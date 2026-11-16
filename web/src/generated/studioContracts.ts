@@ -28,6 +28,69 @@ const jsonObject = z.record(jsonString, jsonValueSchema);
 const invalidJsonValue = z.never({ invalid_type_error: 'Expected a JSON value' });
 export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;
 
+export interface KeepOpen {
+  kind?: "keep-open";
+}
+
+export interface CloseWhenIdle {
+  kind?: "close-when-idle";
+  seconds: number;
+}
+
+export interface LocalTargetProfile {
+  kind: "local";
+  id: "local";
+  label: "This Mac";
+}
+
+export interface SessionTargetProfile {
+  kind: "session";
+  id: string;
+  label: string;
+  driver: string;
+  resources: Record<string, JsonValue>;
+  lifecycle: KeepOpen | CloseWhenIdle;
+  maximum_microusd: number;
+}
+
+export interface LocalTarget {
+  kind: "local";
+  profile: "local";
+}
+
+export interface TargetRealization {
+  environment: string;
+  placement?: Record<string, JsonValue> | null;
+}
+
+export interface SessionTarget {
+  kind: "session";
+  profile: string;
+  driver: string;
+  session_id: string;
+  realization?: TargetRealization | null;
+}
+
+export interface ReadyTarget {
+  state: "ready";
+}
+
+export interface UnavailableTarget {
+  state: "unavailable";
+  reason: string;
+}
+
+export interface TargetOption {
+  profile: LocalTargetProfile | SessionTargetProfile;
+  run_kinds: Array<"train" | "evaluate" | "analyze" | "render" | "report">;
+  availability: ReadyTarget | UnavailableTarget;
+}
+
+export interface ExecutionTargets {
+  default: "local";
+  targets: TargetOption[];
+}
+
 export interface JobError {
   code: string;
   message: string;
@@ -81,6 +144,7 @@ export interface StudioActivityJob {
   seen?: boolean;
   actor?: StudioSubmissionActor | null;
   placement?: "live" | "ordinary" | null;
+  target?: LocalTarget | SessionTarget;
 }
 
 export interface StudioEventReset {
@@ -136,6 +200,7 @@ export interface StudioJobSubmission {
   project_id: string;
   items: StudioSubmissionItem[];
   actor?: StudioSubmissionActor | null;
+  target?: LocalTarget | SessionTarget;
 }
 
 export interface StudioSavedEvaluationRead {
@@ -273,6 +338,7 @@ export interface StudioSavedTrainRunRequest {
   run_keys: StudioSavedTrainKey[];
   token: string;
   reuse_completed?: boolean;
+  target?: string;
 }
 
 export interface StudioSavedTrainRuns {
@@ -4057,6 +4123,129 @@ function arrayScalarInvalid(value: unknown, dtype: string, nonfinite: string): b
   return dtype in floatMax && Math.abs(value) > floatMax[dtype];
 }
 
+export const KeepOpenSchema: z.ZodType<KeepOpen> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("keep-open").optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<KeepOpen>;
+
+export const CloseWhenIdleSchema: z.ZodType<CloseWhenIdle> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("close-when-idle").optional(),
+      "seconds": z.number().int().safe().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<CloseWhenIdle>;
+
+export const LocalTargetProfileSchema: z.ZodType<LocalTargetProfile> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("local"),
+      "id": z.literal("local"),
+      "label": z.literal("This Mac"),
+    })
+    .strict()
+) as unknown as z.ZodType<LocalTargetProfile>;
+
+export const SessionTargetProfileSchema: z.ZodType<SessionTargetProfile> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("session"),
+      "id": z.string().min(1).regex(new RegExp("^\\S+$")),
+      "label": z.string().min(1),
+      "driver": z.string().min(1).regex(new RegExp("^\\S+$")),
+      "resources": z.record(z.string(), jsonValueSchema),
+      "lifecycle": z.union([KeepOpenSchema, CloseWhenIdleSchema]),
+      "maximum_microusd": z.number().int().safe().gte(0),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.id === "local") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "The local target ID is reserved for This Mac",
+        });
+      }
+    })
+) as unknown as z.ZodType<SessionTargetProfile>;
+
+export const LocalTargetSchema: z.ZodType<LocalTarget> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("local"),
+      "profile": z.literal("local"),
+    })
+    .strict()
+) as unknown as z.ZodType<LocalTarget>;
+
+export const TargetRealizationSchema: z.ZodType<TargetRealization> = z.lazy(() =>
+  z
+    .object({
+      "environment": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "placement": z.record(z.string(), jsonValueSchema).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TargetRealization>;
+
+export const SessionTargetSchema: z.ZodType<SessionTarget> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("session"),
+      "profile": z.string().min(1).regex(new RegExp("^\\S+$")),
+      "driver": z.string().min(1).regex(new RegExp("^\\S+$")),
+      "session_id": z.string().uuid(),
+      "realization": TargetRealizationSchema.nullable().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.profile === "local") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A session cannot run as This Mac",
+        });
+      }
+    })
+) as unknown as z.ZodType<SessionTarget>;
+
+export const ReadyTargetSchema: z.ZodType<ReadyTarget> = z.lazy(() =>
+  z
+    .object({
+      "state": z.literal("ready"),
+    })
+    .strict()
+) as unknown as z.ZodType<ReadyTarget>;
+
+export const UnavailableTargetSchema: z.ZodType<UnavailableTarget> = z.lazy(() =>
+  z
+    .object({
+      "state": z.literal("unavailable"),
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<UnavailableTarget>;
+
+export const TargetOptionSchema: z.ZodType<TargetOption> = z.lazy(() =>
+  z
+    .object({
+      "profile": z.union([LocalTargetProfileSchema, SessionTargetProfileSchema]),
+      "run_kinds": z.array(z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("render"), z.literal("report")])),
+      "availability": z.union([ReadyTargetSchema, UnavailableTargetSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<TargetOption>;
+
+export const ExecutionTargetsSchema: z.ZodType<ExecutionTargets> = z.lazy(() =>
+  z
+    .object({
+      "default": z.literal("local"),
+      "targets": z.array(TargetOptionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ExecutionTargets>;
+
 export const JobErrorSchema: z.ZodType<JobError> = z.lazy(() =>
   z
     .object({
@@ -4132,6 +4321,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "seen": z.boolean().optional(),
       "actor": StudioSubmissionActorSchema.nullable().optional(),
       "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
+      "target": z.union([LocalTargetSchema, SessionTargetSchema]).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioActivityJob>;
@@ -4223,6 +4413,7 @@ export const StudioJobSubmissionSchema: z.ZodType<StudioJobSubmission> = z.lazy(
       "project_id": z.string(),
       "items": z.array(StudioSubmissionItemSchema),
       "actor": StudioSubmissionActorSchema.nullable().optional(),
+      "target": z.union([LocalTargetSchema, SessionTargetSchema]).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSubmission>;
@@ -4424,6 +4615,7 @@ export const StudioSavedTrainRunRequestSchema: z.ZodType<StudioSavedTrainRunRequ
       "run_keys": z.array(StudioSavedTrainKeySchema).min(1),
       "token": z.string().min(1).max(128),
       "reuse_completed": z.boolean().optional(),
+      "target": z.string().min(1).regex(new RegExp("^\\S+$")).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRunRequest>;
@@ -10223,6 +10415,17 @@ export const WhenSchema: z.ZodType<When> = z.lazy(() =>
 ) as unknown as z.ZodType<When>;
 
 export const contractSchemas = {
+  KeepOpen: KeepOpenSchema,
+  CloseWhenIdle: CloseWhenIdleSchema,
+  LocalTargetProfile: LocalTargetProfileSchema,
+  SessionTargetProfile: SessionTargetProfileSchema,
+  LocalTarget: LocalTargetSchema,
+  TargetRealization: TargetRealizationSchema,
+  SessionTarget: SessionTargetSchema,
+  ReadyTarget: ReadyTargetSchema,
+  UnavailableTarget: UnavailableTargetSchema,
+  TargetOption: TargetOptionSchema,
+  ExecutionTargets: ExecutionTargetsSchema,
   JobError: JobErrorSchema,
   JobOutcome: JobOutcomeSchema,
   JobProgress: JobProgressSchema,
@@ -10354,6 +10557,17 @@ export const contractSchemas = {
 
 export type ContractName = keyof typeof contractSchemas;
 export interface ContractTypeMap {
+  KeepOpen: KeepOpen;
+  CloseWhenIdle: CloseWhenIdle;
+  LocalTargetProfile: LocalTargetProfile;
+  SessionTargetProfile: SessionTargetProfile;
+  LocalTarget: LocalTarget;
+  TargetRealization: TargetRealization;
+  SessionTarget: SessionTarget;
+  ReadyTarget: ReadyTarget;
+  UnavailableTarget: UnavailableTarget;
+  TargetOption: TargetOption;
+  ExecutionTargets: ExecutionTargets;
   JobError: JobError;
   JobOutcome: JobOutcome;
   JobProgress: JobProgress;

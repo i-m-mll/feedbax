@@ -18,6 +18,10 @@ from pydantic import ConfigDict, Field, SecretStr
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.execution_target import (
+    LOCAL_TARGET_ID, CloseWhenIdle as CloseWhenIdle, KeepOpen as KeepOpen,
+    SessionLifecycle, SessionTarget, TargetId, TargetRealization,
+)
 from feedbax.host.client import HostClient
 from feedbax.host.io import private_directory
 from feedbax.host.protocol import JsonObject, SessionAccess
@@ -41,22 +45,20 @@ type Positive = Annotated[int, Field(gt=0, strict=True)]
 type Nonnegative = Annotated[int, Field(ge=0, strict=True)]
 
 
-class KeepOpen(SessionModel):
-    kind: Literal["keep-open"] = "keep-open"
-
-
-class CloseWhenIdle(SessionModel):
-    kind: Literal["close-when-idle"] = "close-when-idle"
-    seconds: Positive
-
-
 class SessionRequest(SessionModel):
     id: UUID
     target: Nonempty
     resources: JsonObject
     environment: Digest
-    lifecycle: Annotated[KeepOpen | CloseWhenIdle, Field(discriminator="kind")]
+    lifecycle: SessionLifecycle
     maximum_microusd: Nonnegative
+    profile: TargetId | None = Field(default=None, exclude_if=lambda profile: profile is None)
+
+    @property
+    def placement(self) -> SessionTarget:
+        return SessionTarget(
+            kind="session", profile=self.profile or self.target, driver=self.target, session_id=self.id,
+        )
 
     @property
     def digest(self) -> str:
@@ -120,6 +122,20 @@ class SessionRecord(SessionModel):
     epoch: Nonnegative = 0
     close_evidence: CloseEvidence | None = None
 
+    @property
+    def placement(self) -> SessionTarget:
+        realized = self.realization
+        if realized is None or realized.launch != self.launch or realized.environment != self.launch.request.environment:
+            raise SessionError("The venue has no matching realized target.")
+        facts = realized.probe.get("placement")
+        if facts is not None and not isinstance(facts, dict):
+            raise SessionError("The venue reported invalid placement evidence.")
+        target = self.launch.request.placement
+        return SessionTarget(
+            kind=target.kind, profile=target.profile, driver=target.driver, session_id=target.session_id,
+            realization=TargetRealization(environment=realized.environment, placement=facts),
+        )
+
 
 class SessionProvider(Protocol):
     """A provider for one target. The launch intent is the acquisition idempotency key.
@@ -162,6 +178,14 @@ class SessionProvider(Protocol):
     ) -> tuple[ProviderResource, ...] | None:
         """Prevent initialization and return known resources, or leave closure unclaimed."""
         ...
+
+
+def session_capability_problem(provider: SessionProvider, lifecycle: SessionLifecycle) -> str | None:
+    if isinstance(lifecycle, CloseWhenIdle) and not provider.supports_idle_close:
+        return "The provider cannot enforce close-when-idle on the venue."
+    if not provider.enforces_cutoff:
+        return "The running venue cannot independently enforce the authorized cutoff."
+    return None
 
 
 class _ControllerRecord(SessionModel):
@@ -239,6 +263,8 @@ class SessionDriver:
     ) -> None:
         if request.target != self.provider.target:
             raise SessionError(f"Session target {request.target!r} does not match the provider.")
+        if request.profile == LOCAL_TARGET_ID:
+            raise SessionError("A venue session cannot use the This Mac target.")
         if authorization.request_digest != request.digest:
             raise SessionError("Authorization is bound to a different session request.")
         if require_current and authorization.expires_at_ms <= self._clock_ms():
@@ -273,10 +299,8 @@ class SessionDriver:
         self._validate(request, authorization, require_current=False)
         if len(adoption_token) < 32:
             raise SessionError("Session adoption requires a private capability of at least 32 characters.")
-        if isinstance(request.lifecycle, CloseWhenIdle) and not self.provider.supports_idle_close:
-            raise SessionError("The provider cannot enforce close-when-idle on the venue.")
-        if not self.provider.enforces_cutoff:
-            raise SessionError("The running venue cannot independently enforce the authorized cutoff.")
+        if problem := session_capability_problem(self.provider, request.lifecycle):
+            raise SessionError(problem)
         with self._exclusive(request.id):
             control = self._read(request.id)
             if control is None:

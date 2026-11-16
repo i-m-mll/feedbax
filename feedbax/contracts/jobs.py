@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from pydantic import ConfigDict, Field, FiniteFloat, JsonValue
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, TargetId
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
@@ -401,6 +402,7 @@ class StudioSavedTrainRunRequest(StrictModel):
     run_keys: list[StudioSavedTrainKey] = Field(min_length=1)
     token: Token
     reuse_completed: bool = False
+    target: TargetId = LOCAL_TARGET_ID
 
 
 class JobOutcome(StrictModel):
@@ -441,6 +443,7 @@ class StudioActivityJob(StrictModel):
     seen: bool = False
     actor: StudioSubmissionActor | None = Field(default=None, exclude_if=lambda value: value is None)
     placement: Literal["live", "ordinary"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    target: AttemptTarget = LOCAL_TARGET
 
 
 class StudioLocalSession(StrictModel):
@@ -468,6 +471,7 @@ class StudioJobSubmission(StrictModel):
     project_id: str
     items: list[StudioSubmissionItem]
     actor: StudioSubmissionActor | None = Field(default=None, exclude_if=lambda value: value is None)
+    target: AttemptTarget = LOCAL_TARGET
 
 
 class StudioJobStopRequest(StrictModel):

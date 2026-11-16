@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from uuid import UUID
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.execution_target import SESSION_RUN_KINDS, SessionTarget
 from feedbax.contracts.jobs import StudioJobSubmission
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_plan import RunKey
@@ -35,17 +36,17 @@ class Delegation(SessionModel):
 
 
 def admit_saved_delegation(
-    jobs: JobService, folders: ProjectFolder, request: Delegation, *, token: str,
+    jobs: JobService, folders: ProjectFolder, request: Delegation, *, token: str, placement: SessionTarget,
 ) -> StudioJobSubmission:
     reviewed = folders.read_plan(request.project, revision=request.revision)
-    actual = {run.key: run.request_id for run in reviewed.plan.runs if run.kind in {"train", "evaluate"}}
+    actual = {run.key: run.request_id for run in reviewed.plan.runs if run.kind in SESSION_RUN_KINDS}
     if (
         reviewed.semantic_root != request.semantic_root
         or any(key not in actual for key in request.run_keys)
         or (request.request_ids is not None and tuple(actual[key] for key in request.run_keys) != request.request_ids)
     ):
         raise SessionError("The venue's saved Plan differs from the delegated Plan.")
-    return jobs.admit_plan(folders, reviewed, run_keys=request.run_keys, token=token)
+    return jobs.admit_plan(folders, reviewed, run_keys=request.run_keys, token=token, placement=placement)
 
 
 class CollectedAttempt(NamedTuple):
@@ -64,6 +65,7 @@ class SessionJobs:
             raise ValueError("Provide one saved-plan admission service.")
         self.driver = driver
         self.session_id = str(session_id)
+        self.placement = driver.record(session_id).placement
         self._access = driver.session_access(session_id) if venue_jobs is not None else None
         self.host = driver.attach(session_id, access=self._access)
         self._jobs = make_jobs(self.host) if make_jobs is not None else None
@@ -95,7 +97,7 @@ class SessionJobs:
     ) -> StudioJobSubmission:
         if not run_keys or not token:
             raise SessionError("Delegation requires saved runs and a submission token.")
-        selected = {run.key: run.request_id for run in reviewed.plan.runs if run.kind in {"train", "evaluate"}}
+        selected = {run.key: run.request_id for run in reviewed.plan.runs if run.kind in SESSION_RUN_KINDS}
         if any(key not in selected for key in run_keys):
             raise SessionError("This session accepts saved Train and Evaluate runs.")
         request = Delegation(
@@ -137,10 +139,15 @@ class SessionJobs:
             assert self._access is not None
             submission = self._venue_jobs.admit(
                 request.model_copy(update={"local_store": None}), token=token, access=self._access,
+                placement=self.placement,
             )
         else:
             assert self._jobs is not None
-            submission = admit_saved_delegation(self._jobs, folders, request, token=token)
+            submission = admit_saved_delegation(
+                self._jobs, folders, request, token=token, placement=self.placement,
+            )
+        if submission.target != self.placement:
+            raise SessionError("The venue admission returned a different realized target.")
         with self.driver.connection() as db:
             db.execute(
                 "UPDATE session_delegations SET submission=? WHERE session=? AND token=?",

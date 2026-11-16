@@ -15,6 +15,7 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef, ContinuationOccurrence
+from feedbax.contracts.execution_target import AttemptTarget
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.rollout import ResolvedRolloutBinding
 from feedbax.contracts.request_identity import DecodedRequest, decode_request, effective_binding_id
@@ -145,11 +146,12 @@ type Bindings = dict[Name, tuple[BoundMember, ...]]
 
 
 class Success(ReferenceValue):
-    schema_version: Literal["feedbax.proof.effective-success.v1"] = (
-        "feedbax.proof.effective-success.v1"
+    schema_version: Literal["feedbax.proof.effective-success.v2"] = (
+        "feedbax.proof.effective-success.v2"
     )
     request: RequestObject
     attempt: Name
+    target: AttemptTarget
     effective: EffectiveBindingId
     inputs: Bindings
     products: Products = Field(min_length=1)

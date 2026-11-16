@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import RequestObject
+from feedbax.contracts.execution_target import SessionTarget, attempt_target
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.request_refs import BestRank, ContentRef, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
@@ -330,6 +331,7 @@ class Store:
         predecessor = self._train_predecessor(row, payload) if collected is None else None
         ref = publish_train_success(
             root, row["id"], row["request"], payload, outcome, predecessor, collected=collected,
+            target=attempt_target(json.loads(row["data"]).get("target")),
         )
         return outcome | {"store_success": ref}
 
@@ -417,7 +419,10 @@ class Store:
         outcome: dict = {"outcome": state}
         if state == "succeeded":
             ref = ContentObjectRef.model_validate(receipt)
-            if view.attempt_ref(job["id"]) != ref or view.read_owned_success(ref).receipt.request != request:
+            if view.attempt_ref(job["id"]) != ref:
+                raise HostError("invalid_request", "Collected Train success differs from its admitted Store receipt.")
+            success = view.read_owned_success(ref).receipt
+            if success.request != request or success.target != attempt_target(data.get("target")):
                 raise HostError("invalid_request", "Collected Train success differs from its admitted Store receipt.")
             outcome.update(store_success=receipt, receipt={"manifest_id": job["id"], "manifest_sha256": ref.sha256})
         else:
@@ -459,6 +464,7 @@ class Store:
         if (
             success.attempt != job["id"] or success.request.id != job["request"]
             or success.request.object != payload.canonical_request.request or manifest is None
+            or success.target != attempt_target(job["data"].get("target"))
         ):
             raise HostError("invalid_request", "Collected Evaluate differs from its admitted Store receipt.")
         _, _, subject = decode_rollout_request(job["request"], view.store.get_object(success.request.object))
@@ -519,6 +525,7 @@ class Store:
         ref = publish_evaluate_success(
             attempt=row["id"], request_id=row["request"], project=row["project"],
             payload=payload, receipt=outcome["receipt"], binding=binding,
+            target=attempt_target(json.loads(row["data"]).get("target")),
         )
         return outcome | {"store_success": ref.model_dump(mode="json")}
 
@@ -530,6 +537,7 @@ class Store:
         payload = json.loads(row["launch"])["payload"]
         ref = publish_light_success(
             payload, row["id"], row["request"], self.light_origins(row), outcome["products"],
+            target=attempt_target(json.loads(row["data"]).get("target")),
         )
         return {
             "outcome": "succeeded",
@@ -631,15 +639,30 @@ class Store:
             raise HostError("invalid_request", "Managed light jobs require singleton launches and terminal edges.")
 
     def admit(
-        self, token: str, items: list[dict], record: dict, *, allow_completion: bool = False
+        self, token: str, items: list[dict], record: dict, *, allow_completion: bool = False,
+        session_id: str | None = None,
     ) -> dict:
         require_text(token, "submission token")
+        submitted_target = record.get("target")
+        try:
+            target = attempt_target(submitted_target)
+            if submitted_target is not None:
+                venue = str(target.session_id) if isinstance(target, SessionTarget) else None
+                if venue != session_id:
+                    raise ValueError("Execution target differs from the authenticated Host session.")
+                if isinstance(target, SessionTarget) and target.realization is None:
+                    raise ValueError("Venue admission requires realized execution target evidence.")
+        except (TypeError, ValueError) as error:
+            raise HostError("invalid_request", str(error)) from error
         with self.db:
             previous = self.db.execute(
                 "SELECT response FROM submissions WHERE token=?", (token,)
             ).fetchone()
             if previous:
-                return json.loads(previous[0])
+                saved = json.loads(previous[0])
+                if attempt_target(saved["record"].get("target")) != target:
+                    raise HostError("invalid_request", "Submission token belongs to a different execution target.")
+                return saved
             results, aliases, inserted = [], {}, []
             light_parents_by_job: dict[str, tuple[str, ...]] = {}
             live_drivers: set[str] = set()
@@ -667,6 +690,8 @@ class Store:
                     )
                     continue
                 self._validate_job(job)
+                if job["data"].get("target") != submitted_target:
+                    raise HostError("invalid_request", "Job execution target differs from its submission.")
                 job["data"].pop("placement", None)
                 job["data"].pop("placement_detail", None)
                 payload = job["launch"]["payload"]
@@ -753,10 +778,13 @@ class Store:
                     if continued:
                         raise HostError("invalid_resume", "This run already has a continuation.")
                 live = self.db.execute(
-                    f"SELECT id, continues, launch FROM jobs WHERE project=? AND request=? AND state IN {LIVE}",
+                    f"SELECT id, continues, launch, data FROM jobs WHERE project=? AND request=? AND state IN {LIVE}",
                     (job["project"], job["request"]),
                 ).fetchone()
                 matching = by_id if by_id is not None else live
+                different_target = matching is not None and (
+                    attempt_target(json.loads(matching["data"]).get("target")) != target
+                )
                 light_parents = tuple(sorted(
                     aliases.get(edge["job_id"], edge["job_id"]) for edge in job["edges"]
                 )) if light else ()
@@ -773,7 +801,7 @@ class Store:
                         raise HostError(
                             "job_id_conflict", "Job id already names a different request."
                         )
-                    if different_light_parents or _canonical_binding_conflicts(job["launch"], by_id["launch"], evaluate=evaluate) or (
+                    if different_target or different_light_parents or _canonical_binding_conflicts(job["launch"], by_id["launch"], evaluate=evaluate) or (
                         checkpoint_parents is not None
                         and self._completion_parents(by_id["id"]) != checkpoint_parents
                     ):
@@ -782,7 +810,7 @@ class Store:
                         )
                     job_id, disposition = by_id["id"], "admitted"
                 elif live is not None:
-                    if different_light_parents or _canonical_binding_conflicts(
+                    if different_target or different_light_parents or _canonical_binding_conflicts(
                         job["launch"], live["launch"], evaluate=evaluate, live=True,
                     ) or (
                         checkpoint_parents is not None

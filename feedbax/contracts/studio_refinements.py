@@ -41,6 +41,22 @@ _ONE_TRIAL_SOURCE = CrossFieldRefinement(
 
 
 CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
+    "SessionTargetProfile": (
+        CrossFieldRefinement(
+            "target-profile.local-id",
+            "The local target ID is reserved for This Mac",
+            lambda value: value.id == "local",
+            'value.id === "local"',
+        ),
+    ),
+    "SessionTarget": (
+        CrossFieldRefinement(
+            "attempt-target.local-profile",
+            "A session cannot run as This Mac",
+            lambda value: value.profile == "local",
+            'value.profile === "local"',
+        ),
+    ),
     "TaskTrialSampleRequest": (_ONE_TRIAL_SOURCE,),
     "TrialDocuments": (_ONE_TRIAL_SOURCE,),
     "AddModelAttachment": (
@@ -584,6 +600,8 @@ CROSS_FIELD_REFINEMENTS.update(
 
 
 REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
+    "SessionTargetProfile": frozenset({"_remote_id"}),
+    "SessionTarget": frozenset({"_remote_id"}),
     "AddModelAttachment": frozenset({"_owner"}),
     "ChangeModelAttachment": frozenset({"_attachment", "_id"}),
     "RemoveModelAttachment": frozenset({"_attachment"}),

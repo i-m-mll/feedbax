@@ -913,8 +913,11 @@ class Host:
                 return self.store.jobs_snapshot(**message)
             case "stopped_checkpoint":
                 return self.store.stopped_checkpoint(**message)
-            case "admit_with_completion":
-                result = self.store.admit(**message, allow_completion=True)
+            case "admit" | "admit_with_completion":
+                result = self.store.admit(
+                    **message, allow_completion=op == "admit_with_completion",
+                    session_id=fence.state.session_id if fence is not None else None,
+                )
                 self.wake.set()
                 await self._announce()
                 return result
@@ -926,7 +929,6 @@ class Host:
                 "jobs"
                 | "submissions"
                 | "policy"
-                | "admit"
                 | "stop"
                 | "mark_satisfied"
                 | "record_get"

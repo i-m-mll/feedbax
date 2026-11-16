@@ -5,8 +5,10 @@ import {
   ConstantArrayValueSpecSchema,
   ChangeModelAttachmentSchema,
   DocumentSchema,
+  ExecutionTargetsSchema,
   GraphMetadataSchema,
   ModelDocumentSchema,
+  SessionTargetSchema,
   SparseCooArrayValueSpecSchema,
   SparseCooEntrySpecSchema,
   StudioTaskTimelineSpecSchema,
@@ -23,6 +25,32 @@ const tags = {
   schema_id: 'feedbax.spec.component_param.array_value',
   schema_version: 'feedbax.spec.component_param.array_value.v1',
 } as const;
+
+it('validates named execution targets and the exact venue session identity', () => {
+  const profile = {
+    kind: 'session', id: 'cpu-test', label: 'CPU test', driver: 'local-rehearsal',
+    resources: { compute: 1 }, lifecycle: { kind: 'keep-open' }, maximum_microusd: 1000,
+  };
+  const target = {
+    kind: 'session', profile: profile.id, driver: profile.driver,
+    session_id: '3e030d7a-5884-47cd-a987-3b75a13d812d',
+    realization: { environment: 'a'.repeat(64), placement: { device: 'cpu' } },
+  };
+  const catalog = {
+    default: 'local',
+    targets: [{
+      profile, run_kinds: ['train', 'evaluate'],
+      availability: { state: 'unavailable', reason: 'Driver is unavailable.' },
+    }],
+  };
+  expect(ExecutionTargetsSchema.parse(catalog)).toEqual(catalog);
+  expect(SessionTargetSchema.parse(target)).toEqual(target);
+  expect(SessionTargetSchema.safeParse({ ...target, profile: 'local' }).success).toBe(false);
+  expect(SessionTargetSchema.safeParse({ ...target, session_id: 'arbitrary' }).success).toBe(false);
+  expect(ExecutionTargetsSchema.safeParse({
+    ...catalog, targets: [{ ...catalog.targets[0], profile: { ...profile, id: 'local' } }],
+  }).success).toBe(false);
+});
 
 it('preserves JSON payloads and reports the nested path for invalid values', () => {
   const payload = { sample: [null, false, '', -0, 1.25, { scalar: Number.MAX_VALUE }], empty: {} };

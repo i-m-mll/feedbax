@@ -177,6 +177,10 @@ class HostClient:
     def session_status(self) -> SessionStatus:
         return cast(SessionStatus, self._call("session_status"))
 
+    @property
+    def session_id(self) -> str | None:
+        return self._session.session_id if self._session is not None else None
+
     def acknowledge_collection(self, job_id: str, sha256: str) -> None:
         self._call("acknowledge_collection", job_id=job_id, sha256=sha256)
 

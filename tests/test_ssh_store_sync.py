@@ -1,9 +1,11 @@
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError
 from feedbax.contracts.effective_success import INDEX_REF, success_content_ref
+from feedbax.contracts.execution_target import LOCAL_TARGET, SessionTarget, TargetRealization
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import StoreClosureRef
@@ -61,7 +63,14 @@ def test_ssh_collection_verifies_the_bytes_before_admitting_success(tmp_path):
     request = store_request(venue, encode_request(ReportRequestSpec(report_type="proof.ssh"), {}))
     product = document_product(venue, "report", b'{"kind":"report"}')
     original = SuccessView(venue).publish(request, attempt="first", products={"reports": (product,)})
-    newer = SuccessView(venue).publish(request, attempt="second", products={"reports": (product,)})
+    target = SessionTarget(
+        kind="session", profile="fixture-gpu", driver="runpod", session_id=uuid4(),
+        realization=TargetRealization(environment="a" * 64, placement={"device": "fixture"}),
+    )
+    newer = SuccessView(venue).publish_bound(
+        request, attempt="second", products={"reports": (product,)}, bindings={}, target=target,
+    )
+    assert newer.receipt.effective == original.receipt.effective
     ref = success_content_ref(product.content)
     staged = Path(local.root) / ".incoming" / content_object_relative_path(ref.sha256)
     staged.parent.mkdir(parents=True)
@@ -74,7 +83,23 @@ def test_ssh_collection_verifies_the_bytes_before_admitting_success(tmp_path):
     assert not staged.exists()
     assert not connection.rsync_calls()
 
-    assert collect_success(connection.endpoint, local, newer.ref, attempt="second", request_id=request.id) == newer
+    with pytest.raises(OSError, match="expected execution target"):
+        collect_success(connection.endpoint, local, newer.ref, attempt="second", request_id=request.id,
+                        expected_target=LOCAL_TARGET)
+    assert not connection.rsync_calls()
+
+    def reject_observation(success):
+        assert success == newer.receipt
+        raise ValueError("terminal observation differs")
+
+    with pytest.raises(ValueError, match="terminal observation differs"):
+        collect_success(connection.endpoint, local, newer.ref, attempt="second", request_id=request.id,
+                        expected_target=target, verify=reject_observation)
+    assert local.read_ref(INDEX_REF) is None
+
+    assert collect_success(
+        connection.endpoint, local, newer.ref, attempt="second", request_id=request.id, expected_target=target,
+    ) == newer
     assert SuccessView(local).read_attempt("first") == original
     assert SuccessView(local).authored(request.id) == newer
     assert collect_success(connection.endpoint, local, newer.ref, attempt="second", request_id=request.id) == newer

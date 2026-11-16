@@ -16,6 +16,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
 from feedbax._secure_fs import directory_open_flags, rename_no_replace
+from feedbax.contracts.execution_target import SessionTarget
 from feedbax.contracts.jobs import StudioJobSubmission
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
@@ -44,6 +45,7 @@ class _Admission(SessionModel):
     delegation: Delegation
     token: Nonempty
     access: SessionAccess
+    placement: SessionTarget
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,9 @@ class VenueJobs:
         root = PurePosixPath(self.stores_root) / _PROJECT_NAME.validate_python(project_id)
         return RemoteStore(root, self.connection, python=str(self.python))
 
-    def admit(self, request: Delegation, *, token: str, access: SessionAccess) -> StudioJobSubmission:
+    def admit(
+        self, request: Delegation, *, token: str, access: SessionAccess, placement: SessionTarget,
+    ) -> StudioJobSubmission:
         argv = [
             "env", *(f"{key}={value}" for key, value in (self.worker_environment or {}).items()),
             str(self.python), "-m", "feedbax.orchestration.venue_jobs", str(self.cwd),
@@ -82,7 +86,7 @@ class VenueJobs:
         ]
         for module in self.bootstrap_modules:
             argv.extend(("--bootstrap", module))
-        call = _Admission(delegation=request, token=token, access=access)
+        call = _Admission(delegation=request, token=token, access=access, placement=placement)
         reply = json.loads(self.connection.run(argv, call.model_dump_json().encode()))
         if "error" in reply:
             error = reply["error"]
@@ -139,6 +143,8 @@ def _stage_snapshot(root: Path, request: Delegation) -> Path:
 
 
 def _serve(args: argparse.Namespace, call: _Admission) -> StudioJobSubmission:
+    if str(call.placement.session_id) != call.access.session_id or call.placement.realization is None:
+        raise SessionError("Venue admission requires a realized target matching the controller fence.")
     os.chdir(args.cwd)
     host = HostClient(args.host_root, session=call.access)
     host.prohibit_start()
@@ -155,6 +161,7 @@ def _serve(args: argparse.Namespace, call: _Admission) -> StudioJobSubmission:
     )
     return admit_saved_delegation(
         JobService(host, bundle, bootstrap_modules=bootstrap), folders, call.delegation, token=call.token,
+        placement=call.placement,
     )
 
 

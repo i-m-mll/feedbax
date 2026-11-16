@@ -10,6 +10,7 @@ from feedbax.contracts.effective_success import (
     EvaluationSubjectSource, EvaluationSubjectValue, RequestObject, success_content_ref,
 )
 from feedbax.contracts.dataset import DatasetDescriptor
+from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.request_refs import ContentRef, ProductRef, UpdateSeriesMember
@@ -47,6 +48,7 @@ def _retain_checkpoint(
 
 def publish_evaluate_success(
     *, attempt: str, request_id: str, project: str, payload: dict, receipt: dict, binding: dict,
+    target: AttemptTarget = LOCAL_TARGET,
 ) -> ContentObjectRef:
     launch = BoundEvaluationJobInput.model_validate(payload)
     if (launch.project_id, launch.request_id) != (project, request_id):
@@ -82,7 +84,7 @@ def publish_evaluate_success(
         if existing is not None:
             saved = existing.receipt
             if (
-                saved.request != request or saved.evaluation_manifest != manifest_object
+                saved.request != request or saved.evaluation_manifest != manifest_object or saved.target != target
                 or saved.products != {"states": (product,)}
             ):
                 raise ValueError("Published Evaluate attempt differs from its accepted result")
@@ -196,7 +198,7 @@ def publish_evaluate_success(
         )
         result = view.publish_bound(
             request, attempt=attempt, products={"states": (product,)}, bindings={"subject": (bound,)},
-            evaluation_manifest=manifest_object,
+            evaluation_manifest=manifest_object, target=target,
         )
         return result.ref
 

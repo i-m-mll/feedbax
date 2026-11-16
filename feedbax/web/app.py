@@ -9,7 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from feedbax.contracts.studio_api import StudioRenderFailure
 from feedbax.host import HostClient
-from feedbax.jobs import JobService
+from feedbax.jobs import JobService, SessionSubmission
+from feedbax.orchestration.targets import TargetRegistry
 from feedbax.plugins.composition import compose_application
 
 from feedbax.web.api import (
@@ -43,6 +44,8 @@ def create_app(
     desktop_job_root: Path | None = None,
     desktop_release: Path | None = None,
     projects_dir: Path | None = None,
+    targets: TargetRegistry | None = None,
+    submit_session: SessionSubmission | None = None,
 ) -> FastAPI:
     project_root = projects_dir if projects_dir is not None else BASE_DIR / "projects"
 
@@ -58,6 +61,7 @@ def create_app(
         )
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
+            targets=targets, submit_session=submit_session,
         )
         app.state.project_plan = ProjectPlanService(app.state.project_folders, app.state.job_service)
         analysis_jobs = AnalysisJobService(

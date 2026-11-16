@@ -28,11 +28,13 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_content import success_content_objects
 from feedbax.persistence.train_job import TrainJobEntry
+from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 
 
 def publish_train_success(
     store_root: Path, attempt: str, request_id: str, launch: dict, outcome: dict,
     predecessor: tuple[dict, dict] | None, *, collected: TrainJobEntry | None = None,
+    target: AttemptTarget = LOCAL_TARGET,
 ) -> dict:
     """Use only the accepted completion and the producer pinned at Host delivery."""
     completion = outcome["completion"]
@@ -70,7 +72,7 @@ def publish_train_success(
         if existing := view.attempt_ref(attempt):
             committed = view.read_owned_success(existing).receipt
             if (
-                committed.attempt != attempt or committed.request != request
+                committed.attempt != attempt or committed.request != request or committed.target != target
                 or committed.products != {"checkpoint": (product,)}
                 or committed.continuation is None
                 or committed.continuation.provenance != _occurrence(pointer)
@@ -146,7 +148,7 @@ def publish_train_success(
         )
         published = view.publish_bound(
             request, attempt=attempt, products={"checkpoint": (product,)}, bindings=bindings,
-            continuation=continuation, recovery=recovery,
+            continuation=continuation, recovery=recovery, target=target,
         )
     return published.ref.model_dump(mode="json")
 

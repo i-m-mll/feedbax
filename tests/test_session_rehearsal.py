@@ -11,14 +11,17 @@ import subprocess
 import sys
 import time
 from contextlib import closing
-from dataclasses import replace
+from dataclasses import asdict, replace
 from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.execution_target import SessionTargetProfile
+from feedbax.contracts.jobs import StudioJobSubmission
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.host import HostError
@@ -27,8 +30,11 @@ from feedbax.orchestration.session import (
     KeepOpen, ProviderResource, SessionAuthorization, SessionDriver, SessionError, SessionRequest,
 )
 from feedbax.orchestration.session_jobs import CollectedAttempt, SessionJobs
+from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, evidence, verify_authorization
@@ -123,12 +129,17 @@ def test_session_rehearses_saved_train_and_evaluate_after_controller_exit(host_f
     controller_root = tmp_path / "controller"
     provider = _LostAcquisitionReply(provider_root)
     driver = _driver(controller_root, provider)
-    request = _request(provider)
+    profile = SessionTargetProfile(
+        kind="session", id="cpu-rehearsal", label="CPU rehearsal", driver=provider.target,
+        resources={"compute": 1}, lifecycle=KeepOpen(), maximum_microusd=120_000,
+    )
+    registry = TargetRegistry((profile,), (provider,))
+    request = registry.session_request(profile.id, session_id=uuid4(), environment=ENVIRONMENT)
     authorization = _authorization(request)
     adoption = secrets.token_urlsafe()
 
     with pytest.raises(SessionError, match="different session"):
-        driver.open(_request(provider), authorization, adoption_token=adoption)
+        driver.open(request.model_copy(update={"profile": "another-profile"}), authorization, adoption_token=adoption)
     with pytest.raises(SessionError, match="cost ceiling"):
         driver.open(request, _authorization(request, ceiling_microusd=1), adoption_token=adoption)
     with pytest.raises(SessionError, match="issuer authentication"):
@@ -200,9 +211,22 @@ executor.execute_managed_training_run = execute
         reconnected = SessionJobs(_driver(controller_root, provider), request.id, _jobs)
         second = reconnected.poll(limit=1)
         assert second["events"][0]["cursor"] > first["cursor"]
-        submission = reconnected.delegate(folders, folders.read_plan(PROJECT, revision=None),
-                                          run_keys=(TRAIN, EVALUATE), token=TOKEN)
+        def submit_session(selected, app_folders, reviewed, *, run_keys, token, reuse_completed):
+            assert selected == profile and not reuse_completed
+            return reconnected.delegate(app_folders, reviewed, run_keys=run_keys, token=token)
+
+        with TestClient(create_app(projects_dir=folders.root, targets=registry, submit_session=submit_session)) as client:
+            machines = client.get("/api/orchestration/targets").json()
+            assert machines["targets"][1]["availability"] == {"state": "ready"}
+            response = client.post(f"/api/projects/{PROJECT}/train-runs", json={
+                "revision": local_plan.revision, "run_keys": [asdict(TRAIN), asdict(EVALUATE)],
+                "token": TOKEN, "target": profile.id,
+            })
+            assert response.status_code == 202, response.text
+            submission = StudioJobSubmission.model_validate(response.json())
         assert {item.job_id for item in submission.items} == {train_id, evaluation_id}
+        assert submission.target == state.placement
+        assert state.placement.realization.placement == {"device": "cpu"}
         assert len(reconnected.host.jobs()) == 2
         with pytest.raises(HostError) as busy:
             driver.close(request.id)
@@ -225,10 +249,15 @@ executor.execute_managed_training_run = execute
         }
         original = {key: source.get_object(ref) for key, ref in receipts.items()}
         assert attempts[1]["edges"][0]["binding"]["completion"]["producer_job_id"] == train_id
+        request_ids = {run.key: run.request_id for run in local_plan.plan.runs}
+        assert {row["request"] for row in attempts} == {request_ids[TRAIN], request_ids[EVALUATE]}
+        assert all(row["data"]["target"] == state.placement.model_dump(mode="json") for row in attempts)
+        assert all(SuccessView(source).read_receipt(ref).target == state.placement for ref in receipts.values())
         local_jobs = _jobs(host_fixture)
 
         def collect(attempt):
             result = local_jobs.collect_session_attempt(source, attempt, project=PROJECT, store=local_plan.store_path)
+            assert result.activity.target == state.placement
             return CollectedAttempt(result.activity.job_id, result.evidence_sha256)
 
         ack = session.host.acknowledge_collection
