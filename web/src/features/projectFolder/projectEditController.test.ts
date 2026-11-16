@@ -4,6 +4,7 @@ import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, Stud
 import { addressKey, applyAuthoredEdits, presentationAddress } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
+import { createFirstTrain } from './createFirstTrain';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
 
 const model: AuthoredFileAddress = { kind: 'document', id: 'model' };
@@ -103,6 +104,36 @@ function fixture(settleMs = 400, start = initial) {
 }
 
 afterEach(() => vi.useRealTimers());
+
+it('binds the first compatible documents by name and scaffolds only the missing type', async () => {
+  const { editor } = fixture(400, {
+    ...initial,
+    project: { documents: {
+      model: { schema: 'feedbax.spec.model', payload: {} },
+      task: { schema: 'feedbax.spec.python_task', payload: {} },
+      objective: { schema: 'feedbax.report_document.v1', payload: {} },
+      'a-model': { schema: 'feedbax.spec.model', payload: {} },
+      'a-task': { schema: 'feedbax.spec.task_document', payload: {} },
+    } },
+  });
+  const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(undefined);
+  await expect(createFirstTrain(editor, hex(99))).rejects.toBeInstanceOf(ProjectEditConflictError);
+  expect(create).not.toHaveBeenCalled();
+
+  await createFirstTrain(editor, initial.revision);
+  expect(create).toHaveBeenCalledWith('New Step', [
+    { kind: 'document', id: 'objective-2', document: {
+      schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+    } },
+    expect.objectContaining({ kind: 'step', id: 'train', step: expect.objectContaining({
+      base: { inline: expect.objectContaining({ trial_documents: {
+        model_name: 'a-model', model: { document: 'a-model' }, task: { document: 'a-task' },
+        objective: { document: 'objective-2' },
+      } }) },
+    }) }),
+  ], initial.revision);
+  editor.dispose();
+});
 
 it('acknowledges every file of a scoped edit after a lost response and undoes it together', async () => {
   const { editor, external, write, current } = fixture();
