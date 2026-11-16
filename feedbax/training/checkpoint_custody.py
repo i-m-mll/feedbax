@@ -30,7 +30,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-from jax.tree_util import PyTreeDef
+from jax.tree_util import DictKey, GetAttrKey, KeyPath, PyTreeDef
 from feedbax._vendor.jax_cookbook import is_type
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -140,6 +140,7 @@ from feedbax.contracts.worker import (
     StateSlotSpec,
     derive_consistency_predicate,
 )
+from feedbax.runtime.graph import ComponentBinding, Graph
 from feedbax.training.metrics import normalize_serialized_metrics
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
 from feedbax.training.model_checkpoint import (
@@ -2645,9 +2646,28 @@ def _load_checkpoint_from_pointer(
         loaded_slots[slot.slot] = _deserialize_checkpoint_slot(
             slot, transaction_dir, manifest, template=expected_slots.get(slot.slot),
         )
+
+    source_model = None
+
+    def load_binding_source(name: str) -> Any:
+        nonlocal source_model
+        if source_model is None:
+            model_slot = slots_by_name.get("model")
+            if model_slot is None or model_slot.media_type != MODEL_TREE_MEDIA_TYPE:
+                raise CheckpointIntegrityError("Binding order comparison requires a typed model slot.")
+            source_model = _deserialize_checkpoint_slot(
+                model_slot, transaction_dir, manifest,
+            )
+        if name == "model":
+            return source_model
+        return _deserialize_checkpoint_slot(
+            slots_by_name[name], transaction_dir, manifest, loaded_model=source_model,
+        )
+
     provenance_notices, loaded_fingerprints = _validate_manifest_structural_abi(
         manifest,
         loaded_slots,
+        load_binding_source=load_binding_source,
     )
     loaded_fingerprint_slots = dict(loaded_slots)
     if resume_slot_transform is not None:
@@ -4946,7 +4966,7 @@ _COMPONENT_BINDING_FIELD = re.compile(
 )
 
 
-def _ordered_component_binding_abi(fingerprint: StructuralAbiFingerprint) -> StructuralAbiFingerprint:
+def _ordered_component_binding_treedef(treedef: str) -> str:
     """Sort only the entries of a rendered Graph binding field for resume comparison."""
     def order_entries(match: re.Match[str]) -> str:
         if (entries := match["entries"]) is None:
@@ -4955,8 +4975,26 @@ def _ordered_component_binding_abi(fingerprint: StructuralAbiFingerprint) -> Str
         ordered = sorted(_COMPONENT_BINDING_ENTRY.findall(entries))
         return "('component_bindings', {" + ", ".join(ordered) + "})"
 
-    treedef = _COMPONENT_BINDING_FIELD.sub(order_entries, fingerprint.treedef)
-    return fingerprint.model_copy(update={"treedef": treedef})
+    return _COMPONENT_BINDING_FIELD.sub(order_entries, treedef)
+
+
+def _binding_order_only(actual: dict, recorded: dict) -> bool:
+    actual_ordered = actual | {"treedef": _ordered_component_binding_treedef(actual["treedef"])}
+    recorded_ordered = recorded | {"treedef": _ordered_component_binding_treedef(recorded["treedef"])}
+    return _canonical_hash(actual_ordered) == _canonical_hash(recorded_ordered)
+
+
+def _component_bindings_by_path(value: Any) -> dict[KeyPath, Mapping[str, ComponentBinding]]:
+    def visit(path: KeyPath, graph: Graph) -> Iterator[tuple[KeyPath, Mapping[str, ComponentBinding]]]:
+        yield path, graph.component_bindings
+        for name, node in graph.nodes.items():
+            if isinstance(node, Graph):
+                yield from visit((*path, GetAttrKey("nodes"), DictKey(name)), node)
+
+    pairs, _ = jt.flatten_with_path(value, is_leaf=lambda item: isinstance(item, Graph))
+    return dict(
+        binding for path, leaf in pairs if isinstance(leaf, Graph) for binding in visit(path, leaf)
+    )
 
 
 def _validate_manifest_structural_abi(
@@ -4964,37 +5002,42 @@ def _validate_manifest_structural_abi(
     loaded_slots: Mapping[str, Any],
     *,
     layout: Literal["prepared_template", "authenticated_source"] = "prepared_template",
+    load_binding_source: Callable[[str], Any] | None = None,
 ) -> tuple[list[CheckpointProvenanceNotice], dict[str, StructuralAbiFingerprint]]:
     notices: list[CheckpointProvenanceNotice] = []
     loaded_fingerprints: dict[str, StructuralAbiFingerprint] = {}
     for slot in manifest.slots:
         if slot.slot not in loaded_slots:
             continue
-        loaded_fingerprint = structural_abi_fingerprint(loaded_slots[slot.slot])
+        value = loaded_slots[slot.slot]
+        loaded_fingerprint = structural_abi_fingerprint(value)
         loaded_fingerprints[slot.slot] = loaded_fingerprint
-        recorded = slot.structural_abi_fingerprint
-        comparable = loaded_fingerprint
-        if layout == "authenticated_source":
-            comparable = _source_layout_abi(slot, loaded_fingerprint)
-        elif _has_codec_model_layout(slot) and comparable.treedef != recorded.treedef:
-            comparable = _ordered_component_binding_abi(comparable)
-            recorded = _ordered_component_binding_abi(recorded)
-        if _semantic_structural_abi_sha256(
-            comparable,
-            value=loaded_slots[slot.slot],
-        ) != _semantic_structural_abi_sha256(
-            recorded,
-            value=loaded_slots[slot.slot],
-        ):
-            diff_suffix = _format_structural_abi_diff(
-                slot.structural_abi_fingerprint,
-                loaded_fingerprint,
-                recorded_value=loaded_slots[slot.slot],
-                actual_value=loaded_slots[slot.slot],
-            )
-            raise CheckpointIntegrityError(
-                f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale{diff_suffix}"
-            )
+        comparable = (
+            _source_layout_abi(slot, loaded_fingerprint)
+            if layout == "authenticated_source" else loaded_fingerprint
+        )
+        actual = _semantic_structural_abi_projection(comparable, value=value)
+        recorded = _semantic_structural_abi_projection(slot.structural_abi_fingerprint, value=value)
+        if _canonical_hash(actual) != _canonical_hash(recorded):
+            if (
+                load_binding_source is None
+                or not _has_codec_model_layout(slot)
+                or not _binding_order_only(actual, recorded)
+            ):
+                diff_suffix = _format_structural_abi_diff(
+                    slot.structural_abi_fingerprint,
+                    loaded_fingerprint,
+                    recorded_value=value,
+                    actual_value=value,
+                )
+                raise CheckpointIntegrityError(
+                    f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale{diff_suffix}"
+                )
+            source = load_binding_source(slot.slot)
+            if _component_bindings_by_path(value) != _component_bindings_by_path(source):
+                raise CheckpointIntegrityError(
+                    f"checkpoint slot {slot.slot!r} component bindings differ from authenticated source"
+                )
         notice = _environment_provenance_notice(
             slot.slot, slot.structural_abi_fingerprint,
             serializer=_supported_slot_serializer(slot),

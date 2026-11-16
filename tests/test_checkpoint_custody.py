@@ -40,7 +40,8 @@ from feedbax.training.checkpoint_custody import (
     write_checkpoint_transaction,
 )
 from feedbax.training.managed_studio import prepare_managed_training
-from feedbax.training.model_checkpoint import SemanticModelWriter
+from feedbax.training.model_checkpoint import ModelCheckpointError, SemanticModelWriter
+from feedbax.training.standard_train_checkpoint import standard_train_optimizer_template
 from feedbax.runtime.components import identity_activation
 from tests.support.managed_train_fixture import managed_train_payload, managed_train_spec
 
@@ -99,9 +100,29 @@ def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_pat
         assert eqx.tree_equal(resolved.slots[name], resumed.slots[name])
     assert resolved.manifest.run_contract_binding.canonical_projection_sha256
 
-    changed = replace(prepared.initial_slots["model"], checkpoint=True)
+    model = prepared.initial_slots["model"]
+    changed = replace(model, checkpoint=True)
     with pytest.raises(CheckpointIntegrityError, match="model.*structural ABI fingerprint is stale"):
         resume(prepared.initial_slots | {"model": changed})
+
+    bindings = model.component_bindings
+    readout = bindings["readout"]
+    assert readout.trainable_override is None
+
+    def with_readout(binding):
+        return replace(model, component_bindings=bindings | {"readout": binding})
+
+    revised = with_readout(replace(readout, revision=readout.revision + 1))
+    with pytest.raises(ModelCheckpointError, match="readout.*unsupported runtime owner identity or revision"):
+        resume(prepared.initial_slots | {"model": revised})
+
+    changed_override = with_readout(replace(readout, trainable_override=True))
+    changed_optimizer = standard_train_optimizer_template(
+        written.manifest, written.transaction_dir, changed_override,
+    )
+    for name, slot in (("model", changed_override), ("optimizer", changed_optimizer)):
+        with pytest.raises(CheckpointIntegrityError, match=f"{name}.*component bindings differ"):
+            resume(prepared.initial_slots | {name: slot})
 
 
 def test_checkpoint_resolver_rejects_modified_typed_slot(tmp_path):
