@@ -120,28 +120,6 @@ class SuccessView:
     def read_receipt(self, ref: ContentObjectRef) -> Success:
         return read_committed_success(self._index, ref, self.store.get_object)
 
-    def recover_native_train_run(
-        self, request_id: RequestId, receipt_ref: ContentObjectRef,
-    ) -> TerminalTrainSubject:
-        """Install a run ref for an exact committed native success from before run refs."""
-        with self.store._exclusive_lock(create=False):
-            current = terminal_train_subject(self.store, request_id)
-            if current is None:
-                index = decode_success_index(self.store.read_ref(INDEX_REF))
-                if index.authored.get(request_id) != receipt_ref:
-                    raise PublicationConflict(f"Train {request_id} has a different current success")
-                receipt = read_committed_success(index, receipt_ref, self.store.get_object)
-                pin = terminal_train_subject_at(self.store, receipt_ref, request_id, attempt=receipt.attempt)
-                self._publish_run_ref(
-                    request_id, StoreClosureRef(roots=(ReceiptRoot(receipt=receipt_ref),)), previous=None,
-                )
-                current = pin
-            if current.receipt != receipt_ref:
-                raise PublicationConflict(
-                    f"Run {request_id} already has receipt {current.receipt.sha256}; expected {receipt_ref.sha256}"
-                )
-            return current
-
     def resolve(
         self, request: DecodedRequest, member: InputMember, origin: ContentObjectRef | None,
     ) -> BoundMember:

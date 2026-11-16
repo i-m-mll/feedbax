@@ -1954,9 +1954,6 @@ class _Compiler:
                     if isinstance(rule, UpdateCadence):
                         horizon = self.checkpoint_horizon(reference.request_id)
                     selector = _checkpoint(rule, horizon=horizon)
-                    if isinstance(selector, LastMember) and chosen.terminal is None:
-                        if (terminal := self.read_terminal_train(reference.request_id)) is not None:
-                            chosen = replace(chosen, terminal=terminal.subject)
                 except (OSError, ValueError) as error:
                     self.diagnostics.append(ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),

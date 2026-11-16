@@ -1551,7 +1551,6 @@ class Store:
     def _completion_candidate(
         self, anchor: str, selection: CheckpointSelection | None = None, *,
         train_slots: frozenset[str] | None = None, tip: str | None = None, observe: bool = False,
-        terminal_model: bool = False,
     ) -> _CompletionCandidate:
         """Select an authenticated final product or exact checkpoint publications.
 
@@ -1661,21 +1660,8 @@ class Store:
             state = attempt["state"]
             if state == "succeeded" and selection is None:
                 try:
-                    if terminal_model:
-                        from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-                        from feedbax.persistence.evaluation_subject import terminal_train_subject_at
-
-                        outcome = json.loads(attempt["outcome"] or "{}")
-                        ref = ContentObjectRef.model_validate(outcome.get("store_success"))
-                        pin = terminal_train_subject_at(
-                            ImmutableArtifactBlobProvider(Path(payload["manifest_root"])),
-                            ref, attempt["request"], attempt=attempt_id,
-                        )
-                        return _CompletionCandidate(
-                            {"dependency_job_id": anchor, "terminal": pin.model_dump(mode="json")}, None, rejections,
-                        )
                     completion, message = self._completed_product(attempt, train_slots)
-                except (CompletionFileError, OSError, KeyError, ValueError) as error:
+                except CompletionFileError as error:
                     rejections.append(_CompletionRejection(attempt_id, "completion", str(error)))
                 else:
                     if completion is not None:
@@ -1926,15 +1912,10 @@ class Store:
                 if tip is not None and tip["state"] in LIVE_STATES:
                     continue
                 tip_id = tip["id"] if tip is not None else None
-                terminal_model = (
-                    job["request"].startswith("evaluate:") and selection is None
-                    and launch["warm_entrypoint"] == "feedbax.training.evaluate_worker:main"
-                    and isinstance(checkpoint, dict) and (checkpoint.get("select") or {}).get("kind") == "last"
-                )
-                key = anchor, selection, train_slots, tip_id, terminal_model
+                key = anchor, selection, train_slots, tip_id
                 if key not in candidates:
                     candidates[key] = self._completion_candidate(
-                        anchor, selection, train_slots=train_slots, tip=tip_id, terminal_model=terminal_model,
+                        anchor, selection, train_slots=train_slots, tip=tip_id,
                     )
                 candidate = candidates[key]
                 binding, error, rejections = candidate.binding, candidate.error, candidate.rejections

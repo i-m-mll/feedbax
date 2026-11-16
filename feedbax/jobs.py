@@ -65,7 +65,7 @@ from feedbax.contracts.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.effective_success import TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
@@ -518,14 +518,6 @@ class JobService(PlanJobReader):
                         reviewed_terminal = old.inputs["subject"].terminal
                         if reviewed_terminal is not None and reviewed_terminal != terminal:
                             raise ValueError("/inputs/subject: the reviewed terminal Train receipt changed")
-                        if planned.producer in names_by_key:
-                            terminal = None
-                        if (
-                            terminal is None and isinstance(checkpoint, ProductRef)
-                            and isinstance(checkpoint.select, LastMember)
-                            and planned.producer not in names_by_key
-                        ):
-                            terminal = self._terminal_train_subject(project, store, checkpoint.request_id)
                         item = self._evaluation_item(
                             project, run.request_id, current.plan.requests[run.request_id], data, store,
                             checkpoint, params, terminal=terminal,
@@ -680,21 +672,6 @@ class JobService(PlanJobReader):
         return self._submission_for_action(
             admitted, project=project, continues=None, command=command, placement=placement,
         )
-
-    def _terminal_train_subject(
-        self, project: str, store: ImmutableArtifactBlobProvider, request: RequestId,
-    ) -> TerminalTrainSubject | None:
-        from feedbax.persistence.effective_success import SuccessView
-
-        view = SuccessView(store)
-        rows = self.host.jobs(project=project, request=request)
-        for row in reversed(rows):
-            if row["state"] == "succeeded" and row["data"].get("manifest_root") == str(store.root):
-                ref_data = (row.get("outcome") or {}).get("store_success")
-                if ref_data is None:
-                    continue
-                return view.recover_native_train_run(request, ContentObjectRef.model_validate(ref_data))
-        return None
 
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
         anchors = [
@@ -1429,16 +1406,21 @@ class JobService(PlanJobReader):
 
     def _reusable(self, candidate: Job, jobs: Sequence[dict[str, Any]]) -> str | None:
         parents = {edge.job_id for edge in candidate.edges}
+        request_binding = candidate.launch.payload.get("canonical_request")
+        terminal = request_binding.get("terminal") if isinstance(request_binding, dict) else None
+        receipt = TerminalTrainSubject.model_validate(terminal).receipt if terminal is not None else None
         for job in reversed(jobs):
             if {edge["job_id"] for edge in job["edges"]} != parents:
                 continue
             if job["state"] in _LIVE_STATES:
                 return None
-            if job["state"] == "succeeded" and self._receipt_matches(job):
+            if job["state"] == "succeeded" and self._receipt_matches(job, terminal_receipt=receipt):
                 return job["id"]
         return None
 
-    def _receipt_matches(self, job: dict[str, Any]) -> bool:
+    def _receipt_matches(
+        self, job: dict[str, Any], *, terminal_receipt: ContentObjectRef | None = None,
+    ) -> bool:
         from feedbax.persistence.effective_success import SuccessView
 
         root = Path(job["data"]["manifest_root"])
@@ -1449,7 +1431,7 @@ class JobService(PlanJobReader):
         if _is_light_request(job["request"]) or _is_collected_train(job):
             return _verified_store_result(view, job) is not None
         if job["request"].startswith("evaluate:"):
-            return _verified_evaluation_result(job, root) is not None
+            return _verified_evaluation_result(job, root, terminal_receipt=terminal_receipt) is not None
         return _verified_training_receipt(job, root) is not None
 
     def _activity_rows(
@@ -1717,7 +1699,9 @@ def _collected_train_checkpoint_source(view: SuccessView, result: Success) -> St
         return None
 
 
-def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEvaluation | None:
+def _verified_evaluation_result(
+    job: dict[str, Any], store: Path, *, terminal_receipt: ContentObjectRef | None = None,
+) -> _VerifiedEvaluation | None:
     from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.persistence.effective_success import SuccessView
     from feedbax.studio.canonical_evaluate import states_product, states_ref, verify_evaluation_receipt
@@ -1738,7 +1722,10 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
             return None
         manifest_object = success.evaluation_manifest
         (bound,) = success.inputs["subject"]
-        terminal = bound.evaluation_subject and bound.evaluation_subject.terminal_checkpoint is not None
+        subject = bound.evaluation_subject
+        if terminal_receipt is not None and (subject is None or subject.terminal_receipt != terminal_receipt):
+            return None
+        terminal = subject is not None and subject.terminal_checkpoint is not None
         if job["data"].get("collected_evaluate") is True or terminal:
             return _verify_stored_evaluation(view.store, success, receipt, manifest_object)
 

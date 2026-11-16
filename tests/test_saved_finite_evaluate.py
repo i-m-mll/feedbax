@@ -395,8 +395,9 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         (tmp_path / "finish-train").touch()
     completed = terminal(resumed.job_id, "succeeded")
     final = terminal(last.job_id, "succeeded")
-    bound_terminal = final["edges"][0]["binding"]["terminal"]
-    assert bound_terminal["receipt"] == completed["outcome"]["store_success"]
+    completion = final["edges"][0]["binding"]["completion"]
+    assert completion == completed["outcome"]["completion"]
+    assert completion["checkpoint"]["completed_updates"] == 6
     last_result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=last.job_id)
     with last_result.open_states() as states:
         assert states.data("checkpoint").tolist() == [6]
@@ -406,7 +407,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     assert resumed_member["producer_job_id"] == resumed.job_id
     restart(host)
     assert job_row(host, exact.job_id)["edges"][0]["binding"] == binding
-    assert job_row(host, last.job_id)["edges"][0]["binding"]["terminal"] == bound_terminal
+    assert job_row(host, last.job_id)["edges"][0]["binding"]["completion"] == completion
 
     result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=exact.job_id)
     receipt = result._manifest()
