@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from itertools import chain
 import json
@@ -84,6 +84,7 @@ from feedbax.jobs import (
     plan_attempt_key,
     saved_request_status,
 )
+from feedbax.orchestration.session_jobs import ApprovedRowStatus
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.store_damage import inspect_without_recording
@@ -134,6 +135,7 @@ class ProjectPlanRead:
     evaluations: Mapping[RunKey, StudioSavedEvaluationRow]
     evaluation_problems: tuple[StudioProjectWindowMapProblem, ...]
     light: Mapping[RunKey | ElementKey, LightHistory]
+    openings: Mapping[RunKey, ApprovedRowStatus] = field(default_factory=dict)
 
     def status_rows(self) -> Iterator[PlanStatusRow]:
         """Project saved attempt states and the compiler's refused rows and elements."""
@@ -343,6 +345,11 @@ class ProjectPlanRead:
                     label=row.label or row.key.row,
                     status=statuses[row.key].status,
                     reason=statuses[row.key].reason,
+                    opening_step=opening.opening_step if (opening := self.openings.get(row.key)) is not None else None,
+                    collection_progress=next((
+                        attempt.collection_progress for attempt in reversed(self.attempts_by_run.get(row.key, ()))
+                        if attempt.status == JobStatus.COLLECTING
+                    ), None),
                     light=StudioSavedLightHistory(result=light.result, previous=light.previous)
                     if (light := self.light.get(row.key)) is not None else None,
                     evaluation_conditions=conditions.get(row.request_id) if isinstance(row, PlannedRun) else None,
@@ -468,10 +475,12 @@ class ProjectPlanService:
     def __init__(
         self, folders: ProjectFolderService, jobs: JobService,
         remote_attempts: Callable[[SettledProjectPlan], Sequence[StudioActivityJob]] | None = None,
+        remote_openings: Callable[[SettledProjectPlan], Mapping[RunKey, ApprovedRowStatus]] | None = None,
     ) -> None:
         self.folders = folders
         self.jobs = jobs
         self._remote_attempts = remote_attempts
+        self._remote_openings = remote_openings
 
     def read(
         self, project_id: str, *, revision: str, source_runs: Iterable[RunKey] = (),
@@ -482,6 +491,7 @@ class ProjectPlanService:
         return read_settled_project_plan(
             settled, self.jobs, stopped_checkpoint_jobs=stopped_checkpoint_jobs,
             remote_attempts=self._remote_attempts(settled) if self._remote_attempts is not None else (),
+            openings=self._remote_openings(settled) if self._remote_openings is not None else None,
         )
 
     def response(self, view: ProjectPlanRead, *, include_window_map: bool) -> StudioSavedTrainRuns:
@@ -673,6 +683,7 @@ class ProjectPlanService:
 def read_settled_project_plan(
     settled: SettledProjectPlan, reader: PlanJobReader, *, stopped_checkpoint_jobs: Sequence[str] = (),
     remote_attempts: Sequence[StudioActivityJob] = (),
+    openings: Mapping[RunKey, ApprovedRowStatus] | None = None,
 ) -> ProjectPlanRead:
     """Join one saved Plan to the verified Host evidence used by Studio."""
     light = settled.plan.light_requests
@@ -692,7 +703,7 @@ def read_settled_project_plan(
                 continue
             by_request[observed.request_id] = (*local, PlanJobAttempt(
                 observed.job_id, observed.status, observed.phase, observed.progress, observed.reason, None,
-                continues=observed.continues,
+                continues=observed.continues, collection_progress=observed.collection_progress,
             ))
         jobs = replace(jobs, by_request=MappingProxyType(by_request))
     evaluations = {}
@@ -703,6 +714,12 @@ def read_settled_project_plan(
             evaluations[run.key] = row
             if problem is not None:
                 evaluation_problems.append(problem)
+    history = dict(_train_history(settled, jobs))
+    for key, opening in (openings or {}).items():
+        if key in history:
+            history[key] = replace(history[key], status=opening.status, reason=opening.reason)
+        if key in evaluations:
+            evaluations[key] = evaluations[key].model_copy(update={"status": opening.status, "reason": opening.reason})
     return ProjectPlanRead(
         settled,
         jobs,
@@ -711,10 +728,11 @@ def read_settled_project_plan(
             for run in settled.plan.runs
             if (attempts := jobs.by_request.get(run.request_id)) is not None
         }),
-        _train_history(settled, jobs),
+        MappingProxyType(history),
         MappingProxyType(evaluations),
         tuple(evaluation_problems),
         MappingProxyType({key: _light_history(settled, jobs, node) for key, node in light.items()}),
+        openings or {},
     )
 
 

@@ -81,6 +81,7 @@ def create_app(
         app.state.project_plan = ProjectPlanService(
             app.state.project_folders, app.state.job_service,
             remote_runs.project_attempts if remote_runs is not None else None,
+            remote_runs.opening_rows if remote_runs is not None else None,
         )
         analysis_jobs = AnalysisJobService(
             job_root=desktop_job_root / "analysis" if desktop_job_root is not None else None
@@ -105,6 +106,8 @@ def create_app(
             for task in maintenance:
                 with suppress(asyncio.CancelledError):
                     await task
+            if remote_runs is not None:
+                await asyncio.to_thread(remote_runs.stop_collection)
             if desktop_job_root is not None:
                 analysis_jobs.begin_stop(force=True)
             await analysis_jobs.aclose()

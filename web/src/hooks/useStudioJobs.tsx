@@ -28,6 +28,8 @@ import JobsWorker from '@/jobs/studioJobWorker?sharedworker';
 
 const jobsKey = ['studio-jobs'] as const;
 const historyKey = (projectId: string | null) => ['studio-job-history', projectId] as const;
+const eventSource = (venue: StudioJobEvent['venue']) => venue
+  ? JSON.stringify([venue.session_id, venue.stream_id]) : 'local';
 
 const StudioJobsContext = createContext<{
   connection: StudioJobConnection;
@@ -65,6 +67,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     let historyReady = false;
     let snapshotReady = false;
     let machineUpdatePending = false;
+    let historyCursors = new Map<string, number>();
     let announcedThrough = 0;
     const statuses = new Map<string, StudioActivityJob['status']>();
     let initialSnapshot = true;
@@ -92,7 +95,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
     function apply(event: StudioJobEvent) {
       const { activity } = event;
-      if (activity && ownsSnapshot) {
+      if (activity && ownsSnapshot && !event.venue) {
         cache.setQueryData<StudioJobSnapshot>(jobsKey, (snapshot) => {
           if (!snapshot || event.cursor <= snapshot.cursor) return snapshot;
           const known = snapshot.jobs.some((job) => job.job_id === activity.job_id);
@@ -107,14 +110,14 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
         }
       }
       if (projectId === event.project_id && historyReady) {
-        cache.setQueryData<StudioJobEvent[]>(history, (events = []) => {
-          if ((events[events.length - 1]?.cursor ?? 0) >= event.cursor) return events;
-          return [...events, event];
-        });
+        const source = eventSource(event.venue);
+        if ((historyCursors.get(source) ?? 0) >= event.cursor) return;
+        historyCursors.set(source, event.cursor);
+        cache.setQueryData<StudioJobEvent[]>(history, (events = []) => [...events, event]);
       }
     }
 
-    async function hydrate() {
+    async function hydrate(rebuildHistory = false) {
       const current = ++generation;
       historyBoundary?.abort();
       const boundary = new AbortController();
@@ -142,13 +145,35 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
         initialSnapshot = false;
         snapshotReady = true;
         if (projectId !== null) {
+          const venues = snapshot.venue_cursors ?? [];
+          const retained = rebuildHistory ? undefined : cache.getQueryData<StudioJobEvent[]>(history);
+          const before = (source: string, oldest: number, through: number) => {
+            const cursor = retained && historyCursors.get(source);
+            return cursor !== undefined && cursor >= oldest && cursor <= through ? cursor : oldest;
+          };
+          const localStart = before('local', snapshot.oldest_cursor, snapshot.cursor);
+          const venueStarts = new Map(venues.map((venue) => [eventSource(venue), before(eventSource(venue), 0, venue.cursor)]));
+          const retainedEvents = (retained ?? []).filter((event) => event.venue
+            ? event.cursor <= (venueStarts.get(eventSource(event.venue)) ?? 0)
+            : event.cursor > snapshot.oldest_cursor && event.cursor <= localStart);
           await cache.fetchQuery({
             queryKey: history,
-            queryFn: ({ signal }) =>
-              fetchStudioJobHistory(projectId, snapshot.oldest_cursor, snapshot.cursor, signal),
+            queryFn: async ({ signal }) => [
+              ...retainedEvents,
+              ...(await Promise.all([
+                fetchStudioJobHistory(projectId, localStart, snapshot.cursor, signal),
+                ...venues.map((venue) =>
+                  fetchStudioJobHistory(projectId, venueStarts.get(eventSource(venue)) ?? 0, venue.cursor, signal, venue)),
+              ])).flat(),
+            ],
             retry: false,
             staleTime: 0,
           });
+          if (current !== generation) return;
+          historyCursors = new Map([
+            ['local', snapshot.cursor],
+            ...venues.map((venue) => [eventSource(venue), venue.cursor] as const),
+          ]);
         }
         if (current !== generation) return;
         historyReady = true;
@@ -160,7 +185,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
           const arrived = buffered ?? [];
           buffered = null;
           for (const event of arrived) {
-            if (event.cursor > through) apply(event);
+            if (event.venue || event.cursor > through) apply(event);
           }
           if (machineUpdatePending) {
             machineUpdatePending = false;
@@ -182,11 +207,14 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       port.onmessage = ({ data }: MessageEvent<StudioJobWorkerMessage>) => {
         switch (data.type) {
           case 'attached':
-          case 'reset':
             void hydrate();
+            break;
+          case 'reset':
+            void hydrate(true);
             break;
           case 'state':
             setConnection(data.state);
+            if (data.state === 'disconnected') snapshotReady = false;
             if (data.state === 'connected' && !snapshotReady && buffered === null) void hydrate();
             break;
           case 'event':

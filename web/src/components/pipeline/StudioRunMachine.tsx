@@ -14,10 +14,11 @@ export function StudioRunMachine({ catalog, value, disabled, onChange }: {
   const selection = value ?? local;
   const id = useId();
   const current = catalog?.targets.find(({ profile }) => profile.id === selection);
+  const unavailable = current && current.availability.state !== 'ready' ? current.availability : undefined;
   return <label className="flex shrink-0 items-center gap-1">
     {studioName('machine')}
     <select value={selection} disabled={disabled}
-      aria-describedby={current?.availability.state === 'unavailable' ? id : undefined}
+      aria-describedby={unavailable ? id : undefined}
       className="max-w-48 rounded border border-shell-divider bg-shell-surface px-2 py-1"
       onChange={(event) => onChange(event.target.value)}>
       {catalog?.targets.map(({ profile, availability }) => (
@@ -26,10 +27,10 @@ export function StudioRunMachine({ catalog, value, disabled, onChange }: {
         </option>
       )) ?? <option value={local}>{studioName('thisMac')}</option>}
       {selection !== local && !current &&
-        <option value={selection} disabled>{studioMachineStatus('unavailable')}</option>}
+        <option value={selection} disabled>{studioMachineStatus('off')}</option>}
     </select>
-    {current?.availability.state === 'unavailable' && <span id={id} className="sr-only">
-      {current.availability.reason}
+    {unavailable && <span id={id} className="sr-only">
+      {unavailable.reason}
     </span>}
   </label>;
 }

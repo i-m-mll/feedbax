@@ -8,6 +8,7 @@ import {
   type StudioSavedEvaluationReplayRequest,
   type StudioSavedMachineQuoteRequest,
   type StudioSavedTrainRunRequest,
+  type StudioVenueStream,
   type TargetOption,
 } from '@/generated/studioContracts';
 
@@ -91,6 +92,7 @@ export async function fetchStudioJobHistory(
   after: number,
   through: number,
   signal?: AbortSignal,
+  venue?: StudioVenueStream,
 ): Promise<StudioJobEvent[]> {
   const events: StudioJobEvent[] = [];
   while (after < through) {
@@ -99,6 +101,10 @@ export async function fetchStudioJobHistory(
       after: String(after),
       through: String(through),
     });
+    if (venue) {
+      params.set('venue', venue.session_id);
+      params.set('stream', venue.stream_id);
+    }
     const path = `/api/events/history?${params}`;
     const page = await readContract(path, 'StudioJobEventHistory', { signal });
     if (page.cursor <= after || page.cursor > through) {

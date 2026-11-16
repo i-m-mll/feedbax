@@ -57,11 +57,13 @@ export function studioRunHistory(
   }
   const attemptCutoffs = new Map([[job.job_id, Infinity]]);
   const attemptStarts = new Map([[job.job_id, startByAttempt.get(job.job_id)]]);
+  const lineageDepth = new Map([[job.job_id, 0]]);
   let cutoff = startByAttempt.get(job.job_id) ?? Infinity;
   let root = job;
   let previous = root.continues;
   while (previous && !attemptCutoffs.has(previous)) {
     attemptCutoffs.set(previous, cutoff);
+    lineageDepth.set(previous, lineageDepth.size);
     attemptStarts.set(previous, startByAttempt.get(previous));
     cutoff = Math.min(cutoff, startByAttempt.get(previous) ?? Infinity);
     const predecessor = byId.get(previous);
@@ -73,6 +75,11 @@ export function studioRunHistory(
   const loss = new Map<number, LossObservation>();
   const log: string[] = [];
   let trajectory: StudioJobEvent | undefined;
+  const depth = (id: string) => lineageDepth.get(id) ?? Infinity;
+  const recordLoss = (end: number, point: LossObservation) => {
+    const existing = loss.get(end);
+    if (!existing || depth(point.jobId) <= depth(existing.jobId)) loss.set(end, point);
+  };
   for (const event of events) {
     const cutoff = attemptCutoffs.get(event.job_id);
     if (cutoff === undefined) continue;
@@ -82,7 +89,7 @@ export function studioRunHistory(
       const interval = lossIntervalSchema.safeParse(event.data.metric_interval);
       if (interval.success && interval.data.end_inclusive === completed) {
         const { start_exclusive: start, metrics: { train_loss: reduction } } = interval.data;
-        loss.set(completed, {
+        recordLoss(completed, {
           end: completed,
           jobId: event.job_id,
           value: reduction.mean,
@@ -96,11 +103,11 @@ export function studioRunHistory(
         ? metrics.train_loss
         : undefined;
       if (typeof value === 'number' && Number.isFinite(value)) {
-        loss.set(completed, { end: completed, jobId: event.job_id, value, last: value });
+        recordLoss(completed, { end: completed, jobId: event.job_id, value, last: value });
       }
     } else if (event.kind === 'log' && typeof event.data.line === 'string') {
       log.push(event.data.line);
-    } else if (event.kind === 'frame' && (!trajectory || event.cursor > trajectory.cursor)) {
+    } else if (event.kind === 'frame' && (!trajectory || depth(event.job_id) <= depth(trajectory.job_id))) {
       trajectory = event;
     }
   }

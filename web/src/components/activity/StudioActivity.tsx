@@ -5,9 +5,9 @@ import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioC
 import { StudioJobsProvider, useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunInspector } from './StudioRunInspector';
-import { StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
+import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
 import {
-  studioDateTime, studioDefinitionStatus, studioMachineStatus, studioMoney, studioName, studioRunStatus,
+  studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
   studioStep, type StudioRunStatusId,
 } from './studioVocabulary';
 
@@ -127,7 +127,7 @@ function ActivityRun({
       )}
       <StudioRunReason job={job} />
       {job.status === 'running' && job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
-      {job.status === 'collecting' && <progress aria-label={studioRunStatus(job.status)} />}
+      {job.status === 'collecting' && <StudioCollectionProgress progress={job.collection_progress} />}
       {failure && <p role="alert" className="text-xs text-shell-status-failure">{failure}</p>}
       <div className="flex flex-wrap gap-2">
         {jobAllowsCommand(job, 'stop') && (
@@ -151,6 +151,8 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
   const actions = useStudioJobActions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const opening = machine.opening_observations ?? [];
+  const currentStep = opening.at(-1);
   async function close() {
     setError(undefined);
     setBusy(true);
@@ -168,14 +170,31 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
       <h3 className="font-medium">{machine.name}</h3>
       <span className="text-shell-muted">{studioMachineStatus(machine.state)}</span>
     </header>
+    {machine.state === 'opening' && currentStep && <p className="text-shell-muted">{studioOpeningStep(currentStep.step)}</p>}
+    {machine.opening_failure && <p className="text-shell-muted">{machine.opening_failure}</p>}
     <dl className="grid grid-cols-[auto_1fr] gap-x-3">
       <dt>{studioName('hourlyRate')}</dt><dd>{studioMoney(machine.hourly_microusd)}</dd>
-      <dt>{studioName('estimatedCost')}</dt><dd>{studioMoney(machine.estimated_cost_microusd)}</dd>
+      <dt>{studioName(machine.billed_cost_microusd != null ? 'billedCost' : 'estimatedCost')}</dt>
+      <dd>{studioMoney(machine.billed_cost_microusd ?? machine.estimated_cost_microusd)}</dd>
       <dt>{studioName('costCeiling')}</dt><dd>{studioMoney(machine.ceiling_microusd)}</dd>
       <dt>{studioName('closesAt')}</dt><dd>{studioDateTime(machine.closes_at_ms)}</dd>
       {machine.idle_since_ms !== null && <><dt>{studioName('idleSince')}</dt><dd>{studioDateTime(machine.idle_since_ms)}</dd></>}
+      {machine.state === 'unreachable' && machine.power_state && <>
+        <dt>{studioName('power')}</dt><dd>{studioMachinePower(machine.power_state)}</dd>
+      </>}
+      {machine.provider_observed_at_ms != null && <>
+        <dt>{studioName('providerChecked')}</dt><dd>{studioDateTime(machine.provider_observed_at_ms)}</dd>
+      </>}
       <dt>{studioName('runs')}</dt><dd>{machine.job_ids.length}</dd>
     </dl>
+    {opening.length > 0 && <details>
+      <summary>{studioName('openingHistory')}</summary>
+      <ol className="list-disc ps-5">
+        {opening.map(({ step, observed_at_ms }, index) => <li key={index}>
+          {studioOpeningStep(step)} · {studioDateTime(observed_at_ms)}
+        </li>)}
+      </ol>
+    </details>}
     {error && <p role="alert">{error}</p>}
     <button type="button" disabled={!machine.can_close || busy} onClick={() => void close()}
       className="rounded border border-shell-divider px-2 py-1 disabled:opacity-50">{studioName('close')}</button>

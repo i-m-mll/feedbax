@@ -831,14 +831,18 @@ class Host:
     def _session_status(self, fence: SessionFence) -> SessionStatus:
         state = fence.state
         assert self.stream_id is not None
-        live = self.store.db.execute(
+        live = [row["id"] for row in self.store.db.execute(
             "SELECT id FROM jobs WHERE state IN (?, ?, ?, ?) ORDER BY seq", LIVE_STATES,
-        )
+        )]
+        idle = self.store.db.execute(
+            "SELECT time FROM events WHERE kind IN ('terminal', 'blocked') ORDER BY cursor DESC LIMIT 1",
+        ).fetchone() if not live else None
         return {
             "session_id": state.session_id, "stream_id": self.stream_id,
             "operator": state.operator, "epoch": state.epoch,
             "expires_at": state.expires_at, "closing": state.closing, "expired": fence.expired,
-            "live_jobs": [row["id"] for row in live],
+            "live_jobs": live,
+            "idle_since_ms": round(idle["time"] * 1000) if idle is not None else None,
             "pending": {
                 job: digest for job, digest in self._collection_receipts().items()
                 if state.collections.get(job) != digest

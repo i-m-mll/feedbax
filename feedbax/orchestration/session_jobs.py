@@ -4,25 +4,28 @@ from __future__ import annotations
 
 from base64 import b64encode
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import TYPE_CHECKING, NamedTuple, Never
 from uuid import UUID
 
-from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.execution_target import SESSION_RUN_KINDS, SessionTarget
-from feedbax.contracts.jobs import StudioJobSubmission
+from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
+from feedbax.contracts.execution_target import SESSION_RUN_KINDS, OpeningStep, SessionTarget
+from feedbax.contracts.jobs import JobStatus, StudioJobSubmission
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_refs import RequestId
 from feedbax.host.client import HostClient
+from feedbax.host.plan_history import plan_run_key
 from feedbax.host.protocol import Event, EventPage, HostError, JsonObject, JobsSnapshot, StopMode
 from feedbax.jobs import JobConflict, JobService
 from feedbax.orchestration.session import (
     Digest, Nonnegative, SessionAuthorization, SessionDriver, SessionError, SessionModel,
-    SessionOpeningFailed, SessionOpeningRejected, SessionRequest,
+    SessionOpeningFailed, SessionOpeningRejected, SessionRecord, SessionRequest,
 )
+from feedbax.orchestration.venue_history import VenueHistory
 from feedbax.project_folder import ProjectFolder, SettledProjectPlan
 
 if TYPE_CHECKING:
@@ -77,13 +80,6 @@ def _create_journal(driver: SessionDriver) -> None:
                 session TEXT NOT NULL, job TEXT NOT NULL, mode TEXT NOT NULL, reply TEXT,
                 PRIMARY KEY(session, job, mode)
             );
-            CREATE TABLE IF NOT EXISTS session_observations(
-                session TEXT PRIMARY KEY, stream TEXT NOT NULL, cursor INTEGER NOT NULL, snapshot TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS session_events(
-                session TEXT NOT NULL, cursor INTEGER NOT NULL, event TEXT NOT NULL,
-                PRIMARY KEY(session, cursor)
-            );
             """
         )
 
@@ -96,6 +92,26 @@ class _OpeningApproval(SessionModel):
 
 class ApprovedRunClosed(SessionError):
     """The approved selection could not be delivered and its opening is settled."""
+
+
+@dataclass(frozen=True)
+class ApprovedRowStatus:
+    key: RunKey
+    request_id: RequestId
+    status: JobStatus
+    reason: str | None
+    opening_step: OpeningStep | None
+    job_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ApprovedRunVisibility:
+    request: SessionRequest
+    project: str
+    store: Path
+    expires_at_ms: int
+    hourly_microusd: int
+    rows: tuple[ApprovedRowStatus, ...]
 
 
 class ApprovedSessionRuns:
@@ -160,6 +176,50 @@ class ApprovedSessionRuns:
                    JOIN session_delegations d ON d.session=a.session AND d.token=a.session
                    WHERE a.failure IS NULL AND (d.submission IS NULL OR a.close_reason IS NOT NULL) ORDER BY a.rowid""",
             ))
+
+    def visibility(self, records: Mapping[UUID, SessionRecord]) -> tuple[ApprovedRunVisibility, ...]:
+        """Read approved row state from the staged delegation, before a Host attempt is visible."""
+        with self.driver.connection() as db:
+            staged = db.execute(
+                """SELECT json_extract(a.approval,'$.request'),
+                          json_extract(a.approval,'$.authorization.expires_at_ms'),
+                          json_extract(a.approval,'$.hourly_microusd'), a.failure, a.close_reason,
+                          json_remove(d.request,'$.files'), d.submission
+                   FROM session_openings a JOIN session_delegations d ON d.session=a.session AND d.token=a.session
+                   ORDER BY a.rowid""",
+            ).fetchall()
+        visible = []
+        for request_json, expiry, rate, failure, close_reason, delegation_json, submission_json in staged:
+            request = SessionRequest.model_validate_json(request_json)
+            delegated = Delegation.model_validate_json(delegation_json)
+            assert delegated.local_store is not None and delegated.request_ids is not None
+            record = records.get(request.id)
+            failure = failure or close_reason or (record.opening_failure if record is not None else None)
+            events = record.opening_observations if record is not None else ()
+            step = events[-1].step if events else None
+            if failure is not None:
+                status, reason = JobStatus.FAILED, failure
+            elif record is None:
+                status, reason = JobStatus.QUEUED, "Waiting for the machine to open."
+            elif record.phase == "open":
+                status, reason, step = JobStatus.STARTING, "Sending runs to the machine.", None
+            else:
+                status, reason = JobStatus.STARTING, None if step else "Opening the machine."
+            items = {}
+            if submission_json is not None:
+                submission = StudioJobSubmission.model_validate_json(submission_json)
+                items = {item.run_key: item for item in submission.items}
+            rows = []
+            for key, request_id in zip(delegated.run_keys, delegated.request_ids, strict=True):
+                item = items.get(plan_run_key(key.variant, key.step, key.row))
+                if item is not None and item.disposition == "rejected":
+                    rows.append(ApprovedRowStatus(key, request_id, JobStatus.FAILED, item.reason or failure, step))
+                else:
+                    rows.append(ApprovedRowStatus(key, request_id, status, reason, step, item.job_id if item else None))
+            visible.append(ApprovedRunVisibility(
+                request, delegated.project, Path(delegated.local_store), expiry, rate, tuple(rows),
+            ))
+        return tuple(visible)
 
     def _reject(self, session_id: UUID, message: str) -> Never:
         with self.driver.connection() as db:
@@ -303,19 +363,11 @@ class SessionJobs:
         self._jobs = make_jobs(self.host) if make_jobs is not None else None
         self._venue_jobs = venue_jobs
         _create_journal(driver)
+        self.history = VenueHistory(driver)
 
     def destination_stores(self) -> dict[str, Path]:
         """Return the exact destination Store captured by each saved delegation."""
-        with self.driver.connection() as db:
-            destinations = db.execute(
-                """SELECT DISTINCT json_extract(request, '$.project'), json_extract(request, '$.local_store')
-                   FROM session_delegations WHERE session=? AND json_extract(request, '$.local_store') IS NOT NULL""",
-                (self.session_id,),
-            ).fetchall()
-        stores = dict(destinations)
-        if len(stores) != len(destinations):
-            raise SessionError("The machine has more than one destination Store for the same project.")
-        return {project: Path(store) for project, store in stores.items()}
+        return self.history.destination_stores(self.session_id)
 
     def delegate(
         self, folders: ProjectFolder, reviewed: SettledProjectPlan, *,
@@ -422,38 +474,12 @@ class SessionJobs:
                 )
 
     def _observation(self) -> tuple[str, int, JobsSnapshot] | None:
-        with self.driver.connection() as db:
-            row = db.execute(
-                "SELECT stream, cursor, snapshot FROM session_observations WHERE session=?", (self.session_id,)
-            ).fetchone()
-        return (row[0], row[1], json.loads(row[2])) if row is not None else None
+        return self.history.observation(self.session_id)
 
     def observation(self) -> tuple[int, JobsSnapshot | None]:
         if observed := self._observation():
             return observed[1], observed[2]
         return 0, None
-
-    def activity_facts(self) -> tuple[dict[str, list[str]], int | None]:
-        """Project bounded log tails and the last terminal Host event."""
-        with self.driver.connection() as db:
-            (last_terminal,) = db.execute(
-                """SELECT json_extract(event, '$.time') FROM session_events
-                   WHERE session=? AND json_extract(event, '$.kind') IN ('terminal', 'blocked')
-                   ORDER BY cursor DESC LIMIT 1""", (self.session_id,),
-            ).fetchone() or (None,)
-            logs = db.execute(
-                """SELECT json_extract(event, '$.job_id'), substr(json_extract(event, '$.data.line'), 1, 1024)
-                   FROM session_events WHERE session=? AND json_extract(event, '$.kind')='log'
-                   ORDER BY cursor DESC LIMIT 200""", (self.session_id,),
-            ).fetchall()
-        tails: dict[str, list[str]] = {}
-        for job, line in logs:
-            tail = tails.setdefault(job, [])
-            if isinstance(line, str) and len(tail) < 12:
-                tail.append(line)
-        for tail in tails.values():
-            tail.reverse()
-        return tails, int(last_terminal * 1_000) if last_terminal is not None else None
 
     def poll(self, *, limit: int = 256, wait: float = 0) -> EventPage:
         """Mirror a bounded batch and its high-water mark in one commit."""
@@ -477,25 +503,7 @@ class SessionJobs:
         self, observed: tuple[str, int, JobsSnapshot] | None, stream: str, cursor: int,
         snapshot: JobsSnapshot, events: Sequence[Event] = (),
     ) -> None:
-        if snapshot["cursor"] < cursor or (observed is not None and snapshot["cursor"] < observed[2]["cursor"]):
-            raise SessionError("The venue Host event stream no longer matches the saved cursor.")
-        with self.driver.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            current = db.execute(
-                "SELECT stream, cursor, snapshot FROM session_observations WHERE session=?", (self.session_id,)
-            ).fetchone()
-            current = (current[0], current[1], json.loads(current[2])) if current is not None else None
-            if current != observed:
-                raise SessionError("Another poll advanced the session observation. Poll again.")
-            db.executemany(
-                "INSERT INTO session_events VALUES (?, ?, ?)",
-                ((self.session_id, item["cursor"], json.dumps(item)) for item in events),
-            )
-            db.execute(
-                """INSERT INTO session_observations VALUES (?, ?, ?, ?)
-                   ON CONFLICT(session) DO UPDATE SET cursor=excluded.cursor, snapshot=excluded.snapshot""",
-                (self.session_id, stream, cursor, json.dumps(snapshot)),
-            )
+        self.history.record(self.session_id, observed, stream, cursor, snapshot, events)
 
     def collect_project(
         self, local_jobs: JobService, reviewed: SettledProjectPlan, *, observed_only: bool = False,
@@ -517,22 +525,39 @@ class SessionJobs:
             raise SessionError("The local Store differs from the saved delegation.")
         return self._collect_to_store(local_jobs, project, store, observed_only=observed_only)
 
-    def collect_delegated(self, local_jobs: JobService, *, project: str, store: Path) -> tuple[CollectedAttempt, ...]:
+    def collect_delegated(
+        self, local_jobs: JobService, *, project: str, store: Path,
+        progress: Callable[[str, StoreTransferProgress], None] | None = None,
+        pending: Mapping[str, str] | None = None,
+    ) -> tuple[CollectedAttempt, ...]:
         if self.destination_stores().get(project) != store:
             raise SessionError("The local Store differs from the saved delegation.")
-        return self._collect_to_store(local_jobs, project, store)
+        return self._collect_to_store(local_jobs, project, store, progress=progress, pending=pending)
 
     def _collect_to_store(
         self, local_jobs: JobService, project: str, store: Path, *, observed_only: bool = False,
+        progress: Callable[[str, StoreTransferProgress], None] | None = None,
+        pending: Mapping[str, str] | None = None,
     ) -> tuple[CollectedAttempt, ...]:
         if self._venue_jobs is None:
             raise SessionError("Project collection requires a venue Store transport.")
         source = self._venue_jobs.store(project)
 
         def collect(attempt: JsonObject) -> CollectedAttempt:
-            result = local_jobs.collect_session_attempt(source, attempt, project=project, store=store)
+            def transferred(update: StoreTransferProgress) -> None:
+                assert progress is not None
+                progress(str(attempt["id"]), update)
+
+            result = local_jobs.collect_session_attempt(
+                source, attempt, project=project, store=store, progress=transferred if progress is not None else None,
+            )
             return CollectedAttempt(result.activity.job_id, result.evidence_sha256)
 
+        if pending is not None:
+            _, snapshot = self.observation()
+            if snapshot is None:
+                raise SessionError("This controller has no recorded venue Jobs observation.")
+            return self._collect(snapshot, collect, acknowledge=True, project=project, pending=pending)
         read = self.collect_observed if observed_only else self.collect
         return read(collect, project=project)
 
@@ -557,7 +582,7 @@ class SessionJobs:
 
     def _collect(
         self, snapshot: JobsSnapshot, collector: Callable[[JsonObject], CollectedAttempt], *,
-        acknowledge: bool, project: str | None,
+        acknowledge: bool, project: str | None, pending: Mapping[str, str] | None = None,
     ) -> tuple[CollectedAttempt, ...]:
         collected = []
         for attempt in snapshot["jobs"]:
@@ -571,6 +596,8 @@ class SessionJobs:
             if raw_ref is None:
                 continue
             observed_ref = ContentObjectRef.model_validate(raw_ref)
+            if pending is not None and pending.get(str(attempt["id"])) != observed_ref.sha256:
+                continue
             result = collector(attempt)
             if (result.attempt_id, result.sha256) != (attempt["id"], observed_ref.sha256):
                 raise SessionError("Local custody differs from the observed terminal attempt.")

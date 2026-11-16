@@ -166,3 +166,19 @@ it('gives late and reconnected subscribers a fresh-read notice at the replay bou
   offline.send({ type: 'release' });
   expect(stream.closed).toBe(true);
 });
+
+it('forwards a venue event on the same stream without changing the local replay cursor', () => {
+  const training = attach({ type: 'subscribe', projectId: 'training' });
+  const [stream] = streams;
+  stream.emit('message', jobs(7));
+  const remote = {
+    ...jobs(300), venue: { session_id: '16ef80b0-af09-4c78-87dd-e3926256a250', stream_id: 'venue-host' },
+  };
+  stream.emit('venue_event', remote);
+  expect(training.messages().filter(({ type }) => type === 'event')).toEqual([
+    { type: 'event', event: jobs(7) },
+    { type: 'event', event: remote },
+  ]);
+  training.send({ type: 'retry' });
+  expect(streams[1].query().get('after')).toBe('7');
+});

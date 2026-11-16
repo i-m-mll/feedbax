@@ -94,6 +94,14 @@ export function studioMachineStatus(status: keyof typeof vocabulary.status.machi
   return vocabulary.status.machine[status];
 }
 
+export function studioMachinePower(state: keyof typeof vocabulary.status.power) {
+  return vocabulary.status.power[state];
+}
+
+export function studioOpeningStep(step: keyof typeof vocabulary.status.openingStep) {
+  return vocabulary.status.openingStep[step];
+}
+
 export function studioDefinitionStatus(status: keyof typeof vocabulary.status.definition) {
   return vocabulary.status.definition[status];
 }

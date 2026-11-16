@@ -12,8 +12,8 @@ import {
 import { workspaceReplayPolyline } from '@/features/scenario/workspaceReplay';
 import { useStudioJobActions, useStudioJobConnection, useStudioJobHistory, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
-import { StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
-import { studioName, studioReason, studioRunStatus } from './studioVocabulary';
+import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
+import { studioName, studioReason } from './studioVocabulary';
 import { LossPlot, studioRunHistory } from './StudioTrainingLoss';
 import { PlotTrack, plotHeight, plotWidth, projectSeries } from './studioPlot';
 
@@ -104,7 +104,7 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
         <StudioRunStatus status={job.status} />
       </header>
       {job.status === 'running' && job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
-      {job.status === 'collecting' && <progress aria-label={studioRunStatus(job.status)} />}
+      {job.status === 'collecting' && <StudioCollectionProgress progress={job.collection_progress} />}
       <StudioRegion
         state={state}
         skeleton={<div className="h-36 motion-safe:animate-pulse rounded bg-shell-divider" />}

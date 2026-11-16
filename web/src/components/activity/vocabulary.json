@@ -76,6 +76,11 @@
     "hourlyRate": "Hourly rate",
     "costCeiling": "Cost ceiling",
     "estimatedCost": "Estimated cost",
+    "billedCost": "Cost so far",
+    "openingHistory": "Opening history",
+    "power": "Power",
+    "providerChecked": "Provider checked",
+    "verifiedBytes": "Verified",
     "closesAt": "Closes at",
     "idleSince": "Idle since",
     "expiry": "Expiry",
@@ -355,8 +360,16 @@
       "corrupt": "Damaged"
     },
     "machine": {
-      "opening": "Opening", "open": "Open", "closing": "Closing", "unreachable": "Unreachable",
+      "queued": "Queued", "opening": "Opening", "open": "Open", "closing": "Closing", "unreachable": "Unreachable", "off": "Off",
       "ready": "Ready", "unavailable": "Unavailable"
+    },
+    "power": { "starting": "Starting", "on": "On", "off": "Off" },
+    "openingStep": {
+      "acquiring": "Waiting for a machine",
+      "connecting": "Connecting to the machine",
+      "copying": "Syncing the environment",
+      "installing": "Installing the environment",
+      "starting_host": "Starting the worker service"
     },
     "connection": {
       "connecting": "Connecting",

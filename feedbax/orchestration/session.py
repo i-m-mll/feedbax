@@ -19,7 +19,7 @@ from pydantic import ConfigDict, Field, SecretStr
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.execution_target import (
-    LOCAL_TARGET_ID, CloseWhenIdle as CloseWhenIdle, KeepOpen as KeepOpen,
+    LOCAL_TARGET_ID, CloseWhenIdle as CloseWhenIdle, KeepOpen as KeepOpen, OpeningObservation, OpeningStep,
     SessionLifecycle, SessionTarget, TargetId, TargetRealization,
 )
 from feedbax.host.client import HostClient
@@ -29,6 +29,10 @@ from feedbax.host.protocol import JsonObject, SessionAccess
 
 class SessionError(RuntimeError):
     pass
+
+
+class ProviderUnreachable(SessionError):
+    """The configured provider did not answer its control-plane request."""
 
 
 class SessionOpeningFailed(SessionError):
@@ -106,6 +110,13 @@ class ProviderResource(SessionModel):
     kind: Literal["venue", "volume", "secret"]
 
 
+class ProviderMachineObservation(SessionModel):
+    state: Literal["starting", "on", "off"]
+    observed_at_ms: Positive
+    billed_microusd: Nonnegative | None = None
+    billing_started_at_ms: Positive | None = None
+
+
 class SessionRealization(SessionModel):
     launch: SessionLaunch
     environment: Digest
@@ -125,6 +136,8 @@ class SessionRecord(SessionModel):
     realization: SessionRealization | None = None
     epoch: Nonnegative = 0
     close_evidence: CloseEvidence | None = None
+    opening_observations: tuple[OpeningObservation, ...] = Field(default=(), exclude_if=lambda values: not values)
+    opening_failure: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @property
     def placement(self) -> SessionTarget:
@@ -164,11 +177,13 @@ class SessionProvider(Protocol):
 
     def inventory(self) -> Sequence[ProviderResource]: ...
 
+    def machine_observation(self, resource: ProviderResource) -> ProviderMachineObservation: ...
+
     def acquire(self, launch: SessionLaunch) -> ProviderResource: ...
 
     def realize(
         self, resource: ProviderResource, launch: SessionLaunch, *,
-        adoption_token: str, controller_token: str,
+        adoption_token: str, controller_token: str, opening: Callable[[OpeningStep], None],
     ) -> SessionRealization: ...
 
     def realization(self, resource: ProviderResource) -> SessionRealization: ...
@@ -321,7 +336,7 @@ class SessionDriver:
             control = self._read(request.id)
             if control is None:
                 if authorization.expires_at_ms <= self._clock_ms():
-                    raise SessionOpeningRejected("Session authorization has expired.")
+                    raise SessionOpeningRejected("Approval expired before the machine opened.")
                 if self._find_venue(f"feedbax-session-{request.digest}", self.inventory()) is not None:
                     raise SessionError("This session already has a venue. Adopt it explicitly.")
                 hourly_microusd = self.provider.hourly_microusd(request)
@@ -349,22 +364,36 @@ class SessionDriver:
                     return state
 
             launch = state.launch
+
+            def report_opening(step: OpeningStep) -> None:
+                nonlocal state
+                last = state.opening_observations[-1] if state.opening_observations else None
+                if last is None or last.step != step:
+                    events = (*state.opening_observations, OpeningObservation(step=step, observed_at_ms=self._clock_ms()))
+                    state = state.model_copy(update={"opening_observations": events})
+                    self._write(state, token)
+
             try:
                 if self._clock_ms() >= launch.ends_at_ms:
-                    raise SessionOpeningFailed("Session has exhausted its authorized time or cost ceiling.")
+                    raise SessionOpeningFailed("The machine reached its time or cost limit while opening.")
+                if state.venue is None:
+                    report_opening("acquiring")
                 resource = self._find_venue(launch.intent, self.inventory())
                 if state.venue is not None and resource != state.venue:
-                    raise SessionOpeningFailed("The recorded venue disappeared or changed identity during opening.")
+                    raise SessionOpeningFailed("The machine disappeared or changed identity while opening.")
                 if resource is None:
                     resource = self.provider.acquire(launch)
                 if resource.intent != launch.intent or resource.kind != "venue":
                     raise SessionError("The acquired venue does not carry this session's intent.")
                 state = state.model_copy(update={"venue": resource})
                 self._write(state, token)
+                report_opening("connecting")
                 realized = self.provider.realize(
-                    resource, launch, adoption_token=adoption_token, controller_token=token,
+                    resource, launch, adoption_token=adoption_token, controller_token=token, opening=report_opening,
                 )
             except SessionOpeningFailed as error:
+                state = state.model_copy(update={"opening_failure": str(error)})
+                self._write(state, token)
                 try:
                     self._close(state, token)
                 except Exception as cleanup:

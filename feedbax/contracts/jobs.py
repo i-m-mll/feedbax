@@ -8,8 +8,9 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, FiniteFloat, JsonValue
 
+from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, TargetId
+from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
@@ -259,6 +260,8 @@ class StudioProjectWindowMapRow(StrictModel):
     member_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
     status: JobStatus
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    opening_step: OpeningStep | None = Field(default=None, exclude_if=lambda value: value is None)
+    collection_progress: StoreTransferProgress | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
     light: StudioSavedLightHistory | None = Field(default=None, exclude_if=lambda value: value is None)
 
@@ -476,6 +479,7 @@ class StudioActivityJob(StrictModel):
     placement: Literal["live", "ordinary"] | None = Field(default=None, exclude_if=lambda value: value is None)
     target: AttemptTarget = LOCAL_TARGET
     log_tail: list[str] = Field(default_factory=list, exclude_if=lambda lines: not lines)
+    collection_progress: StoreTransferProgress | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioLocalSession(StrictModel):
@@ -486,7 +490,7 @@ class StudioLocalSession(StrictModel):
 class StudioRemoteSession(StrictModel):
     id: UUID
     name: str
-    state: Literal["opening", "open", "closing", "unreachable"]
+    state: Literal["queued", "opening", "open", "closing", "unreachable", "off"]
     hourly_microusd: int = Field(ge=0)
     estimated_cost_microusd: int = Field(ge=0)
     closes_at_ms: int = Field(gt=0)
@@ -494,6 +498,20 @@ class StudioRemoteSession(StrictModel):
     idle_since_ms: int | None = Field(ge=0)
     job_ids: list[str]
     can_close: bool
+    opening_observations: tuple[OpeningObservation, ...] = Field(default=(), exclude_if=lambda value: not value)
+    opening_failure: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    billed_cost_microusd: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
+    provider_observed_at_ms: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
+    power_state: Literal["starting", "on", "off"] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioVenueStream(StrictModel):
+    session_id: UUID
+    stream_id: str = Field(min_length=1)
+
+
+class StudioVenueCursor(StudioVenueStream):
+    cursor: int = Field(ge=0)
 
 
 class StudioJobSnapshot(StrictModel):
@@ -502,6 +520,8 @@ class StudioJobSnapshot(StrictModel):
     oldest_cursor: int = Field(ge=0)
     sessions: list[StudioLocalSession | StudioRemoteSession]
     remote_version: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
+    machine_catalog_version: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
+    venue_cursors: list[StudioVenueCursor] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class StudioSubmissionItem(StrictModel):
@@ -543,6 +563,7 @@ class StudioJobEvent(StrictModel):
     kind: str
     data: dict[str, JsonValue]
     activity: StudioActivityJob | None = None
+    venue: StudioVenueStream | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioJobEventHistory(StrictModel):
