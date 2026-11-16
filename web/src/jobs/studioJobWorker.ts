@@ -111,6 +111,9 @@ function reconcile(force = false) {
       }
     }
   }));
+  stream.addEventListener('machines_changed', () => {
+    if (source === stream) broadcastJobs({ type: 'machines-changed' });
+  });
   stream.addEventListener('reset', read((data) => {
     cursor = StudioEventResetSchema.parse(data).cursor;
     broadcastJobs({ type: 'reset' });

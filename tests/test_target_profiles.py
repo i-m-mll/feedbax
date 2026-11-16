@@ -78,7 +78,7 @@ def test_target_catalog_and_default_saved_submission_share_one_contract(tmp_path
         url = "/api/projects/reaching/train-runs"
         request = {"revision": before.revision, "run_keys": [asdict(key)], "token": "placement-test"}
         denied = client.post(url, json=request | {"target": "missing"})
-        assert denied.status_code == 409 and "not registered" in denied.text
+        assert denied.status_code == 409 and "approve" in denied.text
         assert host.jobs(project="reaching") == []
         response = client.post(url, json=request)
         assert response.status_code == 202, response.text

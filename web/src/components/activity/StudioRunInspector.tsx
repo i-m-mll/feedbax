@@ -13,7 +13,7 @@ import { workspaceReplayPolyline } from '@/features/scenario/workspaceReplay';
 import { useStudioJobActions, useStudioJobConnection, useStudioJobHistory, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
-import { studioName, studioReason } from './studioVocabulary';
+import { studioName, studioReason, studioRunStatus } from './studioVocabulary';
 import { LossPlot, studioRunHistory } from './StudioTrainingLoss';
 import { PlotTrack, plotHeight, plotWidth, projectSeries } from './studioPlot';
 
@@ -89,7 +89,7 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
       <section aria-label={studioName('log')} className="min-w-0 space-y-1">
         <h4 className="text-xs font-medium">{studioName('log')}</h4>
         <pre className="min-h-9 max-h-32 select-text overflow-auto whitespace-pre-wrap break-words rounded border border-shell-divider bg-shell-surface p-2 text-xs text-shell-muted">
-          {data.log}
+          {job.log_tail?.join('\n') ?? data.log}
         </pre>
       </section>
     </>
@@ -104,6 +104,7 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
         <StudioRunStatus status={job.status} />
       </header>
       {job.status === 'running' && job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
+      {job.status === 'collecting' && <progress aria-label={studioRunStatus(job.status)} />}
       <StudioRegion
         state={state}
         skeleton={<div className="h-36 motion-safe:animate-pulse rounded bg-shell-divider" />}

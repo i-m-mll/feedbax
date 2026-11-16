@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchSavedTrainRuns, runSavedTrain } from '@/api/jobs';
+import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
@@ -10,6 +10,7 @@ import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
+import { StudioMachineApproval, StudioRunMachine } from '@/components/pipeline/StudioRunMachine';
 import { StudioSweepOverview } from '@/components/pipeline/StudioSweepOverview';
 import { Dialog } from '@/components/ui/Dialog';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
@@ -24,7 +25,8 @@ import {
 } from '@/features/projectWindow/projectWindowState';
 import {
   ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
-  type StudioActivityJob, type StudioProjectWindowMapProblem, type StudioSavedTrainKey, type StudioSavedTrainRuns,
+  type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectWindowMapProblem,
+  type StudioSavedTrainKey, type StudioSavedTrainRuns,
   type StudioCheckpointRuleRequest,
 } from '@/generated/studioContracts';
 import { useStudioConnection } from '@/hooks/useStudioConnection';
@@ -197,6 +199,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
+  const [machines, setMachines] = useState<Readonly<Record<string, string>>>({});
+  const [machineQuote, setMachineQuote] = useState<StudioMachineQuote>();
   const [rename, setRename] = useState<{ name: string; revision: string }>();
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState<WindowPanel | null>(null);
@@ -232,7 +236,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const [selectedTerm, setSelectedTerm] = useState<{ step: string; term: string }>();
   const submission = useRef<{ intent: string; token: string }>();
   const projection = useQuery({
-    queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor],
+    queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor, jobs.data?.remote_version],
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal),
     placeholderData: keepPreviousData,
     gcTime: 0,
@@ -316,7 +320,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       evaluation_conditions != null && savedRunId(key) === savedRunId(row.key))
     ? attempt.job_id : undefined;
   const stoppedPlan = useQuery({
-    queryKey: ['saved-stopped-checkpoint', saved.project_id, saved.revision, checkpointAttempt, jobs.data?.cursor],
+    queryKey: ['saved-stopped-checkpoint', saved.project_id, saved.revision, checkpointAttempt, jobs.data?.cursor, jobs.data?.remote_version],
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal, checkpointAttempt),
     enabled: ready && checkpointAttempt !== undefined,
     gcTime: 0,
@@ -347,6 +351,20 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       status === 'stopped' || status === 'interrupted' || status === 'corrupt' ||
       reuseCompleted && status === 'succeeded'));
   const runnableRows = [...runnableTrainRows, ...runnableEvaluationRows, ...lightRows];
+  const runnableSteps = new Set(runnableRows.map(({ key }) => key.step));
+  const machineKinds = [...new Set(plan.steps.filter(({ id }) => runnableSteps.has(id) || id === step?.id)
+    .map(({ kind }) => kind))].sort();
+  const machineCatalog = useQuery({
+    queryKey: ['execution-targets', machineKinds],
+    queryFn: ({ signal }) => fetchExecutionTargets(machineKinds, signal),
+    enabled: machineKinds.length > 0,
+    retry: false,
+  });
+  const requestedMachine = step ? machines[step.id] : undefined;
+  const localMachine = machineCatalog.data?.default ?? 'local';
+  const remoteMachine = requestedMachine && requestedMachine !== localMachine ? requestedMachine : undefined;
+  const machineReady = !remoteMachine || !machineCatalog.isError && machineCatalog.data?.targets.some(({ profile, availability }) =>
+    profile.id === remoteMachine && availability.state === 'ready');
   const evaluationAuthoring = wholeStep && authored && ordinaryEvaluation(authored);
   const evaluationSource = evaluationAuthoring && plan.steps.find(({ id }) => id === evaluationAuthoring.subject.step);
   const subject = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)
@@ -474,11 +492,16 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     wholeStep, focused: windowState.mode !== 'map' && focusView === 'document',
   });
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
-  const selectedJobs = state.selection ? runRows.flatMap((item) => {
-    const latest = item.attempts.at(-1);
-    const job = latest && jobsById.get(latest.job_id);
-    return job ? [job] : [];
-  }) : [];
+  const evaluationRequests = new Map(evaluationRows.map(({ key, request_id }) => [savedRunId(key), request_id]));
+  const selectedJobs = state.selection ? [
+    ...runRows.flatMap((item) => {
+      const latest = item.attempts.at(-1);
+      const job = latest && jobsById.get(latest.job_id);
+      return job ? [job] : [];
+    }),
+    ...(jobs.data?.jobs.filter((job) => job.kind === 'evaluate' && job.target?.kind === 'session' &&
+      job.project_id === saved.project_id && evaluationRequests.get(job.run_key) === job.request_id) ?? []),
+  ] : [];
   const exactRow = row ?? (runRows.length === 1 && state.selection ? runRows[0] : undefined);
   const exactJob = exactRow?.attempts.at(-1);
   const resumable = exactJob && jobsById.get(exactJob.job_id);
@@ -498,12 +521,22 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     }
   }
 
+  function applySubmission(result: StudioJobSubmission) {
+    const refusal = result.items.find(({ disposition }) => disposition === 'rejected');
+    if (refusal?.reason) setCommandError(refusal.reason);
+    actions.refresh();
+  }
+
   function run() {
-    if (!ready || !data || !runnableRows.length) return;
+    if (!ready || !data || !runnableRows.length || machineQuote || !machineReady) return;
     const keys = runnableRows.map(({ key }) => key);
     void perform(async () => {
       if (await editor.flush() !== data.revision) throw new Error('The project changed before the run was submitted.');
       const project = editor.getSnapshot().saved.project_id;
+      if (remoteMachine) {
+        setMachineQuote(await quoteSavedRun(project, { revision: data.revision, run_keys: keys, target: remoteMachine }));
+        return;
+      }
       const intent = JSON.stringify([data.revision, keys, reuseCompleted]);
       const token = submission.current?.intent === intent ? submission.current.token : crypto.randomUUID();
       submission.current = { intent, token };
@@ -511,9 +544,16 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         revision: data.revision, run_keys: keys, token, ...(reuseCompleted ? { reuse_completed: true } : {}),
       });
       submission.current = undefined;
-      const refusal = result.items.find(({ disposition }) => disposition === 'rejected');
-      if (refusal?.reason) setCommandError(refusal.reason);
-      actions.refresh();
+      applySubmission(result);
+    });
+  }
+
+  function approveMachine() {
+    if (!machineQuote) return;
+    void perform(async () => {
+      const result = await approveSavedRun(saved.project_id, { quote: machineQuote.id });
+      setMachineQuote(undefined);
+      applySubmission(result);
     });
   }
 
@@ -872,14 +912,20 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const activity = bindStudioCommand('activity', () => setPanel((current) => current?.kind === 'activity' ? null : { kind: 'activity' }));
   const problemCommand = bindStudioCommand('problems', () => openProjectProblems());
   const retryCommand = bindStudioCommand('retry', retry);
-  const runCommand = bindStudioCommand('run', run, { enabled: ready && !busy && runnableRows.length > 0 });
+  const runCommand = bindStudioCommand('run', run, {
+    enabled: ready && !busy && !machineQuote && Boolean(machineReady) && runnableRows.length > 0,
+    name: selectedJobs.length === 1 && selectedJobs[0].target?.kind === 'session' && selectedJobs[0].status === 'failed'
+      ? 'rerun' : 'run',
+  });
   const runCommands: StudioCommand[] = [runCommand];
-  if (step?.kind === 'train') {
+  if (step?.kind === 'train' || step?.kind === 'evaluate') {
     for (const [id, mode] of [['stop', 'checkpoint'], ['forceStop', 'force']] as const) {
       const eligible = selectedJobs.filter((job) => jobAllowsCommand(job, id)).map(({ job_id }) => job_id);
-      if (id === 'forceStop' && !eligible.length) continue;
+      if (!eligible.length && (id === 'forceStop' || step.kind === 'evaluate')) continue;
       runCommands.push(bindStudioCommand(id, () => stop(eligible, mode), { enabled: !busy && eligible.length > 0 }));
     }
+  }
+  if (step?.kind === 'train') {
     if (resumable && jobAllowsCommand(resumable, 'resume')) {
       runCommands.push(bindStudioCommand('resume', () => {
         void perform(async () => { await actions.resume(resumable.job_id); });
@@ -979,6 +1025,11 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         {focusedModel?.overlay}
         {analyze.overlay}
         {report.overlay}
+        {machineQuote && <StudioMachineApproval quote={machineQuote} busy={busy} error={commandError}
+          onApprove={approveMachine} onCancel={() => {
+            setMachineQuote(undefined);
+            setCommandError(undefined);
+          }} />}
         {primaryVariant && reportChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('report')} manageFocus
           onClose={() => setReportChoices(undefined)}
           panelClassName="grid w-[min(24rem,90vw)] gap-1 rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
@@ -1110,6 +1161,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           return {
             header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
               ? runCommands : undefined}
+              machine={<StudioRunMachine catalog={machineCatalog.data} value={requestedMachine}
+                disabled={busy || machineCatalog.isPending}
+                onChange={(value) => setMachines((current) => ({ ...current, [step.id]: value }))} />}
               pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
             drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0) ? <div className="space-y-3 text-sm">
               {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}

@@ -944,6 +944,49 @@ class JobService(PlanJobReader):
             sessions=[StudioLocalSession()],
         )
 
+    def project_venue_activity(
+        self, rows: Sequence[dict[str, Any]], *, pending: set[str], collected: set[str], logs: Mapping[str, list[str]],
+    ) -> tuple[StudioActivityJob, ...]:
+        """Use observed venue state until verified local custody is available."""
+        by_id = {row["id"]: row for row in rows if _is_studio_job(row)}
+        seen = self.host.record_get_many([_seen_key(job) for job in by_id])
+        result = []
+        for job, row in by_id.items():
+            activity = _project_activity(
+                row, receipt_intact=job in pending or job in collected,
+                seen=_seen_key(job) in seen, earlier_definition=False, actor=None,
+            )
+            if row["state"] == "succeeded" and job in pending:
+                activity.status = JobStatus.COLLECTING
+                activity.seen = False
+                activity.allowed_actions = []
+            if activity.status == JobStatus.BLOCKED:
+                parents = [
+                    by_id[edge["job_id"]]["data"]["label"] for edge in row["edges"]
+                    if not edge["satisfied"] and edge["job_id"] in by_id
+                ]
+                if parents:
+                    activity.reason = f"Blocked by {', '.join(dict.fromkeys(parents))}."
+            if activity.status == JobStatus.STARTING and activity.phase is None and activity.reason is None:
+                activity.reason = "Waiting for a worker to start."
+            if activity.status == JobStatus.STOPPING and activity.reason is None:
+                activity.reason = (
+                    "Finishing the checkpoint." if row["stop_mode"] == "checkpoint" else "Stopping the worker."
+                )
+            if activity.status == JobStatus.FAILED and activity.outcome and activity.outcome.error:
+                error = activity.outcome.error
+                if error.phase:
+                    activity.reason = f"{error.phase}: {error.message}"
+            activity.log_tail = logs.get(job, [])
+            result.append(activity)
+        return tuple(result)
+
+    def mark_observed_job_seen(self, job: StudioActivityJob) -> StudioActivityJob:
+        if job.status in _ACTIVE_PLAN_STATUSES:
+            raise JobConflict("Only a finished run can be acknowledged.")
+        self.host.record_put(_seen_key(job.job_id), {"seen": True})
+        return job.model_copy(update={"seen": True})
+
     def background_activity(self, after: int | None) -> tuple[int | None, list[str], tuple[str, str, str, JobStatus] | None]:
         """Read active attempts and new terminal Activity rows without starting the Host."""
         try:
@@ -1918,7 +1961,7 @@ def _project_activity(
     if state == "stopping":
         actions = ["force"]
     elif state in _LIVE_STATES:
-        actions = ["force"] if _is_light_request(job["request"]) else ["checkpoint", "force"]
+        actions = ["checkpoint", "force"] if job["request"].startswith("train:") else ["force"]
     else:
         actions = ["resume"] if resumable else []
     return StudioActivityJob(

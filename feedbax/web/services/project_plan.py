@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from itertools import chain
 import json
@@ -21,6 +21,7 @@ from feedbax.contracts.effective_success import RequestObject, read_success_requ
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
+    StudioActivityJob,
     JobStatus,
     StudioBestRankGroup,
     StudioPlanRequest,
@@ -464,9 +465,13 @@ def _analysis_status(
 
 
 class ProjectPlanService:
-    def __init__(self, folders: ProjectFolderService, jobs: JobService) -> None:
+    def __init__(
+        self, folders: ProjectFolderService, jobs: JobService,
+        remote_attempts: Callable[[SettledProjectPlan], Sequence[StudioActivityJob]] | None = None,
+    ) -> None:
         self.folders = folders
         self.jobs = jobs
+        self._remote_attempts = remote_attempts
 
     def read(
         self, project_id: str, *, revision: str, source_runs: Iterable[RunKey] = (),
@@ -474,7 +479,10 @@ class ProjectPlanService:
     ) -> ProjectPlanRead:
         """Read one saved revision and its request-scoped attempt evidence."""
         settled = self.folders.read_plan(project_id, revision=revision, source_runs=source_runs)
-        return read_settled_project_plan(settled, self.jobs, stopped_checkpoint_jobs=stopped_checkpoint_jobs)
+        return read_settled_project_plan(
+            settled, self.jobs, stopped_checkpoint_jobs=stopped_checkpoint_jobs,
+            remote_attempts=self._remote_attempts(settled) if self._remote_attempts is not None else (),
+        )
 
     def response(self, view: ProjectPlanRead, *, include_window_map: bool) -> StudioSavedTrainRuns:
         evaluation_tasks = self.jobs.registries.python_tasks
@@ -664,6 +672,7 @@ class ProjectPlanService:
 
 def read_settled_project_plan(
     settled: SettledProjectPlan, reader: PlanJobReader, *, stopped_checkpoint_jobs: Sequence[str] = (),
+    remote_attempts: Sequence[StudioActivityJob] = (),
 ) -> ProjectPlanRead:
     """Join one saved Plan to the verified Host evidence used by Studio."""
     light = settled.plan.light_requests
@@ -673,6 +682,19 @@ def read_settled_project_plan(
         stopped_checkpoint_jobs=stopped_checkpoint_jobs,
         light_addresses={plan_attempt_key(key) for key in light},
     )
+    if remote_attempts:
+        by_request = dict(jobs.by_request)
+        for observed in remote_attempts:
+            if observed.request_id not in requests:
+                continue
+            local = by_request.get(observed.request_id, ())
+            if any(attempt.job_id == observed.job_id for attempt in local):
+                continue
+            by_request[observed.request_id] = (*local, PlanJobAttempt(
+                observed.job_id, observed.status, observed.phase, observed.progress, observed.reason, None,
+                continues=observed.continues,
+            ))
+        jobs = replace(jobs, by_request=MappingProxyType(by_request))
     evaluations = {}
     evaluation_problems = []
     for run in settled.plan.runs:

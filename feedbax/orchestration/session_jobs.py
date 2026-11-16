@@ -91,6 +91,19 @@ class SessionJobs:
                 """
             )
 
+    def destination_stores(self) -> dict[str, Path]:
+        """Return the exact destination Store captured by each saved delegation."""
+        with self.driver.connection() as db:
+            destinations = db.execute(
+                """SELECT DISTINCT json_extract(request, '$.project'), json_extract(request, '$.local_store')
+                   FROM session_delegations WHERE session=? AND json_extract(request, '$.local_store') IS NOT NULL""",
+                (self.session_id,),
+            ).fetchall()
+        stores = dict(destinations)
+        if len(stores) != len(destinations):
+            raise SessionError("The machine has more than one destination Store for the same project.")
+        return {project: Path(store) for project, store in stores.items()}
+
     def delegate(
         self, folders: ProjectFolder, reviewed: SettledProjectPlan, *,
         run_keys: Sequence[RunKey], token: str,
@@ -199,6 +212,28 @@ class SessionJobs:
             return observed[1], observed[2]
         return 0, None
 
+    def activity_facts(self) -> tuple[dict[str, list[str]], int | None]:
+        """Project bounded log tails and the last terminal Host event."""
+        with self.driver.connection() as db:
+            (last_terminal,) = db.execute(
+                """SELECT json_extract(event, '$.time') FROM session_events
+                   WHERE session=? AND json_extract(event, '$.kind') IN ('terminal', 'blocked')
+                   ORDER BY cursor DESC LIMIT 1""", (self.session_id,),
+            ).fetchone() or (None,)
+            logs = db.execute(
+                """SELECT json_extract(event, '$.job_id'), substr(json_extract(event, '$.data.line'), 1, 1024)
+                   FROM session_events WHERE session=? AND json_extract(event, '$.kind')='log'
+                   ORDER BY cursor DESC LIMIT 200""", (self.session_id,),
+            ).fetchall()
+        tails: dict[str, list[str]] = {}
+        for job, line in logs:
+            tail = tails.setdefault(job, [])
+            if isinstance(line, str) and len(tail) < 12:
+                tail.append(line)
+        for tail in tails.values():
+            tail.reverse()
+        return tails, int(last_terminal * 1_000) if last_terminal is not None else None
+
     def poll(self, *, limit: int = 256, wait: float = 0) -> EventPage:
         """Mirror a bounded batch and its high-water mark in one commit."""
         observed = self._observation()
@@ -259,6 +294,18 @@ class SessionJobs:
             ).fetchall()
         if any(bound is not None and Path(bound) != store for (bound,) in rows):
             raise SessionError("The local Store differs from the saved delegation.")
+        return self._collect_to_store(local_jobs, project, store, observed_only=observed_only)
+
+    def collect_delegated(self, local_jobs: JobService, *, project: str, store: Path) -> tuple[CollectedAttempt, ...]:
+        if self.destination_stores().get(project) != store:
+            raise SessionError("The local Store differs from the saved delegation.")
+        return self._collect_to_store(local_jobs, project, store)
+
+    def _collect_to_store(
+        self, local_jobs: JobService, project: str, store: Path, *, observed_only: bool = False,
+    ) -> tuple[CollectedAttempt, ...]:
+        if self._venue_jobs is None:
+            raise SessionError("Project collection requires a venue Store transport.")
         source = self._venue_jobs.store(project)
 
         def collect(attempt: JsonObject) -> CollectedAttempt:

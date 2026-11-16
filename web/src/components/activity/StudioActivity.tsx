@@ -1,11 +1,15 @@
 import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
 import { useState } from 'react';
-import type { StudioActivityJob } from '@/generated/studioContracts';
+import { closeStudioMachine } from '@/api/jobs';
+import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
 import { StudioJobsProvider, useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
-import { studioDefinitionStatus, studioMachineStatus, studioName, studioStep, type StudioRunStatusId } from './studioVocabulary';
+import {
+  studioDateTime, studioDefinitionStatus, studioMachineStatus, studioMoney, studioName, studioRunStatus,
+  studioStep, type StudioRunStatusId,
+} from './studioVocabulary';
 
 const liveStatuses = new Set<StudioRunStatusId>([
   'queued',
@@ -28,12 +32,14 @@ function ActivityRun({
   job,
   project,
   selected,
+  machine,
   onOpen,
   onClose,
 }: {
   job: StudioActivityJob;
   project?: string;
   selected: boolean;
+  machine?: string;
   onOpen: () => Promise<boolean>;
   onClose: () => void;
 }) {
@@ -97,8 +103,9 @@ function ActivityRun({
         </button>
         <StudioRunStatus status={job.status} />
       </div>
-      {(coordinates.length > 0 || actor) && (
+      {(coordinates.length > 0 || actor || machine) && (
         <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-shell-muted">
+          {machine && <div className="flex gap-1"><dt>{studioName('machine')}</dt><dd>{machine}</dd></div>}
           {coordinates.map(([axis, value]) => (
             <div key={axis} className="flex gap-1">
               <dt>{axis}</dt>
@@ -120,6 +127,7 @@ function ActivityRun({
       )}
       <StudioRunReason job={job} />
       {job.status === 'running' && job.progress && <StudioRunProgress progress={job.progress} etaSeconds={job.eta_seconds} />}
+      {job.status === 'collecting' && <progress aria-label={studioRunStatus(job.status)} />}
       {failure && <p role="alert" className="text-xs text-shell-status-failure">{failure}</p>}
       <div className="flex flex-wrap gap-2">
         {jobAllowsCommand(job, 'stop') && (
@@ -137,6 +145,41 @@ function ActivityRun({
       </div>
     </li>
   );
+}
+
+function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
+  const actions = useStudioJobActions();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function close() {
+    setError(undefined);
+    setBusy(true);
+    try {
+      await closeStudioMachine(machine.id);
+      actions.refresh();
+    } catch (cause) {
+      setError(studioRegionIssue('machine', cause).reason);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <section aria-label={machine.name} className="space-y-2 rounded-md border border-shell-divider px-3 py-2 text-sm">
+    <header className="flex items-baseline justify-between gap-2">
+      <h3 className="font-medium">{machine.name}</h3>
+      <span className="text-shell-muted">{studioMachineStatus(machine.state)}</span>
+    </header>
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3">
+      <dt>{studioName('hourlyRate')}</dt><dd>{studioMoney(machine.hourly_microusd)}</dd>
+      <dt>{studioName('estimatedCost')}</dt><dd>{studioMoney(machine.estimated_cost_microusd)}</dd>
+      <dt>{studioName('costCeiling')}</dt><dd>{studioMoney(machine.ceiling_microusd)}</dd>
+      <dt>{studioName('closesAt')}</dt><dd>{studioDateTime(machine.closes_at_ms)}</dd>
+      {machine.idle_since_ms !== null && <><dt>{studioName('idleSince')}</dt><dd>{studioDateTime(machine.idle_since_ms)}</dd></>}
+      <dt>{studioName('runs')}</dt><dd>{machine.job_ids.length}</dd>
+    </dl>
+    {error && <p role="alert">{error}</p>}
+    <button type="button" disabled={!machine.can_close || busy} onClick={() => void close()}
+      className="rounded border border-shell-divider px-2 py-1 disabled:opacity-50">{studioName('close')}</button>
+  </section>;
 }
 
 function ActivityCommand({
@@ -190,6 +233,8 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
       || a.label.localeCompare(b.label)
       || a.job_id.localeCompare(b.job_id));
   const machine = snapshot.data?.sessions.find((session) => session.id === 'local');
+  const remoteMachines = snapshot.data?.sessions.filter((session): session is StudioRemoteSession => 'name' in session) ?? [];
+  const machineByJob = new Map(remoteMachines.flatMap((session) => session.job_ids.map((id) => [id, session.name] as const)));
   const machineField = machine && (
     <dl className="flex justify-between rounded-md border border-shell-divider px-3 py-2 text-sm">
       <dt className="font-medium">{studioName('thisMac')}</dt>
@@ -215,11 +260,13 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
       empty={(
         <>
           {machineField}
+          {remoteMachines.map((session) => <ActivityMachine key={session.id} machine={session} />)}
           <ul aria-label={studioName('runs')} className="min-h-10 rounded-md border border-dashed border-shell-divider" />
         </>
       )}
     >
       {machineField}
+      {remoteMachines.map((session) => <ActivityMachine key={session.id} machine={session} />)}
       <ul aria-label={studioName('runs')} className="space-y-2">
         {visible.map((job) => (
           <ActivityRun
@@ -227,6 +274,7 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
             job={job}
             project={projectNames.get(job.project_id) ?? job.project_id}
             selected={job === selected}
+            machine={machineByJob.get(job.job_id)}
             onClose={onClose}
             onOpen={async () => {
               const opened = await onOpenRun(job);

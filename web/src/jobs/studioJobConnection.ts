@@ -14,6 +14,7 @@ export type StudioJobWorkerCommand =
 export type StudioJobWorkerMessage =
   | { type: 'attached' }
   | { type: 'reset' }
+  | { type: 'machines-changed' }
   | { type: 'state'; state: StudioJobConnection }
   | { type: 'event'; event: StudioJobEvent }
   | { type: 'seen'; jobId: string }

@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.execution_target import SessionTargetProfile
-from feedbax.contracts.jobs import StudioJobSubmission
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.host import HostError
@@ -217,13 +216,15 @@ executor.execute_managed_training_run = execute
 
         with TestClient(create_app(projects_dir=folders.root, targets=registry, submit_session=submit_session)) as client:
             machines = client.get("/api/orchestration/targets").json()
-            assert machines["targets"][1]["availability"] == {"state": "ready"}
+            assert machines["targets"][1]["availability"]["state"] == "unavailable"
             response = client.post(f"/api/projects/{PROJECT}/train-runs", json={
                 "revision": local_plan.revision, "run_keys": [asdict(TRAIN), asdict(EVALUATE)],
                 "token": TOKEN, "target": profile.id,
             })
-            assert response.status_code == 202, response.text
-            submission = StudioJobSubmission.model_validate(response.json())
+            assert response.status_code == 409, response.text
+        submission = JobService(
+            reconnected.host, new_application_registry_bundle(), targets=registry, submit_session=submit_session,
+        ).submit_plan(folders, local_plan, run_keys=(TRAIN, EVALUATE), token=TOKEN, target=profile.id)
         assert {item.job_id for item in submission.items} == {train_id, evaluation_id}
         assert submission.target == state.placement
         assert state.placement.realization.placement == {"device": "cpu"}

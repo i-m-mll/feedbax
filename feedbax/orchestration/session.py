@@ -250,6 +250,12 @@ class SessionDriver:
     def record(self, session_id: UUID) -> SessionRecord:
         return self._require(session_id).session
 
+    def records(self) -> tuple[SessionRecord, ...]:
+        with self.connection() as db:
+            return tuple(SessionRecord.model_validate_json(state) for (state,) in db.execute(
+                "SELECT state FROM sessions ORDER BY rowid",
+            ))
+
     def _write(self, state: SessionRecord, token: str) -> None:
         with self.connection() as db:
             db.execute(
@@ -294,6 +300,7 @@ class SessionDriver:
 
     def open(
         self, request: SessionRequest, authorization: SessionAuthorization, *, adoption_token: str,
+        expected_hourly_microusd: int | None = None,
     ) -> SessionRecord:
         request = request.model_copy(deep=True)
         self._validate(request, authorization, require_current=False)
@@ -308,10 +315,13 @@ class SessionDriver:
                     raise SessionError("Session authorization has expired.")
                 if self._find_venue(f"feedbax-session-{request.digest}", self.inventory()) is not None:
                     raise SessionError("This session already has a venue. Adopt it explicitly.")
+                hourly_microusd = self.provider.hourly_microusd(request)
+                if expected_hourly_microusd is not None and hourly_microusd != expected_hourly_microusd:
+                    raise SessionError("The machine rate changed. Review a new quote.")
                 launch = SessionLaunch(
                     request=request, authorization=authorization, acquired_at_ms=self._clock_ms(),
                     adoption_sha256=_capability_digest(adoption_token),
-                    hourly_microusd=self.provider.hourly_microusd(request),
+                    hourly_microusd=hourly_microusd,
                 )
                 state = SessionRecord(launch=launch)
                 token = secrets.token_urlsafe()
@@ -321,6 +331,8 @@ class SessionDriver:
                 token = secret.get_secret_value()
                 if state.launch.request != request or state.launch.authorization != authorization:
                     raise SessionError("Session ID already belongs to a different request or authorization.")
+                if expected_hourly_microusd is not None and state.launch.hourly_microusd != expected_hourly_microusd:
+                    raise SessionError("The machine rate differs from the recorded quote.")
                 self._check_owner(state.launch, adoption_token)
                 if state.phase != "opening":
                     if authorization.expires_at_ms <= self._clock_ms():

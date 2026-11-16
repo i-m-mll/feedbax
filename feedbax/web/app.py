@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -33,9 +34,19 @@ from feedbax.web.services.analysis_service import AnalysisJobService
 from feedbax.web.services.desktop_jobs import StudioJobLifecycle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from feedbax.web.services.remote_runs import StudioRemoteRuns
 
 STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
 service_log = logging.getLogger("uvicorn.error")
+
+
+async def _observe_remote_runs(app: FastAPI, remote: StudioRemoteRuns) -> None:
+    while True:
+        try:
+            await asyncio.to_thread(remote.observe, app.state.project_folders, app.state.job_service)
+        except Exception:
+            service_log.exception("Could not refresh the machine activity.")
+        await asyncio.sleep(0.75)
 
 
 def create_app(
@@ -46,6 +57,7 @@ def create_app(
     projects_dir: Path | None = None,
     targets: TargetRegistry | None = None,
     submit_session: SessionSubmission | None = None,
+    remote_runs: StudioRemoteRuns | None = None,
 ) -> FastAPI:
     project_root = projects_dir if projects_dir is not None else BASE_DIR / "projects"
 
@@ -63,16 +75,25 @@ def create_app(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
             targets=targets, submit_session=submit_session,
         )
-        app.state.project_plan = ProjectPlanService(app.state.project_folders, app.state.job_service)
+        app.state.remote_runs = remote_runs
+        app.state.project_plan = ProjectPlanService(
+            app.state.project_folders, app.state.job_service,
+            remote_runs.project_attempts if remote_runs is not None else None,
+        )
         analysis_jobs = AnalysisJobService(
             job_root=desktop_job_root / "analysis" if desktop_job_root is not None else None
         )
         app.state.analysis_jobs = analysis_jobs
         if desktop_job_root is not None:
             app.state.desktop_jobs = StudioJobLifecycle(analysis_jobs, app.state.job_service, desktop_release)
+        observation = asyncio.create_task(_observe_remote_runs(app, remote_runs)) if remote_runs is not None else None
         try:
             yield
         finally:
+            if observation is not None:
+                observation.cancel()
+                with suppress(asyncio.CancelledError):
+                    await observation
             if desktop_job_root is not None:
                 analysis_jobs.begin_stop(force=True)
             await analysis_jobs.aclose()

@@ -12,7 +12,10 @@ const home = process.env.FEEDBAX_STUDIO_TEST_HOME ??= join(tmpdir(), `feedbax-st
 const preview = process.env.FEEDBAX_STUDIO_E2E_PREVIEW === '1' ? ' --preview' : '';
 const dispose = ownsHome ? ' --remove-test-home' : '';
 const seriesFixture = process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1';
-const launcher = seriesFixture
+const remoteFixture = process.env.FEEDBAX_STUDIO_E2E_REMOTE_FIXTURE === '1';
+const launcher = remoteFixture
+  ? 'cd .. && exec uv run --offline --no-sync python -B -m web.e2e.studio.fixtures.remote_runs_backend'
+  : seriesFixture
   ? 'cd .. && exec uv run --offline --no-sync python -B -m web.e2e.studio.fixtures.evaluate_series_backend'
   : 'exec ../scripts/dev.sh';
 

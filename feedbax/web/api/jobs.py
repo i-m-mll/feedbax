@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from time import monotonic
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from feedbax.contracts.execution_target import ExecutionTargets, TargetRunKind
+from feedbax.contracts.execution_target import ExecutionTargets, LOCAL_TARGET_ID, TargetRunKind
 from feedbax.contracts.jobs import (
     StudioActivityJob,
     StudioEvaluationObjectiveSeries,
@@ -23,8 +24,12 @@ from feedbax.contracts.jobs import (
     StudioJobStopRequest,
     StudioJobSubmission,
     StudioLocalSession,
+    StudioRemoteSession,
+    StudioMachineApproval,
+    StudioMachineQuote,
     StudioSavedEvaluationRead,
     StudioSavedEvaluationReplayRequest,
+    StudioSavedMachineQuoteRequest,
     StudioSavedTrainRunRequest,
     StudioSavedTrainRuns,
 )
@@ -34,7 +39,9 @@ from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
+from feedbax.orchestration.session import SessionError
 from feedbax.web.api.projects import ProjectRevisionWatch, _project_response
+from feedbax.web.services.remote_runs import StudioRemoteRuns
 
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -73,6 +80,8 @@ def saved_train_runs(
 def run_saved_train(
     project_id: ProjectName, body: StudioSavedTrainRunRequest, request: Request, response: Response,
 ) -> StudioJobSubmission:
+    if body.target != LOCAL_TARGET_ID:
+        raise HTTPException(409, detail="Review and approve the machine quote first.")
     folders = request.app.state.project_folders
 
     def admit() -> StudioJobSubmission:
@@ -81,13 +90,48 @@ def run_saved_train(
             folders, reviewed,
             run_keys=[RunKey(key.variant, key.step, key.row) for key in body.run_keys],
             token=body.token,
-            target=body.target,
             reuse_completed=body.reuse_completed,
         )
 
     try:
         return _project_response(response, admit)
     except JobConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
+
+
+def _remote_runs(request: Request) -> StudioRemoteRuns:
+    remote = request.app.state.remote_runs
+    if remote is None:
+        raise HTTPException(503, detail="Machine approval is unavailable.")
+    return remote
+
+
+@router.post("/projects/{project_id}/train-runs/quote")
+def quote_saved_run(
+    project_id: ProjectName, body: StudioSavedMachineQuoteRequest, request: Request, response: Response,
+) -> StudioMachineQuote:
+    remote = _remote_runs(request)
+
+    def quote() -> StudioMachineQuote:
+        reviewed = request.app.state.project_folders.read_plan(project_id, revision=body.revision)
+        return remote.quote(reviewed, body)
+
+    try:
+        return _project_response(response, quote)
+    except (JobConflict, SessionError) as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/train-runs/approve", status_code=202)
+def approve_saved_run(
+    project_id: ProjectName, body: StudioMachineApproval, request: Request, response: Response,
+) -> StudioJobSubmission:
+    remote = _remote_runs(request)
+    try:
+        return _project_response(response, lambda: remote.approve(request.app.state.project_folders, project_id, body.quote))
+    except (JobConflict, SessionError) as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
@@ -166,7 +210,9 @@ def list_jobs(request: Request, project: str | None = None) -> StudioJobSnapshot
     try:
         service = _jobs(request)
         service.warm()
-        return service.jobs(project=project)
+        snapshot = service.jobs(project=project)
+        remote = request.app.state.remote_runs
+        return remote.snapshot(snapshot, project=project) if remote is not None else snapshot
     except HostError as exc:
         raise _host_error(exc) from exc
 
@@ -174,7 +220,12 @@ def list_jobs(request: Request, project: str | None = None) -> StudioJobSnapshot
 @router.post("/jobs/stop", status_code=202)
 def stop_jobs(body: StudioJobStopRequest, request: Request) -> list[StudioJobStopItem]:
     try:
+        remote = request.app.state.remote_runs
+        if remote is not None:
+            return remote.stop(_jobs(request), body.job_ids, body.mode)
         return _jobs(request).stop(body.job_ids, body.mode)
+    except SessionError as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
 
@@ -182,10 +233,13 @@ def stop_jobs(body: StudioJobStopRequest, request: Request) -> list[StudioJobSto
 @router.post("/jobs/{job_id}/resume", status_code=202)
 def resume_job(job_id: str, body: StudioJobResumeRequest, request: Request) -> StudioActivityJob:
     try:
+        remote = request.app.state.remote_runs
+        if remote is not None:
+            return remote.resume(_jobs(request), job_id, body.token)
         return _jobs(request).resume(job_id, body.token)
     except JobNotFound as exc:
         raise HTTPException(404, detail="Unknown job") from exc
-    except JobConflict as exc:
+    except (JobConflict, SessionError) as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
@@ -194,6 +248,9 @@ def resume_job(job_id: str, body: StudioJobResumeRequest, request: Request) -> S
 @router.post("/jobs/{job_id}/seen")
 def acknowledge_job(job_id: str, request: Request) -> StudioActivityJob:
     try:
+        remote = request.app.state.remote_runs
+        if remote is not None:
+            return remote.acknowledge(_jobs(request), job_id)
         return _jobs(request).acknowledge(job_id)
     except JobNotFound as exc:
         raise HTTPException(404, detail="Unknown job") from exc
@@ -204,15 +261,31 @@ def acknowledge_job(job_id: str, request: Request) -> StudioActivityJob:
 
 
 @router.get("/sessions")
-def list_sessions() -> list[StudioLocalSession]:
-    return [StudioLocalSession()]
+def list_sessions(request: Request) -> list[StudioLocalSession | StudioRemoteSession]:
+    remote = request.app.state.remote_runs
+    local = StudioJobSnapshot(jobs=[], cursor=0, oldest_cursor=0, sessions=[StudioLocalSession()])
+    return remote.snapshot(local).sessions if remote is not None else local.sessions
+
+
+@router.post("/sessions/{session_id}/close", status_code=204)
+def close_session(session_id: UUID, request: Request) -> None:
+    try:
+        _remote_runs(request).close(session_id)
+    except JobNotFound as exc:
+        raise HTTPException(404, detail="Unknown machine") from exc
+    except SessionError as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
 
 
 @router.get("/orchestration/targets")
 def list_targets(
     request: Request, kind: Annotated[list[TargetRunKind] | None, Query()] = None,
 ) -> ExecutionTargets:
-    return _jobs(request).execution_targets(kind or ())
+    if request.app.state.remote_runs is not None:
+        return _remote_runs(request).catalog(kind or ())
+    return _jobs(request).targets.catalog(kinds=kind or (), session_submission=False)
 
 
 @router.get("/events/history")
@@ -244,6 +317,7 @@ async def job_events(
     folder: Annotated[list[ProjectName] | None, Query()] = None,
 ) -> StreamingResponse:
     service = _jobs(request)
+    remote = request.app.state.remote_runs if machine else None
     projects = tuple(dict.fromkeys(project or ()))
     folders = tuple(dict.fromkeys(folder or ()))
     watch = ProjectRevisionWatch(request.app.state.project_folders, folders) if folders else None
@@ -265,6 +339,7 @@ async def job_events(
         cursor = start
         replay_complete = False
         next_observation = monotonic()
+        last_remote_version = 0
         while True:
             if cursor < page.oldest_cursor or cursor > head:
                 reset = StudioEventReset(oldest_cursor=page.oldest_cursor, cursor=head)
@@ -281,14 +356,17 @@ async def job_events(
                 yield _watermark_event("replay_complete", boundary)
             if not page.events:
                 yield _watermark_event("heartbeat", cursor)
+            if remote is not None and replay_complete and remote.version != last_remote_version:
+                last_remote_version = remote.version
+                yield f'event: machines_changed\ndata: {{"version":{last_remote_version}}}\n\n'
             if watch is not None and replay_complete and monotonic() >= next_observation:
                 revisions = await run_in_threadpool(watch.changed)
                 next_observation = monotonic() + _FOLDER_OBSERVATION_INTERVAL
                 for revision in revisions:
                     yield f"event: project_revision\ndata: {revision.model_dump_json()}\n\n"
-            wait = 5
+            wait = 5 if remote is None else 0.75
             if watch is not None and replay_complete:
-                wait = max(0, next_observation - monotonic())
+                wait = min(wait, max(0, next_observation - monotonic()))
             try:
                 head, page = await run_in_threadpool(
                     service.events,
