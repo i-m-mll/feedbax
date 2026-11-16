@@ -8,6 +8,8 @@ import sys
 import time
 
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.project_io import dump_text_project, load_text_project
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient, HostError
@@ -26,13 +28,9 @@ def read_job(host, project, attempt):
     return row
 
 
-def restart(paths, host, project, attempt):
+def stopped_checkpoint(paths, host, project, attempt):
     row = read_job(host, project, attempt)
     assert row["state"] == "stopped", row
-    assert all(
-        job["outcome"] is not None
-        for job in host.jobs_snapshot(start_host=False)["jobs"]
-    ), "The test Host must be idle before restart"
     checkpoint = PublishedTrainingCheckpoint.model_validate(row["checkpoint"])
     assert checkpoint.checkpoint_root.is_relative_to(paths.web / "projects" / project)
     pointer = checkpoint.pointer
@@ -49,7 +47,15 @@ def restart(paths, host, project, attempt):
     assert transaction.run_id == attempt == pointer.run_id
     assert transaction.completed_training_batches == checkpoint.completed_updates
     assert transaction.content_integrity_digest.transaction_root_sha256 == pointer.transaction_root_sha256
+    return row["checkpoint"]
 
+
+def restart(paths, host, project, attempt):
+    checkpoint = stopped_checkpoint(paths, host, project, attempt)
+    assert all(
+        job["outcome"] is not None
+        for job in host.jobs_snapshot(start_host=False)["jobs"]
+    ), "The test Host must be idle before restart"
     old_pid = host.ping()["pid"]
     # The launcher owns this isolated home. Signal only the Host returned by its socket.
     os.kill(old_pid, signal.SIGKILL)
@@ -62,8 +68,8 @@ def restart(paths, host, project, attempt):
                 raise
         else:
             if new_pid != old_pid:
-                assert read_job(host, project, attempt)["checkpoint"] == row["checkpoint"]
-                return {"old_host": old_pid, "new_host": new_pid, "checkpoint": row["checkpoint"]}
+                assert read_job(host, project, attempt)["checkpoint"] == checkpoint
+                return {"old_host": old_pid, "new_host": new_pid, "checkpoint": checkpoint}
         time.sleep(0.05)
     raise RuntimeError("The isolated Host did not restart")
 
@@ -72,6 +78,21 @@ def resume(host, project, attempt, successor):
     row = read_job(host, project, successor)
     assert row["continues"] == attempt
     return {"host": host.ping()["pid"], "checkpoint": row["launch"]["payload"]["resume"]}
+
+
+def declare_variants(paths, project, revision):
+    root = paths.web / "projects" / project
+    saved = load_text_project(root)
+    assert saved.revision == revision and saved.project.sweep is None
+    updated = saved.project.model_copy(update={
+        "sweep": Sweep.model_validate({"rows": {"base": {}, "compare": {"from": "base"}}}),
+    })
+    authored = dump_text_project(updated, saved.configuration)
+    for name in ("variants/base.json", "variants/compare.json", saved.declaration):
+        destination = root / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(authored[name])
+    return {"revision": load_text_project(root).revision}
 
 
 def result(paths, host, project, attempt, successor, revision, evaluation, trial):
@@ -96,10 +117,19 @@ def main():
     paths.configure_studio(desktop=False)
     host = HostClient(paths.host)
     match action:
+        case "declare-variants":
+            record = declare_variants(paths, project, attempt)
+        case "checkpoint":
+            record = stopped_checkpoint(paths, host, project, attempt)
         case "restart":
             record = restart(paths, host, project, attempt)
         case "resume":
             record = resume(host, project, attempt, *args)
+        case "completed":
+            completed = read_job(host, project, args[0])
+            assert completed["continues"] == attempt
+            verify_bound_training_completion(completed["outcome"]["completion"])
+            record = completed["outcome"]["receipt"]
         case "result":
             record = result(paths, host, project, attempt, *args)
         case _:
