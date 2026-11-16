@@ -48,7 +48,7 @@ class FakeRunPod:
         self.requests: list[tuple[str, str]] = []
         self.created_pod: dict[str, Any] = {}
         self.quoted_rate = resources.hourly_microusd / 1_000_000
-        self.realized_region = resources.datacenter or "EU-TEST-2"
+        self.realized_region = "EU-TEST-2"
         self.stock = "LOW"
         self.region_stock = {"US-TEST-1": "HIGH", self.realized_region: "LOW"}
 

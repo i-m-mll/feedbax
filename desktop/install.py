@@ -115,6 +115,7 @@ def _require_no_bundle_host(app: Path) -> None:
     )
     for command in rows.splitlines():
         interpreter, separator, _ = command.partition(" -m feedbax.host --root ")
+        interpreter = interpreter.removesuffix(" -I").removesuffix(" -B")
         if separator and Path(interpreter).resolve() == python:
             raise RuntimeError("The retiring Studio release still owns a Host. Stop that Host before continuing.")
 

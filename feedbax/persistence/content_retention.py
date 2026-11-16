@@ -31,6 +31,7 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.host.python import same_python_argv
 from feedbax.persistence._store_metadata import (
     ensure_store_directory,
     sync_directory,
@@ -1017,13 +1018,12 @@ def launch_scheduled_lease_collection(
         raise ContentRetentionError("automatic collection log identity is unsafe")
     with os.fdopen(log_descriptor, "ab", buffering=0) as log:
         process = subprocess.Popen(
-            [
-                sys.executable,
+            same_python_argv(
                 "-m",
                 "feedbax.persistence.content_retention",
                 "--automatic-release-job",
                 str(job_path),
-            ],
+            ),
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,

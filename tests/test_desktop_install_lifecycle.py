@@ -128,7 +128,10 @@ def test_failed_uninstall_registration_is_recoverable(installation, tmp_path, mo
     assert not (control / "installation.json").exists()
 
 
-def test_old_launcher_acknowledgement_cannot_hide_a_live_bundle_host(installation, tmp_path, monkeypatch):
+@pytest.mark.parametrize("python_flags", ["", " -B", " -B -I"])
+def test_old_launcher_acknowledgement_cannot_hide_a_live_bundle_host(
+    installation, tmp_path, monkeypatch, python_flags,
+):
     installer, app, control, unrelated, registrations, _, process_guard = installation
     receipt = tmp_path / "receipt.json"
     receipt.write_bytes(installer.json_bytes({
@@ -145,7 +148,8 @@ def test_old_launcher_acknowledgement_cannot_hide_a_live_bundle_host(installatio
     }))
     monkeypatch.setattr(installer, "_require_no_bundle_host", process_guard)
     monkeypatch.setattr(installer.subprocess, "check_output", lambda *_args, **_kwargs: (
-        f"/other/python -m feedbax.host --root /other/host\n{python} -m feedbax.host --root /old/host\n"
+        f"/other/python -m feedbax.host --root /other/host\n"
+        f"{python}{python_flags} -m feedbax.host --root /old/host\n"
     ))
     with pytest.raises(RuntimeError, match="still owns a Host"):
         installer.uninstall(app, "force")

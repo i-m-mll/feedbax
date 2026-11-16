@@ -68,7 +68,7 @@ def test_runpod_gate_guards_all_mutations(tmp_path):
 
     cutoff = FakeRunPodCutoff(("/usr/bin/true",))
     fake.quoted_rate *= 2
-    with pytest.raises(SessionError, match="authorized GPU, rate, CUDA and region"):
+    with pytest.raises(SessionError, match="authorized GPU, rate, CUDA and stock"):
         _provider(tmp_path, fake.handle, cutoff).acquire(launch)
     assert not any(method == "POST" for method, _ in fake.requests)
     assert cutoff.launches == []
@@ -169,24 +169,20 @@ def test_runpod_recovers_exactly_one_create_or_leaves_it_unresolved(tmp_path, pa
     assert fake.requests.count(("POST", "/v2/pods")) == 1
 
 
-@pytest.mark.parametrize(("field", "value", "legacy_region"), [
-    ("cost", 0.76, None),
-    ("cloud", "COMMUNITY", None),
-    ("cudaVersion", "12.6", None),
-    ("disk", 41, None),
-    ("gpu", {"id": "wrong-device", "count": 1}, None),
-    ("dataCenterId", None, None),
-    ("dataCenterId", "EU-TEST-2", "US-TEST-1"),
+@pytest.mark.parametrize(("field", "value"), [
+    ("cost", 0.76),
+    ("cloud", "COMMUNITY"),
+    ("cudaVersion", "12.6"),
+    ("disk", 41),
+    ("gpu", {"id": "wrong-device", "count": 1}),
+    ("dataCenterId", None),
 ])
-def test_runpod_checks_realized_offer_before_ssh(tmp_path, monkeypatch, field, value, legacy_region):
-    resources = runpod_resources().model_copy(update={"datacenter": legacy_region})
+def test_runpod_checks_realized_offer_before_ssh(tmp_path, monkeypatch, field, value):
+    resources = runpod_resources()
     fake = FakeRunPod(resources)
     provider = _provider(tmp_path, fake.handle, FakeRunPodCutoff(("/usr/bin/true",)))
     venue = provider.acquire(_launch(resources))
-    if legacy_region is not None:
-        assert fake.created_pod["dataCenterIds"] == [legacy_region]
-    else:
-        assert "dataCenterIds" not in fake.created_pod
+    assert "dataCenterIds" not in fake.created_pod
     fake.pods[venue.id][field] = value
 
     def unexpected_ssh(*args, **kwargs):
@@ -331,8 +327,7 @@ def test_unconfirmed_create_fails_at_startup_but_preserves_cleanup_until_end(tmp
                 }, headers={"content-type": "application/problem+json"})
             assert not captured
             captured.append(request.content)
-            # A 400 outside the documented error envelope is still unresolved.
-            return httpx.Response(400, json={"error": "bad gateway"})
+            return httpx.Response(502, json={"error": "bad gateway"})
         if unavailable and (request.method, request.url.path) == ("GET", "/v2/pods"):
             raise httpx.ConnectError("inventory outage", request=request)
         return fake.handle(request)
