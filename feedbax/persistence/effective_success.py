@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -109,13 +110,26 @@ class SuccessView:
             if self.resolve(decoded, member, origin) != bound:
                 raise ValueError(f"Receipt input provenance differs for {member.key!r}")
 
-    def bind(self, request: RequestObject) -> tuple[EffectiveBindingId, Bindings]:
+    def bind(
+        self, request: RequestObject, *, origins: Mapping[RequestId, ContentObjectRef] | None = None,
+    ) -> tuple[EffectiveBindingId, Bindings]:
         decoded = self.read_request(request)
+        if origins is None:
+            origins = self._index.authored
+        else:
+            expected = {
+                member.reference.request_id
+                for members in decoded.inputs.values()
+                for member in members
+                if isinstance(member.reference, ProductRef)
+            }
+            if origins.keys() != expected:
+                raise ValueError("Explicit origins must cover the exact authored producer requests")
         inputs = {
             role: tuple(
                 self.resolve(
                     decoded, member,
-                    self._index.authored.get(member.reference.request_id)
+                    origins.get(member.reference.request_id)
                     if isinstance(member.reference, ProductRef)
                     else None,
                 )

@@ -10,8 +10,9 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
+from feedbax.contracts.effective_success import RequestObject
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
-from feedbax.contracts.request_refs import BestRank
+from feedbax.contracts.request_refs import BestRank, ContentRef, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
 from feedbax.host.best_selection import BestMetricUnavailable, completion_score
@@ -20,7 +21,7 @@ from feedbax.host.checkpoint_selection import (
 )
 from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
 from feedbax.host.plan_history import advance_plan, plan_ref_key
-from feedbax.host.protocol import LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
+from feedbax.host.protocol import LIGHT_ENTRYPOINT, LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
 from feedbax.persistence.store_damage import inspect_without_recording
 
 
@@ -134,7 +135,7 @@ def _canonical_binding_conflicts(
     launch: dict, stored_launch: str, *, evaluate: bool, live: bool = False,
 ) -> bool:
     recorded = json.loads(stored_launch)
-    if evaluate:
+    if evaluate or LIGHT_ENTRYPOINT in (launch.get("warm_entrypoint"), recorded.get("warm_entrypoint")):
         return dump(launch, sort_keys=True) != dump(recorded, sort_keys=True)
     payload, stored = launch["payload"], recorded["payload"]
     if payload.get("canonical_request") is None and stored.get("canonical_request") is None:
@@ -259,6 +260,10 @@ class Store:
         elif kind == "live_evaluate_error":
             self.evaluation_error(row, require_text(data.get("message"), "evaluation error"))
             return
+        elif kind == "result" and json.loads(row["launch"])["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+            # The launcher records the independent terminal status. Draft products
+            # remain in the worker log until Store publication accepts them.
+            return
         elif kind == "terminal":
             if row["outcome"] is not None:
                 return
@@ -282,6 +287,8 @@ class Store:
                         outcome = self._publish_train_result(row, outcome)
                     elif self._is_managed_launch(row, "feedbax.training.evaluate_worker:main"):
                         outcome = self._publish_evaluate_result(row, outcome)
+                    elif json.loads(row["launch"])["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+                        outcome = self._publish_light_result(row, outcome)
                 except (ValueError, KeyError, TypeError, OSError) as error:
                     if isinstance(error, OSError) and error.errno in {
                         errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EBUSY, errno.EINTR,
@@ -291,6 +298,8 @@ class Store:
                         "outcome": "failed", "receipt": outcome.get("receipt"),
                         "error": {"code": "publication_failed", "message": str(error)},
                     }
+            if json.loads(row["launch"])["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+                outcome.pop("products", None)
             self.finished(row, outcome)
             return
         self.append(row, kind, data)
@@ -335,6 +344,88 @@ class Store:
         )
         return outcome | {"store_success": ref.model_dump(mode="json")}
 
+    def _publish_light_result(self, row: sqlite3.Row, outcome: dict) -> dict:
+        from feedbax.light_jobs import publish_light_success
+
+        if outcome.keys() != {"outcome", "products"}:
+            raise ValueError("Light success must supply only its draft products.")
+        payload = json.loads(row["launch"])["payload"]
+        ref = publish_light_success(
+            payload, row["id"], row["request"], self.light_origins(row), outcome["products"],
+        )
+        return {
+            "outcome": "succeeded",
+            "receipt": {"manifest_id": row["id"], "manifest_sha256": ref["sha256"]},
+            "store_success": ref,
+        }
+
+    @staticmethod
+    def _light_requests(payload: dict, project: str, request_id: str) -> frozenset[str]:
+        root = Path(payload["manifest_root"])
+        request = RequestObject.model_validate(payload["request"])
+        if (
+            payload["project_id"] != project or request.id != request_id
+            or not root.is_absolute() or root.resolve() != root
+        ):
+            raise ValueError("Light launch differs from its admitted project, Store or request.")
+        decoded = Store._light_success_view(root).read_request(request)
+        if decoded.kind not in ("analyze", "render", "report"):
+            raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
+        inputs = [member.reference for members in decoded.inputs.values() for member in members]
+        if any(not isinstance(ref, (ProductRef, ContentRef)) for ref in inputs):
+            raise ValueError("Light jobs require exact Store inputs or terminal products.")
+        return frozenset(ref.request_id for ref in inputs if isinstance(ref, ProductRef))
+
+    def _light_parents(self, project: str, root: str, expected: frozenset[str], parents: Sequence[str]) -> list[sqlite3.Row]:
+        rows = []
+        seen = set()
+        for parent_id in parents:
+            source = self.get(parent_id)
+            if source is None or source["project"] != project or source["request"] in seen:
+                raise ValueError("Light dependency is missing, repeated or outside the admitted project.")
+            payload = json.loads(source["launch"])["payload"]
+            if payload.get("manifest_root") != root or source["request"] not in expected:
+                raise ValueError("Light dependency differs from its canonical producer or Store.")
+            seen.add(source["request"])
+            rows.append(source)
+        if seen != expected:
+            raise ValueError("Light dependencies do not cover exactly the canonical producer requests.")
+        return rows
+
+    @staticmethod
+    def _light_success_view(root: str | Path):
+        from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+        from feedbax.persistence.effective_success import SuccessView
+
+        return SuccessView(ImmutableArtifactBlobProvider(root))
+
+    @staticmethod
+    def _light_receipt(view, source: sqlite3.Row) -> dict:
+        from feedbax.contracts.artifact_custody import ContentObjectRef
+
+        if source["state"] != "succeeded":
+            raise ValueError("The exact light producer did not succeed.")
+        outcome = json.loads(source["outcome"])
+        ref = ContentObjectRef.model_validate(outcome.get("store_success"))
+        receipt = view.read_receipt(ref)
+        if receipt.attempt != source["id"] or receipt.request.id != source["request"]:
+            raise ValueError("Accepted origin differs from its exact Store receipt.")
+        return ref.model_dump(mode="json")
+
+    def light_origins(self, row: sqlite3.Row) -> dict:
+        payload = json.loads(row["launch"])["payload"]
+        root = payload["manifest_root"]
+        try:
+            expected = self._light_requests(payload, row["project"], row["request"])
+            parents = tuple(edge["parent"] for edge in self.db.execute(
+                "SELECT parent FROM edges WHERE job=? ORDER BY parent", (row["id"],)
+            ))
+            sources = self._light_parents(row["project"], root, expected, parents)
+            view = self._light_success_view(root)
+            return {source["request"]: self._light_receipt(view, source) for source in sources}
+        except (ValueError, TypeError, KeyError, OSError) as error:
+            raise CompletionFileError(str(error)) from error
+
     def _validate_job(self, job: dict) -> None:
         if not JOB_ID.fullmatch(require_text(job.get("id"), "job id")):
             raise HostError("invalid_request", "Job id is not safe for a host path.")
@@ -355,6 +446,11 @@ class Store:
                 raise HostError("invalid_request", "Invalid launch environment variable.")
         if launch["warm_entrypoint"] and ":" not in launch["warm_entrypoint"]:
             raise HostError("invalid_request", "Warm entrypoint must be module:function.")
+        if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT and (
+            job["slot"] != "light" or job["continues"] is not None
+            or any(edge["publication"] is not None or edge.get("authenticated_completion") for edge in job["edges"])
+        ):
+            raise HostError("invalid_request", "Managed light jobs require singleton launches and terminal edges.")
 
     def admit(
         self, token: str, items: list[dict], record: dict, *, allow_completion: bool = False
@@ -367,6 +463,7 @@ class Store:
             if previous:
                 return json.loads(previous[0])
             results, aliases, inserted = [], {}, []
+            light_parents_by_job: dict[str, tuple[str, ...]] = {}
             live_drivers: set[str] = set()
             projects = set(record.get("projects", ()))
             if record.get("project"):
@@ -376,6 +473,8 @@ class Store:
                 run_key = require_text(item["run_key"], "run key")
                 if job is None:
                     disposition = item["disposition"]
+                    if disposition == "reused":
+                        self._recheck_reuse(item, record)
                     if disposition not in ("reused", "rejected"):
                         raise HostError(
                             "invalid_request", "Admission item needs a job or disposition."
@@ -394,6 +493,7 @@ class Store:
                 job["data"].pop("placement_detail", None)
                 payload = job["launch"]["payload"]
                 canonical_request = payload.get("canonical_request")
+                light = job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT
                 evaluate = job["request"].startswith("evaluate:") and canonical_request is not None
                 input_path = "/inputs/subject" if evaluate else "/inputs/checkpoint"
                 if canonical_request is not None and not isinstance(canonical_request, dict):
@@ -478,12 +578,24 @@ class Store:
                     f"SELECT id, continues, launch FROM jobs WHERE project=? AND request=? AND state IN {LIVE}",
                     (job["project"], job["request"]),
                 ).fetchone()
+                matching = by_id if by_id is not None else live
+                light_parents = tuple(sorted(
+                    aliases.get(edge["job_id"], edge["job_id"]) for edge in job["edges"]
+                )) if light else ()
+                different_light_parents = False
+                if light and matching is not None:
+                    existing = light_parents_by_job.get(matching["id"])
+                    if existing is None:
+                        existing = tuple(row[0] for row in self.db.execute(
+                            "SELECT parent FROM edges WHERE job=? ORDER BY parent", (matching["id"],)
+                        ))
+                    different_light_parents = existing != light_parents
                 if by_id is not None:
                     if (by_id["project"], by_id["request"]) != (job["project"], job["request"]):
                         raise HostError(
                             "job_id_conflict", "Job id already names a different request."
                         )
-                    if _canonical_binding_conflicts(job["launch"], by_id["launch"], evaluate=evaluate) or (
+                    if different_light_parents or _canonical_binding_conflicts(job["launch"], by_id["launch"], evaluate=evaluate) or (
                         checkpoint_parents is not None
                         and self._completion_parents(by_id["id"]) != checkpoint_parents
                     ):
@@ -492,7 +604,7 @@ class Store:
                         )
                     job_id, disposition = by_id["id"], "admitted"
                 elif live is not None:
-                    if _canonical_binding_conflicts(
+                    if different_light_parents or _canonical_binding_conflicts(
                         job["launch"], live["launch"], evaluate=evaluate, live=True,
                     ) or (
                         checkpoint_parents is not None
@@ -503,6 +615,8 @@ class Store:
                             "job_id": None,
                             "disposition": "rejected",
                             "reason": (
+                                "The live light request has different exact inputs."
+                                if light else
                                 f"{input_path}: the live Evaluate has a different execution binding."
                                 if evaluate else
                                 "The live Train request has a different store or execution binding."
@@ -533,6 +647,8 @@ class Store:
                         ),
                     )
                     inserted.append(job)
+                    if light:
+                        light_parents_by_job[job_id] = light_parents
                     row = self.get(job_id)
                     self.append(row, "queued", {})
                     if placement is not None:
@@ -559,9 +675,38 @@ class Store:
             )
         return response
 
+    def _recheck_reuse(self, item: dict, record: dict) -> None:
+        cursor = item.get("checked_through")
+        if cursor is None:
+            return
+        run = record.get("runs", {}).get(item["run_key"], {})
+        reused = run.get("reused_job_id")
+        row = self.get(reused) if isinstance(reused, str) else None
+        if row is None:
+            raise HostError("admission_changed", "The reused result is unavailable.")
+        launch = json.loads(row["launch"])
+        root = launch["payload"].get("manifest_root")
+        if (
+            row["state"] != "succeeded" or row["project"] != record.get("project")
+            or row["request"] != run.get("request_id") or root != (record.get("command") or {}).get("store")
+        ):
+            raise HostError("invalid_request", "Reused result differs from its admitted run.")
+        if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+            try:
+                self._light_receipt(self._light_success_view(root), row)
+            except (ValueError, TypeError, KeyError, OSError) as error:
+                raise HostError("admission_changed", str(error)) from error
+        self._require_admission_current(row, cursor)
+
     def _advance_authored_train_plan(self, record: dict, results: list[dict]) -> None:
         plan = record.get("authored_train_plan")
-        if plan is None or not any(item["job_id"] is not None for item in results):
+        if plan is None:
+            return
+        admitted = [
+            (item, self.get(item["job_id"])) for item in results if item["job_id"] is not None
+        ]
+        trains = [(item, job) for item, job in admitted if job["request"].startswith("train:")]
+        if not trains:
             return
         command = record.get("command") or {}
         if command.get("kind") != "canonical_train":
@@ -574,16 +719,10 @@ class Store:
             for key, value in current.items()
         ):
             raise HostError("invalid_request", "Invalid authored Train Plan request map.")
-        for item in results:
-            if item["job_id"] is None:
-                continue
-            job = self.get(item["job_id"])
-            if job is not None and job["request"].startswith("evaluate:"):
-                continue
-            payload = json.loads(job["launch"])["payload"] if job is not None else {}
+        for item, job in trains:
+            payload = json.loads(job["launch"])["payload"]
             if (
-                job is None
-                or (job["project"], job["request"]) != (project, current.get(item["run_key"]))
+                (job["project"], job["request"]) != (project, current.get(item["run_key"]))
                 or json.loads(job["data"]).get("manifest_root") != root
                 or payload.get("canonical_request") is None
                 or payload.get("manifest_root") != root
@@ -611,7 +750,7 @@ class Store:
         value = advance_plan(plan["object"], current, previous, successes)
         self._write_record(key, value)
 
-    def _require_admission_current(self, job: dict, checked_through: int | None) -> None:
+    def _require_admission_current(self, job: dict | sqlite3.Row, checked_through: int | None) -> None:
         if checked_through is None:
             return
         if type(checked_through) is not int or checked_through < 0:
@@ -686,6 +825,16 @@ class Store:
                    FROM edges WHERE job=? AND authenticated_completion""",
                 (job_id, continues),
             )
+        if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+            payload = job["launch"]["payload"]
+            try:
+                expected = self._light_requests(payload, job["project"], job["request"])
+                self._light_parents(
+                    job["project"], payload["manifest_root"], expected,
+                    tuple(aliases.get(edge["job_id"], edge["job_id"]) for edge in job["edges"]),
+                )
+            except (ValueError, KeyError, TypeError, OSError) as error:
+                raise HostError("invalid_request", str(error)) from error
         for edge in job["edges"]:
             parent = aliases.get(edge["job_id"], edge["job_id"])
             publication = edge["publication"] or ""
@@ -973,6 +1122,9 @@ class Store:
 
     def mark_satisfied(self, job_id: str, edge: dict) -> None:
         with self.db:
+            row = self.get(job_id)
+            if row is not None and json.loads(row["launch"])["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+                raise HostError("invalid_request", "Managed light edges require the exact producer to succeed.")
             updated = self.db.execute(
                 """UPDATE edges SET satisfied=1 WHERE job=? AND parent=? AND publication=?
                    AND NOT authenticated_completion""",

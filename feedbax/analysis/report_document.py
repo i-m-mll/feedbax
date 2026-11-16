@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from base64 import b64encode
 from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from html import escape
 import json
 import re
@@ -15,8 +17,8 @@ from feedbax.contracts.report_document import ReportDocument, ReportText
 from feedbax.contracts.request_refs import ContentRef
 
 
-_HTML_NAME = "report.html"
-_PLOTLY_SCRIPT = "plotly.min.js"
+REPORT_HTML_NAME = "report.html"
+PLOTLY_SCRIPT_NAME = "plotly.min.js"
 _DRAW_FIGURES = """
 <script>
   const sources = JSON.parse(document.getElementById("report-figure-sources").textContent);
@@ -41,6 +43,24 @@ _DRAW_FIGURES = """
   }
 </script>
 """.strip()
+_DRAW_SCRIPT = _DRAW_FIGURES.removeprefix("<script>").removesuffix("</script>")
+
+
+def _integrity(digest: str) -> str:
+    return "sha256-" + b64encode(bytes.fromhex(digest)).decode("ascii")
+
+
+_DRAW_SCRIPT_INTEGRITY = _integrity(sha256(_DRAW_SCRIPT.encode()).hexdigest())
+
+
+def report_content_security_policy(plotly_script_sha256: str | None) -> str:
+    scripts = "'none'" if plotly_script_sha256 is None else (
+        f"'{_DRAW_SCRIPT_INTEGRITY}' '{_integrity(plotly_script_sha256)}'"
+    )
+    return (
+        f"default-src 'none'; script-src {scripts}; connect-src 'self'; "
+        "style-src 'unsafe-inline'; img-src data: blob:; base-uri 'none'; form-action 'none'"
+    )
 
 
 @dataclass(frozen=True)
@@ -59,12 +79,16 @@ def _literal_markdown(value: str) -> str:
     return re.sub(r"([\\\x60*_~\[\]()#<>&])", r"\\\1", " ".join(value.splitlines()))
 
 
-def render(document: ReportDocument, figures: Mapping[str, PlotlyFigureProduct]) -> ReportRender:
+def render(
+    document: ReportDocument, figures: Mapping[str, PlotlyFigureProduct], *, plotly_script_sha256: str | None,
+) -> ReportRender:
     """Render a document from bound products without opening figures or datasets."""
     roles = document.figure_roles
     missing = [role for role in roles if role not in figures]
     if missing:
         raise ValueError(f"Missing saved report figures: {', '.join(missing)}")
+    if roles and plotly_script_sha256 is None:
+        raise ValueError("A Report with figures requires its exact Plotly script digest")
     if document.completeness == "complete":
         omissions = [
             f"{role}/{item.layer}: {item.reason}"
@@ -105,7 +129,7 @@ def render(document: ReportDocument, figures: Mapping[str, PlotlyFigureProduct])
         caption = block.caption or block.figure
         anchor = f"report-figure-{index}"
         source = source_by_role[block.figure]
-        markdown.append(f"[{_literal_markdown(caption)}]({_HTML_NAME}#{anchor})")
+        markdown.append(f"[{_literal_markdown(caption)}]({REPORT_HTML_NAME}#{anchor})")
         html.extend(
             [
                 f'<figure id="{anchor}">',
@@ -122,11 +146,12 @@ def render(document: ReportDocument, figures: Mapping[str, PlotlyFigureProduct])
 
     html.append("</main>")
     if assets:
+        assert plotly_script_sha256 is not None
         html.extend(
             [
                 '<script type="application/json" id="report-figure-sources">'
                 f"{json.dumps(list(assets), separators=(',', ':'))}</script>",
-                f'<script src="{_PLOTLY_SCRIPT}"></script>',
+                f'<script src="{PLOTLY_SCRIPT_NAME}" integrity="{_integrity(plotly_script_sha256)}"></script>',
                 _DRAW_FIGURES,
             ]
         )

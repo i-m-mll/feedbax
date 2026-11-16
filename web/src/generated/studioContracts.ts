@@ -62,7 +62,7 @@ export interface StudioActivityJob {
   job_id: string;
   project_id: string;
   request_id: string;
-  kind: "train" | "evaluate";
+  kind: "train" | "evaluate" | "analyze" | "render" | "report";
   run_key: string;
   stage_id: string;
   scenario_id: string;
@@ -272,6 +272,7 @@ export interface StudioSavedTrainRunRequest {
   revision: string;
   run_keys: StudioSavedTrainKey[];
   token: string;
+  reuse_completed?: boolean;
 }
 
 export interface StudioSavedTrainRuns {
@@ -3521,11 +3522,14 @@ export type StudioProjectWindowMapEdge = {
 };
 
 export type StudioProjectWindowMapElement = {
+  "result"?: StudioSavedLightResult | null;
+  "previous"?: StudioSavedLightResult | null;
   "key": StudioSavedTrainKey;
   "name": string;
   "kind": "analyze" | "render";
   "request_id": string;
-  "status": "not_run";
+  "status": JobStatus;
+  "reason"?: string | null;
   "figure"?: StepReference | null;
 };
 
@@ -3574,6 +3578,7 @@ export type StudioProjectWindowMapRow = {
   "status": JobStatus;
   "reason"?: string | null;
   "evaluation_conditions"?: Array<string> | null;
+  "light"?: StudioSavedLightHistory | null;
 };
 
 export type StudioProjectWindowMapStep = {
@@ -3615,6 +3620,18 @@ export type StudioReportStep = {
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
   "group"?: string | null;
+};
+
+export type StudioSavedLightHistory = {
+  "result"?: StudioSavedLightResult | null;
+  "previous"?: StudioSavedLightResult | null;
+};
+
+export type StudioSavedLightResult = {
+  "job_id": string;
+  "request_id": string;
+  "receipt": JobReceipt;
+  "products": Record<string, string>;
 };
 
 export type StudioSetSweepValue = {
@@ -4095,7 +4112,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "job_id": z.string(),
       "project_id": z.string(),
       "request_id": z.string(),
-      "kind": z.union([z.literal("train"), z.literal("evaluate")]),
+      "kind": z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("render"), z.literal("report")]),
       "run_key": z.string(),
       "stage_id": z.string(),
       "scenario_id": z.string(),
@@ -4405,6 +4422,7 @@ export const StudioSavedTrainRunRequestSchema: z.ZodType<StudioSavedTrainRunRequ
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "run_keys": z.array(StudioSavedTrainKeySchema).min(1),
       "token": z.string().min(1).max(128),
+      "reuse_completed": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRunRequest>;
@@ -9696,11 +9714,14 @@ export const StudioProjectWindowMapEdgeSchema: z.ZodType<StudioProjectWindowMapE
 
 export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowMapElement> = z.lazy(() =>
   z.object({
+    "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
     "key": StudioSavedTrainKeySchema,
     "name": z.string(),
     "kind": z.union([z.literal("analyze"), z.literal("render")]),
     "request_id": z.string(),
-    "status": z.literal("not_run"),
+    "status": JobStatusSchema,
+    "reason": z.union([z.string(), z.null()]).optional(),
     "figure": z.union([StepReferenceSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapElement>;
@@ -9759,6 +9780,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "status": JobStatusSchema,
     "reason": z.union([z.string(), z.null()]).optional(),
     "evaluation_conditions": z.union([z.array(z.string()), z.null()]).optional(),
+    "light": z.union([StudioSavedLightHistorySchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapRow>;
 
@@ -9810,6 +9832,22 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioReportStep>;
+
+export const StudioSavedLightHistorySchema: z.ZodType<StudioSavedLightHistory> = z.lazy(() =>
+  z.object({
+    "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioSavedLightHistory>;
+
+export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z.lazy(() =>
+  z.object({
+    "job_id": z.string(),
+    "request_id": z.string(),
+    "receipt": JobReceiptSchema,
+    "products": z.record(z.string(), z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioSavedLightResult>;
 
 export const StudioSetSweepValueSchema: z.ZodType<StudioSetSweepValue> = z.lazy(() =>
   z.object({

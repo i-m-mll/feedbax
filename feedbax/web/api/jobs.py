@@ -80,6 +80,7 @@ def run_saved_train(
             folders, reviewed,
             run_keys=[RunKey(key.variant, key.step, key.row) for key in body.run_keys],
             token=body.token,
+            reuse_completed=body.reuse_completed,
         )
 
     try:
@@ -97,6 +98,27 @@ def saved_evaluation_replay(
     return _evaluation_response(
         response, lambda: request.app.state.project_plan.evaluation_replay(project_id, body),
     )
+
+
+@router.get("/projects/{project_id}/light-results/{revision}/{job_id}/{role}/{member:path}")
+def saved_light_product(
+    project_id: ProjectName, revision: Sha256, job_id: str, role: str, member: str, request: Request,
+) -> Response:
+    response = Response()
+    try:
+        product = _project_response(response, lambda: request.app.state.project_plan.light_product(
+            project_id, revision, job_id, role, member,
+        ))
+    except JobNotFound as exc:
+        raise HTTPException(404, detail="Product is absent from the saved Plan.") from exc
+    except JobConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
+    headers = {"Cache-Control": response.headers["cache-control"], "X-Content-Type-Options": "nosniff"}
+    if product.content_security_policy is not None:
+        headers["Content-Security-Policy"] = product.content_security_policy
+    return Response(product.content, media_type=product.media_type, headers=headers)
 
 
 @router.post("/projects/{project_id}/evaluate-objective")

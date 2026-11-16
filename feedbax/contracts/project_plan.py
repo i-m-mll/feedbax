@@ -401,6 +401,14 @@ class ProjectPlan:
             for element in row.elements.values()
         })
 
+    @property
+    def light_requests(self) -> Mapping[RunKey | ElementKey, PlannedRun | PlannedElement]:
+        requests: dict[RunKey | ElementKey, PlannedRun | PlannedElement] = {
+            run.key: run for run in self.runs if run.kind == "report"
+        }
+        requests.update(self.elements)
+        return requests
+
     def document_users(self, variant: str, document: str) -> frozenset[str]:
         return frozenset(
             row.key.step for row in self.rows if row.key.variant == variant and document in row.document_uses
@@ -2592,48 +2600,64 @@ def _request_change(
 ) -> ElementChange:
     old = request_identity.decode_request(before.requests[left.request_id], before.documents.__getitem__)
     new = request_identity.decode_request(after.requests[right.request_id], after.documents.__getitem__)
+    path, parts = _authored_request_change(right.key, old, new)
+    if parts[:1] == ("inputs",):
+        role = parts[1]
+        cause = right.element_inputs.get(role)
+        if cause != left.element_inputs.get(role):
+            cause = None
+        row = right.key.run if isinstance(right.key, ElementKey) else right.key
+        source_key = row.variant, row.step, role
+        old_source = before.subset_sources.get(source_key) if isinstance(right.key, RunKey) else None
+        new_source = after.subset_sources.get(source_key) if isinstance(right.key, RunKey) else None
+        return ElementChange(
+            "changed", path, cause,
+            before_source=old_source.origin if old_source is not None else _review_source(before, left.key, parts),
+            after_source=new_source.origin if new_source is not None else _review_source(after, right.key, parts),
+        )
+    return ElementChange(
+        "changed", path,
+        before_source=_review_source(before, left.key, parts) if parts else None,
+        after_source=_review_source(after, right.key, parts) if parts else None,
+    )
+
+
+def authored_request_change_path(
+    key: RunKey | ElementKey, old: request_identity.DecodedRequest, new: request_identity.DecodedRequest,
+) -> str:
+    """Locate a canonical request change at its authored Plan address."""
+    if old.kind != new.kind:
+        return key.payload_path(new.kind) if isinstance(key, ElementKey) else "payload"
+    path, _ = _authored_request_change(key, old, new)
+    return path
+
+
+def _authored_request_change(
+    key: RunKey | ElementKey, old: request_identity.DecodedRequest, new: request_identity.DecodedRequest,
+) -> tuple[str, tuple[str, ...]]:
     change = first_request_change(old, new)
+    prefix = ("payload",)
+    if isinstance(key, ElementKey):
+        prefix += ("operations" if new.kind == "analyze" else "views", key.name)
+    base = ".".join(prefix)
     if change.path == "inputs":
         role = next(
             role for role in sorted(old.inputs.keys() | new.inputs.keys())
             if old.inputs.get(role) != new.inputs.get(role)
         )
-        cause = right.element_inputs.get(role)
-        if cause != left.element_inputs.get(role):
-            cause = None
         input_path = f"inputs.{role}"
-        parts = ("inputs", role)
-        if isinstance(right.key, ElementKey):
-            return ElementChange(
-                "changed", f"{right.path}.{input_path}", cause,
-                _review_source(before, left.key, parts), _review_source(after, right.key, parts),
-            )
-        source_key = right.key.variant, right.key.step, role
-        old_source = before.subset_sources.get(source_key)
-        new_source = after.subset_sources.get(source_key)
-        return ElementChange(
-            "changed", input_path, cause,
-            before_source=old_source.origin if old_source is not None else _review_source(before, left.key, parts),
-            after_source=new_source.origin if new_source is not None else _review_source(after, right.key, parts),
-        )
+        return (f"{base}.{input_path}" if isinstance(key, ElementKey) else input_path), ("inputs", role)
     if not change.parts:
-        return ElementChange("changed", f"{right.path}.{change.path}")
+        return f"{base}.{change.path}", ()
     relative = change.parts[1:]
     if relative == ("analysis_type",):
         relative = ("operation",)
-    elif right.kind == "render" and relative[:1] == ("document",):
+    elif new.kind == "render" and relative[:1] == ("document",):
         relative = ("figure", *relative[1:])
-    elif right.kind == "report" and relative[:1] == ("document",):
+    elif new.kind == "report" and relative[:1] == ("document",):
         relative = relative[1:]
-    prefix = ("payload",)
-    if isinstance(right.key, ElementKey):
-        prefix += ("operations" if right.kind == "analyze" else "views", right.key.name)
-    parts = (*prefix, *relative)
-    return ElementChange(
-        "changed", ".".join(parts),
-        before_source=_review_source(before, left.key, parts),
-        after_source=_review_source(after, right.key, parts),
-    )
+    parts = prefix + relative
+    return ".".join(parts), parts
 
 
 def _review_source(
