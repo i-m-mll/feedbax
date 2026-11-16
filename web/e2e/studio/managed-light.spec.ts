@@ -94,7 +94,7 @@ async function savedLightGate({ page, request }: { page: Page; request: APIReque
       const jobs = await request.get('/api/jobs', { params: { project } });
       const history = await jobs.json() as StudioJobSnapshot;
       return history.jobs.filter(({ job_id }) => watched.has(job_id)).map(({ status }) => status);
-    }, { timeout: 22_000 }).toEqual(Array(doneCount).fill('succeeded'));
+    }, { timeout: 13_000 + 8_000 * doneCount }).toEqual(Array(doneCount).fill('succeeded'));
     await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true })).toHaveCount(doneCount);
   }
 

@@ -47,9 +47,12 @@ export async function authorWalkthroughSweep(context: Walkthrough) {
   await expect(variant(page)).toHaveValue('base');
   await openRuns(page, 'train');
   await authorLearningRateSweep(drawer(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
+  const sweepRows = (value: StudioSavedTrainRuns) =>
+    value.window_map!.rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
+  await expect.poll(async () => sweepRows(await plan(context)).map(({ coordinates }) => coordinates['learning-rate']?.label))
+    .toEqual(['Slow', 'Medium', 'Fast']);
   const swept = await plan(context);
-  const rows = swept.window_map!.rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
-  expect(rows.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Medium', 'Fast']);
+  const rows = sweepRows(swept);
   const patch: StudioProjectPatch = {
     revision: swept.revision,
     address: { kind: 'step', id: 'conditions' },
@@ -108,9 +111,8 @@ export async function verifyWalkthroughVariant(context: Walkthrough) {
   expect(scoped(changed, 'base')).toEqual(base);
   const delta = scoped(changed, 'compare');
   expect(delta.edges).toEqual(compare.edges);
-  expect(delta.requests).toEqual(compare.requests.map(([step, row, element, id]) => [
-    step, row, element, expect.not.stringMatching(`^${id}$`),
-  ]));
+  expect(delta.requests.map((entry) => entry.slice(0, 3))).toEqual(compare.requests.map((entry) => entry.slice(0, 3)));
+  for (const [index, request] of delta.requests.entries()) expect(request[3]).not.toBe(compare.requests[index][3]);
   expect(delta.receipts.every((receipt) => receipt == null)).toBe(true);
   expect(await attempts()).toEqual(originalAttempts);
   await page.reload();
