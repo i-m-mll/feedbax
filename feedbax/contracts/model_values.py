@@ -102,6 +102,9 @@ MODEL_OWNERS = {
         2, _learned(("kernel", "layer.weight"), ("bias", "layer.bias")), states=(),
     ),
     "feedbax.Input": ModelOwner(1, (), states=()),
+    "feedbax.SelectState": ModelOwner(1, (), states=()),
+    "feedbax.AssembleFeedback": ModelOwner(1, (), states=()),
+    "feedbax.Ravel": ModelOwner(1, (), states=()),
     "feedbax.Constant": ModelOwner(1, (), states=(), checkpointable=False),
     "feedbax.Saturation": ModelOwner(1, (), states=()),
     "feedbax.PointMass": ModelOwner(

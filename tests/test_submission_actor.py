@@ -88,7 +88,7 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
     assert "actor" not in before["launch"]["payload"]
     assert before["request"] == planned.request_id
 
-    legacy = run_job("actor-legacy", "pass", project="legacy")
+    legacy = run_job("actor-legacy", "pass", project="legacy", request=planned.request_id)
     legacy_record = {"project": "legacy", "continues": None, "runs": {}}
     legacy_data = {
         "run_key": "old", "stage_id": "old", "scenario_id": "default",

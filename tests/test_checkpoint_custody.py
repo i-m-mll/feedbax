@@ -332,6 +332,7 @@ def test_semantic_state_root_projects_nested_typed_dataclass_state() -> None:
     class MethodState:
         clamp: ClampState
         enabled: bool
+        paths: tuple[str, ...]
 
     def root(value: object) -> str:
         return custody_module.semantic_state_root_sha256(
@@ -343,12 +344,14 @@ def test_semantic_state_root_projects_nested_typed_dataclass_state() -> None:
             population=None,
         )
 
-    baseline = MethodState(clamp=ClampState(value=0.5, count=3), enabled=True)
-    equal = MethodState(clamp=ClampState(value=0.5, count=3), enabled=True)
-    changed = MethodState(clamp=ClampState(value=0.5, count=4), enabled=True)
+    baseline = MethodState(ClampState(value=0.5, count=3), True, ("position", "velocity"))
+    equal = MethodState(ClampState(value=0.5, count=3), True, ("position", "velocity"))
+    changed = MethodState(ClampState(value=0.5, count=4), True, ("position", "velocity"))
+    reordered = MethodState(baseline.clamp, baseline.enabled, ("velocity", "position"))
 
     assert root(equal) == root(baseline)
     assert root(changed) != root(baseline)
+    assert root(reordered) != root(baseline)
 
 
 def test_semantic_state_root_rejects_typed_dataclass_cycles() -> None:

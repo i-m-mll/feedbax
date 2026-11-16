@@ -7,6 +7,7 @@ import jax.random as jr
 import numpy as np
 
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
@@ -14,11 +15,14 @@ from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.examples import load_shipped_projects
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.tasks.document import TaskParameters
+from feedbax.training.checkpoint_custody import open_published_model_slot, write_checkpoint_transaction
 from feedbax.training.managed_studio import prepare_managed_training
+from feedbax.training.model_checkpoint import SemanticModelWriter
 
 
 _VALIDATION_COUNTS = {"simple-reaches": 28, "delayed-reaches": 28, "stabilization": 4}
@@ -41,7 +45,7 @@ def test_shipped_trial_documents_have_unique_names():
         assert seen[OBJECTIVE_DOCUMENT_SCHEMA_ID, f"{name}-objective"] == "point-mass-reaching"
 
 
-def test_shipped_trial_examples_plan_train_and_score_validation():
+def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
     project = load_shipped_projects()["point-mass-reaching"]
     registries = new_application_registry_bundle()
     plan = compile_project(
@@ -71,6 +75,25 @@ def test_shipped_trial_examples_plan_train_and_score_validation():
         assert int(slots["batch_counter"]) == 2
         assert not eqx.tree_equal(initial_model, slots["model"])
 
+        writer = SemanticModelWriter.for_graph(GraphSpec.model_validate(spec.graph.inline), None)
+        assert writer is not None
+        checkpoint = write_checkpoint_transaction(
+            tmp_path / name,
+            run_spec=spec,
+            phase_program=spec.worker_execution.effective_phase.phase_program,
+            barrier_name="after_train_batch",
+            coordinate=ProgressCoordinate(
+                run_id=name, phase="train_batch", program_step=2,
+                completed_barrier="after_train_batch",
+            ),
+            slots=slots,
+            semantic_model=writer,
+        )
+        retained_model = open_published_model_slot(checkpoint.root, checkpoint.latest_pointer)
+        assert retained_model is not None
+        model = retained_model.restore()
+        assert eqx.tree_equal(model, slots["model"])
+
         paired = compile_trial_execution(
             documents.model_name, documents.model, documents.task,
             registries.components, registries.expression_functions,
@@ -79,7 +102,7 @@ def test_shipped_trial_examples_plan_train_and_score_validation():
         assert isinstance(paired, PreparedTrialExecution), paired
         assert paired.objective is not None
         result = paired.execution.validation(
-            slots["model"], paired.objective, TaskParameters(), key=jr.key(27),
+            model, paired.objective, TaskParameters(), key=jr.key(27),
         )
         expected_terms = _REACH_TERMS | (
             {"effector_fixation"} if name == "delayed-reaches" else set()
