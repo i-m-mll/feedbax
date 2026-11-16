@@ -10,6 +10,7 @@ import re
 import stat
 import subprocess
 from collections.abc import Iterator
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,28 @@ def command(*args: str | Path, timeout: int = 45) -> str:
 def _entries(root: Path) -> Iterator[tuple[str, Path]]:
     for path in sorted(root.rglob("*")):
         yield path.relative_to(root).as_posix(), path
+
+
+def allow_owner_write(path: Path) -> int | None:
+    """Make an owned staging entry writable and return its previous mode if changed."""
+    original = path.lstat().st_mode
+    if stat.S_ISLNK(original) or original & stat.S_IWUSR:
+        return None
+    mode = stat.S_IMODE(original)
+    path.chmod(mode | stat.S_IWUSR)
+    return mode
+
+
+def clear_bundle_attributes(app: Path) -> None:
+    changed: list[tuple[Path, int]] = []
+    try:
+        for path in chain((app,), (path for _, path in _entries(app))):
+            if (mode := allow_owner_write(path)) is not None:
+                changed.append((path, mode))
+        command("xattr", "-crs", app)
+    finally:
+        for path, mode in reversed(changed):
+            path.chmod(mode)
 
 
 def _inventory(contents: Path, *, sealed: bool) -> dict[str, dict[str, Any]]:
@@ -197,7 +220,7 @@ def seal(app: Path, manifest: dict[str, Any], signing_identity: str) -> dict[str
     identity, classification = resolve_identity(signing_identity)
     if (contents / MANIFEST).exists() or (contents / "_CodeSignature").exists():
         raise ValueError("sealing requires a new, unsigned Tauri bundle")
-    command("xattr", "-cr", app)
+    clear_bundle_attributes(app)
     native = relocate_and_inventory_native(contents, manifest["platform"]["minimum_macos"])
     for relative in native:
         if relative != LAUNCHER:

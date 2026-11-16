@@ -59,6 +59,12 @@ def installation(tmp_path, monkeypatch):
         (app / "verify.json").write_bytes(installer.json_bytes({
             key: value for key, value in expected.items() if key != "archive"
         }))
+        source = app / "Contents" / "Resources" / "runpod" / "source"
+        source.mkdir(parents=True)
+        source_file = source / "pyproject.toml"
+        source_file.write_text("[project]\nname = 'fixture'\n")
+        source_file.chmod(0o444)
+        source.chmod(0o555)
         registrations.add(app)
         return app
 

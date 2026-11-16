@@ -339,10 +339,23 @@ def _rust_notices(resources: Path) -> None:
                 "notices": {path.name: path.read_text(errors="replace") for path in sorted(files)},
             }
     (resources / "rust-notices.json").write_bytes(json_bytes(inventory))
-    toolchain = Path(run("rustc", "--print", "sysroot", capture=True).strip()) / "share/doc/rust"
+    sysroot = Path(run("rustc", "--print", "sysroot", capture=True).strip())
+    toolchain = _rust_standard_library_notice_directory(sysroot)
     notices = resources / "rust-standard-library-notices"
     shutil.copytree(toolchain / "licenses", notices / "licenses")
     shutil.copyfile(toolchain / "COPYRIGHT-library.html", notices / "COPYRIGHT-library.html")
+
+
+def _rust_standard_library_notice_directory(sysroot: Path) -> Path:
+    docs = sysroot / "share" / "doc"
+    sources = {
+        notice.parent.resolve(strict=True)
+        for notice in docs.glob("*/COPYRIGHT-library.html")
+        if notice.is_file() and (notice.parent / "licenses").is_dir()
+    }
+    if len(sources) != 1:
+        raise ValueError(f"expected one Rust standard library notice directory beneath {docs}, found {len(sources)}")
+    return sources.pop()
 
 
 def package(args: argparse.Namespace) -> None:

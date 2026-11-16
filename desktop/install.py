@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
-from seal import APP_NAME, LAUNCHER, json_bytes, sha256, verify
+from seal import APP_NAME, LAUNCHER, allow_owner_write, json_bytes, sha256, verify
 
 JOURNAL_SCHEMA = "feedbax.desktop.install.v1"
 STAGE_PREFIX = ".feedbax-replace-"
@@ -161,6 +161,14 @@ def _transaction_paths(document: dict, destination: Path) -> tuple[Path, Path, P
     return stage, stage / APP_NAME, stage / "previous.app"
 
 
+def _discard_stage(stage: Path) -> None:
+    # A bundled venue snapshot is read-only. Unlinking its files requires write
+    # permission on their parent directories, including during recovery.
+    for directory, _, _ in os.walk(stage, followlinks=False):
+        allow_owner_write(Path(directory))
+    shutil.rmtree(stage)
+
+
 def _finish(journal: Path, document: dict, destination: Path) -> None:
     stage, candidate, previous = _transaction_paths(document, destination)
     if stage.exists():
@@ -169,7 +177,7 @@ def _finish(journal: Path, document: dict, destination: Path) -> None:
                 _launch_services(bundle, register=False)
     _record(journal, document | {"phase": "complete"})
     if stage.exists():
-        shutil.rmtree(stage)
+        _discard_stage(stage)
         _sync(stage.parent)
     journal.unlink()
     _sync(journal.parent)
@@ -236,7 +244,7 @@ def install(archive: Path, receipt_path: Path, destination: Path, disposition: s
         if not recorded and stage.exists():
             if (candidate := stage / APP_NAME).exists():
                 _launch_services(candidate, register=False)
-            shutil.rmtree(stage)
+            _discard_stage(stage)
 
 
 def recover(control: Path, destination: Path, rollback: bool) -> dict:
