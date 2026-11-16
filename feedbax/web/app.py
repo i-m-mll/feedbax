@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -89,10 +90,10 @@ def create_app(
             app.state.desktop_jobs = StudioJobLifecycle(analysis_jobs, app.state.job_service, desktop_release)
         maintenance = () if remote_runs is None else (
             asyncio.create_task(_maintain_remote_runs(
-                lambda: remote_runs.advance_openings(app.state.project_folders), "Could not advance approved machines.",
+                partial(remote_runs.advance_openings, app.state.project_folders), "Could not advance approved machines.",
             )),
             asyncio.create_task(_maintain_remote_runs(
-                lambda: remote_runs.observe(app.state.project_folders, app.state.job_service),
+                partial(remote_runs.observe, app.state.project_folders, app.state.job_service),
                 "Could not refresh the machine activity.",
             )),
         )
