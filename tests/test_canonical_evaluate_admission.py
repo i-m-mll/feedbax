@@ -170,7 +170,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     (attached,) = launch(jobs, (baseline,), "evaluate-live").items
     assert attached.disposition == "attached" and attached.job_id == submitted.items[0].job_id
     with monkeypatch.context() as environment:
-        environment.setenv("JAX_ENABLE_X64", "1")
+        environment.setenv("XLA_FLAGS", "--xla_cpu_multi_thread_eigen=false")
         different_execution = JobService(host, registry)
         (conflict,) = launch(different_execution, (baseline,), "evaluate-live-conflict").items
         assert conflict.disposition == "rejected"
