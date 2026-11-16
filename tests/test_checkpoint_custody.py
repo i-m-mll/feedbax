@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import FunctionType
 
 import equinox as eqx
@@ -26,7 +26,9 @@ from feedbax.contracts.checkpoints import (
 )
 from feedbax.contracts.checkpoint_initialization import checkpoint_leaf_path
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
+from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.training.checkpoint_custody import (
     CheckpointIntegrityError,
     CheckpointReferenceResolutionError,
@@ -40,7 +42,7 @@ from feedbax.training.checkpoint_custody import (
 from feedbax.training.managed_studio import prepare_managed_training
 from feedbax.training.model_checkpoint import SemanticModelWriter
 from feedbax.runtime.components import identity_activation
-from tests.support.managed_train_fixture import managed_train_spec
+from tests.support.managed_train_fixture import managed_train_payload, managed_train_spec
 
 
 def _write_resolver_checkpoint(root):
@@ -72,17 +74,34 @@ def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_pat
     assert set(resolved.slots) == {"model", "optimizer", "prng", "batch_counter"}
     assert int(resolved.slots["batch_counter"]) == 1
     spec, registries = managed_train_spec(batches=2)
-    prepared = prepare_managed_training(spec, registries)
-    resumed = load_latest_checkpoint(
-        tmp_path,
-        expected_run_spec=spec,
-        expected_phase_program=spec.worker_execution.effective_phase.phase_program,
-        expected_slots=prepared.initial_slots,
-        published_pointer=written.latest_pointer,
+    payload = managed_train_payload(batches=2)
+    interior = payload["trial_documents"]["model"]["interior"]
+    interior["components"] = dict(reversed(tuple(interior["components"].items())))
+    reordered = lower_canonical_train(
+        DocumentTrainingRequestSpec.model_validate(payload),
+        registries.training_programs,
+        registries=registries,
     )
-    for name in ("optimizer", "prng", "batch_counter"):
+    assert reordered == spec
+    prepared = prepare_managed_training(reordered, registries)
+
+    def resume(slots):
+        return load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=reordered,
+            expected_phase_program=reordered.worker_execution.effective_phase.phase_program,
+            expected_slots=slots,
+            published_pointer=written.latest_pointer,
+        )
+
+    resumed = resume(prepared.initial_slots)
+    for name in resolved.slots:
         assert eqx.tree_equal(resolved.slots[name], resumed.slots[name])
     assert resolved.manifest.run_contract_binding.canonical_projection_sha256
+
+    changed = replace(prepared.initial_slots["model"], checkpoint=True)
+    with pytest.raises(CheckpointIntegrityError, match="model.*structural ABI fingerprint is stale"):
+        resume(prepared.initial_slots | {"model": changed})
 
 
 def test_checkpoint_resolver_rejects_modified_typed_slot(tmp_path):

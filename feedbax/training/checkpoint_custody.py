@@ -4914,6 +4914,12 @@ def _validate_structural_abi(
             )
 
 
+def _has_codec_model_layout(slot: CheckpointSlotBlobRef) -> bool:
+    return slot.media_type == MODEL_TREE_MEDIA_TYPE or (
+        slot.media_type == STANDARD_TRAIN_STATE_MEDIA_TYPE and slot.slot == "optimizer"
+    )
+
+
 def _source_layout_abi(
     slot: CheckpointSlotBlobRef, actual: StructuralAbiFingerprint,
 ) -> StructuralAbiFingerprint:
@@ -4924,11 +4930,33 @@ def _source_layout_abi(
     The original runtime representation can order equivalent static maps
     differently from the canonical JSON source.
     """
-    if slot.media_type == MODEL_TREE_MEDIA_TYPE or (
-        slot.media_type == STANDARD_TRAIN_STATE_MEDIA_TYPE and slot.slot == "optimizer"
-    ):
+    if _has_codec_model_layout(slot):
         return actual.model_copy(update={"treedef": slot.structural_abi_fingerprint.treedef})
     return actual
+
+
+_QUOTED_REPR = r"""(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")"""
+_COMPONENT_BINDING_REPR = (
+    rf"{_QUOTED_REPR}: ComponentBinding\(type_id={_QUOTED_REPR}, revision=[0-9]+\)"
+)
+_COMPONENT_BINDING_ENTRY = re.compile(_COMPONENT_BINDING_REPR)
+_COMPONENT_BINDING_FIELD = re.compile(
+    rf"\('component_bindings', \{{(?P<entries>{_COMPONENT_BINDING_REPR}"
+    rf"(?:, {_COMPONENT_BINDING_REPR})*)\}}\)|{_QUOTED_REPR}"
+)
+
+
+def _ordered_component_binding_abi(fingerprint: StructuralAbiFingerprint) -> StructuralAbiFingerprint:
+    """Sort only the entries of a rendered Graph binding field for resume comparison."""
+    def order_entries(match: re.Match[str]) -> str:
+        if (entries := match["entries"]) is None:
+            # Consume quoted reprs intact, including text that looks like a binding field.
+            return match[0]
+        ordered = sorted(_COMPONENT_BINDING_ENTRY.findall(entries))
+        return "('component_bindings', {" + ", ".join(ordered) + "})"
+
+    treedef = _COMPONENT_BINDING_FIELD.sub(order_entries, fingerprint.treedef)
+    return fingerprint.model_copy(update={"treedef": treedef})
 
 
 def _validate_manifest_structural_abi(
@@ -4944,15 +4972,18 @@ def _validate_manifest_structural_abi(
             continue
         loaded_fingerprint = structural_abi_fingerprint(loaded_slots[slot.slot])
         loaded_fingerprints[slot.slot] = loaded_fingerprint
-        comparable = (
-            _source_layout_abi(slot, loaded_fingerprint)
-            if layout == "authenticated_source" else loaded_fingerprint
-        )
+        recorded = slot.structural_abi_fingerprint
+        comparable = loaded_fingerprint
+        if layout == "authenticated_source":
+            comparable = _source_layout_abi(slot, loaded_fingerprint)
+        elif _has_codec_model_layout(slot) and comparable.treedef != recorded.treedef:
+            comparable = _ordered_component_binding_abi(comparable)
+            recorded = _ordered_component_binding_abi(recorded)
         if _semantic_structural_abi_sha256(
             comparable,
             value=loaded_slots[slot.slot],
         ) != _semantic_structural_abi_sha256(
-            slot.structural_abi_fingerprint,
+            recorded,
             value=loaded_slots[slot.slot],
         ):
             diff_suffix = _format_structural_abi_diff(
