@@ -5,13 +5,13 @@ import os
 import sys
 from pathlib import Path
 
-from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.release import AppPaths
 from feedbax.web.services.project_folder import ProjectFolderService
 
 
 def seed(project: str, root: Path, *, variants: bool = False) -> None:
+    from feedbax.contracts.project import Project
+    from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
     from web.e2e.studio.fixtures.canonical_evaluate import _evaluation_project
 
     raw = _evaluation_project()

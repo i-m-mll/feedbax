@@ -7,17 +7,8 @@ import signal
 import sys
 import time
 
-from feedbax.contracts.base import ParentRef
-from feedbax.contracts.project_io import dump_text_project, load_text_project
-from feedbax.contracts.project_sweep import Sweep
-from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient, HostError
-from feedbax.job_completion import verify_bound_training_completion
-from feedbax.jobs import JobService
-from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
-from feedbax.web.services.project_folder import ProjectFolderService
 
 
 def read_job(host, project, attempt):
@@ -29,6 +20,11 @@ def read_job(host, project, attempt):
 
 
 def stopped_checkpoint(paths, host, project, attempt):
+    from feedbax.contracts.base import ParentRef
+    from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+    from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
+    from feedbax.web.services.project_folder import ProjectFolderService
+
     row = read_job(host, project, attempt)
     assert row["state"] == "stopped", row
     checkpoint = PublishedTrainingCheckpoint.model_validate(row["checkpoint"])
@@ -82,6 +78,10 @@ def resume(host, project, attempt, successor):
 
 
 def declare_variants(paths, project, revision):
+    from feedbax.contracts.project_io import dump_text_project, load_text_project
+    from feedbax.contracts.project_sweep import Sweep
+    from feedbax.web.services.project_folder import ProjectFolderService
+
     _, location = ProjectFolderService(paths.web / "projects").open_native_id(project)
     root = location.path
     saved = load_text_project(root)
@@ -97,10 +97,21 @@ def declare_variants(paths, project, revision):
     return {"revision": load_text_project(root).revision}
 
 
+def completed_receipt(host, project, attempt, successor):
+    from feedbax.job_completion import verify_bound_training_completion
+
+    completed = read_job(host, project, successor)
+    assert completed["continues"] == attempt
+    verify_bound_training_completion(completed["outcome"]["completion"])
+    return completed["outcome"]["receipt"]
+
+
 def result(paths, host, project, attempt, successor, revision, evaluation, trial):
-    resumed = read_job(host, project, successor)
-    assert resumed["continues"] == attempt
-    verify_bound_training_completion(resumed["outcome"]["completion"])
+    from feedbax.jobs import JobService
+    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.web.services.project_folder import ProjectFolderService
+
+    completed_receipt(host, project, attempt, successor)
     folders = ProjectFolderService(paths.web / "projects")
     plan = folders.read_plan(project, revision=revision)
     jobs = JobService(host, new_application_registry_bundle())
@@ -128,10 +139,7 @@ def main():
         case "resume":
             record = resume(host, project, attempt, *args)
         case "completed":
-            completed = read_job(host, project, args[0])
-            assert completed["continues"] == attempt
-            verify_bound_training_completion(completed["outcome"]["completion"])
-            record = completed["outcome"]["receipt"]
+            record = completed_receipt(host, project, attempt, *args)
         case "result":
             record = result(paths, host, project, attempt, *args)
         case _:
