@@ -157,8 +157,8 @@ class HostClient:
             raise HostError(error["code"], error["message"])
         return reply["value"]
 
-    def ping(self) -> JsonObject:
-        return cast(JsonObject, self._call("ping"))
+    def ping(self, *, timeout: float = 5) -> JsonObject:
+        return cast(JsonObject, self._call("ping", timeout=timeout))
 
     def session_epoch(self, session_id: str, operator: str, adoption_token: str) -> int:
         return cast(int, self._call(

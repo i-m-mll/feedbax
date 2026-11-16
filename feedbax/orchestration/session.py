@@ -27,6 +27,10 @@ class SessionError(RuntimeError):
     pass
 
 
+class SessionOpeningFailed(SessionError):
+    """An opening stopped and requires reconciling its owned resources."""
+
+
 class SessionModel(StrictModel):
     model_config = ConfigDict(frozen=True)
 
@@ -131,8 +135,10 @@ class SessionProvider(Protocol):
     """
 
     target: str
-    enforces_cutoff: bool
     supports_idle_close: bool
+
+    @property
+    def enforces_cutoff(self) -> bool: ...
 
     def hourly_microusd(self, request: SessionRequest) -> int: ...
 
@@ -151,8 +157,10 @@ class SessionProvider(Protocol):
 
     def remove(self, resource: ProviderResource) -> None: ...
 
-    def claim_opening_close(self, resource: ProviderResource, launch: SessionLaunch) -> bool:
-        """Prevent initialization atomically, or return false if a Host claim is required."""
+    def claim_opening_close(
+        self, resource: ProviderResource | None, launch: SessionLaunch,
+    ) -> tuple[ProviderResource, ...] | None:
+        """Prevent initialization and return known resources, or leave closure unclaimed."""
         ...
 
 
@@ -262,7 +270,7 @@ class SessionDriver:
         self, request: SessionRequest, authorization: SessionAuthorization, *, adoption_token: str,
     ) -> SessionRecord:
         request = request.model_copy(deep=True)
-        self._validate(request, authorization)
+        self._validate(request, authorization, require_current=False)
         if len(adoption_token) < 32:
             raise SessionError("Session adoption requires a private capability of at least 32 characters.")
         if isinstance(request.lifecycle, CloseWhenIdle) and not self.provider.supports_idle_close:
@@ -272,6 +280,8 @@ class SessionDriver:
         with self._exclusive(request.id):
             control = self._read(request.id)
             if control is None:
+                if authorization.expires_at_ms <= self._clock_ms():
+                    raise SessionError("Session authorization has expired.")
                 if self._find_venue(f"feedbax-session-{request.digest}", self.inventory()) is not None:
                     raise SessionError("This session already has a venue. Adopt it explicitly.")
                 launch = SessionLaunch(
@@ -289,23 +299,32 @@ class SessionDriver:
                     raise SessionError("Session ID already belongs to a different request or authorization.")
                 self._check_owner(state.launch, adoption_token)
                 if state.phase != "opening":
+                    if authorization.expires_at_ms <= self._clock_ms():
+                        raise SessionError("Session authorization has expired.")
                     return state
 
             launch = state.launch
-            if self._clock_ms() >= launch.ends_at_ms:
-                raise SessionError("Session has exhausted its authorized time or cost ceiling.")
-            resource = self._find_venue(launch.intent, self.inventory())
-            if state.venue is not None and resource != state.venue:
-                raise SessionError("The recorded venue disappeared or changed identity during opening.")
-            if resource is None:
-                resource = self.provider.acquire(launch)
-            if resource.intent != launch.intent or resource.kind != "venue":
-                raise SessionError("The acquired venue does not carry this session's intent.")
-            state = state.model_copy(update={"venue": resource})
-            self._write(state, token)
-            realized = self.provider.realize(
-                resource, launch, adoption_token=adoption_token, controller_token=token,
-            )
+            try:
+                if self._clock_ms() >= launch.ends_at_ms:
+                    raise SessionOpeningFailed("Session has exhausted its authorized time or cost ceiling.")
+                resource = self._find_venue(launch.intent, self.inventory())
+                if state.venue is not None and resource != state.venue:
+                    raise SessionOpeningFailed("The recorded venue disappeared or changed identity during opening.")
+                if resource is None:
+                    resource = self.provider.acquire(launch)
+                if resource.intent != launch.intent or resource.kind != "venue":
+                    raise SessionError("The acquired venue does not carry this session's intent.")
+                state = state.model_copy(update={"venue": resource})
+                self._write(state, token)
+                realized = self.provider.realize(
+                    resource, launch, adoption_token=adoption_token, controller_token=token,
+                )
+            except SessionOpeningFailed as error:
+                try:
+                    self._close(state, token)
+                except Exception as cleanup:
+                    raise SessionError(f"{error} Owned resource closure is unresolved: {cleanup}") from error
+                raise
             self._check_realization(launch, realized)
             state = state.model_copy(update={"phase": "open", "realization": realized})
             self._write(state, token)
@@ -404,29 +423,42 @@ class SessionDriver:
         previous = state.close_evidence.owned if state.close_evidence is not None else ()
         current_venue = self._find_venue(state.launch.intent, owned)
         recorded = state.venue or current_venue
-        if recorded is None:
-            raise SessionError("Opening has no reconciled venue identity.")
-        known = tuple(dict.fromkeys((*previous, recorded, *owned)))
+        venues = (recorded,) if recorded is not None else ()
+        known = tuple(dict.fromkeys((*previous, *venues, *owned)))
         known_ids = {(item.kind, item.id) for item in known}
+        claimed: tuple[ProviderResource, ...] = ()
         if state.phase != "closing":
             if any(
                 (item.kind, item.id) in known_ids and item.intent != state.launch.intent for item in resources
             ) or (current_venue is not None and current_venue != recorded):
                 raise SessionError(f"Provider custody changed for session {session_id}.")
-            if current_venue is not None:
-                unopened = state.phase == "opening" and self.provider.claim_opening_close(current_venue, state.launch)
-                if not unopened:
-                    access = SessionAccess(str(session_id), state.epoch, token)
-                    claim = self.provider.client(current_venue, access).claim_session_close()
-                    if (
-                        claim["session_id"] != str(session_id) or claim["epoch"] != state.epoch
-                        or claim["operator"] != state.launch.authorization.operator
-                    ):
-                        raise SessionError("The venue close claim does not identify this controller.")
-        evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=owned)
+            unopened = (
+                self.provider.claim_opening_close(current_venue, state.launch)
+                if state.phase == "opening" and (current_venue is not None or recorded is None)
+                else None
+            )
+            if unopened is not None:
+                claimed = unopened
+            elif current_venue is not None:
+                access = SessionAccess(str(session_id), state.epoch, token)
+                claim = self.provider.client(current_venue, access).claim_session_close()
+                if (
+                    claim["session_id"] != str(session_id) or claim["epoch"] != state.epoch
+                    or claim["operator"] != state.launch.authorization.operator
+                ):
+                    raise SessionError("The venue close claim does not identify this controller.")
+            elif recorded is None:
+                raise SessionError("Opening has no reconciled venue identity or definitive create rejection.")
+        if any(item.intent != state.launch.intent for item in claimed):
+            raise SessionError("Opening close claim includes a resource with a different intent.")
+        known = tuple(dict.fromkeys((*known, *claimed)))
+        known_ids.update((item.kind, item.id) for item in claimed)
+        pending = state.close_evidence.remaining if state.close_evidence is not None else ()
+        removable = tuple(dict.fromkeys((*pending, *owned, *claimed)))
+        evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=removable)
         state = state.model_copy(update={"phase": "closing", "venue": recorded, "close_evidence": evidence})
         self._write(state, token)
-        for item in sorted(owned, key=lambda item: item.kind != "venue"):
+        for item in sorted(removable, key=lambda item: item.kind != "venue"):
             self.provider.remove(item)
         remaining = tuple(
             item for item in self.inventory()

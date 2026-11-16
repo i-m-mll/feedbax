@@ -9,21 +9,24 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from feedbax.orchestration import runpod
+from feedbax.orchestration import runpod, runpod_session_provider
+from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, SealedRepoSnapshot
+from feedbax.orchestration.runpod_session import RunPodEnvironment, RunPodSessionProvider
 from feedbax.orchestration.runpod_session_provider import (
     RunPodAcquisition, RunPodResources, _BOOT_COMMAND, _BOOT_KEY, _fresh_boot_host_key,
 )
 from feedbax.orchestration.session import (
-    KeepOpen, ProviderResource, SessionAuthorization, SessionError, SessionLaunch, SessionRequest,
+    KeepOpen, ProviderResource, SessionAuthorization, SessionDriver, SessionError, SessionLaunch,
+    SessionRequest,
 )
 from tests.support.runpod_session import FakeRunPod, FakeRunPodCutoff, runpod_resources
 
 
-def _launch(resources: RunPodResources) -> SessionLaunch:
+def _launch(resources: RunPodResources, *, environment: str = "e" * 64) -> SessionLaunch:
     now = time.time_ns() // 1_000_000
     request = SessionRequest(
         id=uuid4(), target="runpod", resources=resources.model_dump(mode="json"),
-        environment="e" * 64, lifecycle=KeepOpen(kind="keep-open"), maximum_microusd=100_000,
+        environment=environment, lifecycle=KeepOpen(kind="keep-open"), maximum_microusd=100_000,
     )
     authorization = SessionAuthorization(
         request_digest=request.digest, operator="local", method="fixture", evidence="fixture",
@@ -49,6 +52,10 @@ def test_runpod_gate_guards_all_mutations(tmp_path):
     with pytest.raises(SessionError, match="preboot cutoff"):
         _provider(tmp_path, fake.handle, None).acquire(launch)
     assert fake.requests == []
+    quote = _provider(tmp_path, fake.handle, None).review_quote(launch.request)
+    assert quote["gpu_hourly_usd"] == fake.quoted_rate
+    assert quote["ephemeral_disk_gb"] == resources.ephemeral_disk_gb
+    assert quote["authorized_total_hourly_microusd"] == resources.hourly_microusd
 
     cutoff = FakeRunPodCutoff(("/usr/bin/true",))
     fake.quoted_rate *= 2
@@ -61,17 +68,18 @@ def test_runpod_gate_guards_all_mutations(tmp_path):
 def test_runpod_boot_installs_pinned_key_and_arms_guard_before_start(tmp_path):
     private, public = _fresh_boot_host_key()
     start = tmp_path / "start"
-    start.write_text("#!/bin/bash\nprintf 'start\n'\n")
+    start.write_text('#!/bin/bash\ntest -z "${RUNPOD_API_KEY:-}" && printf "start\\n"\n')
     start.chmod(0o700)
     command = ["/bin/bash", "-c", _BOOT_COMMAND, "feedbax-host-key", public, str(tmp_path), str(start)]
-    environment = {**os.environ, _BOOT_KEY: private}
+    environment = {**os.environ, _BOOT_KEY: private, "RUNPOD_API_KEY": "fixture-pod-token"}
     unarmed = subprocess.run(
         [*command, "/usr/bin/false"], env=environment, timeout=5, capture_output=True, text=True,
     )
     assert unarmed.returncode != 0 and unarmed.stdout == ""
     armed = subprocess.run([
         *command, "/bin/bash", "-c",
-        'test -z "${FEEDBAX_BOOT_SSH_KEY:-}" && test -s "$1" && printf "armed\\n"',
+        'test -z "${FEEDBAX_BOOT_SSH_KEY:-}" && test "$RUNPOD_API_KEY" = fixture-pod-token'
+        ' && test ! -e "$1" && printf "armed\\n"',
         "guard", str(tmp_path / "ssh_host_ed25519_key"),
     ], env=environment, timeout=5, capture_output=True, text=True, check=True)
     assert armed.stdout.splitlines() == ["armed", "start"]
@@ -121,6 +129,52 @@ def test_runpod_recovers_exactly_one_create_or_leaves_it_unresolved(tmp_path, pa
     assert fake.requests.count(("POST", "/v2/pods")) == 1
 
 
+@pytest.mark.parametrize("failure", ["deadline", "rejected", "ambiguous"])
+def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, monkeypatch, failure):
+    resources = runpod_resources()
+    fake = FakeRunPod(resources)
+    fake.pods["other"] = {"id": "other", "name": "unrelated"}
+    record = RepoSnapshotRecord(
+        commit="a" * 40, dirty=False, content_sha256="b" * 64, source_state_sha256="c" * 64, file_count=0,
+    )
+    snapshot = SealedRepoSnapshot("fixture", tmp_path, tmp_path, record)
+    environment = RunPodEnvironment(
+        workspace=str(tmp_path), bootstrap_python="/usr/bin/python3", uv="/usr/bin/uv",
+        uv_version="1.2.3", snapshot=record, backend="gpu",
+    )
+    launch = _launch(resources, environment=environment.digest)
+
+    def fail(request: httpx.Request) -> httpx.Response:
+        if (request.method, request.url.path) == ("POST", "/v2/pods"):
+            if failure == "rejected":
+                return httpx.Response(422)
+            if failure == "ambiguous":
+                raise httpx.ReadTimeout("lost create response", request=request)
+            response = fake.handle(request)
+            expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
+            monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
+            return response
+        return fake.handle(request)
+
+    cutoff = FakeRunPodCutoff(("/usr/bin/true",))
+    acquisition = _provider(tmp_path, fail, cutoff)
+    provider = RunPodSessionProvider(acquisition, environment, snapshot)
+    driver = SessionDriver(tmp_path / "driver", provider, verify_authorization=lambda _: None)
+    expected = {"deadline": "SSH readiness exceeded", "rejected": "rejected pod creation", "ambiguous": "transport failed"}
+    with pytest.raises(SessionError, match=expected[failure]):
+        driver.open(launch.request, launch.authorization, adoption_token="x" * 32)
+    session = driver.record(launch.request.id)
+    assert set(fake.pods) == {"other"}
+    if failure == "ambiguous":
+        assert session.phase == "opening" and set(fake.secrets) == {fake.secret_id}
+        with pytest.raises(SessionError, match="no reconciled venue identity"):
+            driver.close(launch.request.id)
+        assert not any(method == "DELETE" for method, _ in fake.requests)
+    else:
+        assert session.phase == "closed" and not fake.secrets
+        assert session.close_evidence is not None and not session.close_evidence.remaining
+
+
 def test_runpod_pins_endpoint_and_removes_only_the_exact_owned_resources(tmp_path, monkeypatch):
     resources = runpod_resources()
     fake = FakeRunPod(resources)
@@ -152,6 +206,14 @@ def test_runpod_pins_endpoint_and_removes_only_the_exact_owned_resources(tmp_pat
     assert "-n" not in endpoint.ssh_argv
     assert len(probe_calls) == 1
     assert endpoint.placement["device"] == resources.gpu_id
+    expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
+    monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
+    with pytest.raises(SessionError, match="SSH readiness exceeded"):
+        provider.endpoint(venue, opening=True)
+    assert len(probe_calls) == 1
+    assert provider.endpoint(venue).opening_deadline is None
+    provider.begin_completion(venue, launch)
+    assert provider.claim_uninitialized(venue, launch) is None
 
     secret = ProviderResource(id=fake.secret_id, intent=launch.intent, kind="secret")
     with pytest.raises(SessionError, match="owned pod remains"):

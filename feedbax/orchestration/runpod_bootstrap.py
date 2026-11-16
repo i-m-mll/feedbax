@@ -41,6 +41,8 @@ def _publish(path: Path, payload: bytes) -> None:
 
 def _prepare(root: Path, settings: dict) -> None:
     _private(root / "incoming")
+    if "watchdog" not in settings:
+        return
     watchdog = root / "watchdog.py"
     config = root / "watchdog.json"
     _publish(watchdog, settings["watchdog"].encode())
@@ -109,6 +111,7 @@ def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str
 
 
 def _complete(root: Path, settings: dict) -> None:
+    _publish(root / "completion-requested", b"")
     realized = root / "realization.json"
     if not realized.exists():
         python = root / "venv" / "bin" / "python"
@@ -134,7 +137,9 @@ def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
     with (root / "setup.lock").open("ab") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if action == "close-opening":
-            unopened = not (root / "realization.json").exists()
+            unopened = not any(
+                (root / name).exists() for name in ("completion-requested", "realization.json", "host")
+            )
             if unopened:
                 _publish(root / "opening-aborted", b"")
             print(json.dumps(unopened))

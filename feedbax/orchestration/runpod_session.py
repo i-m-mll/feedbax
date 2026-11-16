@@ -19,10 +19,11 @@ from feedbax.host.client import HostClient, StdioAttachment
 from feedbax.host.protocol import HostError, JsonObject, SessionAccess
 from feedbax.orchestration import repo_tree, runpod_bootstrap
 from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, SealedRepoSnapshot, verify_repo_snapshot
+from feedbax.orchestration.runpod_cutoff import NativeRunPodCutoff
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition
 from feedbax.orchestration.session import (
     Positive, ProviderResource, SessionDriver, SessionError, SessionLaunch, SessionModel,
-    SessionRealization, SessionRequest,
+    SessionOpeningFailed, SessionRealization, SessionRequest,
 )
 from feedbax.orchestration.session_jobs import SessionJobs
 from feedbax.orchestration.venue_jobs import VenueJobs
@@ -93,6 +94,13 @@ class RunPodSessionProvider:
             raise SessionError("RunPod repository snapshot differs from the declared environment.")
         if type(install_timeout) is not int or install_timeout <= 0:
             raise ValueError("RunPod environment installation timeout must be positive.")
+        cutoff = acquisition.running_cutoff
+        self._native_cutoff = cutoff if isinstance(cutoff, NativeRunPodCutoff) else None
+        if self._native_cutoff is not None and (
+            self._native_cutoff.workspace != environment.workspace
+            or self._native_cutoff.bootstrap_python != environment.bootstrap_python
+        ):
+            raise SessionError("Native RunPod cutoff must use the declared venue root and interpreter.")
         self.acquisition = acquisition
         self.environment = environment
         self.snapshot = snapshot
@@ -128,11 +136,16 @@ class RunPodSessionProvider:
     def remove(self, resource: ProviderResource) -> None:
         self.acquisition.remove(resource)
 
-    def claim_opening_close(self, resource: ProviderResource, launch: SessionLaunch) -> bool:
-        if resource.intent != launch.intent:
+    def claim_opening_close(
+        self, resource: ProviderResource | None, launch: SessionLaunch,
+    ) -> tuple[ProviderResource, ...] | None:
+        if resource is not None and resource.intent != launch.intent:
             raise SessionError("RunPod setup close requires the exact acquisition intent.")
+        unopened = self.acquisition.claim_uninitialized(resource, launch)
+        if unopened is not None or resource is None:
+            return unopened
         raw = self._call(self._connection(resource), self._layout(resource), "close-opening")
-        return json.loads(raw) is True
+        return (resource,) if json.loads(raw) is True else None
 
     def _layout(self, resource: ProviderResource) -> _Layout:
         if resource.kind != "venue" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", resource.id):
@@ -147,8 +160,6 @@ class RunPodSessionProvider:
         self, connection: SSHStoreConnection, layout: _Layout, operation: str,
         settings: dict[str, object] | None = None,
     ) -> bytes:
-        if operation == "install":
-            connection = replace(connection, timeout_seconds=self._install_timeout + 45)
         return connection.run(
             [self.environment.bootstrap_python, "-I", "-c", self._bootstrap, operation, str(layout.root)],
             json.dumps(settings, allow_nan=False).encode(),
@@ -171,32 +182,67 @@ class RunPodSessionProvider:
         self._check_environment(launch.request)
         if resource.intent != launch.intent or not self.enforces_cutoff:
             raise SessionError("RunPod realization requires the owned venue and scoped cutoff authority.")
-        endpoint = self.acquisition.endpoint(resource)
+        endpoint = self.acquisition.endpoint(
+            resource, opening=True, realization_seconds=self._install_timeout + 45,
+        )
         connection = SSHStoreConnection(endpoint.host, endpoint.ssh_argv, self._rsync)
+        deadline = endpoint.opening_deadline
+        assert deadline is not None
+        try:
+            return self._realize(
+                resource, launch, connection, endpoint.placement, deadline,
+                adoption_token=adoption_token, controller_token=controller_token,
+            )
+        except SessionOpeningFailed:
+            raise
+        except (SessionError, OSError, ValueError) as error:
+            raise SessionOpeningFailed(f"RunPod realization failed: {error}") from error
+
+    def _realize(
+        self, resource: ProviderResource, launch: SessionLaunch, connection: SSHStoreConnection,
+        placement: JsonObject, deadline: float, *, adoption_token: str, controller_token: str,
+    ) -> SessionRealization:
+        def remaining() -> float:
+            seconds = min(deadline - time.monotonic(), launch.ends_at_ms / 1000 - time.time())
+            if seconds <= 0:
+                raise SessionOpeningFailed("RunPod realization exceeded its opening deadline.")
+            return seconds
+
+        def bounded() -> SSHStoreConnection:
+            return replace(connection, timeout_seconds=min(connection.timeout_seconds, remaining()))
+
         layout = self._layout(resource)
-        realized = self._read(connection, layout)
+        native = self._native_cutoff
+        cutoff_proof = native.read_proof(
+            bounded().run(native.proof_argv(resource, launch), b""), resource, launch,
+        ) if native is not None else None
+        realized = self._read(bounded(), layout)
         if realized is None:
-            response = self._call(connection, layout, "prepare", {
-                "watchdog": self._watchdog,
-                "worker_env": self.environment.worker_environment,
-                "policy": {
-                    "ends_at_ms": launch.ends_at_ms,
-                    "host_root": str(layout.host),
-                    "host_python": layout.python,
-                    "ready_file": str(layout.root / "ready"),
-                    "terminate_argv": self.acquisition.terminate_argv(resource, launch),
-                },
-            })
+            prepare: dict[str, object] = {}
+            if native is None:
+                prepare = {
+                    "watchdog": self._watchdog,
+                    "worker_env": self.environment.worker_environment,
+                    "policy": {
+                        "ends_at_ms": launch.ends_at_ms,
+                        "host_root": str(layout.host),
+                        "host_python": layout.python,
+                        "ready_file": str(layout.root / "ready"),
+                        "terminate_argv": self.acquisition.terminate_argv(resource, launch),
+                    },
+                }
+            response = self._call(bounded(), layout, "prepare", prepare)
             if json.loads(response)["send"]:
                 record = self.snapshot.record
                 verify_repo_snapshot(
                     self.snapshot.staging_root, content_sha256=record.content_sha256, file_count=record.file_count,
                 )
-                connection.copy_tree(self.snapshot.staging_root, layout.root / "incoming")
-            probe = self._call(connection, layout, "install", {
+                bounded().copy_tree(self.snapshot.staging_root, layout.root / "incoming")
+            install_seconds = remaining()
+            probe = self._call(replace(connection, timeout_seconds=install_seconds), layout, "install", {
                 "content_sha256": self.environment.snapshot.content_sha256,
                 "file_count": self.environment.snapshot.file_count,
-                "timeout": self._install_timeout,
+                "timeout": min(self._install_timeout, install_seconds),
                 "uv": self.environment.uv,
                 "uv_version": self.environment.uv_version,
                 "groups": self.environment.groups,
@@ -204,14 +250,24 @@ class RunPodSessionProvider:
                 "backend": self.environment.backend,
                 "worker_env": self.environment.worker_environment,
             })
+            evidence = json.loads(probe) | {"placement": placement}
+            if cutoff_proof is not None:
+                evidence["running_cutoff"] = cutoff_proof
             realized = SessionRealization(
-                launch=launch, environment=self.environment.digest,
-                probe=cast(JsonObject, json.loads(probe) | {"placement": endpoint.placement}),
+                launch=launch, environment=self.environment.digest, probe=cast(JsonObject, evidence),
             )
         if realized.launch != launch or realized.environment != self.environment.digest:
             raise SessionError("Existing RunPod realization identifies a different authorized launch.")
+        if native is not None:
+            proof = native.read_proof(
+                bounded().run(native.proof_argv(resource, launch), b""), resource, launch,
+            )
+            if realized.probe.get("running_cutoff") != proof:
+                raise SessionError("RunPod realization has different running cutoff evidence.")
         capability = SessionAccess(str(launch.request.id), 0, controller_token)
-        self._call(connection, layout, "complete", {
+        remaining()
+        self.acquisition.begin_completion(resource, launch)
+        self._call(bounded(), layout, "complete", {
             "fence": {
                 "session_id": capability.session_id, "operator": launch.authorization.operator,
                 "expires_at": launch.ends_at_ms / 1000,
@@ -220,15 +276,19 @@ class RunPodSessionProvider:
             "realization": realized.model_dump_json(),
         })
         host = self._client(connection, layout, capability)
-        deadline = time.monotonic() + 8
+        ping_deadline = time.monotonic() + min(8, remaining())
         while True:
             try:
-                host.ping()
+                timeout = min(5, remaining(), ping_deadline - time.monotonic())
+                if timeout <= 0:
+                    raise SessionOpeningFailed("RunPod Host did not respond during opening.")
+                host.ping(timeout=timeout)
+                remaining()
                 return realized
             except HostError as error:
-                if error.code != "disconnected" or time.monotonic() >= deadline:
+                if error.code != "disconnected":
                     raise
-                time.sleep(.05)
+                time.sleep(min(.05, remaining(), max(0, ping_deadline - time.monotonic())))
 
     @staticmethod
     def _client(connection: SSHStoreConnection, layout: _Layout, access: SessionAccess | None) -> HostClient:

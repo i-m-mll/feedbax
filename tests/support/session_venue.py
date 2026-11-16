@@ -124,9 +124,15 @@ class LocalVenueProvider:
 
         return HostClient(root, attachment=StdioAttachment(command), session=access)
 
-    def claim_opening_close(self, resource: ProviderResource, launch: SessionLaunch) -> bool:
+    def claim_opening_close(
+        self, resource: ProviderResource | None, launch: SessionLaunch,
+    ) -> tuple[ProviderResource, ...] | None:
+        if resource is None:
+            return None
         assert resource.intent == launch.intent
-        return not (self.directory(resource) / "realization.json").exists()
+        if (self.directory(resource) / "realization.json").exists():
+            return None
+        return (resource,)
 
     def remove(self, resource: ProviderResource) -> None:
         directory = self.directory(resource)

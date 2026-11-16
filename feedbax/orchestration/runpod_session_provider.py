@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, TypeGuard
 from urllib.parse import quote
 from uuid import UUID
 
@@ -32,7 +32,8 @@ from feedbax.orchestration.runpod import (
     project_runpod_provision_facts,
 )
 from feedbax.orchestration.session import (
-    Nonempty, Positive, ProviderResource, SessionError, SessionLaunch, SessionModel, SessionRequest,
+    Nonempty, Positive, ProviderResource, SessionError, SessionLaunch, SessionModel,
+    SessionOpeningFailed, SessionRequest,
 )
 
 
@@ -40,12 +41,22 @@ _INTENT = re.compile(r"feedbax-session-[0-9a-f]{64}")
 _RESOURCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _PODS = "/v2/pods"
 _SECRETS = "/v2/account/secrets"
+_CREATE_REJECTIONS = frozenset({400, 401, 403, 409, 413, 422, 429})
 _BOOT_KEY = "FEEDBAX_BOOT_SSH_KEY"
 _BOOT_COMMAND = """set +x
 set -euo pipefail
 umask 077
-key="${FEEDBAX_BOOT_SSH_KEY:?Missing injected SSH host key}"
+key="${FEEDBAX_BOOT_SSH_KEY:-}"
 unset FEEDBAX_BOOT_SSH_KEY
+"${@:4}"
+unset RUNPOD_API_KEY
+hold_for_guard() {
+    printf '%s\n' 'RunPod SSH key setup failed; the active cutoff guard is still running.' >&2
+    if [[ -n "${temporary:-}" ]]; then rm -f -- "$temporary"; fi
+    exec /bin/sleep infinity
+}
+trap hold_for_guard ERR
+test -n "$key"
 temporary=$(mktemp "$2/.feedbax-host.XXXXXX")
 trap 'rm -f -- "$temporary"' EXIT
 printf '%s' "$key" | base64 -d >"$temporary"
@@ -56,8 +67,7 @@ public="$algorithm $blob"
 test "$public" = "$1"
 mv -f -- "$temporary" "$2/ssh_host_ed25519_key"
 printf '%s\n' "$public" >"$2/ssh_host_ed25519_key.pub"
-trap - EXIT
-"${@:4}"
+trap - EXIT ERR
 exec "$3"
 """
 _GPU_PROBE = "nvidia-smi --query-gpu=name,driver_version,compute_cap,uuid --format=csv,noheader"
@@ -102,22 +112,28 @@ class RunPodEndpoint:
     host: str
     ssh_argv: tuple[str, ...]
     placement: JsonObject
+    opening_deadline: float | None = None
 
 
 class _Intent(SessionModel):
     launch: SessionLaunch
     public_key: Annotated[str, Field(pattern=r"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$")]
     cutoff: RunPodCutoffArm
+    opening_aborted: bool = False
 
 
 class _SecretRequested(_Intent):
     state: Literal["secret-requested"] = "secret-requested"
+    secret_id: Nonempty | None = None
 
 
 class _PodRequested(_Intent):
     state: Literal["pod-requested"] = "pod-requested"
     secret_id: Nonempty
     pod_id: str | None = None
+    startup_deadline_ms: Positive | None = None
+    boot_verified_at_ms: Positive | None = None
+    completion_requested: bool | None = None
 
 
 _Journal = TypeAdapter(Annotated[_SecretRequested | _PodRequested, Field(discriminator="state")])
@@ -164,11 +180,15 @@ def _fresh_boot_host_key() -> tuple[str, str]:
         return base64.b64encode(key.read_bytes()).decode("ascii"), public
 
 
-def _rate_within_cap(rate: object, cap_microusd: int) -> bool:
+def _rate_within_cap(rate: object, cap_microusd: int) -> TypeGuard[int | float]:
     if type(rate) not in (int, float):
         return False
     value = Decimal(str(rate))
     return value.is_finite() and 0 < value * 1_000_000 <= cap_microusd
+
+
+def _epoch_ms() -> int:
+    return time.time_ns() // 1_000_000
 
 
 class RunPodAcquisition:
@@ -190,6 +210,10 @@ class RunPodAcquisition:
     def enforces_cutoff(self) -> bool:
         return self._running_cutoff is not None
 
+    @property
+    def running_cutoff(self) -> RunPodRunningCutoff | None:
+        return self._running_cutoff
+
     def terminate_argv(self, resource: ProviderResource, launch: SessionLaunch) -> tuple[str, ...]:
         if self._running_cutoff is None or resource.kind != "venue" or resource.intent != launch.intent:
             raise SessionError("RunPod termination requires the owned pod and scoped cutoff capability.")
@@ -198,6 +222,12 @@ class RunPodAcquisition:
 
     def hourly_microusd(self, request: SessionRequest) -> int:
         return RunPodResources.model_validate(request.resources).hourly_microusd
+
+    def review_quote(self, request: SessionRequest) -> JsonObject:
+        """Fetch exact GPU compute pricing without creating provider resources."""
+        if request.target != self.target:
+            raise SessionError("RunPod quote requires a RunPod session request.")
+        return self._verify_quote(RunPodResources.model_validate(request.resources), timeout_seconds=8)
 
     def _api(
         self, method: Literal["GET", "POST", "DELETE"], path: str, *,
@@ -273,10 +303,9 @@ class RunPodAcquisition:
                     time.sleep(min(0.05, self._remaining(deadline)))
             yield path
 
-    def _secret(self, launch: SessionLaunch) -> ProviderResource:
-        intent = launch.intent
+    def _secret(self, intent: str, *, timeout_seconds: float = 8) -> ProviderResource:
         reply = self._api("GET", _SECRETS, params={"name": _secret_metadata(intent)["name"]},
-                          timeout_seconds=self._before_cutoff(launch))
+                          timeout_seconds=timeout_seconds)
         rows = (reply.body or {}).get("secrets")
         if reply.status != 200 or not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
             raise SessionError("RunPod boot secret creation remains unresolved for this intent.")
@@ -287,9 +316,9 @@ class RunPodAcquisition:
 
     @staticmethod
     def _cutoff_remaining(launch: SessionLaunch) -> float:
-        seconds = (launch.ends_at_ms - time.time_ns() // 1_000_000) / 1000
+        seconds = (launch.ends_at_ms - _epoch_ms()) / 1000
         if seconds <= 0:
-            raise SessionError("RunPod acquisition exhausted the authorized cutoff.")
+            raise SessionOpeningFailed("RunPod acquisition exhausted the authorized cutoff.")
         return seconds
 
     @classmethod
@@ -303,25 +332,31 @@ class RunPodAcquisition:
             raise SessionError("RunPod operation exceeded its deadline.")
         return min(8, seconds)
 
-    def _verify_quote(self, config: RunPodResources, launch: SessionLaunch) -> None:
+    def _verify_quote(self, config: RunPodResources, *, timeout_seconds: float) -> JsonObject:
         reply = self._api("GET", f"/v2/catalog/gpus/{quote(config.gpu_id, safe='')}", params={
             "include": "AVAILABILITY", "product": "POD", "cloud": "SECURE", "count": 1,
             "cudaVersions": config.cuda_version,
-        }, timeout_seconds=self._before_cutoff(launch))
+        }, timeout_seconds=timeout_seconds)
         body = reply.body or {}
         price = body.get("price")
+        hourly = price.get("secure") if isinstance(price, Mapping) else None
         versions = body.get("cudaVersions")
         regions = body.get("dataCenters")
         stock = [row.get("availability") for row in regions if isinstance(row, Mapping)
                  and row.get("id") == config.datacenter] if isinstance(regions, list) else []
         if not (
-            reply.status == 200 and body.get("id") == config.gpu_id and isinstance(price, Mapping)
-            and _rate_within_cap(price.get("secure"), config.hourly_microusd)
+            reply.status == 200 and body.get("id") == config.gpu_id
+            and _rate_within_cap(hourly, config.hourly_microusd)
             and isinstance(versions, list) and any(isinstance(row, Mapping) and row.get("available") is True
                 and row.get("version") == config.cuda_version for row in versions)
             and len(stock) == 1 and stock[0] in ("LOW", "MEDIUM", "HIGH")
         ):
             raise SessionError("RunPod quote did not establish the authorized GPU, rate, CUDA and region.")
+        return {
+            "gpu_id": config.gpu_id, "datacenter": config.datacenter, "cuda_version": config.cuda_version,
+            "gpu_hourly_usd": hourly, "ephemeral_disk_gb": config.ephemeral_disk_gb,
+            "authorized_total_hourly_microusd": config.hourly_microusd,
+        }
 
     @staticmethod
     def _pod_body(state: _Intent, config: RunPodResources) -> JsonObject:
@@ -337,7 +372,11 @@ class RunPodAcquisition:
                            state.public_key, "/etc/ssh", "/start.sh", *_absolute_command(state.cutoff.boot_argv)],
             "cmd": [],
         }
-        protected = exact.keys() | {"mounts", "volumes", "networkVolumeId", "networkVolumeIds"}
+        protected = exact.keys() | {
+            "queue", "queueId", "mounts", "volumes", "volumeId", "volumeInGb", "volumeMountPath",
+            "networkVolumeId", "networkVolumeIds", "template", "templateId",
+            "environment", "dockerEnv", "args", "dockerArgs", "dockerEntrypoint", "dockerStartCmd",
+        }
         if protected & state.cutoff.create_terms.keys():
             raise SessionError("RunPod cutoff terms conflict with the authorized pod configuration.")
         return exact | state.cutoff.create_terms
@@ -358,7 +397,7 @@ class RunPodAcquisition:
                     raise SessionError("RunPod already lists a resource for an unjournaled launch intent.")
                 if not self.transport.image_exists(config.image):
                     raise SessionError("RunPod could not verify the authorized immutable image.")
-                self._verify_quote(config, launch)
+                self._verify_quote(config, timeout_seconds=self._before_cutoff(launch))
                 self._before_cutoff(launch)
                 cutoff = self._running_cutoff.arm(launch)
                 private, public = _fresh_boot_host_key()
@@ -368,6 +407,9 @@ class RunPodAcquisition:
                 write_json(path, state.model_dump(mode="json"))
                 reply = self._api("POST", _SECRETS, body={**_secret_metadata(launch.intent), "value": private},
                                   timeout_seconds=self._before_cutoff(launch))
+                if reply.status in _CREATE_REJECTIONS - {409}:
+                    write_json(path, state.model_copy(update={"opening_aborted": True}).model_dump(mode="json"))
+                    raise SessionOpeningFailed(f"RunPod rejected boot secret creation (HTTP {reply.status}).")
                 if reply.status != 201 or reply.body is None:
                     raise SessionError("RunPod boot secret creation remains unresolved for this intent.")
                 secret = _secret_resource(reply.body)
@@ -376,18 +418,33 @@ class RunPodAcquisition:
             else:
                 if state.launch != launch:
                     raise SessionError("RunPod journal is bound to a different session launch.")
+                if state.opening_aborted:
+                    raise SessionOpeningFailed("RunPod opening was already closed.")
                 if isinstance(state, _PodRequested):
                     return self._reconcile_pod(state, path)
-                secret = self._secret(launch)
+                secret = self._secret(launch.intent, timeout_seconds=self._before_cutoff(launch))
 
-            self._verify_quote(config, launch)
+            if state.secret_id is not None and secret.id != state.secret_id:
+                raise SessionError("RunPod boot secret differs from the recorded identity.")
+            if state.secret_id is None:
+                state = state.model_copy(update={"secret_id": secret.id})
+                write_json(path, state.model_dump(mode="json"))
+            try:
+                self._verify_quote(config, timeout_seconds=self._before_cutoff(launch))
+            except SessionError as error:
+                raise SessionOpeningFailed(f"RunPod did not submit pod creation: {error}") from error
             pod_body = self._pod_body(state, config)
             submitted = _PodRequested(
                 launch=state.launch, public_key=state.public_key, cutoff=state.cutoff, secret_id=secret.id,
+                startup_deadline_ms=min(launch.ends_at_ms, _epoch_ms() + 1000 * config.startup_seconds),
+                completion_requested=False,
             )
             self._before_cutoff(launch)
             write_json(path, submitted.model_dump(mode="json"))
             reply = self._api("POST", _PODS, body=pod_body, timeout_seconds=self._before_cutoff(launch))
+            if reply.status in _CREATE_REJECTIONS:
+                write_json(path, state.model_copy(update={"opening_aborted": True}).model_dump(mode="json"))
+                raise SessionOpeningFailed(f"RunPod rejected pod creation (HTTP {reply.status}).")
             if reply.status != 201 or reply.body is None:
                 raise SessionError("RunPod pod creation remains unresolved for this intent.")
             pod_id = _identity(reply.body.get("id"))
@@ -417,43 +474,144 @@ class RunPodAcquisition:
             raise SessionError("RunPod resource intent changed before use.")
         return body
 
-    def endpoint(self, resource: ProviderResource) -> RunPodEndpoint:
-        """Revalidate placement and connect only to the boot key pinned for this launch."""
+    @staticmethod
+    def _pod_state(resource: ProviderResource, path: Path) -> _PodRequested:
         if resource.kind != "venue" or resource.intent is None:
             raise SessionError("RunPod SSH requires an owned venue.")
         pod_id = _identity(resource.id)
-        with self._exclusive(resource.intent) as path:
+        try:
+            state = _Journal.validate_json(path.read_bytes())
+        except FileNotFoundError:
+            raise SessionError("RunPod SSH has no persisted boot key pin for this intent.") from None
+        if not isinstance(state, _PodRequested) or state.launch.intent != resource.intent:
+            raise SessionError("RunPod SSH has no pod submission for this intent.")
+        if state.pod_id is not None and state.pod_id != pod_id:
+            raise SessionError("RunPod venue differs from the recorded pod identity.")
+        return state
+
+    def begin_completion(self, resource: ProviderResource, launch: SessionLaunch) -> None:
+        """Record that the Host fence may be initialized before sending the request."""
+        with self._exclusive(launch.intent) as path:
+            state = self._pod_state(resource, path)
+            if state.launch != launch:
+                raise SessionError("RunPod completion requires the exact launch.")
+            if state.opening_aborted:
+                raise SessionOpeningFailed("RunPod opening was already closed.")
+            self._before_cutoff(launch)
+            if state.completion_requested is not True:
+                write_json(path, state.model_copy(update={"completion_requested": True}).model_dump(mode="json"))
+
+    def claim_uninitialized(
+        self, resource: ProviderResource | None, launch: SessionLaunch,
+    ) -> tuple[ProviderResource, ...] | None:
+        """Fence completion locally if its remote request was never submitted."""
+        with self._exclusive(launch.intent) as path:
             try:
                 state = _Journal.validate_json(path.read_bytes())
             except FileNotFoundError:
-                raise SessionError("RunPod SSH has no persisted boot key pin for this intent.") from None
-            if not isinstance(state, _PodRequested) or state.launch.intent != resource.intent:
-                raise SessionError("RunPod SSH has no pod submission for this intent.")
-            if state.pod_id is not None and state.pod_id != pod_id:
-                raise SessionError("RunPod venue differs from the recorded pod identity.")
+                return None
+            if state.launch != launch:
+                raise SessionError("RunPod opening close requires the exact launch.")
+            if isinstance(state, _PodRequested):
+                if state.completion_requested is not False:
+                    return None
+                if resource is None:
+                    if state.pod_id is None:
+                        return None
+                    resource = ProviderResource(id=state.pod_id, intent=launch.intent, kind="venue")
+                if (
+                    resource.intent != launch.intent or resource.kind != "venue"
+                    or (state.pod_id is not None and resource.id != state.pod_id)
+                ):
+                    raise SessionError("RunPod opening close requires the exact venue identity.")
+                resources = (resource, ProviderResource(id=state.secret_id, intent=launch.intent, kind="secret"))
+            else:
+                if resource is not None:
+                    raise SessionError("RunPod observed a venue without a local pod submission.")
+                secret_id = state.secret_id
+                if secret_id is None and not state.opening_aborted:
+                    secret_id = self._secret(launch.intent).id
+                    state = state.model_copy(update={"secret_id": secret_id})
+                resources = (
+                    (ProviderResource(id=secret_id, intent=launch.intent, kind="secret"),)
+                    if secret_id is not None else ()
+                )
+            if not state.opening_aborted:
+                write_json(path, state.model_copy(update={"opening_aborted": True}).model_dump(mode="json"))
+            return resources
+
+    @staticmethod
+    def _opening_remaining(deadline_ms: int, phase: str) -> float:
+        remaining = (deadline_ms - _epoch_ms()) / 1000
+        if remaining <= 0:
+            raise SessionOpeningFailed(f"RunPod {phase} exceeded its opening deadline.")
+        return remaining
+
+    def endpoint(
+        self, resource: ProviderResource, *, opening: bool = False, realization_seconds: int = 345,
+    ) -> RunPodEndpoint:
+        """Use a persisted readiness deadline for opening, or a fresh RPC budget for reconnection."""
+        if resource.intent is None:
+            raise SessionError("RunPod SSH requires an owned venue.")
+        with self._exclusive(resource.intent) as path:
+            state = self._pod_state(resource, path)
+            pod_id = resource.id
             config = RunPodResources.model_validate(state.launch.request.resources)
-            deadline = time.monotonic() + min(config.startup_seconds, self._cutoff_remaining(state.launch))
+            if opening and state.opening_aborted:
+                raise SessionOpeningFailed("RunPod opening was already closed.")
+            startup_deadline = min(
+                state.launch.ends_at_ms,
+                state.startup_deadline_ms or state.launch.acquired_at_ms + config.startup_seconds * 1000,
+            )
+            ready_at = state.boot_verified_at_ms
+            if opening and ready_at is None:
+                deadline = time.monotonic() + self._opening_remaining(startup_deadline, "SSH readiness")
+            else:
+                deadline = time.monotonic() + 8
+
+            def remaining() -> float:
+                seconds = deadline - time.monotonic()
+                if opening and ready_at is None:
+                    if seconds <= 0:
+                        raise SessionOpeningFailed("RunPod SSH readiness exceeded its opening deadline.")
+                    seconds = min(seconds, self._opening_remaining(startup_deadline, "SSH readiness"))
+                elif opening and ready_at is not None:
+                    realization_deadline = min(state.launch.ends_at_ms, ready_at + 1000 * realization_seconds)
+                    seconds = min(seconds, self._opening_remaining(realization_deadline, "realization"))
+                if seconds <= 0:
+                    raise SessionError("RunPod SSH reconnect exceeded its RPC deadline.")
+                return min(8, seconds)
+
             while True:
-                seconds = min(self._remaining(deadline), self._before_cutoff(state.launch))
-                pod = self._owned_detail(resource, f"{_PODS}/{pod_id}", timeout_seconds=seconds)
+                pod = self._owned_detail(resource, f"{_PODS}/{pod_id}", timeout_seconds=remaining())
                 if pod is None:
-                    raise SessionError("RunPod venue is absent.")
+                    raise SessionOpeningFailed("RunPod venue is absent.")
                 status = classify_pod_state(pod)
                 if status.status == "dead":
-                    raise SessionError("RunPod venue exited during SSH readiness.")
+                    raise SessionOpeningFailed("RunPod venue exited during SSH readiness.")
                 ssh = pod.get("ssh")
                 if pod.get("status") == "RUNNING" and isinstance(ssh, Mapping) and "direct" in ssh:
                     if status.ip is None or status.port is None or ":" in status.ip:
-                        raise SessionError("RunPod did not expose an authenticated direct SSH endpoint.")
-                    seconds = min(self._remaining(deadline), self._before_cutoff(state.launch))
-                    endpoint = self._probe_endpoint(state, config, resource, pod, status.ip, status.port, seconds)
+                        raise SessionOpeningFailed("RunPod did not expose an authenticated direct SSH endpoint.")
+                    endpoint = self._probe_endpoint(state, config, resource, pod, status.ip, status.port, remaining())
                     if endpoint is not None:
-                        self._remaining(deadline)
-                        self._before_cutoff(state.launch)
-                        if state.pod_id is None:
-                            write_json(path, state.model_copy(update={"pod_id": pod_id}).model_dump(mode="json"))
+                        remaining()
+                        if opening:
+                            verified_at = ready_at if ready_at is not None else _epoch_ms()
+                            realization_deadline = min(state.launch.ends_at_ms, verified_at + 1000 * realization_seconds)
+                            endpoint = RunPodEndpoint(
+                                endpoint.host, endpoint.ssh_argv, endpoint.placement,
+                                opening_deadline=time.monotonic() + self._opening_remaining(
+                                    realization_deadline, "realization",
+                                ),
+                            )
+                        else:
+                            verified_at = ready_at
+                        if state.pod_id is None or ready_at != verified_at:
+                            updated = state.model_copy(update={"pod_id": pod_id, "boot_verified_at_ms": verified_at})
+                            write_json(path, updated.model_dump(mode="json"))
                         return endpoint
-                time.sleep(min(0.25, self._remaining(deadline)))
+                time.sleep(min(0.25, remaining()))
 
     def _probe_endpoint(
         self, state: _PodRequested, config: RunPodResources, resource: ProviderResource,
@@ -469,7 +627,7 @@ class RunPodAcquisition:
             and not any(mounts.get(kind) for kind in ("persistent", "network", "global"))
             and _rate_within_cap(pod.get("cost"), config.hourly_microusd)
         ):
-            raise SessionError("RunPod venue differs from the authorized exact CUDA placement.")
+            raise SessionOpeningFailed("RunPod venue differs from the authorized exact CUDA placement.")
         transport = SubprocessRunPodTransport(
             ssh_host=ip, ssh_port=port, ssh_key_path=self._ssh_key_path,
             strict_ssh_host_key=True, ssh_known_hosts_path=str(self.root / f"{resource.intent}.known-hosts"),
@@ -486,7 +644,7 @@ class RunPodAcquisition:
         lines = result.stdout.strip().splitlines()
         fields = [part.strip() for part in lines[0].split(",")] if len(lines) == 1 else []
         if result.returncode or len(fields) != 4:
-            raise SessionError("Pinned RunPod SSH could not attest exactly one GPU.")
+            raise SessionOpeningFailed("Pinned RunPod SSH could not attest exactly one GPU.")
         name, driver, capability, device_id = fields
         if not (
             name == config.gpu_id and capability == config.compute_capability
@@ -494,11 +652,11 @@ class RunPodAcquisition:
             and int(driver.split(".", 1)[0]) >= config.min_driver_major
             and device_id.startswith("GPU-")
         ):
-            raise SessionError("RunPod device probe differs from the authorized GPU and driver.")
+            raise SessionOpeningFailed("RunPod device probe differs from the authorized GPU and driver.")
         try:
             UUID(device_id.removeprefix("GPU-"))
         except ValueError:
-            raise SessionError("RunPod device probe did not report a GPU UUID.") from None
+            raise SessionOpeningFailed("RunPod device probe did not report a GPU UUID.") from None
         facts = project_runpod_provision_facts(pod)
         return RunPodEndpoint(host, transport.pinned_ssh_argv(), {
             "pod_id": resource.id, "intent": resource.intent, "device": name, "device_uuid": device_id,
