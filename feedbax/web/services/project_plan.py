@@ -278,7 +278,10 @@ class ProjectPlanRead:
             for producer in binding.sources
         ]
         edge_keys.extend(
-            (row.states.producer, row.key) for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
+            (producer, row.key)
+            for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
+            for binding in row.states
+            for producer in binding.sources
         )
 
         def inputs(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapInput]:

@@ -55,6 +55,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.project_plan import (
     ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedRow, PlannedRun, ProjectPlan, RunKey,
+    planned_input_groups,
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import BatchSetMember, BestRank, ProductRef, RequestId, UpdateSeriesMember
@@ -606,26 +607,27 @@ class JobService(PlanJobReader):
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")
         parents = {}
-        for role, binding in node.inputs.items():
-            reference = binding.member.reference
-            if not isinstance(reference, ProductRef):
-                continue
-            source = binding.element or binding.producer
-            candidate = items.get(plan_attempt_key(source)) if source is not None else None
-            if candidate is None:
-                anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
-                anchor = next((job["id"] for job in reversed(anchors) if (
-                    job["data"].get("manifest_root") == str(store.root)
-                    and (job["state"] in _LIVE_STATES or (job["state"] == "succeeded" and self._receipt_matches(job)))
-                )), None)
-            else:
-                anchor = (
-                    candidate.job.id
-                    if candidate.job is not None and candidate.job.request == reference.request_id else None
-                )
-            if anchor is None:
-                raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
-            parents.setdefault(reference.request_id, anchor)
+        for role, bindings in planned_input_groups(node).items():
+            for binding in bindings:
+                reference = binding.member.reference
+                if not isinstance(reference, ProductRef):
+                    continue
+                source = binding.element or binding.producer
+                candidate = items.get(plan_attempt_key(source)) if source is not None else None
+                if candidate is None:
+                    anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
+                    anchor = next((job["id"] for job in reversed(anchors) if (
+                        job["data"].get("manifest_root") == str(store.root)
+                        and (job["state"] in _LIVE_STATES or (job["state"] == "succeeded" and self._receipt_matches(job)))
+                    )), None)
+                else:
+                    anchor = (
+                        candidate.job.id
+                        if candidate.job is not None and candidate.job.request == reference.request_id else None
+                    )
+                if anchor is None:
+                    raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
+                parents.setdefault(reference.request_id, anchor)
 
         name = plan_attempt_key(node.key)
         data = _plan_run_data(name, row)
@@ -1122,10 +1124,11 @@ def _planned_light_runs(
     def visit(key: RunKey | ElementKey) -> None:
         if key in result or (node := nodes.get(key)) is None:
             return
-        for binding in node.inputs.values():
-            source = binding.element or binding.producer
-            if source is not None:
-                visit(source)
+        for bindings in planned_input_groups(node).values():
+            for binding in bindings:
+                source = binding.element or binding.producer
+                if source is not None:
+                    visit(source)
         result[key] = node
 
     for key in selected:

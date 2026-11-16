@@ -100,18 +100,28 @@ def validate_light_request(request: DecodedRequest) -> str:
     else:
         raise ValueError("Expected a built-in Analysis, dataset Figure, or Report document")
 
-    if request.inputs.keys() != set(roles) or any(
-        len(members) != 1 for members in request.inputs.values()
-    ):
-        raise ValueError("Managed light requests require one input member per declared role")
-    for (member,) in request.inputs.values():
-        reference = member.reference
-        if isinstance(reference, ProductRef):
-            continue
-        if isinstance(spec, ReportRequestSpec) and isinstance(reference, ContentRef):
-            PlotlyFigureProduct(content=reference)
-            continue
-        raise ValueError(f"Input {member.key!r} requires a typed producer product")
+    if request.inputs.keys() != set(roles):
+        raise ValueError("Managed light inputs must match the declared roles")
+    for role, members in request.inputs.items():
+        if not members:
+            raise ValueError(f"Managed light input {role!r} requires a member")
+        if len(members) > 1 and (
+            isinstance(spec, ReportRequestSpec) or not all(
+                isinstance(member.reference, ProductRef)
+                and member.reference.role == "states"
+                and member.reference.request_id.startswith("evaluate:")
+                for member in members
+            )
+        ):
+            raise ValueError(f"Multiple members of {role!r} must supply saved Evaluate states")
+        for member in members:
+            reference = member.reference
+            if isinstance(reference, ProductRef):
+                continue
+            if isinstance(spec, ReportRequestSpec) and isinstance(reference, ContentRef):
+                PlotlyFigureProduct(content=reference)
+                continue
+            raise ValueError(f"Input {member.key!r} requires a typed producer product")
     return output
 
 

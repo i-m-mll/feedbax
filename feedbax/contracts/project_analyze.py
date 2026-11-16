@@ -57,16 +57,16 @@ class _Lowerer:
         document_ids: Mapping[str, str],
         document_pointers: Mapping[str, str],
         documents: Mapping[str, Document],
-        source: PlannedInput,
-        evaluation: RequestSpec,
+        states: tuple[PlannedInput, ...],
+        evaluations: tuple[RequestSpec, ...],
         operations: OperationRegistry,
     ):
         self.key = key
         self.document_ids = document_ids
         self.document_pointers = document_pointers
         self.documents = documents
-        self.source = source
-        self.evaluation = evaluation
+        self.states = states
+        self.evaluations = evaluations
         self.operations = operations
         self.elements: dict[str, PlannedElement] = {}
         self.figures: dict[str, FigureDocument] = {}
@@ -112,25 +112,28 @@ class _Lowerer:
         self,
         source: DatasetSource,
         path: str,
-    ) -> tuple[PlannedInput, DatasetPort]:
+    ) -> tuple[tuple[PlannedInput, ...], DatasetPort]:
         if isinstance(source, StepDataset):
             if source.input != "states":
                 raise _ElementIssue(path, f"Unknown Analyze step input {source.input!r}.")
-            evaluation = self.evaluation
-            if (
-                not isinstance(evaluation, EvaluationRequestSpec)
-                or evaluation.evaluation_type != ROLLOUT_TYPE
-            ):
-                raise _ElementIssue(
-                    path, "The states input requires a saved rollout Evaluate request."
-                )
-            try:
-                params = RolloutParameters.model_validate(evaluation.params)
-            except ValidationError as error:
-                raise _ElementIssue(path, f"Invalid saved Evaluate parameters: {error}") from error
+            schemas = set()
+            for binding, evaluation in zip(self.states, self.evaluations, strict=True):
+                if (
+                    not isinstance(evaluation, EvaluationRequestSpec)
+                    or evaluation.evaluation_type != ROLLOUT_TYPE
+                ):
+                    raise _ElementIssue(
+                        path, f"States member {binding.member.key!r} requires a saved rollout Evaluate request."
+                    )
+                try:
+                    schemas.add(RolloutParameters.model_validate(evaluation.params).states_schema)
+                except ValidationError as error:
+                    raise _ElementIssue(path, f"Invalid saved Evaluate parameters: {error}") from error
             # The schema is fixed by retention. Concrete model-owned variables are
             # authenticated when the actual saved dataset is read.
-            return self.source, DatasetPort(schema_ids=(params.states_schema,))
+            if len(schemas) != 1:
+                raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
+            return self.states, DatasetPort(schema_ids=tuple(schemas))
         producer = self.elements.get(source.element)
         if producer is None:
             raise _ElementIssue(path, f"Unknown or unplannable operation {source.element!r}.")
@@ -139,20 +142,21 @@ class _Lowerer:
             raise _ElementIssue(
                 path, f"Operation {source.element!r} has no dataset product {source.product!r}."
             )
-        return PlannedInput(
+        binding = PlannedInput(
             self.key,
             InputMember(
                 key="default",
                 reference=ProductRef(request_id=producer.request_id, role=source.product),
             ),
             producer_element=source.element,
-        ), output
+        )
+        return (binding,), output
 
     def _inputs(
         self,
         sources: Mapping[str, DatasetSource],
         roles: set[str],
-    ) -> tuple[dict[str, PlannedInput], dict[str, DatasetPort]]:
+    ) -> tuple[dict[str, tuple[PlannedInput, ...]], dict[str, DatasetPort]]:
         if unknown := sources.keys() - roles:
             role = min(unknown)
             raise _ElementIssue(f"inputs.{role}", f"Unknown dataset input {role!r}.")
@@ -168,11 +172,11 @@ class _Lowerer:
         self,
         name: str,
         spec: AnalysisRequestSpec | RenderRequestSpec,
-        inputs: Mapping[str, PlannedInput],
+        inputs: Mapping[str, tuple[PlannedInput, ...]],
         outputs: Mapping[str, DatasetPort | PlotlyFigurePort],
     ) -> None:
         encoded = encode_request(
-            spec, {role: (binding.member,) for role, binding in inputs.items()}
+            spec, {role: tuple(binding.member for binding in bindings) for role, bindings in inputs.items()}
         )
         kind = "analyze" if isinstance(spec, AnalysisRequestSpec) else "render"
         self.elements[name] = PlannedElement(
@@ -286,13 +290,13 @@ def lower_analyze(
     document_pointers: Mapping[str, str],
     documents: Mapping[str, Document],
     document_problems: tuple[ProjectDiagnostic, ...],
-    source: PlannedInput,
-    evaluation: RequestSpec,
+    states: tuple[PlannedInput, ...],
+    evaluations: tuple[RequestSpec, ...],
     operations: OperationRegistry,
 ) -> tuple[
     dict[str, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
 ]:
-    lower = _Lowerer(key, document_ids, document_pointers, documents, source, evaluation, operations)
+    lower = _Lowerer(key, document_ids, document_pointers, documents, states, evaluations, operations)
     lower.problems.extend(document_problems)
     try:
         # Each figure validates below so a bad figure leaves its siblings plannable.

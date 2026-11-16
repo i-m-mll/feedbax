@@ -113,7 +113,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     assert figure.inputs["summary"][0].reference == ProductRef(
         request_id=summary.id, role="summary"
     )
-    assert row.elements["profile"].inputs["summary"].element == ElementKey(_KEY, "summarize")
+    assert row.elements["profile"].inputs["summary"][0].element == ElementKey(_KEY, "summarize")
     assert align.spec.evaluation_states_policy == "require_durable"
     assert figure.spec.figure is None and figure.spec.document == velocity_summary_figure()
     source = plan.sources[_KEY]["/payload/operations/summarize/params/bounds_scale"]
@@ -138,7 +138,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     summary["params"].pop("ddof")
     summary["inputs"].clear()
     (draft_row,) = (row for row in compile_project(project, operations=registry).rows if isinstance(row, PlannedAnalyzeRun))
-    assert draft_row.states.producer == RunKey("default", "baseline", "default")
+    assert draft_row.states[0].producer == RunKey("default", "baseline", "default")
     states_port = registry.resolve("feedbax.aligned_velocity").definition.inputs["states"]
     states = DatasetPort(schema_ids=(states_port.schema_ids[0],))
     with pytest.raises(ValueError, match="Requires dataset schemas"):
@@ -326,7 +326,7 @@ def test_element_aliases_share_identity_and_refusals_name_the_authored_element()
     changed = compile_project(project, operations=operations)
     assert changed.requests == original.requests
     assert changed.elements[ElementKey(_KEY, "alias")].request_id == _decode(original, "align").id
-    assert changed.elements[ElementKey(_KEY, "summarize")].inputs["velocity"].element == ElementKey(
+    assert changed.elements[ElementKey(_KEY, "summarize")].inputs["velocity"][0].element == ElementKey(
         _KEY, "alias"
     )
 
@@ -365,6 +365,45 @@ def test_figure_binding_and_unselected_evaluate_rows_fail_closed():
     ambiguous = compile_project(project, operations=operations)
     (problem,) = ambiguous.diagnostics
     assert problem.path == "inputs.states" and not ambiguous.elements
+
+
+def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
+    project = _project()
+    operations = _operations()
+    project.steps["conditions"] = Project.model_validate(managed_evaluation_definition()).steps["conditions"]
+    baseline = compile_project(project, operations=operations)
+    conditions = {
+        run.coordinates["mass"].value_id: run for run in baseline.runs if run.key.step == "conditions"
+    }
+    selection = [
+        {"key": key, "variant": "default", "row": conditions[key].key.row}
+        for key in ("heavy", "nominal")
+    ]
+
+    def choose(rows):
+        project.steps["analyze"] = Step.model_validate({
+            "kind": "analyze",
+            "base": {"document": "velocity-analysis"},
+            "inputs": {"states": {"step": "conditions", "where": {"rows": rows}}},
+        })
+        return compile_project(project, operations=operations)
+
+    ordered = choose(selection)
+    reversed_plan = choose(selection[::-1])
+    assert not ordered.diagnostics and not reversed_plan.diagnostics
+    first, second = _decode(ordered, "align"), _decode(reversed_plan, "align")
+    assert first.inputs["states"] == second.inputs["states"][::-1]
+    assert first.id != second.id
+    assert len(ordered.elements) == len(reversed_plan.elements) == 3
+
+    project.steps["analyze"].sweep = Sweep.model_validate({"axes": {"source": {"input": "states"}}})
+    expanded = compile_project(project, operations=operations)
+    assert not expanded.diagnostics
+    assert len(expanded.elements) == 6
+    assert {
+        tuple(binding.member.key for binding in element.inputs["states"])
+        for element in expanded.elements.values() if element.key.name == "align"
+    } == {("heavy",), ("nominal",)}
 
 
 def test_operation_cycle_keeps_independent_elements_plannable():

@@ -16,7 +16,12 @@ from feedbax.contracts.project_sweep import (
     SweepInputMember,
     sweep_value_identity_bytes,
 )
-from feedbax.dataset import Dataset, Variable
+from feedbax.dataset import Dataset, Index, Variable
+
+
+CONDITION_PROVENANCE = "condition_provenance"
+CONDITION_MEMBER = "member"
+_CONDITION_ATTRIBUTES = ("effective_graph_sha256", "effective_task_sha256", "variation_sha256")
 
 
 def _host_values(values: Sequence[JsonValue]) -> np.ndarray:
@@ -126,6 +131,99 @@ def _stack_fields(
             inline_values=inline_values,
         )
     return stacked
+
+
+def join_rollout_conditions(inputs: Sequence[tuple[str, Dataset]]) -> Dataset:
+    """Join ordered singleton rollouts on their existing condition dimension."""
+    if len(inputs) < 2:
+        raise ValueError("Joining rollout conditions requires at least two members")
+    keys, datasets = zip(*inputs, strict=True)
+    descriptors = [dataset.descriptor for dataset in datasets]
+    base = descriptors[0]
+    axis = "condition"
+    if (
+        len(set(keys)) != len(keys)
+        or CONDITION_MEMBER in base.variables or CONDITION_MEMBER in base.coords
+        or CONDITION_PROVENANCE in base.attrs
+        or base.dimensions.get(axis) != 1
+        or axis not in base.coords or base.coords[axis].dims != (axis,)
+    ):
+        raise ValueError("Selected rollout states require distinct member keys and singleton condition coordinates")
+    shared = []
+    provenance = {}
+    for key, item in zip(keys, descriptors, strict=True):
+        if (
+            item.dimensions != base.dimensions or item.schema_id != base.schema_id
+            or item.variables.keys() != base.variables.keys() or item.coords.keys() != base.coords.keys()
+        ):
+            raise ValueError(f"Selected rollout member {key!r} has an incompatible dataset layout")
+        attrs = item.attrs.copy()
+        provenance[key] = {name: attrs.pop(name) for name in _CONDITION_ATTRIBUTES if name in attrs}
+        shared.append(attrs)
+    if any(canonical_json_v2_bytes(attrs) != canonical_json_v2_bytes(shared[0]) for attrs in shared[1:]):
+        raise ValueError("Selected rollout members have incompatible shared dataset attributes")
+
+    def field(name: str, prototype: FieldDescriptor) -> FieldDescriptor:
+        varies = axis in prototype.dims
+        for key, item, dataset in zip(keys[1:], descriptors[1:], datasets[1:], strict=True):
+            other = item.field(name)
+            normalized = other.model_copy(update={"inline_values": prototype.inline_values}) if varies else other
+            if normalized != prototype or (other.inline_values is None) != (prototype.inline_values is None):
+                raise ValueError(f"Selected rollout member {key!r} disagrees on dataset field {name!r}")
+            if name in base.coords and not varies and prototype.inline_values is None:
+                first = np.asarray(datasets[0].data(name))
+                actual = np.asarray(dataset.data(name))
+                if first.dtype != actual.dtype or not np.array_equal(first, actual):
+                    raise ValueError(f"Selected rollout member {key!r} disagrees on coordinate {name!r}")
+        if not varies or prototype.inline_values is None:
+            return prototype
+        values = np.concatenate(
+            [np.asarray(dataset.data(name)) for dataset in datasets], axis=prototype.dims.index(axis)
+        )
+        return prototype.model_copy(update={"inline_values": tuple(values.ravel().tolist())})
+
+    coords = {name: field(name, prototype) for name, prototype in base.coords.items()}
+    conditions = coords[axis].inline_values
+    if conditions is None or any(not isinstance(value, str) for value in conditions) or len(set(conditions)) != len(keys):
+        raise ValueError("Selected rollouts must supply distinct condition IDs")
+    coords[CONDITION_MEMBER] = FieldDescriptor(dims=(axis,), inline_values=keys)
+    descriptor = DatasetDescriptor(
+        dimensions={**base.dimensions, axis: len(keys)},
+        variables={name: field(name, prototype) for name, prototype in base.variables.items()},
+        coords=coords,
+        schema_id=base.schema_id,
+        attrs={**shared[0], CONDITION_PROVENANCE: provenance},
+    )
+
+    def load(name: str, index: Index) -> np.ndarray:
+        dims = base.field(name).dims
+        if axis not in dims:
+            first = np.asarray(datasets[0].data(name, index))
+            if name in base.variables:
+                for key, dataset in zip(keys[1:], datasets[1:], strict=True):
+                    actual = np.asarray(dataset.data(name, index))
+                    if first.dtype != actual.dtype or not np.array_equal(first, actual):
+                        raise ValueError(f"Selected rollout member {key!r} disagrees on variable {name!r}")
+            return first
+        position = dims.index(axis)
+        padded = (*index, *(slice(None),) * max(0, position + 1 - len(index)))
+        selected = range(len(datasets))[padded[position]]
+        before, after = padded[:position], padded[position + 1:]
+        if isinstance(selected, int):
+            return np.asarray(datasets[selected].data(name, (*before, 0, *after)))
+        if not selected:
+            return np.asarray(datasets[0].data(name, (*before, slice(0, 0), *after)))
+        arrays = [np.asarray(datasets[i].data(name, (*before, slice(None), *after))) for i in selected]
+        if any(array.dtype != arrays[0].dtype for array in arrays[1:]):
+            raise ValueError(f"Selected rollout members have different dtypes for {name!r}")
+        stacked_axis = sum(isinstance(item, slice) for item in before)
+        return np.concatenate(arrays, axis=stacked_axis)
+
+    return Dataset.bind(
+        descriptor,
+        tensor_shapes={name: descriptor.shape(name) for name in descriptor.tensor_names},
+        load_tensor=load,
+    )
 
 
 def stack_dataset_members(
