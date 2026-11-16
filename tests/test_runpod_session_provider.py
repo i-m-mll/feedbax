@@ -129,7 +129,7 @@ def test_runpod_recovers_exactly_one_create_or_leaves_it_unresolved(tmp_path, pa
     assert fake.requests.count(("POST", "/v2/pods")) == 1
 
 
-@pytest.mark.parametrize("failure", ["deadline", "rejected", "ambiguous"])
+@pytest.mark.parametrize("failure", ["deadline", "read-deadline", "rejected", "ambiguous"])
 def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, monkeypatch, failure):
     resources = runpod_resources()
     fake = FakeRunPod(resources)
@@ -143,16 +143,26 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
         uv_version="1.2.3", snapshot=record, backend="gpu",
     )
     launch = _launch(resources, environment=environment.digest)
+    lost_read = False
 
     def fail(request: httpx.Request) -> httpx.Response:
+        nonlocal lost_read
+        if failure == "read-deadline" and not lost_read and (
+            request.method, request.url.path
+        ) == ("GET", f"/v2/pods/{fake.pod_id}"):
+            lost_read = True
+            expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
+            monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
+            raise httpx.ReadTimeout("SSH readiness poll timed out", request=request)
         if (request.method, request.url.path) == ("POST", "/v2/pods"):
             if failure == "rejected":
                 return httpx.Response(422)
             if failure == "ambiguous":
                 raise httpx.ReadTimeout("lost create response", request=request)
             response = fake.handle(request)
-            expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
-            monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
+            if failure == "deadline":
+                expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
+                monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
             return response
         return fake.handle(request)
 
@@ -160,7 +170,8 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
     acquisition = _provider(tmp_path, fail, cutoff)
     provider = RunPodSessionProvider(acquisition, environment, snapshot)
     driver = SessionDriver(tmp_path / "driver", provider, verify_authorization=lambda _: None)
-    expected = {"deadline": "SSH readiness exceeded", "rejected": "rejected pod creation", "ambiguous": "transport failed"}
+    expected = {"deadline": "SSH readiness exceeded", "read-deadline": "SSH readiness exceeded",
+                "rejected": "rejected pod creation", "ambiguous": "transport failed"}
     with pytest.raises(SessionError, match=expected[failure]):
         driver.open(launch.request, launch.authorization, adoption_token="x" * 32)
     session = driver.record(launch.request.id)
@@ -176,7 +187,7 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
 
 
 def test_runpod_waits_for_direct_ssh_on_the_same_running_pod(tmp_path, monkeypatch):
-    resources = runpod_resources()
+    resources = RunPodResources.model_validate(runpod_resources().model_dump() | {"startup_seconds": 240})
     fake = FakeRunPod(resources)
     launch = _launch(resources)
     cutoff = FakeRunPodCutoff(("/usr/bin/true",))
@@ -189,6 +200,8 @@ def test_runpod_waits_for_direct_ssh_on_the_same_running_pod(tmp_path, monkeypat
 
     def publish_direct_endpoint(seconds: float) -> None:
         sleeps.append(seconds)
+        after_cold_pull = launch.acquired_at_ms + 91_000
+        monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: after_cold_pull)
         pod["ssh"] = ready
 
     monkeypatch.setattr(runpod_session_provider.time, "sleep", publish_direct_endpoint)

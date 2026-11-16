@@ -73,6 +73,10 @@ exec "$3"
 _GPU_PROBE = "nvidia-smi --query-gpu=name,driver_version,compute_cap,uuid --format=csv,noheader"
 
 
+class _ControlPlaneUnavailable(SessionError):
+    """A bounded RunPod REST request failed in transport."""
+
+
 class RunPodResources(SessionModel):
     """Exact single-device boot configuration and all-in hourly bound."""
 
@@ -84,7 +88,7 @@ class RunPodResources(SessionModel):
     min_driver_major: Positive
     ephemeral_disk_gb: Positive
     hourly_microusd: Positive
-    startup_seconds: Annotated[int, Field(gt=0, le=60, strict=True)] = 60
+    startup_seconds: Annotated[int, Field(gt=0, le=300, strict=True)] = 60
 
 
 class RunPodCutoffArm(SessionModel):
@@ -240,7 +244,7 @@ class RunPodAcquisition:
                 body=body, timeout_seconds=timeout_seconds,
             )
         except (OSError, RunPodDriverError):
-            raise SessionError("RunPod control-plane transport failed.") from None
+            raise _ControlPlaneUnavailable("RunPod control-plane transport failed.") from None
 
     def _pages(self, path: str, key: str, *, paginated: bool) -> Iterator[object]:
         params: dict[str, str | int] = {"limit": 100} if paginated else {}
@@ -583,7 +587,13 @@ class RunPodAcquisition:
                 return min(8, seconds)
 
             while True:
-                pod = self._owned_detail(resource, f"{_PODS}/{pod_id}", timeout_seconds=remaining())
+                try:
+                    pod = self._owned_detail(resource, f"{_PODS}/{pod_id}", timeout_seconds=remaining())
+                except _ControlPlaneUnavailable:
+                    if not opening or ready_at is not None:
+                        raise
+                    time.sleep(min(0.25, remaining()))
+                    continue
                 if pod is None:
                     raise SessionOpeningFailed("RunPod venue is absent.")
                 status = classify_pod_state(pod)
