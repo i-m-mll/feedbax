@@ -404,7 +404,7 @@ class JobService(PlanJobReader):
         if target == LOCAL_TARGET_ID:
             return self.admit_plan(folders, reviewed, run_keys=run_keys, token=token, reuse_completed=reuse_completed)
         selected = set(run_keys)
-        kinds = {
+        kinds: dict[RunKey, TargetRunKind] = {
             row.key: cast(TargetRunKind, row.kind) for row in reviewed.plan.rows
             if row.key in selected and row.kind in LOCAL_RUN_KINDS
         }
@@ -1176,7 +1176,7 @@ class JobService(PlanJobReader):
             else:
                 payload["resume"] = row.get("checkpoint")
             launch = Launch(**(launch_data | {"payload": payload}))
-            placement = attempt_target(row["data"].get("target"))
+            placement = attempt_target(cast(dict[str, Any], row["data"]).get("target"))
             if isinstance(placement, SessionTarget) and self.host.session_id != str(placement.session_id):
                 placement = LOCAL_TARGET
             key = row["data"]["run_key"]
