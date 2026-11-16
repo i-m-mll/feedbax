@@ -93,7 +93,7 @@ _Events.append = append
 
     def points(job_id):
         return [
-            event["data"] for event in host.events(0, projects=(project,))["events"]
+            event["data"] for event in host.events(0, projects=(plan.project_id,))["events"]
             if event["job_id"] == job_id and event["kind"] == "evaluation_point"
         ]
 
@@ -133,7 +133,7 @@ _Events.append = append
 
     store = ImmutableArtifactBlobProvider(plan.store_path)
     evidence = jobs.read_evaluation_objective_attempt(
-        project=project, store=plan.store_path, job_id=evaluation, request_id=rows["baseline"].request_id,
+        project=plan.project_id, store=plan.store_path, job_id=evaluation, request_id=rows["baseline"].request_id,
     )
     assert isinstance(evidence, LiveEvaluationObservation)
     selected = evidence.points[0]
@@ -181,10 +181,10 @@ _Events.append = append
     }
     assert not ordinary_attempt.points
     last_point_cursor = max(
-        event["cursor"] for event in host.events(after=0, projects=(project,))["events"]
+        event["cursor"] for event in host.events(after=0, projects=(plan.project_id,))["events"]
         if event["job_id"] == evaluation and event["kind"] == "evaluation_point"
     )
-    _, activity = jobs.events(after=last_point_cursor - 1, projects=(project,), wait=0, machine=True)
+    _, activity = jobs.events(after=last_point_cursor - 1, projects=(plan.project_id,), wait=0, machine=True)
     assert any(
         event.cursor == last_point_cursor and event.job_id == evaluation
         and event.kind == "activity" and event.activity is not None and not event.data
@@ -192,7 +192,7 @@ _Events.append = append
     )
     assert job_row(host, evaluation)["data"]["placement"] == "live"
     assert job_row(host, ordinary)["data"]["placement_detail"]["reason"] == "driver_occupied"
-    assert {item.job_id: item.placement for item in jobs.jobs(project=project).jobs}[evaluation] == "live"
+    assert {item.job_id: item.placement for item in jobs.jobs(project=plan.project_id).jobs}[evaluation] == "live"
     running = job_row(host, producer)
     assert running["request"] == rows["train"].request_id
     os.killpg(running["worker_pid"], signal.SIGKILL)
@@ -220,12 +220,12 @@ _Events.append = append
     assert points(ordinary) == []
 
     delegated = [
-        event["data"] for event in host.events(0, projects=(project,))["events"]
+        event["data"] for event in host.events(0, projects=(plan.project_id,))["events"]
         if event["job_id"] == evaluation and event["kind"] == "evaluation_delegated"
     ]
     assert [entry["producer_job_id"] for entry in delegated] == [producer, resumed.job_id]
 
-    live = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluation)
+    live = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=evaluation)
     assert live._manifest().metadata["placement"] == "live"
     retained_curve = service.evaluation_objective(project, read)
     assert retained_curve.receipt == live.receipt
@@ -236,7 +236,7 @@ _Events.append = append
         assert dataset.data("update").tolist() == [2, 4, 6, 8]
     (late,) = jobs.admit_plan(folders, plan, run_keys=(rows["baseline"].key,), token="late").items
     wait_until(lambda: job_row(host, late.job_id, "succeeded"), timeout=22)
-    ordinary_result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=late.job_id)
+    ordinary_result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=late.job_id)
     assert job_row(host, late.job_id)["data"]["placement_detail"]["reason"] == "late"
     assert ordinary_result._manifest().metadata["placement"] == "ordinary"
     assert ordinary_result._manifest().artifacts[0].sha256 == live._manifest().artifacts[0].sha256

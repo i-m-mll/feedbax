@@ -84,7 +84,7 @@ def test_target_catalog_and_default_saved_submission_share_one_contract(tmp_path
         request = {"revision": before.revision, "run_keys": [asdict(key)], "token": "placement-test"}
         denied = client.post(url, json=request | {"target": "missing"})
         assert denied.status_code == 409 and "approve" in denied.text
-        assert host.jobs(project="reaching") == []
+        assert host.jobs(project=before.project_id) == []
         response = client.post(url, json=request)
         assert response.status_code == 202, response.text
         submission = response.json()
@@ -98,13 +98,13 @@ def test_target_catalog_and_default_saved_submission_share_one_contract(tmp_path
             service.admit_plan(folders, before, run_keys=(key,), token="wrong-host", placement=remote)
 
         def finished():
-            (job,) = host.jobs(project="reaching", job_id=job_id)
+            (job,) = host.jobs(project=before.project_id, job_id=job_id)
             return job if job["outcome"] is not None else None
 
         job = wait_until(finished, timeout=25)
         assert job["state"] == "succeeded", job["outcome"]
         assert job["request"] == original and job["data"]["target"] == submission["target"]
-        activity = client.get("/api/jobs", params={"project": "reaching"}).json()["jobs"]
+        activity = client.get("/api/jobs", params={"project": before.project_id}).json()["jobs"]
         assert activity[0]["target"] == submission["target"]
 
     store = ImmutableArtifactBlobProvider(before.store_path)

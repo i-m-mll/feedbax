@@ -40,6 +40,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
     params["trial_set"] = {"kind": "conditions", "ids": list(task.condition_ids[:2])}
     folders = ProjectFolderService(projects)
     _save_project(folders, project, Project.model_validate(definition))
+    project_id = folders.open(project).snapshot.project_id
     path = f"/api/projects/{project}"
 
     def expect(response, code=200):
@@ -48,7 +49,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
 
     def terminal(count):
         def settled():
-            jobs = host.jobs(project=project)
+            jobs = host.jobs(project=project_id)
             return jobs if len(jobs) == count and all(job["outcome"] is not None for job in jobs) else None
 
         jobs = wait_until(settled, timeout=42)
@@ -124,7 +125,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         assert main(["run", str(projects / project)]) == 0
         unchanged = capsys.readouterr().out
         assert unchanged.count(" reused ") == 6
-        assert {job["id"] for job in host.jobs(project=project)} == set(by_id)
+        assert {job["id"] for job in host.jobs(project=project_id)} == set(by_id)
         assert projection(rev) == (elements, report)
 
         definition["documents"]["velocity-analysis"]["payload"]["operations"]["summarize"]["params"]["bounds_scale"] = 2.0
@@ -166,7 +167,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         _save_project(folders, project, Project.model_validate(definition))
         assert main(["run", str(projects / project)]) == 0
         assert capsys.readouterr().out.count(" reused ") == 6
-        assert {job["id"] for job in host.jobs(project=project)} == set(rerun_jobs)
+        assert {job["id"] for job in host.jobs(project=project_id)} == set(rerun_jobs)
 
         (replacement,) = run(revision(), "replace-train", "train")
         assert replacement["disposition"] == "admitted"
@@ -247,7 +248,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         assert [item["disposition"] for item in response.json()["items"]] == ["admitted"] * 7, response.text
 
         def terminal():
-            jobs = host.jobs(project=project)
+            jobs = host.jobs(project=review.project_id)
             return jobs if len(jobs) == 7 and all(job["outcome"] is not None for job in jobs) else None
 
         jobs = wait_until(terminal, timeout=44)

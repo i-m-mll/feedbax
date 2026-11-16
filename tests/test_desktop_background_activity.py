@@ -136,7 +136,9 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
             initial_cursor = terminal["cursor"]
             terminal = control.get(ACTIVITY, params={"after": initial_cursor}).json()
         assert terminal["count"] == 0
-        assert terminal["terminal"] == {"id": completed, "project": "reach", "name": "train", "status": "succeeded"}
+        assert terminal["terminal"] == {
+            "id": completed, "project": finished["project"], "name": "train", "status": "succeeded",
+        }
         assert control.get(ACTIVITY, params={"after": terminal["cursor"]}).json()["terminal"] is None
         assert control.get(ACTIVITY).json()["terminal"] is None
 

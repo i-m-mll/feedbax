@@ -57,7 +57,6 @@ from tests.test_model_document_plan import (
 def test_saved_addressed_condition_restores_document_train_model(host, tmp_path, authored):  # noqa: F811
     registry = new_application_registry_bundle()
     jobs = JobService(host, registry)
-    imports = tmp_path / "worker-imports"
     folders = ProjectFolderService(
         tmp_path / "projects",
         components=registry.components,
@@ -185,7 +184,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
 
     def open_states(run):
         return jobs.read_evaluation_result(
-            project=project,
+            project=plan.project_id,
             store=plan.store_path,
             job_id=jobs_by_run[run],
         ).open_states()
@@ -358,7 +357,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
         (edge,) = completions[step]["edges"]
         assert edge["binding"]["terminal"]["receipt"] == completions["train"]["outcome"]["store_success"]
         result = jobs.read_evaluation_result(
-            project="thelen", store=snapshot.store_path, job_id=admissions[step].job_id,
+            project=snapshot.project_id, store=snapshot.store_path, job_id=admissions[step].job_id,
         )
         with result.open_states() as states:
             if step == "condition":
@@ -506,7 +505,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     for step, item in zip(("baseline", "curl"), evaluations, strict=True):
         (edge,) = settled(item.job_id)["edges"]
         assert edge["binding"]["terminal"]["receipt"] == train_outcome["store_success"]
-        result = jobs.read_evaluation_result(project=project, store=snapshot.store_path, job_id=item.job_id)
+        result = jobs.read_evaluation_result(project=snapshot.project_id, store=snapshot.store_path, job_id=item.job_id)
         metadata = result._manifest().metadata
         binding = ResolvedRolloutBinding.model_validate(metadata["effective_binding"])
         assert binding.digest() == metadata["effective_binding_sha256"]

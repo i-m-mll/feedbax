@@ -237,7 +237,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         (edge,) = row["edges"]
         assert edge["job_id"] == source.job_id and edge["authenticated_completion"]
         assert edge["binding"]["terminal"]["receipt"] == trained["outcome"]["store_success"]
-        outcomes[key] = jobs.read_evaluation_result(project=project, store=root, job_id=item.job_id)
+        outcomes[key] = jobs.read_evaluation_result(project=plan.project_id, store=root, job_id=item.job_id)
 
     joined = ProjectPlanService(folders, jobs).read(project, revision=plan.revision)
     for key, item in zip(keys, submitted.items, strict=True):
@@ -374,7 +374,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     (edge,) = observation_job["edges"]
     assert edge["job_id"] == source.job_id
     assert edge["binding"]["terminal"]["receipt"] == trained["outcome"]["store_success"]
-    observation_result = jobs.read_evaluation_result(project=project, store=root, job_id=observation_attempt.job_id)
+    observation_result = jobs.read_evaluation_result(project=plan.project_id, store=root, job_id=observation_attempt.job_id)
     assert observation_result.size_bytes > 0
     with observation_result.open_states() as dataset:
         assert dataset.descriptor.schema_id == STATES_SCHEMA
@@ -397,7 +397,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     before = store.read_ref(INDEX_REF)
     with pytest.raises(ValueError, match="states differ from accepted checkpoint coverage or trials"):
         publish_evaluate_success(
-            attempt=attempt, request_id=raw_attempt["request"], project=project,
+            attempt=attempt, request_id=raw_attempt["request"], project=plan.project_id,
             payload=raw_attempt["launch"]["payload"], binding=binding,
             receipt={"manifest_id": wrong_manifest.id, "manifest_sha256": wrong_ref.object.sha256},
         )
@@ -449,7 +449,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         with writable_store_object(manifest_path):
             manifest_path.write_bytes(raw + b"\n")
         with pytest.raises(JobConflict, match="cannot be authenticated|Cannot authenticate"):
-            jobs.read_evaluation_result(project=project, store=root, job_id=submitted.items[0].job_id)
+            jobs.read_evaluation_result(project=plan.project_id, store=root, job_id=submitted.items[0].job_id)
     finally:
         with writable_store_object(manifest_path):
             manifest_path.write_bytes(raw)

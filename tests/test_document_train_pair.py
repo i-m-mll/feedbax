@@ -599,7 +599,7 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")
     result = jobs.read_evaluation_result(
-        project=project, store=plan.store_path, job_id=evaluation_job.job_id
+        project=plan.project_id, store=plan.store_path, job_id=evaluation_job.job_id
     )
     with result.open_states() as dataset:
         assert np.isfinite(dataset.data("objective/total")).all()

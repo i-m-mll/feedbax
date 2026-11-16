@@ -133,7 +133,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     terminal(resumed.job_id, "succeeded")
     restart(host)
     assert launch("consumers", "ordered", "cadence") == admitted
-    events = host.events(projects=(project,))["events"]
+    events = host.events(projects=(plan.project_id,))["events"]
 
     position = "/v1/model/state/plant/effector~1position"
     target = "/v1/task/output/target_pos"
@@ -153,7 +153,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
             event["data"] for event in events
             if event["job_id"] == row["id"] and event["kind"] == "dependency_bound"
         ] == [row["edges"][0]["binding"]]
-        result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=row["id"])
+        result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=row["id"])
         receipt = result._manifest()
         effective = ResolvedRolloutBinding.model_validate(receipt.metadata["effective_binding"])
         assert [member.coordinate for member in effective.members] == coordinates
@@ -266,7 +266,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     assert stale_train.disposition == "rejected"
     assert stale_train.reason == "/checkpoint_catalog: the reviewed publication demand changed."
     train_attempts = [
-        row for row in host.jobs(project=project, include_launch=True)
+        row for row in host.jobs(project=plan.project_id, include_launch=True)
         if row["request"] == by_step["train"].request_id
     ]
     assert {row["id"] for row in train_attempts} == {producer.job_id, resumed.job_id}
@@ -341,7 +341,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     stopped = terminal(producer.job_id, "stopped")
     checkpoint = stopped["outcome"]["checkpoint"]
     assert checkpoint["completed_updates"] == 3
-    assert host.stopped_checkpoint(producer.job_id, project=project, manifest_root=str(plan.store_path)) == 3
+    assert host.stopped_checkpoint(producer.job_id, project=plan.project_id, manifest_root=str(plan.store_path)) == 3
     assert "checkpoint_catalog" not in host.jobs(job_id=producer.job_id, include_launch=True)[0]["launch"]["payload"]
     evaluated = terminal(exact.job_id, "succeeded")
     binding = evaluated["edges"][0]["binding"]
@@ -377,7 +377,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         ))
         assert pinned == binding
         with _damaged_prng(checkpoint):
-            assert host.stopped_checkpoint(producer.job_id, project=project, manifest_root=str(plan.store_path)) is None
+            assert host.stopped_checkpoint(producer.job_id, project=plan.project_id, manifest_root=str(plan.store_path)) is None
             # A fresh admission detects corruption at selection. The earlier pin also
             # detects the same damage before delivery.
             (corrupt,) = launch("corrupt", "exact")
@@ -397,7 +397,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     final = terminal(last.job_id, "succeeded")
     bound_terminal = final["edges"][0]["binding"]["terminal"]
     assert bound_terminal["receipt"] == completed["outcome"]["store_success"]
-    last_result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=last.job_id)
+    last_result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=last.job_id)
     with last_result.open_states() as states:
         assert states.data("checkpoint").tolist() == [6]
     assert released["requested"] == [4]
@@ -408,7 +408,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     assert job_row(host, exact.job_id)["edges"][0]["binding"] == binding
     assert job_row(host, last.job_id)["edges"][0]["binding"]["terminal"] == bound_terminal
 
-    result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=exact.job_id)
+    result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=exact.job_id)
     receipt = result._manifest()
     assert receipt.input_training_runs == []
     (parent,) = receipt.provenance.parents

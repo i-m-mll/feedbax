@@ -136,7 +136,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     if damage:
         assert result["outcome"]["error"]["code"] == "publication_failed"
         assert "store_success" not in result["outcome"]
-        with jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=prior["id"]).open_states() as dataset:
+        with jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=prior["id"]).open_states() as dataset:
             assert dataset.data("checkpoint").tolist() == [4]
         return
 
@@ -144,7 +144,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     assert SuccessView(store).authored(runs["evaluate"].request_id) == committed
     subject = committed.receipt.inputs["subject"][0].evaluation_subject
     assert subject.terminal_checkpoint.run_id == train.job_id
-    original = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=attempt)
+    original = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=attempt)
     (states,) = committed.receipt.products["states"]
     assert states.content.sha256 == original._manifest().artifacts[0].sha256
     manifest = original._manifest()
@@ -211,7 +211,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
         blocked = wait_until(lambda: job_row(host, new_reader.job_id, "blocked"))
         assert blocked["delivery"] == 0 and model_array.sha256 in blocked["outcome"]["error"]["message"]
         requests = {runs["train"].request_id, runs["evaluate"].request_id}
-        attempts = jobs.read_plan_attempts(project=project, store=plan.store_path, requests=requests)
+        attempts = jobs.read_plan_attempts(project=plan.project_id, store=plan.store_path, requests=requests)
         assert any(row.job_id == attempt and row.status == "succeeded"
                    for row in attempts.by_request[runs["evaluate"].request_id])
     finally:
@@ -227,7 +227,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
             assert train_path.read_bytes() == damaged_train
             assert store.read_ref(INDEX_REF) == before
             requests = {runs["train"].request_id, runs["evaluate"].request_id}
-            attempts = jobs.read_plan_attempts(project=project, store=plan.store_path, requests=requests)
+            attempts = jobs.read_plan_attempts(project=plan.project_id, store=plan.store_path, requests=requests)
             (train_result,) = attempts.by_request[runs["train"].request_id]
             assert train_result.status == "corrupt" and train_slot.sha256 in train_result.reason
             assert all(row.status == "succeeded" for row in attempts.by_request[runs["evaluate"].request_id]
@@ -298,11 +298,11 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
         reopened = ImmutableArtifactBlobProvider(plan.store_path)
         assert read_damage(reopened, states.content.sha256) is not None
         requests = {runs["train"].request_id, runs["evaluate"].request_id}
-        attempts = jobs.read_plan_attempts(project=project, store=plan.store_path, requests=requests)
+        attempts = jobs.read_plan_attempts(project=plan.project_id, store=plan.store_path, requests=requests)
         saved = next(row for row in attempts.by_request[runs["evaluate"].request_id] if row.job_id == attempt)
         assert saved.status == "corrupt" and states.content.sha256 in saved.reason
         with pytest.raises(JobConflict, match=states.content.sha256):
-            jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=attempt)
+            jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=attempt)
         with pytest.raises(ArtifactBlobIntegrityError):
             sync_store(store, destination, closure, destination_ref="proof/evaluate-closure")
         assert destination.read_ref("proof/evaluate-closure") is None

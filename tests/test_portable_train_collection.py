@@ -12,6 +12,7 @@ from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, Content
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef
 from feedbax.contracts.checkpoints import CheckpointTransactionManifest
 from feedbax.contracts.jobs import JobStatus
+from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
 from feedbax.host import HostClient
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -34,14 +35,13 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     registries = new_application_registry_bundle()
     venue = HostClient(tmp_path / "venue-host")
-    venue_folders = ProjectFolderService(tmp_path / "venue-projects")
-    reviewed, prefix, child = _saved_chain(venue_folders)
+    folders = ProjectFolderService(tmp_path / "projects")
+    reviewed, prefix, child = _saved_chain(folders)
     project = reviewed.project_id
-    local_folders = ProjectFolderService(tmp_path / "local-projects")
-    shutil.copytree(venue_folders.root / project, local_folders.root / project)
-    local_plan = local_folders.read_plan(project, revision=None)
+    _, location = folders.open_native_id(project)
+    saved = read_text_project_snapshot(location.path)
     source = ImmutableArtifactBlobProvider(reviewed.store_path)
-    destination = ImmutableArtifactBlobProvider(local_plan.store_path)
+    destination = ImmutableArtifactBlobProvider(tmp_path / "collected-results")
     venue_jobs = JobService(venue, registries)
     local_jobs = JobService(host, registries)
 
@@ -72,17 +72,17 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
     with ExitStack() as cleanup:
         venue.policy(compute=1)
         cleanup.callback(close_venue)
-        producer_id = launch(venue_jobs, venue_folders, reviewed, prefix, "venue-producer")
+        producer_id = launch(venue_jobs, folders, reviewed, prefix, "venue-producer")
         producer = terminal(venue, producer_id, "succeeded")
         original_producer = observed_success(producer, source)
-        control_id = launch(venue_jobs, venue_folders, reviewed, child, "venue-control")
+        control_id = launch(venue_jobs, folders, reviewed, child, "venue-control")
         control = observed_success(terminal(venue, control_id, "succeeded"), source).receipt
 
         gated = JobService(venue, registries)
         gate = tmp_path / "checkpoint-gate"
         gate.mkdir()
         install_finite_gate(gated, gate, stop_at=3, resume_at=8)
-        stopped_id = launch(gated, venue_folders, reviewed, child, "venue-stop")
+        stopped_id = launch(gated, folders, reviewed, child, "venue-stop")
         wait_until(lambda: (gate / "before-stop").exists(), timeout=32)
         (stop,) = gated.stop((stopped_id,), "checkpoint")
         assert stop.error is None
@@ -129,12 +129,18 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
         assert collected.status == JobStatus.SUCCEEDED and collected.job_id == producer_id
         assert observed_success(host.jobs(job_id=producer_id)[0], destination) == original_producer
         assert not (Path(destination.root) / "checkpoints").exists()
-        plan_service = ProjectPlanService(local_folders, local_jobs)
+        configuration = saved.configuration.model_copy(update={"store": str(destination.root)})
+        (location.path / saved.declaration).write_bytes(
+            dump_text_project(saved.project, configuration)[saved.declaration],
+        )
+        local_plan = folders.read_plan(project, revision=None)
+        assert local_plan.plan.requests == reviewed.plan.requests
+        plan_service = ProjectPlanService(folders, local_jobs)
         projected = plan_service.read(project, revision=local_plan.revision).history[prefix]
         assert projected.status == JobStatus.SUCCEEDED
         assert projected.result.receipt.manifest_sha256 == original_producer.ref.sha256
 
-        advanced_id = launch(local_jobs, local_folders, local_plan, prefix, "local-advance")
+        advanced_id = launch(local_jobs, folders, local_plan, prefix, "local-advance")
         advanced = observed_success(terminal(host, advanced_id, "succeeded"), destination)
         assert advanced.ref != original_producer.ref
         assert advanced.receipt.supersedes == original_producer.ref

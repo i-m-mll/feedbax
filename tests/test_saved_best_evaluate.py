@@ -147,7 +147,7 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
             evaluation_subject_objects(
                 view.store, decoded, decoded.inputs["subject"][0], bound.model_copy(update={"evaluation_subject": changed}),
             )
-        with jobs.read_evaluation_result(project=project, store=saved.store_path, job_id=job_id).open_states() as states:
+        with jobs.read_evaluation_result(project=saved.project_id, store=saved.store_path, job_id=job_id).open_states() as states:
             assert states.data("trial").tolist() == decoded.spec.params["trials"]
         successes.append(success)
 

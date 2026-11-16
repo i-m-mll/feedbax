@@ -1152,7 +1152,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")
-    result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluation_job.job_id)
+    result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=evaluation_job.job_id)
     service = ProjectPlanService(folders, jobs)
     accepted = service.read(project, revision=plan.revision)
     train_receipt = accepted.attempts_by_run[train][0].successful_receipt

@@ -224,14 +224,14 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
             finished[job]["edges"][0]["binding"]["terminal"]["receipt"] == train_receipt
             for job in (control, evaluated)
         )
-        with jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=control).open_states() as dataset:
+        with jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=control).open_states() as dataset:
             assert dataset.data("trial").tolist() == ["0"]
             assert all(dataset.data(f"objective/coverage/{term}").item() == 1
                        for term in ("effort", "move-effort", "target-variable", "target-signal"))
             position = "/v1/model/state/plant/effector~1position"
             control_positions = dataset.data(position).copy()
             control_effort = dataset.data("objective/terms/effort").item()
-        result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluated)
+        result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=evaluated)
         with result.open_states() as dataset:
             assert dataset.data("trial").tolist() == ["0"]
             for key in ("effort", "target-signal"):
@@ -253,7 +253,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         ]}))
         assert author(revision).objective.terms[0].name == "Effort"
         assert ids() == after
-        with jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluated).open_states() as dataset:
+        with jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=evaluated).open_states() as dataset:
             assert int(dataset.data("objective/coverage/effort").item()) == 1
 
 

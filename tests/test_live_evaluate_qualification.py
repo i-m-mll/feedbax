@@ -117,7 +117,7 @@ def test_live_evaluate_train_stop_and_independent_cancellation(host, tmp_path, m
     assert stopped["checkpoint"]["completed_updates"] == 4
     assert stopped["stop_mode"] == "checkpoint"
     assert stopped["outcome"].get("signal") is None
-    prefix = events(host, project, evaluation, "evaluation_point")
+    prefix = events(host, plan.project_id, evaluation, "evaluation_point")
     assert [point["checkpoint"]["completed_updates"] for point in prefix] == [2]
     assert job_row(host, evaluation, "queued")["edges"][0]["binding"] is None
     paused_curve = service.evaluation_objective(project, read)
@@ -126,7 +126,7 @@ def test_live_evaluate_train_stop_and_independent_cancellation(host, tmp_path, m
     assert [point.checkpoint.completed_updates for point in paused_curve.points] == [2]
 
     restart(host)
-    assert events(host, project, evaluation, "evaluation_point") == prefix
+    assert events(host, plan.project_id, evaluation, "evaluation_point") == prefix
     assert service.evaluation_objective(project, read) == paused_curve
     resumed = jobs.resume(producer, "resume")
     try:
@@ -147,8 +147,8 @@ def test_live_evaluate_train_stop_and_independent_cancellation(host, tmp_path, m
     assert succeeded["continues"] == producer
     cancelled = terminal(host, evaluation, "stopped")
     assert cancelled["delivery"] == 0 and cancelled["outcome"].get("receipt") is None
-    assert events(host, project, evaluation, "evaluation_point") == prefix
-    assert [row["producer_job_id"] for row in events(host, project, evaluation, "evaluation_delegated")] == [
+    assert events(host, plan.project_id, evaluation, "evaluation_point") == prefix
+    assert [row["producer_job_id"] for row in events(host, plan.project_id, evaluation, "evaluation_delegated")] == [
         producer, resumed.job_id,
     ]
 
@@ -158,14 +158,14 @@ def test_live_evaluate_refuses_tampered_assignment_without_failing_train(host, t
     instrument(jobs, "tamper", tmp_path)
     project = "changed-assignment"
     folders = ProjectFolderService(tmp_path / "projects")
-    _, (producer, evaluation) = admit(jobs, folders, project, series_definition(2))
+    plan, (producer, evaluation) = admit(jobs, folders, project, series_definition(2))
     failed = terminal(host, evaluation, "failed")
     assert failed["data"]["placement"] == "live"
     assert failed["delivery"] == 0 and failed["outcome"].get("receipt") is None
     assert failed["outcome"]["error"] == {
         "code": "live_evaluation_protocol", "message": "Live Evaluate assignment changed after delivery.",
     }
-    assert events(host, project, evaluation, "evaluation_point") == []
+    assert events(host, plan.project_id, evaluation, "evaluation_point") == []
     succeeded = terminal(host, producer, "succeeded")
     assert succeeded["checkpoint"]["completed_updates"] == 2
     assert succeeded["outcome"].get("receipt") is not None
@@ -212,9 +212,9 @@ def test_live_evaluate_fresh_points_and_paired_driver_windows(
         plan, attempts = admit(jobs, folders, project, definition, qualified=live, train_only=not live)
         producer = attempts[0]
         train = terminal(host, producer, "succeeded")
-        clocks = {entry["update"]: entry["ns"] for entry in events(host, project, producer, "qualification_checkpoint_clock")}
+        clocks = {entry["update"]: entry["ns"] for entry in events(host, plan.project_id, producer, "qualification_checkpoint_clock")}
         assert set(clocks) == set(range(1, 37))
-        window, = events(host, project, producer, "qualification_train_window")
+        window, = events(host, plan.project_id, producer, "qualification_train_window")
         checkpoint = train["checkpoint"]
         manifest = Path(checkpoint["checkpoint_root"]) / checkpoint["pointer"]["manifest_relative_path"]
         final_slots = {
@@ -232,13 +232,13 @@ def test_live_evaluate_fresh_points_and_paired_driver_windows(
             evaluation = attempts[1]
             completed = terminal(host, evaluation, "succeeded")
             assert completed["data"]["placement"] == "live"
-            points = events(host, project, evaluation, "evaluation_point")
+            points = events(host, plan.project_id, evaluation, "evaluation_point")
             assert [point["checkpoint"]["completed_updates"] for point in points] == list(range(1, 37))
             hashes = [point["result"]["states"]["content"]["sha256"] for point in points]
             assert len(set(hashes)) == 36
-            times = events(host, project, producer, "qualification_point_window")
+            times = events(host, plan.project_id, producer, "qualification_point_window")
             assert [point["update"] for point in times] == list(range(1, 37))
-            output = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluation)
+            output = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=evaluation)
             with output.open_states() as dataset:
                 assert dataset.data("update").tolist() == list(range(1, 37))
             result |= {

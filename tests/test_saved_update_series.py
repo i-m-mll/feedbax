@@ -105,7 +105,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
         gaps = [{"update": update, "reason": "checkpoint_unavailable"} for update in expected if update not in observed]
         assert selection["gaps"] == gaps
         assert selection["closure"] == {"kind": "completion", "product": finished["outcome"]["completion"]}
-        result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=item.job_id)
+        result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=item.job_id)
         manifest = result._manifest()
         assert manifest.provenance.metadata["checkpoint_selection"]["gaps"] == gaps
         assert manifest.metadata["placement"] == "ordinary"
@@ -136,7 +136,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     restart(host)
     assert jobs.admit_plan(folders, plan, run_keys=run_keys, token="evaluation") == submission
     for item in submission.items:
-        jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=item.job_id)
+        jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=item.job_id)
     service = ProjectPlanService(folders, jobs)
     projected = service.response(service.read(project, revision=plan.revision), include_window_map=True)
     results = {row.key.step: row for row in projected.window_map.evaluations}
@@ -161,7 +161,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
         assert curve.lineage == [producer.job_id]
         assert curve.gaps == evaluation.result.checkpoint_gaps
         assert [point.checkpoint.completed_updates for point in curve.points] == observed
-        with jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=read.job_id).open_states() as dataset:
+        with jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=read.job_id).open_states() as dataset:
             if observed:
                 assert curve.condition == dataset.data("condition").item()
                 assert curve.trials == dataset.data("trial").tolist()

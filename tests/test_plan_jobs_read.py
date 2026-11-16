@@ -254,7 +254,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             assert "post" not in client.app.openapi()["paths"].get("/api/projects/{project_id}/plan", {})
 
             wrong_store = Job(
-                "different-store", "reach", request_id, Launch((sys.executable, "-c", "pass")),
+                "different-store", before.settled.project_id, request_id, Launch((sys.executable, "-c", "pass")),
                 data={"manifest_root": str(tmp_path / "other-results")},
             )
             host.admit("wrong-store", [AdmissionItem(wrong_store.id, wrong_store)], record={})
@@ -274,7 +274,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             assert renamed.status_code == 200, renamed.text
             revision = renamed.json()["snapshot"]["revision"]
             renamed_plan = read()
-            assert renamed_plan.settled.project_id == before.settled.project_id == "reach"
+            assert renamed_plan.settled.project_id == before.settled.project_id == opened["project_id"]
             assert renamed_plan.settled.store_path == before.settled.store_path
             assert renamed_plan.settled.plan == before.settled.plan
             admission = service.jobs.admit_plan(
@@ -309,7 +309,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             assert completion["request_id"] == request_id
             assert completion["producer_job_id"] == attempt_id
             verify_bound_training_completion(completion)
-            events = host.events(projects=("reach",), limit=1000)["events"]
+            events = host.events(projects=(opened["project_id"],), limit=1000)["events"]
             kinds = {event["kind"] for event in events if event["job_id"] == attempt_id}
             assert {"queued", "accepted", "binding", "progress", "terminal"} <= kinds
 
@@ -321,7 +321,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             worker_binding = BoundStudioTrainingJobInput.model_validate_json(
                 (store / "checkpoints" / attempt_id / "binding.json").read_bytes()
             )
-            assert (worker_binding.project_id, worker_binding.manifest_root) == ("reach", store)
+            assert (worker_binding.project_id, worker_binding.manifest_root) == (opened["project_id"], store)
             assert worker_binding.request_id == request_id
             assert worker_binding.canonical_request is not None
 

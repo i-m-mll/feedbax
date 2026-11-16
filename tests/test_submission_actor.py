@@ -109,9 +109,9 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
         assert attached.status_code == 202, attached.text
         assert attached.json()["actor"] == {"client": "studio"}
         assert attached.json()["items"][0]["disposition"] == "attached"
-        activity = client.get("/api/jobs", params={"project": project}).json()["jobs"]
+        activity = client.get("/api/jobs", params={"project": reviewed.project_id}).json()["jobs"]
         assert [(job["job_id"], job["actor"]) for job in activity] == [(origin.job_id, stored["actor"])]
-        _, events = jobs.events(after=0, projects=(project,), wait=0, machine=False)
+        _, events = jobs.events(after=0, projects=(reviewed.project_id,), wait=0, machine=False)
         assert any(event.activity and event.activity.actor == labelled.actor for event in events.events)
 
         # A queued legacy attempt can receive an attachment from a current client.
@@ -138,7 +138,7 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
         studio = new.json()
         assert studio["actor"] == {"client": "studio"}
         assert studio["items"][0]["disposition"] == "admitted"
-        activity = client.get("/api/jobs", params={"project": project}).json()["jobs"]
+        activity = client.get("/api/jobs", params={"project": reviewed.project_id}).json()["jobs"]
         assert [(job["request_id"], job["actor"]) for job in activity] == [
             (planned.request_id, stored["actor"]), (planned.request_id, studio["actor"]),
         ]

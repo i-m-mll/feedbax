@@ -154,8 +154,9 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     client = TestClient(app)
     response = client.post("/api/projects")
     assert response.status_code == 201
-    snapshot = response.json()["snapshot"]
-    root = tmp_path / snapshot["project_id"]
+    document = response.json()
+    snapshot = document["snapshot"]
+    root = tmp_path / document["configuration"]["project"]
     url = f"/api/projects/{snapshot['project_id']}"
     model, task, objective, train = ordinary_files("2")
     trial = train["step"]["base"]["inline"]["trial_documents"]
@@ -837,15 +838,18 @@ def test_new_projects_are_durable_openable_and_distinct(tmp_path):
 
     ids = {document["snapshot"]["project_id"] for document in documents}
     assert len(ids) == 2
-    assert {entry.name for entry in projects.iterdir()} == ids
+    names = {document["configuration"]["project"] for document in documents}
+    assert len(names) == 2
+    assert {entry.name for entry in projects.iterdir()} == names
     reopened = TestClient(create_app(projects_dir=projects))
     for document in documents:
         snapshot = document["snapshot"]
         project_id = snapshot["project_id"]
-        folder = projects / project_id
+        name = document["configuration"]["project"]
+        folder = projects / name
         text = load_text_project(folder)
         assert text.project == Project()
-        assert text.configuration.project == project_id
+        assert text.configuration.project == name
         assert text.store_path == folder / "results"
         assert text.revision == snapshot["revision"]
         assert json.loads((folder / "presentation.json").read_bytes()) == {}
@@ -927,14 +931,15 @@ def test_open_uses_managed_folder_ids_and_refuses_directory_symlinks(tmp_path):
 def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path):
     projects = tmp_path / "projects"
     client = TestClient(create_app(projects_dir=projects))
-    created = client.post("/api/projects").json()["snapshot"]
+    document = client.post("/api/projects").json()
+    created = document["snapshot"]
     project_id = created["project_id"]
     url = f"/api/projects/{project_id}/files"
     train = {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}}
     response = client.post(url, json={"revision": created["revision"], "file": train})
     assert response.status_code == 201, response.text
     step_revision = response.json()["snapshot"]
-    root = projects / project_id
+    root = projects / document["configuration"]["project"]
     step_file = root / "steps/train.json"
     assert json.loads(step_file.read_bytes()) == train["step"]
 

@@ -249,7 +249,7 @@ def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, mon
             plan.plan.requests[producer.request_id], plan.plan.documents.__getitem__,
         ).spec.trial_documents.python_task
         assert inherited.params["x"] == 0.1
-        result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=item.job_id)
+        result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=item.job_id)
         with result.open_states() as states:
             actual = states.data("/v1/task/output/reach_target")
             np.testing.assert_allclose(actual[..., 0], 0.4)
@@ -341,7 +341,7 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
             assert "receipt" not in row["outcome"]
             continue
         assert row["state"] == "succeeded", row["outcome"]
-        result = jobs.read_evaluation_result(project=project, store=reviewed.store_path, job_id=item.job_id)
+        result = jobs.read_evaluation_result(project=reviewed.project_id, store=reviewed.store_path, job_id=item.job_id)
         results[name] = result
         assert result._manifest().provenance.parents[0].id == checkpoint.pointer.transaction_id
         with result.open_states() as states:

@@ -112,7 +112,7 @@ def test_same_evaluate_products_inside_driver_and_ordinary_job(host, tmp_path, m
     binding = ordinary["edges"][0]["binding"]["checkpoint_selection"]
     (member,) = binding["members"]
     assert member["producer_job_id"] == live["id"]
-    result = jobs.read_evaluation_result(project=scenario, store=plan.store_path, job_id=ordinary["id"])
+    result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=ordinary["id"])
     artifact = result._manifest().artifacts[0]
     points = events(live["id"], "qualification_evaluate_point")
     assert len(points) == 3
