@@ -435,12 +435,13 @@ class _Role:
     required: bool
     producer_kind: StepKind
     product_role: str
+    accepts_many: bool = False
 
 
 _ROLES = {
     "train": _Role("checkpoint", False, "train", "checkpoint"),
     "evaluate": _Role("subject", True, "train", "checkpoint"),
-    "analyze": _Role("states", True, "evaluate", "states"),
+    "analyze": _Role("states", True, "evaluate", "states", accepts_many=True),
 }
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
@@ -1858,13 +1859,7 @@ class _Compiler:
 
         basis = template.row_basis if self.previous is not None else None
         train_rows = _TrainRows() if kind == "train" and not wanted and len(rows) > 1 else None
-        analyze_states = (
-            tuple(binding for binding, _ in members)
-            if kind == "analyze" and (
-                len(members) == 1 or (subset is not None and subset.source is not None and subset.source.rows)
-            )
-            else ()
-        )
+        gathered = tuple(binding for binding, _ in members) if role.accepts_many else ()
         result = []
         tracked_template = template if wanted else None
         for row in rows:
@@ -1889,7 +1884,7 @@ class _Compiler:
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
             self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
             if kind == "analyze":
-                states = (chosen,) if chosen is not None else analyze_states
+                states = (chosen,) if chosen is not None else gathered
                 if states:
                     definition = self.select_definition(template, run_key, row, {"states": states})
                     analyze = self.lower_analyze_row(template, run_key, row, states, definition)

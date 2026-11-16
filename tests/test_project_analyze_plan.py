@@ -339,7 +339,7 @@ def test_element_aliases_share_identity_and_refusals_name_the_authored_element()
     assert set(refused.elements) == {ElementKey(_KEY, "align"), ElementKey(_KEY, "alias")}
 
 
-def test_figure_binding_and_unselected_evaluate_rows_fail_closed():
+def test_figure_binding_fails_closed():
     project = _project()
     operations = _operations()
     project.documents["velocity-figure"].payload["layers"][0]["encode"]["upper"] = "unknown_upper"
@@ -353,18 +353,34 @@ def test_figure_binding_and_unselected_evaluate_rows_fail_closed():
     assert "upper" in problem.detail and "unknown_upper" in problem.detail
     assert len(refused.elements) == 2
 
-    original = Project.model_validate(managed_evaluation_definition())
-    project.steps["conditions"] = original.steps["conditions"]
+def test_analyze_collects_static_rows_in_each_named_variant():
+    project = _project()
+    project.steps["conditions"] = Project.model_validate(managed_evaluation_definition()).steps["conditions"]
+    project.sweep = Sweep.model_validate({"rows": {"base": {}, "compare": {"from": "base"}}})
     project.steps["analyze"] = Step.model_validate(
         {
             "kind": "analyze",
             "base": {"document": "velocity-analysis"},
-            "inputs": {"states": {"step": "conditions"}},
+            "inputs": {"states": {"step": "conditions", "where": {"axes": {"mass": ["heavy", "nominal"]}}}},
         }
     )
-    ambiguous = compile_project(project, operations=operations)
-    (problem,) = ambiguous.diagnostics
-    assert problem.path == "inputs.states" and not ambiguous.elements
+    operations = _operations()
+    plan = compile_project(project, operations=operations)
+    assert not plan.diagnostics
+    sources = {
+        run.key.variant: tuple(binding.producer for binding in run.states)
+        for run in plan.rows if isinstance(run, PlannedAnalyzeRun)
+    }
+    assert sources == {
+        name: (RunKey(name, "conditions", "mass=nominal"), RunKey(name, "conditions", "mass=heavy"))
+        for name in ("base", "compare")
+    }
+    assert plan.elements[ElementKey(RunKey("base", "analyze", "default"), "align")].request_id == (
+        plan.elements[ElementKey(RunKey("compare", "analyze", "default"), "align")].request_id
+    )
+
+    project.steps["analyze"].inputs["states"] = project.steps["analyze"].inputs["states"].model_copy(update={"where": None})
+    assert compile_project(project, operations=operations).elements == plan.elements
 
 
 def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
