@@ -550,7 +550,7 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
             raise ProjectFolderInvalid("The proposed edit changes an Objective outside the selected scope.")
     previous = {run.key: run for run in plan.runs}
     current = {run.key: run for run in candidate.runs}
-    before_diagnostics = set(plan.diagnostics)
+    before_diagnostics = plan.diagnostics
     for key in sorted(selected, key=lambda item: (item.variant, item.step, item.row)):
         if key not in candidate.selected_definitions:
             diagnostic = next((

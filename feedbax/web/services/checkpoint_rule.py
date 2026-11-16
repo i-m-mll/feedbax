@@ -79,7 +79,7 @@ def prepare_checkpoint_rule_edit(
         )
     except ValueError as error:
         raise ProjectFolderInvalid(str(error)) from error
-    problems = set(plan.diagnostics)
+    problems = plan.diagnostics
     for problem in candidate.diagnostics:
         if problem not in problems and problem.step == key.step and problem.variant == key.variant:
             raise ProjectFolderInvalid(problem.detail)
