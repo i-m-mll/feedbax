@@ -1,4 +1,4 @@
-"""Revision-bound sweep recipes for the numeric controls in a direct Train definition."""
+"""Revision-bound sweep recipes for numeric fields on authored steps."""
 
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ def _matches(paths: set[str], other: set[str]) -> bool:
     return any(_paths_overlap(left, right) for left in paths for right in other)
 
 
-class TrainFieldSweeps:
+class FieldSweeps:
     def __init__(self, step: Step, target: SweepTarget, label: str, *, integer: bool):
         self.step = step
         self.target = target

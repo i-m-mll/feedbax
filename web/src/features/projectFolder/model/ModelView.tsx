@@ -191,11 +191,13 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const selection = selectedHere[0];
   const fieldOwner = selection?.element.kind === 'attachment' || selection?.element.kind === 'component'
     ? selection : !selection ? graph : undefined;
-  const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.revision === saved.revision);
+  const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.editable &&
+    attachments.data.revision === saved.revision);
   const canEditField = evaluate ? !busy && canEvaluate : fieldEditable;
+  const fieldRun = evaluate?.run ?? projectionRun;
   const fieldBody = shownModel && fieldOwner && !libraryItem
     ? {
-      owner: fieldOwner, revision: saved.revision, run: evaluate?.run ?? projectionRun, evaluate_scope: evaluate?.scope,
+      owner: fieldOwner, revision: saved.revision, run: fieldRun, evaluate_scope: evaluate?.scope,
       rows: evaluate ? undefined : [...fieldRows ?? []],
       axes: evaluate ? undefined : fieldAxes,
     } : undefined;
@@ -205,6 +207,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     enabled: active && !!fieldBody, retry: false, placeholderData: (previous, query) => {
       const previousBody = query?.queryKey[2] as typeof fieldBody;
       return previousBody && fieldBody && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
+        && JSON.stringify(previousBody.evaluate_scope) === JSON.stringify(fieldBody.evaluate_scope)
         && JSON.stringify(previousBody.rows) === JSON.stringify(fieldBody.rows) ? previous : undefined;
     },
   });
@@ -226,7 +229,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           (file.kind === 'step' && fieldLitSteps?.has(file.id)) ||
           (file.kind === 'variant' && file.id !== variant))
           : [{ kind: 'document' as const, id: address.document },
-            ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : [])];
+            ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
+            ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
         editor.editFiles('Set Field', result.files, { reviewedRevision: fieldBody.revision, dependencies });
       }
       return undefined;
@@ -238,7 +242,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const projectedNames = new Set(projectedFields.flatMap(({ address }) =>
     address.element.kind === 'field' && typeof address.element.path.at(-1) === 'string' ? [String(address.element.path.at(-1))] : []));
   const fieldControls = projectedFields.map((field) => <StudioFieldControl
-    key={JSON.stringify([saved.project_id, projectionRun?.variant, projectionRun?.step, fieldRows, addressKey(field.address)])}
+    key={JSON.stringify([saved.project_id, fieldRun?.variant, fieldRun?.step, fieldRows, addressKey(field.address)])}
     field={field}
     planSources={field.sources}
     source={attachments.data?.field_sources?.[addressKey(field.address)] ??

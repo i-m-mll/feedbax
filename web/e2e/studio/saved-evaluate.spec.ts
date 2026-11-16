@@ -3,6 +3,8 @@ import type {
   StudioEvaluationObjectiveSeries, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow,
   StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
+import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
+import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
 
@@ -43,6 +45,107 @@ async function chooseStep(page: Page, step: string) {
   await mapStep(page, step).click();
   await tab(page, 'Runs').click();
 }
+
+test('authors named Evaluate conditions from one authenticated Train checkpoint', async ({ page, request }, info) => {
+  test.setTimeout(60_000);
+  const project: string = JSON.parse(await runProjectFixture(
+    'web.e2e.studio.fixtures.evaluate_authoring', String(info.config.metadata.home), 'authored-evaluate-conditions',
+  ));
+  const projectPath = '/api/projects/' + project;
+  const runsPath = projectPath + '/train-runs';
+  const snapshot = async () => {
+    const response = await request.get(projectPath);
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  };
+  const plan = async (revision: string) => {
+    const response = await request.get(runsPath, { params: { revision, window_map: 'true' } });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  };
+  const variants = page.getByRole('combobox', { name: 'Variant', exact: true });
+  await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded', timeout: 10_000 });
+  await expect(variants).toHaveValue('base');
+  const initial = await snapshot();
+  expect(Object.keys(initial.project.steps)).toEqual(['train']);
+  await chooseStep(page, 'train');
+  const trainItems = await submit(page, runsPath);
+  expect(trainItems).toHaveLength(1);
+  const [admitted] = trainItems;
+  expect(admitted.disposition).toBe('admitted');
+  await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 20_000 });
+  const trained = (await plan(initial.revision)).rows.find(({ key }) => key.variant === 'base')!;
+  expect(admitted.run_key).toBe(savedRunId(trained.key));
+  expect(trained.result?.job_id).toBe(admitted.job_id);
+  await plans(page).getByRole('button', { name: trained.label, exact: true }).click();
+
+  const conditions = [{ label: 'Nominal', value: 1.25 }, { label: 'Heavy', value: 2 }];
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  const { stepId, step, revision, rows } = await authorEvaluateConditions({
+    page, request, projectPath, train: trained.key, field: 'Mass', conditions,
+    selectComponent: () => model.locator('[data-id="plant"] header').click(),
+  });
+  expect(step.kind).toBe('evaluate');
+  expect(step.inputs?.subject).toMatchObject({ step: trained.key.step, checkpoint: 'last' });
+  const axis = Object.values(step.sweep?.axes ?? {}).find((axis) => axis && 'values' in axis);
+  expect(axis).toBeDefined();
+  expect(rows.map(({ coordinates }) => Object.values(coordinates).find(({ label }) =>
+    conditions.some((condition) => condition.label === label)))).toMatchObject(conditions);
+  const saved = await snapshot();
+  expect(saved.project.documents).toEqual(initial.project.documents);
+  expect(saved.project.steps[trained.key.step]).toEqual(initial.project.steps[trained.key.step]);
+  expect(saved.project.sweep).toEqual(initial.project.sweep);
+
+  await tab(page, 'Runs').click();
+  await expect(page.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeVisible();
+  const items = await submit(page, runsPath);
+  expect(items.map(({ disposition, run_key }) => ({ disposition, run_key }))).toEqual(
+    rows.map(({ key }) => ({ disposition: 'admitted', run_key: savedRunId(key) })),
+  );
+  await expect(plans(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 24_000 });
+  const complete = await plan(revision);
+  const evaluations = complete.window_map!.evaluations!.filter(({ key }) => key.step === stepId);
+  const completed = evaluations.filter(({ key }) => key.variant === 'base');
+  expect(completed.map(({ key }) => key)).toEqual(rows.map(({ key }) => key));
+  expect(completed.map(({ result }) => result?.job_id)).toEqual(items.map(({ job_id }) => job_id));
+  expect(new Set(completed.map(({ request_id }) => request_id)).size).toBe(2);
+  expect(new Set(completed.map(({ result }) => result?.receipt.manifest_sha256)).size).toBe(2);
+  expect(completed[0].trials.length).toBeGreaterThan(0);
+  expect(completed[0].trials).toEqual(completed[1].trials);
+  for (const { result } of completed) {
+    expect(result?.receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result?.checkpoint_source).toMatchObject({
+      job_id: trained.result!.job_id, request_id: trained.request_id,
+      completed_updates: trained.result!.progress!.completed_updates,
+    });
+  }
+  expect(completed[0].result?.checkpoint_source).toEqual(completed[1].result?.checkpoint_source);
+  const comparison = evaluations.filter(({ key }) => key.variant === 'compare');
+  expect(comparison.map(({ result }) => result?.receipt)).toEqual(completed.map(({ result }) => result?.receipt));
+  expect(complete.rows.find(({ key }) => key.variant === 'base')).toEqual(trained);
+
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 });
+  await expect(variants).toHaveValue('base');
+  await chooseStep(page, stepId);
+  await expect(plans(page).getByText('Done', { exact: true })).toHaveCount(2);
+  expect((await snapshot()).project.steps[stepId]).toEqual(step);
+  expect((await plan(revision)).window_map!.evaluations!.filter(({ key }) => key.step === stepId)).toEqual(evaluations);
+  await info.attach('authored-evaluate-conditions', {
+    contentType: 'application/json',
+    body: JSON.stringify({ stepId, step, revision, rows, evaluations, train: trained.result }),
+  });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  for (const [index, condition] of conditions.entries()) {
+    await tab(page, 'Runs').click();
+    await plans(page).getByRole('button', { name: rows[index].label, exact: true }).click();
+    await tab(page, 'Model').click();
+    await model.locator('[data-id="plant"] header').click();
+    const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
+    await expect(mass).toHaveValue(String(condition.value));
+    await expect(mass).toHaveAccessibleDescription('Changed by ' + stepId);
+    await expect(mass).not.toBeEditable();
+  }
+});
 
 function expectPositionSamples(samples: number[][]) {
   expect(samples).toHaveLength(81);

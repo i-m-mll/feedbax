@@ -3,7 +3,7 @@ import { studioFormat, studioName, studioReason } from '@/components/activity/st
 import type { PlanRunView, PlanView } from '@/features/pipeline/planView';
 import {
   BatchCheckpointSchema, StepReferenceSchema, UpdateRuleSchema,
-  type BatchCheckpoint, type CheckpointRule, type Step, type StepReference, type StudioSavedTrainRuns,
+  type Axis, type BatchCheckpoint, type CheckpointRule, type Step, type StepReference, type StudioSavedTrainRuns,
   type SubsetTerms, type UpdateRule,
 } from '@/generated/studioContracts';
 import { trainSourceSubset } from './createCheckpointTrain';
@@ -113,6 +113,12 @@ export function validTrialSet(rule: TrialSet, domain: TrialDomain | undefined): 
     (rule.ids.length > 0 && rule.ids.every((id) => domain.conditions.includes(id))));
 }
 
+function addressedModelAxis(axis: Axis) {
+  const paths = 'path' in axis ? [axis.path] : 'values' in axis && !Array.isArray(axis.values)
+    ? Object.values(axis.values).flatMap((value) => Object.keys(value?.patches ?? {})) : [];
+  return paths.length > 0 && paths.every((path) => path.startsWith('{'));
+}
+
 export function ordinaryEvaluation(step: Step): { subject: StepReference; terms: SubsetTerms; trialSet: TrialSet } | undefined {
   if (step.kind !== 'evaluate' || !('inline' in step.base) || step.deltas?.length) return undefined;
   const parsed = StepReferenceSchema.safeParse(step.inputs?.subject);
@@ -126,7 +132,7 @@ export function ordinaryEvaluation(step: Step): { subject: StepReference; terms:
   const sweep = step.sweep;
   const axis = sweep?.axes?.subject;
   if (!axis || !('input' in axis) || axis.input !== 'subject' ||
-      axes.some((axis) => !('input' in axis) && !('checkpoint_rule' in axis)) ||
+      axes.some((axis) => !('input' in axis) && !('checkpoint_rule' in axis) && !addressedModelAxis(axis)) ||
       sweep?.rows || sweep?.combination) return undefined;
   const { evaluation_type, params } = step.base.inline;
   if (evaluation_type !== rollout || !params || typeof params !== 'object' || Array.isArray(params) ||
