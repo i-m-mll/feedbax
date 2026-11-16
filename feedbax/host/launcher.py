@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .io import TOKEN_ENV, append
+from .python import python_argv
 
 BOOTSTRAP = """\
 import sys, types
@@ -25,7 +26,7 @@ HOST_FILES = Path(__file__).resolve().parent
 def command(interpreter: str, role: str, *args: str) -> list[str]:
     # Load only the host bootstrap from our installation. The project interpreter
     # resolves Feedbax and the executor from its own environment.
-    return [interpreter, "-c", BOOTSTRAP, str(HOST_FILES), role, *args]
+    return python_argv(interpreter, "-c", BOOTSTRAP, str(HOST_FILES), role, *args)
 
 
 def _outcome(log: Path, status: int, require_result: bool) -> dict:

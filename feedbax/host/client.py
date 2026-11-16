@@ -4,7 +4,6 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -31,6 +30,7 @@ from feedbax.host.protocol import (
     SessionStatus,
     StopMode,
 )
+from feedbax.host.python import same_python_argv
 
 
 def default_root() -> Path:
@@ -112,7 +112,7 @@ class HostClient:
                 private_directory(self.root)
                 with (self.root / "host.log").open("ab") as log:
                     process = subprocess.Popen(
-                        [sys.executable, "-m", "feedbax.host", "--root", str(self.root)],
+                        same_python_argv("-m", "feedbax.host", "--root", str(self.root)),
                         stdin=subprocess.DEVNULL,
                         stdout=log,
                         stderr=log,

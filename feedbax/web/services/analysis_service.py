@@ -7,7 +7,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import time
 from contextlib import contextmanager
 import logging
@@ -20,6 +19,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 from uuid import uuid4
+
+from feedbax.host.python import same_python_argv
 
 logger = logging.getLogger(__name__)
 
@@ -227,8 +228,9 @@ class AnalysisJobService:
                     if request_id in self._stop_requests:
                         raise InterruptedError("Analysis was cancelled before process launch.")
                     process = subprocess.Popen(
-                        [sys.executable, "-B", "-m", "feedbax.web.services.analysis_worker",
-                         str(job_dir), str(read_fd), str(lease_fd)],
+                        same_python_argv(
+                            "-m", "feedbax.web.services.analysis_worker", str(job_dir), str(read_fd), str(lease_fd),
+                        ),
                         stdin=subprocess.DEVNULL,
                         pass_fds=(read_fd, lease_fd),
                     )
