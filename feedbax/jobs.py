@@ -12,7 +12,7 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from feedbax._secure_fs import (
@@ -24,6 +24,10 @@ from feedbax._secure_fs import (
 )
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.execution_target import (
+    LOCAL_RUN_KINDS, LOCAL_TARGET, LOCAL_TARGET_ID, AttemptTarget, ExecutionTargets,
+    SessionTarget, SessionTargetProfile, TargetRunKind, attempt_target,
+)
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     JobError,
@@ -66,6 +70,8 @@ from feedbax.host.checkpoint_selection import is_checkpoint_producer
 from feedbax.host.live_evaluate import DELEGATION_EVENT
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
 from feedbax.host.protocol import LIGHT_ENTRYPOINT, can_resume_attempt
+from feedbax.orchestration.session import SessionError
+from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
@@ -332,6 +338,13 @@ class PlanJobReader:
         )
 
 
+class SessionSubmission(Protocol):
+    def __call__(
+        self, profile: SessionTargetProfile, folders: ProjectFolder, reviewed: SettledProjectPlan, *,
+        run_keys: Sequence[RunKey], token: str, reuse_completed: bool,
+    ) -> StudioJobSubmission: ...
+
+
 class JobService(PlanJobReader):
     """Bind authored requests to immutable worker launches over the durable host."""
 
@@ -342,10 +355,14 @@ class JobService(PlanJobReader):
         *,
         bootstrap_modules: tuple[str, ...] = (),
         live_validation_qualifications: Sequence[ValidationQualification] = (),
+        targets: TargetRegistry | None = None,
+        submit_session: SessionSubmission | None = None,
     ) -> None:
         super().__init__(host, components=registries.components)
         self.registries = registries
         self.bootstrap_modules = bootstrap_modules
+        self.targets = targets if targets is not None else TargetRegistry()
+        self._submit_session = submit_session
         self._live_validation_qualifications = {
             (entry.train_request, entry.evaluate_request): entry for entry in live_validation_qualifications
         }
@@ -377,6 +394,39 @@ class JobService(PlanJobReader):
         self._launch_lock = Lock()
         self._accepting = True
 
+    def execution_targets(self, kinds: Sequence[TargetRunKind] = ()) -> ExecutionTargets:
+        return self.targets.catalog(kinds=kinds, session_submission=self._submit_session is not None)
+
+    def submit_plan(
+        self, folders: ProjectFolder, reviewed: SettledProjectPlan, *,
+        run_keys: Sequence[RunKey], token: str, target: str = LOCAL_TARGET_ID, reuse_completed: bool = False,
+    ) -> StudioJobSubmission:
+        if target == LOCAL_TARGET_ID:
+            return self.admit_plan(folders, reviewed, run_keys=run_keys, token=token, reuse_completed=reuse_completed)
+        selected = set(run_keys)
+        kinds = {
+            row.key: cast(TargetRunKind, row.kind) for row in reviewed.plan.rows
+            if row.key in selected and row.kind in LOCAL_RUN_KINDS
+        }
+        if not selected or kinds.keys() != selected:
+            raise JobConflict("Target submission requires selected runnable saved rows.")
+        try:
+            profile = self.targets.require_session(target, kinds=kinds.values())
+        except SessionError as error:
+            raise JobConflict(str(error)) from error
+        if self._submit_session is None:
+            raise JobConflict("Session submission is not configured.")
+        submission = self._submit_session(
+            profile, folders, reviewed, run_keys=run_keys, token=token, reuse_completed=reuse_completed,
+        )
+        match submission.target:
+            case SessionTarget(profile=selected_profile, driver=driver) if (
+                selected_profile, driver
+            ) == (profile.id, profile.driver):
+                return submission
+            case _:
+                raise JobConflict("The session submission returned a different execution target.")
+
     def admit_plan(
         self,
         folders: ProjectFolder,
@@ -387,6 +437,7 @@ class JobService(PlanJobReader):
         checkpoint_catalog: tuple[int, ...] = (),
         actor: StudioSubmissionActor = StudioSubmissionActor(client="studio"),
         reuse_completed: bool = False,
+        placement: AttemptTarget = LOCAL_TARGET,
     ) -> StudioJobSubmission:
         """Admit selected rows from a server-issued saved Plan."""
         selected = {
@@ -421,7 +472,7 @@ class JobService(PlanJobReader):
                 raise JobConflict("/inputs/subject/checkpoint: checkpoint catalogue belongs to Train.")
             checkpoint_catalog = finite_coordinates(checkpoint_catalog)
             command["checkpoint_catalog"] = list(checkpoint_catalog)
-        if previous := self._retry(token, project=project, continues=None, command=command):
+        if previous := self._retry(token, project=project, continues=None, command=command, placement=placement):
             return previous
 
         items = {}
@@ -582,6 +633,7 @@ class JobService(PlanJobReader):
             record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
                 "actor": actor.model_dump(mode="json"),
+                "target": placement.model_dump(mode="json"),
             }
             if train and any(item.job and item.job.request.startswith("train:") for item in items.values()):
                 requests = {
@@ -606,7 +658,7 @@ class JobService(PlanJobReader):
                 if light or reuse_completed else self._admit(token, candidates, record)
             )
         return self._submission_for_action(
-            admitted, project=project, continues=None, command=command
+            admitted, project=project, continues=None, command=command, placement=placement,
         )
 
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
@@ -843,7 +895,12 @@ class JobService(PlanJobReader):
         with self._launch_lock:
             if not self._accepting:
                 raise JobConflict("Studio is stopping and cannot start a run.")
-            return self.host.admit(token, items, record=record)
+            placement = attempt_target(record.get("target")).model_dump(mode="json")
+            placed = [
+                replace(item, job=replace(item.job, data=item.job.data | {"target": placement}))
+                if item.job is not None else item for item in items
+            ]
+            return self.host.admit(token, placed, record=record | {"target": placement})
 
     def warm(self) -> None:
         with self._launch_lock:
@@ -1008,6 +1065,7 @@ class JobService(PlanJobReader):
         )
 
         attempt_id, request_id = attempt["id"], attempt["request"]
+        placement = attempt_target(attempt["data"].get("target"))
         observed = JobReceipt.model_validate(attempt["outcome"]["receipt"])
         view = SuccessView(source)
         if view.attempt_ref(attempt_id) != ref:
@@ -1020,7 +1078,7 @@ class JobService(PlanJobReader):
         ):
             raise JobConflict("Evaluate observation differs from its exact Store receipt.")
         destination = ImmutableArtifactBlobProvider(store)
-        collect_success(source, destination, ref, attempt=attempt_id, request_id=request_id)
+        collect_success(source, destination, ref, attempt=attempt_id, request_id=request_id, expected_target=placement)
         _, _, subject = decode_rollout_request(request_id, destination.get_object(success.request.object))
         payload = BoundEvaluationJobInput(
             project_id=project, request_id=request_id, manifest_root=Path(destination.root),
@@ -1031,7 +1089,10 @@ class JobService(PlanJobReader):
         job = Job(
             id=attempt_id, project=project, request=request_id, launch=launch,
             data={key: data[key] for key in ("run_key", "stage_id", "scenario_id", "label", "coordinates")}
-            | {"collected_evaluate": True, "manifest_root": str(destination.root), "runtime": launch.argv[0]},
+            | {
+                "collected_evaluate": True, "manifest_root": str(destination.root), "runtime": launch.argv[0],
+                "target": placement.model_dump(mode="json"),
+            },
         )
         self.host.mirror_collected_evaluate(
             job, receipt=ref.model_dump(mode="json"), progress=attempt["progress"], delivery=attempt["delivery"],
@@ -1057,9 +1118,12 @@ class JobService(PlanJobReader):
         ):
             raise JobConflict("Collection requires an exact terminal Train observation from its source Store.")
         destination = ImmutableArtifactBlobProvider(store)
+        placement = attempt_target(data.get("target"))
         if state == "succeeded":
             receipt = ContentObjectRef.model_validate(outcome["store_success"])
-            result = collect_success(source, destination, receipt, attempt=attempt_id, request_id=request_id)
+            result = collect_success(
+                source, destination, receipt, attempt=attempt_id, request_id=request_id, expected_target=placement,
+            )
             request = result.receipt.request
         else:
             stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
@@ -1078,7 +1142,7 @@ class JobService(PlanJobReader):
         item = self._training_item(
             project, request_id, spec,
             {key: data[key] for key in ("run_key", "stage_id", "scenario_id", "label", "coordinates")}
-            | {"collected_train": True}, store,
+            | {"collected_train": True, "target": placement.model_dump(mode="json")}, store,
             canonical_request=binding,
             checkpoint_catalog=tuple(attempt["launch"]["payload"].get("checkpoint_catalog", ())),
         )
@@ -1112,6 +1176,9 @@ class JobService(PlanJobReader):
             else:
                 payload["resume"] = row.get("checkpoint")
             launch = Launch(**(launch_data | {"payload": payload}))
+            placement = attempt_target(row["data"].get("target"))
+            if isinstance(placement, SessionTarget) and self.host.session_id != str(placement.session_id):
+                placement = LOCAL_TARGET
             key = row["data"]["run_key"]
             job = Job(
                 id=uuid4().hex,
@@ -1127,6 +1194,7 @@ class JobService(PlanJobReader):
                 {
                     "project": row["project"], "continues": job_id, "runs": {},
                     "actor": StudioSubmissionActor(client="studio").model_dump(mode="json"),
+                    "target": placement.model_dump(mode="json"),
                 },
             )
             previous = self._submission_for_action(result, project=row["project"], continues=job_id)
@@ -1215,10 +1283,13 @@ class JobService(PlanJobReader):
         continues: str | None,
         project: str | None = None,
         command: dict[str, Any] | None = None,
+        placement: AttemptTarget | None = None,
     ) -> StudioJobSubmission | None:
         rows = self.host.submissions(token=token)
         return (
-            self._submission_for_action(rows[0], project=project, continues=continues, command=command)
+            self._submission_for_action(
+                rows[0], project=project, continues=continues, command=command, placement=placement,
+            )
             if rows
             else None
         )
@@ -1230,11 +1301,14 @@ class JobService(PlanJobReader):
         project: str | None,
         continues: str | None,
         command: dict[str, Any] | None = None,
+        placement: AttemptTarget | None = None,
     ) -> StudioJobSubmission:
         record = response["record"]
         if not _is_studio_submission(response) or record["continues"] != continues or (
             project is not None and project != record["project"]
-        ) or record.get("command") != command:
+        ) or record.get("command") != command or (
+            placement is not None and attempt_target(record.get("target")) != placement
+        ):
             raise JobConflict("This submission token belongs to another action.")
         return _project_submission(response)
 
@@ -1399,6 +1473,7 @@ def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:
         token=response["token"],
         project_id=record["project"],
         actor=_submission_actor(record),
+        target=attempt_target(record.get("target")),
         items=[
             StudioSubmissionItem(
                 run_key=item["run_key"],
@@ -1489,7 +1564,10 @@ def _verified_store_result(view: SuccessView, job: dict[str, Any]) -> tuple[JobR
                 return None
         else:
             result = view.read_receipt(ref)
-        if result.attempt != job["id"] or result.request.id != job["request"]:
+        if (
+            result.attempt != job["id"] or result.request.id != job["request"]
+            or result.target != attempt_target(job["data"].get("target"))
+        ):
             return None
         return receipt, result
     except (OSError, TypeError, ValueError, KeyError):

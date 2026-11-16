@@ -10,6 +10,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
+from feedbax.contracts.execution_target import ExecutionTargets, TargetRunKind
 from feedbax.contracts.jobs import (
     StudioActivityJob,
     StudioEvaluationObjectiveSeries,
@@ -76,10 +77,11 @@ def run_saved_train(
 
     def admit() -> StudioJobSubmission:
         reviewed = folders.read_plan(project_id, revision=body.revision)
-        return _jobs(request).admit_plan(
+        return _jobs(request).submit_plan(
             folders, reviewed,
             run_keys=[RunKey(key.variant, key.step, key.row) for key in body.run_keys],
             token=body.token,
+            target=body.target,
             reuse_completed=body.reuse_completed,
         )
 
@@ -204,6 +206,13 @@ def acknowledge_job(job_id: str, request: Request) -> StudioActivityJob:
 @router.get("/sessions")
 def list_sessions() -> list[StudioLocalSession]:
     return [StudioLocalSession()]
+
+
+@router.get("/orchestration/targets")
+def list_targets(
+    request: Request, kind: Annotated[list[TargetRunKind] | None, Query()] = None,
+) -> ExecutionTargets:
+    return _jobs(request).execution_targets(kind or ())
 
 
 @router.get("/events/history")

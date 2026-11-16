@@ -10,6 +10,7 @@ import types
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
+from uuid import UUID
 
 from pydantic import BaseModel, JsonValue
 from pydantic.fields import FieldInfo
@@ -48,6 +49,10 @@ from feedbax.contracts.acausal import (
     SpatialSite,
 )
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.execution_target import (
+    CloseWhenIdle, ExecutionTargets, KeepOpen, LocalTarget, LocalTargetProfile, ReadyTarget,
+    SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnavailableTarget,
+)
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
@@ -410,6 +415,8 @@ NONE_TYPE = type(None)
 
 
 JOB_MODELS = (
+    KeepOpen, CloseWhenIdle, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
+    ReadyTarget, UnavailableTarget, TargetOption, ExecutionTargets,
     JobError,
     JobOutcome,
     JobProgress,
@@ -980,7 +987,7 @@ def ts_type(annotation: Any) -> str:
         return "JsonValue"
     if annotation is NONE_TYPE:
         return "null"
-    if annotation is str:
+    if annotation is str or annotation is UUID:
         return "string"
     if annotation is int or annotation is float:
         return "number"
@@ -1095,6 +1102,8 @@ def zod_schema(
         return "jsonValueSchema"
     if annotation is NONE_TYPE:
         return "z.null()"
+    if annotation is UUID:
+        return "z.string().uuid()"
     if annotation is str:
         return _apply_zod_constraints("z.string()", annotation, metadata, context=context)
     if annotation is int:

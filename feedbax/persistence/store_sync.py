@@ -22,6 +22,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.effective_success import INDEX_REF, decode_success_index
+from feedbax.contracts.execution_target import AttemptTarget
 from feedbax.contracts.request_refs import RequestId
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.persistence.artifact_custody import (
@@ -57,6 +58,7 @@ class _SuccessSource(StrictModel):
     receipt: ContentObjectRef
     attempt: str
     request_id: RequestId
+    expected_target: AttemptTarget | None = Field(default=None, exclude_if=lambda target: target is None)
 
 
 class _TrainSource(StrictModel):
@@ -172,6 +174,8 @@ def _inventory(store: ImmutableArtifactBlobProvider, selection: _Selection) -> _
         committed = receipts.receipt_at(selection.receipt)
         if (committed.attempt, committed.request.id) != (selection.attempt, selection.request_id):
             raise ValueError("Source receipt differs from the expected attempt and request")
+        if selection.expected_target is not None and committed.target != selection.expected_target:
+            raise ValueError("Source receipt differs from the expected execution target")
         closure = StoreClosureRef(roots=(ReceiptRoot(receipt=selection.receipt),), include_ancestry=True)
         origins = (selection.receipt,)
         objects = ()
@@ -341,9 +345,12 @@ def collect_success(
     *,
     attempt: str,
     request_id: RequestId,
+    expected_target: AttemptTarget | None = None,
 ) -> PublishedSuccess:
     """Transfer and admit an accepted result with its original receipt identity."""
-    return _collect_success(source, destination, receipt, attempt, request_id, promote=True)
+    return _collect_success(
+        source, destination, receipt, attempt, request_id, promote=True, expected_target=expected_target,
+    )
 
 
 def collect_success_evidence(
@@ -366,13 +373,17 @@ def _collect_success(
     request_id: RequestId,
     *,
     promote: bool,
+    expected_target: AttemptTarget | None = None,
 ) -> PublishedSuccess:
-    selection = _SuccessSource(receipt=receipt, attempt=attempt, request_id=request_id)
+    selection = _SuccessSource(
+        receipt=receipt, attempt=attempt, request_id=request_id, expected_target=expected_target,
+    )
     with _transfer_inventory(source, destination, selection) as inventory:
         _bring_objects(source, destination, inventory)
         return SuccessView(destination).admit_collected(
             receipt, attempt=attempt, request_id=request_id,
             supersession_times=inventory.supersession_times, promote=promote,
+            expected_target=expected_target,
         )
 
 

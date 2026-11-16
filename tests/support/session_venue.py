@@ -109,7 +109,9 @@ class LocalVenueProvider:
             if process.poll() is not None or time.monotonic() >= deadline:
                 raise SessionError(f"Local venue Host did not start. See {directory / 'host.log'}.")
             time.sleep(.02)
-        realized = SessionRealization(launch=launch, environment=ENVIRONMENT, probe={"python": sys.executable})
+        realized = SessionRealization(
+            launch=launch, environment=ENVIRONMENT, probe={"python": sys.executable, "placement": {"device": "cpu"}},
+        )
         assert write_json(bootstrap, realized.model_dump(mode="json"), exclusive=True)
         return realized
 

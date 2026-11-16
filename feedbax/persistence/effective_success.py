@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef, ContinuationOccurrence
+from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.effective_success import (
     INDEX_REF,
     Bindings,
@@ -224,6 +225,7 @@ class SuccessView:
     def admit_collected(
         self, receipt_ref: ContentObjectRef, *, attempt: str, request_id: RequestId,
         supersession_times: Mapping[str, datetime], promote: bool,
+        expected_target: AttemptTarget | None = None,
     ) -> PublishedSuccess:
         """Admit exact transferred bytes and update visibility in one Store generation."""
         from feedbax.persistence.receipt_closure import ReceiptClosure
@@ -233,6 +235,8 @@ class SuccessView:
             receipt = closure.receipt_at(receipt_ref)
             if (receipt.attempt, receipt.request.id) != (attempt, request_id):
                 raise ValueError("Collected receipt differs from the expected attempt and request")
+            if expected_target is not None and receipt.target != expected_target:
+                raise ValueError("Collected receipt differs from the expected execution target")
             graph = closure.for_admission(receipt_ref)
             authored = dict(self._index.authored)
             effective = dict(self._index.effective)
@@ -272,11 +276,12 @@ class SuccessView:
         continuation: ContinuationOccurrence | None = None,
         recovery: CheckpointOccurrenceRef | None = None,
         evaluation_manifest: ContentObjectRef | None = None,
+        target: AttemptTarget = LOCAL_TARGET,
     ) -> PublishedSuccess:
         """Commit an accepted attempt using its pinned bindings, including on replay."""
         return self._publish(
             request, attempt, products, bindings=bindings, continuation=continuation, recovery=recovery,
-            evaluation_manifest=evaluation_manifest,
+            evaluation_manifest=evaluation_manifest, target=target,
         )
 
     def _publish(
@@ -284,6 +289,7 @@ class SuccessView:
         continuation: ContinuationOccurrence | None = None,
         recovery: CheckpointOccurrenceRef | None = None,
         evaluation_manifest: ContentObjectRef | None = None,
+        target: AttemptTarget = LOCAL_TARGET,
     ) -> PublishedSuccess:
         with self.store._exclusive_lock():
             if existing := self._index.attempts.get(attempt):
@@ -293,7 +299,8 @@ class SuccessView:
                 if (
                     published.receipt.request, published.receipt.products, published.receipt.inputs,
                     published.receipt.continuation, published.receipt.recovery, published.receipt.evaluation_manifest,
-                ) != (request, products, bindings, continuation, recovery, evaluation_manifest):
+                    published.receipt.target,
+                ) != (request, products, bindings, continuation, recovery, evaluation_manifest, target):
                     raise ValueError("Published attempt has different request, bindings, or products")
                 return published
             if bindings is None:
@@ -315,6 +322,7 @@ class SuccessView:
             receipt = Success(
                 request=request,
                 attempt=attempt,
+                target=target,
                 effective=effective,
                 inputs=inputs,
                 products=products,

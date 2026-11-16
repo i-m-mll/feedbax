@@ -8,6 +8,7 @@ from typing import NamedTuple
 from uuid import UUID
 
 from feedbax.contracts.jobs import StudioJobSubmission
+from feedbax.contracts.execution_target import SESSION_RUN_KINDS
 from feedbax.contracts.project_plan import RunKey
 from feedbax.host.client import HostClient
 from feedbax.host.protocol import EventPage, JsonObject, JobsSnapshot, StopMode
@@ -34,6 +35,7 @@ class SessionJobs:
     def __init__(self, driver: SessionDriver, session_id: UUID, make_jobs: Callable[[HostClient], JobService]):
         self.driver = driver
         self.session_id = str(session_id)
+        self.placement = driver.record(session_id).placement
         self.host = driver.attach(session_id)
         self._jobs = make_jobs(self.host)
         with self.driver.connection() as db:
@@ -64,7 +66,7 @@ class SessionJobs:
         if not run_keys or not token:
             raise SessionError("Delegation requires saved runs and a submission token.")
         selected = {run.key: run.kind for run in reviewed.plan.runs}
-        if any(selected.get(key) not in {"train", "evaluate"} for key in run_keys):
+        if any(selected.get(key) not in SESSION_RUN_KINDS for key in run_keys):
             raise SessionError("This session accepts saved Train and Evaluate runs.")
         request = Delegation(
             project=reviewed.project_id, revision=reviewed.revision, semantic_root=reviewed.semantic_root,
@@ -90,7 +92,9 @@ class SessionJobs:
         reviewed = folders.read_plan(request.project, revision=request.revision)
         if reviewed.semantic_root != request.semantic_root:
             raise SessionError("The venue's saved Plan differs from the delegated Plan.")
-        submission = self._jobs.admit_plan(folders, reviewed, run_keys=request.run_keys, token=token)
+        submission = self._jobs.admit_plan(
+            folders, reviewed, run_keys=request.run_keys, token=token, placement=self.placement,
+        )
         with self.driver.connection() as db:
             db.execute(
                 "UPDATE session_delegations SET submission=? WHERE session=? AND token=?",

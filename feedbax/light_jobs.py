@@ -26,6 +26,7 @@ from feedbax.contracts.effective_success import (
     RequestObject,
     success_content_ref,
 )
+from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigureProduct
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields
 from feedbax.contracts.request_identity import DecodedRequest
@@ -240,6 +241,8 @@ def publish_light_success(
     request_id: str,
     origins: Mapping[str, object],
     products: object,
+    *,
+    target: AttemptTarget = LOCAL_TARGET,
 ) -> dict:
     """Bind the same exact inputs independently and commit the Host-accepted attempt."""
     delivery = LightDelivery.model_validate(payload)
@@ -263,7 +266,7 @@ def publish_light_success(
                 raise ValueError("Light product differs from the exact staged attempt output")
             _verify_staged_product(store, request, bindings, product)
         success = view.publish_bound(
-            delivery.request, attempt=job_id, products=result, bindings=bindings
+            delivery.request, attempt=job_id, products=result, bindings=bindings, target=target,
         )
         store.release_root(root_id)
     return success.ref.model_dump(mode="json")
