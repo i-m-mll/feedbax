@@ -95,10 +95,12 @@ export async function authorFirstTrain(
   await setLinearSize('Output size', 'output_size');
   if (forceComparison) {
     const activation = inspector.getByRole('combobox', { name: 'Activation', exact: true });
-    await expect(activation.getByRole('option').last()).toHaveValue(forceComparison.activation);
-    await activate(page, activation, 'End');
-    await expect(activation).toHaveValue(forceComparison.activation);
-    await expect.poll(async () => linearField((await savedProject()).project, 'activation')).toBe(forceComparison.activation);
+    // Repeated initials cycle the options. The inspector saves and disables the field between keys.
+    for (const value of ['sigmoid', forceComparison.activation]) {
+      await activate(page, activation, 's');
+      await expect(activation).toHaveValue(value);
+      await expect.poll(async () => linearField((await savedProject()).project, 'activation')).toBe(value);
+    }
   }
   await page.keyboard.press('Meta+2');
   const plant = await add('PointMass', 'Mechanics');
