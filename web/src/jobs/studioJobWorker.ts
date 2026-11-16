@@ -89,6 +89,10 @@ function reconcile(force = false) {
     cursor = event.cursor;
     broadcastJobs({ type: 'event', event });
   });
+  stream.addEventListener('venue_event', read((data) => {
+    const event = StudioJobEventSchema.parse(data);
+    if (event.venue) broadcastJobs({ type: 'event', event });
+  }));
   function advanceWatermark(data: unknown) {
     const marker = StudioEventWatermarkSchema.parse(data);
     cursor = Math.max(cursor, marker.cursor);

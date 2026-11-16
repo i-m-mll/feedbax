@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentBinding, ContentObjectRef
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentBinding, ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoints import CheckpointLatestPointer, CheckpointTransactionManifest
@@ -193,10 +194,11 @@ def collect_train_job(
     source: StoreEndpoint, destination: ImmutableArtifactBlobProvider,
     *, attempt: str, request_id: str, pointer: CheckpointLatestPointer,
     expected: ContentObjectRef | None = None,
+    progress: Callable[[StoreTransferProgress], None] | None = None,
 ) -> TrainJobEntry:
     """Collect a stopped attempt's exact binding, checkpoints, and producer provenance."""
     from feedbax.persistence.store_sync import _collect_train_job
 
     return _collect_train_job(
-        source, destination, attempt=attempt, request_id=request_id, pointer=pointer, expected=expected,
+        source, destination, attempt=attempt, request_id=request_id, pointer=pointer, expected=expected, progress=progress,
     )

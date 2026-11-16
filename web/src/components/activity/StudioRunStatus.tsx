@@ -1,7 +1,8 @@
 import type { CSSProperties } from 'react';
-import type { StudioActivityJob } from '@/generated/studioContracts';
+import type { StoreTransferProgress, StudioActivityJob } from '@/generated/studioContracts';
 import {
   studioName,
+  studioFormat,
   studioReason,
   studioRunPhase,
   studioRunStatus,
@@ -58,6 +59,20 @@ export function StudioRunReason({ job }: { job: StudioActivityJob }) {
       {job.can_resume && <p className="text-xs text-shell-muted">{studioReason('canResume', studioName('run'))}</p>}
     </>
   );
+}
+
+const bytes = new Intl.NumberFormat(undefined, { style: 'unit', unit: 'byte', unitDisplay: 'narrow' });
+
+export function StudioCollectionProgress({ progress }: { progress?: StoreTransferProgress | null }) {
+  const label = studioRunStatus('collecting');
+  return <div className="space-y-1">
+    <progress aria-label={label} value={progress?.verified_bytes} max={progress?.total_bytes} />
+    {progress && <div className="text-xs text-shell-muted">
+      {studioName('verifiedBytes')} {studioFormat('ofCount', {
+        count: bytes.format(progress.verified_bytes), total: bytes.format(progress.total_bytes),
+      })}
+    </div>}
+  </div>;
 }
 
 export function StudioRunProgress({

@@ -75,20 +75,30 @@ export interface ReadyTarget {
   state: "ready";
 }
 
-export interface UnavailableTarget {
-  state: "unavailable";
+export interface OffTarget {
+  state: "off";
+  reason: string;
+}
+
+export interface UnreachableTarget {
+  state: "unreachable";
   reason: string;
 }
 
 export interface TargetOption {
   profile: LocalTargetProfile | SessionTargetProfile;
   run_kinds: Array<"train" | "evaluate" | "analyze" | "render" | "report">;
-  availability: ReadyTarget | UnavailableTarget;
+  availability: ReadyTarget | OffTarget | UnreachableTarget;
 }
 
 export interface ExecutionTargets {
   default: "local";
   targets: TargetOption[];
+}
+
+export interface OpeningObservation {
+  step: "acquiring" | "connecting" | "copying" | "installing" | "starting_host";
+  observed_at_ms: number;
 }
 
 export interface JobError {
@@ -146,6 +156,7 @@ export interface StudioActivityJob {
   placement?: "live" | "ordinary" | null;
   target?: LocalTarget | SessionTarget;
   log_tail?: string[];
+  collection_progress?: StoreTransferProgress | null;
 }
 
 export interface StudioEventReset {
@@ -165,6 +176,7 @@ export interface StudioJobEvent {
   kind: string;
   data: Record<string, JsonValue>;
   activity?: StudioActivityJob | null;
+  venue?: StudioVenueStream | null;
 }
 
 export interface StudioJobEventHistory {
@@ -183,6 +195,8 @@ export interface StudioJobSnapshot {
   oldest_cursor: number;
   sessions: Array<StudioLocalSession | StudioRemoteSession>;
   remote_version?: number | null;
+  machine_catalog_version?: number | null;
+  venue_cursors?: StudioVenueCursor[];
 }
 
 export interface StudioJobStopItem {
@@ -424,7 +438,7 @@ export interface StudioLocalSession {
 export interface StudioRemoteSession {
   id: string;
   name: string;
-  state: "opening" | "open" | "closing" | "unreachable";
+  state: "queued" | "opening" | "open" | "closing" | "unreachable" | "off";
   hourly_microusd: number;
   estimated_cost_microusd: number;
   closes_at_ms: number;
@@ -432,6 +446,27 @@ export interface StudioRemoteSession {
   idle_since_ms: number | null;
   job_ids: string[];
   can_close: boolean;
+  opening_observations?: OpeningObservation[];
+  opening_failure?: string | null;
+  billed_cost_microusd?: number | null;
+  provider_observed_at_ms?: number | null;
+  power_state?: "starting" | "on" | "off" | null;
+}
+
+export interface StudioVenueCursor {
+  session_id: string;
+  stream_id: string;
+  cursor: number;
+}
+
+export interface StudioVenueStream {
+  session_id: string;
+  stream_id: string;
+}
+
+export interface StoreTransferProgress {
+  verified_bytes: number;
+  total_bytes: number;
 }
 
 export interface StudioSubmissionItem {
@@ -3692,6 +3727,8 @@ export type StudioProjectWindowMapRow = {
   "member_key"?: string | null;
   "status": JobStatus;
   "reason"?: string | null;
+  "opening_step"?: "acquiring" | "connecting" | "copying" | "installing" | "starting_host" | null;
+  "collection_progress"?: StoreTransferProgress | null;
   "evaluation_conditions"?: Array<string> | null;
   "light"?: StudioSavedLightHistory | null;
 };
@@ -4266,21 +4303,30 @@ export const ReadyTargetSchema: z.ZodType<ReadyTarget> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<ReadyTarget>;
 
-export const UnavailableTargetSchema: z.ZodType<UnavailableTarget> = z.lazy(() =>
+export const OffTargetSchema: z.ZodType<OffTarget> = z.lazy(() =>
   z
     .object({
-      "state": z.literal("unavailable"),
+      "state": z.literal("off"),
       "reason": z.string(),
     })
     .strict()
-) as unknown as z.ZodType<UnavailableTarget>;
+) as unknown as z.ZodType<OffTarget>;
+
+export const UnreachableTargetSchema: z.ZodType<UnreachableTarget> = z.lazy(() =>
+  z
+    .object({
+      "state": z.literal("unreachable"),
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<UnreachableTarget>;
 
 export const TargetOptionSchema: z.ZodType<TargetOption> = z.lazy(() =>
   z
     .object({
       "profile": z.union([LocalTargetProfileSchema, SessionTargetProfileSchema]),
       "run_kinds": z.array(z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("render"), z.literal("report")])),
-      "availability": z.union([ReadyTargetSchema, UnavailableTargetSchema]),
+      "availability": z.union([ReadyTargetSchema, OffTargetSchema, UnreachableTargetSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<TargetOption>;
@@ -4293,6 +4339,15 @@ export const ExecutionTargetsSchema: z.ZodType<ExecutionTargets> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<ExecutionTargets>;
+
+export const OpeningObservationSchema: z.ZodType<OpeningObservation> = z.lazy(() =>
+  z
+    .object({
+      "step": z.union([z.literal("acquiring"), z.literal("connecting"), z.literal("copying"), z.literal("installing"), z.literal("starting_host")]),
+      "observed_at_ms": z.number().int().safe().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<OpeningObservation>;
 
 export const JobErrorSchema: z.ZodType<JobError> = z.lazy(() =>
   z
@@ -4371,6 +4426,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
       "target": z.union([LocalTargetSchema, SessionTargetSchema]).optional(),
       "log_tail": z.array(z.string()).optional(),
+      "collection_progress": StoreTransferProgressSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioActivityJob>;
@@ -4402,6 +4458,7 @@ export const StudioJobEventSchema: z.ZodType<StudioJobEvent> = z.lazy(() =>
       "kind": z.string(),
       "data": z.record(z.string(), jsonValueSchema),
       "activity": StudioActivityJobSchema.nullable().optional(),
+      "venue": StudioVenueStreamSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobEvent>;
@@ -4432,6 +4489,8 @@ export const StudioJobSnapshotSchema: z.ZodType<StudioJobSnapshot> = z.lazy(() =
       "oldest_cursor": z.number().int().safe().gte(0),
       "sessions": z.array(z.union([StudioLocalSessionSchema, StudioRemoteSessionSchema])),
       "remote_version": z.number().int().safe().gte(0).nullable().optional(),
+      "machine_catalog_version": z.number().int().safe().gte(0).nullable().optional(),
+      "venue_cursors": z.array(StudioVenueCursorSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSnapshot>;
@@ -4797,7 +4856,7 @@ export const StudioRemoteSessionSchema: z.ZodType<StudioRemoteSession> = z.lazy(
     .object({
       "id": z.string().uuid(),
       "name": z.string(),
-      "state": z.union([z.literal("opening"), z.literal("open"), z.literal("closing"), z.literal("unreachable")]),
+      "state": z.union([z.literal("queued"), z.literal("opening"), z.literal("open"), z.literal("closing"), z.literal("unreachable"), z.literal("off")]),
       "hourly_microusd": z.number().int().safe().gte(0),
       "estimated_cost_microusd": z.number().int().safe().gte(0),
       "closes_at_ms": z.number().int().safe().gt(0),
@@ -4805,9 +4864,42 @@ export const StudioRemoteSessionSchema: z.ZodType<StudioRemoteSession> = z.lazy(
       "idle_since_ms": z.number().int().safe().gte(0).nullable(),
       "job_ids": z.array(z.string()),
       "can_close": z.boolean(),
+      "opening_observations": z.array(OpeningObservationSchema).optional(),
+      "opening_failure": z.string().nullable().optional(),
+      "billed_cost_microusd": z.number().int().safe().gte(0).nullable().optional(),
+      "provider_observed_at_ms": z.number().int().safe().gt(0).nullable().optional(),
+      "power_state": z.union([z.literal("starting"), z.literal("on"), z.literal("off")]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioRemoteSession>;
+
+export const StudioVenueCursorSchema: z.ZodType<StudioVenueCursor> = z.lazy(() =>
+  z
+    .object({
+      "session_id": z.string().uuid(),
+      "stream_id": z.string().min(1),
+      "cursor": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioVenueCursor>;
+
+export const StudioVenueStreamSchema: z.ZodType<StudioVenueStream> = z.lazy(() =>
+  z
+    .object({
+      "session_id": z.string().uuid(),
+      "stream_id": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioVenueStream>;
+
+export const StoreTransferProgressSchema: z.ZodType<StoreTransferProgress> = z.lazy(() =>
+  z
+    .object({
+      "verified_bytes": z.number().int().safe().gte(0),
+      "total_bytes": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StoreTransferProgress>;
 
 export const StudioSubmissionItemSchema: z.ZodType<StudioSubmissionItem> = z.lazy(() =>
   z
@@ -10093,6 +10185,8 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "member_key": z.union([z.string(), z.null()]).optional(),
     "status": JobStatusSchema,
     "reason": z.union([z.string(), z.null()]).optional(),
+    "opening_step": z.union([z.union([z.literal("acquiring"), z.literal("connecting"), z.literal("copying"), z.literal("installing"), z.literal("starting_host")]), z.null()]).optional(),
+    "collection_progress": z.union([StoreTransferProgressSchema, z.null()]).optional(),
     "evaluation_conditions": z.union([z.array(z.string()), z.null()]).optional(),
     "light": z.union([StudioSavedLightHistorySchema, z.null()]).optional(),
   }).strict()
@@ -10543,9 +10637,11 @@ export const contractSchemas = {
   TargetRealization: TargetRealizationSchema,
   SessionTarget: SessionTargetSchema,
   ReadyTarget: ReadyTargetSchema,
-  UnavailableTarget: UnavailableTargetSchema,
+  OffTarget: OffTargetSchema,
+  UnreachableTarget: UnreachableTargetSchema,
   TargetOption: TargetOptionSchema,
   ExecutionTargets: ExecutionTargetsSchema,
+  OpeningObservation: OpeningObservationSchema,
   JobError: JobErrorSchema,
   JobOutcome: JobOutcomeSchema,
   JobProgress: JobProgressSchema,
@@ -10589,6 +10685,9 @@ export const contractSchemas = {
   StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
   StudioRemoteSession: StudioRemoteSessionSchema,
+  StudioVenueCursor: StudioVenueCursorSchema,
+  StudioVenueStream: StudioVenueStreamSchema,
+  StoreTransferProgress: StoreTransferProgressSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
   ModelAddress: ModelAddressSchema,
   ModelDocument: ModelDocumentSchema,
@@ -10691,9 +10790,11 @@ export interface ContractTypeMap {
   TargetRealization: TargetRealization;
   SessionTarget: SessionTarget;
   ReadyTarget: ReadyTarget;
-  UnavailableTarget: UnavailableTarget;
+  OffTarget: OffTarget;
+  UnreachableTarget: UnreachableTarget;
   TargetOption: TargetOption;
   ExecutionTargets: ExecutionTargets;
+  OpeningObservation: OpeningObservation;
   JobError: JobError;
   JobOutcome: JobOutcome;
   JobProgress: JobProgress;
@@ -10737,6 +10838,9 @@ export interface ContractTypeMap {
   StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
   StudioRemoteSession: StudioRemoteSession;
+  StudioVenueCursor: StudioVenueCursor;
+  StudioVenueStream: StudioVenueStream;
+  StoreTransferProgress: StoreTransferProgress;
   StudioSubmissionItem: StudioSubmissionItem;
   ModelAddress: ModelAddress;
   ModelDocument: ModelDocument;

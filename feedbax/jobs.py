@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
@@ -23,6 +23,7 @@ from feedbax._secure_fs import (
     recheck_directory_chain,
 )
 from feedbax.checkpoint_coordinates import finite_coordinates
+from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.execution_target import (
     LOCAL_RUN_KINDS, LOCAL_TARGET, LOCAL_TARGET_ID, AttemptTarget, ExecutionTargets,
@@ -49,6 +50,7 @@ from feedbax.contracts.jobs import (
     StudioSubmissionActor,
     StudioSubmissionItem,
     StudioTrainCheckpointSource,
+    StudioVenueStream,
 )
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT, LiveEvaluationObservation
 from feedbax.contracts.manifest import (
@@ -147,6 +149,7 @@ class PlanJobAttempt:
     light_success: Success | None = None
     train_request: RequestObject | None = None
     collected_evaluate: bool = False
+    collection_progress: StoreTransferProgress | None = None
 
 
 @dataclass(frozen=True)
@@ -1060,6 +1063,7 @@ class JobService(PlanJobReader):
 
     def collect_session_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
+        progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> CollectedSessionAttempt:
         """Collect one terminal Jobs snapshot attempt and identify the verified custody for acknowledgement."""
         from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -1108,9 +1112,9 @@ class JobService(PlanJobReader):
                     raise JobConflict("The local Train entry differs from the observed Stop checkpoint.")
             activity = self._activity_rows(existing)[attempt_id]
         elif kind == "train":
-            activity = self.collect_train_attempt(source, attempt, project=project, store=store)
+            activity = self.collect_train_attempt(source, attempt, project=project, store=store, progress=progress)
         else:
-            activity = self._collect_evaluate_attempt(source, attempt, project=project, store=store, ref=ref)
+            activity = self._collect_evaluate_attempt(source, attempt, project=project, store=store, ref=ref, progress=progress)
         if activity.status != JobStatus(state):
             raise JobConflict("The locally retained attempt differs from the observed terminal status.")
         return CollectedSessionAttempt(activity, ref.sha256)
@@ -1118,6 +1122,7 @@ class JobService(PlanJobReader):
     def _collect_evaluate_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *,
         project: str, store: Path, ref: ContentObjectRef,
+        progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> StudioActivityJob:
         from feedbax.persistence.store_sync import collect_success
         from feedbax.studio.canonical_evaluate import (
@@ -1140,7 +1145,7 @@ class JobService(PlanJobReader):
         destination = ImmutableArtifactBlobProvider(store)
         success = collect_success(
             source, destination, ref, attempt=attempt_id, request_id=request_id,
-            expected_target=placement, verify=verify,
+            expected_target=placement, verify=verify, progress=progress,
         ).receipt
         _, _, subject = decode_rollout_request(request_id, destination.get_object(success.request.object))
         payload = BoundEvaluationJobInput(
@@ -1164,6 +1169,7 @@ class JobService(PlanJobReader):
 
     def collect_train_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
+        progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> StudioActivityJob:
         """Collect an observed terminal Train and durably mirror its original attempt."""
         from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -1186,7 +1192,7 @@ class JobService(PlanJobReader):
             receipt = ContentObjectRef.model_validate(outcome["store_success"])
             result = collect_success(
                 source, destination, receipt, attempt=attempt_id, request_id=request_id,
-                expected_target=placement, verify=_require_train_continuation,
+                expected_target=placement, verify=_require_train_continuation, progress=progress,
             )
             request = result.receipt.request
         else:
@@ -1194,7 +1200,7 @@ class JobService(PlanJobReader):
             receipt = ContentObjectRef.model_validate(raw) if (raw := outcome.get("store_job_entry")) else None
             entry = collect_train_job(
                 source, destination, attempt=attempt_id, request_id=request_id, pointer=stopped.pointer,
-                expected=receipt,
+                expected=receipt, progress=progress,
             )
             request = entry.request
 
@@ -1320,6 +1326,14 @@ class JobService(PlanJobReader):
             events=[_project_event(event) for event in visible],
         )
 
+    @staticmethod
+    def venue_events(
+        events: Sequence[Mapping[str, Any]], stream: StudioVenueStream,
+    ) -> list[StudioJobEvent]:
+        return [
+            _project_event(event).model_copy(update={"venue": stream})
+            for event in events if event["kind"] not in _HOST_ONLY_EVENTS
+        ]
     def _visible_events(
         self, events: list[dict[str, Any]], *, activity: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -1559,7 +1573,7 @@ def _project_submission(response: dict[str, Any]) -> StudioJobSubmission:
 
 
 def _project_event(
-    event: dict[str, Any],
+    event: Mapping[str, Any],
     *,
     activity: StudioActivityJob | None = None,
     detail: bool = True,

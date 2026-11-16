@@ -11,6 +11,7 @@ import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal, Protocol, TypeGuard
@@ -32,7 +33,7 @@ from feedbax.orchestration.runpod import (
     project_runpod_provision_facts,
 )
 from feedbax.orchestration.session import (
-    Nonempty, Positive, ProviderResource, SessionError, SessionLaunch, SessionModel,
+    Nonempty, Positive, ProviderMachineObservation, ProviderResource, ProviderUnreachable, SessionError, SessionLaunch, SessionModel,
     SessionOpeningFailed, SessionRequest,
 )
 
@@ -240,7 +241,7 @@ class RunPodAcquisition:
                 body=body, timeout_seconds=timeout_seconds,
             )
         except (OSError, RunPodDriverError):
-            raise SessionError("RunPod control-plane transport failed.") from None
+            raise ProviderUnreachable("RunPod control-plane transport failed.") from None
 
     def _pages(self, path: str, key: str, *, paginated: bool) -> Iterator[object]:
         params: dict[str, str | int] = {"limit": 100} if paginated else {}
@@ -337,6 +338,8 @@ class RunPodAcquisition:
             "include": "AVAILABILITY", "product": "POD", "cloud": "SECURE", "count": 1,
             "cudaVersions": config.cuda_version,
         }, timeout_seconds=timeout_seconds)
+        if reply.status in (401, 403, 408, 429) or reply.status >= 500:
+            raise ProviderUnreachable(f"RunPod could not answer the quote request (HTTP {reply.status}).")
         body = reply.body or {}
         price = body.get("price")
         hourly = price.get("secure") if isinstance(price, Mapping) else None
@@ -473,6 +476,29 @@ class RunPodAcquisition:
         if intent != item.intent:
             raise SessionError("RunPod resource intent changed before use.")
         return body
+
+    def machine_observation(self, resource: ProviderResource) -> ProviderMachineObservation:
+        if resource.kind != "venue" or resource.intent is None or _INTENT.fullmatch(resource.intent) is None:
+            raise SessionError("Machine status requires an owned RunPod venue.")
+        pod = self._owned_detail(resource, f"{_PODS}/{_identity(resource.id)}")
+        observed = _epoch_ms()
+        if pod is None:
+            return ProviderMachineObservation(state="off", observed_at_ms=observed)
+        actual = pod.get("status")
+        if actual in ("EXITED", "TERMINATED", "FAILED"):
+            state = "off"
+        elif actual == "RUNNING":
+            state = "on"
+        elif actual in ("CREATED", "STARTING", "PENDING", "INITIALIZING"):
+            state = "starting"
+        else:
+            raise SessionError("RunPod did not report the venue's current power state.")
+        started = project_runpod_provision_facts(pod)["billing_started_at"]
+        return ProviderMachineObservation(
+            state=state, observed_at_ms=observed,
+            billing_started_at_ms=round(datetime.fromisoformat(started).timestamp() * 1000)
+            if isinstance(started, str) else None,
+        )
 
     @staticmethod
     def _pod_state(resource: ProviderResource, path: Path) -> _PodRequested:

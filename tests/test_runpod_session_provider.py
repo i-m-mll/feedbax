@@ -65,6 +65,30 @@ def test_runpod_gate_guards_all_mutations(tmp_path):
     assert cutoff.launches == []
 
 
+def test_machine_status_uses_owned_provider_state_without_treating_price_as_billed_cost(tmp_path):
+    launch = _launch(runpod_resources())
+    resource = ProviderResource(id="pod", intent=launch.intent, kind="venue")
+    body = {
+        "id": resource.id, "name": resource.intent, "status": "RUNNING", "desiredStatus": "EXITED",
+        "costPerHr": 0.75, "createdAt": "2026-01-01T00:00:00Z",
+    }
+
+    def read(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET" and request.url.path == "/v2/pods/pod"
+        return httpx.Response(200, json=body)
+
+    provider = _provider(tmp_path, read, None)
+    running = provider.machine_observation(resource)
+    assert running.state == "on"
+    assert running.billing_started_at_ms == 1767225600000
+    assert running.billed_microusd is None
+    body["status"] = "EXITED"
+    assert provider.machine_observation(resource).state == "off"
+    body["name"] = "foreign"
+    with pytest.raises(SessionError, match="intent changed"):
+        provider.machine_observation(resource)
+
+
 def test_runpod_boot_installs_pinned_key_and_arms_guard_before_start(tmp_path):
     private, public = _fresh_boot_host_key()
     start = tmp_path / "start"

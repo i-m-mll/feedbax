@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, cast
@@ -14,6 +15,7 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.execution_target import OpeningStep
 from feedbax.host import watchdog
 from feedbax.host.client import HostClient, StdioAttachment
 from feedbax.host.protocol import HostError, JsonObject, SessionAccess
@@ -22,7 +24,7 @@ from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, SealedRepoSn
 from feedbax.orchestration.runpod_cutoff import NativeRunPodCutoff
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition
 from feedbax.orchestration.session import (
-    Digest, Positive, ProviderResource, SessionDriver, SessionError, SessionLaunch, SessionModel,
+    Digest, Positive, ProviderMachineObservation, ProviderResource, SessionDriver, SessionError, SessionLaunch, SessionModel,
     SessionOpeningFailed, SessionRealization, SessionRequest,
 )
 from feedbax.orchestration.session_jobs import SessionJobs
@@ -154,6 +156,9 @@ class RunPodSessionProvider:
     def inventory(self) -> tuple[ProviderResource, ...]:
         return tuple(self.acquisition.inventory())
 
+    def machine_observation(self, resource: ProviderResource) -> ProviderMachineObservation:
+        return self.acquisition.machine_observation(resource)
+
     def acquire(self, launch: SessionLaunch) -> ProviderResource:
         self._check_environment(launch.request)
         self._check_uv_binary()
@@ -209,7 +214,7 @@ class RunPodSessionProvider:
 
     def realize(
         self, resource: ProviderResource, launch: SessionLaunch, *,
-        adoption_token: str, controller_token: str,
+        adoption_token: str, controller_token: str, opening: Callable[[OpeningStep], None],
     ) -> SessionRealization:
         self._check_environment(launch.request)
         if resource.intent != launch.intent or not self.enforces_cutoff:
@@ -223,7 +228,7 @@ class RunPodSessionProvider:
         try:
             return self._realize(
                 resource, launch, connection, endpoint.placement, deadline,
-                adoption_token=adoption_token, controller_token=controller_token,
+                adoption_token=adoption_token, controller_token=controller_token, opening=opening,
             )
         except SessionOpeningFailed:
             raise
@@ -233,6 +238,7 @@ class RunPodSessionProvider:
     def _realize(
         self, resource: ProviderResource, launch: SessionLaunch, connection: SSHStoreConnection,
         placement: JsonObject, deadline: float, *, adoption_token: str, controller_token: str,
+        opening: Callable[[OpeningStep], None],
     ) -> SessionRealization:
         def remaining() -> float:
             seconds = min(deadline - time.monotonic(), launch.ends_at_ms / 1000 - time.time())
@@ -266,6 +272,8 @@ class RunPodSessionProvider:
                 }
             prepare["uv_sha256"] = self.environment.uv_sha256
             prepared = json.loads(self._call(bounded(), layout, "prepare", prepare))
+            if prepared["send_uv"] or prepared["send"]:
+                opening("copying")
             if prepared["send_uv"]:
                 digest, binary = self.environment.uv_sha256, self._uv_binary
                 assert digest is not None and binary is not None
@@ -279,6 +287,7 @@ class RunPodSessionProvider:
                     self.snapshot.staging_root, content_sha256=record.content_sha256, file_count=record.file_count,
                 )
                 bounded().copy_tree(self.snapshot.staging_root, layout.root / "incoming")
+            opening("installing")
             install_seconds = remaining()
             probe = self._call(replace(connection, timeout_seconds=install_seconds), layout, "install", {
                 "content_sha256": self.environment.snapshot.content_sha256,
@@ -309,6 +318,7 @@ class RunPodSessionProvider:
             if realized.probe.get("running_cutoff") != proof:
                 raise SessionError("RunPod realization has different running cutoff evidence.")
         capability = SessionAccess(str(launch.request.id), 0, controller_token)
+        opening("starting_host")
         remaining()
         self.acquisition.begin_completion(resource, launch)
         self._call(bounded(), layout, "complete", {

@@ -40,7 +40,7 @@ it('validates named execution targets and the exact venue session identity', () 
     default: 'local',
     targets: [{
       profile, run_kinds: ['train', 'evaluate'],
-      availability: { state: 'unavailable', reason: 'Driver is unavailable.' },
+      availability: { state: 'off', reason: 'Driver is unavailable.' },
     }],
   };
   expect(ExecutionTargetsSchema.parse(catalog)).toEqual(catalog);

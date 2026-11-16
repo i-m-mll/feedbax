@@ -216,7 +216,7 @@ executor.execute_managed_training_run = execute
 
         with TestClient(create_app(projects_dir=folders.root, targets=registry, submit_session=submit_session)) as client:
             machines = client.get("/api/orchestration/targets").json()
-            assert machines["targets"][1]["availability"]["state"] == "unavailable"
+            assert machines["targets"][1]["availability"]["state"] == "off"
             response = client.post(f"/api/projects/{PROJECT}/train-runs", json={
                 "revision": local_plan.revision, "run_keys": [asdict(TRAIN), asdict(EVALUATE)],
                 "token": TOKEN, "target": profile.id,

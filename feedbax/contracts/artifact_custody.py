@@ -112,6 +112,11 @@ class ContentTreeFile(StrictModel):
         return _canonical_content_path(value)
 
 
+class StoreTransferProgress(StrictModel):
+    verified_bytes: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+
+
 class ContentTree(StrictModel):
     """Canonical role-free descriptor for a directory tree."""
 

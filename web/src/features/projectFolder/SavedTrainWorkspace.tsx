@@ -360,6 +360,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     enabled: machineKinds.length > 0,
     retry: false,
   });
+  const machineCatalogVersion = jobs.data?.machine_catalog_version;
+  useEffect(() => {
+    if (machineCatalogVersion !== undefined) void queries.invalidateQueries({ queryKey: ['execution-targets'] });
+  }, [machineCatalogVersion, queries]);
   const requestedMachine = step ? machines[step.id] : undefined;
   const localMachine = machineCatalog.data?.default ?? 'local';
   const remoteMachine = requestedMachine && requestedMachine !== localMachine ? requestedMachine : undefined;

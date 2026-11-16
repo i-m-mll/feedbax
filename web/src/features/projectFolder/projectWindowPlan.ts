@@ -1,4 +1,4 @@
-import { studioFormat, studioName } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioName, studioOpeningStep } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import type {
   Project, SelectedRow, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
@@ -122,10 +122,12 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
     const change = training?.change;
     const reason = change && row.status === 'stale'
       ? [row.reason, `${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`].filter(Boolean).join(' ')
+      : row.opening_step ? [studioOpeningStep(row.opening_step), row.reason].filter(Boolean).join(' · ')
       : row.reason ?? undefined;
     addRun(row.key.step, {
       id, values, label: producer?.label ?? row.label, status: row.status, reason, variant: row.key.variant,
       progress: training?.attempts.at(-1)?.progress ?? undefined,
+      collectionProgress: row.collection_progress ?? undefined,
       sizeBytes: evaluations.get(id)?.result?.size_bytes,
     });
   }

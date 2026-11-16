@@ -48,10 +48,10 @@ from feedbax.contracts.acausal import (
     SpatialMusclePath,
     SpatialSite,
 )
-from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.execution_target import (
-    CloseWhenIdle, ExecutionTargets, KeepOpen, LocalTarget, LocalTargetProfile, ReadyTarget,
-    SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnavailableTarget,
+    CloseWhenIdle, ExecutionTargets, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
+    SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.report_document import ReportDocument
@@ -200,6 +200,8 @@ from feedbax.contracts.jobs import (
     StudioJobSubmission,
     StudioLocalSession,
     StudioRemoteSession,
+    StudioVenueCursor,
+    StudioVenueStream,
     StudioPlanRequestAddress,
     StudioPlanReviewEntry,
     StudioPlanReviewSource,
@@ -422,7 +424,7 @@ NONE_TYPE = type(None)
 
 JOB_MODELS = (
     KeepOpen, CloseWhenIdle, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
-    ReadyTarget, UnavailableTarget, TargetOption, ExecutionTargets,
+    ReadyTarget, OffTarget, UnreachableTarget, TargetOption, ExecutionTargets, OpeningObservation,
     JobError,
     JobOutcome,
     JobProgress,
@@ -466,6 +468,9 @@ JOB_MODELS = (
     StudioTrainCheckpointSource,
     StudioLocalSession,
     StudioRemoteSession,
+    StudioVenueCursor,
+    StudioVenueStream,
+    StoreTransferProgress,
     StudioSubmissionItem,
 )
 

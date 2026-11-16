@@ -25,6 +25,7 @@ from feedbax.contracts.jobs import (
     StudioJobSubmission,
     StudioLocalSession,
     StudioRemoteSession,
+    StudioVenueStream,
     StudioMachineApproval,
     StudioMachineApprovalReceipt,
     StudioMachineQuote,
@@ -313,11 +314,23 @@ def job_event_history(
     project: Annotated[str, Query(min_length=1)],
     through: Annotated[int, Query(ge=0)],
     after: Annotated[int, Query(ge=0)] = 0,
+    venue: UUID | None = None,
+    stream: Annotated[str | None, Query(min_length=1)] = None,
 ) -> StudioJobEventHistory:
     if after > through:
         raise HTTPException(422, detail="Replay start follows its boundary.")
     try:
+        if venue is not None and stream is not None:
+            return _remote_runs(request).venue_history(
+                StudioVenueStream(session_id=venue, stream_id=stream), after=after, through=through, projects=(project,),
+            )
+        if venue is not None or stream is not None:
+            raise HTTPException(422, detail="Machine history requires both source identifiers.")
         return _jobs(request).event_history(after=after, project=project, through=through)
+    except JobNotFound as exc:
+        raise HTTPException(404, detail="Unknown machine history.") from exc
+    except SessionError as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
 
@@ -352,6 +365,11 @@ async def job_events(
     except HostError as exc:
         raise _host_error(exc) from exc
 
+    venue_positions = {
+        (cursor.session_id, cursor.stream_id): cursor.cursor
+        for cursor in await run_in_threadpool(remote.venue_cursors)
+    } if remote is not None and projects else {}
+
     async def stream() -> AsyncIterator[str]:
         head = boundary
         page = initial_page
@@ -378,6 +396,19 @@ async def job_events(
             if remote is not None and replay_complete and remote.version != last_remote_version:
                 last_remote_version = remote.version
                 yield f'event: machines_changed\ndata: {{"version":{last_remote_version}}}\n\n'
+            if remote is not None and replay_complete and projects:
+                for source in await run_in_threadpool(remote.venue_cursors):
+                    key = (source.session_id, source.stream_id)
+                    position = venue_positions.get(key, 0)
+                    if position == source.cursor:
+                        continue
+                    events = await run_in_threadpool(
+                        remote.venue_history, StudioVenueStream(session_id=source.session_id, stream_id=source.stream_id),
+                        after=position, through=source.cursor, projects=projects,
+                    )
+                    venue_positions[key] = events.cursor
+                    for event in events.events:
+                        yield f"event: venue_event\ndata: {event.model_dump_json()}\n\n"
             if watch is not None and replay_complete and monotonic() >= next_observation:
                 revisions = await run_in_threadpool(watch.changed)
                 next_observation = monotonic() + _FOLDER_OBSERVATION_INTERVAL

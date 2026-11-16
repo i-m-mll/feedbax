@@ -18,6 +18,7 @@ from feedbax.contracts.artifact_custody import (
     ArtifactBlobContainmentError,
     ArtifactBlobIntegrityError,
     ContentObjectRef,
+    StoreTransferProgress,
 )
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
@@ -35,7 +36,6 @@ from feedbax.persistence.ssh_store import RemoteStore, SSHStoreConnection as SSH
 from feedbax.persistence.train_job import (
     TrainJobEntry, _entry_ref, _job_ref, _origins, _read_entry, _verify_checkpoints, _verify_entry,
 )
-
 
 type StoreEndpoint = ImmutableArtifactBlobProvider | RemoteStore
 _INCOMING = ".incoming"
@@ -229,12 +229,15 @@ def _incoming_path(store: ImmutableArtifactBlobProvider, ref: ContentObjectRef) 
 
 def _receive(
     inventory: _Inventory, store: ImmutableArtifactBlobProvider, *, prepare: bool,
+    verified: Callable[[ContentObjectRef], None] | None = None,
 ) -> tuple[ContentObjectRef, ...]:
     """Adopt completed staged files, returning only objects still needed."""
     missing = []
     for ref in inventory.objects:
         if store._reuse_object(ref, store._replacement_validator(ref)):
             store._settle_install(ref)
+            if verified is not None:
+                verified(ref)
             continue
         staged = _incoming_path(store, ref)
         try:
@@ -249,6 +252,8 @@ def _receive(
             raise
         else:
             _remove_incoming(staged)
+            if verified is not None:
+                verified(ref)
     return tuple(missing)
 
 
@@ -264,11 +269,25 @@ def _remove_incoming(staged: Path) -> None:
 
 def _bring_objects(
     source: StoreEndpoint, destination: ImmutableArtifactBlobProvider, inventory: _Inventory,
+    *, progress: Callable[[StoreTransferProgress], None] | None = None,
 ) -> int:
     if isinstance(source, RemoteStore):
         missing = _receive(inventory, destination, prepare=True)
+        total_bytes = sum(ref.size_bytes for ref in inventory.objects)
+        received = total_bytes - sum(ref.size_bytes for ref in missing)
+        remaining = {ref.sha256 for ref in missing}
+
+        def verified(ref: ContentObjectRef) -> None:
+            nonlocal received
+            if progress is not None and ref.sha256 in remaining:
+                remaining.remove(ref.sha256)
+                received += ref.size_bytes
+                progress(StoreTransferProgress(verified_bytes=received, total_bytes=total_bytes))
+
+        if progress is not None:
+            progress(StoreTransferProgress(verified_bytes=received, total_bytes=total_bytes))
         source.connection.copy_objects(source.root, Path(destination.root) / _INCOMING, missing, pull=True)
-        _receive(inventory, destination, prepare=False)
+        _receive(inventory, destination, prepare=False, verified=verified if progress is not None else None)
         return len(missing)
     return sum(destination._clone_object_from(source, ref) for ref in inventory.objects)
 
@@ -347,11 +366,13 @@ def collect_success(
     request_id: RequestId,
     expected_target: AttemptTarget | None = None,
     verify: Callable[[Success], None] | None = None,
+    progress: Callable[[StoreTransferProgress], None] | None = None,
 ) -> PublishedSuccess:
     """Transfer and admit an accepted result with its original receipt identity."""
     return _collect_success(
         source, destination, receipt, attempt, request_id,
         promote=True, expected_target=expected_target, verify=verify,
+        progress=progress,
     )
 
 
@@ -377,12 +398,13 @@ def _collect_success(
     promote: bool,
     expected_target: AttemptTarget | None = None,
     verify: Callable[[Success], None] | None = None,
+    progress: Callable[[StoreTransferProgress], None] | None = None,
 ) -> PublishedSuccess:
     selection = _SuccessSource(
         receipt=receipt, attempt=attempt, request_id=request_id, expected_target=expected_target,
     )
     with _transfer_inventory(source, destination, selection) as inventory:
-        _bring_objects(source, destination, inventory)
+        _bring_objects(source, destination, inventory, progress=progress)
         if verify is not None:
             verify(ReceiptClosure(destination).receipt_at(receipt))
         return SuccessView(destination).admit_collected(
@@ -396,6 +418,7 @@ def _collect_train_job(
     source: StoreEndpoint, destination: ImmutableArtifactBlobProvider,
     *, attempt: str, request_id: RequestId, pointer: CheckpointLatestPointer,
     expected: ContentObjectRef | None,
+    progress: Callable[[StoreTransferProgress], None] | None = None,
 ) -> TrainJobEntry:
     """Collect a receipt-less stopped attempt and publish its verified Resume custody."""
     selection = _TrainSource(attempt=attempt, request_id=request_id, pointer=pointer, expected=expected)
@@ -403,7 +426,7 @@ def _collect_train_job(
         _entry_ref(inventory.closure, selection.expected)
         update = _RefUpdate(name=_job_ref(attempt))
         current = _ref_before(destination, inventory.closure, update)
-        _bring_objects(source, destination, inventory)
+        _bring_objects(source, destination, inventory, progress=progress)
         entry = _selected_train(destination, inventory.closure, selection)
         _verify_checkpoints(destination, entry)
         receipts = ReceiptClosure(destination)

@@ -22,7 +22,7 @@ from feedbax.host.process import verify
 from feedbax.host.protocol import SessionAccess
 from feedbax.host.session import initialize_session
 from feedbax.orchestration.session import (
-    ProviderResource, SessionError, SessionLaunch, SessionRealization, SessionRequest,
+    ProviderMachineObservation, ProviderResource, SessionError, SessionLaunch, SessionRealization, SessionRequest,
 )
 
 
@@ -70,6 +70,13 @@ class LocalVenueProvider:
                 continue
         return result
 
+    def machine_observation(self, resource: ProviderResource) -> ProviderMachineObservation:
+        if resource not in self.inventory():
+            state = "off"
+        else:
+            state = "on" if (self.directory(resource) / "realization.json").is_file() else "starting"
+        return ProviderMachineObservation(state=state, observed_at_ms=time.time_ns() // 1_000_000)
+
     def acquire(self, launch: SessionLaunch) -> ProviderResource:
         resource = ProviderResource(id=launch.request.id.hex, intent=launch.intent, kind="venue")
         assert not (self.root / f".used-{resource.id}").exists()
@@ -85,12 +92,13 @@ class LocalVenueProvider:
 
     def realize(
         self, resource: ProviderResource, launch: SessionLaunch, *,
-        adoption_token: str, controller_token: str,
+        adoption_token: str, controller_token: str, opening,
     ) -> SessionRealization:
         directory = self.directory(resource)
         bootstrap = directory / "realization.json"
         if bootstrap.exists():
             return self.realization(resource)
+        opening("starting_host")
         initialize_session(
             directory / "host", session_id=str(launch.request.id), operator=launch.authorization.operator,
             expires_at=launch.ends_at_ms / 1000, adoption_token=adoption_token, controller_token=controller_token,

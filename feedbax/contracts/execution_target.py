@@ -12,12 +12,18 @@ from feedbax.contracts.studio_refinements import validate_cross_field_refinement
 LOCAL_TARGET_ID = "local"
 TargetId = Annotated[str, Field(min_length=1, pattern=r"^\S+$")]
 TargetRunKind = Literal["train", "evaluate", "analyze", "render", "report"]
+OpeningStep = Literal["acquiring", "connecting", "copying", "installing", "starting_host"]
 SESSION_RUN_KINDS: frozenset[TargetRunKind] = frozenset({"train", "evaluate"})
 LOCAL_RUN_KINDS: tuple[TargetRunKind, ...] = ("train", "evaluate", "analyze", "render", "report")
 
 
 class TargetModel(StrictModel):
     model_config = ConfigDict(frozen=True)
+
+
+class OpeningObservation(TargetModel):
+    step: OpeningStep
+    observed_at_ms: int = Field(gt=0)
 
 
 class KeepOpen(TargetModel):
@@ -93,12 +99,17 @@ class ReadyTarget(TargetModel):
     state: Literal["ready"]
 
 
-class UnavailableTarget(TargetModel):
-    state: Literal["unavailable"]
+class OffTarget(TargetModel):
+    state: Literal["off"]
     reason: str
 
 
-TargetAvailability = Annotated[ReadyTarget | UnavailableTarget, Field(discriminator="state")]
+class UnreachableTarget(TargetModel):
+    state: Literal["unreachable"]
+    reason: str
+
+
+TargetAvailability = Annotated[ReadyTarget | OffTarget | UnreachableTarget, Field(discriminator="state")]
 
 
 class TargetOption(TargetModel):

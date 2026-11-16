@@ -58,6 +58,7 @@ class SessionStatus(TypedDict):
     live_jobs: list[str]
     pending: dict[str, str]
     collections: dict[str, str]
+    idle_since_ms: NotRequired[int | None]
 
 
 class SessionCloseClaim(TypedDict):

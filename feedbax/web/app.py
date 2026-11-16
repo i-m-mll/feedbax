@@ -80,6 +80,7 @@ def create_app(
         app.state.project_plan = ProjectPlanService(
             app.state.project_folders, app.state.job_service,
             remote_runs.project_attempts if remote_runs is not None else None,
+            remote_runs.opening_rows if remote_runs is not None else None,
         )
         analysis_jobs = AnalysisJobService(
             job_root=desktop_job_root / "analysis" if desktop_job_root is not None else None
@@ -87,15 +88,18 @@ def create_app(
         app.state.analysis_jobs = analysis_jobs
         if desktop_job_root is not None:
             app.state.desktop_jobs = StudioJobLifecycle(analysis_jobs, app.state.job_service, desktop_release)
-        maintenance = () if remote_runs is None else (
-            asyncio.create_task(_maintain_remote_runs(
-                lambda: remote_runs.advance_openings(app.state.project_folders), "Could not advance approved machines.",
-            )),
-            asyncio.create_task(_maintain_remote_runs(
-                lambda: remote_runs.observe(app.state.project_folders, app.state.job_service),
-                "Could not refresh the machine activity.",
-            )),
-        )
+        maintenance = ()
+        if remote_runs is not None:
+            remote = remote_runs
+            maintenance = (
+                asyncio.create_task(_maintain_remote_runs(
+                    lambda: remote.advance_openings(app.state.project_folders), "Could not advance approved machines.",
+                )),
+                asyncio.create_task(_maintain_remote_runs(
+                    lambda: remote.observe(app.state.project_folders, app.state.job_service),
+                    "Could not refresh the machine activity.",
+                )),
+            )
         try:
             yield
         finally:
@@ -104,6 +108,8 @@ def create_app(
             for task in maintenance:
                 with suppress(asyncio.CancelledError):
                     await task
+            if remote_runs is not None:
+                await asyncio.to_thread(remote_runs.stop_collection)
             if desktop_job_root is not None:
                 analysis_jobs.begin_stop(force=True)
             await analysis_jobs.aclose()

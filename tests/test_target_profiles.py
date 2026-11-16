@@ -56,7 +56,12 @@ def test_target_catalog_and_default_saved_submission_share_one_contract(tmp_path
     registry = TargetRegistry((ready, idle, missing), (provider,))
     catalog = registry.catalog(kinds=("train",), session_submission=True)
     assert catalog.targets[1].availability.state == "ready"
-    assert registry.catalog(kinds=("report",), session_submission=True).targets[1].availability.state == "unavailable"
+    assert len(registry.catalog(kinds=("report",), session_submission=True).targets) == 1
+    observed = registry.catalog(
+        kinds=("train",), session_submission=True,
+        unreachable={provider.target: "The provider did not answer."},
+    )
+    assert [entry.availability.state for entry in observed.targets] == ["ready", "unreachable", "off", "off"]
 
     key = RunKey("default", "train", "default")
     before = folders.read_plan("reaching", revision=None)
