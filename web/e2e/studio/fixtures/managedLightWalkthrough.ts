@@ -99,9 +99,10 @@ export async function verifyWalkthroughVariant(context: Walkthrough) {
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
-  await model.getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  await model.getByRole('article', { name: 'Plant', exact: true }).locator('header').click();
   const mass = page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('textbox', { name: 'Mass', exact: true });
+  await expect(mass).toBeEditable();
   const saved = mutation(context, 'PATCH');
   await enter(mass, '3');
   const response = await saved;
