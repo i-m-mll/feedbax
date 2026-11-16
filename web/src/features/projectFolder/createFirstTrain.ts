@@ -17,7 +17,7 @@ const objective: Document = {
 const methodSchema = 'feedbax.spec.training_method.studio_graph';
 
 export function canCreateFirstTrain(project: StudioProjectSnapshot['project']) {
-  return !project.sweep && Object.keys(project.steps ?? {}).length === 0;
+  return Object.keys(project.steps ?? {}).length === 0;
 }
 
 export async function createFirstTrain(editor: ProjectEditController, reviewedRevision: string) {

@@ -243,7 +243,7 @@ class _TrainFields:
             and isinstance(checkpoint, StepReference) and checkpoint.step == step.base.step
             and checkpoint.checkpoint == "last"
         )
-        if project.sweep is not None or not (direct or linked):
+        if not (direct or linked):
             raise ValueError("These Train controls require an independent Train or a direct checkpoint continuation")
         self.project = project
         self.step_id = step_id

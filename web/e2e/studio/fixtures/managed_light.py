@@ -10,11 +10,13 @@ from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.release import AppPaths
 
 
-def seed(project: str, root: Path) -> None:
+def seed(project: str, root: Path, *, variants: bool = False) -> None:
     from web.e2e.studio.fixtures.canonical_evaluate import _evaluation_project
 
     raw = _evaluation_project()
     raw["steps"] = {name: raw["steps"][name] for name in ("train", "conditions")}
+    if variants:
+        raw["sweep"] = {"rows": {"base": {}, "compare": {"from": "base"}}}
     for name, data in dump_text_project(
         Project.model_validate(raw), ProjectConfiguration(project=project, store="results"),
     ).items():
@@ -27,8 +29,8 @@ def seed(project: str, root: Path) -> None:
 def main(action: str, instance: str, project: str) -> int:
     paths = AppPaths.resolve(instance_root=Path(instance))
     root = paths.web / "projects" / project
-    if action == "seed":
-        seed(project, root)
+    if action in {"seed", "seed-variants"}:
+        seed(project, root, variants=action == "seed-variants")
         return 0
     if action == "status":
         from feedbax.cli import main as cli

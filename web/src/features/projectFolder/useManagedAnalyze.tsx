@@ -72,7 +72,7 @@ export function useManagedAnalyze({
   const authoring = useQuery({
     queryKey: ['studio-analyze', saved.project_id, saved.revision, id],
     queryFn: ({ signal }) => readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
-    enabled: !!document && !!key && key.variant === 'default' && key.row === 'default' && !draft.sweep,
+    enabled: !!document && !!key && key.row === 'default' && key.variant === projection?.window_map?.variants[0],
     staleTime: 30_000,
     retry: false,
   });

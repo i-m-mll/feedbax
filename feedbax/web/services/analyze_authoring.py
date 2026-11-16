@@ -3,6 +3,7 @@
 from feedbax.analysis.figure_presets import velocity_summary_figure
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource, StepDataset
+from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import validate_figure_bindings
 from feedbax.contracts.operation import (
     DatasetPort,
@@ -26,7 +27,7 @@ from feedbax.contracts.studio_project import (
 )
 from feedbax.jobs import JobConflict, JobNotFound
 from feedbax.web.services.project_folder import ProjectFolderInvalid
-from feedbax.web.services.project_plan import ProjectPlanService
+from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
 
 
 def _port(
@@ -121,6 +122,60 @@ def _variable_choices(definition: OperationDefinition, states: DatasetPort) -> d
     return choices
 
 
+def _common_fields(
+    left: dict[str, FieldDescriptor], right: dict[str, FieldDescriptor],
+) -> dict[str, FieldDescriptor]:
+    return {
+        name: field if field == other else field.model_copy(update={"inline_values": None})
+        for name, field in left.items()
+        if (other := right.get(name)) is not None
+        and field.model_dump(exclude={"inline_values"}) == other.model_dump(exclude={"inline_values"})
+    }
+
+
+def _states_port(
+    service: ProjectPlanService, project_id: str, revision: str, key: RunKey, reference: StepReference,
+) -> tuple[DatasetPort, ProjectPlanRead]:
+    view = service.read(project_id, revision=revision)
+    plan = view.settled.plan
+    if plan.variants[:1] != (key.variant,):
+        raise ValueError("Select the primary variant to edit the shared Analyze step.")
+    subset = plan.subsets.get((key.variant, key.step, "states"))
+    if subset is None or not subset.members or any(
+        (member.variant, member.step) != (key.variant, reference.step) for member in subset.members
+    ):
+        raise ValueError("Select saved Evaluate runs in this variant as the Analyze input.")
+    states = None
+    for member in subset.members:
+        row = view.evaluations.get(member)
+        if row is None or row.result is None:
+            raise ValueError("A selected Evaluate run has no saved states.")
+        result = service.jobs.read_evaluation_result(
+            project=project_id, store=view.settled.store_path, job_id=row.result.job_id,
+        )
+        if result.receipt != row.result.receipt:
+            raise ValueError("A selected Evaluate receipt changed.")
+        with result.open_states() as dataset:
+            descriptor = dataset.descriptor
+        schema = descriptor.schema_id
+        if schema is None:
+            raise ValueError("The saved states have no declared dataset schema.")
+        if states is None:
+            states = DatasetPort(
+                schema_ids=(schema,), variables=descriptor.variables, coordinates=descriptor.coords,
+            )
+        elif states.schema_ids != (schema,):
+            raise ValueError("The selected Evaluate states have different dataset schemas.")
+        else:
+            states = DatasetPort(
+                schema_ids=states.schema_ids,
+                variables=_common_fields(states.variables, descriptor.variables),
+                coordinates=_common_fields(states.coordinates, descriptor.coords),
+            )
+    assert states is not None
+    return states, view
+
+
 def analyze_authoring(
     service: ProjectPlanService, project_id: str, body: StudioAnalyzeRequest
 ) -> StudioAnalyzeAuthoring:
@@ -129,9 +184,7 @@ def analyze_authoring(
     key = RunKey(body.key.variant, body.key.step, body.key.row)
     step = project.steps.get(key.step)
     if (
-        project.sweep
-        or key.variant != "default"
-        or key.row != "default"
+        key.row != "default"
         or step is None
         or step.kind != "analyze"
         or step.sweep
@@ -145,34 +198,15 @@ def analyze_authoring(
     if document is None or document.schema_id != "feedbax.analysis_document.v1":
         raise ProjectFolderInvalid("The selected step has no saved analysis document.")
     reference = step.inputs.get("states")
-    if not isinstance(reference, StepReference) or reference.row is None or reference.variants:
-        raise ProjectFolderInvalid("Select one saved Evaluate run as the Analyze input.")
+    if not isinstance(reference, StepReference) or reference.variants:
+        raise ProjectFolderInvalid("Select saved Evaluate runs in this variant as the Analyze input.")
     try:
-        view = service.read(project_id, revision=body.revision)
+        states, view = _states_port(service, project_id, body.revision, key, reference)
         if any(
             planned.key.step != key.step and step.base.document in planned.document_uses
             for planned in view.settled.plan.rows
         ):
             raise ValueError("This analysis document is shared by more than one step.")
-        row = view.evaluations.get(RunKey(key.variant, reference.step, reference.row))
-        if row is None or row.result is None:
-            raise ValueError("The selected Evaluate run has no saved states.")
-        result = service.jobs.read_evaluation_result(
-            project=project_id,
-            store=view.settled.store_path,
-            job_id=row.result.job_id,
-        )
-        if result.receipt != row.result.receipt:
-            raise ValueError("The selected Evaluate receipt changed.")
-        with result.open_states() as dataset:
-            descriptor = dataset.descriptor
-            if descriptor.schema_id is None:
-                raise ValueError("The saved states have no declared dataset schema.")
-            states = DatasetPort(
-                schema_ids=(descriptor.schema_id,),
-                variables=descriptor.variables,
-                coordinates=descriptor.coords,
-            )
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
         reviewed = (

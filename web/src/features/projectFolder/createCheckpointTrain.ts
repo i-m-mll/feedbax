@@ -3,26 +3,29 @@ import type { PlanView } from '@/features/pipeline/planView';
 import { selectedRuns } from '@/features/pipeline/selection';
 import type { StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
-import { savedRunId, stepSourceRows } from './projectWindowPlan';
+import { planVariants, savedRunId, sharedRowTerms, stepSourceRows } from './projectWindowPlan';
 
 export function trainSourceSubset(
   source: PipelineMapStepSource,
   view: PlanView,
   projection: StudioSavedTrainRuns,
+  sharedProject: boolean,
 ) {
   const { stepId, selection } = source;
   const step = view.steps.find(({ id }) => id === stepId);
   if (step?.kind !== 'train' || !step.runs.length) throw new Error('Choose a runnable Train step.');
   const members = selection ? selectedRuns(step, selection) : step.runs;
+  const variant = planVariants(projection)[0];
+  if (!variant || !members.length || members.some((member) => member.variant !== variant)) throw new ProjectEditConflictError();
   let where: SubsetTerms | undefined;
   if (selection) {
     const selected = new Set(members.map(({ id }) => id));
-    if (!selected.size) throw new ProjectEditConflictError();
     if (selection.kind === 'values') {
       where = { axes: Object.fromEntries(selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])) };
+    } else if (sharedProject) {
+      where = sharedRowTerms(step, members);
+      if (!where) throw new ProjectEditConflictError();
     } else {
-      const variant = members[0]?.variant;
-      if (!variant || projection.window_map?.variants.length !== 1) throw new ProjectEditConflictError();
       const rows = stepSourceRows(projection, stepId, variant).filter((row) =>
         selected.has(savedRunId({ ...row, step: stepId })));
       if (rows.length !== selected.size) throw new ProjectEditConflictError();
@@ -38,7 +41,7 @@ export async function createCheckpointTrain(
   view: PlanView,
   projection: StudioSavedTrainRuns,
 ) {
-  const { step, where } = trainSourceSubset(source, view, projection);
+  const { step, where } = trainSourceSubset(source, view, projection, !!editor.getSnapshot().saved.project.sweep);
   const stepId = step.id;
   const name = `${stepId}-continuation`;
   const stepIds = new Set(Object.keys(editor.getSnapshot().saved.project.steps ?? {}));

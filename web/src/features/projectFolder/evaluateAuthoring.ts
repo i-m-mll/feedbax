@@ -147,8 +147,8 @@ export async function createEvaluation(
   stopped?: StoppedEvaluationSubject,
 ) {
   const { saved } = editor.getSnapshot();
-  if (saved.revision !== projection.revision || saved.project.sweep) throw new ProjectEditConflictError();
-  const { step, members, where } = trainSourceSubset(source, plan, projection);
+  if (saved.revision !== projection.revision || stopped && saved.project.sweep) throw new ProjectEditConflictError();
+  const { step, members, where } = trainSourceSubset(source, plan, projection, !!saved.project.sweep);
   if (stopped && (
     members.length !== 1 || members[0].id !== stopped.runId ||
     !projection.rows.find(({ key }) => savedRunId(key) === stopped.runId)?.attempts.some(
