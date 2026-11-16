@@ -301,8 +301,11 @@ async function savedLightGate({ page, request }: { page: Page; request: APIReque
       'web.e2e.studio.fixtures.managed_light_walkthrough', home, project, aligned.job_id,
     ));
     expect(retained.members).toEqual(sources.map(({ result, request_id }, index) => ({
-      key: memberKeys[index], job_id: result!.job_id, request_id, receipt: result!.receipt.manifest_sha256,
+      key: memberKeys[index], job_id: result!.job_id, request_id,
+      evaluation_manifest_sha256: result!.receipt.manifest_sha256,
+      store_success_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     })));
+    expect(new Set(retained.members.map(({ store_success_sha256 }) => store_success_sha256)).size).toBe(2);
     expect(retained.producers.sort()).toEqual(sources.map(({ result }) => result!.job_id).sort());
     const traces = (await firstFigure.json()).data.filter(({ showlegend }) => showlegend !== false);
     expect(traces).toHaveLength(2);

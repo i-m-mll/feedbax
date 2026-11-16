@@ -21,12 +21,16 @@ def main(instance: str, project: str, alignment: str) -> None:
     receipt = view.read_success(ref).receipt
     members = []
     for item in receipt.inputs["states"]:
-        producer = view.read_success(item.selection.receipt).receipt
+        selected = item.selection.receipt
+        producer = view.read_success(selected).receipt
+        assert producer.evaluation_manifest is not None
+        assert view.attempt_ref(producer.attempt) == selected
         members.append({
             "key": item.key,
             "job_id": producer.attempt,
             "request_id": producer.request.id,
-            "receipt": item.selection.receipt.sha256,
+            "evaluation_manifest_sha256": producer.evaluation_manifest.sha256,
+            "store_success_sha256": selected.sha256,
         })
     print(json.dumps({"members": members, "producers": [edge["job_id"] for edge in job["edges"]]}))
 

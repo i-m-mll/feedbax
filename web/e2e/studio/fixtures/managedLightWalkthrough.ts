@@ -129,6 +129,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
   const prefix = stepRows(await plan(context), 'train');
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
+  const inspector = page.getByRole('region', { name: 'Run Inspector', exact: true });
   const sourceRow = (index: number) => table(page).getByRole('row').filter({ hasText: prefix[index].label }).getByRole('button');
 
   async function selectTwo() {
@@ -138,12 +139,14 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
     await expect(train(page)).toContainText('2 of 3');
   }
 
-  async function addSuccessor(kind: 'Train' | 'Evaluate') {
-    const saved = mutation(context, 'POST', '/files');
+  async function addSuccessor(kind: 'Train' | 'Evaluate', id: string) {
+    const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === context.projectPath + '/files' && response.request().postDataJSON().file.id === id);
     await train(page).getByRole('button', { name: 'New Step train', exact: true }).click();
     await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: kind, exact: true }).click();
     const response = await saved;
     expect(response.status(), await response.text()).toBe(201);
+    await expect(mapStep(page, id)).toHaveAttribute('aria-pressed', 'true');
     return (await response.json() as StudioProjectDocument).snapshot;
   }
 
@@ -162,16 +165,18 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
   if (!await outline.isVisible()) await page.getByRole('button', { name: 'Show Steps', exact: true }).click();
   await sourceRow(2).click();
   await expect(used).toHaveCount(0);
+  await expect(page.getByRole('article', { name: 'Report report', exact: true })).not.toHaveAttribute('data-map-related', /.+/);
   await sourceRow(0).click();
+  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
+  await expect(inspector.getByRole('heading', { name: prefix[0].label, exact: true })).toBeVisible();
   for (const [step, kind, count] of [['conditions', 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
     await expect(used).toContainText(step);
     await expect(outline.getByRole('button', { name: `Select ${step} ${kind} ${count}`, exact: true })).toBeVisible();
-    const card = page.getByRole('article', { name: `${kind} ${step}`, exact: true });
-    await expect(card.locator('[data-map-focus="downstream"]')).toHaveCount(count === '2 of 2' ? 2 : 1);
+    await expect(mapStep(page, step)).toHaveAccessibleDescription(new RegExp(count));
   }
 
   await selectTwo();
-  await addSuccessor('Evaluate');
+  await addSuccessor('Evaluate', 'evaluate');
   const input = drawer(page).getByRole('region', { name: 'Inputs', exact: true });
   await expect(input).toContainText('2 of 3');
   const partial = evaluationRows(await plan(context), 'evaluate');
@@ -194,16 +199,29 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough) {
   expect(await attempts()).toEqual([...beforeWidening, ...extra].sort());
 
   await selectTwo();
-  const continued = await addSuccessor('Train');
   const child = 'train-continuation';
+  const continued = await addSuccessor('Train', child);
   expect(continued.project.steps?.[child]?.kind).toBe('train');
+  const carryover = drawer(page).getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
   const carry = mutation(context, 'PATCH');
-  await drawer(page).getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true })
-    .selectOption({ label: 'Carry training state' });
-  expect((await carry).ok()).toBe(true);
+  await carryover.selectOption({ label: 'Carry training state' });
+  const carried = await carry;
+  expect(carried.ok(), await carried.text()).toBe(true);
+  expect(carried.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
+  await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
+  const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
+  await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');
-  await enter(drawer(page).getByRole('textbox', { name: 'N Batches', exact: true }), '4');
-  expect((await batches).ok()).toBe(true);
+  await enter(batchCount, '4');
+  const changed = await batches;
+  expect(changed.ok(), await changed.text()).toBe(true);
+  expect(changed.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
+  const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps[child];
+  expect(editedChild.deltas?.at(-1)?.patches).toEqual([
+    { op: 'replace', path: 'training_config.n_batches', value: 4 },
+    { op: 'replace', path: 'method_payload.payload.target_total', value: 6 },
+    { op: 'replace', path: 'method_payload.payload.checkpoint_initialization.progress.additional_batches', value: 4 },
+  ]);
   const beforeChildren = await attempts();
   const planned = stepRows(await plan(context), child);
   expect(planned.map(({ key }) => key.row)).toEqual(prefix.slice(0, 2).map(({ key }) => key.row));
