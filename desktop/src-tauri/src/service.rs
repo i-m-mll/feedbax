@@ -55,7 +55,7 @@ struct Manifest {
 #[derive(Clone)]
 pub struct Release {
     contents: PathBuf,
-    bundle: String,
+    agent: String,
     python: PathBuf,
     installer: PathBuf,
 }
@@ -103,21 +103,37 @@ impl Release {
         let manifest = read_manifest(contents)?;
         let executable = std::env::current_exe()?.canonicalize()?;
         let identifier = helper.bundleIdentifier().map(|id| id.to_string());
-        if identifier.as_deref() != Some(&format!("{}.background-activity", manifest.bundle_id))
-            || !executable.starts_with(bundle.join("Contents/MacOS"))
+        if !executable.starts_with(bundle.join("Contents/MacOS"))
             || executable != installed_resource(contents, &manifest, "background_activity")?
         {
             return Err("Installed Background Activity does not match the Studio release".into());
         }
-        Self::from_manifest(contents.to_owned(), manifest)
+        let release = Self::from_manifest(contents.to_owned(), manifest)?;
+        if identifier.as_deref() != Some(release.agent.as_str()) {
+            return Err(
+                "Background Activity and its launch registration have different identities".into(),
+            );
+        }
+        Ok(release)
     }
 
     fn from_manifest(contents: PathBuf, manifest: Manifest) -> Result<Self> {
         let python = installed_resource(&contents, &manifest, "python")?;
         let installer = installed_resource(&contents, &manifest, "installer")?;
+        let plist = installed_resource(&contents, &manifest, "launch_agent")?;
+        if plist.parent() != Some(contents.join("Library/LaunchAgents").as_path())
+            || plist.extension().and_then(|value| value.to_str()) != Some("plist")
+        {
+            return Err("The Studio LaunchAgent must be an installed property list".into());
+        }
+        let agent = plist
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or("The Studio LaunchAgent has an invalid label")?
+            .to_owned();
         Ok(Self {
             contents,
-            bundle: manifest.bundle_id,
+            agent,
             python,
             installer,
         })
@@ -163,7 +179,7 @@ impl Release {
     }
 
     fn registration(&self) -> objc2::rc::Retained<SMAppService> {
-        let plist = NSString::from_str(&format!("{}.runtime.plist", self.bundle));
+        let plist = NSString::from_str(&format!("{}.plist", self.agent));
         unsafe { SMAppService::agentServiceWithPlistName(&plist) }
     }
 
@@ -171,7 +187,7 @@ impl Release {
         status_name(unsafe { self.registration().status() })
     }
 
-    pub fn register(&self) -> Result<&'static str> {
+    fn register(&self) -> Result<&'static str> {
         let agent = self.registration();
         unsafe {
             if matches!(
@@ -254,7 +270,26 @@ impl Release {
     }
 
     fn agent_label(&self) -> String {
-        format!("gui/{}/{}.runtime", unsafe { libc::getuid() }, self.bundle)
+        format!("gui/{}/{}", unsafe { libc::getuid() }, self.agent)
+    }
+
+    fn activate(&self) -> Result<&'static str> {
+        let registered = self.registration_status() == "enabled";
+        let status = self.register()?;
+        if registered && status == "enabled" && self.call("health", &[])?["status"] == "unavailable"
+        {
+            let output = Command::new("/bin/launchctl")
+                .args(["kickstart", &self.agent_label()])
+                .output()?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Could not start the Studio service: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )
+                .into());
+            }
+        }
+        Ok(status)
     }
 
     pub fn connect(&self, ticket_args: &[&str]) -> Result<Value> {
@@ -271,22 +306,9 @@ impl Release {
             Some("unavailable") => {}
             _ => return Ok(health),
         }
-        let registered = self.registration_status() == "enabled";
-        let status = self.register()?;
+        let status = self.activate()?;
         if status != "enabled" {
             return Ok(json!({"status": status}));
-        }
-        if registered {
-            let output = Command::new("/bin/launchctl")
-                .args(["kickstart", &self.agent_label()])
-                .output()?;
-            if !output.status.success() {
-                return Err(format!(
-                    "Could not start the Studio service: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                )
-                .into());
-            }
         }
         let mut wait = vec!["--wait", "20"];
         wait.extend_from_slice(ticket_args);
@@ -526,7 +548,7 @@ pub fn cli(args: &[String]) -> Result<()> {
         ("attest-machine", []) => return crate::authentication::attest_machine(),
         ("register", []) => {
             let _lock = mutation_lock(&release.paths()?, descriptor)?;
-            json!({"status": release.register()?})
+            json!({"status": release.activate()?})
         }
         ("unregister", []) => {
             let _lock = mutation_lock(&release.paths()?, descriptor)?;

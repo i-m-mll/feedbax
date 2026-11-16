@@ -44,7 +44,7 @@ def test_background_app_owns_no_documents_and_keeps_the_registered_agent(desktop
     }
     assert seal._verify_background_layout(contents, manifest) == helper
     agent_plist = plistlib.loads((contents / agent).read_bytes())
-    assert agent_plist["Label"] == f"{bundle}.runtime"
+    assert agent_plist["Label"] == f"{bundle}.background-activity"
     assert agent_plist["RunAtLoad"] and agent_plist["KeepAlive"] == {"SuccessfulExit": False}
     assert (tmp_path / seal.APP_NAME / agent_plist["BundleProgram"]).read_bytes() == binary.read_bytes()
 

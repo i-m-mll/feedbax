@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -79,6 +80,38 @@ def installation(tmp_path, monkeypatch):
     monkeypatch.setattr(installer, "_require_no_bundle_host", lambda app: None)
     monkeypatch.setattr(installer, "verify", verify)
     return installer, destination, control, unrelated, registrations, service, process_guard
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("status", [-10814, -54])
+def test_cleanup_accepts_only_an_absent_exact_registration(tmp_path, monkeypatch, nested, status):
+    desktop = Path(__file__).resolve().parents[1] / "desktop"
+    monkeypatch.syspath_prepend(str(desktop))
+    spec = importlib.util.spec_from_file_location("studio_registration_cleanup", desktop / "install.py")
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    app = tmp_path / installer.APP_NAME
+    helper = app / "Contents" / installer.BACKGROUND_APP
+    helper.mkdir(parents=True)
+    missing = helper if nested else app
+    calls = []
+
+    def unregister(command, **kwargs):
+        calls.append(command[-1])
+        if command[-1] == str(missing):
+            return subprocess.CompletedProcess(
+                command, 1, stdout=f"failed to scan {missing}: {status}\n from spotlight",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    monkeypatch.setattr(installer.subprocess, "run", unregister)
+    if status == -10814:
+        installer._launch_services(app, register=False)
+    else:
+        with pytest.raises(subprocess.CalledProcessError):
+            installer._launch_services(app, register=False)
+    expected = [str(helper)] if nested and status != -10814 else [str(helper), str(app)]
+    assert calls == expected
 
 
 def test_install_replacement_and_uninstall_only_touch_owned_registrations(installation, tmp_path):

@@ -226,11 +226,12 @@ def background_identifier(bundle_id: str) -> str:
 def _verify_background_layout(contents: Path, manifest: dict[str, Any]) -> Path | None:
     bundle_id = manifest["bundle_id"]
     resources = manifest["resources"]
-    label = f"{bundle_id}.runtime"
+    program = resources.get("background_activity")
+    # The shared executable was registered under a requirement for the outer app.
+    label = background_identifier(bundle_id) if program is not None else f"{bundle_id}.runtime"
     if resources["launch_agent"] != f"Library/LaunchAgents/{label}.plist":
         raise ValueError("Studio LaunchAgent does not match the application identity")
     agent = plistlib.loads((contents / resources["launch_agent"]).read_bytes())
-    program = resources.get("background_activity")
     if agent.get("Label") != label or agent.get("BundleProgram") != f"Contents/{program or LAUNCHER}":
         raise ValueError("Studio LaunchAgent does not match the declared background executable")
     if program is None:

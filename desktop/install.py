@@ -25,10 +25,20 @@ LSREGISTER = (
 
 
 def _launch_services(app: Path, *, register: bool) -> None:
+    if register:
+        subprocess.run([LSREGISTER, "-f", str(app)], check=True, timeout=10)
+        return
+
     helper = app / "Contents" / BACKGROUND_APP
-    if not register and helper.is_dir():
-        subprocess.run([LSREGISTER, "-u", str(helper)], check=True, timeout=10)
-    subprocess.run([LSREGISTER, "-f" if register else "-u", str(app)], check=True, timeout=10)
+    for path in ((helper, app) if helper.is_dir() else (app,)):
+        result = subprocess.run(
+            [LSREGISTER, "-u", str(path)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=10,
+        )
+        # A staged or moved bundle may have no entry for this exact path.
+        absent = f"failed to scan {path}: -10814" in result.stdout.splitlines()
+        if not (result.returncode == 1 and absent):
+            result.check_returncode()
 
 
 def _service(app: Path, *args: str, lock: int | None = None) -> dict:

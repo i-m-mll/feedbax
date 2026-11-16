@@ -325,11 +325,12 @@ def _write_background_activity(contents: Path, identifier: str, version: str, bu
         "LSMinimumSystemVersion": MINIMUM_MACOS,
         "LSUIElement": True,
     }))
-    relative = f"Library/LaunchAgents/{identifier}.runtime.plist"
+    label = background_identifier(identifier)
+    relative = f"Library/LaunchAgents/{label}.plist"
     path = contents / relative
     path.parent.mkdir(parents=True)
     path.write_bytes(plistlib.dumps({
-        "Label": f"{identifier}.runtime",
+        "Label": label,
         "BundleProgram": f"Contents/{BACKGROUND_PROGRAM}",
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
