@@ -7,11 +7,15 @@ import type { StudioProjectDocument } from '../../../src/generated/studioContrac
 const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 const run = promisify(execFile);
 
-export async function runProjectFixture(module: string, ...arguments_: string[]) {
+export async function runProjectFixture(
+  fixture: string | { module: string; home: string }, ...arguments_: string[]
+) {
+  const module = typeof fixture === 'string' ? fixture : fixture.module;
+  const env = typeof fixture === 'string' ? process.env : { ...process.env, FEEDBAX_STUDIO_TEST_HOME: fixture.home };
   try {
     const { stdout } = await run('uv', [
       'run', '--no-sync', 'python', '-B', '-m', module, ...arguments_,
-    ], { cwd: repo, timeout: 12_000 });
+    ], { cwd: repo, env, timeout: 12_000 });
     return stdout;
   } catch (error) {
     const failure = error as Error & { code?: number | string; signal?: string; killed?: boolean; stderr?: string };

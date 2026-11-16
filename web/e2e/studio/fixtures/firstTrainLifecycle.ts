@@ -11,7 +11,7 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   const authored = await authorFirstTrain(page, request, totalUpdates);
   const { saved, projectPath, plan, savedProject, plantId } = authored;
   const project = saved.project_id;
-  const witness = 'web.e2e.studio.fixtures.managed_lifecycle';
+  const witness = { module: 'web.e2e.studio.fixtures.managed_lifecycle', home };
   const observe = async (action: string, ...args: string[]) =>
     JSON.parse(await runProjectFixture(witness, action, home, project, ...args));
   const declared = await observe('declare-variants', saved.revision);
