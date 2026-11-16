@@ -56,18 +56,22 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
     return (await response.json() as StudioJobSnapshot).jobs.map(({ job_id }) => job_id).sort();
   }
   async function chooseCommand(name: string) {
-    await page.keyboard.press('Meta+K');
+    await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
     await palette.getByRole('combobox').fill(name);
-    await palette.getByRole('option', { name, exact: true }).press('Enter');
+    await palette.getByRole('option', { name, exact: true }).click();
   }
-  async function runSaved(reuseCompleted = false) {
+  async function runSaved(reused?: readonly string[]) {
     const admitted = mutation('POST', runPath);
     await chooseCommand('Run');
     const response = await admitted;
     expect(response.status(), await response.text()).toBe(202);
-    expect(Boolean(response.request().postDataJSON().reuse_completed)).toBe(reuseCompleted);
+    expect(Boolean(response.request().postDataJSON().reuse_completed)).toBe(reused !== undefined);
     const { items } = await response.json() as StudioJobSubmission;
     expect(items.filter(({ disposition }) => disposition === 'rejected')).toEqual([]);
+    if (reused) {
+      expect(items.every(({ disposition }) => disposition === 'reused')).toBe(true);
+      expect(items.map(({ job_id }) => job_id).sort()).toEqual(reused);
+    }
     return items.filter(({ disposition }) => disposition === 'admitted').map(({ job_id }) => job_id!);
   }
   async function runFixtureStep(step: string, doneCount = 1) {
@@ -75,10 +79,19 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
     await tab(page, 'Runs').click();
     const admitted = mutation('POST', runPath);
     await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
-    expect((await admitted).status()).toBe(202);
-    await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true })).toHaveCount(doneCount, {
-      timeout: 18_000,
-    });
+    const response = await admitted;
+    expect(response.status(), await response.text()).toBe(202);
+    const { items } = await response.json() as StudioJobSubmission;
+    expect(items.map(({ disposition, reason }) => [disposition, reason ?? null])).toEqual(
+      Array.from({ length: doneCount }, () => ['admitted', null]),
+    );
+    const watched = new Set(items.map(({ job_id }) => job_id));
+    await expect.poll(async () => {
+      const jobs = await request.get('/api/jobs', { params: { project } });
+      const history = await jobs.json() as StudioJobSnapshot;
+      return history.jobs.filter(({ job_id }) => watched.has(job_id)).map(({ status }) => status);
+    }, { timeout: 22_000 }).toEqual(Array(doneCount).fill('succeeded'));
+    await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Done', { exact: true })).toHaveCount(doneCount);
   }
 
   await page.goto(mounted);
@@ -266,8 +279,9 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   expect((await snapshot()).revision).toBe(ordered.revision);
 
   const beforeEdit = [...admittedJobs, ...createdJobs].sort();
-  await page.goto(mounted);
-  expect(await runSaved(true)).toEqual([]);
+  await mapStep(page, 'train').click();
+  await mapStep(page, 'train').click({ modifiers: ['Meta'] });
+  expect(await runSaved(beforeEdit)).toEqual([]);
   expect(await attempts()).toEqual(beforeEdit);
 
   await mapStep(page, 'analyze').click();
