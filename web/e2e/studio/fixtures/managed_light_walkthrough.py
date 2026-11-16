@@ -5,13 +5,28 @@ from pathlib import Path
 import sys
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
+from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 
 
-def main(instance: str, project: str, alignment: str) -> None:
+def figure_samples(view: SuccessView, figure: str) -> list[dict]:
+    published = view.read_attempt(figure)
+    assert published is not None
+    (summary,) = published.receipt.inputs["summary"]
+    with open_stored_dataset(view.store, dataset_member(summary), verify=True) as dataset:
+        time = dataset.data("state_time").tolist()
+        return [
+            {"name": condition, "x": time, "y": row.tolist()}
+            for condition, row in zip(dataset.data("condition").tolist(), dataset.data("mean")[0], strict=True)
+        ]
+
+
+def main(instance: str, project: str, alignment: str, figure: str) -> None:
     paths = AppPaths.resolve(instance_root=Path(instance))
     store = paths.web / "projects" / project / "results"
     view = SuccessView(ImmutableArtifactBlobProvider(store))
@@ -20,11 +35,15 @@ def main(instance: str, project: str, alignment: str) -> None:
     ref = ContentObjectRef.model_validate(job["outcome"]["store_success"])
     receipt = view.read_success(ref).receipt
     members = []
+    conditions = []
     for item in receipt.inputs["states"]:
         selected = item.selection.receipt
         producer = view.read_success(selected).receipt
         assert producer.evaluation_manifest is not None
         assert view.attempt_ref(producer.attempt) == selected
+        request = view.read_request(producer.request).spec
+        assert isinstance(request, EvaluationRequestSpec)
+        conditions.append(request.params)
         members.append({
             "key": item.key,
             "job_id": producer.attempt,
@@ -32,7 +51,12 @@ def main(instance: str, project: str, alignment: str) -> None:
             "evaluation_manifest_sha256": producer.evaluation_manifest.sha256,
             "store_success_sha256": selected.sha256,
         })
-    print(json.dumps({"members": members, "producers": [edge["job_id"] for edge in job["edges"]]}))
+    print(json.dumps({
+        "members": members,
+        "producers": [edge["job_id"] for edge in job["edges"]],
+        "condition_inputs": conditions,
+        "figure_samples": figure_samples(view, figure),
+    }, allow_nan=False))
 
 
 if __name__ == "__main__":

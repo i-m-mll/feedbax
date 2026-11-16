@@ -1,12 +1,13 @@
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
-  ReportDocument, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
+  AnalysisDocument, ReportDocument, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
-import { authorWalkthroughSweep, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
+import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
+import { activate, chooseOption, number, openView, palette, typeValue } from './fixtures/studioKeyboard';
 import { recoveryTest, type RecoveryStudio } from './fixtures/studioRecovery';
 
 test.use({
@@ -18,6 +19,17 @@ test.use({
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
 type WalkthroughContext = { page: Page; request: APIRequestContext };
+type PlotSamples = number[] | { dtype: string; bdata: string };
+type PlotTrace = { name: string; x: PlotSamples; y: PlotSamples; showlegend?: boolean };
+
+function traceSamples(encoded: PlotSamples) {
+  if (Array.isArray(encoded)) return encoded;
+  const data = Buffer.from(encoded.bdata, 'base64');
+  expect(encoded.dtype).toMatch(/^f[48]$/);
+  const width = encoded.dtype === 'f4' ? 4 : 8;
+  return Array.from({ length: data.length / width }, (_, index) =>
+    width === 4 ? data.readFloatLE(index * width) : data.readDoubleLE(index * width));
+}
 
 async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: RecoveryStudio) {
   test.setTimeout(studio ? 190_000 : 130_000);
@@ -45,8 +57,6 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   const analysis = page.getByRole('tabpanel', { name: 'Analysis', exact: true });
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   const document = page.getByRole('tabpanel', { name: 'Document', exact: true });
-  const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const boundsScale = inspector.getByRole('spinbutton', { name: 'Edit Bounds Scale', exact: true });
   const mutation = (method: string, route: string) => page.waitForResponse((response) =>
@@ -75,14 +85,9 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json() as StudioJobSnapshot).jobs.map(({ job_id }) => job_id).sort();
   }
-  async function chooseCommand(name: string) {
-    await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-    await palette.getByRole('combobox').fill(name);
-    await palette.getByRole('option', { name, exact: true }).click();
-  }
   async function runSaved(reused?: readonly string[]) {
     const admitted = mutation('POST', runPath);
-    await chooseCommand('Run');
+    await palette(page, 'run', 'Run');
     const response = await admitted;
     expect(response.status(), await response.text()).toBe(202);
     expect(Boolean(response.request().postDataJSON().reuse_completed)).toBe(reused !== undefined);
@@ -95,14 +100,14 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     return items.filter(({ disposition }) => disposition === 'admitted').map(({ job_id }) => job_id!);
   }
   async function runStep(step: string, doneCount = 1, expected?: readonly StudioSavedTrainKey[], selected: readonly string[] = []) {
-    await mapStep(page, step).click();
-    await tab(page, 'Runs').click();
+    await activate(page, mapStep(page, step));
+    await openView(page, 'runs');
     const table = page.getByRole('table', { name: 'Runs', exact: true });
     for (const [index, label] of selected.entries()) {
-      await table.getByRole('button', { name: label, exact: true }).click({ modifiers: index > 0 ? ['Shift'] : [] });
+      await activate(page, table.getByRole('button', { name: label, exact: true }), index > 0 ? 'Shift+Enter' : 'Enter');
     }
     const admitted = mutation('POST', runPath);
-    await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
+    await palette(page, 'run', 'Run');
     const response = await admitted;
     expect(response.status(), await response.text()).toBe(202);
     if (expected) expect(response.request().postDataJSON().run_keys).toEqual(expected);
@@ -124,12 +129,12 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     const [producer, ...otherRows] = await authorWalkthroughSweep(walkthrough);
     expect(producer.result).toEqual(first.trained);
     await runStep('train', 3, otherRows.map(({ key }) => key), otherRows.map(({ label }) => label));
-    await page.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: producer.label, exact: true }).click();
-    const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+    await activate(page, page.getByRole('table', { name: 'Runs', exact: true })
+      .getByRole('button', { name: producer.label, exact: true }));
     return authorEvaluateConditions({
       page, request, projectPath: path, train: producer.key, field: 'Mass',
       conditions: [{ label: 'Nominal', value: 1 }, { label: 'Heavy', value: 2 }],
-      selectComponent: () => model.locator(`[data-id=${JSON.stringify(first.plantId)}]`).getByRole('article').locator('header').click(),
+      selectComponent: () => selectModelComponent(page, first.plantId),
     });
   }) : undefined;
   if (!first) {
@@ -165,9 +170,9 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   expect(admittedJobs).toHaveLength((first ? 4 : 1) + settledEvaluate.length);
   const table = page.getByRole('table', { name: 'Runs', exact: true });
   const sourceLabels = pairedInput?.rows.map(({ label }) => label) ?? [sources[0].key.row];
-  await table.getByRole('button', { name: sourceLabels[0], exact: true }).click();
-  if (paired) await table.getByRole('button', { name: sourceLabels[1], exact: true }).click({ modifiers: ['Shift'] });
-  await chooseCommand('Analyze');
+  await activate(page, table.getByRole('button', { name: sourceLabels[0], exact: true }));
+  if (paired) await activate(page, table.getByRole('button', { name: sourceLabels[1], exact: true }), 'Shift+Enter');
+  await palette(page, 'newStep', 'Analyze');
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
@@ -181,31 +186,36 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     expect(edges.map(({ from_key }) => from_key)).toEqual(sources.map(({ key }) => key));
   }
   expectAnalyzeSources(await plan(created.revision));
-  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
+  if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click());
-  await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
+  async function addOperation(label: string) {
+    await palette(page, 'addComponent', 'Add Operation');
+    const chooser = page.getByRole('dialog', { name: 'Add Operation', exact: true });
+    await typeValue(page, chooser.getByRole('textbox', { name: 'Operations', exact: true }), label);
+    return edit(() => activate(page, chooser.getByRole('button', { name: label, exact: true })));
+  }
+  const selectElement = (name: string) => activate(page, analysis.getByRole('group', { name: 'Select ' + name, exact: true }));
+  await addOperation('Aligned velocity');
+  await selectElement('aligned_velocity');
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', paired ? /reach_target$/ : /target_pos$/],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: 'Edit ' + field, exact: true });
-    const option = select.getByRole('option', { name: label });
-    await expect(option).toHaveCount(1);
-    await edit(async () => select.selectOption({ label: await option.innerText() }));
+    await edit(() => chooseOption(page, select, label));
   }
   const dialog = page.getByRole('dialog', { name: 'Connect Ports', exact: true });
   async function chooseSource(label: string) {
-    await drawer.getByRole('button', { name: 'Connect Ports', exact: true }).click();
-    await dialog.getByRole('combobox', { name: 'Source Port' }).selectOption({ label });
+    await palette(page, 'connectPorts', 'Connect Ports');
+    await chooseOption(page, dialog.getByRole('combobox', { name: 'Source Port' }), label);
   }
-  const connect = () => dialog.getByRole('button', { name: 'Connect Ports', exact: true }).click();
+  const connect = () => activate(page, dialog.getByRole('button', { name: 'Connect Ports', exact: true }));
   await chooseSource('states');
   await edit(connect);
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Trial summary', exact: true }).click());
-  await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
-  await edit(() => enter(boundsScale, '1.5'));
-  const beforeRefusal = await edit(() => enter(inspector.getByRole('spinbutton', { name: 'Edit Ddof', exact: true }), '0'));
+  await addOperation('Trial summary');
+  await selectElement('summarize_velocity');
+  await edit(() => number(page, boundsScale, '1.5'));
+  const beforeRefusal = await edit(() => number(page, inspector.getByRole('spinbutton', { name: 'Edit Ddof', exact: true }), '0'));
   await chooseSource('states');
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
     Boolean(response.request().postDataJSON()?.wire));
@@ -213,14 +223,31 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   expect((await refusal).status()).toBe(422);
   await expect(dialog.getByRole('alert')).toContainText('Requires dataset schemas');
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
-  await dialog.getByRole('combobox', { name: 'Source Port' }).selectOption({ label: 'aligned_velocity.velocity' });
+  await chooseOption(page, dialog.getByRole('combobox', { name: 'Source Port' }), 'aligned_velocity.velocity');
   await edit(connect);
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Figure', exact: true }).click());
-  await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
+  await openView(page, 'figures');
+  await edit(() => palette(page, 'addComponent', 'Add Figure'));
+  await openView(page, 'analysis');
+  await selectElement('velocity_summary');
   await chooseSource('summarize_velocity.summary');
   const wired = await edit(connect);
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
+  if (first) {
+    const authored = wired.project.documents.analyze.payload as unknown as AnalysisDocument;
+    const state = '/v1/model/state/' + first.plantId + '/';
+    expect(authored.operations).toMatchObject({
+      aligned_velocity: {
+        operation: 'feedbax.aligned_velocity',
+        params: { position: state + 'effector~1position', velocity: state + 'effector~1velocity', target: '/v1/task/output/reach_target' },
+        inputs: { states: { input: 'states' } },
+      },
+      summarize_velocity: {
+        operation: 'feedbax.summarize_velocity', params: { bounds_scale: 1.5, ddof: 0 },
+        inputs: { velocity: { element: 'aligned_velocity', product: 'velocity' } },
+      },
+    });
+  }
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
     projection.analysis_elements!.filter(({ key }) => key.variant === scope && key.step === 'analyze')
@@ -229,16 +256,15 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   expect(Object.keys(requests(original)).sort()).toEqual(['aligned_velocity', 'summarize_velocity', 'velocity_summary']);
   expect(original.problems.filter(({ step }) => step === 'analyze')).toEqual([]);
   expectAnalyzeSources(original);
-  await tab(page, 'Figures').click();
-  await figures.getByRole('button', { name: 'velocity_summary', exact: true }).click();
-  await chooseCommand('Report');
+  await openView(page, 'figures');
+  await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
+  await palette(page, 'newStep', 'Report');
   await expect(document.getByRole('textbox', { name: 'Report Title', exact: true })).toBeVisible();
-  await chooseCommand('Add Text');
+  await palette(page, 'addText', 'Add Text');
   const addText = page.getByRole('dialog', { name: 'Add Text', exact: true });
-  await addText.getByRole('textbox', { name: 'Text', exact: true }).fill('**Velocity** by condition.');
-  await edit(() => addText.getByRole('button', { name: 'Add Text', exact: true }).click());
-  const ordered = await edit(() => document.getByRole('listitem').nth(1)
-    .getByRole('button', { name: 'Move Earlier 2', exact: true }).click());
+  await typeValue(page, addText.getByRole('textbox', { name: 'Text', exact: true }), '**Velocity** by condition.');
+  await edit(() => activate(page, addText.getByRole('button', { name: 'Add Text', exact: true })));
+  const ordered = await edit(() => palette(page, 'moveEarlier', 'Move Earlier 2'));
   const report = ordered.project.documents!.report.payload as unknown as ReportDocument;
   const inputs = ordered.project.steps!.report.inputs!;
   expect(report.blocks[0]).toMatchObject({ markdown: '**Velocity** by condition.' });
@@ -293,7 +319,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   }
   async function showReport(url: string) {
     await expect(document.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('**Velocity** by condition.');
-    await document.getByText('Result', { exact: true }).click();
+    await activate(page, document.locator('summary').filter({ hasText: /^Result$/ }));
     const frame = document.locator('iframe[title="Report"]');
     await expect(frame).toHaveAttribute('src', url);
     const rendered = frame.contentFrame();
@@ -301,9 +327,9 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     await expect(rendered.locator('[data-report-source] svg.main-svg').first()).toBeVisible();
   }
   async function showFigure() {
-    await mapStep(page, 'analyze').click();
-    await tab(page, 'Figures').click();
-    await figures.getByRole('button', { name: 'velocity_summary', exact: true }).click();
+    await activate(page, mapStep(page, 'analyze'));
+    await openView(page, 'figures');
+    await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
   }
   async function drawnFigure(name: 'Current Result' | 'Previous Result') {
     await expect(figures.getByRole('region', { name, exact: true }).locator('svg.main-svg').first()).toBeVisible();
@@ -326,18 +352,18 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   await matchesCli(completed);
 
   await page.reload();
-  await mapStep(page, 'report').click();
-  await tab(page, 'Document').click();
+  await activate(page, mapStep(page, 'report'));
+  await openView(page, 'document');
   await showReport(renderedReport.products.report);
   await showFigure();
   await drawnFigure('Current Result');
   expect((await snapshot()).revision).toBe(ordered.revision);
   expectAnalyzeSources(await plan(ordered.revision));
-  if (paired) {
+  if (first) {
     const memberKeys = sources.map(({ key }) => initialPlan.rows.find(({ key: candidate }) =>
       candidate.variant === key.variant && candidate.step === key.step && candidate.row === key.row)?.member_key);
     const retained = JSON.parse(await runProjectFixture(
-      'web.e2e.studio.fixtures.managed_light_walkthrough', home, project, aligned.job_id,
+      'web.e2e.studio.fixtures.managed_light_walkthrough', home, project, aligned.job_id, figure.job_id,
     ));
     expect(retained.members).toEqual(sources.map(({ result, request_id }, index) => ({
       key: memberKeys[index], job_id: result!.job_id, request_id,
@@ -346,11 +372,17 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     })));
     expect(new Set(retained.members.map(({ store_success_sha256 }) => store_success_sha256)).size).toBe(2);
     expect(retained.producers.sort()).toEqual(sources.map(({ result }) => result!.job_id).sort());
-    const traces = (await firstFigure.json()).data.filter(({ showlegend }) => showlegend !== false);
+    const condition = { seed: 0, trial_policy: 'paired', trials: firstCondition.trials };
+    expect(retained.condition_inputs).toEqual([
+      { ...condition, variation: [] },
+      { ...condition, variation: [{ op: 'replace', path: `graph.nodes.${first.plantId}.params.mass`, value: 2 }] },
+    ]);
+    const plot: { data: PlotTrace[] } = await firstFigure.json();
+    const traces = plot.data.filter(({ showlegend }) => showlegend !== false);
     expect(traces).toHaveLength(2);
-    expect(traces[0].name).not.toBe(traces[1].name);
-    expect(traces[0].x).toEqual(traces[1].x);
-    expect(traces[0].y).not.toEqual(traces[1].y);
+    const samples = traces.map(({ name, x, y }) => ({ name, x: traceSamples(x), y: traceSamples(y) }));
+    expect(new Set(samples.map(({ name }) => name)).size).toBe(2);
+    expect(samples).toEqual(retained.figure_samples);
     const html = await request.get(renderedReport.products.report);
     expect(html.ok(), await html.text()).toBe(true);
     const member = /figures\/[a-f0-9]{64}\.json/.exec(await html.text())?.[0];
@@ -361,16 +393,16 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   }
 
   const beforeEdit = [...admittedJobs, ...createdJobs].sort();
-  await mapStep(page, 'train').click();
-  await mapStep(page, 'train').click({ modifiers: ['Meta'] });
+  await activate(page, mapStep(page, 'train'));
+  await activate(page, mapStep(page, 'train'), 'Meta+Enter');
   expect(await runSaved(beforeEdit.filter((job) => job !== first?.stopped))).toEqual([]);
   expect(await attempts()).toEqual(beforeEdit);
 
-  await mapStep(page, 'analyze').click();
-  await tab(page, 'Analysis').click();
-  await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
-  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
-  const changed = await edit(() => enter(boundsScale, '2'));
+  await activate(page, mapStep(page, 'analyze'));
+  await openView(page, 'analysis');
+  await selectElement('summarize_velocity');
+  if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
+  const changed = await edit(() => number(page, boundsScale, '2'));
   const stale = await plan(changed.revision);
   const [stillCurrent, staleSummary, staleFigure, staleReport] = lightStatus(stale);
   expect(stillCurrent.current).toEqual(identity(aligned));
@@ -378,20 +410,20 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   expect([staleSummary, staleFigure, staleReport].map(({ status, previous }) => [status, previous]))
     .toEqual([summary, figure, renderedReport].map((entry) => ['stale', identity(entry)]));
   await matchesCli(stale);
-  await tab(page, 'Figures').click();
-  await figures.getByRole('button', { name: 'velocity_summary', exact: true }).click();
+  await openView(page, 'figures');
+  await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
   await drawnFigure('Previous Result');
   expect(await attempts()).toEqual(beforeEdit);
 
-  await tab(page, 'Analysis').click();
-  const undo = await edit(() => page.keyboard.press('Meta+Z'));
+  await openView(page, 'analysis');
+  const undo = await edit(() => palette(page, 'undo', 'Undo'));
   expect(lightStatus(await plan(undo.revision))).toEqual(lightStatus(completed));
   expect(await attempts()).toEqual(beforeEdit);
 
-  await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
-  const reapplied = await edit(() => enter(boundsScale, '2'));
-  await mapStep(page, 'report').click();
-  await tab(page, 'Document').click();
+  await selectElement('summarize_velocity');
+  const reapplied = await edit(() => number(page, boundsScale, '2'));
+  await activate(page, mapStep(page, 'report'));
+  await openView(page, 'document');
   const rerun = await runSaved();
   expect(rerun).toHaveLength(3);
   const replaced = await waitForLight(reapplied.revision);
@@ -409,7 +441,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   await showReport(newReport.products.report);
   await showFigure();
   await drawnFigure('Current Result');
-  await figures.getByRole('button', { name: 'Previous Result', exact: true }).click();
+  await activate(page, figures.getByRole('button', { name: 'Previous Result', exact: true }));
   await drawnFigure('Previous Result');
   if (first) {
     await test.step('Share the full chain and isolate a compare Model edit', () => verifyWalkthroughVariant(walkthrough, first.plantId));

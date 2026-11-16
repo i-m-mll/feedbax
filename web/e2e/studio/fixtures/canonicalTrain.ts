@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { StudioProjectDocument } from '../../../src/generated/studioContracts';
+import { activate, number } from './studioKeyboard';
 
 const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 const run = promisify(execFile);
@@ -76,17 +77,18 @@ export async function enter(field: Locator, value: string) {
 }
 
 export async function authorLearningRateSweep(rate: Locator) {
-  await rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }).click();
-  await rate.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  const page = rate.page();
+  await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
+  await activate(page, rate.getByRole('menuitem', { name: 'Sweep', exact: true }));
   const text = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await expect(text).toHaveValue('0.001,');
   await expect(text).toBeEditable();
-  await enter(text, '0.001, 0.002, 0.003');
+  await number(page, text, '0.001, 0.002, 0.003');
   await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');
   for (const [index, name] of ['Slow', 'Medium', 'Fast'].entries()) {
     const valueName = rate.getByRole('textbox', { name: `Learning Rate value ${index + 1} name`, exact: true });
     await expect(valueName).toBeEditable();
-    await enter(valueName, name);
+    await number(page, valueName, name);
     await expect(rate.getByRole('textbox', { name: `Value ${name}`, exact: true })).toBeVisible();
   }
 }
