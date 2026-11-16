@@ -68,21 +68,24 @@ def test_runpod_gate_guards_all_mutations(tmp_path):
 def test_runpod_boot_installs_pinned_key_and_arms_guard_before_start(tmp_path):
     private, public = _fresh_boot_host_key()
     start = tmp_path / "start"
-    start.write_text('#!/bin/bash\ntest -z "${RUNPOD_API_KEY:-}" && printf "start\\n"\n')
+    start.write_text('#!/bin/bash\ntest -z "${RUNPOD_API_KEY:-}${LD_LIBRARY_PATH:-}" && printf "start\\n"\n')
     start.chmod(0o700)
     command = ["/bin/bash", "-c", _BOOT_COMMAND, "feedbax-host-key", public, str(tmp_path), str(start)]
-    environment = {**os.environ, _BOOT_KEY: private, "RUNPOD_API_KEY": "fixture-pod-token"}
+    environment = {
+        **os.environ, _BOOT_KEY: private, "RUNPOD_API_KEY": "fixture-pod-token", "LD_LIBRARY_PATH": "/image/cuda",
+    }
     unarmed = subprocess.run(
         [*command, "/usr/bin/false"], env=environment, timeout=5, capture_output=True, text=True,
     )
     assert unarmed.returncode != 0 and unarmed.stdout == ""
     armed = subprocess.run([
         *command, "/bin/bash", "-c",
-        'test -z "${FEEDBAX_BOOT_SSH_KEY:-}" && test "$RUNPOD_API_KEY" = fixture-pod-token'
+        'test -z "${FEEDBAX_BOOT_SSH_KEY:-}${LD_LIBRARY_PATH:-}" && test "$RUNPOD_API_KEY" = fixture-pod-token'
         ' && test ! -e "$1" && printf "armed\\n"',
         "guard", str(tmp_path / "ssh_host_ed25519_key"),
     ], env=environment, timeout=5, capture_output=True, text=True, check=True)
     assert armed.stdout.splitlines() == ["armed", "start"]
+    assert armed.stderr.splitlines() == ["RunPod venue cutoff guard armed.", "RunPod pinned SSH host key installed."]
     assert (tmp_path / "ssh_host_ed25519_key.pub").read_text() == public + "\n"
 
 

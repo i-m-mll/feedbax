@@ -47,9 +47,10 @@ _BOOT_COMMAND = """set +x
 set -euo pipefail
 umask 077
 key="${FEEDBAX_BOOT_SSH_KEY:-}"
-unset FEEDBAX_BOOT_SSH_KEY
+unset FEEDBAX_BOOT_SSH_KEY LD_LIBRARY_PATH
 "${@:4}"
 unset RUNPOD_API_KEY
+printf '%s\n' 'RunPod venue cutoff guard armed.' >&2
 hold_for_guard() {
     printf '%s\n' 'RunPod SSH key setup failed; the active cutoff guard is still running.' >&2
     if [[ -n "${temporary:-}" ]]; then rm -f -- "$temporary"; fi
@@ -68,6 +69,7 @@ test "$public" = "$1"
 mv -f -- "$temporary" "$2/ssh_host_ed25519_key"
 printf '%s\n' "$public" >"$2/ssh_host_ed25519_key.pub"
 trap - EXIT ERR
+printf '%s\n' 'RunPod pinned SSH host key installed.' >&2
 exec "$3"
 """
 _GPU_PROBE = "nvidia-smi --query-gpu=name,driver_version,compute_cap,uuid --format=csv,noheader"
