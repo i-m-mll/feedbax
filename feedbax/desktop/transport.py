@@ -18,6 +18,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.desktop.control import CONTROL_ROUTE, Endpoint
+from feedbax.project_folder import ProjectFolderLocation
 from feedbax.web.services.project_folder import ProjectFolderNotFound
 
 _COOKIE = "feedbax_studio"
@@ -88,7 +89,10 @@ class DesktopTransport:
         self.tickets[token] = _Ticket(now + 20, project_id)
         return token
 
-    def register_ticket_route(self, is_stopping: Callable[[], bool]) -> None:
+    def register_ticket_route(
+        self, is_stopping: Callable[[], bool],
+        *, rebind_arrangement: Callable[[str, ProjectFolderLocation], None] | None = None,
+    ) -> None:
         @self.app.post(CONTROL_ROUTE + "/ticket")
         async def ticket(request: _TicketRequest):
             if is_stopping():
@@ -114,13 +118,15 @@ class DesktopTransport:
                     document, location = await run_in_threadpool(folders.open_native_id, request.project_id)
                 else:
                     document, location = await run_in_threadpool(folders.new_native_project)
+                if is_stopping():
+                    raise HTTPException(503, "Studio service is stopping")
+                project_id = document.snapshot.project_id
+                if rebind_arrangement is not None and location.path.parent == folders.root:
+                    rebind_arrangement(project_id, location)
             except ProjectFolderNotFound as error:
                 raise HTTPException(404, "The selected Studio project folder is missing.") from error
             except (OSError, ValueError) as error:
                 raise HTTPException(422, str(error)) from error
-            if is_stopping():
-                raise HTTPException(503, "Studio service is stopping")
-            project_id = document.snapshot.project_id
             return {
                 "ticket": self.issue_ticket(project_id),
                 "project": {"id": project_id, "title": document.configuration.project},

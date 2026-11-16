@@ -61,7 +61,7 @@ test('the focused File Rename command follows the declaration and refuses a stal
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot, configuration } = await created.json();
   const projectId = snapshot.project_id;
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', projectId);
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', configuration.project);
   const declaration = join(root, `${configuration.project}.feedbax`);
   const bytes = await readFile(declaration);
 
@@ -115,12 +115,13 @@ test('the focused File Rename command follows the declaration and refuses a stal
 });
 
 test('M2 folder controller settles, reopens, observes disk changes, and resolves a stale edit', async ({ page }, info) => {
-  const projectId = 'controller-reach';
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', projectId);
+  const alias = 'controller-reach';
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', alias);
   await folderFixture('seed', root);
   await page.goto('/');
-  await open(page, projectId);
-  expect((await state(page)).saved).toBe(1);
+  await open(page, alias);
+  const { id: projectId, saved } = await state(page);
+  expect(saved).toBe(1);
   await page.evaluate(({ path }) => {
     (window as unknown as Probe).folderEditor.editor.edit({ kind: 'document', id: 'point-mass' }, 'Mass', [{ op: 'replace', path, value: 3 }]);
   }, { path: massPath });
@@ -169,8 +170,8 @@ test('M2 folder controller settles, reopens, observes disk changes, and resolves
 
 test('M2 managed commands preserve edits, identity and names across Rename and reopen', async ({ page, request }, info) => {
   const projects = join(String(info.config.metadata.home), 'state', 'web', 'projects');
-  const projectId = 'commands-reach';
-  const root = join(projects, projectId);
+  const alias = 'commands-reach';
+  const root = join(projects, alias);
   await folderFixture('seed', root);
   await page.goto('/');
 
@@ -184,18 +185,22 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
     const reopened = await folder.openProjectEditor(original.saved.project_id);
     const after = reopened.editor.getSnapshot();
     reopened.close();
-    return { original: original.saved, renamed, after: { configuration: after.configuration, snapshot: after.saved } };
+    return {
+      original: original.saved, initialName: original.configuration.project, renamed,
+      after: { configuration: after.configuration, snapshot: after.saved },
+    };
   });
   expect(blank.renamed.configuration.project).toBe('blank-name');
   expect(blank.after).toEqual(blank.renamed);
   expect(blank.renamed.snapshot).toMatchObject({
     project_id: blank.original.project_id, file_revisions: [], semantic_root: blank.original.semantic_root,
   });
-  expect(JSON.parse(await readFile(join(projects, blank.original.project_id, 'blank-name.feedbax'), 'utf8')))
+  expect(JSON.parse(await readFile(join(projects, blank.initialName, 'blank-name.feedbax'), 'utf8')))
     .not.toHaveProperty('project');
-  expect(JSON.parse(await readFile(join(projects, blank.original.project_id, 'presentation.json'), 'utf8'))).toEqual({});
+  expect(JSON.parse(await readFile(join(projects, blank.initialName, 'presentation.json'), 'utf8'))).toEqual({});
 
-  await open(page, projectId);
+  await open(page, alias);
+  const { id: projectId } = await state(page);
   const renamePath = `**/api/projects/${projectId}/rename`;
   const renameSeen = page.waitForRequest(renamePath);
   let releaseRename!: () => void;
@@ -311,15 +316,15 @@ test('M2 managed New authors a Train with named trial documents', async ({ page,
   const [model, task, objective, definedTrain] = await fixture('ordinary-files', '8');
   const train = { ...definedTrain, step: { ...definedTrain.step, base: { inline: {} } } };
   await page.goto('/');
-  const id = await page.evaluate(async (file) => {
+  const { id, folderName } = await page.evaluate(async (file) => {
     const entry = '/src/features/projectFolder/openProjectEditor.ts';
     const folder = await import(entry) as typeof import('../../src/features/projectFolder/openProjectEditor');
     const session = await folder.newProjectEditor();
     (window as unknown as Probe).folderEditor = session;
     const result = await session.editor.createFile(file);
-    return result.snapshot.project_id;
+    return { id: result.snapshot.project_id, folderName: result.configuration.project };
   }, train);
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', id);
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', folderName);
   expect(JSON.parse(await readFile(join(root, 'steps', 'train.json'), 'utf8'))).toEqual(train.step);
   const path = `/api/projects/${id}/files`;
   const routePath = `**${path}`;

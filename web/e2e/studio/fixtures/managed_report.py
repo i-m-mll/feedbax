@@ -29,7 +29,7 @@ def seed(home: str, project_id: str):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    return project_id
+    return ProjectFolderService(root.parent).open(project_id).snapshot.project_id
 
 
 def requests(home: str, project_id: str, revision: str):

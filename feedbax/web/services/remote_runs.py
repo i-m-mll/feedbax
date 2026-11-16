@@ -182,6 +182,7 @@ class StudioRemoteRuns:
 
     def approve(self, folders: ProjectFolder, project: str, quote_id: UUID) -> bool:
         """Stage once and hold fresh decisions until their response is sent."""
+        project = folders.project_id(project)
         with self._lock:
             pending = self._quotes.get(quote_id)
         if pending is None:

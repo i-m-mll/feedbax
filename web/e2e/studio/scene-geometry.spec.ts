@@ -5,13 +5,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { PlanarScenePose } from '../../src/components/scene/planarModel';
-import type { StudioPlanarSceneRequest } from '../../src/generated/studioContracts';
+import type { StudioPlanarSceneRequest, StudioProjectDocument } from '../../src/generated/studioContracts';
 import type { mountSceneProbe } from './fixtures/sceneGeometryProbe';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const run = promisify(execFile);
-const projectId = 'scene-geometry';
-const projectUrl = `/api/projects/${projectId}`;
+const alias = 'scene-geometry';
 const params = '/payload/interior/components/mechanics/interior/components';
 type Probe = Window & { sceneProof: ReturnType<typeof mountSceneProbe> };
 type Point = [number, number];
@@ -37,7 +36,7 @@ function source(document_id: string, revision: string): StudioPlanarSceneRequest
   return { document_id, revision, node_path: ['mechanics'] };
 }
 
-async function mount(page: Page) {
+async function mount(page: Page, projectId: string) {
   await page.evaluate(async (id) => {
     const entry = '/e2e/studio/fixtures/sceneGeometryProbe.tsx';
     const { mountSceneProbe } = await import(entry) as { mountSceneProbe: typeof mountSceneProbe };
@@ -56,7 +55,7 @@ async function show(page: Page, address: StudioPlanarSceneRequest, pose: PlanarS
   })).toBe(version);
 }
 
-async function patch(request: APIRequestContext, revision: string, patches: unknown[]) {
+async function patch(request: APIRequestContext, projectUrl: string, revision: string, patches: unknown[]) {
   const response = await request.patch(projectUrl, { data: {
     revision, address: { kind: 'document', id: 'chain' }, patches,
   } });
@@ -135,11 +134,16 @@ async function comparePose(page: Page, address: StudioPlanarSceneRequest, sample
 
 test('M2 Scene geometry agrees with compiled kinematics across a saved folder edit', async ({ page, request }, info) => {
   test.setTimeout(40_000);
-  const folder = join(String(info.config.metadata.home), 'state', 'web', 'projects', projectId);
+  const folder = join(String(info.config.metadata.home), 'state', 'web', 'projects', alias);
   await fixture('seed', folder);
   const initial = await fixture('read', folder, 'single', 'chain');
+  const opened = await request.get(`/api/projects/${alias}/open`);
+  expect(opened.ok(), await opened.text()).toBe(true);
+  const { snapshot } = await opened.json() as StudioProjectDocument;
+  const projectId = snapshot.project_id;
+  const projectUrl = `/api/projects/${encodeURIComponent(projectId)}`;
   await page.goto('/');
-  await mount(page);
+  await mount(page, projectId);
   const geometryRequests: string[] = [];
   page.on('request', (req) => {
     if (new URL(req.url()).pathname === `${projectUrl}/scene/planar`) geometryRequests.push(req.postDataJSON().document_id);
@@ -155,7 +159,7 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
   }).locator('dd');
   await expect(guide).toHaveText('0.03, -0.09 m');
 
-  const editedRevision = await patch(request, initial.chain.revision, [
+  const editedRevision = await patch(request, projectUrl, initial.chain.revision, [
     { op: 'replace', path: `${params}/forearm/fields/length`, value: 0.37 },
     { op: 'replace', path: `${params}/cross_chain/fields/path_points/1/offset`, value: [0.05, -0.07] },
   ]);
@@ -163,7 +167,7 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
   expect(edited.revision).toBe(editedRevision);
   expect(edited.identity).not.toBe(initial.chain.identity);
   await page.reload();
-  await mount(page);
+  await mount(page, projectId);
   const address = source('chain', editedRevision);
   for (const sample of edited.samples) residuals.push(await comparePose(page, address, sample));
   residuals.push(await comparePose(page, address, edited.samples[0], {
@@ -178,7 +182,7 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
   await expectInvalidGeometry(page, 'scene.pose_unavailable', /no planar pose/);
   await show(page, address, { kind: 'inspection', qpos: [0.4] });
   await expectInvalidGeometry(page, 'scene.invalid_pose', /coordinate per joint/);
-  const invalid = await patch(request, editedRevision, [
+  const invalid = await patch(request, projectUrl, editedRevision, [
     { op: 'replace', path: `${params}/cross_chain/fields/path_points/1/frame`, value: 'missing.distal' },
   ]);
   await show(page, source('chain', invalid), { kind: 'reference' });

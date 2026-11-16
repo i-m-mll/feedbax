@@ -182,7 +182,7 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   test.setTimeout(45_000);
   const seeded = await seedManagedProject(request, []);
   const { projectPath } = seeded;
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, seeded.snapshot.project_id, 'sweep');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, seeded.configuration.project, 'sweep');
   const opened = await request.get(`${projectPath}/open`);
   expect(opened.ok(), await opened.text()).toBe(true);
   const { snapshot } = await opened.json() as StudioProjectDocument;
@@ -228,8 +228,8 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
 });
 
 test('persists an attachment in the selected project variant', async ({ page, request }, info) => {
-  const { snapshot, projectPath } = await seedManagedProject(request, []);
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, snapshot.project_id, 'variant');
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'variant');
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('treated');
   await mapStep(page, 'baseline').click();

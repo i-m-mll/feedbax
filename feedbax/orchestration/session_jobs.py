@@ -26,7 +26,7 @@ from feedbax.orchestration.session import (
     SessionOpeningFailed, SessionOpeningRejected, SessionRecord, SessionRequest,
 )
 from feedbax.orchestration.venue_history import VenueHistory
-from feedbax.project_folder import ProjectFolder, SettledProjectPlan
+from feedbax.project_folder import ProjectFolder, SavedProjectPlans, SettledProjectPlan
 
 if TYPE_CHECKING:
     from feedbax.orchestration.venue_jobs import VenueJobs
@@ -328,7 +328,7 @@ class ApprovedSessionRuns:
 
 
 def admit_saved_delegation(
-    jobs: JobService, folders: ProjectFolder, request: Delegation, *, token: str, placement: SessionTarget,
+    jobs: JobService, folders: SavedProjectPlans, request: Delegation, *, token: str, placement: SessionTarget,
 ) -> StudioJobSubmission:
     reviewed = folders.read_plan(request.project, revision=request.revision)
     actual = {run.key: run.request_id for run in reviewed.plan.runs if run.kind in SESSION_RUN_KINDS}

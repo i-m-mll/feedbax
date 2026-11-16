@@ -65,7 +65,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     await page.goto('/');
     const created = await creating;
     expect(created.status()).toBe(201);
-    const { snapshot } = await created.json() as StudioProjectDocument;
+    const { snapshot, configuration } = await created.json() as StudioProjectDocument;
     const id = snapshot.project_id;
     await expect(page).toHaveURL(new RegExp('project=' + id + '$'));
     const { projectPath } = await appendManagedFiles(request, snapshot, await fixture('ordinary-files', '1200'));
@@ -81,7 +81,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
 
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
-    const attempt = activity.getByRole('list', { name: 'Runs' }).getByRole('listitem').filter({ hasText: id });
+    const attempt = activity.getByRole('list', { name: 'Runs' }).getByRole('listitem').filter({ hasText: configuration.project });
     const stopping = responseFor(page, '/api/jobs/stop');
     await attempt.getByRole('button', { name: 'Stop', exact: true }).click();
     expect((await stopping).status()).toBe(202);
@@ -119,17 +119,17 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
 
 test('Activity shows the original CLI and Studio clients for a saved Train request', async ({ page, request }, info) => {
   test.setTimeout(45_000);
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const project = snapshot.project_id;
   const label = 'Batch review';
   await page.goto('/?project=' + project);
   await select(page, 'train');
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
-  const entries = activity.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem').filter({ hasText: project });
+  const entries = activity.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem').filter({ hasText: configuration.project });
 
   await runProjectFixture('web.e2e.studio.fixtures.canonical_train',
-    'run-saved-cli', String(info.config.metadata.home), project, label);
+    'run-saved-cli', String(info.config.metadata.home), configuration.project, label);
   const cli = entries.filter({ has: page.getByText('CLI', { exact: true }) });
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
   await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });

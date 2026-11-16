@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  createProjectFolder, openProjectFolder, patchProjectFolder, renameProjectFolder, replayProjectHistory, writeProjectPresentation,
+  createProjectFolder, openProjectFolder, patchProjectFolder, readProjectFolder, renameProjectFolder, replayProjectHistory, writeProjectPresentation,
 } from '@/api/projectFolders';
 import type { StudioProjectSnapshot } from '@/generated/studioContracts';
 
@@ -60,12 +60,14 @@ describe('Studio project folder HTTP contracts', () => {
     }));
   });
 
-  it('uses the same validated envelope for New and Rename and refuses a mismatched folder', async () => {
+  it('accepts an alias on open and refuses a mismatched bound project', async () => {
     const renamed = document('renamed');
+    const distinct = document('renamed', { ...snapshot(), project_id: 'other' });
     const fetch = vi.fn()
       .mockResolvedValueOnce(Response.json(document(), { status: 201 }))
       .mockResolvedValueOnce(Response.json(renamed))
-      .mockResolvedValueOnce(Response.json(document('renamed', { ...snapshot(), project_id: 'other' })));
+      .mockResolvedValueOnce(Response.json(distinct))
+      .mockResolvedValueOnce(Response.json(distinct));
     vi.stubGlobal('fetch', fetch);
 
     expect(await createProjectFolder()).toEqual(document());
@@ -74,7 +76,8 @@ describe('Studio project folder HTTP contracts', () => {
     expect(fetch).toHaveBeenNthCalledWith(2, '/api/projects/reaches/rename', expect.objectContaining({
       method: 'POST', body: JSON.stringify({ revision, name: 'renamed' }),
     }));
-    await expect(openProjectFolder('reaches')).rejects.toMatchObject({ kind: 'contract' });
+    await expect(openProjectFolder('reaches')).resolves.toEqual(distinct);
+    await expect(readProjectFolder('reaches')).rejects.toMatchObject({ kind: 'contract' });
   });
 
   it('replays one revision-bound authored history transaction', async () => {

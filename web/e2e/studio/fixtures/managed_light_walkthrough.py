@@ -7,6 +7,7 @@ import sys
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.desktop.release import AppPaths
+from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.host import HostClient
 from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -28,7 +29,8 @@ def figure_samples(view: SuccessView, figure: str) -> list[dict]:
 
 def main(instance: str, project: str, alignment: str, figure: str) -> None:
     paths = AppPaths.resolve(instance_root=Path(instance))
-    store = paths.web / "projects" / project / "results"
+    _, location = ProjectFolderService(paths.web / "projects").open_native_id(project)
+    store = location.path / "results"
     view = SuccessView(ImmutableArtifactBlobProvider(store))
     jobs = HostClient(paths.host).jobs_snapshot(project=project, start_host=False)["jobs"]
     job = next(job for job in jobs if job["id"] == alignment)

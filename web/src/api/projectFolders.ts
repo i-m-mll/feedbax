@@ -55,6 +55,10 @@ export function createProjectFolder(signal?: AbortSignal) {
 }
 
 export function openProjectFolder(id: string, signal?: AbortSignal) {
+  return readFolder('StudioProjectDocument', undefined, `${projectPath(id)}/open`, { signal });
+}
+
+export function readProjectFolder(id: string, signal?: AbortSignal) {
   return readFolder('StudioProjectDocument', id, `${projectPath(id)}/open`, { signal });
 }
 

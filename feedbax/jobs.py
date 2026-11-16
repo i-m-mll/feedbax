@@ -94,7 +94,7 @@ if TYPE_CHECKING:
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
     from feedbax.studio.canonical_evaluate import EvaluationResult, RolloutParameters
-    from feedbax.project_folder import ProjectFolder, SettledProjectPlan
+    from feedbax.project_folder import ProjectFolder, SavedProjectPlans, SettledProjectPlan
 
 
 _LIVE_STATES = frozenset({"queued", "assigned", "running", "stopping"})
@@ -439,7 +439,7 @@ class JobService(PlanJobReader):
 
     def admit_plan(
         self,
-        folders: ProjectFolder,
+        folders: SavedProjectPlans,
         reviewed: SettledProjectPlan,
         *,
         run_keys: Sequence[RunKey],

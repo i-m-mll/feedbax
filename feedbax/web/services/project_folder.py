@@ -9,7 +9,6 @@ from hmac import compare_digest, digest
 import os
 from pathlib import Path
 from secrets import token_bytes
-from threading import Lock
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
@@ -68,8 +67,6 @@ class ProjectFolderService(ProjectFolder):
             root, operations=operations, components=components, functions=functions, python_tasks=python_tasks,
         )
         self._model_undo_key = token_bytes(32)
-        self._external_projects: dict[str, ProjectFolderLocation] = {}
-        self._external_projects_lock = Lock()
 
     def open_selected_folder(self, folder: Path) -> StudioProjectDocument:
         """Open a folder selected through the private native control socket."""
@@ -96,49 +93,27 @@ class ProjectFolderService(ProjectFolder):
             raise ProjectFolderNotFound(str(folder)) from error
         except (OSError, RuntimeError, ValueError) as error:
             raise ProjectFolderInvalid(str(error)) from error
-        if path == self.root:
+        location = ProjectFolderLocation.selected(path)
+        if location.path == self.root:
             raise ProjectFolderInvalid("Choose an individual Studio project folder.")
-        if path.parent == self.root:
-            with self._external_projects_lock:
-                if path.name in self._external_projects:
-                    raise ProjectFolderInvalid("The selected project conflicts with an external project ID.")
-            location = super()._folder(path.name)
-            if expected_identity is not None and location.identity != expected_identity:
-                raise ProjectFolderNotFound("The saved project folder was replaced")
-            return self._open_folder(path.name, location, declaration=declaration), location
-        grant = ProjectFolderLocation.selected(path)
-        if expected_identity is not None and grant.identity != expected_identity:
+        if expected_identity is not None and location.identity != expected_identity:
             raise ProjectFolderNotFound("The saved project folder was replaced")
-        if not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+        if not os.access(location.path, os.R_OK | os.W_OK | os.X_OK):
             raise ProjectFolderInvalid("The selected project folder must be readable and writable.")
-        locator = os.fsencode(grant.path) + b"\0" + str(grant.identity).encode("ascii")
-        project_id = f"external-{sha256_bytes(locator)}"
-        document = self._open_folder(project_id, grant, declaration=declaration)
-        with self._external_projects_lock:
-            if os.path.lexists(self.root / project_id):
-                raise ProjectFolderInvalid("The selected project conflicts with a managed project ID.")
-            self._external_projects[project_id] = grant
-        return document, grant
+        return self._open_folder(location, declaration=declaration), location
 
     def open_native_id(self, project_id: str) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
         location = self._folder(project_id)
-        return self._open_folder(project_id, location), location
+        return self._open_folder(location), location
 
     def new_native_project(self) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
         return self._new_folder()
 
-    def _folder(self, project_id: str) -> ProjectFolderLocation:
-        with self._external_projects_lock:
-            grant = self._external_projects.get(project_id)
-        return grant if grant is not None else super()._folder(project_id)
-
-    def _base_readers(self, project_id: str, text: TextProject) -> BaseReaders:
-        with self._external_projects_lock:
-            grant = self._external_projects.get(project_id)
-        if grant is None:
-            return super()._base_readers(project_id, text)
+    def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:
+        if location.path.parent == self.root:
+            return super()._base_readers(location, text)
         read_pin = TextProjectExternalInputs(
-            text, authority=grant.path, authority_identity=grant.identity,
+            text, authority=location.path, authority_identity=location.identity,
         ).read
         return BaseReaders(external=read_pin, figure_external=read_pin)
 

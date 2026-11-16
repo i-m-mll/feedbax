@@ -32,8 +32,8 @@ export async function fixture(...arguments_: string[]) {
 export async function seedManagedProject(request: APIRequestContext, files: readonly unknown[], origin = '') {
   const response = await request.post(origin + '/api/projects');
   expect(response.status()).toBe(201);
-  const { snapshot } = await response.json() as StudioProjectDocument;
-  return appendManagedFiles(request, snapshot, files, origin);
+  const { snapshot, configuration } = await response.json() as StudioProjectDocument;
+  return { ...await appendManagedFiles(request, snapshot, files, origin), configuration };
 }
 
 export async function appendManagedFiles(

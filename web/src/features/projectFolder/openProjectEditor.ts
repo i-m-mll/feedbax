@@ -1,5 +1,5 @@
 import {
-  createProjectFile, createProjectFolder, editModel, openProjectFolder, patchProjectFolder, renameProjectFolder, replayProjectHistory,
+  createProjectFile, createProjectFolder, editModel, openProjectFolder, patchProjectFolder, readProjectFolder, renameProjectFolder, replayProjectHistory,
   undoModel, writeProjectPresentation,
 } from '@/api/projectFolders';
 import type { PresentationDocument, StudioProjectDocument } from '@/generated/studioContracts';
@@ -14,11 +14,11 @@ export async function newProjectEditor(signal?: AbortSignal) {
   return bindProjectEditor(await createProjectFolder(signal), signal);
 }
 
-function bindProjectEditor(initial: StudioProjectDocument, signal?: AbortSignal) {
+export function bindProjectEditor(initial: StudioProjectDocument, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const { project_id: projectId } = initial.snapshot;
   const editor = new ProjectEditController(initial, {
-    read: openProjectFolder, write: patchProjectFolder, rename: renameProjectFolder, create: createProjectFile,
+    read: readProjectFolder, write: patchProjectFolder, rename: renameProjectFolder, create: createProjectFile,
     replay: replayProjectHistory, editModel, undoModel,
   });
   let unwatch: () => void;

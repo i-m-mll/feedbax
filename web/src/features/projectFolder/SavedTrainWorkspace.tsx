@@ -25,7 +25,7 @@ import {
 } from '@/features/projectWindow/projectWindowState';
 import {
   ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
-  type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectWindowMapProblem,
+  type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
   type StudioCheckpointRuleRequest,
 } from '@/generated/studioContracts';
@@ -38,7 +38,7 @@ import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
-import { openProjectEditor } from './openProjectEditor';
+import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, type SavedTrainRow as SavedRow } from './projectWindowPlan';
 import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal } from './projectWindowProblems';
@@ -50,7 +50,7 @@ import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, TrialTaskP
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
 
-type EditorSession = Awaited<ReturnType<typeof openProjectEditor>>;
+type EditorSession = ReturnType<typeof bindProjectEditor>;
 
 function exceptionFieldLabel(path: string) {
   if (!path.startsWith('{')) return path;
@@ -151,19 +151,19 @@ function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTr
 }
 
 export default function StudioProjectWorkspace({
-  projectId, onNewStep = checkpointNewStep, onNewSweep,
-}: { projectId: string } & ProjectWindowCommands) {
+  document, onNewStep = checkpointNewStep, onNewSweep,
+}: { document: StudioProjectDocument } & ProjectWindowCommands) {
   const [load, setLoad] = useState<{ session: EditorSession } | { error: string }>();
   const [retry, setRetry] = useState(0);
   useEffect(() => {
-    const lifetime = new AbortController();
-    setLoad(undefined);
-    void openProjectEditor(projectId, lifetime.signal).then(
-      (session) => { if (!lifetime.signal.aborted) setLoad({ session }); },
-      (cause: unknown) => { if (!lifetime.signal.aborted) setLoad({ error: apiErrorMessage(cause) }); },
-    );
-    return () => lifetime.abort();
-  }, [projectId, retry]);
+    try {
+      const session = bindProjectEditor(document);
+      setLoad({ session });
+      return session.close;
+    } catch (cause) {
+      setLoad({ error: apiErrorMessage(cause) });
+    }
+  }, [document, retry]);
 
   if (!load) return <main aria-busy="true" />;
   if ('error' in load) return (
@@ -171,7 +171,7 @@ export default function StudioProjectWorkspace({
       <button type="button" className={control} onClick={() => setRetry((attempt) => attempt + 1)}>{studioName('retry')}</button>
     </main>
   );
-  return <ManagedProjectWindow key={projectId} session={load.session} onNewStep={onNewStep} onNewSweep={onNewSweep} />;
+  return <ManagedProjectWindow session={load.session} onNewStep={onNewStep} onNewSweep={onNewSweep} />;
 }
 
 function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: EditorSession } & ProjectWindowCommands) {

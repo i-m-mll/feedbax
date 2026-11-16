@@ -353,7 +353,12 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
 
 
 def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_path, monkeypatch, host_fixture):
+    from feedbax.contracts.studio_project import StudioProjectRename
+
     folders, foreign = _local_project(tmp_path, monkeypatch, host_fixture)
+    authored = folders.read(PROJECT)
+    renamed = folders.rename(PROJECT, StudioProjectRename(revision=authored.revision, name="renamed_experiment"))
+    assert renamed.snapshot.project_id == authored.project_id
     reviewed = folders.read_plan(PROJECT, revision=None)
     files = folders.read_authored_snapshot(PROJECT, revision=reviewed.revision).files
     requests = {run.key: str(run.request_id) for run in reviewed.plan.runs}
@@ -382,12 +387,14 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
             reply = client.post(f"{API}/approve", json={"quote": str(quote_id)})
             assert reply.status_code == 202 and reply.json() == {"session_id": str(quote_id)}
             assert submission.target == opened.placement
+            assert submission.project_id == reviewed.project_id
             assert [item.disposition for item in submission.items] == ["admitted", "admitted"]
             host = restarted.attach(quote_id)
             assert len(host.submissions(token=str(quote_id))) == 1
             assert [row["request"] for row in host.jobs()] == [requests[key] for key in RUNS]
-            installed = venue / "projects" / reviewed.revision / PROJECT
+            installed = venue / "projects" / reviewed.revision / reviewed.project_id
             assert {name: (installed / name).read_bytes() for name in files} == files
+            assert (venue / "stores" / reviewed.project_id).is_dir()
             assert set(restarted.inventory()) == {opened.venue, foreign}
             assert list((tmp_path / "venues").glob(".used-*")) == [tmp_path / "venues" / f".used-{opened.venue.id}"]
 

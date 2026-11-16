@@ -77,7 +77,7 @@ def seed(home: str, project_id: str):
         path = folders.root / project_id / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    return project_id
+    return folders.open(project_id).snapshot.project_id
 
 
 def walkthrough_files(batches: str | None = None):
@@ -190,7 +190,7 @@ def seed_series_variants(home: str):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    return project_id
+    return ProjectFolderService(root.parent).open(project_id).snapshot.project_id
 
 
 def train_measures(home: str, project: str, metric: str, *attempts: str):

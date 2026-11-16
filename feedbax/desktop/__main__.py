@@ -156,14 +156,14 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
             "runtime": runtime,
         }
 
-    transport.register_ticket_route(lambda: server.should_exit)
+    transport.register_ticket_route(
+        lambda: server.should_exit, rebind_arrangement=register_preferences(app, paths.settings / "studio.json"),
+    )
     register_activity(app, release.digest, endpoint.generation)
 
     @app.get("/api/desktop/jobs")
     async def jobs():
         return app.state.desktop_jobs.snapshot()
-
-    register_preferences(app, paths.settings / "studio.json")
 
     _register_stop(app, server)
 

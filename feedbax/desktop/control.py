@@ -44,6 +44,13 @@ def write_private_json(path: Path, value: object) -> None:
 
 
 def _read_private_json(path: Path, *, max_bytes: int = 8192) -> dict:
+    value = _read_private_json_value(path, max_bytes=max_bytes)
+    if not isinstance(value, dict):
+        raise ValueError(f"invalid desktop service record: {path}")
+    return value
+
+
+def _read_private_json_value(path: Path, *, max_bytes: int) -> object:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
@@ -54,10 +61,7 @@ def _read_private_json(path: Path, *, max_bytes: int = 8192) -> dict:
             or info.st_size > max_bytes
         ):
             raise PermissionError(f"invalid private desktop service record: {path}")
-        value = json.load(stream)
-    if not isinstance(value, dict):
-        raise ValueError(f"invalid desktop service record: {path}")
-    return value
+        return json.load(stream)
 
 
 @dataclass(frozen=True)

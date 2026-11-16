@@ -1,10 +1,13 @@
 """Read-only planning and status for an authored text project."""
 
+from __future__ import annotations
+
 import argparse
 from collections.abc import Mapping
 from dataclasses import replace
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from feedbax.bin.project_commands import CommandOutput
 
@@ -38,6 +41,9 @@ from feedbax.contracts.project_plan_io import (
 )
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.persistence.project_subject import terminal_train_reader
+
+if TYPE_CHECKING:
+    from feedbax.project_folder import ProjectFolderLocation
 
 
 def configure_status_parser(parser: argparse.ArgumentParser) -> None:
@@ -136,12 +142,19 @@ def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
 
 def _read_plan(
     project_dir: Path, *, capture_sources: bool = False,
-) -> tuple[TextProject, ProjectPlan, set[Path], dict[str, bytes]]:
+) -> tuple[ProjectFolderLocation, TextProject, ProjectPlan, set[Path], dict[str, bytes]]:
     from feedbax.analysis.builtin_operations import register_builtin_operations
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.project_folder import ProjectFolderInvalid, ProjectFolderLocation, ProjectFolderNotFound
 
     root, declaration = locate_text_project(project_dir)
-    text = read_text_project_snapshot(root, declaration=declaration)
+    try:
+        location = ProjectFolderLocation.selected(root)
+        text = read_text_project_snapshot(location.path, declaration=declaration)
+        if ProjectFolderLocation.selected(location.path) != location:
+            raise ProjectReadError(root, "project folder changed while it was being read")
+    except (ProjectFolderInvalid, ProjectFolderNotFound) as error:
+        raise ProjectReadError(root, str(error)) from error
 
     operations = OperationRegistry()
     register_builtin_operations(operations)
@@ -157,7 +170,7 @@ def _read_plan(
     readers = BaseReaders(
         external=read, figure_external=read, terminal_train=terminal_train_reader(text.store_path),
     )
-    return text, compile_project(
+    return location, text, compile_project(
         text.project, operations=operations, readers=readers, capture_sources=capture_sources,
     ), external.paths, observed
 
@@ -198,7 +211,7 @@ def write_diagnostics(
 
 
 def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
-    text, plan, external_paths, observed = _read_plan(
+    location, text, plan, external_paths, observed = _read_plan(
         args.project_dir, capture_sources=args.out is not None or args.check is not None,
     )
     current = PlanRequests.from_plan(plan)
@@ -241,7 +254,7 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
         from feedbax.project_folder import SettledProjectPlan
         from feedbax.web.services.project_plan import ProjectPlanRead, plan_request_address
 
-        view = ProjectPlanRead.without_history(SettledProjectPlan.from_text(text.root.name, text, plan))
+        view = ProjectPlanRead.without_history(SettledProjectPlan.from_text(location, text, plan))
         result = view.response(include_window_map=True, variants=variants)
         if before is not None:
             result.review = [
@@ -284,11 +297,11 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.web.services.project_plan import read_settled_project_plan
 
     try:
-        text, plan, _, _ = _read_plan(args.project_dir)
+        location, text, plan, _, _ = _read_plan(args.project_dir)
         variants = _variants(args.variant)
         _validate_variants(text.root, variants, set(plan.variants))
         problems = write_diagnostics(output, plan, variants, declaration=text.declaration)
-        settled = SettledProjectPlan.from_text(text.root.name, text, plan)
+        settled = SettledProjectPlan.from_text(location, text, plan)
         view = read_settled_project_plan(
             settled,
             PlanJobReader(HostClient()),

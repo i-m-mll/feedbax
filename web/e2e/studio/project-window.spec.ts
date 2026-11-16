@@ -12,7 +12,7 @@ test.use({
 });
 
 test('opens a readable project beside a malformed project folder', async ({ page, request }, info) => {
-  const { snapshot } = await seedManagedProject(request, []);
+  const { snapshot, configuration } = await seedManagedProject(request, []);
   const projectId = snapshot.project_id;
   const projects = join(String(info.config.metadata.home), 'state', 'web', 'projects');
   const brokenFolder = await mkdtemp(join(projects, 'malformed-project-'));
@@ -27,7 +27,7 @@ test('opens a readable project beside a malformed project folder', async ({ page
     return opened;
   }
 
-  const heading = page.getByRole('heading', { name: projectId, exact: true, level: 1 });
+  const heading = page.getByRole('heading', { name: configuration.project, exact: true, level: 1 });
   expect((await open(projectId)).status()).toBe(200);
   await expect(heading).toBeVisible();
 
@@ -83,7 +83,7 @@ test('a failed Task read retries in its slot without disturbing Runs', async ({ 
 
 test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }, info) => {
   test.setTimeout(45_000);
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const host = await request.get('/api/jobs');
   expect(host.ok(), await host.text()).toBe(true);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
@@ -98,7 +98,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const activityRow = activity.getByRole('listitem').filter({
-    has: page.getByRole('button', { name: `Train ${snapshot.project_id} train`, exact: true }),
+    has: page.getByRole('button', { name: `Train ${configuration.project} train`, exact: true }),
   });
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
   await expect(runButton).toBeEnabled();
@@ -159,8 +159,8 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
 
 test('outside saved-folder edits join the mounted Undo history', async ({ page, request }, info) => {
   test.setTimeout(45_000);
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', snapshot.project_id);
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', configuration.project);
   const modelPath = join(root, 'documents', 'point-mass.json');
   const stepPath = join(root, 'steps', 'train.json');
   const panel = (name: string) => page.getByRole('tabpanel', { name, exact: true });

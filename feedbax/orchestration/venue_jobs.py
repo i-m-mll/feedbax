@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 from base64 import b64decode
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 import json
 import os
@@ -20,12 +22,14 @@ from feedbax.contracts.execution_target import SessionTarget
 from feedbax.contracts.jobs import StudioJobSubmission
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
+    PROJECT_DECLARATION_SUFFIX,
     PROJECT_FILE_FAMILIES,
+    TextProjectExternalInputs,
     parse_text_project_files,
-    project_declaration_name,
     project_semantic_root,
     read_text_project_snapshot,
 )
+from feedbax.contracts.project_resolution import BaseReaders
 from feedbax.host.client import HostClient
 from feedbax.host.io import private_directory
 from feedbax.host.protocol import HostError, SessionAccess
@@ -33,8 +37,9 @@ from feedbax.jobs import JobService
 from feedbax.orchestration.session import Nonempty, SessionError, SessionModel
 from feedbax.orchestration.session_jobs import Delegation, admit_saved_delegation
 from feedbax.persistence.ssh_store import RemoteStore, SSHStoreConnection
+from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.plugins.composition import compose_application
-from feedbax.project_folder import ProjectFolder, ProjectFolderLocation
+from feedbax.project_folder import ProjectFolderLocation, SettledProjectPlan, _folder_lock, compile_saved_project
 
 
 _PROJECT_NAME = TypeAdapter(ProjectName)
@@ -96,29 +101,24 @@ class VenueJobs:
         return StudioJobSubmission.model_validate(reply["value"])
 
 
-def _stage_snapshot(root: Path, request: Delegation) -> Path:
+def _stage_snapshot(root: Path, request: Delegation) -> ProjectFolderLocation:
     if request.files is None or request.request_ids is None:
         raise SessionError("Venue admission requires an authored snapshot and selected request IDs.")
     files = {}
-    declaration = project_declaration_name(request.project)
     for relative, data in request.files.items():
         path = PurePosixPath(relative)
-        if relative != declaration and (
-            path.as_posix() != relative or len(path.parts) != 2 or path.parts[0] not in PROJECT_FILE_FAMILIES
-            or path.suffix != ".json"
-        ):
+        declaration = len(path.parts) == 1 and path.suffix == PROJECT_DECLARATION_SUFFIX
+        member = len(path.parts) == 2 and path.parts[0] in PROJECT_FILE_FAMILIES and path.suffix == ".json"
+        if path.as_posix() != relative or not (declaration or member):
             raise SessionError("Invalid authored venue path.")
-        if relative != declaration:
+        if member:
             _PROJECT_NAME.validate_python(path.stem)
         files[relative] = b64decode(data, validate=True)
 
     destination_parent = private_directory(private_directory(root) / request.revision)
     destination = destination_parent / request.project
     text = parse_text_project_files(destination, files)
-    if (
-        text.configuration.project != request.project or text.revision != request.revision
-        or project_semantic_root(text.project) != request.semantic_root
-    ):
+    if text.revision != request.revision or project_semantic_root(text.project) != request.semantic_root:
         raise SessionError("Authored snapshot differs from the saved delegation.")
     with TemporaryDirectory(prefix=".stage-", dir=destination_parent) as staged:
         stage = Path(staged)
@@ -135,11 +135,43 @@ def _stage_snapshot(root: Path, request: Delegation) -> Path:
                 pass
         finally:
             os.close(parent)
-    ProjectFolderLocation.selected(destination)
+    location = ProjectFolderLocation.selected(destination)
     if read_text_project_snapshot(destination).files != files:
         raise SessionError("The venue already has different bytes for this snapshot.")
     sync_parent_directories(destination)
-    return destination
+    return location
+
+
+@dataclass(frozen=True)
+class _DelegatedProjectPlans:
+    request: Delegation
+    location: ProjectFolderLocation
+    store: Path
+    bundle: ApplicationRegistryBundle
+
+    @contextmanager
+    def _review(self, project_id: str, *, write: bool) -> Iterator[SettledProjectPlan]:
+        if project_id != self.request.project:
+            raise SessionError("The venue project differs from the authenticated delegation.")
+        with _folder_lock(self.location, write=write) as folder:
+            text = read_text_project_snapshot(folder.path)
+            if text.revision != self.request.revision or project_semantic_root(text.project) != self.request.semantic_root:
+                raise SessionError("Authored snapshot differs from the saved delegation.")
+            read_pin = TextProjectExternalInputs(text, authority=self.location.path.parent).read
+            yield compile_saved_project(
+                text, project_id=self.request.project, store=self.store, readers=BaseReaders(figure_external=read_pin),
+                operations=self.bundle.operations, components=self.bundle.components,
+                functions=self.bundle.expression_functions, python_tasks=self.bundle.python_tasks,
+            )
+
+    def read_plan(self, project_id: str, *, revision: str | None) -> SettledProjectPlan:
+        if revision != self.request.revision:
+            raise SessionError("The requested revision differs from the authenticated delegation.")
+        with self._review(project_id, write=False) as plan:
+            return plan
+
+    def admission_plan(self, project_id: str) -> AbstractContextManager[SettledProjectPlan]:
+        return self._review(project_id, write=True)
 
 
 def _serve(args: argparse.Namespace, call: _Admission) -> StudioJobSubmission:
@@ -153,11 +185,9 @@ def _serve(args: argparse.Namespace, call: _Admission) -> StudioJobSubmission:
         raise SessionError("The venue session cannot accept a saved delegation.")
     bootstrap = tuple(args.bootstrap)
     bundle = asyncio.run(compose_application(modules=bootstrap)).bundle
-    destination = _stage_snapshot(args.projects_root, call.delegation)
-    folders = ProjectFolder(
-        destination.parent, stores_root=private_directory(args.stores_root),
-        operations=bundle.operations, components=bundle.components, functions=bundle.expression_functions,
-        python_tasks=bundle.python_tasks,
+    location = _stage_snapshot(args.projects_root, call.delegation)
+    folders = _DelegatedProjectPlans(
+        call.delegation, location, private_directory(args.stores_root) / call.delegation.project, bundle,
     )
     return admit_saved_delegation(
         JobService(host, bundle, bootstrap_modules=bootstrap), folders, call.delegation, token=call.token,

@@ -8,11 +8,11 @@ test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900
 
 test('saves and runs managed optimizer and attachment sweeps', async ({ page, request }, info) => {
   test.setTimeout(50_000);
-  const { snapshot, projectPath } = await seedManagedProject(request, []);
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   const id = snapshot.project_id;
   const url = '/?project=' + encodeURIComponent(id);
   const runsPath = projectPath + '/train-runs';
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, id, 'managed-fields');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'managed-fields');
   const save = async () => {
     const response = await request.get(projectPath + '/open');
     expect(response.ok(), await response.text()).toBe(true);

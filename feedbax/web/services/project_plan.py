@@ -629,7 +629,7 @@ class ProjectPlanService:
         if isinstance(body, StudioSavedEvaluationReplayRequest) and body.trial not in row.trials:
             raise ProjectFolderInvalid("The selected trial is absent from the saved Evaluate request.")
         result = self.jobs.read_evaluation_result(
-            project=project_id, store=view.settled.store_path, job_id=body.job_id,
+            project=view.settled.project_id, store=view.settled.store_path, job_id=body.job_id,
         )
         if result.receipt != receipt:
             raise JobConflict("The selected Evaluate receipt changed.")
@@ -664,7 +664,7 @@ class ProjectPlanService:
             if not isinstance(train, DocumentTrainingRequestSpec):
                 raise ValueError("Evaluate subject has no authored Objective.")
             result = self.jobs.read_evaluation_objective_attempt(
-                project=project_id, store=settled.store_path, job_id=body.job_id, request_id=run.request_id,
+                project=settled.project_id, store=settled.store_path, job_id=body.job_id, request_id=run.request_id,
             )
             requested = list(subject.select.updates)
             objective = train.trial_documents.objective
@@ -672,7 +672,7 @@ class ProjectPlanService:
                 return result.objective_series(requested, objective=objective)
             return live_objective_series(
                 ImmutableArtifactBlobProvider(settled.store_path),
-                project_id=project_id, job_id=body.job_id, request_id=run.request_id,
+                project_id=settled.project_id, job_id=body.job_id, request_id=run.request_id,
                 producer_request=subject.request_id, params=params, requested=requested,
                 objective=objective, observation=result,
             )

@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useLayoutEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { createProjectFolder } from '@/api/projectFolders';
+import { createProjectFolder, openProjectFolder } from '@/api/projectFolders';
 import { apiErrorMessage } from '@/api/request';
 import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import { StudioActivityPane } from '@/components/activity/StudioActivity';
@@ -8,20 +8,10 @@ import { studioName } from '@/components/activity/studioVocabulary';
 
 const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
-function Project({ id }: { id: string }) {
-  return (
-    <StudioJobsProvider projectId={id}>
-      <Suspense fallback={<main aria-busy="true" />}>
-        <StudioProjectWorkspace projectId={id} />
-      </Suspense>
-    </StudioJobsProvider>
-  );
-}
-
-function NewProject() {
+function ProjectEntry({ requestedId }: { requestedId: string | null }) {
   const project = useQuery({
-    queryKey: ['studio-entry-project'],
-    queryFn: () => createProjectFolder(),
+    queryKey: ['studio-entry-project', requestedId],
+    queryFn: () => requestedId ? openProjectFolder(requestedId) : createProjectFolder(),
     retry: false,
     retryOnMount: false,
     refetchOnWindowFocus: false,
@@ -29,14 +19,20 @@ function NewProject() {
     staleTime: Infinity,
   });
   const id = project.data?.snapshot.project_id;
-  useEffect(() => {
-    if (!id) return;
+  useLayoutEffect(() => {
+    if (!id || id === requestedId) return;
     const url = new URL(window.location.href);
     url.searchParams.set('project', id);
     window.history.replaceState(window.history.state, '', url);
-  }, [id]);
+  }, [id, requestedId]);
 
-  if (id) return <Project id={id} />;
+  if (project.data) return (
+    <StudioJobsProvider key={id} projectId={project.data.snapshot.project_id}>
+      <Suspense fallback={<main aria-busy="true" />}>
+        <StudioProjectWorkspace document={project.data} />
+      </Suspense>
+    </StudioJobsProvider>
+  );
   if (project.isError && !project.isFetching) return (
     <main className="p-4">
       <p role="alert">{apiErrorMessage(project.error)}</p>
@@ -55,5 +51,5 @@ export default function App({ projectId, activity }: { projectId: string | null;
       </main>
     </StudioJobsProvider>
   );
-  return projectId ? <Project id={projectId} /> : <NewProject />;
+  return <ProjectEntry requestedId={projectId} />;
 }

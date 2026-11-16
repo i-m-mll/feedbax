@@ -43,7 +43,7 @@ def add_physical_interior(raw, scope):
 
 
 if __name__ == "__main__":
-    home, project_id, scope = sys.argv[1:]
+    home, folder_name, scope = sys.argv[1:]
     if scope == "managed-fields":
         raw = document_project(authored_documents())
         raw["steps"]["train"]["model_attachments"] = {
@@ -62,9 +62,9 @@ if __name__ == "__main__":
         }}}}
     project = Project.model_validate(raw)
     paths = AppPaths.resolve(instance_root=Path(home))
-    root = paths.web / "projects" / project_id
-    for name, data in dump_text_project(project, ProjectConfiguration(project=project_id, store="results")).items():
+    root = paths.web / "projects" / folder_name
+    for name, data in dump_text_project(project, ProjectConfiguration(project=folder_name, store="results")).items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    print(json.dumps(project_id))
+    print(json.dumps(folder_name))

@@ -88,7 +88,7 @@ def seed_variants(home: str, project_id: str):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    return project_id
+    return ProjectFolderService(root.parent).open(project_id).snapshot.project_id
 
 
 def last_train_interval(events, attempt: str):
@@ -301,10 +301,10 @@ def observe_history(home: Path, project: str, revision: str):
     return output
 
 
-def run_saved_cli(home: str, project_id: str, label: str) -> None:
+def run_saved_cli(home: str, folder_name: str, label: str) -> None:
     paths = AppPaths.resolve(instance_root=Path(home))
     paths.configure_studio(desktop=False)
-    project = paths.web / "projects" / project_id
+    project = paths.web / "projects" / folder_name
     os.execv(sys.executable, [sys.executable, "-m", "feedbax.cli", "run", str(project), "train", "--label", label])
 
 

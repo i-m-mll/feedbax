@@ -32,7 +32,8 @@ def stopped_checkpoint(paths, host, project, attempt):
     row = read_job(host, project, attempt)
     assert row["state"] == "stopped", row
     checkpoint = PublishedTrainingCheckpoint.model_validate(row["checkpoint"])
-    assert checkpoint.checkpoint_root.is_relative_to(paths.web / "projects" / project)
+    _, location = ProjectFolderService(paths.web / "projects").open_native_id(project)
+    assert checkpoint.checkpoint_root.is_relative_to(location.path)
     pointer = checkpoint.pointer
     transaction = authenticate_checkpoint_custody_ref(
         ParentRef(
@@ -81,7 +82,8 @@ def resume(host, project, attempt, successor):
 
 
 def declare_variants(paths, project, revision):
-    root = paths.web / "projects" / project
+    _, location = ProjectFolderService(paths.web / "projects").open_native_id(project)
+    root = location.path
     saved = load_text_project(root)
     assert saved.revision == revision and saved.project.sweep is None
     updated = saved.project.model_copy(update={

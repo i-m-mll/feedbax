@@ -47,14 +47,16 @@ def test_native_entry_creates_and_opens_project_windows(tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     app = create_app(projects_dir=projects)
     folders = app.state.project_folders
-    first = folders.new().snapshot
-    second = folders.new().snapshot
+    first_document, first_location = folders.new_native_project()
+    second_document, second_location = folders.new_native_project()
+    first = first_document.snapshot
+    second = second_document.snapshot
     for project in (first, second):
         folders.rename(
             project.project_id,
             StudioProjectRename(name="same_title", revision=project.revision),
         )
-    (projects / "alias").symlink_to(projects / first.project_id, target_is_directory=True)
+    (projects / "alias").symlink_to(first_location.path, target_is_directory=True)
     (projects / "empty").mkdir()
     external = tmp_path / "external"
     external.mkdir()
@@ -81,7 +83,7 @@ def test_native_entry_creates_and_opens_project_windows(tmp_path, monkeypatch):
         assert control.post(ticket_url, json={"project_folder": str(path)}).status_code == expected
     assert control.post(ticket_url, json={
         "project_id": second.project_id,
-        "project_folder": str(projects / first.project_id),
+        "project_folder": str(first_location.path),
     }).status_code == 422
 
     default_ticket = control.post(ticket_url, json={}).json()
@@ -97,11 +99,11 @@ def test_native_entry_creates_and_opens_project_windows(tmp_path, monkeypatch):
     assert browser.post(ticket_url, json={}, headers={"Origin": endpoint.origin}).status_code == 403
     browser.cookies.clear()
 
-    for project in (first, second):
-        open_url = f"/api/projects/{project.project_id}/open"
+    for project, location in ((first, first_location), (second, second_location)):
+        open_url = f"/api/projects/{location.path.name}/open"
         browser.cookies.clear()
         assert browser.get(open_url).status_code == 403
-        issued = control.post(ticket_url, json={"project_folder": str(projects / project.project_id)})
+        issued = control.post(ticket_url, json={"project_folder": str(location.path)})
         assert issued.status_code == 200, issued.text
         ticket = issued.json()
         assert ticket["project"] == {"id": project.project_id, "title": "same_title"}
@@ -114,7 +116,7 @@ def test_native_entry_creates_and_opens_project_windows(tmp_path, monkeypatch):
         assert opened.json()["snapshot"]["project_id"] == project.project_id
         assert opened.json()["configuration"]["project"] == "same_title"
 
-    renewed = control.post(ticket_url, json={"project_id": first.project_id})
+    renewed = control.post(ticket_url, json={"project_id": first_location.path.name})
     assert renewed.status_code == 200, renewed.text
     renewed_ticket = renewed.json()
     assert renewed_ticket["project"] == {"id": first.project_id, "title": "same_title"}
@@ -189,7 +191,8 @@ def test_external_git_project_opens_saves_and_reopens_in_place(tmp_path, monkeyp
         created = control.post(ticket_url, json={}).json()
         exchange(created)
         created_id = created["project"]["id"]
-        assert list(projects.iterdir()) == [projects / created_id]
+        created_path = Path(created["folder"]["path"])
+        assert list(projects.iterdir()) == [created_path]
         assert browser.post(ticket_url, json={"project_folder": str(repo)}, headers=origin).status_code == 403
         assert browser.get("/api/projects/agent%20checkout/open").status_code == 422
         assert browser.get("/api/projects/external-unknown/open").status_code == 404
@@ -230,6 +233,9 @@ def test_external_git_project_opens_saves_and_reopens_in_place(tmp_path, monkeyp
         assert new_request == _cli_request_id(repo)
 
         assert select(repo)["project"] == selected["project"]
+        alternate_case = repo.with_name(repo.name.swapcase())
+        if alternate_case.exists():
+            assert select(alternate_case)["project"] == selected["project"]
         renewed = control.post(ticket_url, json={"project_id": project_id})
         assert renewed.status_code == 200, renewed.text
         exchange(renewed.json())
@@ -238,9 +244,10 @@ def test_external_git_project_opens_saves_and_reopens_in_place(tmp_path, monkeyp
         other = tmp_path / "other" / repo.name
         _write_train(other)
         assert select(other)["project"] != selected["project"]
-        assert list(projects.iterdir()) == [projects / created_id]
+        assert list(projects.iterdir()) == [created_path]
 
         moved = repo.rename(tmp_path / "moved")
+        assert select(moved)["project"] != selected["project"]
         repo.symlink_to(moved, target_is_directory=True)
         assert control.post(ticket_url, json={"project_folder": str(repo)}).status_code == 422
         assert browser.get(f"{url}/open").status_code in (404, 422)
@@ -427,7 +434,8 @@ def test_recent_ticket_returns_the_latest_acknowledged_title(tmp_path):
     origin = {"Origin": transport.endpoint.origin}
     issued = control.post("/_desktop/ticket", json={}).json()
     project_id = issued["project"]["id"]
-    assert list(projects.iterdir()) == [projects / project_id]
+    location = issued["folder"]
+    assert list(projects.iterdir()) == [Path(location["path"])]
     assert browser.post(
         "/_desktop/exchange", headers={**origin, "X-Feedbax-Ticket": issued["ticket"]},
     ).status_code == 204
@@ -435,14 +443,13 @@ def test_recent_ticket_returns_the_latest_acknowledged_title(tmp_path):
     revision = browser.get(f"{url}/open").json()["snapshot"]["revision"]
     renamed = browser.post(f"{url}/rename", json={"revision": revision, "name": "renamed"}, headers=origin)
     assert renamed.status_code == 200, renamed.text
-    location = issued["folder"]
     request = {"project_folder": location["path"], "folder_identity": location["identity"]}
     assert browser.post("/_desktop/ticket", json=request, headers=origin).status_code == 403
     reopened = control.post("/_desktop/ticket", json=request)
     assert reopened.status_code == 200, reopened.text
     assert reopened.json()["project"] == {"id": project_id, "title": "renamed"}
     assert reopened.json()["folder"] == location
-    assert list(projects.iterdir()) == [projects / project_id]
+    assert list(projects.iterdir()) == [Path(location["path"])]
 
 
 @pytest.mark.parametrize("entries", [

@@ -8,6 +8,7 @@ from pathlib import Path
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.release import AppPaths
+from feedbax.web.services.project_folder import ProjectFolderService
 
 
 def seed(project: str, root: Path, *, variants: bool = False) -> None:
@@ -23,20 +24,22 @@ def seed(project: str, root: Path, *, variants: bool = False) -> None:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    print(json.dumps(project))
+    document = ProjectFolderService(root.parent).open(project)
+    print(json.dumps(document.snapshot.project_id))
 
 
 def main(action: str, instance: str, project: str) -> int:
     paths = AppPaths.resolve(instance_root=Path(instance))
-    root = paths.web / "projects" / project
+    projects = paths.web / "projects"
     if action in {"seed", "seed-variants"}:
-        seed(project, root, variants=action == "seed-variants")
+        seed(project, projects / project, variants=action == "seed-variants")
         return 0
     if action == "status":
         from feedbax.cli import main as cli
 
         os.environ["FEEDBAX_HOST_ROOT"] = str(paths.host)
-        return cli(["status", str(root), "--json"])
+        _, location = ProjectFolderService(projects).open_native_id(project)
+        return cli(["status", str(location.path), "--json"])
     raise ValueError(f"Unknown action {action!r}")
 
 

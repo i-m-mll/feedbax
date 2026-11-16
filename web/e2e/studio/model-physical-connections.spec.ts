@@ -23,8 +23,8 @@ async function revealModel(page: Page, url: string) {
 }
 
 test('edits a conserving connection only inside its physical interior', async ({ page, request }, info) => {
-  const { snapshot, projectPath } = await seedManagedProject(request, []);
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, snapshot.project_id, 'equations');
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'equations');
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
   const model = modelPanel(page);
   const fit = () => model.getByRole('button', { name: 'Fit View', exact: true }).click();
@@ -123,8 +123,8 @@ for (const { scope, element, composites, target } of [
     target: (model: Locator) => edge(model, 'drive') },
 ]) {
   test(`reveals the saved Plan problem at its ${element.kind} address (${scope})`, async ({ page, request }, info) => {
-    const { snapshot, projectPath } = await seedManagedProject(request, []);
-    await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, snapshot.project_id, scope);
+    const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
+    await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, scope);
     const plan = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/train-runs` &&
       new URL(response.url()).searchParams.get('window_map') === 'true');
     await revealModel(page, `/?project=${encodeURIComponent(snapshot.project_id)}`);

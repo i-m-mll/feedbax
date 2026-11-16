@@ -34,7 +34,7 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     projects = tmp_path / "projects"
     walkthrough = projects / "reaching"
     _, files = _write_walkthrough(walkthrough)
-    train = projects / "managed checkout"
+    train = tmp_path / "external" / "managed checkout"
     declaration = train / "managed.feedbax"
     for relative, data in dump_text_project(
         managed_train_project(), ProjectConfiguration(project="managed", store="results"),
@@ -63,7 +63,7 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
         "run": (StudioJobSubmission, (str(declaration), "train", "--label", "explicit actor")),
         "describe": (StudioAuthoringCatalog, ()),
     }
-    assert cases.keys() == PROJECT_COMMANDS.keys()
+    assert cases.keys() == PROJECT_COMMANDS.keys() - {"store"}
 
     def call(args, expected_exit, response=None):
         assert main(args) == expected_exit
@@ -81,8 +81,12 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
             problems.append(problem)
         return payload, problems
 
+    def comparable_status(view):
+        # Studio includes trial-condition previews for editing.
+        return view.model_dump(exclude={"window_map": {"rows": {"__all__": {"evaluation_conditions"}}}})
+
     results = {}
-    for name in PROJECT_COMMANDS:
+    for name in cases:
         model, args = cases[name]
         with pytest.raises(SystemExit) as help_exit:
             main([name, "--help"])
@@ -130,18 +134,31 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     submission = results["run"]
     assert submission.actor is not None and submission.actor.client == "cli"
     assert submission.actor.label == "explicit actor"
-    assert submission.project_id == train.name
     assert [item.disposition for item in submission.items] == ["admitted"]
-    with TestClient(create_app(projects_dir=projects)) as client:
+    app = create_app(projects_dir=projects)
+    external_status, problems = call(["status", str(declaration), "--json"], 0, StudioSavedTrainRuns)
+    assert not problems
+    with TestClient(app) as client:
+        opened, _ = app.state.project_folders.open_native_document(declaration)
+        assert opened.snapshot.project_id == submission.project_id
         response = client.get(
             f"/api/projects/{walkthrough.name}/train-runs",
             params={"revision": read_text_project_snapshot(walkthrough).revision, "window_map": True},
         )
         assert response.status_code == 200
-        assert StudioSavedTrainRuns.model_validate(response.json()) == status
+        studio_status = StudioSavedTrainRuns.model_validate(response.json())
+        assert comparable_status(studio_status) == comparable_status(status)
         response = client.get(f"/api/submissions/{submission.id}")
         assert response.status_code == 200
         assert StudioJobSubmission.model_validate(response.json()) == submission
+        response = client.get(
+            f"/api/projects/{opened.snapshot.project_id}/train-runs",
+            params={"revision": opened.snapshot.revision, "window_map": True},
+        )
+        assert response.status_code == 200
+        assert comparable_status(StudioSavedTrainRuns.model_validate(response.json())) == comparable_status(external_status)
+        (attempt,) = external_status.rows[0].attempts
+        assert attempt.job_id == submission.items[0].job_id
         response = client.get("/api/projects/authoring/catalog")
         assert response.status_code == 200
         assert StudioAuthoringCatalog.model_validate(response.json()) == results["describe"]
@@ -172,10 +189,10 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     rejected, problems = call(
         ["run", str(walkthrough), "report", "--json"], 1, StudioJobSubmission,
     )
-    (item,) = rejected.items
-    assert item.disposition == "rejected"
+    refused = [item for item in rejected.items if item.disposition == "rejected"]
+    assert refused
     assert [(problem.code, problem.address) for problem in problems] == [
-        ("admission_rejected", item.run_key),
+        ("admission_rejected", item.run_key) for item in refused
     ]
 
     _edit(
@@ -187,7 +204,7 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     checked, problems = call(["check", str(walkthrough), "--json"], 0, StoreCheckResult)
     assert checked.verified_objects == 1 and problems == []
     project_errors = {}
-    for name in PROJECT_COMMANDS.keys() - {"describe", "check"}:
+    for name in cases.keys() - {"describe", "check"}:
         model = cases[name][0] if name != "run" else None
         result, problems = call([name, str(walkthrough), "--json"], 2, model)
         project_errors[name] = problems

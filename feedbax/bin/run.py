@@ -37,13 +37,14 @@ def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
 
     try:
         root, declaration = locate_text_project(args.project_dir)
+        location = ProjectFolderLocation.selected(root)
         registries = asyncio.run(compose_application()).bundle
         folders = ProjectFolder(
             root.parent, operations=registries.operations, components=registries.components,
             functions=registries.expression_functions, python_tasks=registries.python_tasks,
-            local_folder=ProjectFolderLocation.selected(root),
+            local_folder=location,
         )
-        reviewed = folders.read_plan(root.name, revision=None, declaration=declaration)
+        reviewed = folders.read_plan(location.project_id, revision=None, declaration=declaration)
         if reviewed.plan.diagnostics:
             write_diagnostics(output, reviewed.plan, None, declaration=project_declaration_name(
                 reviewed.configuration.project,

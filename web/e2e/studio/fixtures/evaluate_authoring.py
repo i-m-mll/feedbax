@@ -8,6 +8,7 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.desktop.release import AppPaths
+from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_project
 
 
@@ -42,7 +43,7 @@ def seed_train_variants(home: str, project_id: str):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    return project_id
+    return ProjectFolderService(root.parent).open(project_id).snapshot.project_id
 
 
 def files():

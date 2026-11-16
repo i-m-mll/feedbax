@@ -128,9 +128,12 @@ impl Windows {
     }
 
     fn restore(&mut self, path: PathBuf, open: OpenWindows) {
+        let mut folders = BTreeSet::new();
         for (id, saved) in &open {
-            self.pending
-                .push_back(Entry::Restore(id.clone(), saved.clone()));
+            if folders.insert((&saved.folder.path, saved.folder.identity)) {
+                self.pending
+                    .push_back(Entry::Restore(id.clone(), saved.clone()));
+            }
         }
         self.open = open;
         self.session_file = Some(path);
@@ -156,13 +159,34 @@ impl Windows {
         self.open
             .get(id)
             .filter(|saved| &saved.folder == folder)
+            .or_else(|| {
+                let legacy = self.managed_alias(folder)?;
+                self.open
+                    .get(legacy)
+                    .filter(|saved| &saved.folder == folder)
+            })
             .map(|saved| saved.size)
     }
 
-    fn opened(&mut self, id: &str, folder: &Folder) {
-        self.pending.retain(|entry| {
-            !matches!(entry, Entry::Restore(saved_id, saved) if saved_id == id && &saved.folder == folder)
-        });
+    fn managed_alias<'a>(&self, folder: &'a Folder) -> Option<&'a str> {
+        folder.managed_alias(self.projects_root.as_deref()?)
+    }
+
+    fn opened(&mut self, id: &str, folder: &Folder) -> bool {
+        self.pending
+            .retain(|entry| !matches!(entry, Entry::Restore(_, saved) if &saved.folder == folder));
+        let Some(legacy) = self.managed_alias(folder).filter(|legacy| *legacy != id) else {
+            return false;
+        };
+        if self
+            .open
+            .get(legacy)
+            .is_some_and(|saved| &saved.folder == folder)
+        {
+            self.open.remove(legacy);
+            return true;
+        }
+        false
     }
 
     fn requested_focus(&mut self, label: String) {
@@ -338,7 +362,7 @@ fn show_studio(
         .lock()
         .unwrap()
         .saved_size(&ticket.project.id, &project_folder);
-    if let Some(window) = app.get_webview_window(&label) {
+    let created = if let Some(window) = app.get_webview_window(&label) {
         refresh_project_session(&window, &ticket, &ticket.project.id, reconnect)?;
         project_document::ProjectDocuments::bind(
             &window,
@@ -351,6 +375,7 @@ fn show_studio(
         if focused {
             focus(&window)?;
         }
+        None
     } else {
         let origin = ticket.url.origin();
         #[cfg(target_os = "macos")]
@@ -419,7 +444,10 @@ fn show_studio(
             window.destroy()?;
             return Err(error);
         }
-        let mut state = windows.lock().unwrap();
+        Some(size)
+    };
+    let mut state = windows.lock().unwrap();
+    if let Some(size) = created {
         state.open.insert(
             ticket.project.id.clone(),
             SavedWindow {
@@ -427,12 +455,10 @@ fn show_studio(
                 size,
             },
         );
+    }
+    if state.opened(&ticket.project.id, &project_folder) || created.is_some() {
         state.save()?;
     }
-    windows
-        .lock()
-        .unwrap()
-        .opened(&ticket.project.id, &project_folder);
     Ok(())
 }
 
@@ -442,6 +468,19 @@ fn record_recent(app: &AppHandle, project: RecentProject) -> tauri::Result<()> {
     let mut recents = state.recents.clone();
     recents.record(project);
     set_recents(app, &mut state, recents)
+}
+
+fn rebind_recent(app: &AppHandle, project: &RecentProject) -> tauri::Result<()> {
+    let windows = app.state::<Mutex<Windows>>();
+    let mut state = windows.lock().unwrap();
+    let Some(legacy) = state.managed_alias(&project.folder) else {
+        return Ok(());
+    };
+    let mut recents = state.recents.clone();
+    if recents.rebind(legacy, project) {
+        set_recents(app, &mut state, recents)?;
+    }
+    Ok(())
 }
 
 pub fn rename_recent(app: &AppHandle, id: &str, title: &str) -> tauri::Result<()> {
@@ -596,7 +635,9 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
                     Entry::Recent(recent) => Some((&recent.id, &recent.folder)),
                     _ => None,
                 } {
-                    if ticket.project.id != *id || ticket.folder != *folder {
+                    let valid_id = ticket.project.id == *id
+                        || !reconnect && folder.managed_alias(&paths.projects) == Some(id.as_str());
+                    if !valid_id || ticket.folder != *folder {
                         return Err(io::Error::other(
                             "The saved project no longer identifies the same folder.",
                         )
@@ -621,6 +662,8 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
                     Entry::NewProject | Entry::Folder(_) | Entry::Document(_) | Entry::Recent(_)
                 ) {
                     record_recent(app, recent)?;
+                } else {
+                    rebind_recent(app, &recent)?;
                 }
                 if let Some(window) = app.get_webview_window("status") {
                     let state = app.state::<Mutex<Windows>>();
@@ -1342,7 +1385,10 @@ mod tests {
 
     #[test]
     fn finder_open_reuses_saved_size_and_consumes_only_matching_restore() {
-        let mut state = Windows::default();
+        let mut state = Windows {
+            projects_root: Some("/projects".into()),
+            ..Windows::default()
+        };
         let first = project("one", "First");
         let second = project("two", "Second");
         let size = Size {
@@ -1367,13 +1413,55 @@ mod tests {
         state.ready = true;
         state.queue_open_urls(&[Url::from_directory_path(&first.folder.path).unwrap()]);
         assert_eq!(state.next(), Some(Entry::Folder(first.folder.path.clone())));
-        assert_eq!(state.saved_size("one", &first.folder), Some(size));
-        state.opened("one", &first.folder);
+        let replaced = Folder {
+            identity: [7, 8],
+            ..first.folder.clone()
+        };
+        assert_eq!(state.saved_size("canonical-one", &replaced), None);
+        assert!(!state.opened("canonical-one", &replaced));
+        assert_eq!(state.saved_size("canonical-one", &first.folder), Some(size));
+        assert!(state.opened("canonical-one", &first.folder));
+        assert!(!state.open.contains_key("one"));
         assert_eq!(
             state.next(),
             Some(Entry::Restore("two".into(), second_saved))
         );
         assert!(state.next().is_none());
+    }
+
+    #[test]
+    fn a_legacy_and_canonical_entry_restore_one_window_with_the_canonical_size() {
+        let mut state = Windows {
+            projects_root: Some("/projects".into()),
+            ready: true,
+            ..Windows::default()
+        };
+        let folder = project("old", "Project").folder;
+        let size = Size {
+            width: 1010.,
+            height: 652.,
+        };
+        let canonical = SavedWindow {
+            folder: folder.clone(),
+            size,
+        };
+        let legacy = SavedWindow {
+            folder: folder.clone(),
+            size: Size::DEFAULT,
+        };
+        state.restore(
+            "/settings/windows.json".into(),
+            OpenWindows::from([
+                ("canonical".into(), canonical.clone()),
+                ("old".into(), legacy),
+            ]),
+        );
+        assert_eq!(
+            state.next(),
+            Some(Entry::Restore("canonical".into(), canonical))
+        );
+        assert!(state.next().is_none());
+        assert_eq!(state.saved_size("canonical", &folder), Some(size));
     }
 
     #[test]

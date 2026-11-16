@@ -18,6 +18,16 @@ pub struct Folder {
     pub identity: [u64; 2],
 }
 
+impl Folder {
+    pub fn managed_alias(&self, projects: &Path) -> Option<&str> {
+        self.path
+            .strip_prefix(projects)
+            .ok()
+            .filter(|relative| relative.components().count() == 1)
+            .and_then(Path::to_str)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Size {
@@ -80,6 +90,25 @@ impl RecentProjects {
             .retain(|entry| entry.id != project.id && entry.folder.path != project.folder.path);
         self.0.insert(0, project);
         self.0.truncate(Self::LIMIT);
+    }
+
+    pub fn rebind(&mut self, legacy: &str, project: &RecentProject) -> bool {
+        if legacy == project.id {
+            return false;
+        }
+        let Some(index) = self
+            .0
+            .iter()
+            .position(|entry| entry.id == legacy && entry.folder == project.folder)
+        else {
+            return false;
+        };
+        if self.0.iter().any(|entry| entry.id == project.id) {
+            self.0.remove(index);
+        } else {
+            self.0[index] = project.clone();
+        }
+        true
     }
 
     pub fn rename(&mut self, id: &str, title: &str) -> bool {
@@ -233,6 +262,15 @@ mod tests {
             .entries()
             .is_empty());
         assert_eq!(read::<OpenWindows>(&windows_path).unwrap(), windows);
+
+        let mut canonical = project(2);
+        canonical.id = "canonical-project".into();
+        canonical.folder.identity = [0, 0];
+        assert!(!projects.rebind("p-2", &canonical));
+        canonical.folder.identity = project(2).folder.identity;
+        assert!(projects.rebind("p-2", &canonical));
+        assert_eq!(projects.entries()[0], canonical);
+        assert_eq!(projects.entries()[1].title, "Renamed");
         fs::remove_dir_all(directory).unwrap();
     }
 }

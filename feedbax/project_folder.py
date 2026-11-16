@@ -10,9 +10,11 @@ import fcntl
 from functools import lru_cache
 import os
 from pathlib import Path
+import re
 import stat
 from tempfile import TemporaryDirectory
-from typing import Literal, TYPE_CHECKING
+from threading import Lock
+from typing import Literal, Protocol, TYPE_CHECKING
 from uuid import uuid4
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
@@ -92,6 +94,7 @@ if TYPE_CHECKING:
 _FAMILIES = {"document": "documents", "step": "steps", "variant": "variants"}
 _KINDS = {family: kind for kind, family in _FAMILIES.items()}
 _FOLDER_ID = TypeAdapter(ProjectName)
+_CANONICAL_PROJECT_ID = re.compile(r"external-[0-9a-f]{64}")
 type _Resource = Literal["project", "presentation"]
 
 
@@ -236,13 +239,38 @@ class SettledProjectPlan:
 
     @classmethod
     def from_text(
-        cls, project_id: str, text: TextProject, plan: ProjectPlan, *, readers: BaseReaders = BaseReaders(),
+        cls, location: ProjectFolderLocation, text: TextProject, plan: ProjectPlan, *,
+        readers: BaseReaders = BaseReaders(),
         store: Path | None = None,
     ) -> SettledProjectPlan:
         return cls(
-            project_id, text.revision, project_semantic_root(text.project),
+            location.project_id, text.revision, project_semantic_root(text.project),
             text.configuration, text.store_path if store is None else store, plan, readers,
         )
+
+
+class SavedProjectPlans(Protocol):
+    def read_plan(self, project_id: str, *, revision: str | None) -> SettledProjectPlan: ...
+
+    def admission_plan(self, project_id: str) -> AbstractContextManager[SettledProjectPlan]: ...
+
+
+def compile_saved_project(
+    text: TextProject, *, project_id: str, store: Path, readers: BaseReaders,
+    operations: OperationRegistry | None = None, components: ComponentRegistry | None = None,
+    functions: FunctionRegistry | None = None, python_tasks: PythonTaskRegistry | None = None,
+    source_runs: Iterable[RunKey] = (), memo: ProjectPlanMemo | None = None,
+) -> SettledProjectPlan:
+    """Compile a snapshot against the Store of its resolved local or delegated project."""
+    readers = replace(readers, terminal_train=terminal_train_reader(store))
+    plan = compile_project(
+        text.project, source_runs=source_runs, memo=memo,
+        operations=operations, components=components, functions=functions,
+        python_tasks=python_tasks, readers=readers,
+    )
+    return SettledProjectPlan(
+        project_id, text.revision, project_semantic_root(text.project), text.configuration, store, plan, readers,
+    )
 
 
 def _may_read_figure_pin(project: Project) -> bool:
@@ -457,14 +485,20 @@ class ProjectFolderLocation:
     path: Path
     identity: tuple[int, int]
 
-    @classmethod
-    def from_stat(cls, path: Path, info: os.stat_result) -> ProjectFolderLocation:
-        return cls(path, (info.st_dev, info.st_ino))
+    @property
+    def project_id(self) -> str:
+        locator = os.fsencode(self.path) + b"\0" + str(self.identity).encode("ascii")
+        return f"external-{sha256_bytes(locator)}"
 
     @classmethod
     def selected(cls, path: Path) -> ProjectFolderLocation:
         with _project_directory_chain(path) as chain:
-            return cls.from_stat(path, chain[-1][2])
+            opened, descriptor, info = chain[-1]
+            if hasattr(fcntl, "F_GETPATH"):
+                # APFS can open a differently cased spelling of the same folder.
+                spelling = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
+                opened = Path(os.fsdecode(spelling.split(b"\0", 1)[0]))
+            return cls(opened, (info.st_dev, info.st_ino))
 
 
 @contextmanager
@@ -483,9 +517,13 @@ def _project_directory_chain(path: Path) -> Iterator[list[DirectoryRecord]]:
 
 @dataclass(frozen=True)
 class _LockedProjectFolder:
-    path: Path
+    location: ProjectFolderLocation
     descriptor: int
     check: Callable[[], None]
+
+    @property
+    def path(self) -> Path:
+        return self.location.path
 
     def write(
         self, path: Path, data: bytes, *, before_publish: Callable[[], None],
@@ -544,7 +582,7 @@ def _folder_lock(
                     check_folder()
                 check_declaration()
                 _finish_patch_at(root, directory)
-            yield _LockedProjectFolder(root, directory, check_folder)
+            yield _LockedProjectFolder(location, directory, check_folder)
             check_folder()
         finally:
             os.close(descriptor)
@@ -629,34 +667,55 @@ class ProjectFolder:
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
-        stores_root: Path | None = None,
     ) -> None:
         self.root = root.resolve()
         self._local_folder = local_folder
-        self._stores_root = stores_root.resolve() if stores_root is not None else None
         self.operations = operations
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
+        self._known_locations: dict[str, ProjectFolderLocation] = {}
+        self._known_locations_lock = Lock()
 
     def _folder(self, project_id: str) -> ProjectFolderLocation:
         if self._local_folder is not None:
-            if project_id != self._local_folder.path.name:
+            if project_id not in (self._local_folder.path.name, self._local_folder.project_id):
                 raise ProjectFolderNotFound(project_id)
             return self._local_folder
+        with self._known_locations_lock:
+            location = self._known_locations.get(project_id)
+        if location is not None:
+            return location
+        if _CANONICAL_PROJECT_ID.fullmatch(project_id):
+            if self.root.is_dir():
+                for child in self.root.iterdir():
+                    if child.is_symlink() or not child.is_dir():
+                        continue
+                    try:
+                        location = ProjectFolderLocation.selected(child)
+                    except (ProjectFolderInvalid, ProjectFolderNotFound):
+                        continue
+                    if location.project_id == project_id:
+                        self._remember_location(location)
+                        return location
+            raise ProjectFolderNotFound(project_id)
         try:
             _FOLDER_ID.validate_python(project_id)
         except ValidationError as error:
             raise ProjectFolderInvalid("Invalid project name") from error
         folder = self.root / project_id
         try:
-            info = folder.lstat()
-        except FileNotFoundError as error:
+            return ProjectFolderLocation.selected(folder)
+        except ProjectFolderNotFound as error:
             raise ProjectFolderNotFound(project_id) from error
-        if not stat.S_ISDIR(info.st_mode):
-            raise ProjectFolderInvalid("Project must be a directory")
-        return ProjectFolderLocation.from_stat(folder, info)
+
+    def _remember_location(self, location: ProjectFolderLocation) -> None:
+        with self._known_locations_lock:
+            self._known_locations[location.project_id] = location
+
+    def project_id(self, address: str) -> str:
+        return self._folder(address).project_id
 
     def _locked_folder(self, project_id: str, *, write: bool = True) -> AbstractContextManager[_LockedProjectFolder]:
         return _folder_lock(self._folder(project_id), write=write)
@@ -679,7 +738,7 @@ class ProjectFolder:
         except ProjectReadError as error:
             raise ProjectFolderInvalid(str(error)) from error
 
-    def _snapshot(self, project_id: str, text: TextProject) -> StudioProjectSnapshot:
+    def _snapshot(self, location: ProjectFolderLocation, text: TextProject) -> StudioProjectSnapshot:
         data, presentation_revision = _read_presentation(text.root)
         presentation_error = None
         try:
@@ -688,7 +747,7 @@ class ProjectFolder:
             presentation = None
             presentation_error = "unreadable_presentation"
         return StudioProjectSnapshot(
-            project_id=project_id,
+            project_id=location.project_id,
             revision=text.revision,
             project=text.project,
             semantic_root=project_semantic_root(text.project),
@@ -711,14 +770,14 @@ class ProjectFolder:
             ),
         )
 
-    def _document(self, project_id: str, text: TextProject) -> StudioProjectDocument:
+    def _document(self, location: ProjectFolderLocation, text: TextProject) -> StudioProjectDocument:
         return StudioProjectDocument(
             configuration=text.configuration,
-            snapshot=self._snapshot(project_id, text),
+            snapshot=self._snapshot(location, text),
         )
 
     def open(self, project_id: str) -> StudioProjectDocument:
-        return self._open_folder(project_id, self._folder(project_id))
+        return self._open_folder(self._folder(project_id))
 
     def represented_declaration(self, project_id: str, identity: tuple[int, int]) -> Path:
         location = self._folder(project_id)
@@ -736,52 +795,55 @@ class ProjectFolder:
             return declaration
 
     def _open_folder(
-        self, project_id: str, location: ProjectFolderLocation, *, declaration: str | None = None,
+        self, location: ProjectFolderLocation, *, declaration: str | None = None,
     ) -> StudioProjectDocument:
         with _folder_lock(location, write=False, declaration=declaration, verify_project=True) as folder:
-            return self._document(project_id, self._load(folder.path, declaration=declaration))
+            document = self._document(location, self._load(folder.path, declaration=declaration))
+        self._remember_location(location)
+        return document
 
     def read(self, project_id: str, *, revision: str | None = None) -> StudioProjectSnapshot:
         with self._locked_folder(project_id, write=False) as folder:
             text = self._load(folder.path)
             if revision is not None:
                 check_revision("project", revision, text.revision)
-            return self._snapshot(project_id, text)
+            return self._snapshot(folder.location, text)
 
     def read_plan(
         self, project_id: str, *, revision: str | None, source_runs: Iterable[RunKey] = (),
         declaration: str | None = None,
     ) -> SettledProjectPlan:
         """Compile the acknowledged folder snapshot and resolve its Store subjects."""
-        text = self.read_authored_snapshot(project_id, revision=revision, declaration=declaration)
-        return self._compile(project_id, text, source_runs)
+        location = self._folder(project_id)
+        text = self._read_authored_snapshot(location, revision=revision, declaration=declaration)
+        return self._compile(location, text, source_runs)
 
     def read_authored_snapshot(
         self, project_id: str, *, revision: str | None, declaration: str | None = None,
     ) -> TextProject:
         """Freeze the exact authored files under the project folder's read lock."""
-        with _folder_lock(self._folder(project_id), write=False, declaration=declaration) as folder:
+        return self._read_authored_snapshot(self._folder(project_id), revision=revision, declaration=declaration)
+
+    def _read_authored_snapshot(
+        self, location: ProjectFolderLocation, *, revision: str | None, declaration: str | None,
+    ) -> TextProject:
+        with _folder_lock(location, write=False, declaration=declaration) as folder:
             text = self._load(folder.path, declaration=declaration)
         if revision is not None:
             check_revision("project", revision, text.revision)
         return text
 
     def _compile(
-        self, project_id: str, text: TextProject, source_runs: Iterable[RunKey] = ()
+        self, location: ProjectFolderLocation, text: TextProject, source_runs: Iterable[RunKey] = ()
     ) -> SettledProjectPlan:
-        store = text.store_path if self._stores_root is None else self._stores_root / project_id
-        readers = replace(self._base_readers(project_id, text), terminal_train=terminal_train_reader(store))
-        return SettledProjectPlan.from_text(
-            project_id, text,
-            compile_project(
-                text.project, source_runs=source_runs, memo=self._plan_memo(project_id),
-                operations=self.operations, components=self.components, functions=self.functions,
-                python_tasks=self.python_tasks, readers=readers,
-            ),
-            readers=readers, store=store,
+        project_id = location.project_id
+        return compile_saved_project(
+            text, project_id=project_id, store=text.store_path, readers=self._base_readers(location, text),
+            source_runs=source_runs, memo=self._plan_memo(project_id),
+            operations=self.operations, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
         )
 
-    def _base_readers(self, project_id: str, text: TextProject) -> BaseReaders:
+    def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:
         if not _may_read_figure_pin(text.project):
             return BaseReaders()
         return BaseReaders(figure_external=TextProjectExternalInputs(text, authority=self.root).read)
@@ -790,7 +852,7 @@ class ProjectFolder:
     def admission_plan(self, project_id: str) -> Iterator[SettledProjectPlan]:
         """Hold the project folder's writer lock through comparison and Host admission."""
         with self._locked_folder(project_id) as folder:
-            plan = self._compile(project_id, self._load(folder.path))
+            plan = self._compile(folder.location, self._load(folder.path))
             folder.check()
             yield plan
 
@@ -803,7 +865,7 @@ class ProjectFolder:
         self.root.mkdir(parents=True, exist_ok=True)
         write_new_project_folder(self.root / project_id, Project(), configuration, PresentationDocument())
         location = self._folder(project_id)
-        return self._open_folder(project_id, location), location
+        return self._open_folder(location), location
 
     def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:
         with self._locked_folder(project_id) as folder:
@@ -825,7 +887,7 @@ class ProjectFolder:
                 os.fsync(folder.descriptor)
                 folder.check()
                 text = self._load(root)
-            return self._document(project_id, text)
+            return self._document(folder.location, text)
 
     def create_file(self, project_id: str, body: StudioProjectCreateFile) -> StudioProjectDocument:
         file = body.file
@@ -851,7 +913,7 @@ class ProjectFolder:
                 folder.write(root / relative, data, replace=False, before_publish=guard)
             except FileExistsError as error:
                 raise ProjectFileExists(relative) from error
-            return self._document(project_id, self._load(root))
+            return self._document(folder.location, self._load(root))
 
     def revision(self, project_id: str) -> StudioProjectRevision:
         with self._locked_folder(project_id, write=False) as folder:
@@ -914,7 +976,7 @@ class ProjectFolder:
             if pending:
                 _publish_patch(folder, pending, lambda: check_revision("project", text.revision, self._load(root).revision))
                 text = self._load(root)
-            return self._snapshot(project_id, text)
+            return self._snapshot(folder.location, text)
 
     def apply_model_command(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,
@@ -1059,7 +1121,7 @@ class ProjectFolder:
                     for relative in changed
                 ], guard)
                 text = self._load(root)
-            return self._snapshot(project_id, text)
+            return self._snapshot(folder.location, text)
 
     def write_presentation(
         self, project_id: str, body: StudioPresentationWrite
@@ -1078,4 +1140,4 @@ class ProjectFolder:
 
                 folder.write(path, replacement, mode=mode, before_publish=guard)
                 text = self._load(root)
-            return self._snapshot(project_id, text)
+            return self._snapshot(folder.location, text)
