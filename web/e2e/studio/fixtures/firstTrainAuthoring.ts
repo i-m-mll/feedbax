@@ -1,7 +1,7 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
-import { activate, chooseOption, number, palette, post, readSaved } from './studioKeyboard';
+import { activate, number, palette, post, readSaved } from './studioKeyboard';
 
 export async function authorFirstTrain(
   page: Page, request: APIRequestContext, totalUpdates: number,
@@ -94,7 +94,10 @@ export async function authorFirstTrain(
   await setLinearSize('Input size', 'input_size');
   await setLinearSize('Output size', 'output_size');
   if (forceComparison) {
-    await chooseOption(page, inspector.getByRole('combobox', { name: 'Activation', exact: true }), forceComparison.activation);
+    const activation = inspector.getByRole('combobox', { name: 'Activation', exact: true });
+    await expect(activation.getByRole('option').last()).toHaveValue(forceComparison.activation);
+    await activate(page, activation, 'End');
+    await expect(activation).toHaveValue(forceComparison.activation);
     await expect.poll(async () => linearField((await savedProject()).project, 'activation')).toBe(forceComparison.activation);
   }
   await page.keyboard.press('Meta+2');
