@@ -260,7 +260,7 @@ export function modelDocumentId(ids?: Readonly<Record<string, string>>) {
 
 export function directTrainStep(project: AuthoredProject, stepId: string, includeRowEdits = false) {
   const step = project.steps?.[stepId];
-  if (step?.kind !== 'train' || !('inline' in step.base) || project.sweep ||
+  if (step?.kind !== 'train' || !('inline' in step.base) ||
       step.deltas?.length || Object.keys(step.inputs ?? {}).length ||
       !includeRowEdits && (Object.keys(step.sweep?.rows ?? {}).length || Object.keys(step.sweep?.exceptions ?? {}).length)) return null;
   return step.base.inline;

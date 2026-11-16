@@ -10,7 +10,7 @@ test.use({
   viewport: { width: 1440, height: 900 },
 });
 
-test('authors an ordered managed Report from a planned Analyze figure', async ({ page, request }, info) => {
+test('authors an ordered shared Report from a planned Analyze figure', async ({ page, request }, info) => {
   const home = String(info.config.metadata.home);
   const module = 'web.e2e.studio.fixtures.managed_report';
   const project = JSON.parse(await runProjectFixture(module, 'seed', home, 'managed-report'));
@@ -58,6 +58,8 @@ test('authors an ordered managed Report from a planned Analyze figure', async ({
   }
 
   await page.goto(mounted);
+  const variants = page.getByRole('combobox', { name: 'Variant', exact: true });
+  await expect(variants).toHaveValue('base');
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
   await expect(figures.getByText('Reach-aligned velocity', { exact: true })).toBeVisible();
@@ -72,11 +74,24 @@ test('authors an ordered managed Report from a planned Analyze figure', async ({
   expect(map.rows).toContainEqual(expect.objectContaining({
     key: expect.objectContaining({ step: 'report' }), status: 'not_run',
   }));
-  expect(map.edges).toContainEqual(expect.objectContaining({
-    from_key: { variant: 'default', step: 'analyze', row: 'default' },
-    to_key: { variant: 'default', step: 'report', row: 'default' },
-  }));
+  for (const variant of ['base', 'compare']) {
+    expect(map.edges).toContainEqual(expect.objectContaining({
+      from_key: { variant, step: 'analyze', row: 'default' },
+      to_key: { variant, step: 'report', row: 'default' },
+    }));
+  }
   const original = await requests(created.revision);
+  expect(original.report.base).toMatch(/^report:/);
+  expect(original.report.compare).toBe(original.report.base);
+
+  await variants.selectOption('compare');
+  await mapStep(page, 'report').click();
+  await page.getByRole('tab', { name: 'Document', exact: true }).click();
+  await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');
+  await expect(document.getByRole('textbox', { name: 'Report Title' })).toBeDisabled();
+  await variants.selectOption('base');
+  await mapStep(page, 'report').click();
+  await page.getByRole('tab', { name: 'Document', exact: true }).click();
 
   await expect(document.getByRole('button', { name: 'Add Text', exact: true })).toBeEnabled();
   await palette('Add Text');
@@ -106,7 +121,9 @@ test('authors an ordered managed Report from a planned Analyze figure', async ({
 
   const permissive = await edit(() => document.getByRole('combobox', { name: 'Completeness' }).selectOption('allow_omissions'));
   const changed = await requests(permissive.revision);
-  expect(changed.report).not.toBe(original.report);
+  expect(changed.report.base).toMatch(/^report:/);
+  expect(changed.report.base).not.toBe(original.report.base);
+  expect(changed.report.compare).toBe(changed.report.base);
   expect(changed.upstream).toEqual(original.upstream);
   const stale = await request.patch(path, { data: {
     revision: created.revision,

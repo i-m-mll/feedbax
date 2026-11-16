@@ -343,7 +343,7 @@ class ProjectPlanRead:
                     if (light := self.light.get(row.key)) is not None else None,
                     evaluation_conditions=conditions.get(row.request_id) if isinstance(row, PlannedRun) else None,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
-                    if row.kind == "train" else None,
+                    if row.kind in {"train", "evaluate"} else None,
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate.model_validate(
                             coordinate, from_attributes=True

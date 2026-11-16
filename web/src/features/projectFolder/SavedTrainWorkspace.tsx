@@ -33,7 +33,7 @@ import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdi
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
 import { useModelSelectionStore } from './model/modelSelection';
 import { createCheckpointTrain } from './createCheckpointTrain';
-import { createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
+import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { openProjectEditor } from './openProjectEditor';
@@ -242,7 +242,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const variants = useMemo(() => planVariants(projection.data), [projection.data]);
   const variant = selection.variantId ?? variants[0] ?? null;
   const missingVariant = selection.variantId !== null && !variants.includes(selection.variantId);
-  const primaryVariant = variant === (variants[0] ?? null);
+  const primaryVariant = variant !== null && variant === variants[0];
   const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant),
     [saved.project, projection.data, variant]);
   const step = plan.steps.find(({ id }) => id === selection.stepId);
@@ -255,7 +255,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const authored = step && saved.project.steps[step.id];
   const subjectCheckpoint = authored?.kind === 'evaluate' ? exactCheckpoint(authored) : undefined;
   const checkpoint = authored && authored.inputs?.checkpoint;
-  const linked = wholeStep && !saved.project.sweep && authored?.kind === 'train' &&
+  const linked = wholeStep && authored?.kind === 'train' &&
     'step' in authored.base && authored.base.row == null && checkpoint &&
     'step' in checkpoint && checkpoint.step === authored.base.step && checkpoint.checkpoint === 'last';
   const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null || linked) && state.selection ? {
@@ -277,7 +277,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       : step?.documentIds?.['payload.trial_documents.task'] ?? step?.documentIds?.['payload.trial_documents.python_task'];
     if (!document || !step || !singleStep || !data || step.kind !== 'train') return undefined;
     const localVariant = Boolean(saved.project.sweep && !primaryVariant && field === 'graph');
-    if (!localVariant && (!wholeStep || saved.project.sweep)) return undefined;
+    if (!localVariant && !wholeStep) return undefined;
     const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.includes(document)).map(({ id }) => id));
     if (!users.has(step.id)) return undefined;
     const key = JSON.stringify([step.id, document, variant]);
@@ -308,7 +308,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     ? row.attempts.find(({ job_id }) => job_id === resultAttempt?.jobId) : undefined;
   const attempt = selectedAttempt ?? row?.attempts.at(-1);
   const ready = Boolean(data && !pending && !outside && !connection.isError && !projection.error);
-  const canAuthorContinuation = ready && !saved.project.sweep;
+  const canAuthorContinuation = ready && primaryVariant;
   const checkpointAttempt = !saved.project.sweep && windowState.mode !== 'map' &&
     state.selection?.kind === 'rows' && state.selection.runIds.length === 1 &&
     (primaryView === 'results' || secondaryView === 'results') && row && attempt?.status === 'stopped' &&
@@ -347,7 +347,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       status === 'stopped' || status === 'interrupted' || status === 'corrupt' ||
       reuseCompleted && status === 'succeeded'));
   const runnableRows = [...runnableTrainRows, ...runnableEvaluationRows, ...lightRows];
-  const evaluationAuthoring = wholeStep && !saved.project.sweep && authored && ordinaryEvaluation(authored);
+  const evaluationAuthoring = wholeStep && authored && ordinaryEvaluation(authored);
   const evaluationSource = evaluationAuthoring && plan.steps.find(({ id }) => id === evaluationAuthoring.subject.step);
   const subject = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)
     ?.inputs.find(({ id }) => id === 'subject');
@@ -414,7 +414,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         : undefined);
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
     !pending && !outside && !snapshot.saving && Boolean(evaluateScope ||
-      wholeStep && !saved.project.sweep && !authored?.sweep && !authored?.deltas?.length && step?.kind === 'train'),
+      wholeStep && !authored?.sweep && !authored?.deltas?.length && step?.kind === 'train'),
     evaluateScope || undefined);
   const chosenAxis = evaluateScope && evaluateScope.kind === 'axis_value'
     ? authored?.sweep?.axes?.[evaluateScope.axis] : undefined;
@@ -682,7 +682,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   };
 
   function chooseFirstTrain() {
-    if (!firstStepRevision) return;
+    if (!firstStepRevision || !primaryVariant || !ready) return;
     setFirstStepRevision(undefined);
     void perform(async () => {
       const id = await createFirstTrain(commandScope.editor, firstStepRevision);
@@ -692,7 +692,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
 
   function chooseTrainSuccessor(kind: 'train' | 'evaluate') {
     const choice = trainStepChoices;
-    if (!choice || choice.revision !== saved.revision || !ready) return;
+    if (!choice || choice.revision !== saved.revision || !canAuthorContinuation) return;
     setTrainStepChoices(undefined);
     void perform(async () => {
       if (kind === 'train') {
@@ -796,6 +796,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
 
   function chooseReportFigure(revision: string, figure: ReportFigureSource) {
     setReportChoices(undefined);
+    if (!primaryVariant || !ready || revision !== saved.revision) return;
     void perform(async () => {
       const id = await createReport(editor, revision, figure, humanizeLabel(figure.name));
       commandScope.selectCreatedStep(id, 'document');
@@ -803,6 +804,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   }
 
   function newStepCommand(source?: PipelineMapStepSource, subject?: string) {
+    if (!primaryVariant) return undefined;
     if (!source) {
       if ((step?.kind === 'evaluate' || step?.kind === 'analyze') &&
           (state.selection?.kind !== 'steps' || state.selection.stepIds.length === 1)) {
@@ -816,17 +818,16 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       return bindStudioCommand('newStep', () => setFirstStepRevision(saved.revision), { enabled: ready && !busy });
     }
     const sourceStep = plan.steps.find(({ id }) => id === source.stepId);
-    if (sourceStep?.kind === 'evaluate' && !saved.project.sweep && variant === 'default') {
+    if (sourceStep?.kind === 'evaluate' && data) {
       const rows = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
-      const evaluation = rows.length === 1 && data?.window_map?.evaluations?.find((row) =>
-        row.result && savedRunId(row.key) === rows[0].id);
-      if (!evaluation) return undefined;
+      const input = analyzeInput(sourceStep, rows, data, !!saved.project.sweep);
+      if (!input) return undefined;
       return bindStudioCommand('newStep', () => { void perform(async () => {
-        const id = await createAnalyze(editor, saved.revision, evaluation.key);
+        const id = await createAnalyze(editor, data.revision, input);
         commandScope.selectCreatedStep(id, 'analysis');
       }); }, { enabled: ready && !busy, name: 'analyze', subject });
     }
-    if (sourceStep?.kind === 'analyze' && !saved.project.sweep && variant === 'default') {
+    if (sourceStep?.kind === 'analyze' && data) {
       const rows = new Set((source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs).map(({ id }) => id));
       const figures = (data?.window_map?.analysis_elements ?? []).filter(isReportFigureSource)
         .filter(({ key }) => rows.has(savedRunId(key)));
@@ -978,7 +979,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         {focusedModel?.overlay}
         {analyze.overlay}
         {report.overlay}
-        {reportChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('report')} manageFocus
+        {primaryVariant && reportChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('report')} manageFocus
           onClose={() => setReportChoices(undefined)}
           panelClassName="grid w-[min(24rem,90vw)] gap-1 rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
           {reportChoices.figures.map((figure) => <button type="button" className={control}
@@ -987,14 +988,14 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             {figure.name}{figure.key.row !== 'default' && ' · ' + figure.key.row}
           </button>)}
         </Dialog>}
-        {firstStepRevision && <Dialog ariaLabel={studioName('newStep')} onClose={() => setFirstStepRevision(undefined)} manageFocus
+        {primaryVariant && firstStepRevision && <Dialog ariaLabel={studioName('newStep')} onClose={() => setFirstStepRevision(undefined)} manageFocus
           panelClassName="w-[min(20rem,90vw)] rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
           <button type="button" className={`${control} flex w-full items-center gap-2 text-sm`} data-dialog-autofocus onClick={chooseFirstTrain}>
             <TrainIcon size={16} aria-hidden="true" style={{ color: trainTint }} />
             {trainName}
           </button>
         </Dialog>}
-        {trainStepChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('newStep')}
+        {primaryVariant && trainStepChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('newStep')}
           onClose={() => setTrainStepChoices(undefined)} manageFocus
           panelClassName="grid w-[min(20rem,90vw)] gap-1 rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
           {trainStepChoices.stopped && <p className="px-2 text-sm">{checkpointLabel(trainStepChoices.stopped.at)}</p>}

@@ -60,8 +60,8 @@ export function useManagedReport({
   const shared = document && (plan.steps.some(({ id, documentUses }) => id !== stepId && documentUses?.includes(document))
     || Object.entries(draft.steps ?? {}).some(([id, { base }]) => id !== stepId && 'document' in base && base.document === document));
   const direct = !step?.sweep && !step?.deltas?.length && !Object.keys(step?.document_overrides ?? {}).length;
-  const editable = !!report && !!document && wholeStep && variant === 'default' && direct &&
-    projection?.revision === saved.revision && !draft.sweep && !pending && !outside && !shared;
+  const editable = !!report && !!document && wholeStep && direct &&
+    projection?.revision === saved.revision && !pending && !outside && !shared;
   const figures = projection?.window_map?.analysis_elements?.filter(isReportFigureSource)
     .filter(({ key }) => key.variant === variant) ?? [];
   const inputs = step?.inputs ?? {};

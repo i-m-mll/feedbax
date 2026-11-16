@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.release import AppPaths
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -15,6 +16,7 @@ def seed(home: str, project_id: str):
     paths = AppPaths.resolve(instance_root=Path(home))
     root = paths.web / "projects" / project_id
     project = _project()
+    project.sweep = Sweep.model_validate({"rows": {"base": {}, "compare": {"from": "base"}}})
     figure = project.documents["velocity-figure"].payload
     figure["caption"] = "Reach-aligned velocity"
     comparison = deepcopy(figure)
@@ -39,7 +41,7 @@ def requests(home: str, project_id: str, revision: str):
             *(run.request_id for run in plan.runs if run.kind != "report"),
             *(element.request_id for element in plan.elements.values()),
         ]),
-        "report": next(run.request_id for run in plan.runs if run.kind == "report"),
+        "report": {run.key.variant: run.request_id for run in plan.runs if run.kind == "report"},
     }
 
 

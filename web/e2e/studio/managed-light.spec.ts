@@ -330,3 +330,166 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   await figures.getByRole('button', { name: 'Previous Result', exact: true }).click();
   await drawnFigure('Previous Result');
 });
+
+test('authors a paired Analyze and shared successors from the primary variant', async ({ page, request }, info) => {
+  test.setTimeout(65_000);
+  const home = String(info.config.metadata.home);
+  const project = JSON.parse(await runProjectFixture(
+    'web.e2e.studio.fixtures.managed_light', 'seed-variants', home, 'managed-light-variants',
+  ));
+  const path = '/api/projects/' + project;
+  const runPath = path + '/train-runs';
+  const variants = page.getByRole('combobox', { name: 'Variant', exact: true });
+  const table = page.getByRole('table', { name: 'Runs', exact: true });
+  const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  const train = page.getByRole('article', { name: 'Train train', exact: true });
+  async function snapshot() {
+    const response = await request.get(path);
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  }
+  async function plan() {
+    const saved = await snapshot();
+    const response = await request.get(runPath, { params: { revision: saved.revision, window_map: 'true' } });
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  }
+  async function openRuns(step: string) {
+    await mapStep(page, step).click();
+    await tab(page, 'Runs').click();
+  }
+  async function runStep(step: string, count: number) {
+    await openRuns(step);
+    const admitted = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === runPath);
+    await page.getByRole('tabpanel', { name: 'Runs', exact: true }).getByRole('button', { name: 'Run', exact: true }).click();
+    const response = await admitted;
+    expect(response.status(), await response.text()).toBe(202);
+    const { items } = await response.json() as StudioJobSubmission;
+    expect(items.map(({ disposition }) => disposition)).toEqual(Array(count).fill('admitted'));
+    await expect(table.getByText('Done', { exact: true })).toHaveCount(count, { timeout: 22_000 });
+  }
+  async function selectPair() {
+    await openRuns('conditions');
+    const nominal = table.getByRole('button', { name: 'mass=nominal', exact: true });
+    const heavy = table.getByRole('button', { name: 'mass=heavy', exact: true });
+    await nominal.click();
+    await heavy.click({ modifiers: ['Shift'] });
+    await expect(nominal).toHaveAttribute('aria-pressed', 'true');
+    await expect(heavy).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Meta+K');
+    await palette.getByRole('combobox').fill('Analyze');
+  }
+  async function successor(kind: 'Train' | 'Evaluate', id: string) {
+    await openRuns('train');
+    const creation = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === path + '/files'
+      && response.request().postDataJSON().file.id === id);
+    await train.getByRole('button', { name: 'New Step train', exact: true }).click();
+    await page.getByRole('dialog', { name: 'New Step', exact: true })
+      .getByRole('button', { name: kind, exact: true }).click();
+    const created = await creation;
+    expect(created.status(), await created.text()).toBe(201);
+    await expect(mapStep(page, id)).toHaveAttribute('aria-pressed', 'true');
+    return (await created.json() as StudioProjectDocument).snapshot;
+  }
+
+  await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded', timeout: 10_000 });
+  await expect(variants).toHaveValue('base');
+  const initial = await snapshot();
+  await runStep('train', 1);
+  await runStep('conditions', 2);
+  const settled = (await plan()).window_map!.evaluations!.filter(({ key }) => key.step === 'conditions');
+  const base = settled.filter(({ key }) => key.variant === 'base');
+  const compare = settled.filter(({ key }) => key.variant === 'compare');
+  expect(base).toHaveLength(2);
+  expect(compare.map(({ result }) => result?.receipt)).toEqual(base.map(({ result }) => result?.receipt));
+  const [first, second] = base;
+  for (const { result } of base) expect(result?.receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(first.result!.receipt).not.toEqual(second.result!.receipt);
+  expect(first.result!.checkpoint_source).toBeTruthy();
+  expect(second.result!.checkpoint_source).toEqual(first.result!.checkpoint_source);
+  expect(first.trials.length).toBeGreaterThan(0);
+  expect(second.trials).toEqual(first.trials);
+
+  await variants.selectOption('compare');
+  await selectPair();
+  await expect(palette.getByRole('option', { name: 'Analyze', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await openRuns('train');
+  await expect(train.getByRole('button', { name: 'New Step train', exact: true })).toHaveCount(0);
+
+  await variants.selectOption('base');
+  await selectPair();
+  const creating = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === path + '/files'
+    && response.request().postDataJSON().file.kind === 'step');
+  await palette.getByRole('option', { name: 'Analyze', exact: true }).press('Enter');
+  const created = await creating;
+  expect(created.status(), await created.text()).toBe(201);
+  const { snapshot: paired } = await created.json() as StudioProjectDocument;
+  await expect(page.getByRole('tabpanel', { name: 'Analysis', exact: true })).toBeVisible();
+  expect(paired.project.steps?.analyze).toMatchObject({
+    kind: 'analyze', inputs: { states: { step: 'conditions', where: { axes: {
+      mass: base.map(({ key }) => key.row.split('=')[1]),
+    } } } },
+  });
+  expect(paired.project.sweep).toEqual(initial.project.sweep);
+  await expect(drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true })).toBeEnabled();
+  await drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click();
+  await expect.poll(async () => (await snapshot()).project.documents?.analyze?.payload)
+    .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
+
+  const evaluated = await successor('Evaluate', 'evaluate');
+  await expect(drawer.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeFocused();
+  expect(evaluated.project.steps?.evaluate).toMatchObject({
+    kind: 'evaluate', inputs: { subject: { step: 'train', checkpoint: 'last' } },
+  });
+  const childId = 'train-continuation';
+  const continuation = await successor('Train', childId);
+  const batches = drawer.getByRole('textbox', { name: 'N Batches', exact: true });
+  await expect(batches).toBeEditable();
+  const prepared = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === path + '/authoring/train/' + childId + '/fields'
+    && response.request().postDataJSON().edit?.text === '4');
+  const saving = page.waitForResponse((response) => response.request().method() === 'PATCH'
+    && new URL(response.url()).pathname === path
+    && response.request().postDataJSON().address?.id === childId);
+  void saving.catch(() => {});
+  await enter(batches, '4');
+  const recipe = await prepared;
+  expect(recipe.ok(), await recipe.text()).toBe(true);
+  expect(recipe.request().postDataJSON()).toMatchObject({ revision: continuation.revision });
+  const saved = await saving;
+  expect(saved.ok(), await saved.text()).toBe(true);
+  const edited = await saved.json() as StudioProjectSnapshot;
+  const child = edited.project.steps?.[childId];
+  expect(child).toMatchObject({
+    base: { step: 'train' }, inputs: { checkpoint: { step: 'train', checkpoint: 'last' } },
+  });
+  expect(child?.deltas?.at(-1)?.patches).toEqual([
+    { op: 'replace', path: 'training_config.n_batches', value: 4 },
+    { op: 'replace', path: 'method_payload.payload.target_total', value: 4 },
+  ]);
+  expect(edited.project.steps?.train).toEqual(initial.project.steps?.train);
+  expect(edited.project.sweep).toEqual(initial.project.sweep);
+  const finished = await plan();
+  expect(finished.revision).toBe(edited.revision);
+  const successorEdges = finished.window_map!.edges.filter(({ to_key }) =>
+    to_key.step === 'evaluate' || to_key.step === childId);
+  expect(successorEdges).toHaveLength(4);
+  for (const variant of ['base', 'compare']) {
+    expect(successorEdges).toEqual(expect.arrayContaining([
+      {
+        from_key: { variant, step: 'train', row: 'default' },
+        to_key: { variant, step: 'evaluate', row: 'subject=default' },
+      },
+      {
+        from_key: { variant, step: 'train', row: 'default' },
+        to_key: { variant, step: childId, row: 'default' },
+      },
+    ]));
+  }
+  expect(finished.window_map?.evaluations?.filter(({ key }) => key.step === 'conditions')).toEqual(settled);
+});

@@ -16,6 +16,19 @@ export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, varian
     ? [{ key: member_key, variant: key.variant, row: key.row }] : []) ?? [];
 }
 
+export function sharedRowTerms(
+  step: PlanStepView, members: readonly PlanRunView[],
+): SubsetTerms | undefined {
+  if (!members.length) return undefined;
+  const axes = Object.fromEntries(step.sweeps.flatMap(({ id, values }) => {
+    const selected = new Set(members.map((member) => member.values[id]));
+    return selected.has(undefined) ? [] : [[id, values.filter((value) => selected.has(value.id)).map(({ id }) => id)]];
+  }));
+  const selected = new Set(members.map(({ id }) => id));
+  const matches = step.runs.filter(({ values }) => Object.entries(axes).every(([axis, ids]) => ids.includes(values[axis])));
+  return matches.length === selected.size && matches.every(({ id }) => selected.has(id)) ? { axes } : undefined;
+}
+
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
   return saved?.window_map?.variants ?? [...new Set(saved?.rows.map(({ key }) => key.variant))];
 }
