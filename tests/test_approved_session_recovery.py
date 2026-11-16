@@ -268,9 +268,9 @@ def test_staging_one_hundred_saved_runs_replies_before_provider_acquisition(
         assert wait_until(lambda: _approval_row(driver, quote_id)[1]) == REFUSED
 
 
-def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatch, host_fixture):
+@pytest.fixture
+def installed_runpod(tmp_path, monkeypatch, host_fixture):
     folders, _ = _local_project(tmp_path, monkeypatch, host_fixture)
-    reviewed = folders.read_plan(PROJECT, revision=None)
     source = tmp_path / "source"
     package = source / "feedbax"
     package.mkdir(parents=True)
@@ -285,11 +285,12 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
         workspace="/workspace", bootstrap_python="/usr/bin/python3", uv_sha256=hashlib.sha256(toolchain).hexdigest(),
         uv_version="0.11.0", snapshot=snapshot.record, backend="gpu",
     )
-    resources = runpod_resources().model_copy(update={"datacenter": "US-TEST-1"})
+    resources = runpod_resources()
     fake = FakeRunPod(resources)
 
     def provider_response(request):
-        assert request.headers["Authorization"] == "Bearer fixture-key"
+        if request.url.host == "api.runpod.io":
+            assert request.headers["Authorization"] == "Bearer fixture-key"
         return fake.handle(request)
 
     monkeypatch.setattr(
@@ -320,13 +321,21 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
     identity.touch()
     profile = SessionTargetProfile(
         kind="session", id=PROFILE, label="RunPod test", driver="runpod",
-        resources=resources.model_dump(mode="json"), lifecycle=KeepOpen(), maximum_microusd=90_000,
+        resources=resources.model_dump(mode="json") | {"datacenter": "US-TEST-1"},
+        lifecycle=KeepOpen(), maximum_microusd=90_000,
     )
     write_private_json(paths.control / "runpod.json", {
         "schema_id": "feedbax.desktop.runpod.v1", "profiles": [profile.model_dump(mode="json")],
         "authorization_seconds": 120, "runpod_config": str(credentials),
         "ssh_identity": str(identity),
     })
+    return folders, paths, release, fake, credentials
+
+
+def test_installed_runpod_composes_the_real_read_only_quote(installed_runpod):
+    folders, paths, release, fake, credentials = installed_runpod
+    resources = fake.resources
+    reviewed = folders.read_plan(PROJECT, revision=None)
     other_release = Release(release.contents, release.document | {"source_commit": "0" * 40}, "other")
     with pytest.raises(ValueError, match="must match the installed Studio source commit"):
         installed_remote.load_remote_runs(paths, other_release)
@@ -356,6 +365,53 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
     configured = next(choice for choice in unavailable.catalog(("train",)).targets if choice.profile.id == PROFILE)
     assert configured.availability.state != "ready"
     assert len(fake.requests) == 2
+
+
+def test_plain_text_runpod_rejection_becomes_a_failed_saved_run(installed_runpod, monkeypatch):
+    folders, paths, release, fake, _ = installed_runpod
+    reviewed = folders.read_plan(PROJECT, revision=None)
+    handle = fake.handle
+    expected = "RunPod HTTP 400: The container entrypoint exceeds the allowed length for [redacted]."
+
+    def reject_pod(request):
+        if (request.method, request.url.path) != ("POST", "/v2/pods"):
+            return handle(request)
+        fake.requests.append((request.method, request.url.path))
+        assert "dataCenterIds" not in json.loads(request.content)
+        return httpx.Response(
+            400, text="The container entrypoint exceeds the allowed length for fixture-key.",
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+        )
+
+    monkeypatch.setattr(fake, "handle", reject_pod)
+    monkeypatch.setattr(installed_remote, "DesktopApproval", lambda key_path, launcher: DesktopApproval(
+        key_path, launcher, native_proof=lambda _launcher, challenge, _reason: challenge,
+    ))
+    remote = installed_remote.load_remote_runs(paths, release)
+    assert remote is not None
+    with TestClient(create_app(projects_dir=folders.root, remote_runs=remote)) as client:
+        quote = client.post(f"{API}/quote", json={
+            "revision": reviewed.revision, "target": PROFILE, "run_keys": [asdict(TRAIN)],
+        })
+        quote.raise_for_status()
+        session_id = quote.json()["id"]
+        assert client.post(f"{API}/approve", json={"quote": session_id}).status_code == 202
+
+        def failed_row():
+            plan = client.get(API, params={"revision": reviewed.revision, "window_map": "true"})
+            plan.raise_for_status()
+            row = next(row for row in plan.json()["window_map"]["rows"] if row["key"] == asdict(TRAIN))
+            return row if row["status"] == "failed" else None
+
+        row = wait_until(failed_row, timeout=8)
+        assert row["reason"] == expected
+        assert row["opening_step"] == "acquiring"
+        sessions = client.get("/api/sessions")
+        sessions.raise_for_status()
+        machine = next(machine for machine in sessions.json() if machine["id"] == session_id)
+        assert machine["state"] == "off"
+        assert fake.requests.count(("POST", "/v2/pods")) == 1
+        assert not fake.pods and not fake.secrets
 
 
 def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_path, monkeypatch, host_fixture):

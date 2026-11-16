@@ -60,9 +60,12 @@ def load_remote_runs(paths: AppPaths, release: Release) -> StudioRemoteRuns | No
     for profile in config.profiles:
         if profile.driver != RunPodSessionProvider.target:
             raise ValueError("Studio RunPod profiles must use the RunPod session driver.")
-        resources = RunPodResources.model_validate(profile.resources)
+        # A saved desktop profile can predate the any-region offer.
+        resources = RunPodResources.model_validate({
+            key: value for key, value in profile.resources.items() if key != "datacenter"
+        })
         profiles.append(profile.model_copy(update={
-            "resources": resources.model_dump(mode="json", exclude={"datacenter"}),
+            "resources": resources.model_dump(mode="json"),
         }))
     root = private_directory(paths.state / "jobs" / "runpod")
     approval = DesktopApproval(root / "studio-approval.json", release.resource("launcher"))

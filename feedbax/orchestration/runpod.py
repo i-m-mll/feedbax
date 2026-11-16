@@ -87,6 +87,7 @@ class RunPodApiReply:
     status: int
     body: Mapping[str, Any] | None
     media_type: str
+    error_text: str = field(default="", repr=False)
 
 
 class RunPodTransport(Protocol):
@@ -180,21 +181,25 @@ class SubprocessRunPodTransport:
                 params=params,
                 json=body,
             ) as response:
-                media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
+                media_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
                 size_limit = 8192 if response.is_error else 4 * 1024 * 1024
                 payload = bytearray()
+                oversized = False
                 for chunk in response.iter_bytes(chunk_size=8192):
-                    if len(payload) + len(chunk) > size_limit:
-                        return RunPodApiReply(response.status_code, None, media_type)
-                    payload.extend(chunk)
+                    remaining = size_limit - len(payload)
+                    payload.extend(chunk[:remaining])
+                    if len(chunk) > remaining:
+                        oversized = True
+                        break
                 try:
-                    decoded = strict_json_loads(bytes(payload)) if payload else None
+                    decoded = strict_json_loads(bytes(payload)) if payload and not oversized else None
                 except (ValueError, RecursionError):
                     decoded = None
                 return RunPodApiReply(
                     response.status_code,
                     decoded if isinstance(decoded, Mapping) else None,
                     media_type,
+                    error_text=payload.decode("utf-8", errors="replace") if response.is_error else "",
                 )
         except httpx.HTTPError:
             raise RunPodDriverError("RunPod v2 transport failed") from None

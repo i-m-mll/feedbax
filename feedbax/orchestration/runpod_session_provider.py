@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import fcntl
 import hashlib
+import json
 import re
 import tempfile
 import time
@@ -87,8 +88,6 @@ class RunPodResources(SessionModel):
 
     image: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")]
     gpu_id: Nonempty
-    # Persisted approvals can still bind a specific data center.
-    datacenter: Nonempty | None = Field(default=None, exclude_if=lambda value: value is None)
     cuda_version: Annotated[str, Field(pattern=r"^[0-9]+\.[0-9]+$")]
     compute_capability: Annotated[str, Field(pattern=r"^[0-9]+\.[0-9]+$")]
     min_driver_major: Positive
@@ -149,22 +148,27 @@ class _CreateRejection(SessionModel):
 def _create_rejection(
     reply: RunPodApiReply, call: Literal["boot-secret", "pod"], *secrets: str,
 ) -> _CreateRejection | None:
-    problem = reply.body or {}
-    title, detail, errors = problem.get("title"), problem.get("detail"), problem.get("errors", [])
-    if (
-        reply.status not in _CREATE_REJECTIONS or reply.media_type != "application/problem+json"
-        or type(problem.get("status")) is not int or problem["status"] != reply.status
-        or not isinstance(title, str) or not isinstance(detail, str) or "id" in problem
-        or not isinstance(errors, list) or any(not isinstance(error, str) for error in errors)
-    ):
+    if reply.status not in _CREATE_REJECTIONS:
         return None
 
     def scrub(value: str) -> str:
         for secret in secrets:
             if secret:
-                value = value.replace(secret, "[redacted]").replace(quote(secret, safe=""), "[redacted]")
+                for spelling in (secret, quote(secret, safe=""), json.dumps(secret)[1:-1]):
+                    value = value.replace(spelling, "[redacted]")
         return "".join(" " if unicodedata.category(char).startswith("C") else char for char in value)[:500].strip()
 
+    problem = reply.body or {}
+    title, detail, errors = problem.get("title"), problem.get("detail"), problem.get("errors", [])
+    if (
+        reply.media_type != "application/problem+json"
+        or type(problem.get("status")) is not int or problem["status"] != reply.status
+        or not isinstance(title, str) or not isinstance(detail, str) or "id" in problem
+        or not isinstance(errors, list) or any(not isinstance(error, str) for error in errors)
+    ):
+        return _CreateRejection(
+            call=call, status=reply.status, title="", detail=scrub(reply.error_text), errors=(),
+        )
     return _CreateRejection(
         call=call, status=reply.status, title=scrub(title), detail=scrub(detail),
         errors=tuple(line for error in errors[:8] if (line := scrub(error))),
@@ -406,24 +410,22 @@ class RunPodAcquisition:
                     and isinstance(stock, str) and stock in (*_AVAILABLE_STOCK, "NONE")
                 ):
                     region_stock[region] = stock
-        available = availability if config.datacenter is None else region_stock.get(config.datacenter)
         if not (
             reply.status == 200 and body.get("id") == config.gpu_id
             and _rate_within_cap(hourly, config.hourly_microusd)
             and isinstance(versions, list) and any(isinstance(row, Mapping) and row.get("available") is True
                 and row.get("version") == config.cuda_version for row in versions)
-            and available in _AVAILABLE_STOCK
+            and isinstance(availability, str) and availability in _AVAILABLE_STOCK
         ):
-            raise SessionError("RunPod quote did not establish the authorized GPU, rate, CUDA and region.")
-        quote_facts: JsonObject = {
-            "gpu_id": config.gpu_id, "datacenter": config.datacenter, "cuda_version": config.cuda_version,
+            raise SessionError("RunPod quote did not establish the authorized GPU, rate, CUDA and stock.")
+        return {
+            "gpu_id": config.gpu_id, "cuda_version": config.cuda_version,
             "gpu_hourly_usd": hourly, "ephemeral_disk_gb": config.ephemeral_disk_gb,
             "authorized_total_hourly_microusd": config.hourly_microusd,
-            "availability": availability if isinstance(availability, str) and availability in (*_AVAILABLE_STOCK, "NONE") else None,
+            "availability": availability,
             "region_stock": dict(region_stock),
             "observed_at_ms": _epoch_ms(),
         }
-        return quote_facts
 
     @staticmethod
     def _pod_body(state: _Intent, config: RunPodResources) -> JsonObject:
@@ -439,8 +441,6 @@ class RunPodAcquisition:
                            state.public_key, "/etc/ssh", "/start.sh", *_absolute_command(state.cutoff.boot_argv)],
             "cmd": [],
         }
-        if config.datacenter is not None:
-            exact["dataCenterIds"] = [config.datacenter]
         protected = exact.keys() | {
             "dataCenterIds",
             "queue", "queueId", "mounts", "volumes", "volumeId", "volumeInGb", "volumeMountPath",
@@ -766,7 +766,6 @@ class RunPodAcquisition:
         if not (
             pod.get("image") == config.image and pod.get("cloud") == "SECURE"
             and isinstance(region, str) and _RESOURCE_ID.fullmatch(region)
-            and (config.datacenter is None or region == config.datacenter)
             and pod.get("cudaVersion") == config.cuda_version
             and type(pod.get("disk")) is int and pod["disk"] == config.ephemeral_disk_gb
             and pod.get("ports") == ["22/tcp"] and isinstance(gpu, Mapping) and gpu.get("id") == config.gpu_id
