@@ -1,20 +1,43 @@
-"""Sync a typed closure between two immutable Stores on one volume."""
+"""Transfer and publish exact typed closures between immutable Stores."""
 
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 import errno
+import os
 from pathlib import Path
 import stat
+import sys
+from typing import Literal
+
+from pydantic import Field, JsonValue, TypeAdapter
 
 from feedbax._secure_fs import close_directory_chain, open_directory_chain
-from feedbax.contracts.artifact_custody import ArtifactBlobContainmentError, ContentObjectRef
+from feedbax.contracts.artifact_custody import (
+    ArtifactBlobContainmentError,
+    ArtifactBlobIntegrityError,
+    ContentObjectRef,
+)
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.effective_success import INDEX_REF, decode_success_index
 from feedbax.contracts.request_refs import RequestId
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.artifact_custody import (
+    ImmutableArtifactBlobProvider,
+    content_object_relative_path,
+)
 from feedbax.persistence.effective_success import PublishedSuccess, SuccessView
 from feedbax.persistence.receipt_closure import ReceiptClosure
+from feedbax.persistence.ssh_store import RemoteStore, SSHStoreConnection as SSHStoreConnection
+from feedbax.persistence.train_job import (
+    TrainJobEntry, _entry_ref, _job_ref, _origins, _read_entry, _verify_checkpoints, _verify_entry,
+)
+
+
+type StoreEndpoint = ImmutableArtifactBlobProvider | RemoteStore
+_INCOMING = ".incoming"
 
 
 @dataclass(frozen=True)
@@ -24,6 +47,45 @@ class StoreSyncResult:
     reused: int
 
 
+class _ClosureSource(StrictModel):
+    kind: Literal["closure"] = "closure"
+    selection: StoreClosureRef | str
+
+
+class _SuccessSource(StrictModel):
+    kind: Literal["success"] = "success"
+    receipt: ContentObjectRef
+    attempt: str
+    request_id: RequestId
+
+
+class _TrainSource(StrictModel):
+    kind: Literal["stopped_train"] = "stopped_train"
+    attempt: str
+    request_id: RequestId
+    pointer: CheckpointLatestPointer
+    expected: ContentObjectRef | None = None
+
+
+type _Selection = _ClosureSource | _SuccessSource | _TrainSource
+
+
+class _Inventory(StrictModel):
+    closure: StoreClosureRef
+    objects: tuple[ContentObjectRef, ...]
+    supersession_times: dict[str, datetime] = Field(default_factory=dict)
+
+
+class _RefUpdate(StrictModel):
+    name: str
+    expected: StoreClosureRef | None = None
+
+
+class _PublishRequest(StrictModel):
+    inventory: _Inventory
+    ref: _RefUpdate
+
+
 def _directory_identity(path: Path | str) -> tuple[int, int]:
     info = Path(path).lstat()
     if not stat.S_ISDIR(info.st_mode):
@@ -31,20 +93,24 @@ def _directory_identity(path: Path | str) -> tuple[int, int]:
     return info.st_dev, info.st_ino
 
 
+def _open_directory(path: Path | str, *, create: bool, mode: int = 0o777):
+    return open_directory_chain(
+        path, create=create, error_factory=ArtifactBlobContainmentError,
+        context="Store transfer directory", create_mode=mode,
+    )
+
+
 @contextmanager
 def _locked_stores(
-    source: ImmutableArtifactBlobProvider,
-    destination: ImmutableArtifactBlobProvider,
+    source: StoreEndpoint, destination: ImmutableArtifactBlobProvider,
 ) -> Iterator[None]:
+    close_directory_chain(_open_directory(destination.root, create=True))
+    if isinstance(source, RemoteStore):
+        with _locked_store(destination, create=True):
+            yield
+        return
+
     source_identity = _directory_identity(source.root)
-    close_directory_chain(
-        open_directory_chain(
-            destination.root,
-            create=True,
-            error_factory=ArtifactBlobContainmentError,
-            context="destination Store",
-        )
-    )
     destination_identity = _directory_identity(destination.root)
     if source_identity == destination_identity:
         raise ValueError("Store sync requires two distinct Store directories")
@@ -61,52 +127,215 @@ def _locked_stores(
         yield
 
 
+@contextmanager
+def _locked_store(store: ImmutableArtifactBlobProvider, *, create: bool) -> Iterator[None]:
+    identity = _directory_identity(store.root)
+    with store._exclusive_lock(create=create):
+        if _directory_identity(store.root) != identity:
+            raise ValueError(f"Store directory changed while taking its lock: {store.root}")
+        yield
+
+
+def _named_closure(store: ImmutableArtifactBlobProvider, name: str) -> StoreClosureRef:
+    value = store.read_ref(name)
+    if value is None:
+        raise FileNotFoundError(f"Source closure ref is missing: {name}")
+    return read_store_closure_ref(value)
+
+
+def _selected_train(
+    store: ImmutableArtifactBlobProvider, closure: StoreClosureRef, selection: _TrainSource,
+) -> TrainJobEntry:
+    entry = _read_entry(store, closure, selection.attempt, expected=selection.expected)
+    if entry.request.id != selection.request_id or entry.recovery.pointer != selection.pointer:
+        raise ValueError("Collected Train binding differs from the mirrored request or Stop checkpoint")
+    return entry
+
+
+def _inventory(store: ImmutableArtifactBlobProvider, selection: _Selection) -> _Inventory:
+    if isinstance(selection, _ClosureSource):
+        chosen = selection.selection
+        if isinstance(chosen, str):
+            closure = _named_closure(store, chosen)
+            index = None
+        else:
+            closure = chosen
+            index = (
+                decode_success_index(store.read_ref(INDEX_REF))
+                if any(isinstance(root, ReceiptRoot) for root in closure.roots) else None
+            )
+        return _Inventory(closure=closure, objects=ReceiptClosure(store, index).walk(closure))
+
+    index = decode_success_index(store.read_ref(INDEX_REF))
+    receipts = ReceiptClosure(store, index)
+    if isinstance(selection, _SuccessSource):
+        committed = receipts.receipt_at(selection.receipt)
+        if (committed.attempt, committed.request.id) != (selection.attempt, selection.request_id):
+            raise ValueError("Source receipt differs from the expected attempt and request")
+        closure = StoreClosureRef(roots=(ReceiptRoot(receipt=selection.receipt),), include_ancestry=True)
+        origins = (selection.receipt,)
+        objects = ()
+    else:
+        closure = _named_closure(store, _job_ref(selection.attempt))
+        entry = _selected_train(store, closure, selection)
+        _verify_entry(store, entry)
+        origins = _origins(entry)
+        objects = receipts.walk(closure)
+
+    by_digest = {ref.sha256: ref for ref in objects}
+    times = {}
+    for receipt in origins:
+        graph = receipts.for_admission(receipt)
+        for ref in graph.objects:
+            if by_digest.setdefault(ref.sha256, ref) != ref:
+                raise ValueError(f"Conflicting object evidence: {ref.sha256}")
+        for ref, result in graph.receipts:
+            if result.supersedes is not None:
+                times[ref.sha256] = index.supersession_times[ref.sha256]
+    return _Inventory(
+        closure=closure, objects=tuple(by_digest[digest] for digest in sorted(by_digest)),
+        supersession_times=times,
+    )
+
+
+def _verify_source(store: ImmutableArtifactBlobProvider, inventory: _Inventory) -> None:
+    for ref in inventory.objects:
+        store.verify_observed_object(ref, verifier="SSH Store transfer source")
+
+
+@contextmanager
+def _transfer_inventory(
+    source: StoreEndpoint, destination: ImmutableArtifactBlobProvider, selection: _Selection,
+) -> Iterator[_Inventory]:
+    remote = (
+        _Inventory.model_validate_json(source.call("inventory", selection))
+        if isinstance(source, RemoteStore) else None
+    )
+    with _locked_stores(source, destination):
+        if isinstance(source, RemoteStore):
+            assert remote is not None
+            yield remote
+        else:
+            yield _inventory(source, selection)
+
+
+def _incoming_path(store: ImmutableArtifactBlobProvider, ref: ContentObjectRef) -> Path:
+    return Path(store.root) / _INCOMING / content_object_relative_path(ref.sha256)
+
+
+def _receive(
+    inventory: _Inventory, store: ImmutableArtifactBlobProvider, *, prepare: bool,
+) -> tuple[ContentObjectRef, ...]:
+    """Adopt completed staged files, returning only objects still needed."""
+    missing = []
+    for ref in inventory.objects:
+        if store._reuse_object(ref, store._replacement_validator(ref)):
+            store._settle_install(ref)
+            continue
+        staged = _incoming_path(store, ref)
+        try:
+            store._store_file(staged, sha256=ref.sha256, size_bytes=ref.size_bytes)
+        except FileNotFoundError:
+            if not prepare:
+                raise
+            close_directory_chain(_open_directory(staged.parent, create=True, mode=0o700))
+            missing.append(ref)
+        except ArtifactBlobIntegrityError:
+            _remove_incoming(staged)
+            raise
+        else:
+            _remove_incoming(staged)
+    return tuple(missing)
+
+
+def _remove_incoming(staged: Path) -> None:
+    records = _open_directory(staged.parent, create=False)
+    try:
+        os.unlink(staged.name, dir_fd=records[-1][1])
+    except FileNotFoundError:
+        pass
+    finally:
+        close_directory_chain(records)
+
+
+def _bring_objects(
+    source: StoreEndpoint, destination: ImmutableArtifactBlobProvider, inventory: _Inventory,
+) -> int:
+    if isinstance(source, RemoteStore):
+        missing = _receive(inventory, destination, prepare=True)
+        source.connection.copy_objects(source.root, Path(destination.root) / _INCOMING, missing, pull=True)
+        _receive(inventory, destination, prepare=False)
+        return len(missing)
+    return sum(destination._clone_object_from(source, ref) for ref in inventory.objects)
+
+
+def _ref_before(
+    store: ImmutableArtifactBlobProvider, closure: StoreClosureRef, update: _RefUpdate,
+) -> dict[str, JsonValue] | None:
+    if update.name == INDEX_REF:
+        raise ValueError("Store sync cannot publish to the successful-result index")
+    current = store.read_ref(update.name)
+    previous = update.expected.model_dump(mode="json") if update.expected is not None else None
+    if current != closure.model_dump(mode="json") and current != previous:
+        raise ValueError(f"Destination closure ref changed: {update.name}")
+    return current
+
+
+def _publish(
+    store: ImmutableArtifactBlobProvider, inventory: _Inventory, update: _RefUpdate,
+    current: dict[str, JsonValue] | None,
+) -> None:
+    if not store.compare_and_swap_ref(
+        update.name, expected=current, replacement=inventory.closure.model_dump(mode="json")
+    ):
+        raise ValueError(f"Destination closure ref changed: {update.name}")
+
+
+def _verify_closure(store: ImmutableArtifactBlobProvider, inventory: _Inventory) -> None:
+    if ReceiptClosure(store).walk(inventory.closure) != inventory.objects:
+        raise ValueError("Transferred inventory differs from its exact Store closure")
+
+
 def sync_store(
-    source: ImmutableArtifactBlobProvider,
-    destination: ImmutableArtifactBlobProvider,
+    source: StoreEndpoint,
+    destination: StoreEndpoint,
     selection: StoreClosureRef | str,
     *,
     destination_ref: str,
     expected: StoreClosureRef | None = None,
 ) -> StoreSyncResult:
-    """Publish a complete verified closure from committed receipts or a named packet ref.
-
-    A ref replacement requires its expected value. Repeating the same transfer is
-    safe after interruption, including when the requested ref already exists.
-    """
-    destination._ref_path(destination_ref)
-    if destination_ref == INDEX_REF:
-        raise ValueError("Store sync cannot publish to the successful-result index")
-
-    with _locked_stores(source, destination):
-        index = None
-        if isinstance(selection, str):
-            value = source.read_ref(selection)
-            if value is None:
-                raise FileNotFoundError(f"Source closure ref is missing: {selection}")
-            closure = read_store_closure_ref(value)
-        else:
-            closure = selection
-            if any(isinstance(root, ReceiptRoot) for root in closure.roots):
-                index = decode_success_index(source.read_ref(INDEX_REF))
-
-        replacement = closure.model_dump(mode="json")
-        current = destination.read_ref(destination_ref)
-        previous = expected.model_dump(mode="json") if expected is not None else None
-        if current != replacement and current != previous:
-            raise ValueError(f"Destination closure ref changed: {destination_ref}")
-
-        objects = ReceiptClosure(source, index).walk(closure)
-        cloned = sum(destination._clone_object_from(source, ref) for ref in objects)
-        if not destination.compare_and_swap_ref(
-            destination_ref, expected=current, replacement=replacement
+    """Publish a verified closure from committed receipts or a named packet ref."""
+    selected = _ClosureSource(selection=selection)
+    update = _RefUpdate(name=destination_ref, expected=expected)
+    if isinstance(destination, RemoteStore):
+        if isinstance(source, RemoteStore):
+            raise ValueError("Store transfer requires one local endpoint")
+        with _locked_store(source, create=False):
+            inventory = _inventory(source, selected)
+            _verify_source(source, inventory)
+        request = _PublishRequest(inventory=inventory, ref=update)
+        missing = TypeAdapter(tuple[ContentObjectRef, ...]).validate_json(destination.call("missing", request))
+        object_refs = {ref.sha256: ref for ref in inventory.objects}
+        if len({ref.sha256 for ref in missing}) != len(missing) or any(
+            object_refs.get(ref.sha256) != ref for ref in missing
         ):
-            raise ValueError(f"Destination closure ref changed: {destination_ref}")
-        return StoreSyncResult(closure, cloned, len(objects) - cloned)
+            raise ValueError("Destination asked for objects outside the exact Store closure")
+        with _locked_store(source, create=False):
+            destination.connection.copy_objects(Path(source.root), destination.root / _INCOMING, missing, pull=False)
+        destination.call("publish", request)
+        transferred = len(missing)
+    else:
+        with _transfer_inventory(source, destination, selected) as inventory:
+            current = _ref_before(destination, inventory.closure, update)
+            transferred = _bring_objects(source, destination, inventory)
+            if isinstance(source, RemoteStore):
+                _verify_closure(destination, inventory)
+            _publish(destination, inventory, update, current)
+    return StoreSyncResult(inventory.closure, transferred, len(inventory.objects) - transferred)
 
 
 def collect_success(
-    source: ImmutableArtifactBlobProvider,
+    source: StoreEndpoint,
     destination: ImmutableArtifactBlobProvider,
     receipt: ContentObjectRef,
     *,
@@ -118,7 +347,7 @@ def collect_success(
 
 
 def collect_success_evidence(
-    source: ImmutableArtifactBlobProvider,
+    source: StoreEndpoint,
     destination: ImmutableArtifactBlobProvider,
     receipt: ContentObjectRef,
     *,
@@ -130,7 +359,7 @@ def collect_success_evidence(
 
 
 def _collect_success(
-    source: ImmutableArtifactBlobProvider,
+    source: StoreEndpoint,
     destination: ImmutableArtifactBlobProvider,
     receipt: ContentObjectRef,
     attempt: str,
@@ -138,15 +367,64 @@ def _collect_success(
     *,
     promote: bool,
 ) -> PublishedSuccess:
-    with _locked_stores(source, destination):
-        index = decode_success_index(source.read_ref(INDEX_REF))
-        closure = ReceiptClosure(source, index)
-        committed = closure.receipt_at(receipt)
-        if (committed.attempt, committed.request.id) != (attempt, request_id):
-            raise ValueError("Source receipt differs from the expected attempt and request")
-        for ref in closure.for_admission(receipt).objects:
-            destination._clone_object_from(source, ref)
+    selection = _SuccessSource(receipt=receipt, attempt=attempt, request_id=request_id)
+    with _transfer_inventory(source, destination, selection) as inventory:
+        _bring_objects(source, destination, inventory)
         return SuccessView(destination).admit_collected(
             receipt, attempt=attempt, request_id=request_id,
-            supersession_times=index.supersession_times, promote=promote,
+            supersession_times=inventory.supersession_times, promote=promote,
         )
+
+
+def _collect_train_job(
+    source: StoreEndpoint, destination: ImmutableArtifactBlobProvider,
+    *, attempt: str, request_id: RequestId, pointer: CheckpointLatestPointer,
+    expected: ContentObjectRef | None,
+) -> TrainJobEntry:
+    """Collect a receipt-less stopped attempt and publish its verified Resume custody."""
+    selection = _TrainSource(attempt=attempt, request_id=request_id, pointer=pointer, expected=expected)
+    with _transfer_inventory(source, destination, selection) as inventory:
+        _entry_ref(inventory.closure, selection.expected)
+        update = _RefUpdate(name=_job_ref(attempt))
+        current = _ref_before(destination, inventory.closure, update)
+        _bring_objects(source, destination, inventory)
+        entry = _selected_train(destination, inventory.closure, selection)
+        _verify_checkpoints(destination, entry)
+        receipts = ReceiptClosure(destination)
+        for origin in _origins(entry):
+            receipt = receipts.receipt_at(origin)
+            SuccessView(destination).admit_collected(
+                origin, attempt=receipt.attempt, request_id=receipt.request.id,
+                supersession_times=inventory.supersession_times, promote=False,
+            )
+        SuccessView(destination).verify_bindings(entry.request, entry.inputs)
+        _publish(destination, inventory, update, current)
+        return entry
+
+
+def _serve(operation: str, root: Path, raw: bytes) -> bytes:
+    store = ImmutableArtifactBlobProvider(root)
+    if operation == "inventory":
+        selection = TypeAdapter(_Selection).validate_json(raw)
+        with store._exclusive_lock(create=False):
+            inventory = _inventory(store, selection)
+            _verify_source(store, inventory)
+        return inventory.model_dump_json().encode()
+    if operation not in {"missing", "publish"}:
+        raise ValueError(f"Unknown Store transfer operation: {operation!r}")
+    request = _PublishRequest.model_validate_json(raw)
+    close_directory_chain(_open_directory(store.root, create=True))
+    with store._exclusive_lock():
+        current = _ref_before(store, request.inventory.closure, request.ref)
+        if operation == "missing":
+            missing = _receive(request.inventory, store, prepare=True)
+            return TypeAdapter(tuple[ContentObjectRef, ...]).dump_json(missing)
+        _receive(request.inventory, store, prepare=False)
+        _verify_closure(store, request.inventory)
+        _publish(store, request.inventory, request.ref, current)
+        return b""
+
+
+if __name__ == "__main__":
+    _operation, _root = sys.argv[1:]
+    sys.stdout.buffer.write(_serve(_operation, Path(_root), sys.stdin.buffer.read()))
