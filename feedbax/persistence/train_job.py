@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.artifact_custody import ContentBinding, ContentObjectRef
-from feedbax.contracts.base import StrictModel
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentBinding, ContentObjectRef
+from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoints import CheckpointLatestPointer, CheckpointTransactionManifest
 from feedbax.contracts.effective_success import Bindings, Product, RequestObject
@@ -18,6 +19,9 @@ from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_s
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider, content_object_relative_path
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_content import success_content_objects
+
+if TYPE_CHECKING:
+    from feedbax.persistence.store_sync import StoreEndpoint
 
 
 class TrainJobCheckpoint(StrictModel):
@@ -48,6 +52,18 @@ class TrainJobEntry(StrictModel):
     def recovery(self) -> TrainJobCheckpoint:
         return self.checkpoints[-1]
 
+    @property
+    def object_ref(self) -> ContentObjectRef:
+        """The exact binding object named by the committed job ref."""
+        raw = self._canonical_bytes()
+        digest = sha256_bytes(raw)
+        return ContentObjectRef(
+            object_id=CONTENT_OBJECT_REF_PREFIX + digest, sha256=digest, size_bytes=len(raw),
+        )
+
+    def _canonical_bytes(self) -> bytes:
+        return canonical_json_v2_bytes(self.model_dump(mode="json"))
+
 
 def _job_ref(attempt: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_-]+", attempt) is None:
@@ -73,6 +89,10 @@ def _closure(ref: ContentObjectRef, entry: TrainJobEntry) -> StoreClosureRef:
 
 def _verify_entry(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> None:
     SuccessView(store).verify_bindings(entry.request, entry.inputs)
+    _verify_checkpoints(store, entry)
+
+
+def _verify_checkpoints(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> None:
     for checkpoint in entry.checkpoints:
         content, pointer = checkpoint.content, checkpoint.pointer
         if content.root_kind != "checkpoint-custody" or content.binding_name != pointer.transaction_id:
@@ -122,7 +142,7 @@ def publish_train_job(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry
     name = _job_ref(entry.attempt)
     with store._exclusive_lock():
         _verify_entry(store, entry)
-        ref = store.store_object(canonical_json_v2_bytes(entry.model_dump(mode="json")))
+        ref = store.store_object(entry._canonical_bytes())
         closure = _closure(ref, entry).model_dump(mode="json")
         current = store.read_ref(name)
         if current == closure:
@@ -137,34 +157,34 @@ def read_train_job(store: ImmutableArtifactBlobProvider, attempt: str) -> TrainJ
         raw = store.read_ref(_job_ref(attempt))
         if raw is None:
             raise FileNotFoundError(f"No collected checkpoint for Train attempt {attempt!r}")
-        closure = read_store_closure_ref(raw)
-        ref = closure.roots[0]
-        if not isinstance(ref, ContentObjectRef):
-            raise ValueError("Train job closure does not start with its binding object")
-        data = store.get_object(ref)
-        entry = TrainJobEntry.model_validate_json(data)
-        if (
-            entry.attempt != attempt or closure != _closure(ref, entry)
-            or data != canonical_json_v2_bytes(entry.model_dump(mode="json"))
-        ):
-            raise ValueError("Train job entry differs from its named closure")
+        entry = _read_entry(store, read_store_closure_ref(raw), attempt)
         _verify_entry(store, entry)
         return entry
 
 
+def _read_entry(
+    store: ImmutableArtifactBlobProvider, closure: StoreClosureRef, attempt: str,
+) -> TrainJobEntry:
+    ref = closure.roots[0]
+    if not isinstance(ref, ContentObjectRef):
+        raise ValueError("Train job closure does not start with its binding object")
+    data = store.get_object(ref)
+    entry = TrainJobEntry.model_validate_json(data)
+    if (
+        entry.attempt != attempt or closure != _closure(ref, entry)
+        or data != entry._canonical_bytes()
+    ):
+        raise ValueError("Train job entry differs from its named closure")
+    return entry
+
+
 def collect_train_job(
-    source: ImmutableArtifactBlobProvider, destination: ImmutableArtifactBlobProvider,
+    source: StoreEndpoint, destination: ImmutableArtifactBlobProvider,
     *, attempt: str, request_id: str, pointer: CheckpointLatestPointer,
 ) -> TrainJobEntry:
-    """Sync a stopped attempt's entry and provenance, then verify local Resume custody."""
-    from feedbax.persistence.store_sync import collect_success_evidence, sync_store
+    """Collect a stopped attempt's exact binding, checkpoints, and producer provenance."""
+    from feedbax.persistence.store_sync import _collect_train_job
 
-    entry = read_train_job(source, attempt)
-    if entry.request.id != request_id or entry.recovery.pointer != pointer:
-        raise ValueError("Collected Train binding differs from the mirrored request or Stop checkpoint")
-    for origin in _origins(entry):
-        receipt = SuccessView(source).read_receipt(origin)
-        collect_success_evidence(source, destination, origin, attempt=receipt.attempt, request_id=receipt.request.id)
-    name = _job_ref(attempt)
-    sync_store(source, destination, name, destination_ref=name)
-    return read_train_job(destination, attempt)
+    return _collect_train_job(
+        source, destination, attempt=attempt, request_id=request_id, pointer=pointer,
+    )

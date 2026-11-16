@@ -16,12 +16,14 @@ from feedbax.host import HostClient
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.persistence.train_job import read_train_job
+from feedbax.persistence.store_sync import collect_success
+from feedbax.persistence.train_job import collect_train_job, read_train_job
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.finite_train import install_finite_gate
 from tests.support.store_damage import writable_store_object
+from tests.support.store_transport import loopback_store
 from tests.test_canonical_train_admission import _saved_chain
 from tests.test_local_job_host import host as host_fixture, restart, wait_until
 
@@ -92,6 +94,27 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
         (selected,) = exact.inputs["checkpoint"]
         assert selected.selection.receipt == original_producer.ref
         close_venue()
+
+        remote = loopback_store(source.root, tmp_path / "connection")
+        transported = ImmutableArtifactBlobProvider(tmp_path / "transported")
+        transported_entry = collect_train_job(
+            remote.endpoint, transported, attempt=stopped_id,
+            request_id=exact.request.id, pointer=exact.recovery.pointer,
+        )
+        assert transported_entry == exact
+        assert transported_entry.object_ref == exact.object_ref
+        assert transported.read_ref(f"jobs/{stopped_id}")["roots"][0] == exact.object_ref.model_dump(mode="json")
+        received = SuccessView(transported)
+        assert received.read_attempt(producer_id) == original_producer
+        assert received.authored(original_producer.receipt.request.id) is None
+        assert received.attempt_ref(stopped_id) is None
+        assert read_train_job(transported, stopped_id) == exact
+        assert collect_success(
+            remote.endpoint, transported, original_producer.ref,
+            attempt=producer_id, request_id=original_producer.receipt.request.id,
+        ) == original_producer
+        assert SuccessView(transported).authored(original_producer.receipt.request.id) == original_producer
+        assert len(remote.rsync_calls()) == 1
 
         collected = local_jobs.collect_train_attempt(source, producer, project=project, store=destination.root)
         assert collected.status == JobStatus.SUCCEEDED and collected.job_id == producer_id
