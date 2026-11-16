@@ -320,8 +320,10 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     }));
   }
   async function matchesCli(projection: StudioProjectWindowMap) {
-    const cli = JSON.parse(await runProjectFixture(fixture, 'status', home, project)) as StudioSavedTrainRuns;
-    expect(lightStatus(cli.window_map!)).toEqual(lightStatus(projection));
+    await test.step('Compare saved result status with CLI', async () => {
+      const cli = JSON.parse(await runProjectFixture(fixture, 'status', home, project)) as StudioSavedTrainRuns;
+      expect(lightStatus(cli.window_map!)).toEqual(lightStatus(projection));
+    });
   }
   async function waitForLight(revision: string) {
     await expect.poll(async () => lightStatus(await plan(revision)).map(({ status }) => status), { timeout: 22_000 })
@@ -350,6 +352,12 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     if (paired) await expectSeparateVelocityLines(plot);
   }
 
+  async function showCurrentResults(reportUrl: string) {
+    await showReport(reportUrl);
+    await showFigure();
+    await drawnFigure('Current Result');
+  }
+
   const createdJobs = await runSaved();
   expect(createdJobs).toHaveLength(4);
   const completed = await waitForLight(ordered.revision);
@@ -361,17 +369,12 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   const firstFigure = await request.get(figure.products.figure);
   expect(firstFigure.ok(), await firstFigure.text()).toBe(true);
   const figureBody = await firstFigure.body();
-  await showReport(renderedReport.products.report);
-  await showFigure();
-  await drawnFigure('Current Result');
-  await matchesCli(completed);
+  await Promise.all([matchesCli(completed), showCurrentResults(renderedReport.products.report)]);
 
   await page.reload();
   await activate(page, mapStep(page, 'report'));
   await openView(page, 'document');
-  await showReport(renderedReport.products.report);
-  await showFigure();
-  await drawnFigure('Current Result');
+  await showCurrentResults(renderedReport.products.report);
   expect((await snapshot()).revision).toBe(ordered.revision);
   expectAnalyzeSources(await plan(ordered.revision));
   if (first) {
@@ -436,10 +439,14 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   expect(staleSummary.reason).toContain('bounds_scale');
   expect([staleSummary, staleFigure, staleReport].map(({ status, previous }) => [status, previous]))
     .toEqual([summary, figure, renderedReport].map((entry) => ['stale', identity(entry)]));
-  await matchesCli(stale);
-  await openView(page, 'figures');
-  await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
-  await drawnFigure('Previous Result');
+  await Promise.all([
+    matchesCli(stale),
+    (async () => {
+      await openView(page, 'figures');
+      await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
+      await drawnFigure('Previous Result');
+    })(),
+  ]);
   expect(await attempts()).toEqual(beforeEdit);
 
   await openView(page, 'analysis');
@@ -464,10 +471,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   const previousProduct = await request.get(previous.products.figure);
   expect(previousProduct.ok(), await previousProduct.text()).toBe(true);
   expect(await previousProduct.body()).toEqual(figureBody);
-  await matchesCli(replaced);
-  await showReport(newReport.products.report);
-  await showFigure();
-  await drawnFigure('Current Result');
+  await Promise.all([matchesCli(replaced), showCurrentResults(newReport.products.report)]);
   await activate(page, figures.getByRole('button', { name: 'Previous Result', exact: true }));
   await drawnFigure('Previous Result');
   if (first) {
