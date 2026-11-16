@@ -60,6 +60,16 @@ export function studioPlanValueSource(source: StudioPlanReviewSource) {
 }
 
 const countFormat = new Intl.NumberFormat();
+const usdFormat = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 6 });
+const dateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'long' });
+
+export function studioMoney(microusd: number) {
+  return usdFormat.format(microusd / 1_000_000);
+}
+
+export function studioDateTime(epochMs: number) {
+  return dateTimeFormat.format(epochMs);
+}
 
 export function studioFormat(
   id: keyof typeof vocabulary.format,

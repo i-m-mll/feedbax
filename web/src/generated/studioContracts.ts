@@ -145,6 +145,7 @@ export interface StudioActivityJob {
   actor?: StudioSubmissionActor | null;
   placement?: "live" | "ordinary" | null;
   target?: LocalTarget | SessionTarget;
+  log_tail?: string[];
 }
 
 export interface StudioEventReset {
@@ -180,7 +181,8 @@ export interface StudioJobSnapshot {
   jobs: StudioActivityJob[];
   cursor: number;
   oldest_cursor: number;
-  sessions: StudioLocalSession[];
+  sessions: Array<StudioLocalSession | StudioRemoteSession>;
+  remote_version?: number | null;
 }
 
 export interface StudioJobStopItem {
@@ -336,9 +338,38 @@ export interface StudioSavedTrainRow {
 export interface StudioSavedTrainRunRequest {
   revision: string;
   run_keys: StudioSavedTrainKey[];
+  target?: string;
   token: string;
   reuse_completed?: boolean;
+}
+
+export interface StudioSavedMachineQuoteRequest {
+  revision: string;
+  run_keys: StudioSavedTrainKey[];
   target?: string;
+}
+
+export interface StudioMachineApproval {
+  quote: string;
+}
+
+export interface StudioMachineQuote {
+  id: string;
+  machine: string;
+  resources: Record<string, JsonValue>;
+  hourly_microusd: number;
+  rows: StudioMachineQuoteRow[];
+  ceiling_microusd: number;
+  expires_at_ms: number;
+  idle_timeout_seconds: number | null;
+  idle_with_results: "on";
+  status: "awaiting_authorization";
+}
+
+export interface StudioMachineQuoteRow {
+  key: StudioSavedTrainKey;
+  label: string;
+  axes: Record<string, JsonValue>;
 }
 
 export interface StudioSavedTrainRuns {
@@ -384,6 +415,19 @@ export interface StudioTrainCheckpointSource {
 export interface StudioLocalSession {
   id?: "local";
   state?: "open";
+}
+
+export interface StudioRemoteSession {
+  id: string;
+  name: string;
+  state: "opening" | "open" | "closing" | "unreachable";
+  hourly_microusd: number;
+  estimated_cost_microusd: number;
+  closes_at_ms: number;
+  ceiling_microusd: number;
+  idle_since_ms: number | null;
+  job_ids: string[];
+  can_close: boolean;
 }
 
 export interface StudioSubmissionItem {
@@ -4322,6 +4366,7 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "actor": StudioSubmissionActorSchema.nullable().optional(),
       "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
       "target": z.union([LocalTargetSchema, SessionTargetSchema]).optional(),
+      "log_tail": z.array(z.string()).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioActivityJob>;
@@ -4381,7 +4426,8 @@ export const StudioJobSnapshotSchema: z.ZodType<StudioJobSnapshot> = z.lazy(() =
       "jobs": z.array(StudioActivityJobSchema),
       "cursor": z.number().int().safe().gte(0),
       "oldest_cursor": z.number().int().safe().gte(0),
-      "sessions": z.array(StudioLocalSessionSchema),
+      "sessions": z.array(z.union([StudioLocalSessionSchema, StudioRemoteSessionSchema])),
+      "remote_version": z.number().int().safe().gte(0).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSnapshot>;
@@ -4613,12 +4659,57 @@ export const StudioSavedTrainRunRequestSchema: z.ZodType<StudioSavedTrainRunRequ
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "run_keys": z.array(StudioSavedTrainKeySchema).min(1),
+      "target": z.string().min(1).regex(new RegExp("^\\S+$")).optional(),
       "token": z.string().min(1).max(128),
       "reuse_completed": z.boolean().optional(),
-      "target": z.string().min(1).regex(new RegExp("^\\S+$")).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainRunRequest>;
+
+export const StudioSavedMachineQuoteRequestSchema: z.ZodType<StudioSavedMachineQuoteRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "run_keys": z.array(StudioSavedTrainKeySchema).min(1),
+      "target": z.string().min(1).regex(new RegExp("^\\S+$")).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedMachineQuoteRequest>;
+
+export const StudioMachineApprovalSchema: z.ZodType<StudioMachineApproval> = z.lazy(() =>
+  z
+    .object({
+      "quote": z.string().uuid(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioMachineApproval>;
+
+export const StudioMachineQuoteSchema: z.ZodType<StudioMachineQuote> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().uuid(),
+      "machine": z.string(),
+      "resources": z.record(z.string(), jsonValueSchema),
+      "hourly_microusd": z.number().int().safe().gte(0),
+      "rows": z.array(StudioMachineQuoteRowSchema).min(1),
+      "ceiling_microusd": z.number().int().safe().gte(0),
+      "expires_at_ms": z.number().int().safe().gt(0),
+      "idle_timeout_seconds": z.number().int().safe().gt(0).nullable(),
+      "idle_with_results": z.literal("on"),
+      "status": z.literal("awaiting_authorization"),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioMachineQuote>;
+
+export const StudioMachineQuoteRowSchema: z.ZodType<StudioMachineQuoteRow> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "label": z.string(),
+      "axes": z.record(z.string(), jsonValueSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioMachineQuoteRow>;
 
 export const StudioSavedTrainRunsSchema: z.ZodType<StudioSavedTrainRuns> = z.lazy(() =>
   z
@@ -4688,6 +4779,23 @@ export const StudioLocalSessionSchema: z.ZodType<StudioLocalSession> = z.lazy(()
     })
     .strict()
 ) as unknown as z.ZodType<StudioLocalSession>;
+
+export const StudioRemoteSessionSchema: z.ZodType<StudioRemoteSession> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().uuid(),
+      "name": z.string(),
+      "state": z.union([z.literal("opening"), z.literal("open"), z.literal("closing"), z.literal("unreachable")]),
+      "hourly_microusd": z.number().int().safe().gte(0),
+      "estimated_cost_microusd": z.number().int().safe().gte(0),
+      "closes_at_ms": z.number().int().safe().gt(0),
+      "ceiling_microusd": z.number().int().safe().gte(0),
+      "idle_since_ms": z.number().int().safe().gte(0).nullable(),
+      "job_ids": z.array(z.string()),
+      "can_close": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRemoteSession>;
 
 export const StudioSubmissionItemSchema: z.ZodType<StudioSubmissionItem> = z.lazy(() =>
   z
@@ -10457,12 +10565,17 @@ export const contractSchemas = {
   StudioSavedTrainResult: StudioSavedTrainResultSchema,
   StudioSavedTrainRow: StudioSavedTrainRowSchema,
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
+  StudioSavedMachineQuoteRequest: StudioSavedMachineQuoteRequestSchema,
+  StudioMachineApproval: StudioMachineApprovalSchema,
+  StudioMachineQuote: StudioMachineQuoteSchema,
+  StudioMachineQuoteRow: StudioMachineQuoteRowSchema,
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
   StudioPlanRequestAddress: StudioPlanRequestAddressSchema,
   StudioPlanReviewEntry: StudioPlanReviewEntrySchema,
   StudioPlanReviewSource: StudioPlanReviewSourceSchema,
   StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
   StudioLocalSession: StudioLocalSessionSchema,
+  StudioRemoteSession: StudioRemoteSessionSchema,
   StudioSubmissionItem: StudioSubmissionItemSchema,
   ModelAddress: ModelAddressSchema,
   ModelDocument: ModelDocumentSchema,
@@ -10599,12 +10712,17 @@ export interface ContractTypeMap {
   StudioSavedTrainResult: StudioSavedTrainResult;
   StudioSavedTrainRow: StudioSavedTrainRow;
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
+  StudioSavedMachineQuoteRequest: StudioSavedMachineQuoteRequest;
+  StudioMachineApproval: StudioMachineApproval;
+  StudioMachineQuote: StudioMachineQuote;
+  StudioMachineQuoteRow: StudioMachineQuoteRow;
   StudioSavedTrainRuns: StudioSavedTrainRuns;
   StudioPlanRequestAddress: StudioPlanRequestAddress;
   StudioPlanReviewEntry: StudioPlanReviewEntry;
   StudioPlanReviewSource: StudioPlanReviewSource;
   StudioTrainCheckpointSource: StudioTrainCheckpointSource;
   StudioLocalSession: StudioLocalSession;
+  StudioRemoteSession: StudioRemoteSession;
   StudioSubmissionItem: StudioSubmissionItem;
   ModelAddress: ModelAddress;
   ModelDocument: ModelDocument;

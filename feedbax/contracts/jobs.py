@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Literal
+from uuid import UUID
 
 from pydantic import ConfigDict, Field, FiniteFloat, JsonValue
 
@@ -397,12 +398,38 @@ class StudioSavedTrainRuns(StrictModel):
     review: list[StudioPlanReviewEntry] | None = None
 
 
-class StudioSavedTrainRunRequest(StrictModel):
+class StudioSavedMachineQuoteRequest(StrictModel):
     revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     run_keys: list[StudioSavedTrainKey] = Field(min_length=1)
+    target: TargetId = LOCAL_TARGET_ID
+
+
+class StudioSavedTrainRunRequest(StudioSavedMachineQuoteRequest):
     token: Token
     reuse_completed: bool = False
-    target: TargetId = LOCAL_TARGET_ID
+
+
+class StudioMachineQuoteRow(StrictModel):
+    key: StudioSavedTrainKey
+    label: str
+    axes: dict[str, JsonValue]
+
+
+class StudioMachineQuote(StrictModel):
+    id: UUID
+    machine: str
+    resources: dict[str, JsonValue]
+    hourly_microusd: int = Field(ge=0)
+    rows: list[StudioMachineQuoteRow] = Field(min_length=1)
+    ceiling_microusd: int = Field(ge=0)
+    expires_at_ms: int = Field(gt=0)
+    idle_timeout_seconds: int | None = Field(gt=0)
+    idle_with_results: Literal["on"]
+    status: Literal["awaiting_authorization"]
+
+
+class StudioMachineApproval(StrictModel):
+    quote: UUID
 
 
 class JobOutcome(StrictModel):
@@ -444,6 +471,7 @@ class StudioActivityJob(StrictModel):
     actor: StudioSubmissionActor | None = Field(default=None, exclude_if=lambda value: value is None)
     placement: Literal["live", "ordinary"] | None = Field(default=None, exclude_if=lambda value: value is None)
     target: AttemptTarget = LOCAL_TARGET
+    log_tail: list[str] = Field(default_factory=list, exclude_if=lambda lines: not lines)
 
 
 class StudioLocalSession(StrictModel):
@@ -451,11 +479,25 @@ class StudioLocalSession(StrictModel):
     state: Literal["open"] = "open"
 
 
+class StudioRemoteSession(StrictModel):
+    id: UUID
+    name: str
+    state: Literal["opening", "open", "closing", "unreachable"]
+    hourly_microusd: int = Field(ge=0)
+    estimated_cost_microusd: int = Field(ge=0)
+    closes_at_ms: int = Field(gt=0)
+    ceiling_microusd: int = Field(ge=0)
+    idle_since_ms: int | None = Field(ge=0)
+    job_ids: list[str]
+    can_close: bool
+
+
 class StudioJobSnapshot(StrictModel):
     jobs: list[StudioActivityJob]
     cursor: int = Field(ge=0)
     oldest_cursor: int = Field(ge=0)
-    sessions: list[StudioLocalSession]
+    sessions: list[StudioLocalSession | StudioRemoteSession]
+    remote_version: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
 
 
 class StudioSubmissionItem(StrictModel):

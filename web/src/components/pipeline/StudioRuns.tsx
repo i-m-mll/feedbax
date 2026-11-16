@@ -194,13 +194,15 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
   </section>;
 }
 
-export function StudioRunControls({ commands, pivotCommand, pivotActive, reason }: {
+export function StudioRunControls({ commands, machine, pivotCommand, pivotActive, reason }: {
   commands?: readonly StudioCommand[];
+  machine?: ReactNode;
   pivotCommand?: StudioCommand;
   pivotActive?: boolean;
   reason?: string;
 }) {
   return <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+    {machine}
     {commands?.map((command) => (
       <button type="button" key={command.id} {...commandAttributes(command)}
         disabled={!command.enabled && command.id !== 'run'}

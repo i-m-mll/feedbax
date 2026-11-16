@@ -1,11 +1,14 @@
-import { asApiRequestError, requestJson } from '@/api/request';
+import { asApiRequestError, requestJson, requestResponse } from '@/api/request';
 import {
   parseContract,
   type ContractName,
   type StudioJobEvent,
+  type StudioMachineApproval,
   type StudioSavedEvaluationRead,
   type StudioSavedEvaluationReplayRequest,
+  type StudioSavedMachineQuoteRequest,
   type StudioSavedTrainRunRequest,
+  type TargetOption,
 } from '@/generated/studioContracts';
 
 async function readContract<K extends ContractName>(
@@ -38,6 +41,27 @@ export function runSavedTrain(project: string, input: StudioSavedTrainRunRequest
   });
 }
 
+export function fetchExecutionTargets(kinds: readonly TargetOption['run_kinds'][number][], signal?: AbortSignal) {
+  const query = new URLSearchParams(kinds.map((kind) => ['kind', kind]));
+  return readContract(`/api/orchestration/targets?${query}`, 'ExecutionTargets', { signal });
+}
+
+export function quoteSavedRun(project: string, input: StudioSavedMachineQuoteRequest) {
+  const body = parseContract('StudioSavedMachineQuoteRequest', input);
+  return readContract(`${savedTrainRunsPath(project)}/quote`, 'StudioMachineQuote', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function approveSavedRun(project: string, input: StudioMachineApproval) {
+  const body = parseContract('StudioMachineApproval', input);
+  return readContract(`${savedTrainRunsPath(project)}/approve`, 'StudioJobSubmission', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 export function fetchSavedEvaluationReplay(project: string, input: StudioSavedEvaluationReplayRequest, signal?: AbortSignal) {
   const body = parseContract('StudioSavedEvaluationReplayRequest', input);
   return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-replay`, 'WorkspaceReplayTrial', {
@@ -56,6 +80,10 @@ export function fetchSavedEvaluationObjective(project: string, input: StudioSave
 
 export function fetchStudioJobs(signal?: AbortSignal) {
   return readContract('/api/jobs', 'StudioJobSnapshot', { signal });
+}
+
+export async function closeStudioMachine(id: string) {
+  await requestResponse(`/api/sessions/${encodeURIComponent(id)}/close`, { method: 'POST' });
 }
 
 export async function fetchStudioJobHistory(

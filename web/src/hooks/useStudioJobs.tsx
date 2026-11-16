@@ -64,6 +64,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     let buffered: StudioJobEvent[] | null = null;
     let historyReady = false;
     let snapshotReady = false;
+    let machineUpdatePending = false;
     let announcedThrough = 0;
     const statuses = new Map<string, StudioActivityJob['status']>();
     let initialSnapshot = true;
@@ -161,6 +162,10 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
           for (const event of arrived) {
             if (event.cursor > through) apply(event);
           }
+          if (machineUpdatePending) {
+            machineUpdatePending = false;
+            void hydrate();
+          }
         }
       }
     }
@@ -187,6 +192,12 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
           case 'event':
             if (buffered) buffered.push(data.event);
             else apply(data.event);
+            break;
+          case 'machines-changed':
+            if (ownsSnapshot) {
+              if (buffered) machineUpdatePending = true;
+              else void hydrate();
+            }
             break;
           case 'seen':
             setSeen(data.jobId);

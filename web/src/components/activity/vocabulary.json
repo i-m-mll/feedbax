@@ -70,6 +70,21 @@
     "trainSteps": "Train steps",
     "results": "Results",
     "machine": "Machine",
+    "approve": "Approve",
+    "cancel": "Cancel",
+    "resources": "Resources",
+    "hourlyRate": "Hourly rate",
+    "costCeiling": "Cost ceiling",
+    "estimatedCost": "Estimated cost",
+    "closesAt": "Closes at",
+    "idleSince": "Idle since",
+    "expiry": "Expiry",
+    "idleTimeout": "Idle timeout",
+    "idleWithResults": "Idle with results",
+    "atExpiry": "At expiry",
+    "undownloadedResultsDestroyed": "Results not downloaded are destroyed",
+    "on": "On",
+    "noIdleTimeout": "Until expiry",
     "madeFrom": "Made From",
     "members": "Members",
     "metric": "Metric",
@@ -339,7 +354,10 @@
       "interrupted": "Interrupted",
       "corrupt": "Damaged"
     },
-    "machine": { "open": "Open" },
+    "machine": {
+      "opening": "Opening", "open": "Open", "closing": "Closing", "unreachable": "Unreachable",
+      "ready": "Ready", "unavailable": "Unavailable"
+    },
     "connection": {
       "connecting": "Connecting",
       "connected": "Connected",

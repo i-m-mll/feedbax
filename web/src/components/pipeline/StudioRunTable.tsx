@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioCountOf, studioName } from "@/components/activity/studioVocabulary";
+import { studioCountOf, studioName, studioRunStatus } from "@/components/activity/studioVocabulary";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
   selectionButton,
@@ -190,9 +190,11 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                 ))}
                 <td tabIndex={-1} className={cellClass}>
                   <StudioRunStatus status={run.status} />
+                  {run.reason && <div className="text-xs text-shell-muted">{run.reason}</div>}
                 </td>
                 <td tabIndex={-1} className={cellClass}>
                   {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
+                  {run.status === "collecting" && <progress aria-label={studioRunStatus(run.status)} />}
                   {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
                 </td>
               </tr>
