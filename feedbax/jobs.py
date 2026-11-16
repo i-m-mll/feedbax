@@ -765,22 +765,34 @@ class JobService(PlanJobReader):
         for attempt in range(3):
             snapshot = self.host.jobs_snapshot(project=record["project"])
             history: dict[str, list[dict[str, Any]]] = {}
+            attempts: dict[str, dict[str, Any]] = {}
             for row in cast(list[dict[str, Any]], snapshot["jobs"]):
                 if _is_studio_job(row) and row["data"].get("manifest_root") == record["command"]["store"]:
                     history.setdefault(row["request"], []).append(row)
+                    attempts[row["id"]] = row
             chosen = []
             reused = {}
+            checkpoint_roots = {}
             runs = {key: dict(run) for key, run in record["runs"].items()}
             for item in candidates:
                 if item.job is None:
                     chosen.append(item)
                     continue
                 job = replace(item.job, edges=tuple(
-                    replace(edge, job_id=reused.get(edge.job_id, edge.job_id)) for edge in item.job.edges
+                    replace(edge, job_id=(checkpoint_roots if edge.authenticated_completion else reused).get(
+                        edge.job_id, edge.job_id,
+                    ))
+                    for edge in item.job.edges
                 ))
                 eligible = reuse_completed or _is_light_request(job.request)
                 if eligible and (reusable := self._reusable(job, history.get(job.request, ()))):
                     reused[job.id] = reusable
+                    if job.request.startswith("train:"):
+                        # The Host authenticates checkpoint selections through the original Train attempt.
+                        root = attempts[reusable]
+                        while root["continues"] is not None:
+                            root = attempts[root["continues"]]
+                        checkpoint_roots[job.id] = root["id"]
                     chosen.append(AdmissionItem(
                         run_key=item.run_key, disposition="reused", checked_through=snapshot["cursor"],
                     ))

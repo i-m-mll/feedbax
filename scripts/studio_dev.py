@@ -150,6 +150,10 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
     backend = [sys.executable, "-B", "-m", "uvicorn", backend_app]
     vite = ["bun", "--bun", "vite"]
     front = vite
+    if args.preview_from:
+        if not (args.preview_from / "index.html").is_file():
+            raise ValueError(f"No Studio preview built at {args.preview_from}")
+        front = [*vite, "preview", "--outDir", str(args.preview_from.resolve())]
     if args.preview:
         dist = str(paths.cache / "dist")
         build = subprocess.Popen([*vite, "build", "--outDir", dist, "--emptyOutDir"], cwd=WEB)
@@ -158,7 +162,7 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         if build_code:
             return build_code
         front = [*vite, "preview", "--outDir", dist]
-    port = args.port or (3009 if args.preview else 3008)
+    port = args.port or (3009 if args.preview or args.preview_from else 3008)
 
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -183,6 +187,7 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
     parser.add_argument("--backend-port", type=int, default=8000)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--preview", action="store_true", help="build and serve the production frontend")
+    mode.add_argument("--preview-from", type=Path, help="serve the existing production frontend build")
     mode.add_argument("--backend-only", action="store_true", help="serve the backend for an existing frontend")
     parser.add_argument(
         "--remove-test-home", action="store_true", help="remove a new test home after its jobs settle"

@@ -1,7 +1,10 @@
-import { expect, type APIRequestContext } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -49,7 +52,7 @@ async function stop(child: ChildProcess) {
   }
 }
 
-export function studioRecovery(request: APIRequestContext, home: string, origin: string, backendPort: number) {
+function studioRecovery(home: string, origin: string, backendPort: number) {
   const backendArgs = ['--home', home, '--backend-port', String(backendPort)];
   const log: string[] = [];
   const launchers: ChildProcess[] = [];
@@ -64,7 +67,9 @@ export function studioRecovery(request: APIRequestContext, home: string, origin:
   };
   const healthy = async () => {
     try {
-      return (await request.get(`${origin}/api/health`, { timeout: 1000 })).ok();
+      const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1000) });
+      await response.arrayBuffer();
+      return response.ok;
     } catch {
       return false;
     }
@@ -88,3 +93,55 @@ export function studioRecovery(request: APIRequestContext, home: string, origin:
     },
   };
 }
+
+async function loopbackPorts() {
+  const servers = [createServer(), createServer()];
+  try {
+    return await Promise.all(servers.map(async (server) => {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (address === null || typeof address === 'string') throw new Error('Expected a loopback TCP port');
+      return address.port;
+    }));
+  } finally {
+    for (const server of servers) server.close();
+  }
+}
+
+export type RecoveryStudio = {
+  origin: string;
+  home: string;
+  stopBackend(): Promise<void>;
+  startBackend(): Promise<void>;
+  serviceLog(): string;
+};
+
+export const recoveryTest = test.extend<{ studio: RecoveryStudio }>({
+  studio: [async ({}, use, info) => {
+    const [webPort, backendPort] = await loopbackPorts();
+    const origin = `http://127.0.0.1:${webPort}`;
+    const suiteHome = String(info.config.metadata.home);
+    const retain = info.config.metadata.retainHome;
+    const home = retain
+      ? join(suiteHome, 'recovery', randomUUID())
+      : join(tmpdir(), `feedbax-studio-recovery-${randomUUID()}`);
+    const recovery = studioRecovery(home, origin, backendPort);
+    const preview = process.env.FEEDBAX_STUDIO_E2E_PREVIEW === '1'
+      ? ['--preview-from', join(suiteHome, 'cache', 'dist')] : [];
+    recovery.start('--port', String(webPort), ...preview, ...(retain ? [] : ['--remove-test-home']));
+    try {
+      await expect.poll(recovery.healthy, { timeout: 35_000 }).toBe(true);
+      await use({ origin, home, ...recovery });
+    } finally {
+      try {
+        await recovery.close();
+      } finally {
+        await info.attach('Studio process log', { body: recovery.serviceLog(), contentType: 'text/plain' });
+      }
+    }
+  }, { timeout: 45_000 }],
+  baseURL: async ({ studio }, use) => {
+    await use(studio.origin);
+  },
+});

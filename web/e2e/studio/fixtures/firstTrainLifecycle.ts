@@ -3,11 +3,11 @@ import type { StudioActivityJob, StudioJobSnapshot, StudioJobSubmission } from '
 import { mapStep, runProjectFixture } from './canonicalTrain';
 import { authorFirstTrain } from './firstTrainAuthoring';
 import { activate, palette, post } from './studioKeyboard';
-import { hostPid, processExists, studioRecovery } from './studioRecovery';
+import { hostPid, processExists, type RecoveryStudio } from './studioRecovery';
 
-export async function authorAndRecoverTrain(page: Page, request: APIRequestContext, info: TestInfo) {
+export async function authorAndRecoverTrain(page: Page, request: APIRequestContext, info: TestInfo, studio: RecoveryStudio) {
   const totalUpdates = 6000;
-  const home = String(info.config.metadata.home);
+  const { home } = studio;
   const authored = await authorFirstTrain(page, request, totalUpdates);
   const { saved, projectPath, plan, savedProject, plantId } = authored;
   const project = saved.project_id;
@@ -86,52 +86,43 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   await activate(page, activity.getByRole('button', { name: 'Close', exact: true }));
   await expect.poll(async () => (await job(resumed))?.status, { timeout: 14_000 }).toBe('running');
 
-  const origin = new URL(page.url()).origin;
-  const recovery = studioRecovery(request, home, origin, Number(info.config.metadata.backendPort));
-  try {
-    await recovery.stopBackend();
-    const footer = page.locator('[data-studio-focus-region="bottom"]');
-    for (const region of [footer, results, page.locator('[data-studio-focus-region="map"]')]) {
-      await expect(region.getByRole('alert').filter({ hasText: 'Service unreachable' })).toBeVisible();
-    }
-    await recovery.startBackend();
-    const retry = footer.locator('button[data-command-id="retry"]');
-    const restored = page.waitForResponse((response) => response.ok() && response.request().method() === 'GET' &&
-      new URL(response.url()).pathname === '/api/jobs');
-    await activate(page, retry);
-    await restored;
-    expect(await hostPid(home)).toBe(binding.host);
-    expect(await job(resumed)).toMatchObject({ status: 'running', request_id: row.request_id });
-
-    process.kill(binding.host, 'SIGKILL');
-    await expect.poll(() => processExists(binding.host)).toBe(false);
-    const replacementHost = await hostPid(home);
-    expect(replacementHost).not.toBe(binding.host);
-    await page.reload();
-    await selectRun();
-    await openRun();
-    await expect(footer.getByRole('alert')).toHaveCount(0);
-    await expect(line(initial).first()).toBeAttached();
-    await expect.poll(() => line(initial).count()).toBeGreaterThanOrEqual(previousLossCount);
-    await expect(line(resumed).first()).toBeAttached({ timeout: 16_000 });
-    await expect.poll(async () => (await job(resumed))?.status, { timeout: 25_000 }).toBe('succeeded');
-    const final = (await plan(current.revision)).rows.find(({ key }) => key.variant === 'base' && key.step === 'train')!;
-    expect(final.attempts.map(({ job_id }) => job_id)).toEqual([initial, resumed]);
-    expect(final.result).toMatchObject({
-      job_id: resumed, request_id: row.request_id,
-      progress: { completed_updates: totalUpdates, total_updates: totalUpdates },
-      receipt: await observe('completed', initial, resumed),
-    });
-    expect(await savedProject()).toMatchObject({ project_id: project, revision: current.revision, project: current.project });
-    await info.attach('first Train checkpoint and restart', {
-      body: JSON.stringify({ initial, resumed, checkpoint, oldHost: binding.host, replacementHost, result: final.result }),
-      contentType: 'application/json',
-    });
-    return { project, projectPath, plantId, stopped: initial, trained: final.result!, closeBackend: recovery.close };
-  } catch (error) {
-    await recovery.close();
-    throw error;
-  } finally {
-    await info.attach('Studio recovery log', { body: recovery.serviceLog(), contentType: 'text/plain' });
+  await studio.stopBackend();
+  const footer = page.locator('[data-studio-focus-region="bottom"]');
+  for (const region of [footer, results, page.locator('[data-studio-focus-region="map"]')]) {
+    await expect(region.getByRole('alert').filter({ hasText: 'Service unreachable' })).toBeVisible();
   }
+  await studio.startBackend();
+  const retry = footer.locator('button[data-command-id="retry"]');
+  const restored = page.waitForResponse((response) => response.ok() && response.request().method() === 'GET' &&
+    new URL(response.url()).pathname === '/api/jobs');
+  await activate(page, retry);
+  await restored;
+  expect(await hostPid(home)).toBe(binding.host);
+  expect(await job(resumed)).toMatchObject({ status: 'running', request_id: row.request_id });
+
+  process.kill(binding.host, 'SIGKILL');
+  await expect.poll(() => processExists(binding.host)).toBe(false);
+  const replacementHost = await hostPid(home);
+  expect(replacementHost).not.toBe(binding.host);
+  await page.reload();
+  await selectRun();
+  await openRun();
+  await expect(footer.getByRole('alert')).toHaveCount(0);
+  await expect(line(initial).first()).toBeAttached();
+  await expect.poll(() => line(initial).count()).toBeGreaterThanOrEqual(previousLossCount);
+  await expect(line(resumed).first()).toBeAttached({ timeout: 16_000 });
+  await expect.poll(async () => (await job(resumed))?.status, { timeout: 25_000 }).toBe('succeeded');
+  const final = (await plan(current.revision)).rows.find(({ key }) => key.variant === 'base' && key.step === 'train')!;
+  expect(final.attempts.map(({ job_id }) => job_id)).toEqual([initial, resumed]);
+  expect(final.result).toMatchObject({
+    job_id: resumed, request_id: row.request_id,
+    progress: { completed_updates: totalUpdates, total_updates: totalUpdates },
+    receipt: await observe('completed', initial, resumed),
+  });
+  expect(await savedProject()).toMatchObject({ project_id: project, revision: current.revision, project: current.project });
+  await info.attach('first Train checkpoint and restart', {
+    body: JSON.stringify({ initial, resumed, checkpoint, oldHost: binding.host, replacementHost, result: final.result }),
+    contentType: 'application/json',
+  });
+  return { home, project, projectPath, plantId, stopped: initial, trained: final.result! };
 }

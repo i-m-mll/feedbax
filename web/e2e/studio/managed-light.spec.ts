@@ -7,6 +7,7 @@ import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
+import { recoveryTest, type RecoveryStudio } from './fixtures/studioRecovery';
 
 test.use({
   trace: 'off',
@@ -18,22 +19,22 @@ const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: t
 
 type WalkthroughContext = { page: Page; request: APIRequestContext };
 
-async function savedLightGate(context: WalkthroughContext, info: TestInfo, paired: boolean) {
-  test.setTimeout(paired ? 190_000 : 130_000);
-  const first = paired ? await test.step('Author, Stop, Resume and recover the first Train', () =>
-    authorAndRecoverTrain(context.page, context.request, info)) : undefined;
-  try {
-    await exerciseSavedResults(context, info, first);
-  } finally {
-    await first?.closeBackend();
-  }
+async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: RecoveryStudio) {
+  test.setTimeout(studio ? 190_000 : 130_000);
+  const start = performance.now();
+  const first = studio ? await test.step('Author, Stop, Resume and recover the first Train', () =>
+    authorAndRecoverTrain(context.page, context.request, info, studio)) : undefined;
+  await exerciseSavedResults(context, info, first);
+  await info.attach('Walkthrough duration', {
+    body: JSON.stringify({ milliseconds: performance.now() - start }), contentType: 'application/json',
+  });
 }
 
 async function exerciseSavedResults({ page, request }: WalkthroughContext, info: TestInfo,
   first?: Awaited<ReturnType<typeof authorAndRecoverTrain>>,
 ) {
   const paired = first !== undefined;
-  const home = String(info.config.metadata.home);
+  const home = first?.home ?? String(info.config.metadata.home);
   const fixture = 'web.e2e.studio.fixtures.managed_light';
   const project: string = first?.project ?? JSON.parse(await runProjectFixture(fixture, 'seed', home, 'managed-light'));
   const scope = paired ? 'base' : 'default';
@@ -417,10 +418,10 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
 }
 
 test('runs and reopens saved figures and Report from a selected Evaluate row', ({ page, request }, info) =>
-  savedLightGate({ page, request }, info, false));
+  savedLightGate({ page, request }, info));
 
-test('walks one saved project through paired results, variants, widened Evaluate and chained Train', ({ page, request }, info) =>
-  savedLightGate({ page, request }, info, true));
+recoveryTest('walks one saved project through paired results, variants, widened Evaluate and chained Train', ({ page, request, studio }, info) =>
+  savedLightGate({ page, request }, info, studio));
 
 test('authors a paired Analyze and shared successors from the primary variant', async ({ page, request }, info) => {
   test.setTimeout(65_000);
