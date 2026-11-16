@@ -80,7 +80,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
     `/api/sessions/${submission.target?.kind === 'session' ? submission.target.session_id : ''}/close`);
   await close.click();
   const confirmation = await closed;
-  expect(confirmation.status(), await confirmation.text()).toBe(204);
+  expect(confirmation.status(), confirmation.statusText()).toBe(204);
   await expect(card).toBeHidden({ timeout: 10_000 });
   expect(await attempts()).toEqual([attempt]);
 });
@@ -188,5 +188,5 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
     return machines.find((machine) => machine.id === session && 'can_close' in machine);
   }, { timeout: 12_000 }).toMatchObject({ can_close: true });
   const closed = await request.post(`/api/sessions/${session}/close`);
-  expect(closed.status(), await closed.text()).toBe(204);
+  expect(closed.status(), closed.statusText()).toBe(204);
 });
