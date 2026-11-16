@@ -46,7 +46,7 @@ def __getattr__(name: str):
         return _authorization(request, expires_at_ms=quote.expires_at_ms, ceiling_microusd=quote.ceiling_microusd)
 
     app = create_app(remote_runs=StudioRemoteRuns(
-        (profile,), (StudioVenue(driver, ENVIRONMENT, jobs, 90),), attest=attest,
+        (profile,), (StudioVenue(driver, ENVIRONMENT, jobs, 90, provider.hourly_microusd),), attest=attest,
     ))
     application = app.router.lifespan_context
 

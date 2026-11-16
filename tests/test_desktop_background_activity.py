@@ -18,6 +18,7 @@ from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.__main__ import _register_stop
 from feedbax.desktop.activity import register_activity
 from feedbax.host import HostClient
+from feedbax.host.protocol import AdmissionItem
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_desktop_project_open import _desktop_clients
@@ -147,15 +148,21 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert stopped["checkpoint"]
         assert control.get(ACTIVITY).json()["count"] == 0
 
-        probe = replace(run_job("stubborn", "import time; time.sleep(40)"), data=stopped["data"])
-        admit(host, "force-probe", probe)
+        def admit_probe(name, source):
+            job = replace(
+                run_job(name, source, project=stopped["project"], request=f"train:{name}"),
+                data=stopped["data"],
+            )
+            host.admit(name, [AdmissionItem(job.id, job)], record={"target": job.data["target"]})
+            return job
+
+        probe = admit_probe("stubborn", "import time; time.sleep(40)")
         wait_until(lambda: job_row(host, probe.id, "running"))
         assert control.post(f"{ACTIVITY}/stop", json={"mode": "force"}).status_code == 200
         wait_until(lambda: job_row(host, probe.id)["outcome"])
         assert job_row(host, probe.id)["stop_mode"] == "force"
 
-        failed_probe = replace(run_job("failed", "raise RuntimeError('failed')"), data=stopped["data"])
-        admit(host, "terminal-probe", failed_probe)
+        failed_probe = admit_probe("failed", "raise RuntimeError('failed')")
         wait_until(lambda: job_row(host, failed_probe.id, "failed"))
         observed = control.get(ACTIVITY, params={"after": terminal["cursor"]}).json()
         while observed["terminal"] is None:
@@ -165,8 +172,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert observed["terminal"]["id"] == failed_probe.id
         assert observed["terminal"]["status"] == "failed"
 
-        stubborn = replace(run_job("quit-escalation", "import time; time.sleep(40)"), data=stopped["data"])
-        admit(host, "quit-escalation", stubborn)
+        stubborn = admit_probe("quit-escalation", "import time; time.sleep(40)")
         wait_until(lambda: job_row(host, stubborn.id, "running"))
         with ThreadPoolExecutor(max_workers=1) as executor:
             quitting = executor.submit(control.post, "/_desktop/stop", json={"disposition": "checkpoint"})

@@ -489,6 +489,7 @@ pub fn cli(args: &[String]) -> Result<()> {
     };
     let answer = match (action.as_str(), rest.as_slice()) {
         ("serve", []) => return release.serve(),
+        ("attest-machine", []) => return crate::authentication::attest_machine(),
         ("register", []) => {
             let _lock = mutation_lock(&release.paths()?, descriptor)?;
             json!({"status": release.register()?})

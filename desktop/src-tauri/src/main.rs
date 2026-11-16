@@ -1,4 +1,5 @@
 mod activity_window;
+mod authentication;
 mod background_activity;
 #[cfg(target_os = "macos")]
 mod native_frame;

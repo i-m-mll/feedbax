@@ -87,6 +87,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
 
     from feedbax.desktop.activity import register_activity
     from feedbax.desktop.preferences import register_preferences
+    from feedbax.desktop.remote_runs import load_remote_runs
     from feedbax.desktop.transport import DesktopTransport
     from feedbax.orchestration.revision import assert_feedbax_revision_exact
     from feedbax.web.app import create_app
@@ -122,7 +123,10 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
             "device": backend,
             "distributions": distributions,
         }
-    app = create_app(desktop_job_root=paths.state / "jobs", desktop_release=release.contents)
+    app = create_app(
+        desktop_job_root=paths.state / "jobs", desktop_release=release.contents,
+        remote_runs=load_remote_runs(paths, release),
+    )
     endpoint = Endpoint.create(studio_socket.getsockname()[1])
     transport = DesktopTransport(app, endpoint)
     class Server(uvicorn.Server):

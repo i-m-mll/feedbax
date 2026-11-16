@@ -36,6 +36,7 @@ class StudioVenue:
     environment: str
     jobs: Callable[[SessionDriver, UUID], SessionJobs]
     authorization_seconds: int
+    quote_rate: Callable[[SessionRequest], int]
 
 
 @dataclass(frozen=True)
@@ -98,7 +99,7 @@ class StudioRemoteRuns:
         profile = self.registry.require_session(body.target)
         venue = self._venues[profile.driver]
         request = self.registry.session_request(profile.id, session_id=uuid4(), environment=venue.environment)
-        rate = venue.driver.provider.hourly_microusd(request)
+        rate = venue.quote_rate(request)
         if rate > 0 and request.maximum_microusd == 0:
             raise JobConflict("This machine has no budget.")
         now = time_ns() // 1_000_000
@@ -140,13 +141,14 @@ class StudioRemoteRuns:
             quote = pending.quote
             if quote.expires_at_ms <= time_ns() // 1_000_000:
                 raise JobConflict("The machine quote has expired.")
-            reviewed = folders.read_plan(project, revision=pending.revision)
+            folders.read_plan(project, revision=pending.revision)
             request = pending.request
             authorization = self._attest(quote.model_copy(deep=True), request.model_copy(deep=True))
             if (authorization.request_digest, authorization.expires_at_ms, authorization.ceiling_microusd) != (
                 request.digest, quote.expires_at_ms, quote.ceiling_microusd,
             ):
                 raise SessionError("Approval differs from the reviewed machine quote.")
+            reviewed = folders.read_plan(project, revision=pending.revision)
             return openings.submit(
                 folders, reviewed, run_keys=pending.keys, request=request, authorization=authorization,
                 hourly_microusd=quote.hourly_microusd,

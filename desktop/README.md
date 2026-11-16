@@ -46,3 +46,9 @@ Studio's Quit command closes the GUI. Its per-user background service continues 
 The application menu has Reconnect, Login Items and Service Logs. A run that finishes or fails can notify you when its project window is in the background. The owner-only control socket is separate from the loopback Studio origin, and the app exchanges a short-lived ticket for the browser session.
 
 Installed files live inside the app bundle. Durable application state lives under `~/.feedbax`, with configuration in `config`, preferences in `settings` and the default workspace under `workspace`. Project-selected output locations retain models, checkpoints and results. `~/.cache/feedbax` contains disposable compilation files, temporary files and bounded service logs. Replacement and uninstall preserve durable state and project data.
+
+## RunPod machines
+
+An installed service with an owner-only `config/desktop-service/runpod.json` loads RunPod profiles at startup. The file uses `schema_id: "feedbax.desktop.runpod.v1"` and contains `profiles` (session target profiles with RunPod resources), `environment` (the RunPod environment declaration), and `authorization_seconds`. Set `snapshot_root` to a sealed Feedbax source tree matching the installed release commit, `runpod_config` to the account's RunPod TOML configuration, and `ssh_identity` to the client SSH identity. Use absolute paths. When the environment specifies a staged `uv_sha256`, supply the matching Linux executable as `uv_binary`.
+
+Studio reads the machine quote before asking for Touch ID. Jobs records the approved saved selection and uses its existing RunPod session and Host admission flow. Keep the configured account, venue snapshot and toolchain available while approved work is outstanding.

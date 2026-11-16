@@ -142,6 +142,11 @@ class RunPodSessionProvider:
         self._check_environment(request)
         return self.acquisition.hourly_microusd(request)
 
+    def review_rate(self, request: SessionRequest) -> int:
+        rate = self.hourly_microusd(request)
+        self.acquisition.review_quote(request)
+        return rate
+
     def _check_environment(self, request: SessionRequest) -> None:
         if self.environment.digest != request.environment:
             raise SessionError("The RunPod session names a different environment declaration.")
