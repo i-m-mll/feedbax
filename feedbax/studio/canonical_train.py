@@ -8,11 +8,12 @@ from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentObjectRef
 from feedbax.contracts.base import StrictModel, canonical_json_bytes
+from feedbax.contracts.effective_success import RequestObject
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
@@ -35,6 +36,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 if TYPE_CHECKING:
     from feedbax.compiler.trial_execution import ResolvedTrialExecution
+    from feedbax.persistence.train_job import TrainJobEntry
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 
@@ -56,11 +58,34 @@ class BoundStudioTrainingJobInput(StudioTrainingJobInput):
     canonical_request: CanonicalTrainRequestBinding
     checkpoint_input: PinnedTrainCheckpoint | None = None
     checkpoint_catalog: tuple[int, ...] = Field(default=(), exclude_if=lambda value: not value)
+    collected_resume: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")
 
     @field_validator("checkpoint_catalog", mode="before")
     @classmethod
     def _validate_catalog(cls, value):
         return finite_coordinates(value) if value else ()
+
+    @model_validator(mode="after")
+    def _one_resume_authority(self) -> BoundStudioTrainingJobInput:
+        if self.collected_resume is not None and (self.resume is not None or self.checkpoint_input is not None):
+            raise ValueError("Collected Train Resume requires the Store job entry as its recovery authority.")
+        return self
+
+
+def read_collected_train_job(launch: BoundStudioTrainingJobInput) -> TrainJobEntry:
+    """Resolve the authenticated recovery entry for this canonical Train launch."""
+    from feedbax.persistence.train_job import read_train_job
+
+    if launch.collected_resume is None:
+        raise ValueError("Train launch does not name a collected attempt.")
+    entry = read_train_job(ImmutableArtifactBlobProvider(launch.manifest_root), launch.collected_resume)
+    if entry.request != RequestObject(
+        id=launch.request_id,
+        object=launch.canonical_request.request,
+        documents=launch.canonical_request.documents,
+    ):
+        raise ValueError("Collected Train request differs from its original binding.")
+    return entry
 
 
 def _decode_train(

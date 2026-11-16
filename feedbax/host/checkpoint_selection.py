@@ -19,10 +19,13 @@ class CheckpointSelection:
     allows_gaps: bool = False
 
 
-def is_checkpoint_producer(launch: dict, *, continues: str | None, manifest_root: str) -> bool:
+def is_checkpoint_producer(
+    launch: dict, *, continues: str | None, manifest_root: str, collected: bool = False,
+) -> bool:
     payload = launch["payload"]
     return (
         continues is None
+        and not collected
         and payload.get("canonical_request") is not None
         and payload.get("manifest_root") == manifest_root
     )

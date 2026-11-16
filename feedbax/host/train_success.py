@@ -27,11 +27,12 @@ from feedbax.host.completion import completion_file
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_content import success_content_objects
+from feedbax.persistence.train_job import TrainJobEntry
 
 
 def publish_train_success(
     store_root: Path, attempt: str, request_id: str, launch: dict, outcome: dict,
-    predecessor: tuple[dict, dict] | None,
+    predecessor: tuple[dict, dict] | None, *, collected: TrainJobEntry | None = None,
 ) -> dict:
     """Use only the accepted completion and the producer pinned at Host delivery."""
     completion = outcome["completion"]
@@ -59,6 +60,10 @@ def publish_train_success(
     model_root = checkpoint_root / relative.parent / "semantic-model"
     resume = launch.get("resume")
     recovery = _occurrence(resume["pointer"]) if resume is not None else None
+    if collected is not None:
+        if collected.request != request or collected.attempt != launch.get("collected_resume"):
+            raise ValueError("Collected Resume differs from its original Train request")
+        recovery = _occurrence(collected.recovery.pointer.model_dump(mode="json"))
     store = ImmutableArtifactBlobProvider(store_root)
     with store._exclusive_lock():
         view = SuccessView(store)
@@ -70,7 +75,8 @@ def publish_train_success(
                 or committed.continuation is None
                 or committed.continuation.provenance != _occurrence(pointer)
                 or committed.recovery != recovery
-                or (predecessor is None) != (not committed.inputs)
+                or (collected is not None and committed.inputs != collected.inputs)
+                or (collected is None and (predecessor is None) != (not committed.inputs))
             ):
                 raise ValueError("Published Train attempt differs from the accepted result")
             if predecessor is not None:
@@ -84,7 +90,7 @@ def publish_train_success(
                 ):
                     raise ValueError("Published Train inputs differ from the delivered checkpoint")
             return existing.model_dump(mode="json")
-        bindings = _train_inputs(view, request, predecessor)
+        bindings = collected.inputs if collected is not None else bind_train_inputs(view, request, predecessor)
         source = ImmutableArtifactBlobProvider(model_root)
         files = {file["path"]: (file["sha256"], file["size_bytes"]) for file in completion["files"]}
         manifest_path = checkpoint_root / relative
@@ -172,7 +178,7 @@ def _check_model_slot(
     return manifest
 
 
-def _train_inputs(view: SuccessView, request: RequestObject, predecessor: tuple[dict, dict] | None) -> Bindings:
+def bind_train_inputs(view: SuccessView, request: RequestObject, predecessor: tuple[dict, dict] | None) -> Bindings:
     decoded = view.read_request(request)
     if not decoded.inputs and predecessor is None:
         return {}

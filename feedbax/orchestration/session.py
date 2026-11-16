@@ -1,0 +1,425 @@
+"""Durable venue acquisition, attachment and owned-resource teardown."""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import hmac
+import secrets
+import sqlite3
+import time
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import closing, contextmanager
+from pathlib import Path
+from typing import Annotated, Literal, Protocol
+from uuid import UUID
+
+from pydantic import ConfigDict, Field, SecretStr
+
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.host.client import HostClient
+from feedbax.host.io import private_directory
+from feedbax.host.protocol import JsonObject, SessionAccess
+
+
+class SessionError(RuntimeError):
+    pass
+
+
+class SessionModel(StrictModel):
+    model_config = ConfigDict(frozen=True)
+
+
+type Nonempty = Annotated[str, Field(min_length=1)]
+type Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+type Positive = Annotated[int, Field(gt=0, strict=True)]
+type Nonnegative = Annotated[int, Field(ge=0, strict=True)]
+
+
+class KeepOpen(SessionModel):
+    kind: Literal["keep-open"] = "keep-open"
+
+
+class CloseWhenIdle(SessionModel):
+    kind: Literal["close-when-idle"] = "close-when-idle"
+    seconds: Positive
+
+
+class SessionRequest(SessionModel):
+    id: UUID
+    target: Nonempty
+    resources: JsonObject
+    environment: Digest
+    lifecycle: Annotated[KeepOpen | CloseWhenIdle, Field(discriminator="kind")]
+    maximum_microusd: Nonnegative
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(
+            canonical_json_v2_bytes(self.model_dump(mode="json"))
+        ).hexdigest()
+
+
+class SessionAuthorization(SessionModel):
+    request_digest: Digest
+    operator: Nonempty
+    method: Nonempty
+    evidence: Nonempty
+    expires_at_ms: Positive
+    ceiling_microusd: Nonnegative
+
+
+class SessionLaunch(SessionModel):
+    request: SessionRequest
+    authorization: SessionAuthorization
+    adoption_sha256: Digest
+    acquired_at_ms: Positive
+    hourly_microusd: Nonnegative
+
+    @property
+    def intent(self) -> str:
+        return f"feedbax-session-{self.request.digest}"
+
+    @property
+    def ends_at_ms(self) -> int:
+        expiry = self.authorization.expires_at_ms
+        if not self.hourly_microusd:
+            return expiry
+        budget_ms = self.request.maximum_microusd * 3_600_000 // self.hourly_microusd
+        return min(expiry, self.acquired_at_ms + budget_ms)
+
+
+class ProviderResource(SessionModel):
+    id: Nonempty
+    intent: str | None
+    kind: Literal["venue", "volume", "secret"]
+
+
+class SessionRealization(SessionModel):
+    launch: SessionLaunch
+    environment: Digest
+    probe: JsonObject
+
+
+class CloseEvidence(SessionModel):
+    checked_at_ms: Positive
+    owned: tuple[ProviderResource, ...]
+    remaining: tuple[ProviderResource, ...]
+
+
+class SessionRecord(SessionModel):
+    launch: SessionLaunch
+    phase: Literal["opening", "open", "closing", "closed"] = "opening"
+    venue: ProviderResource | None = None
+    realization: SessionRealization | None = None
+    epoch: Nonnegative = 0
+    close_evidence: CloseEvidence | None = None
+
+
+class SessionProvider(Protocol):
+    """A provider for one target. The launch intent is the acquisition idempotency key.
+
+    Acquisition must set the intent on creation and reconcile by that key even when
+    the original reply is lost. A used intent cannot create a second venue, even
+    after removal. A bounded provider enforces ends_at_ms for every resource it
+    creates, independently of either process. Realization and close can be
+    retried. Remove must compare the resource identity and intent before acting,
+    and treat an already absent resource as success. Adoption reads realization
+    evidence from venue custody.
+    """
+
+    target: str
+    enforces_cutoff: bool
+    supports_idle_close: bool
+
+    def hourly_microusd(self, request: SessionRequest) -> int: ...
+
+    def inventory(self) -> Sequence[ProviderResource]: ...
+
+    def acquire(self, launch: SessionLaunch) -> ProviderResource: ...
+
+    def realize(
+        self, resource: ProviderResource, launch: SessionLaunch, *,
+        adoption_token: str, controller_token: str,
+    ) -> SessionRealization: ...
+
+    def realization(self, resource: ProviderResource) -> SessionRealization: ...
+
+    def client(self, resource: ProviderResource, access: SessionAccess | None) -> HostClient: ...
+
+    def remove(self, resource: ProviderResource) -> None: ...
+
+
+class _ControllerRecord(SessionModel):
+    session: SessionRecord
+    token: SecretStr
+
+
+def _capability_digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _now_ms() -> int:
+    return time.time_ns() // 1_000_000
+
+
+class SessionDriver:
+    """Own one target's venues. Jobs go through the attached, ordinary Host."""
+
+    def __init__(
+        self, root: Path, provider: SessionProvider, *,
+        verify_authorization: Callable[[SessionAuthorization], None],
+        clock_ms: Callable[[], int] = _now_ms,
+    ):
+        self.root = private_directory(root.resolve())
+        self.provider = provider
+        self._verify_authorization = verify_authorization
+        self._clock_ms = clock_ms
+        with self.connection() as db:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS sessions(
+                    id TEXT PRIMARY KEY, state TEXT NOT NULL, token TEXT NOT NULL
+                )"""
+            )
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        with closing(sqlite3.connect(self.root / "sessions.sqlite3")) as db, db:
+            yield db
+
+    @contextmanager
+    def _exclusive(self, session_id: UUID) -> Iterator[None]:
+        with (self.root / f"{session_id}.lock").open("ab") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+    def _read(self, session_id: UUID) -> _ControllerRecord | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT state, token FROM sessions WHERE id=?", (str(session_id),)
+            ).fetchone()
+        if row is None:
+            return None
+        state, token = row
+        return _ControllerRecord(session=SessionRecord.model_validate_json(state), token=token)
+
+    def _require(self, session_id: UUID) -> _ControllerRecord:
+        control = self._read(session_id)
+        if control is None:
+            raise SessionError(f"Unknown session {session_id}.")
+        return control
+
+    def record(self, session_id: UUID) -> SessionRecord:
+        return self._require(session_id).session
+
+    def _write(self, state: SessionRecord, token: str) -> None:
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO sessions VALUES (?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET state=excluded.state, token=excluded.token""",
+                (str(state.launch.request.id), state.model_dump_json(), token),
+            )
+
+    def _validate(
+        self, request: SessionRequest, authorization: SessionAuthorization, *, require_current: bool = True,
+    ) -> None:
+        if request.target != self.provider.target:
+            raise SessionError(f"Session target {request.target!r} does not match the provider.")
+        if authorization.request_digest != request.digest:
+            raise SessionError("Authorization is bound to a different session request.")
+        if require_current and authorization.expires_at_ms <= self._clock_ms():
+            raise SessionError("Session authorization has expired.")
+        if authorization.ceiling_microusd < request.maximum_microusd:
+            raise SessionError("The requested maximum exceeds the authorized cost ceiling.")
+        self._verify_authorization(authorization)
+
+    def inventory(self) -> tuple[ProviderResource, ...]:
+        return tuple(self.provider.inventory())
+
+    def _find_venue(self, intent: str, inventory: Sequence[ProviderResource]) -> ProviderResource | None:
+        matches = [item for item in inventory if item.kind == "venue" and item.intent == intent]
+        if len(matches) > 1:
+            raise SessionError(f"Provider reports multiple venues for acquisition intent {intent}.")
+        return matches[0] if matches else None
+
+    @staticmethod
+    def _check_realization(launch: SessionLaunch, realized: SessionRealization) -> None:
+        if realized.launch != launch or realized.environment != launch.request.environment or not realized.probe:
+            raise SessionError("Venue realization does not match the authorized session environment.")
+
+    @staticmethod
+    def _check_owner(launch: SessionLaunch, adoption_token: str) -> None:
+        if not hmac.compare_digest(launch.adoption_sha256, _capability_digest(adoption_token)):
+            raise SessionError("The adoption capability does not match the session owner.")
+
+    def open(
+        self, request: SessionRequest, authorization: SessionAuthorization, *, adoption_token: str,
+    ) -> SessionRecord:
+        request = request.model_copy(deep=True)
+        self._validate(request, authorization)
+        if len(adoption_token) < 32:
+            raise SessionError("Session adoption requires a private capability of at least 32 characters.")
+        if isinstance(request.lifecycle, CloseWhenIdle) and not self.provider.supports_idle_close:
+            raise SessionError("The provider cannot enforce close-when-idle on the venue.")
+        if not self.provider.enforces_cutoff:
+            raise SessionError("The provider cannot independently enforce the authorized cutoff.")
+        with self._exclusive(request.id):
+            control = self._read(request.id)
+            if control is None:
+                if self._find_venue(f"feedbax-session-{request.digest}", self.inventory()) is not None:
+                    raise SessionError("This session already has a venue. Adopt it explicitly.")
+                launch = SessionLaunch(
+                    request=request, authorization=authorization, acquired_at_ms=self._clock_ms(),
+                    adoption_sha256=_capability_digest(adoption_token),
+                    hourly_microusd=self.provider.hourly_microusd(request),
+                )
+                state = SessionRecord(launch=launch)
+                token = secrets.token_urlsafe()
+                self._write(state, token)
+            else:
+                state, secret = control.session, control.token
+                token = secret.get_secret_value()
+                if state.launch.request != request or state.launch.authorization != authorization:
+                    raise SessionError("Session ID already belongs to a different request or authorization.")
+                self._check_owner(state.launch, adoption_token)
+                if state.phase != "opening":
+                    return state
+
+            launch = state.launch
+            if self._clock_ms() >= launch.ends_at_ms:
+                raise SessionError("Session has exhausted its authorized time or cost ceiling.")
+            resource = self._find_venue(launch.intent, self.inventory())
+            if state.venue is not None and resource != state.venue:
+                raise SessionError("The recorded venue disappeared or changed identity during opening.")
+            if resource is None:
+                resource = self.provider.acquire(launch)
+            if resource.intent != launch.intent or resource.kind != "venue":
+                raise SessionError("The acquired venue does not carry this session's intent.")
+            state = state.model_copy(update={"venue": resource})
+            self._write(state, token)
+            realized = self.provider.realize(
+                resource, launch, adoption_token=adoption_token, controller_token=token,
+            )
+            self._check_realization(launch, realized)
+            state = state.model_copy(update={"phase": "open", "realization": realized})
+            self._write(state, token)
+            return state
+
+    def attach(self, session_id: UUID) -> HostClient:
+        record = self._require(session_id)
+        state = record.session
+        if state.phase != "open" or state.venue is None:
+            raise SessionError(f"Session {session_id} has no open Host.")
+        access = SessionAccess(str(session_id), state.epoch, record.token.get_secret_value())
+        return self.provider.client(state.venue, access)
+
+    def adopt(
+        self, request: SessionRequest, authorization: SessionAuthorization, *, adoption_token: str,
+    ) -> SessionRecord:
+        self._validate(request, authorization)
+        with self._exclusive(request.id):
+            resource = self._find_venue(f"feedbax-session-{request.digest}", self.inventory())
+            if resource is None:
+                raise SessionError("No venue carries the authorized session's intent.")
+            realized = self.provider.realization(resource)
+            launch = realized.launch
+            if launch.request != request or launch.authorization != authorization:
+                raise SessionError("Venue custody identifies a different request or authorization.")
+            self._check_realization(launch, realized)
+            self._check_owner(launch, adoption_token)
+            if launch.ends_at_ms <= self._clock_ms():
+                raise SessionError("Session has exhausted its authorized time or cost ceiling.")
+            local = self._read(request.id)
+            if local is not None and local.session.phase in ("closing", "closed"):
+                raise SessionError("A closing or closed session cannot be adopted.")
+            host = self.provider.client(resource, None)
+            identity = str(request.id)
+            operator = authorization.operator
+            epoch = host.session_epoch(identity, operator, adoption_token)
+            token = secrets.token_urlsafe()
+            adopted = host.adopt_session(identity, operator, epoch, adoption_token, token)
+            state = SessionRecord(launch=launch, phase="open", venue=resource, realization=realized, epoch=adopted)
+            self._write(state, token)
+            return state
+
+    def recover_close(
+        self, request: SessionRequest, authorization: SessionAuthorization, *, adoption_token: str,
+    ) -> CloseEvidence:
+        """Recover a prior venue close claim after losing the controller journal."""
+        self._validate(request, authorization, require_current=False)
+        with self._exclusive(request.id):
+            local = self._read(request.id)
+            if local is not None:
+                if local.session.launch.request != request or local.session.launch.authorization != authorization:
+                    raise SessionError("The local session belongs to a different request or authorization.")
+                self._check_owner(local.session.launch, adoption_token)
+                if local.session.phase in ("closing", "closed"):
+                    return self._close(local.session, local.token.get_secret_value())
+            resource = self._find_venue(f"feedbax-session-{request.digest}", self.inventory())
+            if resource is None:
+                raise SessionError("No venue remains from which to recover close authority.")
+            realized = self.provider.realization(resource)
+            launch = realized.launch
+            if launch.request != request or launch.authorization != authorization:
+                raise SessionError("Venue custody identifies a different request or authorization.")
+            self._check_realization(launch, realized)
+            self._check_owner(launch, adoption_token)
+            host = self.provider.client(resource, None)
+            claim = host.recover_session_close(str(request.id), authorization.operator, adoption_token)
+            if claim["session_id"] != str(request.id) or claim["operator"] != authorization.operator:
+                raise SessionError("Recovered close authority does not identify this session.")
+            state = SessionRecord(
+                launch=launch, phase="closing", venue=resource, realization=realized, epoch=claim["epoch"],
+            )
+            return self._close(state, "")
+
+    def close(self, session_id: UUID) -> CloseEvidence:
+        with self._exclusive(session_id):
+            control = self._require(session_id)
+            return self._close(control.session, control.token.get_secret_value())
+
+    def _close(self, state: SessionRecord, token: str) -> CloseEvidence:
+        if state.phase == "closed":
+            assert state.close_evidence is not None
+            return state.close_evidence
+        if state.venue is None or state.phase == "opening":
+            raise SessionError("An incomplete opening has no attached Host to authorize closure.")
+
+        session_id = state.launch.request.id
+        resources = self.inventory()
+        owned = tuple(item for item in resources if item.intent == state.launch.intent)
+        previous = state.close_evidence.owned if state.close_evidence is not None else ()
+        known = tuple(dict.fromkeys((*previous, state.venue, *owned)))
+        known_ids = {(item.kind, item.id) for item in known}
+        if state.phase == "open" and not owned:
+            if any((item.kind, item.id) in known_ids for item in resources):
+                raise SessionError(f"Recorded resources remain with a different intent for session {session_id}.")
+            evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=())
+            self._write(state.model_copy(update={"phase": "closed", "close_evidence": evidence}), token)
+            return evidence
+
+        # Acquire an irreversible
+        # venue claim before publishing a retryable local close intent.
+        if state.phase == "open":
+            claim = self.attach(session_id).claim_session_close()
+            if (
+                claim["session_id"] != str(session_id) or claim["epoch"] != state.epoch
+                or claim["operator"] != state.launch.authorization.operator
+            ):
+                raise SessionError("The venue close claim does not identify this controller.")
+        evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=owned)
+        state = state.model_copy(update={"phase": "closing", "close_evidence": evidence})
+        self._write(state, token)
+        for item in sorted(owned, key=lambda item: item.kind == "venue"):
+            self.provider.remove(item)
+        remaining = tuple(
+            item for item in self.inventory()
+            if item.intent == state.launch.intent or (item.kind, item.id) in known_ids
+        )
+        evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=remaining)
+        phase = "closing" if remaining else "closed"
+        self._write(state.model_copy(update={"phase": phase, "close_evidence": evidence}), token)
+        if remaining:
+            raise SessionError(f"Owned resources remain for session {session_id}: {[r.id for r in remaining]}")
+        return evidence

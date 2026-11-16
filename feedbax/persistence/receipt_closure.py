@@ -1,5 +1,7 @@
 """Resolve exact typed Store roots to the objects they require."""
 
+from dataclasses import dataclass
+
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import (
     BoundMember,
@@ -17,6 +19,12 @@ from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
 from feedbax.persistence.receipt_content import ClosureVisitors, continuation_objects, success_content_objects, tree_objects
+
+
+@dataclass(frozen=True)
+class SuccessClosure:
+    receipts: tuple[tuple[ContentObjectRef, Success], ...]
+    objects: tuple[ContentObjectRef, ...]
 
 
 class ReceiptClosure:
@@ -75,6 +83,19 @@ class ReceiptClosure:
         self, closure: StoreClosureRef, *, visitors: ClosureVisitors | None = None,
     ) -> tuple[ContentObjectRef, ...]:
         """Return the closure and optionally visit exact objects and array anchors."""
+        return self._walk(closure, visitors=visitors)
+
+    def for_admission(self, ref: ContentObjectRef) -> SuccessClosure:
+        """Resolve whole receipts for the exact attempt, its inputs and superseded results."""
+        receipts: dict[str, tuple[ContentObjectRef, Success]] = {}
+        closure = StoreClosureRef(roots=(ReceiptRoot(receipt=ref),), include_ancestry=True)
+        objects = self._walk(closure, admitted=receipts)
+        return SuccessClosure(tuple(receipts.values()), objects)
+
+    def _walk(
+        self, closure: StoreClosureRef, *, visitors: ClosureVisitors | None = None,
+        admitted: dict[str, tuple[ContentObjectRef, Success]] | None = None,
+    ) -> tuple[ContentObjectRef, ...]:
         objects: dict[str, ContentObjectRef] = {}
         pending: list[tuple[ReceiptRoot, tuple[DecodedRequest, BoundMember] | None]] = []
         visited: set[tuple[str, str | None, str | None, bytes | None]] = set()
@@ -98,6 +119,14 @@ class ReceiptClosure:
             root, consumer = pending.pop()
             add(root.receipt)
             receipt = self.receipt_at(root.receipt)
+            if admitted is not None and root.receipt.sha256 not in admitted:
+                admitted[root.receipt.sha256] = root.receipt, receipt
+                if root.product is not None:
+                    pending.append((ReceiptRoot(receipt=root.receipt), None))
+                if (prior := receipt.supersedes) is not None:
+                    if prior == root.receipt or self.receipt_at(prior).request.id != receipt.request.id:
+                        raise ValueError("Superseded receipt differs from the authored request")
+                    pending.append((ReceiptRoot(receipt=prior), None))
             if root.product is None:
                 key = root.receipt.sha256, None, None, None
                 products = tuple(
@@ -155,7 +184,10 @@ class ReceiptClosure:
                             pending.append(
                                 (ReceiptRoot(receipt=selection.receipt, product=reference), (decoded, bound))
                             )
-                    elif not isinstance(reference, ContentRef) or selection is not None or bound.descriptor is not None:
+                    elif (
+                        not isinstance(reference, ContentRef) or bound.content != reference
+                        or selection is not None or bound.descriptor is not None
+                    ):
                         raise ValueError(f"Unexpected producer evidence for {role}.{bound.key}")
                     elif closure.include_ancestry:
                         for ref in success_content_objects(self.store, reference):

@@ -17,7 +17,7 @@ from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAM
 from feedbax.compiler.trial_execution import evaluation_conditions
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
-from feedbax.contracts.effective_success import success_content_ref
+from feedbax.contracts.effective_success import RequestObject, read_success_request, success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
@@ -794,7 +794,12 @@ def _evaluation_row(
             placement=success.evaluation_placement if series is not None else None,
             bound_subject=success.bound_subject,
         )
-    status, reason = saved_request_status(attempts, success=success, problem=problem.detail if problem else None)
+    retained = bool(attempts and attempts[-1].collected_evaluate) or (
+        success is not None and success.collected_evaluate
+    )
+    status, reason = saved_request_status(
+        attempts, success=success, problem=problem.detail if problem and not retained else None,
+    )
     displayed_attempt = active_plan_attempt(attempts)
     if displayed_attempt is None and attempts:
         displayed_attempt = success if status is JobStatus.SUCCEEDED else attempts[-1]
@@ -815,7 +820,8 @@ def _train_history(
     successful = {
         request: tuple(
             attempt for attempt in attempts
-            if attempt.successful_receipt is not None and attempt.binding_sha256 is not None
+            if attempt.successful_receipt is not None
+            and (attempt.train_request is not None or attempt.binding_sha256 is not None)
         )
         for request, attempts in jobs.by_request.items()
     }
@@ -903,21 +909,23 @@ def _definition_change(
     attempt: PlanJobAttempt,
 ) -> StudioSavedTrainChange:
     root = settled.store_path
-    relative = training_binding_path(root, attempt.job_id).relative_to(root).as_posix()
     try:
-        with completion_file(root, relative) as (stream, _):
-            raw = stream.read()
-        if sha256(raw).hexdigest() != attempt.binding_sha256:
-            raise ValueError("Previous Train binding changed")
-        launch = BoundStudioTrainingJobInput.model_validate_json(raw)
-        binding = launch.canonical_request
-        if binding is None or (launch.project_id, launch.request_id, launch.manifest_root) != (
-            settled.project_id, previous.request_id, root,
-        ):
-            raise ValueError("Previous Train binding differs from its saved request")
+        request = attempt.train_request
+        if request is None:
+            relative = training_binding_path(root, attempt.job_id).relative_to(root).as_posix()
+            with completion_file(root, relative) as (stream, _):
+                raw = stream.read()
+            if sha256(raw).hexdigest() != attempt.binding_sha256:
+                raise ValueError("Previous Train binding changed")
+            launch = BoundStudioTrainingJobInput.model_validate_json(raw)
+            if (launch.project_id, launch.request_id, launch.manifest_root) != (
+                settled.project_id, previous.request_id, root,
+            ):
+                raise ValueError("Previous Train binding differs from its saved request")
+            binding = launch.canonical_request
+            request = RequestObject(id=launch.request_id, object=binding.request, documents=binding.documents)
         store = ImmutableArtifactBlobProvider(root)
-        docs = {ref.sha256: ref for ref in binding.documents}
-        old = decode_request(store.get_object(binding.request), lambda digest: store.get_object(docs[digest]))
+        old = read_success_request(request, store.get_object)
         if old.id != previous.request_id:
             raise ValueError("Previous Train object has a different request ID")
     except (OSError, ValueError, KeyError):

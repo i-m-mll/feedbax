@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import RequestObject
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.request_refs import BestRank, ContentRef, ProductRef
@@ -268,6 +269,8 @@ class Store:
             if row["outcome"] is not None:
                 return
             outcome = dict(data)
+            outcome.pop("store_success", None)
+            outcome.pop("store_job_entry", None)
             if row["event_error"] and outcome["outcome"] == "succeeded":
                 outcome = {
                     "outcome": "failed",
@@ -300,16 +303,38 @@ class Store:
                     }
             if json.loads(row["launch"])["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                 outcome.pop("products", None)
+            if staged := outcome.pop("stopped_checkpoints", None):
+                if outcome["outcome"] != "stopped" or not self._is_managed_launch(row, "feedbax.training_host_worker:main"):
+                    raise ValueError("Only a managed Train checkpoint stop may publish a job entry")
+                try:
+                    ref = self._publish_stopped_train(row, outcome, staged)
+                    outcome["store_job_entry"] = ref.model_dump(mode="json")
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    if isinstance(error, OSError) and error.errno in {
+                        errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EBUSY, errno.EINTR,
+                    }:
+                        raise StorePublicationPending(str(error)) from error
+                    outcome["store_publication_error"] = {"code": "publication_failed", "message": str(error)}
             self.finished(row, outcome)
             return
         self.append(row, kind, data)
 
     def _publish_train_result(self, row: sqlite3.Row, outcome: dict) -> dict:
         from feedbax.host.train_success import publish_train_success
+        from feedbax.persistence.train_job import read_train_job
 
         payload = json.loads(row["launch"])["payload"]
-        binding = payload["canonical_request"]
+        root = Path(payload["manifest_root"])
         self._check_completion_identity(row, outcome)
+        collected = read_train_job(self._success_view(root).store, payload["collected_resume"]) if payload.get("collected_resume") else None
+        predecessor = self._train_predecessor(row, payload) if collected is None else None
+        ref = publish_train_success(
+            root, row["id"], row["request"], payload, outcome, predecessor, collected=collected,
+        )
+        return outcome | {"store_success": ref}
+
+    def _train_predecessor(self, row: sqlite3.Row, payload: dict) -> tuple[dict, dict] | None:
+        binding = payload["canonical_request"]
         predecessor = None
         if binding.get("checkpoint") is not None:
             (edge,) = self.completion_bindings(row["id"])
@@ -321,10 +346,163 @@ class Store:
             if prior["completion"] != pinned:
                 raise ValueError("Pinned Train predecessor differs from its accepted completion")
             predecessor = pinned, prior
-        ref = publish_train_success(
-            Path(payload["manifest_root"]), row["id"], row["request"], payload, outcome, predecessor,
+        return predecessor
+
+    def _publish_stopped_train(
+        self, row: sqlite3.Row, outcome: dict, staged: dict,
+    ) -> ContentObjectRef:
+        from pydantic import TypeAdapter
+
+        from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+        from feedbax.host.train_success import bind_train_inputs
+        from feedbax.persistence.train_job import TrainJobCheckpoint, TrainJobEntry, publish_train_job, read_train_job
+
+        payload = json.loads(row["launch"])["payload"]
+        binding = payload["canonical_request"]
+        view = self._success_view(payload["manifest_root"])
+        request = RequestObject.model_validate({
+            "id": row["request"], "object": binding["request"], "documents": binding["documents"],
+        })
+        stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
+        ref = ContentObjectRef.model_validate(staged)
+        checkpoints = TypeAdapter(tuple[TrainJobCheckpoint, ...]).validate_json(view.store.get_object(ref))
+        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_training_batches:
+            raise ValueError("Train Stop differs from its staged recovery publication")
+        accepted = {
+            PublishedTrainingCheckpoint.model_validate(data["checkpoint"]).pointer.transaction_id: data["checkpoint"]
+            for (raw,) in self.db.execute("SELECT data FROM events WHERE job=? AND kind='publication'", (row["id"],))
+            if (data := json.loads(raw)).get("checkpoint") is not None
+        }
+        if {item.pointer.transaction_id for item in checkpoints} != accepted.keys() or any(
+            PublishedTrainingCheckpoint.model_validate(accepted[item.pointer.transaction_id]).pointer != item.pointer
+            for item in checkpoints
+        ):
+            raise ValueError("Train staged progress differs from its Host publications")
+        if source := payload.get("collected_resume"):
+            original = read_train_job(view.store, source)
+            if original.request != request:
+                raise ValueError("Collected Resume differs from its original Train request")
+            inputs = original.inputs
+        else:
+            inputs = bind_train_inputs(view, request, self._train_predecessor(row, payload))
+        return publish_train_job(view.store, TrainJobEntry(
+            attempt=row["id"], request=request, inputs=inputs, checkpoints=checkpoints,
+        ))
+
+    def mirror_collected_train(
+        self, job: dict, state: str, receipt: dict | None, progress: dict | None, delivery: int,
+    ) -> None:
+        """Acknowledge terminal Train custody only after it is committed to this Host."""
+        from feedbax.persistence.train_job import read_train_job
+
+        self._validate_job(job)
+        payload = job["launch"]["payload"]
+        data = job["data"]
+        root = payload["manifest_root"]
+        if (
+            state not in {"succeeded", "stopped"} or not TRAIN_REQUEST_ID.fullmatch(job["request"])
+            or type(delivery) is not int or delivery < 1 or job["edges"] or job["slot"] != "compute"
+            or job["launch"]["warm_entrypoint"] != "feedbax.training_host_worker:main"
+            or (payload["project_id"], payload["request_id"], root)
+            != (job["project"], job["request"], data.get("manifest_root"))
+            or data.get("collected_train") is not True
+        ):
+            raise HostError("invalid_request", "Collected Train differs from its terminal attempt.")
+        request = RequestObject.model_validate({
+            "id": job["request"], "object": payload["canonical_request"]["request"],
+            "documents": payload["canonical_request"]["documents"],
+        })
+        view = self._success_view(root)
+        checkpoint = None
+        outcome: dict = {"outcome": state}
+        if state == "succeeded":
+            ref = ContentObjectRef.model_validate(receipt)
+            if view.attempt_ref(job["id"]) != ref or view.read_owned_success(ref).receipt.request != request:
+                raise HostError("invalid_request", "Collected Train success differs from its admitted Store receipt.")
+            outcome.update(store_success=receipt, receipt={"manifest_id": job["id"], "manifest_sha256": ref.sha256})
+        else:
+            ref = ContentObjectRef.model_validate(receipt) if receipt is not None else None
+            entry = read_train_job(view.store, job["id"], expected=ref)
+            if entry.request != request:
+                raise HostError("invalid_request", "Collected Train Stop differs from its stored binding.")
+            if ref is not None:
+                outcome["store_job_entry"] = ref.model_dump(mode="json")
+            checkpoint = {"completed_updates": entry.recovery.pointer.completed_training_batches}
+        self._mirror_collected_terminal(job, state, outcome, progress, checkpoint, delivery)
+
+    def mirror_collected_evaluate(
+        self, job: dict, receipt: dict, progress: dict | None, delivery: int,
+    ) -> None:
+        """Record the terminal attempt only after its exact Store receipt is admitted locally."""
+        from feedbax.studio.canonical_evaluate import (
+            BoundEvaluationJobInput, decode_rollout_request, evaluation_manifest_id,
         )
-        return outcome | {"store_success": ref}
+
+        self._validate_job(job)
+        payload = BoundEvaluationJobInput.model_validate(job["launch"]["payload"])
+        root = str(payload.manifest_root)
+        if (
+            not job["request"].startswith("evaluate:") or type(delivery) is not int or delivery < 1
+            or job["continues"] is not None or job["edges"] or job["slot"] != "compute"
+            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+            or (payload.project_id, payload.request_id, root)
+            != (job["project"], job["request"], job["data"].get("manifest_root"))
+            or job["data"].get("collected_evaluate") is not True
+        ):
+            raise HostError("invalid_request", "Collected Evaluate differs from its terminal attempt.")
+        ref = ContentObjectRef.model_validate(receipt)
+        view = self._success_view(root)
+        if view.attempt_ref(job["id"]) != ref:
+            raise HostError("invalid_request", "Collected Evaluate differs from its admitted Store receipt.")
+        success = view.read_owned_success(ref).receipt
+        manifest = success.evaluation_manifest
+        if (
+            success.attempt != job["id"] or success.request.id != job["request"]
+            or success.request.object != payload.canonical_request.request or manifest is None
+        ):
+            raise HostError("invalid_request", "Collected Evaluate differs from its admitted Store receipt.")
+        _, _, subject = decode_rollout_request(job["request"], view.store.get_object(success.request.object))
+        if subject != payload.canonical_request.checkpoint:
+            raise HostError("invalid_request", "Collected Evaluate changed its canonical subject.")
+        outcome = {
+            "outcome": "succeeded",
+            "store_success": receipt,
+            "receipt": {"manifest_id": evaluation_manifest_id(job["id"]), "manifest_sha256": manifest.sha256},
+        }
+        self._mirror_collected_terminal(job, "succeeded", outcome, progress, None, delivery)
+
+    def _mirror_collected_terminal(
+        self, job: dict, state: str, outcome: dict, progress: dict | None, checkpoint: dict | None, delivery: int,
+    ) -> None:
+        data = job["data"]
+        with self.db:
+            if (previous := self.get(job["id"])) is not None:
+                if (
+                    previous["project"], previous["request"], previous["continues"], previous["state"],
+                    json.loads(previous["outcome"] or "null"),
+                    json.loads(previous["data"]), json.loads(previous["launch"]),
+                    json.loads(previous["progress"] or "null"), json.loads(previous["checkpoint"] or "null"),
+                    previous["delivery"],
+                ) != (
+                    job["project"], job["request"], job["continues"], state, outcome,
+                    data, job["launch"], progress, checkpoint, delivery,
+                ):
+                    raise HostError("job_id_conflict", "Collected attempt conflicts with the existing job.")
+                return
+            if job["continues"] is not None:
+                previous = self.get(job["continues"])
+                if previous is None or (previous["project"], previous["request"]) != (job["project"], job["request"]):
+                    raise HostError("invalid_resume", "Collect the exact continued Train attempt first.")
+            self.db.execute(
+                """INSERT INTO jobs(id, project, request, launch, slot, continues, data,
+                   state, progress, checkpoint, outcome, delivery) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (job["id"], job["project"], job["request"], dump(job["launch"]), "compute", job["continues"], dump(data),
+                 state, dump(progress) if progress is not None else None,
+                 dump(checkpoint) if checkpoint is not None else None, dump(outcome), delivery),
+            )
+            recorded = self.get(job["id"])
+            assert recorded is not None
+            self.append(recorded, "terminal", outcome)
 
     def _is_managed_launch(self, row: sqlite3.Row, entrypoint: str) -> bool:
         launch = json.loads(row["launch"])
@@ -368,7 +546,7 @@ class Store:
             or not root.is_absolute() or root.resolve() != root
         ):
             raise ValueError("Light launch differs from its admitted project, Store or request.")
-        decoded = Store._light_success_view(root).read_request(request)
+        decoded = Store._success_view(root).read_request(request)
         if decoded.kind not in ("analyze", "render", "report"):
             raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
         inputs = [member.reference for members in decoded.inputs.values() for member in members]
@@ -393,7 +571,7 @@ class Store:
         return rows
 
     @staticmethod
-    def _light_success_view(root: str | Path):
+    def _success_view(root: str | Path):
         from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
         from feedbax.persistence.effective_success import SuccessView
 
@@ -421,7 +599,7 @@ class Store:
                 "SELECT parent FROM edges WHERE job=? ORDER BY parent", (row["id"],)
             ))
             sources = self._light_parents(row["project"], root, expected, parents)
-            view = self._light_success_view(root)
+            view = self._success_view(root)
             return {source["request"]: self._light_receipt(view, source) for source in sources}
         except (ValueError, TypeError, KeyError, OSError) as error:
             raise CompletionFileError(str(error)) from error
@@ -693,7 +871,7 @@ class Store:
             raise HostError("invalid_request", "Reused result differs from its admitted run.")
         if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
             try:
-                self._light_receipt(self._light_success_view(root), row)
+                self._light_receipt(self._success_view(root), row)
             except (ValueError, TypeError, KeyError, OSError) as error:
                 raise HostError("admission_changed", str(error)) from error
         self._require_admission_current(row, cursor)
@@ -797,6 +975,7 @@ class Store:
                 or not TRAIN_REQUEST_ID.fullmatch(parent["request"])
                 or not is_checkpoint_producer(
                     json.loads(parent["launch"]), continues=parent["continues"], manifest_root=root,
+                    collected=json.loads(parent["data"]).get("collected_train", False),
                 )
             ):
                 raise HostError("invalid_request", f"{path}: Best candidate edge differs from its canonical input.")
@@ -806,6 +985,10 @@ class Store:
 
     def _bind_edges(self, job: dict, aliases: dict[str, str]) -> None:
         job_id, continues = job["id"], job["continues"]
+        payload = job["launch"]["payload"]
+        collected = payload.get("collected_resume")
+        if collected is not None and (collected != continues or job["launch"]["warm_entrypoint"] != "feedbax.training_host_worker:main"):
+            raise HostError("invalid_resume", "Collected recovery must name the continued Train attempt.")
         if continues is not None:
             source = self.get(continues)
             if (
@@ -819,12 +1002,22 @@ class Store:
             self.db.execute("UPDATE jobs SET continues=? WHERE id=?", (continues, job_id))
             if "run_key" in job["data"]:
                 self.append(source, "continued", {})
-            self.db.execute(
-                """INSERT INTO edges(job, parent, publication, satisfied, authenticated_completion, binding)
-                   SELECT ?, parent, publication, satisfied, authenticated_completion, binding
-                   FROM edges WHERE job=? AND authenticated_completion""",
-                (job_id, continues),
-            )
+            if collected is not None:
+                from feedbax.persistence.train_job import read_train_job
+
+                try:
+                    recovery = read_train_job(self._success_view(payload["manifest_root"]).store, collected)
+                    if recovery.request.id != job["request"]:
+                        raise ValueError("Collected recovery differs from the original Train request")
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    raise HostError("invalid_resume", str(error)) from error
+            else:
+                self.db.execute(
+                    """INSERT INTO edges(job, parent, publication, satisfied, authenticated_completion, binding)
+                       SELECT ?, parent, publication, satisfied, authenticated_completion, binding
+                       FROM edges WHERE job=? AND authenticated_completion""",
+                    (job_id, continues),
+                )
         if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
             payload = job["launch"]["payload"]
             try:
@@ -1084,10 +1277,13 @@ class Store:
             return None
         anchors = [
             row["id"] for row in self.db.execute(
-                "SELECT id, launch FROM jobs WHERE project=? AND request=? AND continues IS NULL",
+                "SELECT id, launch, data FROM jobs WHERE project=? AND request=? AND continues IS NULL",
                 (project, job["request"]),
             )
-            if is_checkpoint_producer(json.loads(row["launch"]), continues=None, manifest_root=manifest_root)
+            if is_checkpoint_producer(
+                json.loads(row["launch"]), continues=None, manifest_root=manifest_root,
+                collected=json.loads(row["data"]).get("collected_train", False),
+            )
         ]
         if len(anchors) != 1:
             return None
