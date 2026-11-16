@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import secrets
-import shutil
 import signal
 import sqlite3
 import subprocess
@@ -22,6 +21,7 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.execution_target import SessionTargetProfile
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, project_declaration_name
 from feedbax.contracts.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.jobs import JobService
@@ -37,7 +37,7 @@ from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, evidence, verify_authorization
-from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
+from tests.test_canonical_evaluate_admission import managed_evaluation_definition
 from tests import test_local_job_host
 
 
@@ -81,7 +81,7 @@ def _jobs(client):
     return JobService(client, new_application_registry_bundle())
 
 
-def _controller(root: Path, provider_root: Path, venue: Path, gate: Path, session_id):
+def _controller(root: Path, provider_root: Path, projects: Path, gate: Path, session_id):
     """Run one real delegation, lose the reply, then exit the controller process."""
     def make_jobs(client):
         call = client._call
@@ -103,7 +103,7 @@ def _controller(root: Path, provider_root: Path, venue: Path, gate: Path, sessio
         return service
 
     session = SessionJobs(_driver(root, LocalVenueProvider(provider_root)), session_id, make_jobs)
-    folders = ProjectFolderService(venue / "projects")
+    folders = ProjectFolderService(projects)
     reviewed = folders.read_plan(PROJECT, revision=None)
     try:
         session.delegate(folders, reviewed, run_keys=(TRAIN, EVALUATE), token=TOKEN)
@@ -161,12 +161,18 @@ def test_session_rehearses_saved_train_and_evaluate_after_controller_exit(host_f
         other = ProviderResource(id="other-session", intent="feedbax-session-" + "f" * 64, kind="venue")
         provider._write_resource(other)
 
-        folders = ProjectFolderService(venue / "projects")
-        _save_project(folders, PROJECT, Project.model_validate(managed_evaluation_definition()))
-        local_folders = ProjectFolderService(tmp_path / "projects")
-        shutil.copytree(folders.root / PROJECT, local_folders.root / PROJECT)
-        local_plan = local_folders.read_plan(PROJECT, revision=None)
-        source = ImmutableArtifactBlobProvider(folders.read_plan(PROJECT, revision=None).store_path)
+        folders = ProjectFolderService(tmp_path / "projects")
+        project_root = folders.root / PROJECT
+        authored = Project.model_validate(managed_evaluation_definition())
+        configuration = ProjectConfiguration(project=PROJECT, store=str(venue / "results"))
+        for name, data in dump_text_project(authored, configuration).items():
+            path = project_root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        local_plan = folders.read_plan(PROJECT, revision=None)
+        project_id = local_plan.project_id
+        destination_store = tmp_path / "collected-results"
+        source = ImmutableArtifactBlobProvider(local_plan.store_path)
 
         gate = tmp_path / "gate"
         gate.mkdir()
@@ -194,7 +200,7 @@ executor.execute_managed_training_run = execute
         )
         process = subprocess.run(
             [sys.executable, "-m", __name__, str(controller_root), str(provider_root),
-             str(venue), str(gate), str(request.id)],
+             str(folders.root), str(gate), str(request.id)],
             capture_output=True, text=True, timeout=22,
         )
         assert process.returncode == 0, process.stdout + process.stderr
@@ -217,7 +223,7 @@ executor.execute_managed_training_run = execute
         with TestClient(create_app(projects_dir=folders.root, targets=registry, submit_session=submit_session)) as client:
             machines = client.get("/api/orchestration/targets").json()
             assert machines["targets"][1]["availability"]["state"] == "off"
-            response = client.post(f"/api/projects/{PROJECT}/train-runs", json={
+            response = client.post(f"/api/projects/{project_id}/train-runs", json={
                 "revision": local_plan.revision, "run_keys": [asdict(TRAIN), asdict(EVALUATE)],
                 "token": TOKEN, "target": profile.id,
             })
@@ -226,6 +232,7 @@ executor.execute_managed_training_run = execute
             reconnected.host, new_application_registry_bundle(), targets=registry, submit_session=submit_session,
         ).submit_plan(folders, local_plan, run_keys=(TRAIN, EVALUATE), token=TOKEN, target=profile.id)
         assert {item.job_id for item in submission.items} == {train_id, evaluation_id}
+        assert submission.project_id == project_id
         assert submission.target == state.placement
         assert state.placement.realization.placement == {"device": "cpu"}
         assert len(reconnected.host.jobs()) == 2
@@ -254,12 +261,13 @@ executor.execute_managed_training_run = execute
         assert edge["binding"]["terminal"]["receipt"] == receipts[train_id].model_dump(mode="json")
         request_ids = {run.key: run.request_id for run in local_plan.plan.runs}
         assert {row["request"] for row in attempts} == {request_ids[TRAIN], request_ids[EVALUATE]}
+        assert all(row["project"] == project_id for row in attempts)
         assert all(row["data"]["target"] == state.placement.model_dump(mode="json") for row in attempts)
         assert all(SuccessView(source).read_receipt(ref).target == state.placement for ref in receipts.values())
         local_jobs = _jobs(host_fixture)
 
         def collect(attempt):
-            result = local_jobs.collect_session_attempt(source, attempt, project=PROJECT, store=local_plan.store_path)
+            result = local_jobs.collect_session_attempt(source, attempt, project=project_id, store=destination_store)
             assert result.activity.target == state.placement
             return CollectedAttempt(result.activity.job_id, result.evidence_sha256)
 
@@ -315,13 +323,18 @@ executor.execute_managed_training_run = execute
         assert set(provider.inventory()) == {other, foreign}
         assert not venue.exists()
 
-        destination = ImmutableArtifactBlobProvider(local_plan.store_path)
+        destination = ImmutableArtifactBlobProvider(destination_store)
         assert {key: destination.get_object(ref) for key, ref in receipts.items()} == original
-        plan = ProjectPlanService(local_folders, local_jobs).read(PROJECT, revision=local_plan.revision)
+        declaration = project_declaration_name(PROJECT)
+        local_configuration = configuration.model_copy(update={"store": str(destination_store)})
+        (project_root / declaration).write_bytes(dump_text_project(authored, local_configuration)[declaration])
+        collected_plan = folders.read_plan(project_id, revision=None)
+        assert {run.key: run.request_id for run in collected_plan.plan.runs} == request_ids
+        plan = ProjectPlanService(folders, local_jobs).read(project_id, revision=collected_plan.revision)
         (observed,) = plan.attempts_by_run[EVALUATE]
         assert observed.job_id == evaluation_id
         assert observed.checkpoint_source.job_id == train_id
-        result = local_jobs.read_evaluation_result(project=PROJECT, store=local_plan.store_path, job_id=evaluation_id)
+        result = local_jobs.read_evaluation_result(project=project_id, store=destination_store, job_id=evaluation_id)
         with result.open_states(verify=True) as recorded:
             assert recorded.descriptor.dimensions["checkpoint"] == 1
             assert recorded.descriptor.dimensions["trial"] > 0

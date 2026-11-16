@@ -268,7 +268,8 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
         target.write_bytes(data)
     approved = local_folders.read_plan(PROJECT, revision=None)
     assert approved.store_path == local_store
-    approved_files = local_folders.read_authored_snapshot(PROJECT, revision=approved.revision).files
+    project_id = approved.project_id
+    approved_files = local_folders.read_authored_snapshot(project_id, revision=approved.revision).files
 
     opened = driver.open(request, authorization, adoption_token=adoption)
     assert fake.boot_armed.is_file()
@@ -294,7 +295,7 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     assert not lost_reply.exists()
     changed_file = next(name for name in approved_files if name.endswith(".json"))
     (project_root / changed_file).write_bytes(approved_files[changed_file] + b"\n")
-    assert local_folders.read_plan(PROJECT, revision=None).revision != approved.revision
+    assert local_folders.read_plan(project_id, revision=None).revision != approved.revision
     gate.touch()
     rows = wait_until(lambda: _terminal_without_rpc(venue / "host" / "host.sqlite"), timeout=33)
     assert [row[1] for row in rows] == ["succeeded", "succeeded"], rows
@@ -306,8 +307,9 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
         local_folders, approved, run_keys=(TRAIN, EVALUATE), token="saved-chain",
     )
     assert all(item.disposition == "admitted" for item in submitted.items), submitted.items
+    assert submitted.project_id == project_id
     assert submitted.target == opened.placement and submitted.target.profile == profile.id
-    saved = venue / "projects" / approved.revision / PROJECT
+    saved = venue / "projects" / approved.revision / project_id
     assert {name: (saved / name).read_bytes() for name in approved_files} == approved_files
     first = session.poll(limit=1)
     second = reconnected.poll(limit=1)
@@ -318,16 +320,18 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     train_id, evaluate_id = (item.job_id for item in submitted.items)
     venue_rows = reconnected.host.jobs_snapshot(include_launch=True)["jobs"]
     assert len(venue_rows) == 2
+    assert all(row["project"] == project_id for row in venue_rows)
     assert all(attempt_target(row["data"]["target"]) == opened.placement for row in venue_rows)
     assert all(row["launch"]["argv"] == [opened.realization.probe["python"]] for row in venue_rows)
-    assert all(row["data"]["manifest_root"] == str(venue / "stores" / PROJECT) for row in venue_rows)
+    venue_store_path = venue / "stores" / project_id
+    assert all(row["data"]["manifest_root"] == str(venue_store_path) for row in venue_rows)
     train_row, evaluate_row = venue_rows
     (edge,) = evaluate_row["edges"]
     assert edge["job_id"] == train_id and edge["authenticated_completion"]
     assert edge["binding"]["terminal"]["receipt"] == train_row["outcome"]["store_success"]
 
     original = []
-    venue_store = ImmutableArtifactBlobProvider(venue / "stores" / PROJECT)
+    venue_store = ImmutableArtifactBlobProvider(venue_store_path)
     for row in venue_rows:
         ref = ContentObjectRef.model_validate(row["outcome"]["store_success"])
         original.append((ref, venue_store.get_object(ref)))
@@ -365,7 +369,7 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     subject = recorded.inputs["subject"][0].evaluation_subject
     assert subject.terminal_receipt == original[0][0]
     assert subject.terminal_checkpoint.run_id == train_id
-    result = local_jobs.read_evaluation_result(project=PROJECT, store=local_store, job_id=evaluate_id)
+    result = local_jobs.read_evaluation_result(project=project_id, store=local_store, job_id=evaluate_id)
     with result.open_states(verify=True) as states:
         assert states.descriptor.dimensions["checkpoint"] == 1
 
