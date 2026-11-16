@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test';
 import type {
   AnalysisDocument, ReportDocument, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainKey, StudioSavedTrainRuns,
@@ -29,6 +29,17 @@ function traceSamples(encoded: PlotSamples) {
   const width = encoded.dtype === 'f4' ? 4 : 8;
   return Array.from({ length: data.length / width }, (_, index) =>
     width === 4 ? data.readFloatLE(index * width) : data.readDoubleLE(index * width));
+}
+
+async function expectSeparateVelocityLines(figure: Locator) {
+  await expect.poll(() => figure.locator('g.scatterlayer g.lines path.js-line').evaluateAll((lines) => {
+    const visible = lines.filter((line) => {
+      const style = getComputedStyle(line);
+      const bounds = line.getBoundingClientRect();
+      return style.stroke !== 'none' && Number(style.strokeOpacity) > 0 && bounds.width > 0 && bounds.height > 0;
+    });
+    return { count: visible.length, shapes: new Set(visible.map((line) => line.getAttribute('d'))).size };
+  })).toEqual({ count: 2, shapes: 2 });
 }
 
 async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: RecoveryStudio) {
@@ -324,7 +335,9 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     await expect(frame).toHaveAttribute('src', url);
     const rendered = frame.contentFrame();
     await expect(rendered.getByText('Velocity', { exact: true })).toBeVisible();
-    await expect(rendered.locator('[data-report-source] svg.main-svg').first()).toBeVisible();
+    const reportFigure = rendered.locator('[data-report-source] svg.main-svg').first();
+    await expect(reportFigure).toBeVisible();
+    if (paired) await expectSeparateVelocityLines(reportFigure);
   }
   async function showFigure() {
     await activate(page, mapStep(page, 'analyze'));
@@ -332,7 +345,9 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
   }
   async function drawnFigure(name: 'Current Result' | 'Previous Result') {
-    await expect(figures.getByRole('region', { name, exact: true }).locator('svg.main-svg').first()).toBeVisible();
+    const plot = figures.getByRole('region', { name, exact: true }).locator('svg.main-svg').first();
+    await expect(plot).toBeVisible();
+    if (paired) await expectSeparateVelocityLines(plot);
   }
 
   const createdJobs = await runSaved();
@@ -383,6 +398,18 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
     const samples = traces.map(({ name, x, y }) => ({ name, x: traceSamples(x), y: traceSamples(y) }));
     expect(new Set(samples.map(({ name }) => name)).size).toBe(2);
     expect(samples).toEqual(retained.figure_samples);
+    const [nominal, heavy] = samples;
+    expect(nominal.x).toHaveLength(13);
+    expect(nominal.x).toEqual(heavy.x);
+    for (const [index, time] of nominal.x.entries()) {
+      expect(nominal.y[index]).toBeCloseTo(time * Math.SQRT1_2, 6);
+      expect(heavy.y[index]).toBeCloseTo(time * Math.SQRT1_2 / 2, 6);
+    }
+    expect(heavy.y.at(-1)!).toBeGreaterThan(0.04);
+    expect(nominal.y.at(-1)! - heavy.y.at(-1)!).toBeGreaterThan(0.04);
+    await info.attach('Nominal and Heavy velocity', {
+      body: JSON.stringify({ Nominal: nominal, Heavy: heavy }), contentType: 'application/json',
+    });
     const html = await request.get(renderedReport.products.report);
     expect(html.ok(), await html.text()).toBe(true);
     const member = /figures\/[a-f0-9]{64}\.json/.exec(await html.text())?.[0];

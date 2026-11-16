@@ -8,7 +8,8 @@ import { hostPid, processExists, type RecoveryStudio } from './studioRecovery';
 export async function authorAndRecoverTrain(page: Page, request: APIRequestContext, info: TestInfo, studio: RecoveryStudio) {
   const totalUpdates = 6000;
   const { home } = studio;
-  const authored = await authorFirstTrain(page, request, totalUpdates);
+  // Softmax keeps the total force at one along the diagonal reach, regardless of training.
+  const authored = await authorFirstTrain(page, request, totalUpdates, { targetY: 0.22, activation: 'softmax' });
   const { saved, projectPath, plan, savedProject, plantId } = authored;
   const project = saved.project_id;
   const witness = { module: 'web.e2e.studio.fixtures.managed_lifecycle', home };
