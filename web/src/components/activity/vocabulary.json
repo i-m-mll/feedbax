@@ -418,6 +418,7 @@
     "rankedMember": "Rank {rank}",
     "groupedRank": "{group} · {rank}",
     "boundRankedMember": "Rank {rank} · {producer}",
+    "runAcquisitionFailure": "Acquiring: {reason}",
     "trainedValue": "Trained by {step}",
     "evaluateChangedValue": "Changed by {step}",
     "ofCount": "{count} of {total}",

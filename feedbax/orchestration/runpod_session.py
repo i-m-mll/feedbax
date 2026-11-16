@@ -159,6 +159,9 @@ class RunPodSessionProvider:
     def machine_observation(self, resource: ProviderResource) -> ProviderMachineObservation:
         return self.acquisition.machine_observation(resource)
 
+    def check_opening_deadline(self, launch: SessionLaunch) -> None:
+        self.acquisition.check_opening_deadline(launch)
+
     def acquire(self, launch: SessionLaunch) -> ProviderResource:
         self._check_environment(launch.request)
         self._check_uv_binary()

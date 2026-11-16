@@ -120,12 +120,18 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
     const sourceStep = stepSources.get(row.key.step);
     const producer = sourceStep && bound && sourceRows.get(savedRunId({ ...bound, step: sourceStep }));
     const change = training?.change;
+    const rejectedCreate = row.status === 'failed' && row.opening_step === 'acquiring' && (
+      row.reason?.startsWith('RunPod HTTP ') || row.reason?.startsWith('RunPod did not confirm creation.')
+    );
+    const [summary, ...openingErrors] = rejectedCreate ? (row.reason ?? '').split('\n') : [];
     const reason = change && row.status === 'stale'
       ? [row.reason, `${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`].filter(Boolean).join(' ')
+      : rejectedCreate ? studioFormat('runAcquisitionFailure', { reason: summary })
       : row.opening_step ? [studioOpeningStep(row.opening_step), row.reason].filter(Boolean).join(' · ')
       : row.reason ?? undefined;
     addRun(row.key.step, {
       id, values, label: producer?.label ?? row.label, status: row.status, reason, variant: row.key.variant,
+      openingErrors: openingErrors.length ? openingErrors : undefined,
       progress: training?.attempts.at(-1)?.progress ?? undefined,
       collectionProgress: row.collection_progress ?? undefined,
       sizeBytes: evaluations.get(id)?.result?.size_bytes,

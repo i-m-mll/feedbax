@@ -176,6 +176,7 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
   const single = selected.length === 1;
   const counts = new Map<PlanRunView["status"], number>();
   const reasons = new Set<string>();
+  const openingErrors = new Set(selected.flatMap((run) => run.openingErrors ?? []));
   for (const run of selected) {
     counts.set(run.status, (counts.get(run.status) ?? 0) + 1);
     if (run.reason) reasons.add(run.reason);
@@ -190,6 +191,9 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
     </ul>
     {single && detail ? detail : reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
       {[...reasons].map((reason) => <li key={reason}>{studioReason("observed", reason)}</li>)}
+    </ul>}
+    {openingErrors.size > 0 && <ul className="space-y-1 font-mono text-xs text-shell-muted">
+      {[...openingErrors].map((line) => <li key={line}>{line}</li>)}
     </ul>}
   </section>;
 }

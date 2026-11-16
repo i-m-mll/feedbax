@@ -93,6 +93,7 @@ class StudioRemoteRuns:
         self._lock = Lock()
         self._observations: dict[UUID, _VenueObservation] = {}
         self._opening_errors: dict[UUID, str] = {}
+        self._reconciled_openings: set[str] = set()
         self._awaiting_ack: set[UUID] = set()
         self._visible_openings: tuple[ApprovedRunVisibility, ...] = ()
         self._unreachable: dict[str, _ProviderOutage] = {}
@@ -345,6 +346,13 @@ class StudioRemoteRuns:
         """Advance the durable Jobs observations even with no Studio window open."""
         visible_openings = []
         for target, venue in self._venues.items():
+            if target not in self._reconciled_openings:
+                try:
+                    venue.driver.reconcile_unconfirmed_creates()
+                except (OSError, SessionError) as error:
+                    log.debug("Could not reconcile earlier %s acquisitions: %s", target, error)
+                else:
+                    self._reconciled_openings.add(target)
             openings = self._openings[target]
             records = {entry.launch.request.id: entry for entry in venue.driver.records()}
             visible_openings.extend(openings.visibility(records))

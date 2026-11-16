@@ -39,6 +39,10 @@ class SessionOpeningFailed(SessionError):
     """An opening stopped and requires reconciling its owned resources."""
 
 
+class SessionOpeningUnconfirmed(SessionOpeningFailed):
+    """The create may have succeeded without a confirmed resource identity."""
+
+
 class SessionOpeningRejected(SessionError):
     """The driver rejected the request before it could acquire a venue."""
 
@@ -127,6 +131,7 @@ class CloseEvidence(SessionModel):
     checked_at_ms: Positive
     owned: tuple[ProviderResource, ...]
     remaining: tuple[ProviderResource, ...]
+    note: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class SessionRecord(SessionModel):
@@ -138,6 +143,7 @@ class SessionRecord(SessionModel):
     close_evidence: CloseEvidence | None = None
     opening_observations: tuple[OpeningObservation, ...] = Field(default=(), exclude_if=lambda values: not values)
     opening_failure: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    unconfirmed_create: bool = Field(default=False, exclude_if=lambda value: not value)
 
     @property
     def placement(self) -> SessionTarget:
@@ -178,6 +184,10 @@ class SessionProvider(Protocol):
     def inventory(self) -> Sequence[ProviderResource]: ...
 
     def machine_observation(self, resource: ProviderResource) -> ProviderMachineObservation: ...
+
+    def check_opening_deadline(self, launch: SessionLaunch) -> None:
+        """Check an opening bound owned by the provider before querying inventory."""
+        ...
 
     def acquire(self, launch: SessionLaunch) -> ProviderResource: ...
 
@@ -374,11 +384,16 @@ class SessionDriver:
                     self._write(state, token)
 
             try:
-                if self._clock_ms() >= launch.ends_at_ms:
-                    raise SessionOpeningFailed("The machine reached its time or cost limit while opening.")
+                if state.opening_failure is not None:
+                    raise SessionOpeningFailed(state.opening_failure)
                 if state.venue is None:
                     report_opening("acquiring")
+                    self.provider.check_opening_deadline(launch)
+                if self._clock_ms() >= launch.ends_at_ms:
+                    raise SessionOpeningFailed("The machine reached its time or cost limit while opening.")
                 resource = self._find_venue(launch.intent, self.inventory())
+                if state.venue is None:
+                    self.provider.check_opening_deadline(launch)
                 if state.venue is not None and resource != state.venue:
                     raise SessionOpeningFailed("The machine disappeared or changed identity while opening.")
                 if resource is None:
@@ -393,6 +408,8 @@ class SessionDriver:
                 )
             except SessionOpeningFailed as error:
                 state = state.model_copy(update={"opening_failure": str(error)})
+                if isinstance(error, SessionOpeningUnconfirmed):
+                    state = state.model_copy(update={"phase": "closing", "unconfirmed_create": True})
                 self._write(state, token)
                 try:
                     self._close(state, token)
@@ -427,6 +444,9 @@ class SessionDriver:
     ) -> SessionRecord:
         self._validate(request, authorization)
         with self._exclusive(request.id):
+            existing = self._read(request.id)
+            if existing is not None and existing.session.opening_failure is not None:
+                raise SessionError("This failed opening can only reconcile and close its resources.")
             resource = self._find_venue(f"feedbax-session-{request.digest}", self.inventory())
             if resource is None:
                 raise SessionError("No venue carries the authorized session's intent.")
@@ -487,6 +507,25 @@ class SessionDriver:
             control = self._require(session_id)
             return self._close(control.session, control.token.get_secret_value())
 
+    def reconcile_unconfirmed_creates(self) -> None:
+        """Check expired acquisition intents for late resources on controller startup."""
+        records = [
+            record for record in self.records()
+            if record.unconfirmed_create and record.launch.ends_at_ms <= self._clock_ms()
+        ]
+        if not records:
+            return
+        intents = {resource.intent for resource in self.inventory()}
+        for record in records:
+            if record.launch.intent not in intents and record.phase == "closed":
+                continue
+            session_id = record.launch.request.id
+            with self._exclusive(session_id):
+                control = self._require(session_id)
+                closing = control.session.model_copy(update={"phase": "closing"})
+                self._write(closing, control.token.get_secret_value())
+                self._close(closing, control.token.get_secret_value())
+
     def _close(self, state: SessionRecord, token: str) -> CloseEvidence:
         if state.phase == "closed":
             assert state.close_evidence is not None
@@ -501,14 +540,17 @@ class SessionDriver:
         known = tuple(dict.fromkeys((*previous, *venues, *owned)))
         known_ids = {(item.kind, item.id) for item in known}
         claimed: tuple[ProviderResource, ...] = ()
-        if state.phase != "closing":
-            if any(
-                (item.kind, item.id) in known_ids and item.intent != state.launch.intent for item in resources
-            ) or (current_venue is not None and current_venue != recorded):
-                raise SessionError(f"Provider custody changed for session {session_id}.")
+        if any(
+            (item.kind, item.id) in known_ids and item.intent != state.launch.intent for item in resources
+        ) or (current_venue is not None and current_venue != recorded):
+            raise SessionError(f"Provider custody changed for session {session_id}.")
+        end_reached = self._clock_ms() >= state.launch.ends_at_ms
+        recheck_unconfirmed = state.unconfirmed_create and (current_venue is not None or end_reached and recorded is None)
+        if state.phase != "closing" or recheck_unconfirmed:
             unopened = (
                 self.provider.claim_opening_close(current_venue, state.launch)
-                if state.phase == "opening" and (current_venue is not None or recorded is None)
+                if (state.phase == "opening" or state.unconfirmed_create)
+                and (current_venue is not None or recorded is None)
                 else None
             )
             if unopened is not None:
@@ -532,15 +574,23 @@ class SessionDriver:
         evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=removable)
         state = state.model_copy(update={"phase": "closing", "venue": recorded, "close_evidence": evidence})
         self._write(state, token)
+        waiting_for_end = state.unconfirmed_create and not end_reached
         for item in sorted(removable, key=lambda item: item.kind != "venue"):
-            self.provider.remove(item)
+            if not waiting_for_end or item.kind == "venue":
+                self.provider.remove(item)
         remaining = tuple(
             item for item in self.inventory()
             if item.intent == state.launch.intent or (item.kind, item.id) in known_ids
         )
-        evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=remaining)
-        phase = "closing" if remaining else "closed"
+        phase = "closing" if remaining or waiting_for_end else "closed"
+        note = (
+            "Create unresolved. Exact-name listing was empty through the approved end time."
+            if state.unconfirmed_create and phase == "closed" and recorded is None else None
+        )
+        evidence = CloseEvidence(checked_at_ms=self._clock_ms(), owned=known, remaining=remaining, note=note)
         self._write(state.model_copy(update={"phase": phase, "close_evidence": evidence}), token)
+        if waiting_for_end:
+            raise SessionError("Unconfirmed RunPod create remains in cleanup through the approved end time.")
         if remaining:
             raise SessionError(f"Owned resources remain for session {session_id}: {[r.id for r in remaining]}")
         return evidence

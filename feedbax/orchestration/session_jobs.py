@@ -292,7 +292,10 @@ class ApprovedSessionRuns:
                 if submission is not None:
                     return self._finish_refused_submission(session_id, submission)
                 if close_reason or record.phase in ("closing", "closed"):
-                    self._close(session_id, close_reason or "The machine closed before the approved runs could be confirmed.")
+                    self._close(
+                        session_id, close_reason or record.opening_failure
+                        or "The machine closed before the approved runs could be confirmed.",
+                    )
                 if launch.ends_at_ms <= self.driver._clock_ms():
                     if record.phase == "open":
                         try:
@@ -306,7 +309,10 @@ class ApprovedSessionRuns:
                         else:
                             if recovered is not None:
                                 return self._complete(session, session_id, recovered)
-                    self._close(session_id, "The machine reached its deadline before the approved runs could be confirmed.")
+                    self._close(
+                        session_id, record.opening_failure
+                        or "The machine reached its deadline before the approved runs could be confirmed.",
+                    )
             try:
                 opened = self.driver.open(
                     approval.request, approval.authorization, adoption_token=adoption_token,

@@ -8,6 +8,7 @@ import hashlib
 import re
 import tempfile
 import time
+import unicodedata
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ from feedbax.orchestration.runpod import (
 )
 from feedbax.orchestration.session import (
     Nonempty, Positive, ProviderMachineObservation, ProviderResource, ProviderUnreachable, SessionError, SessionLaunch, SessionModel,
-    SessionOpeningFailed, SessionRequest,
+    SessionOpeningFailed, SessionOpeningUnconfirmed, SessionRequest,
 )
 
 
@@ -42,7 +43,7 @@ _INTENT = re.compile(r"feedbax-session-[0-9a-f]{64}")
 _RESOURCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _PODS = "/v2/pods"
 _SECRETS = "/v2/account/secrets"
-_CREATE_REJECTIONS = frozenset({400, 401, 403, 409, 413, 422, 429})
+_CREATE_REJECTIONS = frozenset({400, 401, 402, 403, 404, 409, 413, 422, 429})
 _BOOT_KEY = "FEEDBAX_BOOT_SSH_KEY"
 _BOOT_COMMAND = """set +x
 set -euo pipefail
@@ -129,9 +130,48 @@ class _Intent(SessionModel):
     opening_aborted: bool = False
 
 
+class _CreateRejection(SessionModel):
+    call: Literal["boot-secret", "pod"]
+    status: int
+    title: str
+    detail: str
+    errors: tuple[str, ...]
+
+    def opening_failure(self) -> SessionOpeningFailed:
+        action = " creating the boot secret" if self.call == "boot-secret" else ""
+        summary = f"RunPod HTTP {self.status}{action}: {self.detail or self.title or 'Request rejected'}"
+        return SessionOpeningFailed("\n".join((summary, *self.errors)))
+
+
+def _create_rejection(
+    reply: RunPodApiReply, call: Literal["boot-secret", "pod"], *secrets: str,
+) -> _CreateRejection | None:
+    problem = reply.body or {}
+    title, detail, errors = problem.get("title"), problem.get("detail"), problem.get("errors", [])
+    if (
+        reply.status not in _CREATE_REJECTIONS or reply.media_type != "application/problem+json"
+        or type(problem.get("status")) is not int or problem["status"] != reply.status
+        or not isinstance(title, str) or not isinstance(detail, str) or "id" in problem
+        or not isinstance(errors, list) or any(not isinstance(error, str) for error in errors)
+    ):
+        return None
+
+    def scrub(value: str) -> str:
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "[redacted]").replace(quote(secret, safe=""), "[redacted]")
+        return "".join(" " if unicodedata.category(char).startswith("C") else char for char in value)[:500].strip()
+
+    return _CreateRejection(
+        call=call, status=reply.status, title=scrub(title), detail=scrub(detail),
+        errors=tuple(line for error in errors[:8] if (line := scrub(error))),
+    )
+
+
 class _SecretRequested(_Intent):
     state: Literal["secret-requested"] = "secret-requested"
     secret_id: Nonempty | None = None
+    rejection: _CreateRejection | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class _PodRequested(_Intent):
@@ -416,9 +456,9 @@ class RunPodAcquisition:
                 write_json(path, state.model_dump(mode="json"))
                 reply = self._api("POST", _SECRETS, body={**_secret_metadata(launch.intent), "value": private},
                                   timeout_seconds=self._before_cutoff(launch))
-                if reply.status in _CREATE_REJECTIONS - {409}:
-                    write_json(path, state.model_copy(update={"opening_aborted": True}).model_dump(mode="json"))
-                    raise SessionOpeningFailed(f"RunPod rejected boot secret creation (HTTP {reply.status}).")
+                if rejection := _create_rejection(reply, "boot-secret", self._api_key.get_secret_value(), private):
+                    write_json(path, state.model_copy(update={"rejection": rejection}).model_dump(mode="json"))
+                    raise rejection.opening_failure()
                 if reply.status != 201 or reply.body is None:
                     raise SessionError("RunPod boot secret creation remains unresolved for this intent.")
                 secret = _secret_resource(reply.body)
@@ -427,6 +467,8 @@ class RunPodAcquisition:
             else:
                 if state.launch != launch:
                     raise SessionError("RunPod journal is bound to a different session launch.")
+                if isinstance(state, _SecretRequested) and state.rejection is not None:
+                    raise state.rejection.opening_failure()
                 if state.opening_aborted:
                     raise SessionOpeningFailed("RunPod opening was already closed.")
                 if isinstance(state, _PodRequested):
@@ -451,17 +493,41 @@ class RunPodAcquisition:
             self._before_cutoff(launch)
             write_json(path, submitted.model_dump(mode="json"))
             reply = self._api("POST", _PODS, body=pod_body, timeout_seconds=self._before_cutoff(launch))
-            if reply.status in _CREATE_REJECTIONS:
-                write_json(path, state.model_copy(update={"opening_aborted": True}).model_dump(mode="json"))
-                raise SessionOpeningFailed(f"RunPod rejected pod creation (HTTP {reply.status}).")
+            if rejection := _create_rejection(reply, "pod", self._api_key.get_secret_value()):
+                write_json(path, state.model_copy(update={"rejection": rejection}).model_dump(mode="json"))
+                raise rejection.opening_failure()
             if reply.status != 201 or reply.body is None:
-                raise SessionError("RunPod pod creation remains unresolved for this intent.")
+                raise SessionError(f"RunPod pod creation remains unresolved for this intent (HTTP {reply.status}).")
             pod_id = _identity(reply.body.get("id"))
             write_json(path, submitted.model_copy(update={"pod_id": pod_id}).model_dump(mode="json"))
             return ProviderResource(id=pod_id, intent=launch.intent, kind="venue")
 
+    def _check_pending_pod_deadline(self, state: _PodRequested) -> None:
+        if state.pod_id is not None:
+            return
+        config = RunPodResources.model_validate(state.launch.request.resources)
+        startup_deadline = min(
+            state.startup_deadline_ms or state.launch.acquired_at_ms + 1000 * config.startup_seconds,
+            state.launch.ends_at_ms,
+        )
+        if startup_deadline <= _epoch_ms():
+            raise SessionOpeningUnconfirmed("RunPod did not confirm creation.")
+
+    def check_opening_deadline(self, launch: SessionLaunch) -> None:
+        with self._exclusive(launch.intent) as path:
+            try:
+                state = _Journal.validate_json(path.read_bytes())
+            except FileNotFoundError:
+                return
+            if state.launch != launch:
+                raise SessionError("RunPod journal is bound to a different session launch.")
+            if isinstance(state, _PodRequested):
+                self._check_pending_pod_deadline(state)
+
     def _reconcile_pod(self, state: _PodRequested, path: Path) -> ProviderResource:
+        self._check_pending_pod_deadline(state)
         matches = [row for row in self._venues() if row.intent == state.launch.intent]
+        self._check_pending_pod_deadline(state)
         if len(matches) != 1 or (state.pod_id is not None and matches[0].id != state.pod_id):
             raise SessionError("RunPod pod creation remains unresolved for this intent.")
         resource = matches[0]
@@ -547,29 +613,37 @@ class RunPodAcquisition:
             if isinstance(state, _PodRequested):
                 if state.completion_requested is not False:
                     return None
-                if resource is None:
-                    if state.pod_id is None:
+                secret = ProviderResource(id=state.secret_id, intent=launch.intent, kind="secret")
+                if resource is None and state.pod_id is None:
+                    if _epoch_ms() < launch.ends_at_ms:
                         return None
-                    resource = ProviderResource(id=state.pod_id, intent=launch.intent, kind="venue")
-                if (
-                    resource.intent != launch.intent or resource.kind != "venue"
-                    or (state.pod_id is not None and resource.id != state.pod_id)
-                ):
-                    raise SessionError("RunPod opening close requires the exact venue identity.")
-                resources = (resource, ProviderResource(id=state.secret_id, intent=launch.intent, kind="secret"))
+                    resources = (secret,)
+                else:
+                    if resource is None:
+                        assert state.pod_id is not None
+                        resource = ProviderResource(id=state.pod_id, intent=launch.intent, kind="venue")
+                    if (
+                        resource.intent != launch.intent or resource.kind != "venue"
+                        or (state.pod_id is not None and resource.id != state.pod_id)
+                    ):
+                        raise SessionError("RunPod opening close requires the exact venue identity.")
+                    resources = (resource, secret)
             else:
                 if resource is not None:
                     raise SessionError("RunPod observed a venue without a local pod submission.")
                 secret_id = state.secret_id
-                if secret_id is None and not state.opening_aborted:
+                if secret_id is None and not state.opening_aborted and state.rejection is None:
                     secret_id = self._secret(launch.intent).id
                     state = state.model_copy(update={"secret_id": secret_id})
                 resources = (
                     (ProviderResource(id=secret_id, intent=launch.intent, kind="secret"),)
                     if secret_id is not None else ()
                 )
-            if not state.opening_aborted:
-                write_json(path, state.model_copy(update={"opening_aborted": True}).model_dump(mode="json"))
+            closed = state.model_copy(update={"opening_aborted": True})
+            if isinstance(state, _PodRequested) and state.pod_id is None and resource is not None:
+                closed = closed.model_copy(update={"pod_id": resource.id})
+            if closed != state:
+                write_json(path, closed.model_dump(mode="json"))
             return resources
 
     @staticmethod

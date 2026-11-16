@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -163,7 +165,7 @@ def test_runpod_recovers_exactly_one_create_or_leaves_it_unresolved(tmp_path, pa
     assert fake.requests.count(("POST", "/v2/pods")) == 1
 
 
-@pytest.mark.parametrize("failure", ["deadline", "read-deadline", "rejected", "ambiguous"])
+@pytest.mark.parametrize("failure", ["deadline", "read-deadline", 400, 402, 404, 422, 429, "ambiguous"])
 def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, monkeypatch, failure):
     resources = runpod_resources()
     fake = FakeRunPod(resources)
@@ -189,8 +191,13 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
             monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
             raise httpx.ReadTimeout("SSH readiness poll timed out", request=request)
         if (request.method, request.url.path) == ("POST", "/v2/pods"):
-            if failure == "rejected":
-                return httpx.Response(422)
+            if isinstance(failure, int):
+                return httpx.Response(failure, json={
+                    "status": failure,
+                    "title": "Request rejected",
+                    "detail": "entrypoint exceeded its allowed length for fixture-api-key",
+                    "errors": ["Schema error: custom error text", *[f"field {i}" for i in range(9)]],
+                }, headers={"Content-Type": "application/problem+json"})
             if failure == "ambiguous":
                 raise httpx.ReadTimeout("lost create response", request=request)
             response = fake.handle(request)
@@ -204,12 +211,24 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
     acquisition = _provider(tmp_path, fail, cutoff)
     provider = RunPodSessionProvider(acquisition, environment, snapshot)
     driver = SessionDriver(tmp_path / "driver", provider, verify_authorization=lambda _: None)
-    expected = {"deadline": "SSH readiness exceeded", "read-deadline": "SSH readiness exceeded",
-                "rejected": "rejected pod creation", "ambiguous": "transport failed"}
-    with pytest.raises(SessionError, match=expected[failure]):
+    expected = f"RunPod HTTP {failure}" if isinstance(failure, int) else {
+        "deadline": "SSH readiness exceeded", "read-deadline": "SSH readiness exceeded",
+        "ambiguous": "transport failed",
+    }[failure]
+    with pytest.raises(SessionError, match=expected):
         driver.open(launch.request, launch.authorization, adoption_token="x" * 32)
     session = driver.record(launch.request.id)
     assert set(fake.pods) == {"other"}
+    if isinstance(failure, int):
+        record_path = tmp_path / "acquisition records" / f"{launch.intent}.json"
+        assert json.loads(record_path.read_text())["rejection"] == {
+            "call": "pod", "status": failure, "title": "Request rejected",
+            "detail": "entrypoint exceeded its allowed length for [redacted]",
+            "errors": ["Schema error: custom error text", *[f"field {i}" for i in range(7)]],
+        }
+        assert session.opening_failure is not None
+        assert session.opening_failure.splitlines()[1] == "Schema error: custom error text"
+        assert "fixture-api-key" not in session.opening_failure
     if failure == "ambiguous":
         assert session.phase == "opening" and set(fake.secrets) == {fake.secret_id}
         with pytest.raises(SessionError, match="no reconciled venue identity"):
@@ -218,6 +237,119 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
     else:
         assert session.phase == "closed" and not fake.secrets
         assert session.close_evidence is not None and not session.close_evidence.remaining
+
+
+def test_runpod_redacts_actual_boot_secret_and_keeps_unfamiliar_provider_vocabulary(tmp_path, monkeypatch):
+    resources = runpod_resources()
+    fake = FakeRunPod(resources)
+    launch = _launch(resources)
+    private_key = "private/input=="
+    monkeypatch.setattr(runpod_session_provider, "_fresh_boot_host_key", lambda: (private_key, "ssh-ed25519 YWJj"))
+
+    def reject(request):
+        if (request.method, request.url.path) == ("POST", "/v2/account/secrets"):
+            assert json.loads(request.content)["value"] == private_key
+            return httpx.Response(422, json={
+                "status": 422, "title": "Unexpected credential field",
+                "detail": f"Unknown FieldName\u202e\n{private_key} {quote(private_key, safe='')} fixture-api-key",
+                "errors": ["arbitrary vocabulary" + "x" * 700],
+            }, headers={"Content-Type": "application/problem+json"})
+        return fake.handle(request)
+
+    provider = _provider(tmp_path, reject, FakeRunPodCutoff(("/usr/bin/true",)))
+    with pytest.raises(SessionError, match=r"Unknown FieldName\s+\[redacted\]") as error:
+        provider.acquire(launch)
+    journal = (tmp_path / "acquisition records" / f"{launch.intent}.json").read_text()
+    rejection = json.loads(journal)["rejection"]
+    assert rejection["call"] == "boot-secret"
+    assert "Unexpected credential field" in rejection["title"]
+    assert len(rejection["errors"][0]) == 500
+    for record in (journal, str(error.value)):
+        for secret in (private_key, quote(private_key, safe=""), "fixture-api-key", "\u202e"):
+            assert secret not in record
+    assert ("POST", "/v2/pods") not in fake.requests
+
+
+@pytest.mark.parametrize("late", ["never", "before-end", "after-end", "inventory-unavailable"])
+def test_unconfirmed_create_fails_at_startup_but_preserves_cleanup_until_end(tmp_path, monkeypatch, late):
+    resources = runpod_resources()
+    fake = FakeRunPod(resources)
+    fake.pods["other"] = {"id": "other", "name": "foreign"}
+    cutoff = FakeRunPodCutoff(("/usr/bin/true",))
+    snapshot = RepoSnapshotRecord(
+        commit="a" * 40, dirty=False, content_sha256="b" * 64, source_state_sha256="c" * 64, file_count=0,
+    )
+    environment = RunPodEnvironment(
+        workspace=str(tmp_path), bootstrap_python="/usr/bin/python3", uv="/usr/bin/uv",
+        uv_version="1.2.3", snapshot=snapshot, backend="gpu",
+    )
+    launch = _launch(resources, environment=environment.digest)
+    now = launch.acquired_at_ms
+    monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: now)
+    captured = []
+    unavailable = False
+
+    def handle(request):
+        if (request.method, request.url.path) == ("POST", "/v2/pods"):
+            assert not captured
+            captured.append(request.content)
+            # A 400 outside the documented error envelope is still unresolved.
+            return httpx.Response(400, json={"error": "bad gateway"})
+        if unavailable and (request.method, request.url.path) == ("GET", "/v2/pods"):
+            raise httpx.ConnectError("inventory outage", request=request)
+        return fake.handle(request)
+
+    def driver():
+        api = _provider(tmp_path, handle, cutoff)
+        provider = RunPodSessionProvider(api, environment, SealedRepoSnapshot("fixture", tmp_path, tmp_path, snapshot))
+        return SessionDriver(tmp_path / "driver", provider, verify_authorization=lambda _: None, clock_ms=lambda: now)
+
+    def open_session(service):
+        return service.open(launch.request, launch.authorization, adoption_token="x" * 32)
+
+    def publish_late():
+        request = httpx.Request("POST", "https://api.runpod.io/v2/pods", content=captured[0])
+        fake.handle(request)
+
+    with pytest.raises(SessionError, match="remains unresolved"):
+        open_session(driver())
+    with pytest.raises(SessionError, match="remains unresolved"):
+        open_session(driver())
+    assert set(fake.secrets) == {fake.secret_id}
+    now += resources.startup_seconds * 1000
+    unavailable = late == "inventory-unavailable"
+    with pytest.raises(SessionError, match="did not confirm creation"):
+        open_session(driver())
+    record = driver().record(launch.request.id)
+    assert record.phase == "closing" and record.unconfirmed_create
+    assert record.opening_failure == "RunPod did not confirm creation."
+    assert set(fake.secrets) == {fake.secret_id}
+    assert set(fake.pods) == {"other"}
+    with pytest.raises(SessionError, match="can only reconcile and close"):
+        driver().adopt(launch.request, launch.authorization, adoption_token="x" * 32)
+    if late == "before-end":
+        publish_late()
+        with pytest.raises(SessionError, match="approved end time"):
+            driver().close(launch.request.id)
+        assert set(fake.pods) == {"other"} and set(fake.secrets) == {fake.secret_id}
+
+    now = record.launch.ends_at_ms
+    if unavailable:
+        with pytest.raises(ProviderUnreachable):
+            driver().close(launch.request.id)
+        assert driver().record(launch.request.id).phase == "closing"
+        assert set(fake.secrets) == {fake.secret_id}
+        unavailable = False
+    closed = driver().close(launch.request.id)
+    assert driver().record(launch.request.id).phase == "closed"
+    assert bool(closed.note) == (late != "before-end")
+    assert set(fake.pods) == {"other"} and not fake.secrets
+    if late == "after-end":
+        publish_late()
+        driver().reconcile_unconfirmed_creates()
+        assert set(fake.pods) == {"other"}
+        assert driver().record(launch.request.id).close_evidence.note is None
+    assert len(captured) == 1
 
 
 def test_runpod_waits_for_direct_ssh_on_the_same_running_pod(tmp_path, monkeypatch):
