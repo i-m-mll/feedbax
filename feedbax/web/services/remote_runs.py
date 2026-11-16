@@ -6,13 +6,12 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 import logging
 from pathlib import Path
-from secrets import token_urlsafe
 from threading import Lock
 from time import time_ns
 from uuid import UUID, uuid4
 
 from feedbax.contracts.execution_target import (
-    LOCAL_TARGET_ID, CloseWhenIdle, ExecutionTargets, SessionTarget, SessionTargetProfile,
+    LOCAL_TARGET_ID, CloseWhenIdle, ExecutionTargets, SessionTargetProfile,
     TargetRunKind,
 )
 from feedbax.contracts.jobs import (
@@ -23,7 +22,7 @@ from feedbax.contracts.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.orchestration.session import SessionAuthorization, SessionDriver, SessionError, SessionRecord, SessionRequest
-from feedbax.orchestration.session_jobs import SessionJobs
+from feedbax.orchestration.session_jobs import ApprovedRunClosed, ApprovedSessionRuns, SessionJobs
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.project_folder import ProjectFolder, SettledProjectPlan
 
@@ -39,18 +38,14 @@ class StudioVenue:
     authorization_seconds: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class _PendingRun:
     quote: StudioMachineQuote
     project: str
     revision: str
     keys: tuple[RunKey, ...]
     request: SessionRequest
-    venue: StudioVenue
-    adoption: str = field(default_factory=token_urlsafe)
     lock: Lock = field(default_factory=Lock)
-    authorization: SessionAuthorization | None = None
-    result: StudioJobSubmission | None = None
 
 
 @dataclass(frozen=True)
@@ -75,10 +70,12 @@ class StudioRemoteRuns:
         self.registry = TargetRegistry(profiles, (venue.driver.provider for venue in venues))
         self._labels = {profile.id: profile.label for profile in profiles}
         self._venues = {venue.driver.provider.target: venue for venue in venues}
+        self._openings = {target: ApprovedSessionRuns(venue.driver, venue.jobs) for target, venue in self._venues.items()}
         self._attest = attest
         self._quotes: dict[UUID, _PendingRun] = {}
         self._lock = Lock()
         self._observations: dict[UUID, _VenueObservation] = {}
+        self._opening_errors: dict[UUID, str] = {}
         self._version = 0
 
     def catalog(self, kinds: Sequence[TargetRunKind]) -> ExecutionTargets:
@@ -122,46 +119,38 @@ class StudioRemoteRuns:
                 for key, run, data in zip(body.run_keys, selected, values, strict=True)
             ],
         )
-        pending = _PendingRun(quote, reviewed.project_id, reviewed.revision, keys, request, venue)
+        pending = _PendingRun(quote, reviewed.project_id, reviewed.revision, keys, request)
         with self._lock:
             self._quotes = {key: item for key, item in self._quotes.items() if item.quote.expires_at_ms > now}
             self._quotes[quote.id] = pending
         return quote
 
     def approve(self, folders: ProjectFolder, project: str, quote_id: UUID) -> StudioJobSubmission:
+        for openings in self._openings.values():
+            if result := openings.resume(folders, quote_id, project=project):
+                return result
         with self._lock:
             pending = self._quotes.get(quote_id)
         if pending is None or pending.project != project:
             raise JobConflict("Review the machine quote again.")
         with pending.lock:
-            if pending.result is not None:
-                return pending.result
+            openings = self._openings[pending.request.target]
+            if result := openings.resume(folders, quote_id, project=project):
+                return result
             quote = pending.quote
             if quote.expires_at_ms <= time_ns() // 1_000_000:
                 raise JobConflict("The machine quote has expired.")
-            folders.read_plan(project, revision=pending.revision)
-            request = pending.request
-            if pending.authorization is None:
-                authorization = self._attest(quote.model_copy(deep=True), request.model_copy(deep=True))
-                if (authorization.request_digest, authorization.expires_at_ms, authorization.ceiling_microusd) != (
-                    request.digest, quote.expires_at_ms, quote.ceiling_microusd,
-                ):
-                    raise SessionError("Approval differs from the reviewed machine quote.")
-                pending.authorization = authorization
             reviewed = folders.read_plan(project, revision=pending.revision)
-            driver = pending.venue.driver
-            opened = driver.open(
-                request, pending.authorization, adoption_token=pending.adoption,
-                expected_hourly_microusd=quote.hourly_microusd,
+            request = pending.request
+            authorization = self._attest(quote.model_copy(deep=True), request.model_copy(deep=True))
+            if (authorization.request_digest, authorization.expires_at_ms, authorization.ceiling_microusd) != (
+                request.digest, quote.expires_at_ms, quote.ceiling_microusd,
+            ):
+                raise SessionError("Approval differs from the reviewed machine quote.")
+            return openings.submit(
+                folders, reviewed, run_keys=pending.keys, request=request, authorization=authorization,
+                hourly_microusd=quote.hourly_microusd,
             )
-            if opened.phase != "open":
-                raise SessionError("The approved machine is closed.")
-            jobs = pending.venue.jobs(driver, quote_id)
-            result = jobs.delegate(folders, reviewed, run_keys=pending.keys, token=str(quote_id))
-            if not isinstance(result.target, SessionTarget) or result.target != opened.placement:
-                raise SessionError("The runs returned a different machine from the approval.")
-            pending.result = result
-            return result
 
     @property
     def version(self) -> int:
@@ -177,7 +166,21 @@ class StudioRemoteRuns:
 
     def observe(self, folders: ProjectFolder, local_jobs: JobService) -> None:
         """Advance the durable Jobs observations even with no Studio window open."""
-        for venue in self._venues.values():
+        for target, venue in self._venues.items():
+            openings = self._openings[target]
+            for session_id in openings.pending():
+                try:
+                    openings.resume(folders, session_id)
+                except ApprovedRunClosed as error:
+                    self._opening_errors.pop(session_id, None)
+                    log.warning("Approved runs %s were not confirmed: %s", session_id, error)
+                except (HostError, OSError, SessionError) as error:
+                    message = str(error)
+                    if self._opening_errors.get(session_id) != message:
+                        self._opening_errors[session_id] = message
+                        log.warning("Approved runs %s await recovery: %s", session_id, error)
+                else:
+                    self._opening_errors.pop(session_id, None)
             for record in venue.driver.records():
                 if (
                     record.launch.request.target != venue.driver.provider.target
