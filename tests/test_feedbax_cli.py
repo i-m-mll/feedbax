@@ -129,7 +129,7 @@ def test_an_engine_command_reaches_the_engine_main_with_the_command_included(
     "name",
     [
         "train", "provider", "orchestrate", "preflight-experiment-envelope",
-        "migrate-content-store", "migrate-project", "store",
+        "migrate-content-store", "migrate-project",
     ],
 )
 def test_retired_commands_are_refused(name, capsys: pytest.CaptureFixture[str]) -> None:
@@ -142,7 +142,7 @@ def test_the_module_inventory_is_read_from_the_module_entry_point() -> None:
 
     assert cli.engine_commands() == engine_command_names()
     assert cli.engine_commands() == (
-        "check", "plan", "status", "describe", "matrix-harness", "check-project-science-surface",
+        "check", "plan", "status", "describe", "store", "matrix-harness", "check-project-science-surface",
     )
 
 

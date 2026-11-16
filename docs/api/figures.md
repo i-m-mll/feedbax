@@ -80,13 +80,9 @@ policy, any data-bearing axis that remains unknown fails clearly. Omitting
 `output_descriptors` keeps existing product identity bytes unchanged and means
 unknown; no field-name or display-label inference occurs.
 
-The current API keeps these boundaries explicit:
-
-- A project declaration v2 may name one `figure_policy` as a
-  `ContentPinnedJsonBase`. Resolution is always rooted at the explicitly supplied
-  project root; Feedbax never walks from the working directory and never mutates
-  Plotly process globals. A declaration with no policy, and projectless figure
-  execution, keep the existing bytes and behavior.
+- The Python figure resolver accepts a `ContentPinnedJsonBase` through
+  `project_figure_policy` and resolves it from the explicit `repo_root`.
+  The standalone CLI uses `--repo-root` to resolve composition sources.
 - Policy precedence is deterministic: project defaults, then the frozen named
   `FigureTemplate` and authored figure/composition values, then explicit project
   overrides. Existing explicit per-axis ranges remain the final scientific

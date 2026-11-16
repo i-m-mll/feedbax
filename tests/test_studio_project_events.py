@@ -79,6 +79,7 @@ def _app(job_events, folders=None):
     app = FastAPI()
     app.include_router(jobs.router)
     app.state.job_service = job_events
+    app.state.remote_runs = None
     if folders is not None:
         app.state.project_folders = folders
     return app

@@ -135,7 +135,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     registry = _operations()
     document = project.documents["velocity-analysis"].payload
     summary = document["operations"]["summarize"]
-    summary["params"].pop("ddof")
+    ddof = summary["params"].pop("ddof")
     summary["inputs"].clear()
     (draft_row,) = (row for row in compile_project(project, operations=registry).rows if isinstance(row, PlannedAnalyzeRun))
     assert draft_row.states[0].producer == RunKey("default", "baseline", "default")
@@ -163,6 +163,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     ), registry, states)
     assert replacement.patches[0].op == "replace"
 
+    summary["params"]["ddof"] = ddof
     view = document["views"]["profile"]
     view["inputs"].clear()
     draft_plan = compile_project(project, operations=registry)
@@ -306,10 +307,14 @@ def test_refuses_named_figure_at_its_authored_field_and_keeps_inline_sibling():
     figure.schema_id = "feedbax.figure_document.v1"
     figure.payload["layers"][0].setdefault("style", {})["band_alpha"] = -1
     malformed = compile_project(project, operations=operations)
-    (problem,) = malformed.diagnostics
+    problem, layers = malformed.diagnostics
     assert (problem.code, problem.document, problem.document_path, problem.path, problem.element) == (
         ResolutionCode.INVALID_DOCUMENT, "velocity-figure", "payload.layers.0.style.band_alpha",
         "payload.views.profile.figure.layers.0.style.band_alpha", "profile",
+    )
+    assert (layers.code, layers.document, layers.document_path, layers.path, layers.element) == (
+        ResolutionCode.INVALID_DOCUMENT, "velocity-figure", "payload.layers",
+        "payload.views.profile.figure.layers", "profile",
     )
     for refused in (wrong_schema, malformed):
         assert set(refused.elements) == set(initial.elements) - {ElementKey(_KEY, "profile")}

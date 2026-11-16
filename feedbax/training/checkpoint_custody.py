@@ -5593,6 +5593,17 @@ def _semantic_value_projection(
             "dtype_str": scalar.dtype.str,
             "value_hex": scalar.tobytes().hex(),
         }
+    if type(leaf) is tuple:
+        return {
+            "kind": "tuple",
+            "items": [
+                _semantic_value_projection(
+                    item, path_text=f"{path_text.rstrip('/')}/{index}",
+                    active_dataclasses=active_dataclasses,
+                )
+                for index, item in enumerate(leaf)
+            ],
+        }
     if is_dataclass(leaf) and not isinstance(leaf, type):
         identity = id(leaf)
         if identity in active_dataclasses:

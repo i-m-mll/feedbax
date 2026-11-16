@@ -1,5 +1,6 @@
 """Qualify the saved Plan join against the real local Host and training worker."""
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 import os
@@ -78,8 +79,13 @@ def _measure(service, revision: str, selection: tuple[RunKey, ...], expected, mo
         baseline = timed(base, "baseline")
         joined = timed(service.read, "joined")
         for _ in range(12):
-            assert baseline("reach", revision=revision, source_runs=selection) == expected.settled
-            assert joined("reach", revision=revision, source_runs=selection) == expected
+            compiled = baseline("reach", revision=revision, source_runs=selection)
+            observed = joined("reach", revision=revision, source_runs=selection)
+            # Each read binds a new terminal-Train lookup function.
+            assert replace(compiled, readers=expected.settled.readers) == expected.settled
+            assert replace(observed, settled=replace(
+                observed.settled, readers=expected.settled.readers,
+            )) == expected
     return {
         name: {"median_ms": median(values), "samples_ms": values}
         for name, values in samples.items()
@@ -249,7 +255,8 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             encoded = encode_request(canonical, {})
             assert (request_id, plan.requests[request_id]) == (encoded.id, encoded.data)
             decoded = decode_request(plan.requests[request_id], plan.documents.__getitem__)
-            assert decoded.spec == canonical and decoded.inputs == {}
+            assert decoded.inputs == {}
+            assert encode_request(decoded.spec, decoded.inputs) == encoded
             assert not before.attempts_by_run and not store.exists()
             assert "post" not in client.app.openapi()["paths"].get("/api/projects/{project_id}/plan", {})
 
@@ -286,7 +293,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
 
             def current_attempt():
                 view = read()
-                assert view.settled == renamed_plan.settled
+                assert replace(view.settled, readers=renamed_plan.settled.readers) == renamed_plan.settled
                 assert set(view.attempts_by_run) == {original, same}
                 assert view.attempts_by_run[original] == view.attempts_by_run[same]
                 attempt, = view.jobs.by_request[request_id]
@@ -335,7 +342,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             fingerprint = {file.relative_to(root): file.stat().st_mtime_ns for file in root.rglob("*")}
             timing = _measure(service, revision, selection, reopened, monkeypatch)
             assert fingerprint == {file.relative_to(root): file.stat().st_mtime_ns for file in root.rglob("*")}
-            assert not (store / "store.json").exists() and not (store / "refs").exists()
+            assert (store / "store.json").is_file() and (store / "refs").is_dir()
 
             path.write_bytes(raw + b"\n")
             corrupt, = read().attempts_by_run[same]
@@ -343,7 +350,8 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             path.write_bytes(raw)
 
             failure = Job(
-                "later-failure", "reach", request_id, Launch((sys.executable, "-c", "raise SystemExit(7)")),
+                "later-failure", opened["project_id"], request_id,
+                Launch((sys.executable, "-c", "raise SystemExit(7)")),
                 data={"manifest_root": str(store)},
             )
             host.admit("later-failure", [AdmissionItem(failure.id, failure)], record={})

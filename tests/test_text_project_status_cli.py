@@ -1,26 +1,25 @@
 """Read the same saved receipt evidence through Studio and the text CLI."""
 
-from hashlib import sha256
 import json
 
 from feedbax.cli import main
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.jobs import JobStatus
-from feedbax.contracts.manifest import TrainingRunManifest, training_run_manifest_id, write_manifest
-from feedbax.contracts.project import InlineBase
+from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import RunKey
 from feedbax.host import HostClient
-from feedbax.host.plan_history import advance_plan, plan_ref_key, plan_run_key
-from feedbax.job_completion import training_binding_path
+from feedbax.host.plan_history import plan_ref_key
 from feedbax.jobs import JobService
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, bind_canonical_train
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project
+from tests.test_local_job_host import host as host_fixture
+from tests.test_local_job_host import job_row, wait_until
 from tests.test_text_project_plan_cli import _edit, _files, _write_walkthrough
+
+
+host = host_fixture
 
 
 def _status_table(output):
@@ -33,88 +32,32 @@ def _status_table(output):
     return result
 
 
-def _retain_train(root, project, registries):
-    job_id = "saved-attempt"
-    plan = compile_project(project)
-    (train,) = (run for run in plan.runs if run.kind == "train")
-    store = ImmutableArtifactBlobProvider(root / "results")
-    spec, binding = bind_canonical_train(
-        train.request_id,
-        plan.requests[train.request_id],
-        plan.documents,
-        registries.training_programs,
-        store,
-        registries=registries,
+def _retain_train(host, folders, reviewed, registries, key):
+    submission = JobService(host, registries).admit_plan(
+        folders, reviewed, run_keys=(key,), token="saved-train",
     )
-    bound = (
-        BoundStudioTrainingJobInput(
-            spec=spec,
-            project_id=root.name,
-            request_id=train.request_id,
-            manifest_root=store.root,
-            canonical_request=binding,
-        )
-        .model_dump_json()
-        .encode()
+    (attempt,) = submission.items
+    finished = wait_until(
+        lambda: row if (row := job_row(host, attempt.job_id))["outcome"] else None,
+        timeout=24,
     )
-    binding_path = training_binding_path(store.root, job_id)
-    binding_path.parent.mkdir(parents=True)
-    binding_path.write_bytes(bound)
-    manifest_id = training_run_manifest_id(job_id)
-    manifest = write_manifest(
-        TrainingRunManifest(id=manifest_id, job_id=job_id, status="completed"),
-        root=store.root,
-        index=False,
+    assert finished["state"] == "succeeded", finished
+    store = reviewed.store_path
+    receipt = finished["outcome"]["receipt"]
+    manifest = canonical_manifest_path("TrainingRunManifest", receipt["manifest_id"], root=store)
+    plan_key = plan_ref_key(reviewed.project_id, str(store))
+    snapshot = host.jobs_snapshot(
+        project=reviewed.project_id, start_host=False, record_keys=(plan_key,), include_launch=True,
     )
-    receipt = {
-        "manifest_id": manifest_id,
-        "manifest_sha256": sha256(manifest.read_bytes()).hexdigest(),
-    }
-    root_name = str(store.root)
-    plan_key = plan_ref_key(root.name, root_name)
-    request_map = {plan_run_key("default", "train", "default"): train.request_id}
-    ref = store.store_object(canonical_json_v2_bytes({"requests": request_map}))
-    snapshot = {
-        "cursor": 9,
-        "oldest_cursor": 0,
-        "jobs": [
-            {
-                "id": job_id,
-                "project": root.name,
-                "request": train.request_id,
-                "state": "succeeded",
-                "data": {"manifest_root": root_name},
-                "edges": [],
-                "continues": None,
-                "outcome": {
-                    "receipt": receipt,
-                    "completion": {
-                        "project_id": root.name,
-                        "manifest_root": root_name,
-                        "producer_job_id": job_id,
-                        "request_id": train.request_id,
-                        "binding_sha256": sha256(bound).hexdigest(),
-                        "receipt": receipt,
-                    },
-                },
-            }
-        ],
-        "records": {plan_key: advance_plan(ref.model_dump(mode="json"), request_map, None, {})},
-    }
     return snapshot, plan_key, manifest
 
 
-def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monkeypatch, capsys):
+def test_cli_and_studio_verify_saved_status_and_authored_history(host, tmp_path, monkeypatch, capsys):
     root = (tmp_path / "saved").resolve()
     project, _ = _write_walkthrough(root)
     managed = managed_train_project()
     project.steps["train"] = managed.steps["train"]
     project.documents.update(managed.documents)
-    baseline = project.steps["baseline"].base
-    assert isinstance(baseline, InlineBase)
-    params = baseline.inline["params"]
-    del params["trials"]
-    params["trial_set"] = {"kind": "every_condition"}
     configuration = read_text_project_snapshot(root).configuration
     for relative, data in dump_text_project(project, configuration).items():
         path = root / relative
@@ -122,40 +65,38 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monke
         path.write_bytes(data)
     registries = new_application_registry_bundle()
     registries.seal()
-    snapshot, plan_key, manifest = _retain_train(root, project, registries)
+    folders = ProjectFolderService(root.parent, operations=registries.operations)
+    reviewed = folders.read_plan(root.name, revision=None)
+    key = RunKey("default", "train", "default")
+    snapshot, plan_key, manifest = _retain_train(host, folders, reviewed, registries, key)
     receipt = manifest.read_bytes()
-    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
+    absent_host = tmp_path / "absent-host"
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(absent_host))
 
-    def snapshot_rpc(self, *, project, start_host, record_keys, include_launch):
-        assert (project, start_host, record_keys, include_launch) == (
-            root.name,
-            False,
-            (plan_key,),
-            False,
-        )
+    def snapshot_rpc(self, *, project, start_host, record_keys, include_launch, checkpoint_progress_root):
+        assert project == reviewed.project_id
+        assert not start_host and record_keys == (plan_key,)
+        assert include_launch and checkpoint_progress_root == str(root / "results")
         return snapshot
 
     monkeypatch.setattr(HostClient, "jobs_snapshot", snapshot_rpc)
     monkeypatch.chdir(root / "steps")
-    service = ProjectPlanService(
-        ProjectFolderService(root.parent, operations=registries.operations), JobService(HostClient(), registries)
-    )
-    key = RunKey("default", "train", "default")
+    service = ProjectPlanService(folders, JobService(HostClient(), registries))
 
     def compare(state):
         before = _files(root)
         assert main(["status", "--variant", "default"]) == 0
         table = _status_table(capsys.readouterr().out)
         assert _files(root) == before
-        assert not (tmp_path / "host").exists()
+        assert not absent_host.exists()
         saved = read_text_project_snapshot(root)
         studio = service.read(root.name, revision=saved.revision)
         history = studio.history[key]
         assert history.status is state
         assert table["default/train/default"] == ("default", state.value, history.reason or "")
         evaluation = studio.evaluations[RunKey("default", "baseline", "default")]
-        assert evaluation.reason == "/evaluation_type: Evaluate activation is held."
-        assert table["default/baseline/default"][1:] == (evaluation.status.value, evaluation.reason)
+        assert evaluation.result is None
+        assert table["default/baseline/default"][1:] == (evaluation.status.value, evaluation.reason or "")
         mounted = studio.window_map()
         mounted_rows = {
             f"{item.key.variant}/{item.key.step}/{item.key.row}": item.status
@@ -191,11 +132,11 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(tmp_path, monke
 
     step_path = root / "steps/train.json"
     step = json.loads(step_path.read_bytes())
-    method = step["base"]["inline"]["method_payload"]["payload"]
-    method["seed"] = method.get("seed", 0) + 1
+    payload = step["base"]["inline"]
+    payload["seed"] = payload.get("seed", 0) + 1
     step_path.write_text(json.dumps(step), encoding="utf-8")
     stale = compare(JobStatus.STALE)
-    assert stale.change.path == "payload.method_payload.payload.seed"
+    assert stale.change.path == "payload.seed"
     assert stale.change.path in stale.reason
     assert stale.previous is not None
 

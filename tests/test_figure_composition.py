@@ -1375,7 +1375,7 @@ def test_figure_cli_resolve_prints_ordinary_spec_and_optional_lineage(
     assert lineage["composition"]["authored_envelope_sha256"] == lineage["authored_identity_sha256"]
 
 
-def test_figure_cli_applies_policy_only_from_an_explicit_project_root(
+def test_figure_cli_does_not_discover_retired_project_policy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from feedbax.bin import figure as figure_cli
@@ -1408,9 +1408,10 @@ def test_figure_cli_applies_policy_only_from_an_explicit_project_root(
     projectless = json.loads(capsys.readouterr().out)
     assert "width" not in projectless["assembler_params"]
 
-    assert figure_cli.main(["resolve", str(spec_path), "--project-root", str(tmp_path)]) == 0
-    governed = json.loads(capsys.readouterr().out)
-    assert governed["assembler_params"]["width"] == 812
+    with pytest.raises(SystemExit) as exc:
+        figure_cli.main(["resolve", str(spec_path), "--project-root", str(tmp_path)])
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --project-root" in capsys.readouterr().err
 
 
 def test_composition_authoring_reference_is_indexed_and_names_public_surfaces() -> None:

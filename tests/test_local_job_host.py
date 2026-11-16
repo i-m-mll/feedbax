@@ -742,11 +742,11 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from feedbax.host.completion import read_completion_bindings
     from feedbax.job_completion import verify_bound_training_completion
     from feedbax.jobs import JobService
     from feedbax.plugins.application import new_application_registry_bundle
     from feedbax.training.checkpoint_custody import LATEST_POINTER_NAME
-    from feedbax.training_host_worker import main as training_worker
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
     from feedbax.contracts.project import Project
@@ -757,40 +757,33 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     # actual host can deliver the checkpoint stop before the next update.
     stop_ready = tmp_path / "stop-ready"
     (tmp_path / "gated_training.py").write_text(f"""
-import json
 import os
 import time
 from pathlib import Path
-from unittest.mock import patch
 from feedbax.training import executor
-from {training_worker.__module__} import {training_worker.__name__} as run_training
+execute = executor.execute_managed_training_run
 
-def main(args):
-    launch = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
-    if launch.get("resume") is not None:
-        return run_training(args)
-    execute = executor.execute_managed_training_run
-
-    def pause_first_update(*args, **kwargs):
-        callback = kwargs["committed_update_callback"]
-
-        def wait_for_stop(coordinate, completed, slots):
-            callback(coordinate, completed, slots)
-            if completed != 1:
-                return
-            Path({str(stop_ready)!r}).touch()
-            stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-            deadline = time.monotonic() + 15
-            while not stop.exists():
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Host did not deliver checkpoint stop.")
-                time.sleep(0.01)
-
-        kwargs["committed_update_callback"] = wait_for_stop
+def pause_first_update(*args, **kwargs):
+    if kwargs["resume"]:
         return execute(*args, **kwargs)
+    callback = kwargs["committed_update_callback"]
 
-    with patch.object(executor, "execute_managed_training_run", pause_first_update):
-        return run_training(args)
+    def wait_for_stop(coordinate, completed, slots):
+        callback(coordinate, completed, slots)
+        if completed != 1:
+            return
+        Path({str(stop_ready)!r}).touch()
+        stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
+        deadline = time.monotonic() + 15
+        while not stop.exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Host did not deliver checkpoint stop.")
+            time.sleep(0.01)
+
+    kwargs["committed_update_callback"] = wait_for_stop
+    return execute(*args, **kwargs)
+
+executor.execute_managed_training_run = pause_first_update
 """)
 
     service = JobService(host, new_application_registry_bundle())
@@ -799,24 +792,27 @@ def main(args):
         "_training_worker",
         replace(
             service._training_worker,
-            env={
+            env=service._training_worker.env | {
                 "JAX_PLATFORMS": "cpu",
                 "PYTHONPATH": os.pathsep.join((str(tmp_path), str(Path(__file__).resolve().parents[1]))),
             },
-            warm_entrypoint="gated_training:main",
+            preload=(*service._training_worker.preload, "gated_training"),
         ),
     )
     app = FastAPI()
     app.include_router(jobs.router)
     app.include_router(projects.router)
     app.state.job_service = service
+    app.state.remote_runs = None
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)
-    project = "document-resume"
+    folder = "document-resume"
     _save_project(
-        app.state.project_folders, project, Project.model_validate(document_project(authored_documents()))
+        app.state.project_folders, folder, Project.model_validate(document_project(authored_documents()))
     )
-    revision = app.state.project_folders.read_plan(project, revision=None).revision
+    opened = app.state.project_folders.read_plan(folder, revision=None)
+    project = opened.project_id
+    revision = opened.revision
     submission = {
         "token": "ordinary-m1",
         "revision": revision,
@@ -830,10 +826,10 @@ def main(args):
         "consumer",
         f"""
 import json
-import os
 from pathlib import Path
+from {read_completion_bindings.__module__} import {read_completion_bindings.__name__}
 from {verify_bound_training_completion.__module__} import {verify_bound_training_completion.__name__}
-bindings = json.loads(Path(os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"]).read_text())["bindings"]
+bindings = read_completion_bindings()["bindings"]
 assert len(bindings) == 1
 verify_bound_training_completion(bindings[0]["completion"])
 Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
@@ -856,7 +852,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
             ),
             slot="light",
         ),
-        data=job_row(host, producer)["data"],
+        data={key: value for key, value in job_row(host, producer)["data"].items() if key != "target"},
     )
     internal = admit(
         host,
@@ -886,6 +882,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     wait_until(lambda: job_row(host, producer)["outcome"], timeout=20)
     stopped = job_row(host, producer)
     assert stopped["state"] == "stopped", stopped
+    assert stopped["outcome"]["store_job_entry"]
     checkpoint = stopped["checkpoint"]
     assert checkpoint["completed_updates"] == 1
     assert job_row(host, consumer.id)["state"] == "queued"
@@ -914,6 +911,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     wait_until(lambda: job_row(host, continued)["outcome"], timeout=20)
     finished = job_row(host, continued)
     assert finished["state"] == "succeeded", finished
+    assert finished["outcome"]["store_success"]
     pinned = wait_until(lambda: _bound_edge(host) or job_row(host, consumer.id, "blocked"))
     assert "completion" in pinned, (pinned, finished["outcome"])
     completion = pinned["completion"]
@@ -996,7 +994,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
                     notices.append(notice["revision"])
                     if len(notices) == 1:
                         edit = await http.post(
-                            f"/api/projects/{project}/files",
+                            f"/api/projects/{folder}/files",
                             json={
                                 "revision": revision,
                                 "file": {
@@ -1019,7 +1017,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
                 "asgi": {"version": "3.0", "spec_version": "2.3"},
                 "method": "GET",
                 "path": "/api/events",
-                "query_string": f"machine=true&project={project}&folder={project}".encode(),
+                "query_string": f"machine=true&project={project}&folder={folder}".encode(),
                 "headers": [(b"last-event-id", str(cursor).encode())],
                 "http_version": "1.1",
                 "scheme": "http",
@@ -1029,7 +1027,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
         return notices, replay
 
     notices, replay = asyncio.run(observe_folder())
-    current = client.get(f"/api/projects/{project}").json()
+    current = client.get(f"/api/projects/{folder}").json()
     assert notices == [revision, current["revision"]]
     assert any(f"id: {raw['head']}\nevent: replay_complete\n" in frame for frame in replay)
     assert not any(
