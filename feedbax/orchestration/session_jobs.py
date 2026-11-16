@@ -296,19 +296,18 @@ class ApprovedSessionRuns:
                         session_id, close_reason or record.opening_failure
                         or "The machine closed before the approved runs could be confirmed.",
                     )
-                if launch.ends_at_ms <= self.driver._clock_ms():
-                    if record.phase == "open":
-                        try:
-                            session = self._attach(self.driver, session_id)
-                            recovered = session._recover_submission(identity, delegated)
-                        except (HostError, OSError, SessionError):
-                            if any(resource.kind == "venue" and (
-                                resource == record.venue or resource.intent == launch.intent
-                            ) for resource in self.driver.inventory()):
-                                raise
-                        else:
-                            if recovered is not None:
-                                return self._complete(session, session_id, recovered)
+                if record.phase == "open" and launch.ends_at_ms <= self.driver._clock_ms():
+                    try:
+                        session = self._attach(self.driver, session_id)
+                        recovered = session._recover_submission(identity, delegated)
+                    except (HostError, OSError, SessionError):
+                        if any(resource.kind == "venue" and (
+                            resource == record.venue or resource.intent == launch.intent
+                        ) for resource in self.driver.inventory()):
+                            raise
+                    else:
+                        if recovered is not None:
+                            return self._complete(session, session_id, recovered)
                     self._close(
                         session_id, record.opening_failure
                         or "The machine reached its deadline before the approved runs could be confirmed.",

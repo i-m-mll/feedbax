@@ -79,6 +79,25 @@ it("preserves the sweep and row handles through the same Run command", () => {
     .getByRole("button", { name: "Select Test reach 1 of 1" })).toBeDefined();
 });
 
+it("shows the current opening stage and keeps provider error lines in the inspector", () => {
+  const summary = "Acquiring: RunPod HTTP 400: Placement refused";
+  const line = "The GPU had no slots with this CUDA version.";
+  showRuns({
+    ...train,
+    runs: [
+      { ...train.runs[0], status: "starting", openingReason: "Opening machine: connecting" },
+      { ...train.runs[1], status: "failed", openingReason: summary, reason: summary, openingErrors: [line] },
+    ],
+    statusCounts: { starting: 1, failed: 1 },
+  });
+  const table = within(screen.getByRole("table", { name: "Runs" }));
+  expect(table.getByText("Opening machine: connecting")).toBeDefined();
+  expect(table.getByText(summary)).toBeDefined();
+  expect(table.queryByText(line)).toBeNull();
+  fireEvent.click(table.getByRole("button", { name: "B" }));
+  expect(within(screen.getByRole("region", { name: "Run Inspector" })).getByText(line)).toBeDefined();
+});
+
 it("virtualizes an authoritative 1,000-row result and keeps its full accessible count", () => {
   const runs = Array.from({ length: 1000 }, (_, index) => ({ ...train.runs[0], id: String(index), label: `Reach ${index}` }));
   showRuns({ ...train, runs, statusCounts: { succeeded: runs.length } });

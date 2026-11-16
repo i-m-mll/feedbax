@@ -28,6 +28,7 @@ export interface PlanRunView {
   readonly values: Readonly<Record<string, string>>;
   readonly status: StudioRunStatusId;
   readonly reason?: string;
+  readonly openingReason?: string;
   readonly openingErrors?: readonly string[];
   readonly progress?: NonNullable<StudioActivityJob["progress"]>;
   readonly collectionProgress?: NonNullable<StudioActivityJob["collection_progress"]>;

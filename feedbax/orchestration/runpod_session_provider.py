@@ -44,6 +44,7 @@ _RESOURCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _PODS = "/v2/pods"
 _SECRETS = "/v2/account/secrets"
 _CREATE_REJECTIONS = frozenset({400, 401, 402, 403, 404, 409, 413, 422, 429})
+_AVAILABLE_STOCK = ("LOW", "MEDIUM", "HIGH")
 _BOOT_KEY = "FEEDBAX_BOOT_SSH_KEY"
 _BOOT_COMMAND = """set +x
 set -euo pipefail
@@ -86,7 +87,8 @@ class RunPodResources(SessionModel):
 
     image: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$")]
     gpu_id: Nonempty
-    datacenter: Nonempty
+    # Persisted approvals can still bind a specific data center.
+    datacenter: Nonempty | None = Field(default=None, exclude_if=lambda value: value is None)
     cuda_version: Annotated[str, Field(pattern=r"^[0-9]+\.[0-9]+$")]
     compute_capability: Annotated[str, Field(pattern=r"^[0-9]+\.[0-9]+$")]
     min_driver_major: Positive
@@ -128,6 +130,7 @@ class _Intent(SessionModel):
     public_key: Annotated[str, Field(pattern=r"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$")]
     cutoff: RunPodCutoffArm
     opening_aborted: bool = False
+    quote: JsonObject | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class _CreateRejection(SessionModel):
@@ -390,22 +393,37 @@ class RunPodAcquisition:
         price = body.get("price")
         hourly = price.get("secure") if isinstance(price, Mapping) else None
         versions = body.get("cudaVersions")
+        availability = body.get("availability")
         regions = body.get("dataCenters")
-        stock = [row.get("availability") for row in regions if isinstance(row, Mapping)
-                 and row.get("id") == config.datacenter] if isinstance(regions, list) else []
+        region_stock: dict[str, str] = {}
+        if isinstance(regions, list):
+            for row in regions:
+                if not isinstance(row, Mapping):
+                    continue
+                region, stock = row.get("id"), row.get("availability")
+                if (
+                    isinstance(region, str) and _RESOURCE_ID.fullmatch(region)
+                    and isinstance(stock, str) and stock in (*_AVAILABLE_STOCK, "NONE")
+                ):
+                    region_stock[region] = stock
+        available = availability if config.datacenter is None else region_stock.get(config.datacenter)
         if not (
             reply.status == 200 and body.get("id") == config.gpu_id
             and _rate_within_cap(hourly, config.hourly_microusd)
             and isinstance(versions, list) and any(isinstance(row, Mapping) and row.get("available") is True
                 and row.get("version") == config.cuda_version for row in versions)
-            and len(stock) == 1 and stock[0] in ("LOW", "MEDIUM", "HIGH")
+            and available in _AVAILABLE_STOCK
         ):
             raise SessionError("RunPod quote did not establish the authorized GPU, rate, CUDA and region.")
-        return {
+        quote_facts: JsonObject = {
             "gpu_id": config.gpu_id, "datacenter": config.datacenter, "cuda_version": config.cuda_version,
             "gpu_hourly_usd": hourly, "ephemeral_disk_gb": config.ephemeral_disk_gb,
             "authorized_total_hourly_microusd": config.hourly_microusd,
+            "availability": availability if isinstance(availability, str) and availability in (*_AVAILABLE_STOCK, "NONE") else None,
+            "region_stock": dict(region_stock),
+            "observed_at_ms": _epoch_ms(),
         }
+        return quote_facts
 
     @staticmethod
     def _pod_body(state: _Intent, config: RunPodResources) -> JsonObject:
@@ -415,13 +433,16 @@ class RunPodAcquisition:
             "disk": config.ephemeral_disk_gb, "gpu": {
                 "id": config.gpu_id, "count": 1, "allowedCudaVersions": [config.cuda_version],
             },
-            "dataCenterIds": [config.datacenter], "ports": ["22/tcp"], "startSsh": True,
+            "ports": ["22/tcp"], "startSsh": True,
             "env": {_BOOT_KEY: "{{ RUNPOD_SECRET_" + secret + " }}"},
             "entrypoint": ["/bin/bash", "-c", _BOOT_COMMAND, "feedbax-host-key",
                            state.public_key, "/etc/ssh", "/start.sh", *_absolute_command(state.cutoff.boot_argv)],
             "cmd": [],
         }
+        if config.datacenter is not None:
+            exact["dataCenterIds"] = [config.datacenter]
         protected = exact.keys() | {
+            "dataCenterIds",
             "queue", "queueId", "mounts", "volumes", "volumeId", "volumeInGb", "volumeMountPath",
             "networkVolumeId", "networkVolumeIds", "template", "templateId",
             "environment", "dockerEnv", "args", "dockerArgs", "dockerEntrypoint", "dockerStartCmd",
@@ -446,7 +467,12 @@ class RunPodAcquisition:
                     raise SessionError("RunPod already lists a resource for an unjournaled launch intent.")
                 if not self.transport.image_exists(config.image):
                     raise SessionError("RunPod could not verify the authorized immutable image.")
-                self._verify_quote(config, timeout_seconds=self._before_cutoff(launch))
+                try:
+                    self._verify_quote(config, timeout_seconds=self._before_cutoff(launch))
+                except ProviderUnreachable:
+                    raise
+                except SessionError as error:
+                    raise SessionOpeningFailed(f"RunPod did not submit pod creation: {error}") from error
                 self._before_cutoff(launch)
                 cutoff = self._running_cutoff.arm(launch)
                 private, public = _fresh_boot_host_key()
@@ -481,20 +507,21 @@ class RunPodAcquisition:
                 state = state.model_copy(update={"secret_id": secret.id})
                 write_json(path, state.model_dump(mode="json"))
             try:
-                self._verify_quote(config, timeout_seconds=self._before_cutoff(launch))
+                observed_quote = self._verify_quote(config, timeout_seconds=self._before_cutoff(launch))
             except SessionError as error:
                 raise SessionOpeningFailed(f"RunPod did not submit pod creation: {error}") from error
             pod_body = self._pod_body(state, config)
             submitted = _PodRequested(
                 launch=state.launch, public_key=state.public_key, cutoff=state.cutoff, secret_id=secret.id,
                 startup_deadline_ms=min(launch.ends_at_ms, _epoch_ms() + 1000 * config.startup_seconds),
-                completion_requested=False,
+                completion_requested=False, quote=observed_quote,
             )
             self._before_cutoff(launch)
             write_json(path, submitted.model_dump(mode="json"))
             reply = self._api("POST", _PODS, body=pod_body, timeout_seconds=self._before_cutoff(launch))
             if rejection := _create_rejection(reply, "pod", self._api_key.get_secret_value()):
-                write_json(path, state.model_copy(update={"rejection": rejection}).model_dump(mode="json"))
+                state = state.model_copy(update={"rejection": rejection, "quote": observed_quote})
+                write_json(path, state.model_dump(mode="json"))
                 raise rejection.opening_failure()
             if reply.status != 201 or reply.body is None:
                 raise SessionError(f"RunPod pod creation remains unresolved for this intent (HTTP {reply.status}).")
@@ -607,7 +634,8 @@ class RunPodAcquisition:
             try:
                 state = _Journal.validate_json(path.read_bytes())
             except FileNotFoundError:
-                return None
+                # Every provider mutation is preceded by a journal write.
+                return () if resource is None else None
             if state.launch != launch:
                 raise SessionError("RunPod opening close requires the exact launch.")
             if isinstance(state, _PodRequested):
@@ -734,14 +762,17 @@ class RunPodAcquisition:
         pod: Mapping[str, object], ip: str, port: int, seconds: float,
     ) -> RunPodEndpoint | None:
         gpu, mounts = pod.get("gpu"), pod.get("mounts")
+        region, hourly = pod.get("dataCenterId"), pod.get("cost")
         if not (
             pod.get("image") == config.image and pod.get("cloud") == "SECURE"
-            and pod.get("dataCenterId") == config.datacenter and pod.get("cudaVersion") == config.cuda_version
+            and isinstance(region, str) and _RESOURCE_ID.fullmatch(region)
+            and (config.datacenter is None or region == config.datacenter)
+            and pod.get("cudaVersion") == config.cuda_version
             and type(pod.get("disk")) is int and pod["disk"] == config.ephemeral_disk_gb
             and pod.get("ports") == ["22/tcp"] and isinstance(gpu, Mapping) and gpu.get("id") == config.gpu_id
             and type(gpu.get("count")) is int and gpu["count"] == 1 and isinstance(mounts, Mapping)
             and not any(mounts.get(kind) for kind in ("persistent", "network", "global"))
-            and _rate_within_cap(pod.get("cost"), config.hourly_microusd)
+            and _rate_within_cap(hourly, config.hourly_microusd)
         ):
             raise SessionOpeningFailed("RunPod venue differs from the authorized exact CUDA placement.")
         transport = SubprocessRunPodTransport(
@@ -776,9 +807,10 @@ class RunPodAcquisition:
         facts = project_runpod_provision_facts(pod)
         return RunPodEndpoint(host, transport.pinned_ssh_argv(), {
             "pod_id": resource.id, "intent": resource.intent, "device": name, "device_uuid": device_id,
-            "driver": driver, "compute_capability": capability, "region": config.datacenter,
+            "driver": driver, "compute_capability": capability, "region": region,
             "cuda_version": config.cuda_version, "image": config.image, "ephemeral_disk_gb": config.ephemeral_disk_gb,
-            "hourly_microusd": config.hourly_microusd, "billing_started_at": facts["billing_started_at"],
+            "hourly_microusd": config.hourly_microusd, "realized_hourly_usd": hourly,
+            "billing_started_at": facts["billing_started_at"],
         })
 
     def remove(self, resource: ProviderResource) -> None:

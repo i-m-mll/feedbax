@@ -143,6 +143,10 @@ def test_runpod_recovers_exactly_one_create_or_leaves_it_unresolved(tmp_path, pa
             expected = "secret-requested" if path.endswith("secrets") else "pod-requested"
             text = journal.read_text()
             assert expected in text and "fixture-api-key" not in text
+            if expected == "pod-requested":
+                assert "dataCenterIds" not in json.loads(request.content)
+                assert json.loads(text)["quote"]["availability"] == "LOW"
+                assert json.loads(text)["quote"]["region_stock"] == {"US-TEST-1": "HIGH", "EU-TEST-2": "LOW"}
             if commit:
                 fake.handle(request)
             raise httpx.ReadTimeout("lost create response", request=request)
@@ -162,6 +166,35 @@ def test_runpod_recovers_exactly_one_create_or_leaves_it_unresolved(tmp_path, pa
     assert venue.intent == launch.intent
     assert cutoff.launches == [launch]
     assert fake.requests.count(("POST", "/v2/account/secrets")) == 1
+    assert fake.requests.count(("POST", "/v2/pods")) == 1
+
+
+@pytest.mark.parametrize(("field", "value", "legacy_region"), [
+    ("cost", 0.76, None),
+    ("cloud", "COMMUNITY", None),
+    ("cudaVersion", "12.6", None),
+    ("disk", 41, None),
+    ("gpu", {"id": "wrong-device", "count": 1}, None),
+    ("dataCenterId", None, None),
+    ("dataCenterId", "EU-TEST-2", "US-TEST-1"),
+])
+def test_runpod_checks_realized_offer_before_ssh(tmp_path, monkeypatch, field, value, legacy_region):
+    resources = runpod_resources().model_copy(update={"datacenter": legacy_region})
+    fake = FakeRunPod(resources)
+    provider = _provider(tmp_path, fake.handle, FakeRunPodCutoff(("/usr/bin/true",)))
+    venue = provider.acquire(_launch(resources))
+    if legacy_region is not None:
+        assert fake.created_pod["dataCenterIds"] == [legacy_region]
+    else:
+        assert "dataCenterIds" not in fake.created_pod
+    fake.pods[venue.id][field] = value
+
+    def unexpected_ssh(*args, **kwargs):
+        pytest.fail("The controller contacted a venue outside the approved offer.")
+
+    monkeypatch.setattr(runpod, "_run_command", unexpected_ssh)
+    with pytest.raises(SessionError, match="differs from the authorized exact CUDA placement"):
+        provider.endpoint(venue, opening=True)
     assert fake.requests.count(("POST", "/v2/pods")) == 1
 
 
@@ -288,9 +321,14 @@ def test_unconfirmed_create_fails_at_startup_but_preserves_cleanup_until_end(tmp
     monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: now)
     captured = []
     unavailable = False
+    next_intent = None
 
     def handle(request):
         if (request.method, request.url.path) == ("POST", "/v2/pods"):
+            if json.loads(request.content)["name"] == next_intent:
+                return httpx.Response(400, json={
+                    "status": 400, "title": "No stock", "detail": "No capacity for the next run.",
+                }, headers={"content-type": "application/problem+json"})
             assert not captured
             captured.append(request.content)
             # A 400 outside the documented error envelope is still unresolved.
@@ -327,6 +365,17 @@ def test_unconfirmed_create_fails_at_startup_but_preserves_cleanup_until_end(tmp
     assert set(fake.pods) == {"other"}
     with pytest.raises(SessionError, match="can only reconcile and close"):
         driver().adopt(launch.request, launch.authorization, adoption_token="x" * 32)
+    if late == "never":
+        subsequent = _launch(resources, environment=environment.digest)
+        next_intent = subsequent.intent
+        assert next_intent != launch.intent
+        first_secret = fake.secret_id
+        fake.secret_id = "next-secret"
+        with pytest.raises(SessionError, match="No capacity for the next run"):
+            driver().open(subsequent.request, subsequent.authorization, adoption_token="y" * 32)
+        fake.secret_id = first_secret
+        assert set(fake.secrets) == {first_secret}
+        assert driver().record(launch.request.id).phase == "closing"
     if late == "before-end":
         publish_late()
         with pytest.raises(SessionError, match="approved end time"):
@@ -412,6 +461,8 @@ def test_runpod_pins_endpoint_and_removes_only_the_exact_owned_resources(tmp_pat
     assert "-n" not in endpoint.ssh_argv
     assert len(probe_calls) == 1
     assert endpoint.placement["device"] == resources.gpu_id
+    assert endpoint.placement["region"] == fake.realized_region
+    assert endpoint.placement["realized_hourly_usd"] == fake.quoted_rate
     expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
     monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
     with pytest.raises(SessionError, match="SSH readiness exceeded"):

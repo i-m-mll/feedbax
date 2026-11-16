@@ -144,10 +144,9 @@ class RunPodSessionProvider:
         self._check_environment(request)
         return self.acquisition.hourly_microusd(request)
 
-    def review_rate(self, request: SessionRequest) -> int:
-        rate = self.hourly_microusd(request)
-        self.acquisition.review_quote(request)
-        return rate
+    def review_quote(self, request: SessionRequest) -> JsonObject:
+        self._check_environment(request)
+        return self.acquisition.review_quote(request)
 
     def _check_environment(self, request: SessionRequest) -> None:
         if self.environment.digest != request.environment:

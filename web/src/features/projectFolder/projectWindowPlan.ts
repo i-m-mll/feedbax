@@ -1,4 +1,4 @@
-import { studioFormat, studioName, studioOpeningStep } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioName, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import type {
   Project, SelectedRow, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
@@ -120,17 +120,22 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
     const sourceStep = stepSources.get(row.key.step);
     const producer = sourceStep && bound && sourceRows.get(savedRunId({ ...bound, step: sourceStep }));
     const change = training?.change;
-    const rejectedCreate = row.status === 'failed' && row.opening_step === 'acquiring' && (
-      row.reason?.startsWith('RunPod HTTP ') || row.reason?.startsWith('RunPod did not confirm creation.')
-    );
-    const [summary, ...openingErrors] = rejectedCreate ? (row.reason ?? '').split('\n') : [];
+    const acquiringFailed = row.status === 'failed' && row.opening_step === 'acquiring' && row.reason;
+    const [summary, ...openingErrors] = acquiringFailed ? acquiringFailed.split('\n') : [];
+    const openingReason = row.status === 'starting' && row.opening_step
+      ? studioFormat('runOpeningMachine', { stage: studioOpeningStage(row.opening_step) })
+      : acquiringFailed ? studioFormat('runAcquisitionFailure', { reason: summary })
+      : row.status === 'failed' && row.opening_step
+        ? [studioOpeningStep(row.opening_step), row.reason].filter(Boolean).join(' · ')
+        : undefined;
     const reason = change && row.status === 'stale'
       ? [row.reason, `${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`].filter(Boolean).join(' ')
-      : rejectedCreate ? studioFormat('runAcquisitionFailure', { reason: summary })
+      : openingReason ? openingReason
       : row.opening_step ? [studioOpeningStep(row.opening_step), row.reason].filter(Boolean).join(' · ')
       : row.reason ?? undefined;
     addRun(row.key.step, {
       id, values, label: producer?.label ?? row.label, status: row.status, reason, variant: row.key.variant,
+      openingReason,
       openingErrors: openingErrors.length ? openingErrors : undefined,
       progress: training?.attempts.at(-1)?.progress ?? undefined,
       collectionProgress: row.collection_progress ?? undefined,

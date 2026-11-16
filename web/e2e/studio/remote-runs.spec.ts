@@ -71,7 +71,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
         await unlink(queueGate);
       }
       await expect(runs.getByText('Starting', { exact: true })).toBeVisible();
-      await expect(runs.getByText('Starting the worker service', { exact: true })).toBeVisible();
+      await expect(runs.getByText('Opening machine: starting the worker service', { exact: true })).toBeVisible();
       expect(await attempts()).toEqual([]);
     } finally {
       await unlink(openingGate);

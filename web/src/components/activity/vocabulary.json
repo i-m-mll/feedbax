@@ -78,6 +78,7 @@
     "estimatedCost": "Estimated cost",
     "billedCost": "Cost so far",
     "openingHistory": "Opening history",
+    "region": "Region",
     "power": "Power",
     "providerChecked": "Provider checked",
     "verifiedBytes": "Verified",
@@ -371,6 +372,13 @@
       "installing": "Installing the environment",
       "starting_host": "Starting the worker service"
     },
+    "openingStage": {
+      "acquiring": "acquiring",
+      "connecting": "connecting",
+      "copying": "copying the environment",
+      "installing": "installing the environment",
+      "starting_host": "starting the worker service"
+    },
     "connection": {
       "connecting": "Connecting",
       "connected": "Connected",
@@ -419,6 +427,7 @@
     "groupedRank": "{group} · {rank}",
     "boundRankedMember": "Rank {rank} · {producer}",
     "runAcquisitionFailure": "Acquiring: {reason}",
+    "runOpeningMachine": "Opening machine: {stage}",
     "trainedValue": "Trained by {step}",
     "evaluateChangedValue": "Changed by {step}",
     "ofCount": "{count} of {total}",
