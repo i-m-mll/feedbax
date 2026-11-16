@@ -41,6 +41,32 @@ class HostError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class SessionAccess:
+    session_id: str
+    epoch: int
+    token: str = field(repr=False)
+
+
+class SessionStatus(TypedDict):
+    session_id: str
+    stream_id: str
+    operator: str
+    epoch: int
+    expires_at: float
+    closing: bool
+    expired: bool
+    live_jobs: list[str]
+    pending: dict[str, str]
+    collections: dict[str, str]
+
+
+class SessionCloseClaim(TypedDict):
+    session_id: str
+    operator: str
+    epoch: int
+
+
+@dataclass(frozen=True, slots=True)
 class Launch:
     argv: tuple[str, ...]
     env: dict[str, str] = field(default_factory=dict)

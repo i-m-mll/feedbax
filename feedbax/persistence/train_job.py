@@ -117,7 +117,7 @@ def _verify_entry(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) ->
             store.verify_object(member)
 
 
-def publish_train_job(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> None:
+def publish_train_job(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> ContentObjectRef:
     """Retain the stopped attempt's authenticated binding and exact checkpoint trees."""
     name = _job_ref(entry.attempt)
     with store._exclusive_lock():
@@ -126,12 +126,15 @@ def publish_train_job(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry
         closure = _closure(ref, entry).model_dump(mode="json")
         current = store.read_ref(name)
         if current == closure:
-            return
+            return ref
         if current is not None or not store.compare_and_swap_ref(name, expected=None, replacement=closure):
             raise ValueError("Train attempt already has different retained custody")
+        return ref
 
 
-def read_train_job(store: ImmutableArtifactBlobProvider, attempt: str) -> TrainJobEntry:
+def read_train_job(
+    store: ImmutableArtifactBlobProvider, attempt: str, *, expected: ContentObjectRef | None = None,
+) -> TrainJobEntry:
     """Read a committed job entry and authenticate the custody needed for Resume."""
     with store._exclusive_lock(create=False):
         raw = store.read_ref(_job_ref(attempt))
@@ -141,6 +144,8 @@ def read_train_job(store: ImmutableArtifactBlobProvider, attempt: str) -> TrainJ
         ref = closure.roots[0]
         if not isinstance(ref, ContentObjectRef):
             raise ValueError("Train job closure does not start with its binding object")
+        if expected is not None and ref != expected:
+            raise ValueError("Train job entry differs from the observed Store reference")
         data = store.get_object(ref)
         entry = TrainJobEntry.model_validate_json(data)
         if (
@@ -155,11 +160,12 @@ def read_train_job(store: ImmutableArtifactBlobProvider, attempt: str) -> TrainJ
 def collect_train_job(
     source: ImmutableArtifactBlobProvider, destination: ImmutableArtifactBlobProvider,
     *, attempt: str, request_id: str, pointer: CheckpointLatestPointer,
+    expected: ContentObjectRef | None = None,
 ) -> TrainJobEntry:
     """Sync a stopped attempt's entry and provenance, then verify local Resume custody."""
     from feedbax.persistence.store_sync import collect_success_evidence, sync_store
 
-    entry = read_train_job(source, attempt)
+    entry = read_train_job(source, attempt, expected=expected)
     if entry.request.id != request_id or entry.recovery.pointer != pointer:
         raise ValueError("Collected Train binding differs from the mirrored request or Stop checkpoint")
     for origin in _origins(entry):
@@ -167,4 +173,4 @@ def collect_train_job(
         collect_success_evidence(source, destination, origin, attempt=receipt.attempt, request_id=receipt.request.id)
     name = _job_ref(attempt)
     sync_store(source, destination, name, destination_ref=name)
-    return read_train_job(destination, attempt)
+    return read_train_job(destination, attempt, expected=expected)

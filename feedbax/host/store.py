@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import RequestObject
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.request_refs import BestRank, ContentRef, ProductRef
@@ -268,6 +269,8 @@ class Store:
             if row["outcome"] is not None:
                 return
             outcome = dict(data)
+            outcome.pop("store_success", None)
+            outcome.pop("store_job_entry", None)
             if row["event_error"] and outcome["outcome"] == "succeeded":
                 outcome = {
                     "outcome": "failed",
@@ -304,7 +307,8 @@ class Store:
                 if outcome["outcome"] != "stopped" or not self._is_managed_launch(row, "feedbax.training_host_worker:main"):
                     raise ValueError("Only a managed Train checkpoint stop may publish a job entry")
                 try:
-                    self._publish_stopped_train(row, outcome, staged)
+                    ref = self._publish_stopped_train(row, outcome, staged)
+                    outcome["store_job_entry"] = ref.model_dump(mode="json")
                 except (OSError, ValueError, KeyError, TypeError) as error:
                     if isinstance(error, OSError) and error.errno in {
                         errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EBUSY, errno.EINTR,
@@ -344,10 +348,11 @@ class Store:
             predecessor = pinned, prior
         return predecessor
 
-    def _publish_stopped_train(self, row: sqlite3.Row, outcome: dict, staged: dict) -> None:
+    def _publish_stopped_train(
+        self, row: sqlite3.Row, outcome: dict, staged: dict,
+    ) -> ContentObjectRef:
         from pydantic import TypeAdapter
 
-        from feedbax.contracts.artifact_custody import ContentObjectRef
         from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
         from feedbax.host.train_success import bind_train_inputs
         from feedbax.persistence.train_job import TrainJobCheckpoint, TrainJobEntry, publish_train_job, read_train_job
@@ -380,7 +385,7 @@ class Store:
             inputs = original.inputs
         else:
             inputs = bind_train_inputs(view, request, self._train_predecessor(row, payload))
-        publish_train_job(view.store, TrainJobEntry(
+        return publish_train_job(view.store, TrainJobEntry(
             attempt=row["id"], request=request, inputs=inputs, checkpoints=checkpoints,
         ))
 
@@ -388,7 +393,6 @@ class Store:
         self, job: dict, state: str, receipt: dict | None, progress: dict | None, delivery: int,
     ) -> None:
         """Acknowledge terminal Train custody only after it is committed to this Host."""
-        from feedbax.contracts.artifact_custody import ContentObjectRef
         from feedbax.persistence.train_job import read_train_job
 
         self._validate_job(job)
@@ -410,17 +414,67 @@ class Store:
         })
         view = self._success_view(root)
         checkpoint = None
-        outcome = {"outcome": state}
+        outcome: dict = {"outcome": state}
         if state == "succeeded":
             ref = ContentObjectRef.model_validate(receipt)
             if view.attempt_ref(job["id"]) != ref or view.read_owned_success(ref).receipt.request != request:
                 raise HostError("invalid_request", "Collected Train success differs from its admitted Store receipt.")
             outcome.update(store_success=receipt, receipt={"manifest_id": job["id"], "manifest_sha256": ref.sha256})
         else:
-            entry = read_train_job(view.store, job["id"])
-            if receipt is not None or entry.request != request:
+            ref = ContentObjectRef.model_validate(receipt) if receipt is not None else None
+            entry = read_train_job(view.store, job["id"], expected=ref)
+            if entry.request != request:
                 raise HostError("invalid_request", "Collected Train Stop differs from its stored binding.")
+            if ref is not None:
+                outcome["store_job_entry"] = ref.model_dump(mode="json")
             checkpoint = {"completed_updates": entry.recovery.pointer.completed_training_batches}
+        self._mirror_collected_terminal(job, state, outcome, progress, checkpoint, delivery)
+
+    def mirror_collected_evaluate(
+        self, job: dict, receipt: dict, progress: dict | None, delivery: int,
+    ) -> None:
+        """Record the terminal attempt only after its exact Store receipt is admitted locally."""
+        from feedbax.studio.canonical_evaluate import (
+            BoundEvaluationJobInput, decode_rollout_request, evaluation_manifest_id,
+        )
+
+        self._validate_job(job)
+        payload = BoundEvaluationJobInput.model_validate(job["launch"]["payload"])
+        root = str(payload.manifest_root)
+        if (
+            not job["request"].startswith("evaluate:") or type(delivery) is not int or delivery < 1
+            or job["continues"] is not None or job["edges"] or job["slot"] != "compute"
+            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+            or (payload.project_id, payload.request_id, root)
+            != (job["project"], job["request"], job["data"].get("manifest_root"))
+            or job["data"].get("collected_evaluate") is not True
+        ):
+            raise HostError("invalid_request", "Collected Evaluate differs from its terminal attempt.")
+        ref = ContentObjectRef.model_validate(receipt)
+        view = self._success_view(root)
+        if view.attempt_ref(job["id"]) != ref:
+            raise HostError("invalid_request", "Collected Evaluate differs from its admitted Store receipt.")
+        success = view.read_owned_success(ref).receipt
+        manifest = success.evaluation_manifest
+        if (
+            success.attempt != job["id"] or success.request.id != job["request"]
+            or success.request.object != payload.canonical_request.request or manifest is None
+        ):
+            raise HostError("invalid_request", "Collected Evaluate differs from its admitted Store receipt.")
+        _, _, subject = decode_rollout_request(job["request"], view.store.get_object(success.request.object))
+        if subject != payload.canonical_request.checkpoint:
+            raise HostError("invalid_request", "Collected Evaluate changed its canonical subject.")
+        outcome = {
+            "outcome": "succeeded",
+            "store_success": receipt,
+            "receipt": {"manifest_id": evaluation_manifest_id(job["id"]), "manifest_sha256": manifest.sha256},
+        }
+        self._mirror_collected_terminal(job, "succeeded", outcome, progress, None, delivery)
+
+    def _mirror_collected_terminal(
+        self, job: dict, state: str, outcome: dict, progress: dict | None, checkpoint: dict | None, delivery: int,
+    ) -> None:
+        data = job["data"]
         with self.db:
             if (previous := self.get(job["id"])) is not None:
                 if (
@@ -446,7 +500,9 @@ class Store:
                  state, dump(progress) if progress is not None else None,
                  dump(checkpoint) if checkpoint is not None else None, dump(outcome), delivery),
             )
-            self.append(self.get(job["id"]), "terminal", outcome)
+            recorded = self.get(job["id"])
+            assert recorded is not None
+            self.append(recorded, "terminal", outcome)
 
     def _is_managed_launch(self, row: sqlite3.Row, entrypoint: str) -> bool:
         launch = json.loads(row["launch"])

@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.host import live_evaluate
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection, verify_dependency_files
 from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
@@ -23,7 +24,10 @@ from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, w
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
-from feedbax.host.protocol import LIGHT_ENTRYPOINT, LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError, JsonObject
+from feedbax.host.protocol import (
+    LIGHT_ENTRYPOINT, LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError, JsonObject, SessionCloseClaim, SessionStatus,
+)
+from feedbax.host.session import SessionFence
 from feedbax.host.store import Store, StorePublicationPending
 
 LOG_LINE_LIMIT = 8192
@@ -31,6 +35,9 @@ EVENT_LINE_LIMIT = 2 * 1024 * 1024
 POLL_SECONDS = 0.20
 TERM_GRACE = 2
 RESERVE_BYTES = 2 * 1024 * 1024
+_SESSION_READS = {
+    "ping", "events", "jobs_snapshot", "stopped_checkpoint", "jobs", "submissions", "record_get", "record_get_many",
+}
 
 
 @dataclass(slots=True)
@@ -59,11 +66,21 @@ class Host:
             raise OSError(f"Host state root must be on a local filesystem: {root}")
         self.lock = (root / "host.lock").open("a")
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.session = SessionFence.load(root)
         self.address = socket_path(root)
         self.deliveries = private_directory(root / "deliveries")
         self.worker_root = private_directory(root / "workers")
         self.cache = private_directory(root / "jax")
         self.store = Store(root / "host.sqlite")
+        self.stream_id: str | None = None
+        if self.session is not None:
+            self.stream_id = self._session_stream_id(self.session.state.session_id)
+        elif self.store.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_stream'"
+        ).fetchone() is not None:
+            self.store.db.close()
+            self.lock.close()
+            raise HostError("session_unavailable", "The venue's Host database has no controller fence.")
         self.reserve = root / "emergency.reserve"
         if not self.reserve.exists():
             with self.reserve.open("xb") as stream:
@@ -87,6 +104,22 @@ class Host:
         self.publication_errors: dict[str, str] = {}
         self.power: subprocess.Popen | None = None
         self.last_clock_delta = time.time() - time.monotonic()
+
+    def _session_stream_id(self, session_id: str) -> str:
+        """Bind cursor identity to the database that stores the event stream."""
+        with self.store.db:
+            self.store.db.execute(
+                """CREATE TABLE IF NOT EXISTS session_stream (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton=1), session_id TEXT NOT NULL, id TEXT NOT NULL
+                )"""
+            )
+            self.store.db.execute(
+                "INSERT OR IGNORE INTO session_stream VALUES (1, ?, ?)", (session_id, secrets.token_hex(16)),
+            )
+            row = self.store.db.execute("SELECT session_id, id FROM session_stream").fetchone()
+            if row["session_id"] != session_id:
+                raise ValueError("Venue Host event stream belongs to a different session.")
+            return row["id"]
 
     def _paths(self, row: sqlite3.Row, *, delivery: int | None = None) -> dict[str, Path]:
         attempt = row["delivery"] if delivery is None else delivery
@@ -304,7 +337,10 @@ class Host:
         return False
 
     def _assign(self, row: sqlite3.Row) -> None:
-        if self.exiting or self._runtime(json.loads(row["data"])) in self.retiring:
+        if (
+            self.exiting or (self.session is not None and not self.session.accepts_work)
+            or self._runtime(json.loads(row["data"])) in self.retiring
+        ):
             return
         bindings = self.store.completion_bindings(row["id"])
         launch = json.loads(row["launch"])
@@ -327,6 +363,8 @@ class Host:
                 self.store.finished(
                     row, failure("dependency_corrupt", str(error), outcome="blocked")
                 )
+            return
+        if self.session is not None and not self.session.accepts_work:
             return
         if launch["warm_entrypoint"]:
             self.profiles.pop(key, None)
@@ -392,6 +430,8 @@ class Host:
             paths["live_evaluate"] = paths["directory"] / "live-evaluate.json"
             live_evaluate_sha256 = hashlib.sha256(encode(assignment)).hexdigest()
             write_json(paths["live_evaluate"], assignment)
+        if self.session is not None and not self.session.accepts_work:
+            return
         with self.store.db:
             if owner is not None:
                 self.store.db.execute(
@@ -420,6 +460,7 @@ class Host:
                 "completion_bindings_sha256": completion_bindings_sha256,
                 "live_evaluate_sha256": live_evaluate_sha256,
                 "startup_log": str(worker.profile_dir / "startup.log"),
+                "expires_at": self.session.state.expires_at if self.session is not None else None,
             }
         )
         try:
@@ -694,7 +735,8 @@ class Host:
                 if launch["warm_entrypoint"]:
                     key, profile = self._profile(launch, row["slot"], self._runtime(json.loads(row["data"])))
                     self.profiles[key] = profile
-        self._maintain_pool()
+        if self.session is None or self.session.accepts_work:
+            self._maintain_pool()
         self.file_changes.watch(
             {
                 self._paths(row)[name]
@@ -763,10 +805,86 @@ class Host:
                 except TimeoutError:
                     return self.store.events(after, projects, limit)
 
+    def _collection_receipts(self, job_id: str | None = None) -> dict[str, str]:
+        query = """SELECT id, state, outcome FROM jobs
+                   WHERE state IN ('succeeded', 'stopped') AND outcome IS NOT NULL"""
+        rows = (
+            self.store.db.execute(query + " ORDER BY seq") if job_id is None
+            else self.store.db.execute(query + " AND id=?", (job_id,))
+        )
+        receipts = {}
+        for row in rows:
+            outcome = json.loads(row["outcome"])
+            key = "store_success" if row["state"] == "succeeded" else "store_job_entry"
+            ref = outcome.get(key)
+            if ref is not None:
+                receipts[row["id"]] = ContentObjectRef.model_validate(ref).sha256
+        return receipts
+
+    def _session_status(self, fence: SessionFence) -> SessionStatus:
+        state = fence.state
+        assert self.stream_id is not None
+        live = self.store.db.execute(
+            "SELECT id FROM jobs WHERE state IN (?, ?, ?, ?) ORDER BY seq", LIVE_STATES,
+        )
+        return {
+            "session_id": state.session_id, "stream_id": self.stream_id,
+            "operator": state.operator, "epoch": state.epoch,
+            "expires_at": state.expires_at, "closing": state.closing, "expired": fence.expired,
+            "live_jobs": [row["id"] for row in live],
+            "pending": {
+                job: digest for job, digest in self._collection_receipts().items()
+                if state.collections.get(job) != digest
+            },
+            "collections": state.collections.copy(),
+        }
+
+    def _acknowledge_collection(self, fence: SessionFence, job_id: str, sha256: str) -> None:
+        if not isinstance(job_id, str):
+            raise HostError("invalid_request", "Collection acknowledgement requires a job ID.")
+        digest = self._collection_receipts(job_id).get(job_id)
+        if digest is None or digest != sha256:
+            raise HostError("collection_conflict", "Collection evidence differs from the terminal Host receipt.")
+        fence.acknowledge_collection(job_id, digest)
+
+    def _claim_session_close(self, fence: SessionFence) -> SessionCloseClaim:
+        if fence.expired:
+            raise HostError("session_expired", "The venue session has expired.")
+        if not fence.state.closing:
+            status = self._session_status(fence)
+            if status["live_jobs"] or status["pending"]:
+                raise HostError("session_busy", "The venue still has live jobs or unacknowledged results.")
+        return fence.claim_close()
+
     async def _call(self, message: dict):
         if message.pop("version") != VERSION:
             raise HostError("protocol_version", f"Host expects protocol version {VERSION}.")
         op = message.pop("op")
+        access = message.pop("session", None)
+        fence = self.session
+        if fence is None:
+            if access is not None or op in {
+                "session_epoch", "adopt_session", "session_status", "acknowledge_collection", "claim_session_close",
+                "recover_session_close",
+            }:
+                raise HostError("session_uninitialized", "This Host does not own a venue session.")
+        else:
+            if op == "session_epoch":
+                return fence.epoch(**message)
+            if op == "adopt_session":
+                return fence.adopt(**message)
+            if op == "recover_session_close":
+                return fence.recover_close(**message)
+            fence.authenticate(access)
+            if op == "session_status":
+                return self._session_status(fence)
+            if op == "claim_session_close":
+                return self._claim_session_close(fence)
+            policy_read = op == "policy" and all(message.get(slot) is None for slot in ("compute", "light"))
+            if op not in _SESSION_READS and not policy_read:
+                fence.require_open()
+            if op == "acknowledge_collection":
+                return self._acknowledge_collection(fence, **message)
         if op in ("admit", "admit_with_completion") and (
             self.exiting or any(
                 item.get("job") is not None and self._runtime(item["job"]["data"]) in self.retiring
@@ -780,7 +898,8 @@ class Host:
                 self.wake.set()
                 return result
             case "ping":
-                return {"version": VERSION, "pid": os.getpid()}
+                identity = {} if self.stream_id is None else {"stream_id": self.stream_id}
+                return {"version": VERSION, "pid": os.getpid(), **identity}
             case "events":
                 return await self._events(**message)
             case "jobs_snapshot":
@@ -807,6 +926,7 @@ class Host:
                 | "record_get_many"
                 | "record_put"
                 | "mirror_collected_train"
+                | "mirror_collected_evaluate"
             ):
                 result = getattr(self.store, op)(**message)
                 self.wake.set()

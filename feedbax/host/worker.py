@@ -6,6 +6,7 @@ import os
 import shutil
 import socket
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -119,6 +120,21 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
         os.environ["FEEDBAX_HOST_LIVE_EVALUATE"] = paths["live_evaluate"]
         os.environ["FEEDBAX_HOST_LIVE_EVALUATE_SHA256"] = message["live_evaluate_sha256"]
     try:
+        expires_at = message.get("expires_at")
+        if expires_at is not None and time.time() >= expires_at:
+            append(
+                log,
+                "result",
+                {
+                    "outcome": "failed",
+                    "error": {
+                        "code": "session_expired",
+                        "message": "The venue session expired before the worker could start.",
+                    },
+                },
+                sync=True,
+            )
+            return 1
         if import_error is not None:
             error, detail = import_error
             print(detail, file=sys.stderr)

@@ -58,7 +58,7 @@ from feedbax.contracts.project_plan import (
     planned_input_groups,
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
-from feedbax.contracts.request_refs import BatchSetMember, BestRank, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
@@ -139,6 +139,7 @@ class PlanJobAttempt:
     checkpoint_attempt: StudioEvaluationCheckpointAttempt | None = None
     light_success: Success | None = None
     train_request: RequestObject | None = None
+    collected_evaluate: bool = False
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,15 @@ class _VerifiedEvaluation:
     checkpoint_gaps: tuple[StudioEvaluationCheckpointGap, ...] | None
     placement: Literal["ordinary", "live"]
     manifest_object: ContentObjectRef
+    checkpoint_source: StudioTrainCheckpointSource | None = None
+    checkpoint_sources: tuple[StudioTrainCheckpointSource, ...] = ()
+    bound_subject: StudioBoundBestSubject | None = None
+
+
+@dataclass(frozen=True)
+class CollectedSessionAttempt:
+    activity: StudioActivityJob
+    evidence_sha256: str
 
 
 class PlanJobReader:
@@ -243,6 +253,7 @@ class PlanJobReader:
                 continue
             evaluate = request_id.startswith("evaluate:")
             collected_train = _is_collected_train(job)
+            collected_evaluate = evaluate and job["data"].get("collected_evaluate") is True
             succeeded = job["state"] == "succeeded"
             size = None
             result = None
@@ -258,6 +269,8 @@ class PlanJobReader:
             elif evaluate:
                 result = _verified_evaluation_result(job, store) if succeeded else None
                 receipt, size = (result.receipt, result.size) if result is not None else (None, None)
+                if collected_evaluate and result is not None:
+                    checkpoint_source = result.checkpoint_source
             elif succeeded and (light or collected_train):
                 assert success_view is not None
                 verified = _verified_store_result(success_view, job)
@@ -294,14 +307,17 @@ class PlanJobReader:
                 continues=job["continues"],
                 checkpoint_source=checkpoint_source,
                 output_size_bytes=size,
-                checkpoint_sources=_selected_checkpoint_sources(job) if evaluate and receipt is not None else (),
+                checkpoint_sources=result.checkpoint_sources if result is not None else (),
                 stopped_checkpoint=stopped_checkpoint,
                 checkpoint_gaps=result.checkpoint_gaps if result is not None else None,
                 evaluation_placement=result.placement if result is not None else None,
-                bound_subject=_best_subject(job) if evaluate and (not succeeded or result is not None) else None,
+                bound_subject=result.bound_subject if result is not None else (
+                    _best_subject(job) if evaluate and not succeeded else None
+                ),
                 checkpoint_attempt=_evaluation_checkpoint_attempt(job) if evaluate else None,
                 light_success=store_success if light else None,
                 train_request=store_success.request if collected_train and store_success is not None else None,
+                collected_evaluate=collected_evaluate,
             )
             attempts.setdefault(request_id, []).append(attempt)
             if light and address in light_addresses:
@@ -913,6 +929,103 @@ class JobService(PlanJobReader):
             for job_id in ids
         ]
 
+    def collect_session_attempt(
+        self, source: ImmutableArtifactBlobProvider, attempt: Mapping[str, Any], *, project: str, store: Path,
+    ) -> CollectedSessionAttempt:
+        """Collect one terminal Jobs snapshot attempt and identify the verified custody for acknowledgement."""
+        from feedbax.contracts.artifact_custody import ContentObjectRef
+        from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+        from feedbax.persistence.effective_success import SuccessView
+        from feedbax.persistence.train_job import read_train_job
+
+        kind = attempt["request"].partition(":")[0]
+        state = attempt["state"]
+        outcome = attempt["outcome"]
+        if (
+            attempt["project"] != project or attempt["data"].get("manifest_root") != str(source.root)
+            or not isinstance(outcome, dict) or outcome.get("outcome") != state
+        ):
+            raise JobConflict("Collection requires an exact terminal Jobs observation from its source Store.")
+        if state == "succeeded" and kind in {"train", "evaluate"}:
+            evidence_key = "store_success"
+        elif state == "stopped" and kind == "train":
+            evidence_key = "store_job_entry"
+        else:
+            raise JobConflict("Only successful Train or Evaluate and checkpoint-stopped Train can be collected.")
+        ref = ContentObjectRef.model_validate(outcome.get(evidence_key))
+        attempt_id = attempt["id"]
+        existing = self.host.jobs(job_id=attempt_id)
+        if existing:
+            (local,) = existing
+            local_data = local["data"]
+            local_outcome = local["outcome"]
+            if (
+                (local["project"], local["request"], local["state"], local["continues"], local["delivery"])
+                != (project, attempt["request"], state, attempt["continues"], attempt["delivery"])
+                or not isinstance(local_data, dict) or local_data.get("manifest_root") != str(store)
+                or local_data.get(f"collected_{kind}") is not True
+                or not isinstance(local_outcome, dict) or local_outcome.get(evidence_key) != ref.model_dump(mode="json")
+                or (kind == "evaluate" and local_outcome.get("receipt") != outcome.get("receipt"))
+            ):
+                raise JobConflict("The local Host already has different evidence for this attempt.")
+            destination = ImmutableArtifactBlobProvider(store)
+            if state == "succeeded":
+                SuccessView(destination).read_owned_success(ref)
+            else:
+                entry = read_train_job(destination, attempt_id, expected=ref)
+                stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
+                if entry.recovery.pointer != stopped.pointer:
+                    raise JobConflict("The local Train entry differs from the observed Stop checkpoint.")
+            activity = self._activity_rows(existing)[attempt_id]
+        elif kind == "train":
+            activity = self.collect_train_attempt(source, attempt, project=project, store=store)
+        else:
+            activity = self._collect_evaluate_attempt(source, attempt, project=project, store=store, ref=ref)
+        if activity.status != JobStatus(state):
+            raise JobConflict("The locally retained attempt differs from the observed terminal status.")
+        return CollectedSessionAttempt(activity, ref.sha256)
+
+    def _collect_evaluate_attempt(
+        self, source: ImmutableArtifactBlobProvider, attempt: Mapping[str, Any], *,
+        project: str, store: Path, ref: ContentObjectRef,
+    ) -> StudioActivityJob:
+        from feedbax.persistence.effective_success import SuccessView
+        from feedbax.persistence.store_sync import collect_success
+        from feedbax.studio.canonical_evaluate import (
+            BoundEvaluationJobInput, EvaluationRequestBinding, decode_rollout_request, evaluation_manifest_id,
+        )
+
+        attempt_id, request_id = attempt["id"], attempt["request"]
+        observed = JobReceipt.model_validate(attempt["outcome"]["receipt"])
+        view = SuccessView(source)
+        if view.attempt_ref(attempt_id) != ref:
+            raise JobConflict("Evaluate observation differs from the source Store's accepted attempt.")
+        success = view.read_receipt(ref)
+        manifest = success.evaluation_manifest
+        if (
+            success.attempt != attempt_id or success.request.id != request_id or manifest is None
+            or (observed.manifest_id, observed.manifest_sha256) != (evaluation_manifest_id(attempt_id), manifest.sha256)
+        ):
+            raise JobConflict("Evaluate observation differs from its exact Store receipt.")
+        destination = ImmutableArtifactBlobProvider(store)
+        collect_success(source, destination, ref, attempt=attempt_id, request_id=request_id)
+        _, _, subject = decode_rollout_request(request_id, destination.get_object(success.request.object))
+        payload = BoundEvaluationJobInput(
+            project_id=project, request_id=request_id, manifest_root=Path(destination.root),
+            canonical_request=EvaluationRequestBinding(request=success.request.object, checkpoint=subject),
+        )
+        launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
+        data = attempt["data"]
+        job = Job(
+            id=attempt_id, project=project, request=request_id, launch=launch,
+            data={key: data[key] for key in ("run_key", "stage_id", "scenario_id", "label", "coordinates")}
+            | {"collected_evaluate": True, "manifest_root": str(destination.root), "runtime": launch.argv[0]},
+        )
+        self.host.mirror_collected_evaluate(
+            job, receipt=ref.model_dump(mode="json"), progress=attempt["progress"], delivery=attempt["delivery"],
+        )
+        return self._activity_rows(self.host.jobs(job_id=attempt_id))[attempt_id]
+
     def collect_train_attempt(
         self, source: ImmutableArtifactBlobProvider, attempt: Mapping[str, Any], *, project: str, store: Path,
     ) -> StudioActivityJob:
@@ -932,15 +1045,16 @@ class JobService(PlanJobReader):
         ):
             raise JobConflict("Collection requires an exact terminal Train observation from its source Store.")
         destination = ImmutableArtifactBlobProvider(store)
-        receipt = None
         if state == "succeeded":
             receipt = ContentObjectRef.model_validate(outcome["store_success"])
             result = collect_success(source, destination, receipt, attempt=attempt_id, request_id=request_id)
             request = result.receipt.request
         else:
             stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
+            receipt = ContentObjectRef.model_validate(raw) if (raw := outcome.get("store_job_entry")) else None
             entry = collect_train_job(
                 source, destination, attempt=attempt_id, request_id=request_id, pointer=stopped.pointer,
+                expected=receipt,
             )
             request = entry.request
 
@@ -1394,7 +1508,6 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
     try:
         outcome = job.get("outcome") or {}
         receipt = JobReceipt.model_validate(outcome.get("receipt"))
-        binding, = _pinned_dependencies(job)
         view = SuccessView(ImmutableArtifactBlobProvider(store))
         accepted = ContentObjectRef.model_validate(outcome["store_success"])
         if view.attempt_ref(job["id"]) != accepted:
@@ -1403,7 +1516,10 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
         if success.attempt != job["id"] or success.request.id != job["request"] or success.evaluation_manifest is None:
             return None
         manifest_object = success.evaluation_manifest
+        if job["data"].get("collected_evaluate") is True:
+            return _verify_collected_evaluation(view.store, success, receipt, manifest_object)
 
+        binding, = _pinned_dependencies(job)
         manifest, subject = verify_evaluation_receipt(
             store, attempt=job["id"], request_id=job["request"], project=job["project"],
             receipt=receipt, binding=binding, manifest_object=manifest_object,
@@ -1418,9 +1534,61 @@ def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEv
             receipt=receipt, size=states_ref(manifest).content.size, checkpoint_gaps=gaps,
             placement="live" if "live_evaluation_points" in binding else "ordinary",
             manifest_object=manifest_object,
+            checkpoint_sources=_selected_checkpoint_sources(job),
+            bound_subject=_best_subject(job),
         )
     except (OSError, TypeError, ValueError, KeyError):
         return None
+
+
+def _verify_collected_evaluation(
+    store: ImmutableArtifactBlobProvider, success: Success, receipt: JobReceipt, manifest_object: ContentObjectRef,
+) -> _VerifiedEvaluation:
+    from feedbax.contracts.effective_success import EvaluationSubjectValue
+    from feedbax.persistence.evaluation_subject import verify_evaluation_success_evidence
+    from feedbax.studio.canonical_evaluate import (
+        decode_evaluation_manifest, evaluation_checkpoint_coordinates, states_ref,
+    )
+
+    verify_evaluation_success_evidence(store, success, verify_bound_closure=False)
+    manifest, subject = decode_evaluation_manifest(
+        store, store.get_object(manifest_object), manifest_object, success.attempt, success.request.id, receipt,
+    )
+    (bound,) = success.inputs["subject"]
+    source = bound.evaluation_subject
+    assert source is not None
+    value = EvaluationSubjectValue.model_validate(bound.descriptor)
+    members = value.resolved.members if value.resolved is not None else ()
+    checkpoints = tuple(
+        StudioTrainCheckpointSource(
+            job_id=checkpoint.occurrence.run_id, request_id=source.producer.id,
+            completed_updates=member.coordinate,
+        )
+        for checkpoint, member in zip(source.checkpoints, members, strict=True)
+    )
+    single = evaluation_checkpoint_coordinates(subject) is None
+    checkpoint_source = None
+    if single:
+        (checkpoint_source,) = checkpoints
+    gaps = None
+    if value.axis == "update":
+        gaps = tuple(StudioEvaluationCheckpointGap(update=gap.update, reason=gap.reason) for gap in value.gaps)
+    best = None
+    if isinstance(subject, BestRank):
+        evidence = manifest.provenance.metadata["best_rank"]["candidates"]
+        (checkpoint,) = checkpoints
+        chosen = subject.candidates[subject.winner([candidate["score"] for candidate in evidence])]
+        if chosen.reference.request_id != checkpoint.request_id:
+            raise ValueError("Collected Best result differs from its selected Train subject.")
+        best = _project_best_subject(subject, chosen, success.attempt, checkpoint, evidence)
+    return _VerifiedEvaluation(
+        receipt=receipt, size=states_ref(manifest).content.size, checkpoint_gaps=gaps,
+        placement="live" if manifest.metadata.get("placement") == "live" else "ordinary",
+        manifest_object=manifest_object,
+        checkpoint_source=checkpoint_source,
+        checkpoint_sources=() if single else checkpoints,
+        bound_subject=best,
+    )
 
 
 def _selected_checkpoint_sources(job: dict[str, Any]) -> tuple[StudioTrainCheckpointSource, ...]:
@@ -1465,22 +1633,33 @@ def _best_subject(job: dict[str, Any]) -> StudioBoundBestSubject | None:
         chosen = rank.candidates[best_bound_rank(rank, binding)]
         completion = binding["completion"]
         _, provenance = evaluation_subject_provenance(binding)
-        selection = {
-            "metric": rank.metric, "order": rank.order, "count": rank.count,
-            "candidates": [item.model_dump(mode="json") for item in rank.candidates],
-            "evidence": provenance.metadata["best_rank"]["candidates"],
-        }
-        if rank.group:
-            selection["group"] = rank.group
-        digest = sha256(canonical_json_v2_bytes(selection)).hexdigest()
-        return StudioBoundBestSubject(
-            key=rank.key, variant=chosen.variant, row=chosen.row,
-            consumer_job_id=job["id"],
-            producer_job_id=completion["producer_job_id"], producer_request_id=completion["request_id"],
-            completed_updates=completion["checkpoint"]["completed_updates"], selection_sha256=digest,
+        checkpoint = StudioTrainCheckpointSource(
+            job_id=completion["producer_job_id"], request_id=completion["request_id"],
+            completed_updates=completion["checkpoint"]["completed_updates"],
+        )
+        return _project_best_subject(
+            rank, chosen, job["id"], checkpoint, provenance.metadata["best_rank"]["candidates"],
         )
     except (KeyError, ValueError, TypeError):
         return None
+
+
+def _project_best_subject(
+    rank: BestRank, chosen: BestCandidate, attempt: str, checkpoint: StudioTrainCheckpointSource, evidence: Any,
+) -> StudioBoundBestSubject:
+    selection = {
+        "metric": rank.metric, "order": rank.order, "count": rank.count,
+        "candidates": [item.model_dump(mode="json") for item in rank.candidates],
+        "evidence": evidence,
+    }
+    if rank.group:
+        selection["group"] = rank.group
+    digest = sha256(canonical_json_v2_bytes(selection)).hexdigest()
+    return StudioBoundBestSubject(
+        key=rank.key, variant=chosen.variant, row=chosen.row, consumer_job_id=attempt,
+        producer_job_id=checkpoint.job_id, producer_request_id=checkpoint.request_id,
+        completed_updates=checkpoint.completed_updates, selection_sha256=digest,
+    )
 
 
 def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt | None:

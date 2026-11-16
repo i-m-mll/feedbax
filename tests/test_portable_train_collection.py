@@ -106,6 +106,15 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
         advanced = observed_success(terminal(host, advanced_id, "succeeded"), destination)
         assert advanced.ref != original_producer.ref
         assert advanced.receipt.supersedes == original_producer.ref
+        retry = local_jobs.collect_session_attempt(source, producer, project=project, store=destination.root)
+        assert retry.activity.job_id == producer_id
+        assert retry.evidence_sha256 == original_producer.ref.sha256
+        assert SuccessView(destination).authored(original_producer.receipt.request.id) == advanced
+
+        wrong = stopped | {"outcome": stopped["outcome"] | {"store_job_entry": producer["outcome"]["store_success"]}}
+        with pytest.raises(ValueError, match="observed Store reference"):
+            local_jobs.collect_session_attempt(source, wrong, project=project, store=destination.root)
+        assert not host.jobs(job_id=stopped_id)
 
         recovery_tree = exact.recovery.content.tree
         clone = ImmutableArtifactBlobProvider._clone_object_from
@@ -151,7 +160,9 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
         assert mirrored.status == JobStatus.STOPPED and mirrored.can_resume and mirrored.outcome.receipt is None
         assert read_train_job(destination, stopped_id) == exact
         observed_cursor = host.jobs_snapshot()["cursor"]
-        assert local_jobs.collect_train_attempt(source, stopped, project=project, store=destination.root) == mirrored
+        retry = local_jobs.collect_session_attempt(source, stopped, project=project, store=destination.root)
+        assert retry.activity == mirrored
+        assert retry.evidence_sha256 == stopped["outcome"]["store_job_entry"]["sha256"]
         assert host.jobs_snapshot()["cursor"] == observed_cursor
         assert SuccessView(destination).authored(original_producer.receipt.request.id) == advanced
         assert SuccessView(destination).attempt_ref(stopped_id) is None

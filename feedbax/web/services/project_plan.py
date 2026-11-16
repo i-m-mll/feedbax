@@ -794,7 +794,12 @@ def _evaluation_row(
             placement=success.evaluation_placement if series is not None else None,
             bound_subject=success.bound_subject,
         )
-    status, reason = saved_request_status(attempts, success=success, problem=problem.detail if problem else None)
+    retained = bool(attempts and attempts[-1].collected_evaluate) or (
+        success is not None and success.collected_evaluate
+    )
+    status, reason = saved_request_status(
+        attempts, success=success, problem=problem.detail if problem and not retained else None,
+    )
     displayed_attempt = active_plan_attempt(attempts)
     if displayed_attempt is None and attempts:
         displayed_attempt = success if status is JobStatus.SUCCEEDED else attempts[-1]
