@@ -15,7 +15,7 @@ from feedbax.contracts.execution_target import (
     TargetRunKind,
 )
 from feedbax.contracts.jobs import (
-    JobStatus, StopMode, StudioActivityJob, StudioJobSnapshot, StudioJobStopItem, StudioJobSubmission,
+    JobStatus, StopMode, StudioActivityJob, StudioJobSnapshot, StudioJobStopItem,
     StudioMachineQuote, StudioMachineQuoteRow, StudioRemoteSession, StudioSavedMachineQuoteRequest,
 )
 from feedbax.contracts.project_plan import RunKey
@@ -43,7 +43,7 @@ class StudioVenue:
 class _PendingRun:
     quote: StudioMachineQuote
     project: str
-    revision: str
+    reviewed: SettledProjectPlan
     keys: tuple[RunKey, ...]
     request: SessionRequest
     lock: Lock = field(default_factory=Lock)
@@ -77,6 +77,7 @@ class StudioRemoteRuns:
         self._lock = Lock()
         self._observations: dict[UUID, _VenueObservation] = {}
         self._opening_errors: dict[UUID, str] = {}
+        self._awaiting_ack: set[UUID] = set()
         self._version = 0
 
     def catalog(self, kinds: Sequence[TargetRunKind]) -> ExecutionTargets:
@@ -120,39 +121,53 @@ class StudioRemoteRuns:
                 for key, run, data in zip(body.run_keys, selected, values, strict=True)
             ],
         )
-        pending = _PendingRun(quote, reviewed.project_id, reviewed.revision, keys, request)
+        pending = _PendingRun(quote, reviewed.project_id, reviewed, keys, request)
         with self._lock:
             self._quotes = {key: item for key, item in self._quotes.items() if item.quote.expires_at_ms > now}
             self._quotes[quote.id] = pending
         return quote
 
-    def approve(self, folders: ProjectFolder, project: str, quote_id: UUID) -> StudioJobSubmission:
+    def approve(self, folders: ProjectFolder, project: str, quote_id: UUID) -> bool:
+        """Stage once and hold fresh decisions until their response is sent."""
         for openings in self._openings.values():
-            if result := openings.resume(folders, quote_id, project=project):
-                return result
+            if openings.staged(quote_id, project=project):
+                return False
         with self._lock:
             pending = self._quotes.get(quote_id)
         if pending is None or pending.project != project:
             raise JobConflict("Review the machine quote again.")
         with pending.lock:
             openings = self._openings[pending.request.target]
-            if result := openings.resume(folders, quote_id, project=project):
-                return result
+            if openings.staged(quote_id, project=project):
+                return False
             quote = pending.quote
             if quote.expires_at_ms <= time_ns() // 1_000_000:
                 raise JobConflict("The machine quote has expired.")
-            folders.read_plan(project, revision=pending.revision)
+            folders.read_authored_snapshot(project, revision=pending.reviewed.revision)
             request = pending.request
             authorization = self._attest(quote.model_copy(deep=True), request.model_copy(deep=True))
             if (authorization.request_digest, authorization.expires_at_ms, authorization.ceiling_microusd) != (
                 request.digest, quote.expires_at_ms, quote.ceiling_microusd,
             ):
                 raise SessionError("Approval differs from the reviewed machine quote.")
-            reviewed = folders.read_plan(project, revision=pending.revision)
-            return openings.submit(
-                folders, reviewed, run_keys=pending.keys, request=request, authorization=authorization,
-                hourly_microusd=quote.hourly_microusd,
-            )
+            with self._lock:
+                self._awaiting_ack.add(quote_id)
+            try:
+                openings.stage(
+                    folders, pending.reviewed, run_keys=pending.keys, request=request,
+                    authorization=authorization, hourly_microusd=quote.hourly_microusd,
+                )
+            except BaseException:
+                self.acknowledge_opening(quote_id)
+                raise
+            with self._lock:
+                self._quotes.pop(quote_id, None)
+            return True
+
+    def acknowledge_opening(self, quote_id: UUID) -> None:
+        with self._lock:
+            self._awaiting_ack.discard(quote_id)
+            self._version += 1
 
     @property
     def version(self) -> int:
@@ -166,16 +181,18 @@ class StudioRemoteRuns:
                 self._observations[session_id] = observation
                 self._version += 1
 
-    def observe(self, folders: ProjectFolder, local_jobs: JobService) -> None:
-        """Advance the durable Jobs observations even with no Studio window open."""
-        for target, venue in self._venues.items():
-            openings = self._openings[target]
+    def advance_openings(self, folders: ProjectFolder) -> None:
+        for openings in self._openings.values():
             for session_id in openings.pending():
+                with self._lock:
+                    if session_id in self._awaiting_ack:
+                        continue
                 try:
                     openings.resume(folders, session_id)
                 except ApprovedRunClosed as error:
                     self._opening_errors.pop(session_id, None)
                     log.warning("Approved runs %s were not confirmed: %s", session_id, error)
+                    self.acknowledge_opening(session_id)
                 except (HostError, OSError, SessionError) as error:
                     message = str(error)
                     if self._opening_errors.get(session_id) != message:
@@ -183,6 +200,11 @@ class StudioRemoteRuns:
                         log.warning("Approved runs %s await recovery: %s", session_id, error)
                 else:
                     self._opening_errors.pop(session_id, None)
+                    self.acknowledge_opening(session_id)
+
+    def observe(self, folders: ProjectFolder, local_jobs: JobService) -> None:
+        """Advance the durable Jobs observations even with no Studio window open."""
+        for venue in self._venues.values():
             for record in venue.driver.records():
                 if (
                     record.launch.request.target != venue.driver.provider.target

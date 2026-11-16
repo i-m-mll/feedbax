@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 from dataclasses import asdict
+import hashlib
 import json
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
+from time import perf_counter_ns
 from uuid import UUID
 
 import httpx
@@ -115,8 +120,11 @@ def _first_controller(root: Path, action: str) -> None:
         assert all(resource.intent is None for resource in driver.inventory())
         quote_id = quote.json()["id"]
         (root / "quote-id").write_text(quote_id)
-        client.post(f"{API}/approve", json={"quote": quote_id}).raise_for_status()
-    raise AssertionError("The first controller must exit before replying.")
+        accepted = client.post(f"{API}/approve", json={"quote": quote_id})
+        assert accepted.status_code == 202 and accepted.json() == {"session_id": quote_id}
+        (root / "acknowledged").touch()
+        signal.pause()
+    raise AssertionError("The first controller must be killed during recovery.")
 
 
 def _kill_controller(root: Path, action: str) -> UUID:
@@ -127,7 +135,7 @@ def _kill_controller(root: Path, action: str) -> UUID:
     ) as child:
         def reached_boundary():
             assert child.poll() is None, output.read_text()
-            return (root / "boundary").is_file()
+            return (root / "boundary").is_file() and (root / "acknowledged").is_file()
 
         try:
             wait_until(reached_boundary, timeout=15)
@@ -199,6 +207,62 @@ def test_native_refusal_and_edit_during_approval_leave_no_admission(tmp_path, mo
         assert len(challenges) == 3
 
 
+def test_staging_one_hundred_saved_runs_replies_before_provider_acquisition(
+    tmp_path, monkeypatch, host_fixture, record_property,
+):
+    folders, foreign = _local_project(tmp_path, monkeypatch, host_fixture)
+    raw = document_project(authored_documents())
+    base = raw["steps"].pop("train")
+    for index in range(100):
+        step = deepcopy(base)
+        step["base"]["inline"]["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] += index / 1e6
+        raw["steps"][f"train-{index}"] = step
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    reviewed = folders.read_plan(PROJECT, revision=None)
+    selected = [run for run in reviewed.plan.runs if run.key.step.startswith("train-")]
+    assert len(selected) == 100
+    attested_ns = None
+    staged_ns = None
+    quote_id = None
+
+    def native_proof(_launcher, challenge, _reason):
+        nonlocal attested_ns
+        attested_ns = perf_counter_ns()
+        return challenge
+
+    app, driver = _app(tmp_path, "refuse", native_proof)
+
+    async def check_response(scope, receive, send):
+        async def observe(message):
+            nonlocal staged_ns
+            if scope.get("path") == f"{API}/approve" and message["type"] == "http.response.body":
+                staged_ns = perf_counter_ns()
+                assert _approval_row(driver, quote_id) == (None, None)
+                await asyncio.to_thread(app.state.remote_runs.advance_openings, app.state.project_folders)
+                assert driver.records() == () and driver.inventory() == (foreign,)
+            await send(message)
+        await app(scope, receive, observe)
+
+    with TestClient(check_response) as client:
+        quote = client.post(f"{API}/quote", json={
+            "revision": reviewed.revision, "target": PROFILE,
+            "run_keys": [asdict(run.key) for run in selected],
+        })
+        quote.raise_for_status()
+        quote_id = quote.json()["id"]
+        reply = client.post(f"{API}/approve", json={"quote": quote_id})
+        assert reply.status_code == 202 and reply.json() == {"session_id": quote_id}
+        assert staged_ns is not None and attested_ns is not None
+        elapsed_ms = (staged_ns - attested_ns) / 1e6
+        record_property("approval_stage_ms", round(elapsed_ms, 3))
+        with driver.connection() as db:
+            (stored,) = db.execute("SELECT request FROM session_delegations WHERE session=?", (quote_id,)).fetchone()
+        delegation = json.loads(stored)
+        assert delegation["run_keys"] == [asdict(run.key) for run in selected]
+        assert delegation["request_ids"] == [run.request_id for run in selected]
+        assert wait_until(lambda: _approval_row(driver, quote_id)[1]) == REFUSED
+
+
 def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatch, host_fixture):
     folders, _ = _local_project(tmp_path, monkeypatch, host_fixture)
     reviewed = folders.read_plan(PROJECT, revision=None)
@@ -211,8 +275,9 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
     run_fixture_git(source, "add", "pyproject.toml", "feedbax/__init__.py")
     run_fixture_git(source, "commit", "-m", "Fixture source")
     snapshot = seal_repo_snapshot("feedbax", source, snapshot_parent=tmp_path / "snapshots")
+    toolchain = b"isolated Linux uv fixture"
     environment = RunPodEnvironment(
-        workspace="/workspace", bootstrap_python="/usr/bin/python3", uv="/usr/bin/uv",
+        workspace="/workspace", bootstrap_python="/usr/bin/python3", uv_sha256=hashlib.sha256(toolchain).hexdigest(),
         uv_version="0.11.0", snapshot=snapshot.record, backend="gpu",
     )
     resources = runpod_resources()
@@ -227,8 +292,16 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
     launcher = tmp_path / "Contents" / "MacOS" / "feedbax-studio"
     launcher.parent.mkdir(parents=True)
     launcher.touch()
+    venue = launcher.parent.parent / "Resources" / "runpod"
+    venue.mkdir(parents=True)
+    shutil.copytree(snapshot.staging_root, venue / "source")
+    (venue / "environment.json").write_text(environment.model_dump_json())
+    (venue / "uv").write_bytes(toolchain)
     release = Release(launcher.parent.parent, {
-        "source_commit": snapshot.record.commit, "resources": {"launcher": "MacOS/feedbax-studio"},
+        "source_commit": snapshot.record.commit, "resources": {
+            "launcher": "MacOS/feedbax-studio", "runpod_environment": "Resources/runpod/environment.json",
+            "runpod_uv": "Resources/runpod/uv", "runpod_source": "Resources/runpod/source",
+        },
     }, "fixture")
     assert installed_remote.load_remote_runs(paths, release) is None
     credentials = tmp_path / "account.toml"
@@ -241,8 +314,7 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
     )
     write_private_json(paths.control / "runpod.json", {
         "schema_id": "feedbax.desktop.runpod.v1", "profiles": [profile.model_dump(mode="json")],
-        "environment": environment.model_dump(mode="json"), "authorization_seconds": 120,
-        "snapshot_root": str(snapshot.staging_root), "runpod_config": str(credentials),
+        "authorization_seconds": 120, "runpod_config": str(credentials),
         "ssh_identity": str(identity),
     })
     other_release = Release(release.contents, release.document | {"source_commit": "0" * 40}, "other")
@@ -294,7 +366,7 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
             accepted = wait_until(lambda: _approval_row(restarted, quote_id)[0], timeout=16)
             submission = StudioJobSubmission.model_validate_json(accepted)
             reply = client.post(f"{API}/approve", json={"quote": str(quote_id)})
-            assert reply.status_code == 202 and StudioJobSubmission.model_validate(reply.json()) == submission
+            assert reply.status_code == 202 and reply.json() == {"session_id": str(quote_id)}
             assert submission.target == opened.placement
             assert [item.disposition for item in submission.items] == ["admitted", "admitted"]
             host = restarted.attach(quote_id)
@@ -320,9 +392,15 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
 
 
 def test_recovered_opening_failure_closes_the_original_machine(tmp_path, monkeypatch, host_fixture):
-    _, foreign = _local_project(tmp_path, monkeypatch, host_fixture)
+    folders, foreign = _local_project(tmp_path, monkeypatch, host_fixture)
     quote_id = _kill_controller(tmp_path, "after-acquisition")
-    app, restarted = _app(tmp_path, "refuse")
+    challenges = []
+
+    def attest(_launcher, challenge, _reason):
+        challenges.append(challenge)
+        return challenge
+
+    app, restarted = _app(tmp_path, "refuse", attest)
     original = restarted.record(quote_id)
     assert original.phase == "opening" and original.venue is None
     assert _approval_row(restarted, quote_id) == (None, None)
@@ -331,13 +409,26 @@ def test_recovered_opening_failure_closes_the_original_machine(tmp_path, monkeyp
     with TestClient(app) as client:
         failure = wait_until(lambda: _approval_row(restarted, quote_id)[1])
         reply = client.post(f"{API}/approve", json={"quote": str(quote_id)})
-        assert reply.status_code == 409 and reply.json() == {"detail": REFUSED} and failure == REFUSED
+        assert reply.status_code == 202 and reply.json() == {"session_id": str(quote_id)} and failure == REFUSED
         closed = restarted.record(quote_id)
         assert closed.phase == "closed" and closed.venue == owned
         assert closed.close_evidence is not None
         assert closed.close_evidence.owned == (owned,) and closed.close_evidence.remaining == ()
         assert restarted.inventory() == (foreign,)
         assert list((tmp_path / "venues").glob(".used-*")) == [tmp_path / "venues" / f".used-{owned.id}"]
+        assert challenges == []
+
+        revised = folders.read_plan(PROJECT, revision=None)
+        new_quote = client.post(f"{API}/quote", json={
+            "revision": revised.revision, "target": PROFILE, "run_keys": [asdict(key) for key in RUNS],
+        })
+        new_quote.raise_for_status()
+        next_id = new_quote.json()["id"]
+        assert next_id != str(quote_id)
+        assert client.post(f"{API}/approve", json={"quote": next_id}).status_code == 202
+        assert len(challenges) == 1
+        assert wait_until(lambda: _approval_row(restarted, next_id)[1]) == REFUSED
+        assert restarted.inventory() == (foreign,)
 
 
 if __name__ == "__main__":

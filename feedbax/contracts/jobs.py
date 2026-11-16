@@ -432,6 +432,10 @@ class StudioMachineApproval(StrictModel):
     quote: UUID
 
 
+class StudioMachineApprovalReceipt(StrictModel):
+    session_id: UUID
+
+
 class JobOutcome(StrictModel):
     outcome: Literal["succeeded", "stopped", "failed", "interrupted", "blocked"]
     error: JobError | None = None

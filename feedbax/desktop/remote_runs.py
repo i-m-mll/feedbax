@@ -27,17 +27,14 @@ from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue
 class DesktopRunPod(StrictModel):
     schema_id: Literal["feedbax.desktop.runpod.v1"]
     profiles: Annotated[tuple[SessionTargetProfile, ...], Field(min_length=1)]
-    environment: RunPodEnvironment
     authorization_seconds: Positive
-    snapshot_root: Path
     runpod_config: Path
     ssh_identity: Path
-    uv_binary: Path | None = None
 
-    @field_validator("snapshot_root", "runpod_config", "ssh_identity", "uv_binary")
+    @field_validator("runpod_config", "ssh_identity")
     @classmethod
-    def _absolute(cls, path: Path | None) -> Path | None:
-        if path is not None and (not path.is_absolute() or ".." in path.parts):
+    def _absolute(cls, path: Path) -> Path:
+        if not path.is_absolute() or ".." in path.parts:
             raise ValueError("Studio RunPod paths must be absolute.")
         return path
 
@@ -48,19 +45,17 @@ def load_remote_runs(paths: AppPaths, release: Release) -> StudioRemoteRuns | No
     except FileNotFoundError:
         return None
     config = DesktopRunPod.model_validate(document)
-    environment = config.environment
+    environment = RunPodEnvironment.model_validate_json(release.resource("runpod_environment").read_bytes())
+    source = release.resource("runpod_source")
     record = environment.snapshot
     if record.dirty or record.commit != release.document["source_commit"]:
         raise ValueError("The RunPod snapshot must match the installed Studio source commit.")
     verify_repo_snapshot(
-        config.snapshot_root, content_sha256=record.content_sha256, file_count=record.file_count,
+        source, content_sha256=record.content_sha256, file_count=record.file_count,
     )
-    provenance, revision = load_and_verify_provenance(config.snapshot_root / "feedbax")
+    provenance, revision = load_and_verify_provenance(source / "feedbax")
     if revision != record.commit or hashlib.sha256(provenance).hexdigest() != record.distribution_provenance_sha256:
         raise ValueError("The RunPod snapshot provenance differs from the installed release.")
-    if (config.uv_binary is None) != (environment.uv_sha256 is None):
-        raise ValueError("Studio RunPod requires the declared Linux uv binary for staged uv.")
-
     for profile in config.profiles:
         if profile.driver != RunPodSessionProvider.target:
             raise ValueError("Studio RunPod profiles must use the RunPod session driver.")
@@ -76,8 +71,8 @@ def load_remote_runs(paths: AppPaths, release: Release) -> StudioRemoteRuns | No
         root / "provider", SubprocessRunPodTransport(), api_key=api_key,
         ssh_key_path=config.ssh_identity, running_cutoff=cutoff,
     )
-    snapshot = SealedRepoSnapshot("feedbax", config.snapshot_root, config.snapshot_root, record)
-    provider = RunPodSessionProvider(acquisition, environment, snapshot, uv_binary=config.uv_binary)
+    snapshot = SealedRepoSnapshot("feedbax", source, source, record)
+    provider = RunPodSessionProvider(acquisition, environment, snapshot, uv_binary=release.resource("runpod_uv"))
     driver = SessionDriver(root / "controller", provider, verify_authorization=approval.verify)
     venue = StudioVenue(
         driver, environment.digest, provider.jobs, config.authorization_seconds,

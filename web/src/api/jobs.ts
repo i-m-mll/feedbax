@@ -56,7 +56,7 @@ export function quoteSavedRun(project: string, input: StudioSavedMachineQuoteReq
 
 export function approveSavedRun(project: string, input: StudioMachineApproval) {
   const body = parseContract('StudioMachineApproval', input);
-  return readContract(`${savedTrainRunsPath(project)}/approve`, 'StudioJobSubmission', {
+  return readContract(`${savedTrainRunsPath(project)}/approve`, 'StudioMachineApprovalReceipt', {
     method: 'POST',
     body: JSON.stringify(body),
   });

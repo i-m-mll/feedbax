@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { StudioActivityJob, StudioJobSnapshot, StudioJobSubmission, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { StudioActivityJob, StudioJobSnapshot, StudioMachineApprovalReceipt, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.skip(process.env.FEEDBAX_STUDIO_E2E_REMOTE_FIXTURE !== '1', 'Requires the disposable machine provider');
@@ -50,14 +50,13 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await writeFile(downloadGate, '');
   const accepted = page.waitForResponse((response) => new URL(response.url()).pathname === `${path}/approve`);
   const runs = page.getByRole('table', { name: 'Runs', exact: true });
-  let submission: StudioJobSubmission;
+  let session: string;
   try {
     await approval.getByRole('button', { name: 'Approve' }).click();
     const response = await accepted;
     expect(response.status(), await response.text()).toBe(202);
-    submission = await response.json() as StudioJobSubmission;
-    expect(submission.target).toMatchObject({ kind: 'session', profile: 'rehearsal', driver: 'local-rehearsal' });
-    expect(submission.items).toEqual([expect.objectContaining({ disposition: 'admitted', job_id: expect.any(String) })]);
+    session = ((await response.json()) as StudioMachineApprovalReceipt).session_id;
+    expect(session).toMatch(/^[0-9a-f-]{36}$/);
     await expect(approval).toBeHidden();
     await expect(runs.getByText('Downloading', { exact: true })).toBeVisible({ timeout: 18_000 });
     await expect(runs.getByRole('progressbar', { name: 'Downloading' })).toBeVisible();
@@ -66,7 +65,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   }
   await expect(runs.getByText('Done', { exact: true })).toBeVisible({ timeout: 20_000 });
   const [attempt] = await attempts();
-  expect(attempt).toMatchObject({ status: 'succeeded', job_id: submission.items[0].job_id });
+  expect(attempt).toMatchObject({ status: 'succeeded', job_id: expect.any(String) });
   await page.reload();
   await mapStep(page, 'train').click();
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
@@ -77,7 +76,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   const close = card.getByRole('button', { name: 'Close', exact: true });
   await expect(close).toBeEnabled();
   const closed = page.waitForResponse((response) => new URL(response.url()).pathname ===
-    `/api/sessions/${submission.target?.kind === 'session' ? submission.target.session_id : ''}/close`);
+    `/api/sessions/${session}/close`);
   await close.click();
   const confirmation = await closed;
   expect(confirmation.status(), confirmation.statusText()).toBe(204);
@@ -126,11 +125,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   await approval.getByRole('button', { name: 'Approve' }).click();
   const response = await accepted;
   expect(response.status(), await response.text()).toBe(202);
-  const admitted = await response.json() as StudioJobSubmission;
-  expect(admitted.items).toHaveLength(6);
-  expect(admitted.items.every(({ disposition }) => disposition === 'admitted')).toBe(true);
-  if (admitted.target?.kind !== 'session') throw new Error('Expected the rehearsal machine placement');
-  const session = admitted.target.session_id;
+  const { session_id: session } = (await response.json()) as StudioMachineApprovalReceipt;
   await expect(runs.getByText('Queued', { exact: true })).toHaveCount(2, { timeout: 12_000 });
   await expect(runs.getByText('Waiting for a training slot.', { exact: true })).toHaveCount(2);
   await expect.poll(async () => (await jobs()).filter(({ status }) => status === 'running').length,
@@ -139,6 +134,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   await expect(runs.getByText('Queued', { exact: true })).toHaveCount(2);
   await expect(runs.getByText('Running', { exact: true })).toHaveCount(4);
   let active = (await jobs()).filter(({ status }) => status === 'running');
+  expect(active.every(({ target }) => target?.kind === 'session' && target.session_id === session)).toBe(true);
   const checkpoint = active[0];
   const force = active[1];
   const interrupt = active[2];

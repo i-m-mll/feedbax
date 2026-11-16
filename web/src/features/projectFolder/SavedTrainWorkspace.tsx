@@ -551,9 +551,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   function approveMachine() {
     if (!machineQuote) return;
     void perform(async () => {
-      const result = await approveSavedRun(saved.project_id, { quote: machineQuote.id });
+      await approveSavedRun(saved.project_id, { quote: machineQuote.id });
       setMachineQuote(undefined);
-      applySubmission(result);
+      actions.refresh();
     });
   }
 

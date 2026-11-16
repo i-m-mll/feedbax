@@ -26,6 +26,7 @@ from feedbax.contracts.jobs import (
     StudioLocalSession,
     StudioRemoteSession,
     StudioMachineApproval,
+    StudioMachineApprovalReceipt,
     StudioMachineQuote,
     StudioSavedEvaluationRead,
     StudioSavedEvaluationReplayRequest,
@@ -124,17 +125,35 @@ def quote_saved_run(
         raise HTTPException(409, detail=str(exc)) from exc
 
 
-@router.post("/projects/{project_id}/train-runs/approve", status_code=202)
+class _ApprovalResponse(Response):
+    def __init__(self, result: StudioMachineApprovalReceipt, headers, release: Callable[[], None]) -> None:
+        super().__init__(result.model_dump_json(), status_code=202, media_type="application/json", headers=headers)
+        self.release_opening = release
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.release_opening()
+
+
+@router.post("/projects/{project_id}/train-runs/approve", status_code=202, response_model=StudioMachineApprovalReceipt)
 def approve_saved_run(
     project_id: ProjectName, body: StudioMachineApproval, request: Request, response: Response,
-) -> StudioJobSubmission:
+) -> StudioMachineApprovalReceipt | Response:
     remote = _remote_runs(request)
     try:
-        return _project_response(response, lambda: remote.approve(request.app.state.project_folders, project_id, body.quote))
+        fresh = _project_response(
+            response, lambda: remote.approve(request.app.state.project_folders, project_id, body.quote),
+        )
     except (JobConflict, SessionError) as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
+    result = StudioMachineApprovalReceipt(session_id=body.quote)
+    if fresh:
+        return _ApprovalResponse(result, response.headers, lambda: remote.acknowledge_opening(body.quote))
+    return result
 
 
 @router.post("/projects/{project_id}/evaluate-replay")

@@ -15,6 +15,7 @@ uv run --no-project --with packaging==26.3 python desktop/package.py native
 uv run --no-project --with packaging==26.3 python desktop/package.py bundle \
   --output .desktop-build/candidate --build-number 1 \
   --numerical-manifest "$STUDIO_NUMERICAL_MANIFEST" \
+  --runpod-uv "$STUDIO_RUNPOD_UV" \
   --signing-identity "$STUDIO_SIGNING_IDENTITY"
 ```
 
@@ -49,6 +50,8 @@ Installed files live inside the app bundle. Durable application state lives unde
 
 ## RunPod machines
 
-An installed service with an owner-only `config/desktop-service/runpod.json` loads RunPod profiles at startup. The file uses `schema_id: "feedbax.desktop.runpod.v1"` and contains `profiles` (session target profiles with RunPod resources), `environment` (the RunPod environment declaration), and `authorization_seconds`. Set `snapshot_root` to a sealed Feedbax source tree matching the installed release commit, `runpod_config` to the account's RunPod TOML configuration, and `ssh_identity` to the client SSH identity. Use absolute paths. When the environment specifies a staged `uv_sha256`, supply the matching Linux executable as `uv_binary`.
+Each release contains a sealed venue source tree from its own commit and the qualified Linux x86-64 `uv` binary. Supply the pinned Linux binary as `STUDIO_RUNPOD_UV` at bundle assembly.
 
-Studio reads the machine quote before asking for Touch ID. Jobs records the approved saved selection and uses its existing RunPod session and Host admission flow. Keep the configured account, venue snapshot and toolchain available while approved work is outstanding.
+An installed service with an owner-only `config/desktop-service/runpod.json` loads RunPod profiles at startup. The file uses `schema_id: "feedbax.desktop.runpod.v1"` and contains `profiles` (session target profiles with RunPod resources) and `authorization_seconds`. Set `runpod_config` to the absolute path of the account's RunPod TOML configuration and `ssh_identity` to the absolute path of the client SSH identity.
+
+Studio reads the machine quote before asking for Touch ID. Approve returns once Jobs records the approved saved selection. Jobs advances the recorded operation in the background and recovers it after restart. Keep the configured account and the approved release available while work is outstanding.

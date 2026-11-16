@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -40,12 +41,12 @@ STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
 service_log = logging.getLogger("uvicorn.error")
 
 
-async def _observe_remote_runs(app: FastAPI, remote: StudioRemoteRuns) -> None:
+async def _maintain_remote_runs(advance: Callable[[], None], failure: str) -> None:
     while True:
         try:
-            await asyncio.to_thread(remote.observe, app.state.project_folders, app.state.job_service)
+            await asyncio.to_thread(advance)
         except Exception:
-            service_log.exception("Could not refresh the machine activity.")
+            service_log.exception(failure)
         await asyncio.sleep(0.75)
 
 
@@ -86,14 +87,23 @@ def create_app(
         app.state.analysis_jobs = analysis_jobs
         if desktop_job_root is not None:
             app.state.desktop_jobs = StudioJobLifecycle(analysis_jobs, app.state.job_service, desktop_release)
-        observation = asyncio.create_task(_observe_remote_runs(app, remote_runs)) if remote_runs is not None else None
+        maintenance = () if remote_runs is None else (
+            asyncio.create_task(_maintain_remote_runs(
+                lambda: remote_runs.advance_openings(app.state.project_folders), "Could not advance approved machines.",
+            )),
+            asyncio.create_task(_maintain_remote_runs(
+                lambda: remote_runs.observe(app.state.project_folders, app.state.job_service),
+                "Could not refresh the machine activity.",
+            )),
+        )
         try:
             yield
         finally:
-            if observation is not None:
-                observation.cancel()
+            for task in maintenance:
+                task.cancel()
+            for task in maintenance:
                 with suppress(asyncio.CancelledError):
-                    await observation
+                    await task
             if desktop_job_root is not None:
                 analysis_jobs.begin_stop(force=True)
             await analysis_jobs.aclose()

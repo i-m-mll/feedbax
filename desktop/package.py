@@ -396,6 +396,10 @@ def package(args: argparse.Namespace) -> None:
             env=dict(os.environ, VITE_FEEDBAX_DESKTOP="1"))
         dependencies = _package_python(resources, stage, manifest_path.parent, wheels, numerical)
         (resources / "dependencies.json").write_bytes(json_bytes(dependencies))
+        run(
+            contents / PYTHON, "-I", "-B", "-m", "feedbax.desktop.venue_release",
+            ROOT, resources / "runpod", revision, args.runpod_uv.resolve(strict=True),
+        )
         _rust_notices(resources)
         launch_agent = _write_launch_agent(contents, identifier)
         shutil.copyfile(ROOT / "LICENSE", resources / "Feedbax-LICENSE")
@@ -413,6 +417,9 @@ def package(args: argparse.Namespace) -> None:
                 "launcher": LAUNCHER, "python": PYTHON, "studio": "Resources/studio",
                 "dependencies": "Resources/dependencies.json", "launch_agent": launch_agent,
                 "installer": "Resources/installer",
+                "runpod_environment": "Resources/runpod/environment.json",
+                "runpod_source": "Resources/runpod/source",
+                "runpod_uv": "Resources/runpod/uv",
             },
         } | fixture
         if clean_revision() != revision:
@@ -442,6 +449,7 @@ def main() -> None:
     bundle.add_argument("--fixture-root", type=Path)
     bundle.add_argument("--fixture-name")
     bundle.add_argument("--numerical-manifest", type=Path, required=True)
+    bundle.add_argument("--runpod-uv", type=Path, required=True)
     args = parser.parse_args()
     if sys.platform != "darwin" or platform.machine() != "arm64":
         parser.error("packaging requires macOS on Apple Silicon")

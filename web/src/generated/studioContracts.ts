@@ -353,6 +353,10 @@ export interface StudioMachineApproval {
   quote: string;
 }
 
+export interface StudioMachineApprovalReceipt {
+  session_id: string;
+}
+
 export interface StudioMachineQuote {
   id: string;
   machine: string;
@@ -4683,6 +4687,14 @@ export const StudioMachineApprovalSchema: z.ZodType<StudioMachineApproval> = z.l
     })
     .strict()
 ) as unknown as z.ZodType<StudioMachineApproval>;
+
+export const StudioMachineApprovalReceiptSchema: z.ZodType<StudioMachineApprovalReceipt> = z.lazy(() =>
+  z
+    .object({
+      "session_id": z.string().uuid(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioMachineApprovalReceipt>;
 
 export const StudioMachineQuoteSchema: z.ZodType<StudioMachineQuote> = z.lazy(() =>
   z
@@ -10567,6 +10579,7 @@ export const contractSchemas = {
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
   StudioSavedMachineQuoteRequest: StudioSavedMachineQuoteRequestSchema,
   StudioMachineApproval: StudioMachineApprovalSchema,
+  StudioMachineApprovalReceipt: StudioMachineApprovalReceiptSchema,
   StudioMachineQuote: StudioMachineQuoteSchema,
   StudioMachineQuoteRow: StudioMachineQuoteRowSchema,
   StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
@@ -10714,6 +10727,7 @@ export interface ContractTypeMap {
   StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
   StudioSavedMachineQuoteRequest: StudioSavedMachineQuoteRequest;
   StudioMachineApproval: StudioMachineApproval;
+  StudioMachineApprovalReceipt: StudioMachineApprovalReceipt;
   StudioMachineQuote: StudioMachineQuote;
   StudioMachineQuoteRow: StudioMachineQuoteRow;
   StudioSavedTrainRuns: StudioSavedTrainRuns;

@@ -106,11 +106,17 @@ class ApprovedSessionRuns:
         self._attach = attach
         _create_journal(driver)
 
-    def submit(
+    def stage(
         self, folders: ProjectFolder, reviewed: SettledProjectPlan, *, run_keys: Sequence[RunKey],
         request: SessionRequest, authorization: SessionAuthorization, hourly_microusd: int,
-    ) -> StudioJobSubmission:
+    ) -> None:
         self.driver._validate(request, authorization)
+        runnable = {
+            run.key: run for run in reviewed.plan.runs
+            if run.kind in SESSION_RUN_KINDS and run.admission_problem is None
+        }
+        if len(set(run_keys)) != len(run_keys) or any(key not in runnable for key in run_keys):
+            raise SessionError("Machine approval requires distinct runnable saved Train and Evaluate rows.")
         approval = _OpeningApproval(request=request, authorization=authorization, hourly_microusd=hourly_microusd)
         delegated = _freeze_delegation(folders, _saved_delegation(reviewed, run_keys, destination=True))
         identity = str(request.id)
@@ -122,6 +128,8 @@ class ApprovedSessionRuns:
                 (identity,),
             ).fetchone()
             if prior is None:
+                if authorization.expires_at_ms <= self.driver._clock_ms():
+                    raise SessionError("The machine quote has expired.")
                 db.execute(
                     "INSERT INTO session_delegations(session, token, request) VALUES (?, ?, ?)",
                     (identity, identity, delegated.model_dump_json()),
@@ -135,9 +143,15 @@ class ApprovedSessionRuns:
                 or Delegation.model_validate_json(prior[1]) != delegated
             ):
                 raise SessionError("This approval belongs to a different saved delegation.")
-        submission = self.resume(folders, request.id, project=reviewed.project_id)
-        assert submission is not None
-        return submission
+
+    def staged(self, session_id: UUID, *, project: str) -> bool:
+        with self.driver.connection() as db:
+            return db.execute(
+                """SELECT 1 FROM session_openings a
+                   JOIN session_delegations d ON d.session=a.session AND d.token=a.session
+                   WHERE a.session=? AND json_extract(d.request, '$.project')=?""",
+                (str(session_id), project),
+            ).fetchone() is not None
 
     def pending(self) -> tuple[UUID, ...]:
         with self.driver.connection() as db:
