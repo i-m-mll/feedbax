@@ -22,6 +22,7 @@ use tauri::{
     menu::{MenuItem, Submenu},
     webview::NewWindowResponse,
     App, AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
 };
 use window_session::{Folder, OpenWindows, RecentProject, RecentProjects, SavedWindow, Size};
 
@@ -96,6 +97,13 @@ impl Windows {
         }
     }
 
+    fn load_session(&mut self, path: PathBuf) -> io::Result<()> {
+        let open = window_session::read(&path)?;
+        self.restore(path, open);
+        self.ready = true;
+        Ok(())
+    }
+
     fn restore(&mut self, path: PathBuf, open: OpenWindows) {
         let mut folders = BTreeSet::new();
         for (id, saved) in &open {
@@ -130,6 +138,40 @@ impl Windows {
                     .filter(|saved| &saved.folder == folder)
             })
             .map(|saved| saved.size)
+    }
+
+    fn size_project_window<B>(
+        &self,
+        id: &str,
+        folder: &Folder,
+        available: Option<Size>,
+        inner_size: impl FnOnce(f64, f64) -> B,
+    ) -> (B, Size) {
+        let size = self.saved_size(id, folder).unwrap_or(Size::DEFAULT);
+        let size = available.map_or(size, |screen| size.bounded(screen));
+        (inner_size(size.width, size.height), size)
+    }
+
+    fn remember_resize(&mut self, label: &str, event: &WindowEvent, scale_factor: f64) {
+        let (physical, scale_factor) = match event {
+            WindowEvent::Resized(size) => (*size, scale_factor),
+            WindowEvent::ScaleFactorChanged {
+                scale_factor,
+                new_inner_size,
+                ..
+            } => (*new_inner_size, *scale_factor),
+            _ => return,
+        };
+        if let Some(saved) = label
+            .strip_prefix(PROJECT_PREFIX)
+            .and_then(|id| self.open.get_mut(id))
+        {
+            let logical = physical.to_logical::<f64>(scale_factor);
+            saved.size = Size {
+                width: logical.width,
+                height: logical.height,
+            };
+        }
     }
 
     fn managed_alias<'a>(&self, folder: &'a Folder) -> Option<&'a str> {
@@ -322,10 +364,6 @@ fn show_studio(
     let windows = app.state::<Mutex<Windows>>();
     let title = ticket.project.title.as_str();
     let project_folder = ticket.folder.clone();
-    let remembered = windows
-        .lock()
-        .unwrap()
-        .saved_size(&ticket.project.id, &project_folder);
     let created = if let Some(window) = app.get_webview_window(&label) {
         refresh_project_session(&window, &ticket, &ticket.project.id, reconnect)?;
         project_document::ProjectDocuments::bind(
@@ -349,7 +387,6 @@ fn show_studio(
         let origin_text = json!(origin.ascii_serialization());
         let generation = json!(ticket.generation);
         let script = format!("{menu_script}; if (location.origin === {origin_text}) window.__FEEDBAX_STUDIO_GENERATION__ = {generation};");
-        let size = remembered.unwrap_or(Size::DEFAULT);
         let available = app.primary_monitor()?.map(|monitor| {
             let work = monitor
                 .work_area()
@@ -360,10 +397,15 @@ fn show_studio(
                 height: work.height,
             }
         });
-        let size = available.map_or(size, |screen| size.bounded(screen));
-        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(ticket.url))
+        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(ticket.url));
+        let (builder, size) = windows.lock().unwrap().size_project_window(
+            &project_id,
+            &project_folder,
+            available,
+            |width, height| builder.inner_size(width, height),
+        );
+        let builder = builder
             .title(title)
-            .inner_size(size.width, size.height)
             .min_inner_size(Size::MIN.width, Size::MIN.height)
             .focused(focused)
             .devtools(false)
@@ -745,23 +787,20 @@ fn drain_entries(app: &AppHandle) {
     }
 }
 
-fn remember_size(window: &tauri::Window) -> tauri::Result<()> {
-    let Some(id) = window.label().strip_prefix(PROJECT_PREFIX) else {
-        return Ok(());
-    };
-    if window.is_fullscreen()? || window.is_maximized()? || window.is_minimized()? {
+fn remember_size(window: &tauri::Window, event: &WindowEvent) -> tauri::Result<()> {
+    if !window.label().starts_with(PROJECT_PREFIX)
+        || window.is_fullscreen()?
+        || window.is_maximized()?
+        || window.is_minimized()?
+    {
         return Ok(());
     }
-    let size = window
-        .inner_size()?
-        .to_logical::<f64>(window.scale_factor()?);
-    let state = window.state::<Mutex<Windows>>();
-    if let Some(saved) = state.lock().unwrap().open.get_mut(id) {
-        saved.size = Size {
-            width: size.width,
-            height: size.height,
-        };
-    }
+    let scale_factor = window.scale_factor()?;
+    window
+        .state::<Mutex<Windows>>()
+        .lock()
+        .unwrap()
+        .remember_resize(window.label(), event, scale_factor);
     Ok(())
 }
 
@@ -943,15 +982,13 @@ fn start_windows(app: &AppHandle) {
         .and_then(|paths| {
             let path = paths.settings.join("studio-windows.json");
             project_document::ProjectDocuments::start(app, paths.control)?;
-            let open = window_session::read(&path)?;
             let recents_path = paths.settings.join("studio-recents.json");
             let recents = window_session::read(&recents_path);
             let windows = app.state::<Mutex<Windows>>();
             let mut state = windows.lock().unwrap();
+            state.load_session(path)?;
             state.projects_root = Some(paths.projects);
             state.recents_file = Some(recents_path);
-            state.restore(path, open);
-            state.ready = true;
             match recents {
                 Ok(recents) => {
                     studio_menu::set_recent(app, &recents)?;
@@ -1135,8 +1172,8 @@ fn main() {
                     eprintln!("Studio could not record a closed project: {error}");
                 }
             }
-            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
-                if let Err(error) = remember_size(window) {
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                if let Err(error) = remember_size(window, event) {
                     eprintln!("Studio could not read window size: {error}");
                 }
             }
@@ -1336,6 +1373,61 @@ mod tests {
         state.restore("/settings/windows.json".into(), OpenWindows::new());
         assert_eq!(state.next(), Some(Entry::NewProject));
         assert!(state.next().is_none());
+    }
+
+    #[test]
+    fn resized_project_windows_restore_their_own_dimensions_after_relaunch() {
+        let directory = std::env::temp_dir().join(format!(
+            "feedbax-studio-resized-windows-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("studio-windows.json");
+        let first = project("one", "First");
+        let second = project("two", "Second");
+        let mut session = Windows::default();
+        session.load_session(path.clone()).unwrap();
+        for ticket in [&first, &second] {
+            session.open.insert(
+                ticket.project.id.clone(),
+                SavedWindow {
+                    folder: ticket.folder.clone(),
+                    size: Size::DEFAULT,
+                },
+            );
+        }
+
+        for (ticket, physical, scale) in [
+            (&second, tauri::PhysicalSize::new(1180, 740), 1.),
+            (&first, tauri::PhysicalSize::new(2040, 1304), 2.),
+        ] {
+            session.remember_resize(&ticket.label(), &WindowEvent::Resized(physical), scale);
+        }
+        session.save().unwrap();
+
+        let mut relaunched = Windows::default();
+        relaunched.load_session(path).unwrap();
+        let screen = Some(Size {
+            width: 1600.,
+            height: 1000.,
+        });
+        for (ticket, expected) in [(&first, (1020., 652.)), (&second, (1180., 740.))] {
+            let Some(Entry::Restore(id, saved)) = relaunched.next() else {
+                panic!("expected a restored project window");
+            };
+            assert_eq!(id, ticket.project.id);
+            assert_eq!(saved.folder, ticket.folder);
+
+            let (builder_dimensions, _) = relaunched.size_project_window(
+                &ticket.project.id,
+                &ticket.folder,
+                screen,
+                |width, height| (width, height),
+            );
+            assert_eq!(builder_dimensions, expected, "{}", ticket.label());
+        }
+        assert!(relaunched.next().is_none());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
