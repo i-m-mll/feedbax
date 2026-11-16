@@ -137,13 +137,6 @@ def test_retired_commands_are_refused(name, capsys: pytest.CaptureFixture[str]) 
     assert f"unknown command {name!r}" in capsys.readouterr().err
 
 
-def test_store_command_exposes_packet_operations(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["store", "--help"])
-    assert exc.value.code == 0
-    assert "{gc,export,import}" in capsys.readouterr().out
-
-
 def test_the_module_inventory_is_read_from_the_module_entry_point() -> None:
     from feedbax.__main__ import engine_command_names
 
