@@ -10,9 +10,9 @@ use objc2::{
     sel, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags, NSEventType,
-    NSMenu, NSMenuItem, NSRunningApplication, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength, NSWorkspace, NSWorkspaceOpenConfiguration,
+    NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSMenuItem,
+    NSRunningApplication, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWorkspace,
+    NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRunLoop, NSString, NSTimer, NSURL};
 use objc2_user_notifications::{
@@ -120,10 +120,7 @@ impl Menu {
     pub fn new(release: &service::Release, paths: &service::Paths) -> service::Result<Self> {
         let main =
             MainThreadMarker::new().ok_or("Background Activity must start on the main thread")?;
-        let app = NSApplication::sharedApplication(main);
-        if !app.setActivationPolicy(NSApplicationActivationPolicy::Accessory) {
-            return Err("Could not set the Studio service activation policy".into());
-        }
+        NSApplication::sharedApplication(main);
         let control = Control::new(paths)?;
         let cursor_path = paths.control.join("activity-notifications.json");
         let cursor = window_session::read(&cursor_path)?;
