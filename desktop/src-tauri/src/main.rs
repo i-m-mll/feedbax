@@ -22,7 +22,6 @@ use tauri::{
     menu::{MenuItem, Submenu},
     webview::NewWindowResponse,
     App, AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-    WindowEvent,
 };
 use window_session::{Folder, OpenWindows, RecentProject, RecentProjects, SavedWindow, Size};
 
@@ -140,32 +139,13 @@ impl Windows {
             .map(|saved| saved.size)
     }
 
-    fn size_project_window<B>(
-        &self,
-        id: &str,
-        folder: &Folder,
-        available: Option<Size>,
-        inner_size: impl FnOnce(f64, f64) -> B,
-    ) -> (B, Size) {
+    fn initial_size(&self, id: &str, folder: &Folder, available: Option<Size>) -> Size {
         let size = self.saved_size(id, folder).unwrap_or(Size::DEFAULT);
-        let size = available.map_or(size, |screen| size.bounded(screen));
-        (inner_size(size.width, size.height), size)
+        available.map_or(size, |screen| size.bounded(screen))
     }
 
-    fn remember_resize(&mut self, label: &str, event: &WindowEvent, scale_factor: f64) {
-        let (physical, scale_factor) = match event {
-            WindowEvent::Resized(size) => (*size, scale_factor),
-            WindowEvent::ScaleFactorChanged {
-                scale_factor,
-                new_inner_size,
-                ..
-            } => (*new_inner_size, *scale_factor),
-            _ => return,
-        };
-        if let Some(saved) = label
-            .strip_prefix(PROJECT_PREFIX)
-            .and_then(|id| self.open.get_mut(id))
-        {
+    fn remember_resize(&mut self, id: &str, physical: tauri::PhysicalSize<u32>, scale_factor: f64) {
+        if let Some(saved) = self.open.get_mut(id) {
             let logical = physical.to_logical::<f64>(scale_factor);
             saved.size = Size {
                 width: logical.width,
@@ -397,15 +377,13 @@ fn show_studio(
                 height: work.height,
             }
         });
-        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(ticket.url));
-        let (builder, size) = windows.lock().unwrap().size_project_window(
-            &project_id,
-            &project_folder,
-            available,
-            |width, height| builder.inner_size(width, height),
-        );
-        let builder = builder
+        let size = windows
+            .lock()
+            .unwrap()
+            .initial_size(&project_id, &project_folder, available);
+        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(ticket.url))
             .title(title)
+            .inner_size(size.width, size.height)
             .min_inner_size(Size::MIN.width, Size::MIN.height)
             .focused(focused)
             .devtools(false)
@@ -787,20 +765,20 @@ fn drain_entries(app: &AppHandle) {
     }
 }
 
-fn remember_size(window: &tauri::Window, event: &WindowEvent) -> tauri::Result<()> {
-    if !window.label().starts_with(PROJECT_PREFIX)
-        || window.is_fullscreen()?
-        || window.is_maximized()?
-        || window.is_minimized()?
-    {
+fn remember_size(window: &tauri::Window) -> tauri::Result<()> {
+    let Some(id) = window.label().strip_prefix(PROJECT_PREFIX) else {
+        return Ok(());
+    };
+    if window.is_fullscreen()? || window.is_maximized()? || window.is_minimized()? {
         return Ok(());
     }
+    let physical = window.inner_size()?;
     let scale_factor = window.scale_factor()?;
     window
         .state::<Mutex<Windows>>()
         .lock()
         .unwrap()
-        .remember_resize(window.label(), event, scale_factor);
+        .remember_resize(id, physical, scale_factor);
     Ok(())
 }
 
@@ -1172,8 +1150,8 @@ fn main() {
                     eprintln!("Studio could not record a closed project: {error}");
                 }
             }
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                if let Err(error) = remember_size(window, event) {
+            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                if let Err(error) = remember_size(window) {
                     eprintln!("Studio could not read window size: {error}");
                 }
             }
@@ -1401,7 +1379,7 @@ mod tests {
             (&second, tauri::PhysicalSize::new(1180, 740), 1.),
             (&first, tauri::PhysicalSize::new(2040, 1304), 2.),
         ] {
-            session.remember_resize(&ticket.label(), &WindowEvent::Resized(physical), scale);
+            session.remember_resize(&ticket.project.id, physical, scale);
         }
         session.save().unwrap();
 
@@ -1418,13 +1396,8 @@ mod tests {
             assert_eq!(id, ticket.project.id);
             assert_eq!(saved.folder, ticket.folder);
 
-            let (builder_dimensions, _) = relaunched.size_project_window(
-                &ticket.project.id,
-                &ticket.folder,
-                screen,
-                |width, height| (width, height),
-            );
-            assert_eq!(builder_dimensions, expected, "{}", ticket.label());
+            let size = relaunched.initial_size(&id, &saved.folder, screen);
+            assert_eq!((size.width, size.height), expected, "{}", ticket.label());
         }
         assert!(relaunched.next().is_none());
         std::fs::remove_dir_all(directory).unwrap();
