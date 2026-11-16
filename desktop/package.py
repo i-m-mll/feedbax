@@ -25,10 +25,15 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 
 from seal import (
     APP_NAME,
+    BACKGROUND_APP,
+    BACKGROUND_EXECUTABLE,
+    BACKGROUND_NAME,
+    BACKGROUND_PROGRAM,
     FIXTURE_PREFIX,
     LAUNCHER,
     PRODUCTION_BUNDLE_ID,
     RELEASE_SCHEMA,
+    background_identifier,
     json_bytes,
     seal,
     sha256,
@@ -46,6 +51,7 @@ PYTHON_URL = f"https://github.com/astral-sh/python-build-standalone/releases/dow
 PYTHON_SHA256 = "652e90aeaef68e9c726f883a4c160bbbff205403de68ab2c56fced267c9a652d"
 NATIVE_TARGET = SCRATCH / "native"
 NATIVE_BINARY = NATIVE_TARGET / TARGET / "release" / "feedbax-studio"
+BACKGROUND_BINARY = NATIVE_BINARY.with_name(BACKGROUND_EXECUTABLE)
 NATIVE_RECEIPT = SCRATCH / "native.json"
 TAURI = ("bun", "run", "tauri")
 EXTRAS = ("web", "analysis", "training", "mjx")
@@ -128,6 +134,13 @@ def native_environment() -> dict:
     )
 
 
+def native_binary_hashes() -> dict[str, str]:
+    return {
+        "sha256": sha256(NATIVE_BINARY),
+        "background_activity_sha256": sha256(BACKGROUND_BINARY),
+    }
+
+
 def build_native(timeout: int) -> None:
     clean_revision()
     inputs = native_inputs()
@@ -142,9 +155,12 @@ def build_native(timeout: int) -> None:
         stamp.write_text(icon_source)
     run(*TAURI, "build", "--target", TARGET, "--no-bundle", "--ci", "--", "--locked",
         cwd=DESKTOP, env=native_environment(), timeout=timeout)
+    run("cargo", "build", "--release", "--locked", "--target", TARGET,
+        "--bin", BACKGROUND_EXECUTABLE, "--features", "background-activity-executable,custom-protocol",
+        cwd=DESKTOP / "src-tauri", env=native_environment(), timeout=timeout)
     if checked_window_shell() != inputs["inputs"][WINDOW_SHELL]:
         raise ValueError("shared window shell pin changed during the native build")
-    (SCRATCH / "native.json.tmp").write_bytes(json_bytes(inputs | {"sha256": sha256(NATIVE_BINARY)}))
+    (SCRATCH / "native.json.tmp").write_bytes(json_bytes(inputs | native_binary_hashes()))
     (SCRATCH / "native.json.tmp").replace(NATIVE_RECEIPT)
 
 
@@ -288,14 +304,33 @@ def _package_python(
     }
 
 
-def _write_launch_agent(contents: Path, identifier: str) -> str:
+def _write_background_activity(contents: Path, identifier: str, version: str, build: str) -> str:
+    helper_contents = contents / BACKGROUND_APP / "Contents"
+    program = contents / BACKGROUND_PROGRAM
+    program.parent.mkdir(parents=True)
+    shutil.copy2(BACKGROUND_BINARY, program)
+    resources = helper_contents / "Resources"
+    resources.mkdir()
+    icon = plistlib.loads((contents / "Info.plist").read_bytes())["CFBundleIconFile"]
+    shutil.copyfile(contents / "Resources" / icon, resources / icon)
+    (helper_contents / "Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleIdentifier": background_identifier(identifier),
+        "CFBundleExecutable": BACKGROUND_EXECUTABLE,
+        "CFBundleName": BACKGROUND_NAME,
+        "CFBundleDisplayName": BACKGROUND_NAME,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": version,
+        "CFBundleVersion": build,
+        "CFBundleIconFile": icon,
+        "LSMinimumSystemVersion": MINIMUM_MACOS,
+        "LSUIElement": True,
+    }))
     relative = f"Library/LaunchAgents/{identifier}.runtime.plist"
     path = contents / relative
     path.parent.mkdir(parents=True)
     path.write_bytes(plistlib.dumps({
         "Label": f"{identifier}.runtime",
-        "BundleProgram": f"Contents/{LAUNCHER}",
-        "ProgramArguments": [Path(LAUNCHER).name, "service", "serve"],
+        "BundleProgram": f"Contents/{BACKGROUND_PROGRAM}",
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
         "ExitTimeOut": 45,
@@ -380,7 +415,7 @@ def package(args: argparse.Namespace) -> None:
     with tempfile.TemporaryDirectory(prefix=".studio-package-", dir=output.parent) as temporary:
         stage = Path(temporary)
         wheels, numerical = _release_wheels(stage, manifest_path)
-        expected = native_inputs() | {"sha256": sha256(NATIVE_BINARY)}
+        expected = native_inputs() | native_binary_hashes()
         if json.loads(NATIVE_RECEIPT.read_bytes()) != expected:
             raise ValueError("native input or binary changed; run the native build phase")
         config = json.dumps({
@@ -414,7 +449,7 @@ def package(args: argparse.Namespace) -> None:
             ROOT, resources / "runpod", revision, args.runpod_uv.resolve(strict=True),
         )
         _rust_notices(resources)
-        launch_agent = _write_launch_agent(contents, identifier)
+        launch_agent = _write_background_activity(contents, identifier, version, args.build_number)
         shutil.copyfile(ROOT / "LICENSE", resources / "Feedbax-LICENSE")
         manifest = {
             "schema": RELEASE_SCHEMA, "service_protocol": 1, "bundle_id": identifier,
@@ -429,6 +464,7 @@ def package(args: argparse.Namespace) -> None:
             "resources": {
                 "launcher": LAUNCHER, "python": PYTHON, "studio": "Resources/studio",
                 "dependencies": "Resources/dependencies.json", "launch_agent": launch_agent,
+                "background_activity": BACKGROUND_PROGRAM,
                 "installer": "Resources/installer",
                 "runpod_environment": "Resources/runpod/environment.json",
                 "runpod_source": "Resources/runpod/source",

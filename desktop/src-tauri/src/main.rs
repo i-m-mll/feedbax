@@ -1,14 +1,11 @@
 mod activity_window;
-mod authentication;
-mod background_activity;
 #[cfg(target_os = "macos")]
 mod native_frame;
 #[cfg(target_os = "macos")]
 mod project_document;
-mod service;
 mod studio_menu;
-mod window_session;
 
+use feedbax_studio::{activity_control::OPEN_ACTIVITY, service, window_session};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -42,8 +39,6 @@ struct Windows {
     recents: RecentProjects,
     open: OpenWindows,
     pending: VecDeque<Entry>,
-    awaiting_documents: bool,
-    received_documents: Option<(String, u64)>,
     requested_window: Option<String>,
     restore_problems: Vec<String>,
     starting: bool,
@@ -101,32 +96,6 @@ impl Windows {
         }
     }
 
-    fn receive_documents(
-        &mut self,
-        intents: background_activity::DocumentIntents,
-    ) -> Option<(String, u64)> {
-        if !self.ready || self.quitting || self.flushing_exit {
-            return None;
-        }
-        let through = intents.batches.last()?.sequence;
-        self.awaiting_documents = false;
-        let previous = self
-            .received_documents
-            .as_ref()
-            .filter(|(generation, _)| generation == &intents.generation)
-            .map_or(0, |(_, sequence)| *sequence);
-        for batch in intents
-            .batches
-            .iter()
-            .filter(|batch| batch.sequence > previous)
-        {
-            self.queue_open_urls(&batch.urls);
-        }
-        self.received_documents = Some((intents.generation.clone(), through.max(previous)));
-        let received = (intents.generation, through);
-        Some(received)
-    }
-
     fn restore(&mut self, path: PathBuf, open: OpenWindows) {
         let mut folders = BTreeSet::new();
         for (id, saved) in &open {
@@ -141,12 +110,7 @@ impl Windows {
     }
 
     fn next(&mut self) -> Option<Entry> {
-        if !self.ready
-            || self.awaiting_documents
-            || self.waiting
-            || self.quitting
-            || self.flushing_exit
-        {
+        if !self.ready || self.waiting || self.quitting || self.flushing_exit {
             return None;
         }
         let startup = std::mem::take(&mut self.starting);
@@ -1133,10 +1097,7 @@ fn setup(app: &mut App) -> tauri::Result<()> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let activity_launch = args.first().is_some_and(|arg| arg == "--activity");
-    let document_launch = args
-        .first()
-        .is_some_and(|arg| arg == background_activity::OPEN_DOCUMENTS);
+    let activity_launch = args.first().is_some_and(|arg| arg == OPEN_ACTIVITY);
     if args
         .first()
         .is_some_and(|arg| matches!(arg.as_str(), "install" | "recover" | "uninstall"))
@@ -1155,10 +1116,7 @@ fn main() {
         return;
     }
     let application = tauri::Builder::default()
-        .manage(Mutex::new(Windows {
-            awaiting_documents: document_launch,
-            ..Windows::default()
-        }))
+        .manage(Mutex::new(Windows::default()))
         .setup(|app| Ok(setup(app)?))
         .invoke_handler(tauri::generate_handler![
             studio_menu::publish_studio_menu,
@@ -1237,7 +1195,7 @@ fn main() {
         Ok(app) => app.run(move |app, event| match event {
             RunEvent::Ready => {
                 start_windows(app);
-                if activity_launch || document_launch {
+                if activity_launch {
                     app.state::<Mutex<Windows>>().lock().unwrap().starting = false;
                 }
                 activity_window::observe(app, activity_launch);
@@ -1255,10 +1213,7 @@ fn main() {
             } => {
                 let windows = app.state::<Mutex<Windows>>();
                 let state = windows.lock().unwrap();
-                let started = state.ready
-                    && !state.starting
-                    && !state.awaiting_documents
-                    && state.pending.is_empty();
+                let started = state.ready && !state.starting && state.pending.is_empty();
                 drop(state);
                 if started && !BUSY.load(Ordering::Acquire) {
                     reconnect(app);
@@ -1465,11 +1420,8 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_open_precedes_restore_and_keeps_the_latest_requested_window() {
-        let mut state = Windows {
-            awaiting_documents: true,
-            ..Windows::default()
-        };
+    fn finder_open_precedes_restore_and_keeps_the_latest_requested_window() {
+        let mut state = Windows::default();
         let saved = SavedWindow {
             folder: project("saved", "Saved").folder,
             size: Size::DEFAULT,
@@ -1479,29 +1431,12 @@ mod tests {
             OpenWindows::from([("saved".into(), saved.clone())]),
         );
         state.ready = true;
-        assert!(state.next().is_none());
         let first_url = Url::parse("file:///external/Project/a.feedbax").unwrap();
         let second_url = Url::parse("file:///external/Other/").unwrap();
-        let receive = |state: &mut Windows, second: bool| {
-            let mut batches = vec![background_activity::DocumentOpen {
-                sequence: 1,
-                urls: vec![first_url.clone()],
-            }];
-            if second {
-                batches.push(background_activity::DocumentOpen {
-                    sequence: 2,
-                    urls: vec![second_url.clone()],
-                });
-            }
-            state.receive_documents(background_activity::DocumentIntents {
-                generation: "service".into(),
-                batches,
-            })
-        };
-        assert_eq!(receive(&mut state, false), Some(("service".into(), 1)));
+        state.queue_open_urls(std::slice::from_ref(&first_url));
         assert_eq!(state.next(), opened_entry(&first_url));
         state.requested_focus("project-first".into());
-        assert_eq!(receive(&mut state, true), Some(("service".into(), 2)));
+        state.queue_open_urls(std::slice::from_ref(&second_url));
         assert_eq!(state.next(), opened_entry(&second_url));
         state.requested_focus("project-second".into());
         assert!(state.take_requested_window().is_none());

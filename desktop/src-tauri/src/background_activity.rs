@@ -1,27 +1,28 @@
-use crate::{open_path, service, window_session};
+use crate::{
+    activity_control::{Control, Snapshot, Terminal, Window, OPEN_ACTIVITY},
+    service, window_session,
+};
 use block2::RcBlock;
 use objc2::{
     define_class,
     rc::Retained,
-    runtime::{NSObject, NSObjectProtocol, ProtocolObject},
+    runtime::{NSObject, NSObjectProtocol},
     sel, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSEvent,
-    NSEventModifierFlags, NSEventType, NSMenu, NSMenuItem, NSRunningApplication, NSStatusBar,
-    NSStatusItem, NSVariableStatusItemLength, NSWorkspace, NSWorkspaceOpenConfiguration,
+    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags, NSEventType,
+    NSMenu, NSMenuItem, NSRunningApplication, NSStatusBar, NSStatusItem,
+    NSVariableStatusItemLength, NSWorkspace, NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRunLoop, NSString, NSTimer, NSURL};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
     UNNotificationRequest, UNUserNotificationCenter,
 };
-use reqwest::blocking::{Client, RequestBuilder};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     cell::{Cell, RefCell},
-    collections::VecDeque,
     fs::File,
     path::{Path, PathBuf},
     process::{Child, ExitStatus},
@@ -34,152 +35,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-
-const PREFIX: &str = "http://localhost/_desktop/activity";
-pub const OPEN_DOCUMENTS: &str = "--open-documents";
-const OPEN_ACTIVITY: &str = "--activity";
-
-#[derive(Deserialize)]
-struct GuiTarget {
-    pid: Option<i32>,
-}
-
-#[derive(Deserialize)]
-pub struct WindowIntents {
-    pub open: Option<u64>,
-    pub documents: Option<DocumentIntents>,
-}
-
-#[derive(Deserialize)]
-pub struct DocumentIntents {
-    pub generation: String,
-    pub batches: Vec<DocumentOpen>,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct DocumentOpen {
-    pub sequence: u64,
-    pub urls: Vec<tauri::Url>,
-}
-
-pub struct Control(Client);
-
-impl Control {
-    pub fn new(paths: &service::Paths) -> service::Result<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("x-feedbax-release", paths.release.parse()?);
-        Ok(Self(
-            Client::builder()
-                .unix_socket(paths.control.join("service.sock"))
-                .default_headers(headers)
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(3))
-                .build()?,
-        ))
-    }
-
-    fn send<T: DeserializeOwned>(request: RequestBuilder) -> service::Result<T> {
-        Ok(request.send()?.error_for_status()?.json()?)
-    }
-
-    fn snapshot(&self, after: Option<u64>) -> service::Result<Snapshot> {
-        let url = after.map_or_else(
-            || PREFIX.to_owned(),
-            |cursor| format!("{PREFIX}?after={cursor}"),
-        );
-        Self::send(self.0.get(url))
-    }
-
-    fn open(&self, activity: bool) -> service::Result<Option<i32>> {
-        let request = if activity {
-            self.0.post(format!("{PREFIX}/open"))
-        } else {
-            self.0.get(format!("{PREFIX}/window"))
-        };
-        Ok(Self::send::<GuiTarget>(request)?.pid)
-    }
-
-    fn open_documents(&self, documents: &DocumentOpen) -> service::Result<Option<i32>> {
-        let request = self
-            .0
-            .post(format!("{PREFIX}/open-documents"))
-            .json(documents);
-        Ok(Self::send::<GuiTarget>(request)?.pid)
-    }
-
-    fn stop(&self, force: bool) -> service::Result<()> {
-        let mode = if force { "force" } else { "checkpoint" };
-        let result: Vec<Value> = Self::send(
-            self.0
-                .post(format!("{PREFIX}/stop"))
-                .json(&json!({"mode": mode})),
-        )?;
-        if let Some(error) = result
-            .iter()
-            .find_map(|item| item.get("error").filter(|value| !value.is_null()))
-        {
-            return Err(format!("Studio could not stop all runs: {error}").into());
-        }
-        Ok(())
-    }
-
-    pub fn window(&self, project: Option<&str>, ready: bool) -> service::Result<WindowIntents> {
-        Self::send(self.0.post(format!("{PREFIX}/window")).json(&json!({
-                "pid": std::process::id(), "project": project, "ready": ready,
-        })))
-    }
-
-    pub fn acknowledge_documents(&self, generation: &str, through: u64) -> service::Result<()> {
-        Self::send::<Value>(self.0.post(format!("{PREFIX}/ack-documents")).json(&json!({
-            "generation": generation, "through": through,
-        })))?;
-        Ok(())
-    }
-
-    pub fn acknowledge(&self, intent: u64) -> service::Result<()> {
-        Self::send::<Value>(self.0.post(format!("{PREFIX}/ack/{intent}")))?;
-        Ok(())
-    }
-}
-
-#[derive(Deserialize)]
-struct Snapshot {
-    cursor: Option<u64>,
-    after: Option<u64>,
-    count: usize,
-    terminal: Option<Terminal>,
-    window: Option<Window>,
-}
-
-#[derive(Deserialize)]
-struct Window {
-    pid: i32,
-    project: Option<String>,
-}
-
-#[derive(Clone, Deserialize)]
-struct Terminal {
-    id: String,
-    project: String,
-    name: String,
-    status: TerminalStatus,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TerminalStatus {
-    Succeeded,
-    Failed,
-}
-
-impl TerminalStatus {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Succeeded => "Done",
-            Self::Failed => "Failed",
-        }
-    }
-}
 
 fn should_notify(project: &str, window: Option<&Window>, frontmost: Option<i32>) -> bool {
     !window.is_some_and(|window| {
@@ -194,8 +49,7 @@ struct NotificationCursor {
 }
 
 enum Command {
-    Open { activity: bool },
-    OpenDocuments(Vec<tauri::Url>),
+    OpenActivity,
     Stop { force: bool },
     Quit,
 }
@@ -210,7 +64,7 @@ define_class!(
     impl Actions {
         #[unsafe(method(openActivity:))]
         fn open(&self, _: &NSMenuItem) {
-            self.send(Command::Open { activity: true });
+            self.send(Command::OpenActivity);
         }
 
         #[unsafe(method(stopRuns:))]
@@ -226,26 +80,6 @@ define_class!(
 
     unsafe impl NSObjectProtocol for Actions {}
 
-    #[allow(non_snake_case)]
-    unsafe impl NSApplicationDelegate for Actions {
-        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
-        fn applicationShouldHandleReopen_hasVisibleWindows(&self, _: &NSApplication, _: bool) -> bool {
-            self.send(Command::Open { activity: false });
-            false
-        }
-
-        #[unsafe(method(application:openURLs:))]
-        fn application_openURLs(&self, _: &NSApplication, urls: &NSArray<NSURL>) {
-            let urls: Vec<_> = urls
-                .iter()
-                .filter_map(|url| url.absoluteString()?.to_string().parse().ok())
-                .filter(|url| open_path(url).is_some())
-                .collect();
-            if !urls.is_empty() {
-                self.send(Command::OpenDocuments(urls));
-            }
-        }
-    }
 );
 
 impl Actions {
@@ -258,11 +92,7 @@ impl Actions {
 
 enum Update {
     Snapshot(Snapshot),
-    Open {
-        pid: Option<i32>,
-        activation: File,
-        argument: Option<&'static str>,
-    },
+    Open { pid: Option<i32>, activation: File },
 }
 
 fn save_cursor(
@@ -304,7 +134,6 @@ impl Menu {
         let (sender, commands) = mpsc::channel();
         let actions: Retained<Actions> =
             unsafe { objc2::msg_send![super(main.alloc().set_ivars(sender)), init] };
-        app.setDelegate(Some(ProtocolObject::from_ref(&*actions)));
         for (title, selector, alternate) in [
             ("Activity", sel!(openActivity:), false),
             ("Stop All", sel!(stopRuns:), false),
@@ -475,11 +304,7 @@ impl Menu {
                             }
                         }
                     }
-                    Update::Open {
-                        pid,
-                        activation,
-                        argument,
-                    } => {
+                    Update::Open { pid, activation } => {
                         let mut state = launch.lock().unwrap();
                         let starting_pid = state
                             .started
@@ -496,7 +321,7 @@ impl Menu {
                         } else if !state.in_flight {
                             state.in_flight = true;
                             drop(state);
-                            launch_gui(&release, activation, argument, launch.clone());
+                            launch_gui(&release, activation, launch.clone());
                         }
                     }
                 }
@@ -537,9 +362,6 @@ fn monitor(
 ) {
     let mut quitting: Option<Receiver<service::Result<Value>>> = None;
     let mut last_error = None;
-    let mut document_error = None;
-    let mut pending_documents = VecDeque::new();
-    let mut sequence = 0;
     let paths = match release.paths() {
         Ok(paths) => paths,
         Err(error) => {
@@ -550,21 +372,12 @@ fn monitor(
     while alive.load(Ordering::Relaxed) {
         let command = commands.recv_timeout(Duration::from_millis(500));
         let operation = match command {
-            Ok(Command::Open { activity }) => (|| {
+            Ok(Command::OpenActivity) => (|| {
                 let activation = release.activity_activation(&paths)?;
-                let pid = control.open(activity)?;
-                let _ = updates.send(Update::Open {
-                    pid,
-                    activation,
-                    argument: activity.then_some(OPEN_ACTIVITY),
-                });
+                let pid = control.open()?;
+                let _ = updates.send(Update::Open { pid, activation });
                 Ok(())
             })(),
-            Ok(Command::OpenDocuments(urls)) => {
-                sequence += 1;
-                pending_documents.push_back(DocumentOpen { sequence, urls });
-                Ok(())
-            }
             Ok(Command::Stop { force }) => control.stop(force),
             Ok(Command::Quit) => {
                 if quitting.is_none() {
@@ -577,29 +390,6 @@ fn monitor(
         };
         if let Err(error) = operation {
             eprintln!("Studio background action failed: {error}");
-        }
-        if let Some(documents) = pending_documents.front() {
-            match release.activity_activation(&paths).and_then(|activation| {
-                let pid = control.open_documents(documents)?;
-                let _ = updates.send(Update::Open {
-                    pid,
-                    activation,
-                    argument: Some(OPEN_DOCUMENTS),
-                });
-                Ok(())
-            }) {
-                Ok(()) => {
-                    pending_documents.pop_front();
-                    document_error = None;
-                }
-                Err(error) => {
-                    let detail = error.to_string();
-                    if document_error.as_ref() != Some(&detail) {
-                        eprintln!("Could not forward Studio documents: {detail}");
-                        document_error = Some(detail);
-                    }
-                }
-            }
         }
         if let Some(reply) = &quitting {
             match reply.try_recv() {
@@ -660,24 +450,16 @@ struct GuiLaunch {
     started: Option<(i32, Instant)>,
 }
 
-fn launch_gui(
-    release: &service::Release,
-    activation: File,
-    argument: Option<&str>,
-    launch: Arc<Mutex<GuiLaunch>>,
-) {
+fn launch_gui(release: &service::Release, activation: File, launch: Arc<Mutex<GuiLaunch>>) {
     let url = NSURL::fileURLWithPath_isDirectory(
         &NSString::from_str(&release.bundle_path().to_string_lossy()),
         true,
     );
     let configuration = NSWorkspaceOpenConfiguration::configuration();
-    configuration.setCreatesNewApplicationInstance(true);
     configuration.setAllowsRunningApplicationSubstitution(false);
-    if let Some(argument) = argument {
-        configuration.setArguments(&NSArray::from_retained_slice(&[NSString::from_str(
-            argument,
-        )]));
-    }
+    configuration.setArguments(&NSArray::from_retained_slice(&[NSString::from_str(
+        OPEN_ACTIVITY,
+    )]));
     let activation = Mutex::new(Some(activation));
     let callback = RcBlock::new(
         move |application: *mut NSRunningApplication, error: *mut objc2_foundation::NSError| {

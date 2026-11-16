@@ -80,22 +80,44 @@ impl Release {
             .bundleIdentifier()
             .ok_or("Studio must launch from its installed app bundle")?
             .to_string();
-        let manifest: Manifest =
-            serde_json::from_slice(&fs::read(contents.join("Resources/release.json"))?)?;
-        if manifest.schema != "feedbax.desktop.release.v1" || manifest.service_protocol != 1 {
-            return Err("Unsupported Studio release manifest or service protocol".into());
-        }
+        let manifest = read_manifest(&contents)?;
         if identifier != manifest.bundle_id {
             return Err(
                 "Installed application and release manifest have different bundle identities"
                     .into(),
             );
         }
+        Self::from_manifest(contents, manifest)
+    }
+
+    fn load_background() -> Result<Self> {
+        let helper = NSBundle::mainBundle();
+        let bundle = PathBuf::from(helper.bundlePath().to_string()).canonicalize()?;
+        let helpers = bundle
+            .parent()
+            .filter(|parent| parent.ends_with("Contents/Helpers"))
+            .ok_or("Background Activity must run inside the installed Studio bundle")?;
+        let contents = helpers
+            .parent()
+            .ok_or("Missing Studio Contents directory")?;
+        let manifest = read_manifest(contents)?;
+        let executable = std::env::current_exe()?.canonicalize()?;
+        let identifier = helper.bundleIdentifier().map(|id| id.to_string());
+        if identifier.as_deref() != Some(&format!("{}.background-activity", manifest.bundle_id))
+            || !executable.starts_with(bundle.join("Contents/MacOS"))
+            || executable != installed_resource(contents, &manifest, "background_activity")?
+        {
+            return Err("Installed Background Activity does not match the Studio release".into());
+        }
+        Self::from_manifest(contents.to_owned(), manifest)
+    }
+
+    fn from_manifest(contents: PathBuf, manifest: Manifest) -> Result<Self> {
         let python = installed_resource(&contents, &manifest, "python")?;
         let installer = installed_resource(&contents, &manifest, "installer")?;
         Ok(Self {
             contents,
-            bundle: identifier,
+            bundle: manifest.bundle_id,
             python,
             installer,
         })
@@ -371,6 +393,19 @@ impl Release {
     }
 }
 
+pub fn run_background() -> Result<()> {
+    Release::load_background()?.serve()
+}
+
+fn read_manifest(contents: &Path) -> Result<Manifest> {
+    let manifest: Manifest =
+        serde_json::from_slice(&fs::read(contents.join("Resources/release.json"))?)?;
+    if manifest.schema != "feedbax.desktop.release.v1" || manifest.service_protocol != 1 {
+        return Err("Unsupported Studio release manifest or service protocol".into());
+    }
+    Ok(manifest)
+}
+
 fn installed_resource(contents: &Path, manifest: &Manifest, role: &str) -> Result<PathBuf> {
     let relative = Path::new(
         manifest
@@ -488,7 +523,6 @@ pub fn cli(args: &[String]) -> Result<()> {
         None
     };
     let answer = match (action.as_str(), rest.as_slice()) {
-        ("serve", []) => return release.serve(),
         ("attest-machine", []) => return crate::authentication::attest_machine(),
         ("register", []) => {
             let _lock = mutation_lock(&release.paths()?, descriptor)?;

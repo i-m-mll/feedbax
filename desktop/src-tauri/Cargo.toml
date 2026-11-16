@@ -2,8 +2,15 @@
 name = "feedbax-studio"
 version = "0.0.0"
 edition = "2021"
+default-run = "feedbax-studio"
+
+[[bin]]
+name = "feedbax-background-activity"
+path = "src/background_main.rs"
+required-features = ["background-activity-executable"]
 
 [features]
+background-activity-executable = []
 custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]

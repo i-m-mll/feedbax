@@ -1,7 +1,5 @@
-use crate::{
-    background_activity::Control, focus, service, studio_menu, Windows, BUSY, CONNECT_PATH,
-    PROJECT_PREFIX,
-};
+use crate::{focus, studio_menu, Windows, BUSY, CONNECT_PATH, PROJECT_PREFIX};
+use feedbax_studio::{activity_control::Control, service};
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSApplication;
 use serde_json::json;
@@ -54,30 +52,9 @@ fn report(app: &AppHandle, mut cold_open: bool) -> service::Result<()> {
         if quitting {
             return Ok(());
         }
-        if let Ok(intents) = control.window(project.as_deref(), ready) {
-            if let Some(documents) = intents.documents {
-                // Launch Services completes under the same lock needed to connect a project.
-                if let Ok(activation) = release.activity_activation(&paths) {
-                    drop(activation);
-                    let (send, receive) = mpsc::sync_channel(1);
-                    let callback = app.clone();
-                    app.run_on_main_thread(move || {
-                        let windows = callback.state::<Mutex<Windows>>();
-                        let receipt = windows.lock().unwrap().receive_documents(documents);
-                        let _ = send.send(receipt);
-                        crate::drain_entries(&callback);
-                    })?;
-                    if let Some((generation, through)) =
-                        receive.recv_timeout(Duration::from_secs(2))?
-                    {
-                        if let Err(error) = control.acknowledge_documents(&generation, through) {
-                            eprintln!("Could not acknowledge Studio document delivery: {error}");
-                        }
-                    }
-                }
-            }
-            if ready && (cold_open || intents.open.is_some()) {
-                match deliver(app, &release, &paths, &control, intents.open) {
+        if let Ok(intent) = control.window(project.as_deref(), ready) {
+            if ready && (cold_open || intent.is_some()) {
+                match deliver(app, &release, &paths, &control, intent) {
                     Ok(()) => {
                         cold_open = false;
                         last_error = None;

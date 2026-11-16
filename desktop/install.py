@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
-from seal import APP_NAME, LAUNCHER, allow_owner_write, json_bytes, sha256, verify
+from seal import APP_NAME, BACKGROUND_APP, LAUNCHER, allow_owner_write, json_bytes, sha256, verify
 
 JOURNAL_SCHEMA = "feedbax.desktop.install.v1"
 STAGE_PREFIX = ".feedbax-replace-"
@@ -25,6 +25,9 @@ LSREGISTER = (
 
 
 def _launch_services(app: Path, *, register: bool) -> None:
+    helper = app / "Contents" / BACKGROUND_APP
+    if not register and helper.is_dir():
+        subprocess.run([LSREGISTER, "-u", str(helper)], check=True, timeout=10)
     subprocess.run([LSREGISTER, "-f" if register else "-u", str(app)], check=True, timeout=10)
 
 
@@ -141,7 +144,8 @@ def _require_closed_gui(app: Path) -> None:
     processes = subprocess.check_output(
         ["/bin/ps", "-axww", "-o", "command="], text=True, timeout=5,
     )
-    if any(command in (executable, f"{executable} --activity") for command in processes.splitlines()):
+    gui_commands = {executable, f"{executable} --activity", f"{executable} --open-documents"}
+    if gui_commands.intersection(processes.splitlines()):
         raise RuntimeError("Quit the installed Studio GUI before replacing or removing it")
 
 

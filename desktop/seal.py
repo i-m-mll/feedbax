@@ -20,6 +20,10 @@ RECEIPT_SCHEMA = "feedbax.desktop.receipt.v1"
 PRODUCTION_BUNDLE_ID = "org.feedbax.studio"
 FIXTURE_PREFIX = f"{PRODUCTION_BUNDLE_ID}.fixture."
 LAUNCHER = "MacOS/feedbax-studio"
+BACKGROUND_NAME = "Feedbax Background Activity"
+BACKGROUND_EXECUTABLE = "feedbax-background-activity"
+BACKGROUND_APP = f"Helpers/{BACKGROUND_NAME}.app"
+BACKGROUND_PROGRAM = f"{BACKGROUND_APP}/Contents/MacOS/{BACKGROUND_EXECUTABLE}"
 MANIFEST = "Resources/release.json"
 _MACH_O_MAGIC = {
     bytes.fromhex(value) for value in ("cffaedfe", "feedfacf", "cafebabe", "cafebabf")
@@ -215,16 +219,59 @@ def resolve_identity(value: str) -> tuple[str, str]:
     raise ValueError("local packaging supports an Apple Development identity or explicit ad-hoc")
 
 
+def background_identifier(bundle_id: str) -> str:
+    return f"{bundle_id}.background-activity"
+
+
+def _verify_background_layout(contents: Path, manifest: dict[str, Any]) -> Path | None:
+    bundle_id = manifest["bundle_id"]
+    resources = manifest["resources"]
+    label = f"{bundle_id}.runtime"
+    if resources["launch_agent"] != f"Library/LaunchAgents/{label}.plist":
+        raise ValueError("Studio LaunchAgent does not match the application identity")
+    agent = plistlib.loads((contents / resources["launch_agent"]).read_bytes())
+    program = resources.get("background_activity")
+    if agent.get("Label") != label or agent.get("BundleProgram") != f"Contents/{program or LAUNCHER}":
+        raise ValueError("Studio LaunchAgent does not match the declared background executable")
+    if program is None:
+        if agent.get("ProgramArguments") != [Path(LAUNCHER).name, "service", "serve"]:
+            raise ValueError("unsupported earlier Studio background executable")
+        return None
+    if program != BACKGROUND_PROGRAM or "ProgramArguments" in agent:
+        raise ValueError("invalid Studio background executable location or arguments")
+    helper = contents / BACKGROUND_APP
+    info = plistlib.loads((helper / "Contents" / "Info.plist").read_bytes())
+    if (
+        info.get("CFBundleIdentifier") != background_identifier(bundle_id)
+        or info.get("CFBundleExecutable") != BACKGROUND_EXECUTABLE
+        or info.get("CFBundlePackageType") != "APPL"
+        or info.get("CFBundleShortVersionString") != manifest["version"]
+        or info.get("CFBundleVersion") != manifest["build_number"]
+        or info.get("LSMinimumSystemVersion") != manifest["platform"]["minimum_macos"]
+        or info.get("LSUIElement") is not True
+        or {"CFBundleDocumentTypes", "CFBundleURLTypes", "UTExportedTypeDeclarations",
+            "UTImportedTypeDeclarations"}.intersection(info)
+    ):
+        raise ValueError("Background Activity does not match the declared helper identity")
+    return helper
+
+
 def seal(app: Path, manifest: dict[str, Any], signing_identity: str) -> dict[str, Any]:
     contents = app / "Contents"
     identity, classification = resolve_identity(signing_identity)
     if (contents / MANIFEST).exists() or (contents / "_CodeSignature").exists():
         raise ValueError("sealing requires a new, unsigned Tauri bundle")
+    helper = _verify_background_layout(contents, manifest)
+    if helper is None:
+        raise ValueError("sealing requires a dedicated Background Activity app")
     clear_bundle_attributes(app)
     native = relocate_and_inventory_native(contents, manifest["platform"]["minimum_macos"])
+    if BACKGROUND_PROGRAM not in native:
+        raise ValueError("missing native Background Activity executable")
     for relative in native:
-        if relative != LAUNCHER:
+        if relative not in (LAUNCHER, BACKGROUND_PROGRAM):
             command("codesign", "--force", "--sign", identity, "--timestamp=none", contents / relative)
+    command("codesign", "--force", "--sign", identity, "--timestamp=none", helper)
     manifest["native"] = native
     manifest["inventory"] = _inventory(contents, sealed=False)
     manifest["signing"] = {
@@ -266,6 +313,7 @@ def verify(app: Path) -> dict[str, Any]:
             raise ValueError(f"installed resource leaves the release: {role}")
     if sha256(contents / manifest["resources"]["dependencies"]) != manifest["dependency_manifest_sha256"]:
         raise ValueError("installed dependency manifest does not match its declared identity")
+    helper = _verify_background_layout(contents, manifest)
     command("codesign", "--verify", "--deep", "--strict", app)
     # Code-signing verification alone does not account for mode or extra files.
     inventory = _inventory(contents, sealed=True)
@@ -283,6 +331,15 @@ def verify(app: Path) -> dict[str, Any]:
     )
     if cdhash is None or classification != manifest["signing"]["classification"]:
         raise ValueError("outer signature class or CDHash does not match the release policy")
+    if helper is not None:
+        helper_signature = command("codesign", "--display", "--verbose=4", helper)
+        helper_team = re.search(r"^TeamIdentifier=(.+)$", helper_signature, re.M)
+        if (
+            f"Identifier={background_identifier(bundle_id)}" not in helper_signature.splitlines()
+            or (helper_team[1] if helper_team else None) != (team[1] if team else None)
+            or re.findall(r"^Authority=(.+)$", helper_signature, re.M) != authorities
+        ):
+            raise ValueError("Background Activity code signature does not match the Studio release")
     return {
         "schema": RECEIPT_SCHEMA,
         "bundle_id": bundle_id,

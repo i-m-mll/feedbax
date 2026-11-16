@@ -5,6 +5,7 @@ from importlib.util import source_from_cache
 import json
 import os
 from pathlib import Path
+import plistlib
 import signal
 import stat
 import subprocess
@@ -18,6 +19,42 @@ import pytest
 def desktop_package(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "desktop"))
     return importlib.import_module("package")
+
+
+@pytest.mark.parametrize("fixture", [False, True])
+def test_background_app_owns_no_documents_and_keeps_the_registered_agent(desktop_package, tmp_path, monkeypatch, fixture):
+    seal = importlib.import_module("seal")
+    contents = tmp_path / seal.APP_NAME / "Contents"
+    resources = contents / "Resources"
+    resources.mkdir(parents=True)
+    icon = "icon.icns"
+    (resources / icon).write_bytes(b"icon")
+    (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIconFile": icon}))
+    binary = tmp_path / "built-helper"
+    binary.write_bytes(b"executable")
+    monkeypatch.setattr(desktop_package, "BACKGROUND_BINARY", binary)
+    bundle = f"{seal.FIXTURE_PREFIX}example" if fixture else seal.PRODUCTION_BUNDLE_ID
+
+    agent = desktop_package._write_background_activity(contents, bundle, "0.2.0", "4")
+    helper = contents / seal.BACKGROUND_APP
+    manifest = {
+        "bundle_id": bundle, "build_number": "4", "version": "0.2.0",
+        "platform": {"minimum_macos": desktop_package.MINIMUM_MACOS},
+        "resources": {"launch_agent": agent, "background_activity": seal.BACKGROUND_PROGRAM},
+    }
+    assert seal._verify_background_layout(contents, manifest) == helper
+    agent_plist = plistlib.loads((contents / agent).read_bytes())
+    assert agent_plist["Label"] == f"{bundle}.runtime"
+    assert agent_plist["RunAtLoad"] and agent_plist["KeepAlive"] == {"SuccessfulExit": False}
+    assert (tmp_path / seal.APP_NAME / agent_plist["BundleProgram"]).read_bytes() == binary.read_bytes()
+
+    info_path = helper / "Contents" / "Info.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    assert info["CFBundleIdentifier"] == f"{bundle}.background-activity"
+    info["CFBundleDocumentTypes"] = [{"CFBundleTypeName": "Project"}]
+    info_path.write_bytes(plistlib.dumps(info))
+    with pytest.raises(ValueError, match="helper identity"):
+        seal._verify_background_layout(contents, manifest)
 
 
 @pytest.mark.parametrize("documentation_directory", ["rust", "rustc"])
