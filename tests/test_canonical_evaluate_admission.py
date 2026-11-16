@@ -455,13 +455,15 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
 
 
 def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, monkeypatch):
+    from tests.test_document_train_pair import authored_documents, document_project
+
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     jobs = JobService(host, new_application_registry_bundle())
     folders = ProjectFolderService(tmp_path / "projects")
     project = "unsupported-owner"
     registry = jobs.registries
-    definition = managed_evaluation_definition()
+    definition = document_project(authored_documents())
     _save_project(folders, project, Project.model_validate(definition))
     reviewed = folders.read_plan(project, revision=None)
     assert not reviewed.plan.diagnostics
