@@ -176,6 +176,7 @@ class ProjectFolderService(ProjectFolder):
             edit = _ModelInverse.model_validate_json(data)
         except (Base64Error, ValueError) as error:
             raise ProjectFolderInvalid("The model edit history entry is unavailable") from error
+        project_id = self.project_id(project_id)
         if edit.project != project_id:
             raise ProjectFolderInvalid("The model edit history entry belongs to another project")
         snapshot = self.read(project_id, revision=body.revision)

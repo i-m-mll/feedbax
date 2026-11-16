@@ -1,5 +1,7 @@
 """Addressed operations and the model-document transaction invariants."""
 
+from shutil import copytree
+
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
 from fastapi.testclient import TestClient
@@ -178,8 +180,8 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
             "presentation": reopened["presentation"] | {"visible_groups": ["group"]},
         }).json()
 
-        def replay(snapshot, token):
-            return client.post(url + "/model/undo", json={
+        def replay(snapshot, token, target=url):
+            return client.post(target + "/model/undo", json={
                 "revision": snapshot["revision"],
                 "presentation_revision": snapshot["presentation_revision"],
                 "token": token,
@@ -196,11 +198,20 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
         assert saved["presentation"]["visible_groups"] == ["group"]
         assert not saved["presentation"].get("documents")
         assert replay(saved, token).status_code == 409
-        redone = replay(saved, inverse["undo_token"])
+        canonical = f"/api/projects/{saved['project_id']}"
+        redone = replay(saved, inverse["undo_token"], canonical)
         assert redone.status_code == 200, redone.text
         reapplied = redone.json()["result"]["snapshot"]
         assert reapplied["project"] == reopened["project"]
         assert reapplied["presentation"] == later["presentation"]
+        retired = path.rename(tmp_path / "old-project")
+        copytree(retired, path)
+        replacement = client.get(url).json()
+        assert replacement["revision"] == reapplied["revision"]
+        assert replacement["project_id"] != reapplied["project_id"]
+        rejected = replay(replacement, redone.json()["result"]["undo_token"])
+        assert rejected.status_code == 422 and "another project" in rejected.text
+        assert client.get(url).json() == replacement
 
 
 def _graphs(owner, scope=()):
