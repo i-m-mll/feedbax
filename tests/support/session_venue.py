@@ -77,6 +77,9 @@ class LocalVenueProvider:
             state = "on" if (self.directory(resource) / "realization.json").is_file() else "starting"
         return ProviderMachineObservation(state=state, observed_at_ms=time.time_ns() // 1_000_000)
 
+    def check_opening_deadline(self, launch: SessionLaunch) -> None:
+        pass
+
     def acquire(self, launch: SessionLaunch) -> ProviderResource:
         resource = ProviderResource(id=launch.request.id.hex, intent=launch.intent, kind="venue")
         assert not (self.root / f".used-{resource.id}").exists()

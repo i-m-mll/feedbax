@@ -446,6 +446,7 @@ export interface StudioRemoteSession {
   idle_since_ms: number | null;
   job_ids: string[];
   can_close: boolean;
+  region?: string | null;
   opening_observations?: OpeningObservation[];
   opening_failure?: string | null;
   billed_cost_microusd?: number | null;
@@ -4864,6 +4865,7 @@ export const StudioRemoteSessionSchema: z.ZodType<StudioRemoteSession> = z.lazy(
       "idle_since_ms": z.number().int().safe().gte(0).nullable(),
       "job_ids": z.array(z.string()),
       "can_close": z.boolean(),
+      "region": z.string().nullable().optional(),
       "opening_observations": z.array(OpeningObservationSchema).optional(),
       "opening_failure": z.string().nullable().optional(),
       "billed_cost_microusd": z.number().int().safe().gte(0).nullable().optional(),

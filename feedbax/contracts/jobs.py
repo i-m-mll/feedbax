@@ -498,6 +498,7 @@ class StudioRemoteSession(StrictModel):
     idle_since_ms: int | None = Field(ge=0)
     job_ids: list[str]
     can_close: bool
+    region: str | None = Field(default=None, exclude_if=lambda value: value is None)
     opening_observations: tuple[OpeningObservation, ...] = Field(default=(), exclude_if=lambda value: not value)
     opening_failure: str | None = Field(default=None, exclude_if=lambda value: value is None)
     billed_cost_microusd: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)

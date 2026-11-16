@@ -10,13 +10,16 @@ import signal
 import subprocess
 import sys
 from contextlib import suppress
+from dataclasses import asdict
 from functools import partial
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.execution_target import SessionTargetProfile, attempt_target
@@ -34,7 +37,9 @@ from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue, StudioVenueQuote
 from tests import test_local_job_host
 from tests.support.runpod_native import ACCOUNT_KEY, NativeLoopbackRunPod
 from tests.support.runpod_session import runpod_resources
@@ -142,6 +147,93 @@ def native_execution(tmp_path):
                                   provider=provider, verifier=verifier, driver=driver)
         finally:
             _terminate_local_venue(venue)
+
+
+def test_approved_runpod_offer_opens_in_another_region_and_projects_its_stages(
+    host_fixture, native_execution, monkeypatch,
+):
+    run = native_execution
+    provider, driver, fake = run.provider, run.driver, run.fake
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host_fixture.root))
+    projects = run.controller / "projects"
+    for name, data in dump_text_project(
+        Project.model_validate(document_project(authored_documents(), evaluation=True)),
+        ProjectConfiguration(project=PROJECT, store=str(run.controller / "results")),
+    ).items():
+        target = projects / PROJECT / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    folders = ProjectFolderService(projects)
+    reviewed = folders.read_plan(PROJECT, revision=None)
+    profile = SessionTargetProfile(
+        kind="session", id="runpod-witness", label="RunPod witness", driver=provider.target,
+        resources=run.resources.model_dump(mode="json"), lifecycle=KeepOpen(), maximum_microusd=750_000,
+    )
+    acquire, endpoint = provider.acquire, provider.acquisition.endpoint
+    release_create, release_ssh = Event(), Event()
+
+    def delayed_create(launch):
+        assert release_create.wait(10)
+        return acquire(launch)
+
+    def delayed_ssh(resource, **kwargs):
+        if kwargs.get("opening"):
+            assert release_ssh.wait(10)
+        return endpoint(resource, **kwargs)
+
+    def review_quote(request):
+        provider.review_quote(request)
+        return StudioVenueQuote(provider.hourly_microusd(request))
+
+    monkeypatch.setattr(provider, "acquire", delayed_create)
+    monkeypatch.setattr(provider.acquisition, "endpoint", delayed_ssh)
+    remote = StudioRemoteRuns(
+        (profile,), (StudioVenue(driver, run.environment.digest, provider.jobs, 120, review_quote),),
+        attest=lambda quote, request: _authorization(request, expires_at_ms=quote.expires_at_ms),
+    )
+    path = f"/api/projects/{PROJECT}/train-runs"
+    with TestClient(create_app(projects_dir=projects, remote_runs=remote)) as client:
+        quote = client.post(f"{path}/quote", json={
+            "revision": reviewed.revision, "target": profile.id, "run_keys": [asdict(TRAIN)],
+        })
+        quote.raise_for_status()
+        session_id = quote.json()["id"]
+        assert not fake.pods and not fake.secrets
+
+        def projected_stage(stage):
+            response = client.get(path, params={"revision": reviewed.revision, "window_map": "true"})
+            response.raise_for_status()
+            return any(
+                row["key"] == asdict(TRAIN) and row["status"] == "starting" and row.get("opening_step") == stage
+                for row in response.json()["window_map"]["rows"]
+            )
+
+        def activity_with_region():
+            response = client.get("/api/sessions")
+            response.raise_for_status()
+            return next((machine for machine in response.json()
+                         if machine["id"] == session_id and machine.get("region")), None)
+
+        try:
+            accepted = client.post(f"{path}/approve", json={"quote": session_id})
+            assert accepted.status_code == 202
+            wait_until(lambda: projected_stage("acquiring"), timeout=8)
+            release_create.set()
+            wait_until(lambda: projected_stage("connecting"), timeout=8)
+            release_ssh.set()
+            machine = wait_until(activity_with_region, timeout=20)
+            assert machine["region"] == "EU-TEST-2"
+            assert [item["step"] for item in machine["opening_observations"]] == [
+                "acquiring", "connecting", "copying", "installing", "starting_host",
+            ]
+            opened = driver.record(UUID(session_id))
+            assert opened.realization.probe["placement"]["region"] == "EU-TEST-2"
+            assert opened.realization.probe["placement"]["realized_hourly_usd"] == 0.75
+            assert "dataCenterIds" not in fake.created_pod
+            assert fake.requests.count(("POST", "/v2/pods")) == 1
+        finally:
+            release_create.set()
+            release_ssh.set()
 
 
 def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixture, native_execution):

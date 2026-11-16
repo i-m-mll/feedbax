@@ -102,6 +102,10 @@ export function studioOpeningStep(step: keyof typeof vocabulary.status.openingSt
   return vocabulary.status.openingStep[step];
 }
 
+export function studioOpeningStage(step: keyof typeof vocabulary.status.openingStage) {
+  return vocabulary.status.openingStage[step];
+}
+
 export function studioDefinitionStatus(status: keyof typeof vocabulary.status.definition) {
   return vocabulary.status.definition[status];
 }

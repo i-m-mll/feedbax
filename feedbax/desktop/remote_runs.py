@@ -20,8 +20,8 @@ from feedbax.orchestration.runpod import SubprocessRunPodTransport, read_runpod_
 from feedbax.orchestration.runpod_cutoff import NativeRunPodCutoff
 from feedbax.orchestration.runpod_session import RunPodEnvironment, RunPodSessionProvider
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition, RunPodResources
-from feedbax.orchestration.session import Positive, SessionDriver
-from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue
+from feedbax.orchestration.session import Positive, SessionDriver, SessionError, SessionRequest
+from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue, StudioVenueQuote
 
 
 class DesktopRunPod(StrictModel):
@@ -56,15 +56,19 @@ def load_remote_runs(paths: AppPaths, release: Release) -> StudioRemoteRuns | No
     provenance, revision = load_and_verify_provenance(source / "feedbax")
     if revision != record.commit or hashlib.sha256(provenance).hexdigest() != record.distribution_provenance_sha256:
         raise ValueError("The RunPod snapshot provenance differs from the installed release.")
+    profiles: list[SessionTargetProfile] = []
     for profile in config.profiles:
         if profile.driver != RunPodSessionProvider.target:
             raise ValueError("Studio RunPod profiles must use the RunPod session driver.")
-        RunPodResources.model_validate(profile.resources)
+        resources = RunPodResources.model_validate(profile.resources)
+        profiles.append(profile.model_copy(update={
+            "resources": resources.model_dump(mode="json", exclude={"datacenter"}),
+        }))
     root = private_directory(paths.state / "jobs" / "runpod")
     approval = DesktopApproval(root / "studio-approval.json", release.resource("launcher"))
     api_key = read_runpod_api_key(config.runpod_config)
     if not api_key or not config.ssh_identity.is_file():
-        return StudioRemoteRuns(config.profiles, (), attest=approval)
+        return StudioRemoteRuns(profiles, (), attest=approval)
     cutoff = NativeRunPodCutoff(environment.workspace, environment.bootstrap_python)
     acquisition = RunPodAcquisition(
         root / "provider", SubprocessRunPodTransport(), api_key=api_key,
@@ -76,8 +80,18 @@ def load_remote_runs(paths: AppPaths, release: Release) -> StudioRemoteRuns | No
         uv_binary=release.resource("runpod_uv"), install_timeout=480,
     )
     driver = SessionDriver(root / "controller", provider, verify_authorization=approval.verify)
+
+    def review_quote(request: SessionRequest) -> StudioVenueQuote:
+        facts = provider.review_quote(request)
+        stock = facts["availability"]
+        if not isinstance(stock, str):
+            raise SessionError("RunPod did not report stock for this offer.")
+        return StudioVenueQuote(
+            provider.hourly_microusd(request), {"cloud": "Secure", "region": "Any", "stock": stock.title()},
+        )
+
     venue = StudioVenue(
         driver, environment.digest, provider.jobs, config.authorization_seconds,
-        quote_rate=provider.review_rate,
+        review_quote=review_quote,
     )
-    return StudioRemoteRuns(config.profiles, (venue,), attest=approval)
+    return StudioRemoteRuns(profiles, (venue,), attest=approval)

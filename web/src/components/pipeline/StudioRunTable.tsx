@@ -146,6 +146,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {items.map((item) => {
             const run = rows[item.index];
             const lit = selected.has(run.id);
+            const summary = run.openingReason ?? (run.status === "stale" ? undefined : run.reason);
             const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
               <tr
@@ -190,7 +191,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                 ))}
                 <td tabIndex={-1} className={cellClass}>
                   <StudioRunStatus status={run.status} />
-                  {run.reason && <div className="text-xs text-shell-muted">{run.reason}</div>}
+                  {summary && <div className="text-xs text-shell-muted">{summary}</div>}
                 </td>
                 <td tabIndex={-1} className={cellClass}>
                   {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}

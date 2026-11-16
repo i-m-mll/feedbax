@@ -173,6 +173,7 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
     {machine.state === 'opening' && currentStep && <p className="text-shell-muted">{studioOpeningStep(currentStep.step)}</p>}
     {machine.opening_failure && <p className="text-shell-muted">{machine.opening_failure}</p>}
     <dl className="grid grid-cols-[auto_1fr] gap-x-3">
+      {machine.region && <><dt>{studioName('region')}</dt><dd>{machine.region}</dd></>}
       <dt>{studioName('hourlyRate')}</dt><dd>{studioMoney(machine.hourly_microusd)}</dd>
       <dt>{studioName(machine.billed_cost_microusd != null ? 'billedCost' : 'estimatedCost')}</dt>
       <dd>{studioMoney(machine.billed_cost_microusd ?? machine.estimated_cost_microusd)}</dd>

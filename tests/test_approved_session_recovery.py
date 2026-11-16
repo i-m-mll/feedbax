@@ -36,7 +36,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
-from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue
+from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue, StudioVenueQuote
 from tests.support.git_fixtures import run_fixture_git
 from tests.support.runpod_session import FakeRunPod, runpod_resources
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider
@@ -104,7 +104,9 @@ def _app(root: Path, action: str, native_proof=None):
             projects_root=directory / "projects", stores_root=directory / "stores",
         ))
 
-    venue = StudioVenue(driver, ENVIRONMENT, jobs, 90, driver.provider.hourly_microusd)
+    venue = StudioVenue(driver, ENVIRONMENT, jobs, 90, lambda request: StudioVenueQuote(
+        driver.provider.hourly_microusd(request),
+    ))
     remote = StudioRemoteRuns((profile,), (venue,), attest=approval)
     return create_app(projects_dir=root / "projects", remote_runs=remote), driver
 
@@ -283,7 +285,7 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
         workspace="/workspace", bootstrap_python="/usr/bin/python3", uv_sha256=hashlib.sha256(toolchain).hexdigest(),
         uv_version="0.11.0", snapshot=snapshot.record, backend="gpu",
     )
-    resources = runpod_resources()
+    resources = runpod_resources().model_copy(update={"datacenter": "US-TEST-1"})
     fake = FakeRunPod(resources)
 
     def provider_response(request):
@@ -336,6 +338,10 @@ def test_installed_runpod_composes_the_real_read_only_quote(tmp_path, monkeypatc
         })
         quote.raise_for_status()
         assert quote.json()["hourly_microusd"] == resources.hourly_microusd
+        assert "datacenter" not in quote.json()["resources"]
+        assert {key: quote.json()["resources"][key] for key in ("region", "stock", "cloud")} == {
+            "region": "Any", "stock": "Low", "cloud": "Secure",
+        }
         assert fake.requests == [("GET", f"/v2/catalog/gpus/{resources.gpu_id}")]
         fake.quoted_rate = 0.76
         refused = client.post(f"{API}/quote", json={

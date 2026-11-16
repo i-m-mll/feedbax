@@ -13,17 +13,17 @@ from feedbax.orchestration.session import ProviderUnreachable, SessionDriver, Se
 from feedbax.orchestration.session_jobs import SessionJobs
 from feedbax.orchestration.venue_jobs import VenueJobs
 from feedbax.web.app import create_app
-from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue
+from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue, StudioVenueQuote
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, verify_authorization
 from tests.support.store_transport import loopback_store
 from tests.test_session_rehearsal import ISSUER_KEY, _authorization
 
 
 class RehearsalVenue(LocalVenueProvider):
-    def quote_rate(self, request):
+    def review_quote(self, request):
         if (self.root.parent / "provider-unreachable").exists():
             raise ProviderUnreachable("The provider did not answer.")
-        return self.hourly_microusd(request)
+        return StudioVenueQuote(self.hourly_microusd(request))
 
     def inventory(self):
         deadline = monotonic() + 14
@@ -81,7 +81,7 @@ def __getattr__(name: str):
         return _authorization(request, expires_at_ms=quote.expires_at_ms, ceiling_microusd=quote.ceiling_microusd)
 
     app = create_app(remote_runs=StudioRemoteRuns(
-        (profile,), (StudioVenue(driver, ENVIRONMENT, jobs, 90, provider.quote_rate),), attest=attest,
+        (profile,), (StudioVenue(driver, ENVIRONMENT, jobs, 90, provider.review_quote),), attest=attest,
     ))
     application = app.router.lifespan_context
 

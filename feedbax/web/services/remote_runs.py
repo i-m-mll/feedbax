@@ -23,6 +23,7 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.project_plan import RunKey
 from feedbax.host import HostError
+from feedbax.host.protocol import JsonObject
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.orchestration.session import (
     ProviderMachineObservation, ProviderUnreachable, SessionAuthorization, SessionDriver, SessionError, SessionRecord, SessionRequest,
@@ -37,12 +38,18 @@ log = logging.getLogger("uvicorn.error")
 
 
 @dataclass(frozen=True)
+class StudioVenueQuote:
+    hourly_microusd: int
+    display_resources: JsonObject = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class StudioVenue:
     driver: SessionDriver
     environment: str
     jobs: Callable[[SessionDriver, UUID], SessionJobs]
     authorization_seconds: int
-    quote_rate: Callable[[SessionRequest], int]
+    review_quote: Callable[[SessionRequest], StudioVenueQuote]
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,7 @@ class StudioRemoteRuns:
         self._lock = Lock()
         self._observations: dict[UUID, _VenueObservation] = {}
         self._opening_errors: dict[UUID, str] = {}
+        self._reconciled_openings: set[str] = set()
         self._awaiting_ack: set[UUID] = set()
         self._visible_openings: tuple[ApprovedRunVisibility, ...] = ()
         self._unreachable: dict[str, _ProviderOutage] = {}
@@ -125,7 +133,7 @@ class StudioRemoteRuns:
         if outage is None or outage.retry_at > monotonic():
             return
         try:
-            venue.quote_rate(outage.request)
+            venue.review_quote(outage.request)
         except ProviderUnreachable as error:
             self._provider_response(outage.request, error)
         except SessionError:
@@ -149,12 +157,12 @@ class StudioRemoteRuns:
         venue = self._venues[profile.driver]
         request = self.registry.session_request(profile.id, session_id=uuid4(), environment=venue.environment)
         try:
-            rate = venue.quote_rate(request)
+            offer = venue.review_quote(request)
         except ProviderUnreachable as error:
             self._provider_response(request, error)
             raise
         self._provider_response(request)
-        if rate > 0 and request.maximum_microusd == 0:
+        if offer.hourly_microusd > 0 and request.maximum_microusd == 0:
             raise JobConflict("This machine has no budget.")
         now = time_ns() // 1_000_000
         values = [{axis: item.value for axis, item in run.coordinates.items()} for run in selected]
@@ -163,8 +171,8 @@ class StudioRemoteRuns:
             if any(axis not in other or data[axis] != other[axis] for other in values)
         }
         quote = StudioMachineQuote(
-            id=request.id, machine=profile.label, resources=request.resources,
-            hourly_microusd=rate, ceiling_microusd=request.maximum_microusd,
+            id=request.id, machine=profile.label, resources=request.resources | offer.display_resources,
+            hourly_microusd=offer.hourly_microusd, ceiling_microusd=request.maximum_microusd,
             expires_at_ms=now + venue.authorization_seconds * 1_000,
             idle_timeout_seconds=request.lifecycle.seconds if isinstance(request.lifecycle, CloseWhenIdle) else None,
             idle_with_results="on", status="awaiting_authorization",
@@ -346,6 +354,13 @@ class StudioRemoteRuns:
         """Advance the durable Jobs observations even with no Studio window open."""
         visible_openings = []
         for target, venue in self._venues.items():
+            if target not in self._reconciled_openings:
+                try:
+                    venue.driver.reconcile_unconfirmed_creates()
+                except (OSError, SessionError) as error:
+                    log.debug("Could not reconcile earlier %s acquisitions: %s", target, error)
+                else:
+                    self._reconciled_openings.add(target)
             openings = self._openings[target]
             records = {entry.launch.request.id: entry for entry in venue.driver.records()}
             visible_openings.extend(openings.visibility(records))
@@ -518,6 +533,8 @@ class StudioRemoteRuns:
             end = provider.observed_at_ms if provider is not None and provider.state == "off" else now
             start = provider.billing_started_at_ms if provider is not None else None
             elapsed_ms = max(0, min(end, launch.ends_at_ms) - (start or launch.acquired_at_ms))
+            placement = record.realization.probe.get("placement") if record.realization else None
+            region = placement.get("region") if isinstance(placement, dict) else None
             machines.append(StudioRemoteSession(
                 id=launch.request.id, name=self._labels[launch.request.placement.profile],
                 state=active, hourly_microusd=launch.hourly_microusd,
@@ -525,6 +542,7 @@ class StudioRemoteRuns:
                 closes_at_ms=observation.verified_cutoff_ms or launch.ends_at_ms, ceiling_microusd=launch.request.maximum_microusd,
                 idle_since_ms=observation.idle_since_ms, job_ids=[job.job_id for job in observation.jobs],
                 can_close=observation.can_close,
+                region=region if isinstance(region, str) else None,
                 opening_observations=record.opening_observations, opening_failure=opening_failure,
                 billed_cost_microusd=provider.billed_microusd if provider is not None else None,
                 provider_observed_at_ms=provider.observed_at_ms if provider is not None else None,
