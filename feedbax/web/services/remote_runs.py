@@ -129,12 +129,13 @@ class StudioRemoteRuns:
 
     def approve(self, folders: ProjectFolder, project: str, quote_id: UUID) -> bool:
         """Stage once and hold fresh decisions until their response is sent."""
-        for openings in self._openings.values():
-            if openings.staged(quote_id, project=project):
-                return False
         with self._lock:
             pending = self._quotes.get(quote_id)
-        if pending is None or pending.project != project:
+        if pending is None:
+            if any(journal.staged(quote_id, project=project) for journal in self._openings.values()):
+                return False
+            raise JobConflict("Review the machine quote again.")
+        if pending.project != project:
             raise JobConflict("Review the machine quote again.")
         with pending.lock:
             openings = self._openings[pending.request.target]

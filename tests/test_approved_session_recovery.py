@@ -238,6 +238,9 @@ def test_staging_one_hundred_saved_runs_replies_before_provider_acquisition(
             if scope.get("path") == f"{API}/approve" and message["type"] == "http.response.body":
                 staged_ns = perf_counter_ns()
                 assert _approval_row(driver, quote_id) == (None, None)
+                assert not await asyncio.to_thread(
+                    app.state.remote_runs.approve, app.state.project_folders, PROJECT, UUID(quote_id),
+                )
                 await asyncio.to_thread(app.state.remote_runs.advance_openings, app.state.project_folders)
                 assert driver.records() == () and driver.inventory() == (foreign,)
             await send(message)
