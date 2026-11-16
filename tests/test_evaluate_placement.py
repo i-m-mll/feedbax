@@ -84,7 +84,7 @@ def test_same_evaluate_products_inside_driver_and_ordinary_job(host, tmp_path, m
         cursor = 0
         found = []
         while True:
-            page = host.events(cursor, projects=(scenario, f"{scenario}-control"))
+            page = host.events(cursor, projects=(plan.project_id, control_plan.project_id))
             found.extend(
                 event["data"] for event in page["events"]
                 if event["job_id"] == attempt and event["kind"] == kind
@@ -103,7 +103,8 @@ def test_same_evaluate_products_inside_driver_and_ordinary_job(host, tmp_path, m
     host.policy(compute=1)
     control_project = f"{scenario}-control"
     _save_project(folders, control_project, project)
-    control = train_arm("disabled", folders.read_plan(control_project, revision=None))
+    control_plan = folders.read_plan(control_project, revision=None)
+    control = train_arm("disabled", control_plan)
     live = train_arm("live", plan)
     jobs._training_worker = template
     (item,) = jobs.admit_plan(folders, plan, run_keys=(evaluate.key,), token="ordinary").items

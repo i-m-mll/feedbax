@@ -85,7 +85,8 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         light = [job for job in jobs if job["slot"] == "light"]
         assert len(light) == 4 and len({job["worker_pid"] for job in light}) == 1
         assert all(job["delivery"] == 1 for job in light)
-        assert {job["kind"] for job in expect(client.get("/api/jobs", params={"project": project})).json()["jobs"]} == {
+        activity = expect(client.get("/api/jobs", params={"project": project_id})).json()
+        assert {job["kind"] for job in activity["jobs"]} == {
             "train", "evaluate", "analyze", "render", "report",
         }
         root = projects / project / "results"
