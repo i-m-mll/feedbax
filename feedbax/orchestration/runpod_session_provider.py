@@ -590,8 +590,12 @@ class RunPodAcquisition:
                 if status.status == "dead":
                     raise SessionOpeningFailed("RunPod venue exited during SSH readiness.")
                 ssh = pod.get("ssh")
-                if pod.get("status") == "RUNNING" and isinstance(ssh, Mapping) and "direct" in ssh:
-                    if status.ip is None or status.port is None or ":" in status.ip:
+                # RunPod can report RUNNING before it publishes the direct SSH mapping.
+                if (
+                    pod.get("status") == "RUNNING" and isinstance(ssh, Mapping) and "direct" in ssh
+                    and status.ip is not None and status.port is not None
+                ):
+                    if ":" in status.ip:
                         raise SessionOpeningFailed("RunPod did not expose an authenticated direct SSH endpoint.")
                     endpoint = self._probe_endpoint(state, config, resource, pod, status.ip, status.port, remaining())
                     if endpoint is not None:

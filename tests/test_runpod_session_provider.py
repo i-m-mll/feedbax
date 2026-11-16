@@ -175,6 +175,33 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
         assert session.close_evidence is not None and not session.close_evidence.remaining
 
 
+def test_runpod_waits_for_direct_ssh_on_the_same_running_pod(tmp_path, monkeypatch):
+    resources = runpod_resources()
+    fake = FakeRunPod(resources)
+    launch = _launch(resources)
+    cutoff = FakeRunPodCutoff(("/usr/bin/true",))
+    provider = _provider(tmp_path, fake.handle, cutoff)
+    venue = provider.acquire(launch)
+    pod = fake.pods[venue.id]
+    ready = pod["ssh"]
+    pod["ssh"] = {"direct": None}
+    sleeps = []
+
+    def publish_direct_endpoint(seconds: float) -> None:
+        sleeps.append(seconds)
+        pod["ssh"] = ready
+
+    monkeypatch.setattr(runpod_session_provider.time, "sleep", publish_direct_endpoint)
+    probe = f"{resources.gpu_id}, 570.86.10, 8.9, GPU-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n"
+    monkeypatch.setattr(runpod, "_run_command", lambda *_args, **_kwargs: runpod.CommandResult(0, probe, ""))
+
+    endpoint = provider.endpoint(venue, opening=True)
+    assert endpoint.host == "root@127.0.0.1" and endpoint.opening_deadline is not None
+    assert len(sleeps) == 1
+    assert fake.requests.count(("POST", "/v2/pods")) == 1
+    assert not any(method == "DELETE" for method, _ in fake.requests)
+
+
 def test_runpod_pins_endpoint_and_removes_only_the_exact_owned_resources(tmp_path, monkeypatch):
     resources = runpod_resources()
     fake = FakeRunPod(resources)
