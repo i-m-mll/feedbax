@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.host import watchdog
@@ -22,7 +22,7 @@ from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, SealedRepoSn
 from feedbax.orchestration.runpod_cutoff import NativeRunPodCutoff
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition
 from feedbax.orchestration.session import (
-    Positive, ProviderResource, SessionDriver, SessionError, SessionLaunch, SessionModel,
+    Digest, Positive, ProviderResource, SessionDriver, SessionError, SessionLaunch, SessionModel,
     SessionOpeningFailed, SessionRealization, SessionRequest,
 )
 from feedbax.orchestration.session_jobs import SessionJobs
@@ -36,7 +36,8 @@ type DependencyName = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$
 class RunPodEnvironment(SessionModel):
     workspace: str
     bootstrap_python: str
-    uv: str
+    uv: str | None = None
+    uv_sha256: Digest | None = None
     uv_version: Annotated[str, Field(pattern=r"^\d+\.\d+\.\d+$")]
     snapshot: RepoSnapshotRecord
     backend: Literal["cpu", "gpu"]
@@ -47,15 +48,25 @@ class RunPodEnvironment(SessionModel):
 
     @field_validator("workspace", "bootstrap_python", "uv")
     @classmethod
-    def _absolute(cls, value: str) -> str:
+    def _absolute(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         path = PurePosixPath(value)
         if not path.is_absolute() or ".." in path.parts or path.as_posix() != value or "\x00" in value:
             raise ValueError("RunPod environment requires canonical absolute venue paths.")
         return value
 
+    @model_validator(mode="after")
+    def _uv_source(self) -> RunPodEnvironment:
+        if (self.uv is None) == (self.uv_sha256 is None):
+            raise ValueError("Declare an image uv path or a staged uv SHA-256.")
+        return self
+
     @property
     def digest(self) -> str:
-        return hashlib.sha256(canonical_json_v2_bytes(self.model_dump(mode="json"))).hexdigest()
+        uv_source = "uv_sha256" if self.uv_sha256 is None else "uv"
+        declaration = self.model_dump(mode="json", exclude={uv_source})
+        return hashlib.sha256(canonical_json_v2_bytes(declaration)).hexdigest()
 
     @property
     def worker_environment(self) -> dict[str, str]:
@@ -88,12 +99,23 @@ class RunPodSessionProvider:
     def __init__(
         self, acquisition: RunPodAcquisition, environment: RunPodEnvironment,
         snapshot: SealedRepoSnapshot, *,
+        uv_binary: Path | None = None,
         rsync_executable: str = "rsync", install_timeout: Positive = 300,
     ):
         if snapshot.record != environment.snapshot:
             raise SessionError("RunPod repository snapshot differs from the declared environment.")
         if type(install_timeout) is not int or install_timeout <= 0:
             raise ValueError("RunPod environment installation timeout must be positive.")
+        self._uv_binary: bytes | None = None
+        if uv_binary is not None:
+            if environment.uv_sha256 is None:
+                raise SessionError("A local uv binary requires a staged uv SHA-256.")
+            if not uv_binary.is_file():
+                raise SessionError("RunPod staged uv requires a regular local binary.")
+            binary = uv_binary.read_bytes()
+            if hashlib.sha256(binary).hexdigest() != environment.uv_sha256:
+                raise SessionError("Local uv binary differs from the authorized SHA-256.")
+            self._uv_binary = binary
         cutoff = acquisition.running_cutoff
         self._native_cutoff = cutoff if isinstance(cutoff, NativeRunPodCutoff) else None
         if self._native_cutoff is not None and (
@@ -129,9 +151,14 @@ class RunPodSessionProvider:
 
     def acquire(self, launch: SessionLaunch) -> ProviderResource:
         self._check_environment(launch.request)
+        self._check_uv_binary()
         if not self.enforces_cutoff:
             raise SessionError("RunPod running-session cutoff is not qualified.")
         return self.acquisition.acquire(launch)
+
+    def _check_uv_binary(self) -> None:
+        if self.environment.uv_sha256 is not None and self._uv_binary is None:
+            raise SessionError("Opening requires the local binary for the authorized staged uv.")
 
     def remove(self, resource: ProviderResource) -> None:
         self.acquisition.remove(resource)
@@ -218,6 +245,7 @@ class RunPodSessionProvider:
         ) if native is not None else None
         realized = self._read(bounded(), layout)
         if realized is None:
+            self._check_uv_binary()
             prepare: dict[str, object] = {}
             if native is None:
                 prepare = {
@@ -231,8 +259,16 @@ class RunPodSessionProvider:
                         "terminate_argv": self.acquisition.terminate_argv(resource, launch),
                     },
                 }
-            response = self._call(bounded(), layout, "prepare", prepare)
-            if json.loads(response)["send"]:
+            prepare["uv_sha256"] = self.environment.uv_sha256
+            prepared = json.loads(self._call(bounded(), layout, "prepare", prepare))
+            if prepared["send_uv"]:
+                digest, binary = self.environment.uv_sha256, self._uv_binary
+                assert digest is not None and binary is not None
+                bounded().run([
+                    self.environment.bootstrap_python, "-I", "-c", self._bootstrap,
+                    "stage-uv", str(layout.root), digest,
+                ], binary)
+            if prepared["send"]:
                 record = self.snapshot.record
                 verify_repo_snapshot(
                     self.snapshot.staging_root, content_sha256=record.content_sha256, file_count=record.file_count,
@@ -244,6 +280,7 @@ class RunPodSessionProvider:
                 "file_count": self.environment.snapshot.file_count,
                 "timeout": min(self._install_timeout, install_seconds),
                 "uv": self.environment.uv,
+                "uv_sha256": self.environment.uv_sha256,
                 "uv_version": self.environment.uv_version,
                 "groups": self.environment.groups,
                 "extras": self.environment.extras,
@@ -251,6 +288,8 @@ class RunPodSessionProvider:
                 "worker_env": self.environment.worker_environment,
             })
             evidence = json.loads(probe) | {"placement": placement}
+            if self.environment.uv_sha256 is not None:
+                evidence["uv_sha256"] = self.environment.uv_sha256
             if cutoff_proof is not None:
                 evidence["running_cutoff"] = cutoff_proof
             realized = SessionRealization(

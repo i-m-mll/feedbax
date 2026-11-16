@@ -1,9 +1,11 @@
 """Standard-library bootstrap sent over a pinned venue connection before import."""
 
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -29,14 +31,63 @@ def _publish(path: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-            os.link(staged, path)
+            _link_staged(staged, path)
         finally:
             staged.unlink()
+
+
+def _link_staged(staged: Path, path: Path) -> None:
+    os.link(staged, path)
     fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _uv_path(root: Path) -> Path:
+    toolbox = root / "tools"
+    _private(toolbox)
+    return toolbox / "uv"
+
+
+def _verified_uv(root: Path, digest: str) -> Path:
+    path = _uv_path(root)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o500:
+            raise PermissionError("Expected a private staged uv executable.")
+        if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
+            raise ValueError("Staged uv differs from the authorized SHA-256.")
+    return path
+
+
+def _stage_uv(root: Path, digest: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("Staging uv requires its exact SHA-256.")
+    try:
+        _verified_uv(root, digest)
+    except FileNotFoundError:
+        pass
+    else:
+        return
+    path = _uv_path(root)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        staged = Path(stream.name)
+        try:
+            received = hashlib.sha256()
+            while chunk := sys.stdin.buffer.read(1024 * 1024):
+                received.update(chunk)
+                stream.write(chunk)
+            if received.hexdigest() != digest:
+                raise ValueError("Transferred uv differs from the authorized SHA-256.")
+            stream.flush()
+            os.fchmod(stream.fileno(), 0o500)
+            os.fsync(stream.fileno())
+            _link_staged(staged, path)
+        finally:
+            staged.unlink()
 
 
 def _prepare(root: Path, settings: dict) -> None:
@@ -91,7 +142,8 @@ def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str
     env.update(
         UV_PROJECT_ENVIRONMENT=str(root / "venv"), UV_PYTHON_DOWNLOADS="never", PYTHONDONTWRITEBYTECODE="1",
     )
-    uv = settings["uv"]
+    digest = settings.get("uv_sha256")
+    uv = str(_verified_uv(root, digest)) if digest is not None else settings["uv"]
     version = subprocess.check_output([uv, "--version"], env=env, timeout=5).decode().split()
     if version[:2] != ["uv", settings["uv_version"]]:
         raise ValueError(f"Expected uv {settings['uv_version']!r}")
@@ -124,7 +176,9 @@ def _complete(root: Path, settings: dict) -> None:
 
 
 def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
-    action, location = sys.argv[1:]
+    action, location, *arguments = sys.argv[1:]
+    if len(arguments) != (1 if action == "stage-uv" else 0):
+        raise ValueError("Unexpected RunPod bootstrap arguments.")
     root = Path(location)
     if action == "read":
         try:
@@ -133,7 +187,7 @@ def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
             pass
         return
     _private(root)
-    settings = json.load(sys.stdin.buffer)
+    settings = json.load(sys.stdin.buffer) if action != "stage-uv" else {}
     with (root / "setup.lock").open("ab") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if action == "close-opening":
@@ -146,9 +200,19 @@ def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
             return
         if (root / "opening-aborted").exists():
             raise ValueError("RunPod session setup was closed before publication.")
+        if action == "stage-uv":
+            _stage_uv(root, arguments[0])
+            return
         if action == "prepare":
             _prepare(root, settings)
-            print(json.dumps({"send": not (root / "repo").exists()}))
+            digest = settings.get("uv_sha256")
+            send_uv = False
+            if digest is not None:
+                try:
+                    _verified_uv(root, digest)
+                except FileNotFoundError:
+                    send_uv = True
+            print(json.dumps({"send": not (root / "repo").exists(), "send_uv": send_uv}))
         elif action == "install":
             _install(root, settings, verify_tree)
         elif action == "complete":

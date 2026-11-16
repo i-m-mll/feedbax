@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import shutil
@@ -18,22 +19,27 @@ import httpx
 import pytest
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.execution_target import SessionTargetProfile, attempt_target
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.host.protocol import HostError
+from feedbax.jobs import JobService
 from feedbax.orchestration.repo_snapshot import seal_repo_snapshot
 from feedbax.orchestration.runpod import SubprocessRunPodTransport
 from feedbax.orchestration.runpod_cutoff import NativeRunPodCutoff
 from feedbax.orchestration.runpod_session import RunPodEnvironment, RunPodSessionProvider
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition
-from feedbax.orchestration.session import KeepOpen, SessionDriver, SessionRequest
+from feedbax.orchestration.session import KeepOpen, SessionDriver, SessionError, SessionRequest
+from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
+from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests import test_local_job_host
 from tests.support.runpod_native import ACCOUNT_KEY, NativeLoopbackRunPod
 from tests.support.runpod_session import runpod_resources
 from tests.support.session_venue import verify_authorization
-from tests.test_canonical_evaluate_admission import managed_evaluation_definition
+from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_session_rehearsal import EVALUATE, ISSUER_KEY, PROJECT, TRAIN, _authorization, _jobs, _terminal_without_rpc
 
 
@@ -116,7 +122,8 @@ def native_execution(tmp_path):
         "feedbax", src, snapshot_parent=tmp_path / "snapshots", exclude_gitlinks=("vendor/window-shell",),
     )
     environment = RunPodEnvironment(
-        workspace=str(workspace), bootstrap_python=sys._base_executable, uv=uv, uv_version=uv_version,
+        workspace=str(workspace), bootstrap_python=sys._base_executable,
+        uv_sha256=hashlib.sha256(Path(uv).read_bytes()).hexdigest(), uv_version=uv_version,
         snapshot=snapshot.record, backend="cpu", extras=("web",),
     )
     with fake.serve_scoped() as origin:
@@ -126,7 +133,7 @@ def native_execution(tmp_path):
             running_cutoff=NativeRunPodCutoff(str(workspace), sys._base_executable, _test_origin=origin),
             ssh_executable=str(ssh),
         )
-        provider = RunPodSessionProvider(acquisition, environment, snapshot)
+        provider = RunPodSessionProvider(acquisition, environment, snapshot, uv_binary=Path(uv))
         verifier = partial(verify_authorization, key=ISSUER_KEY)
         driver = SessionDriver(controller / "sessions", provider, verify_authorization=verifier)
         try:
@@ -142,21 +149,26 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     controller, venue, fake = run.controller, run.venue, run.fake
     gate, trace, lost_reply = run.gate, run.trace, run.lost_reply
     provider, driver, verifier = run.provider, run.driver, run.verifier
-    request = SessionRequest(
-        id=uuid4(), target=provider.target, resources=run.resources.model_dump(mode="json"),
-        environment=run.environment.digest, lifecycle=KeepOpen(), maximum_microusd=750_000,
+    profile = SessionTargetProfile(
+        kind="session", id="runpod-witness", label="RunPod witness", driver=provider.target,
+        resources=run.resources.model_dump(mode="json"), lifecycle=KeepOpen(), maximum_microusd=750_000,
     )
+    targets = TargetRegistry((profile,), (provider,))
+    request = targets.session_request(profile.id, session_id=uuid4(), environment=run.environment.digest)
     quote = provider.acquisition.review_quote(request)
     assert quote["gpu_hourly_usd"] == 0.75 and quote["ephemeral_disk_gb"] == 40
     assert quote["authorized_total_hourly_microusd"] == run.resources.hourly_microusd
     assert not fake.pods and not fake.secrets
     authorization = _authorization(request)
     adoption = secrets.token_urlsafe()
+    with pytest.raises(SessionError):
+        driver.open(request.model_copy(update={"profile": "runpod-other"}), authorization, adoption_token=adoption)
+    assert all(method != "POST" for method, _ in fake.requests)
     local_folders = ProjectFolderService(controller / "projects")
     project_root = local_folders.root / PROJECT
     local_store = project_root / "local-results"
     for name, data in dump_text_project(
-        Project.model_validate(managed_evaluation_definition()),
+        Project.model_validate(document_project(authored_documents(), evaluation=True)),
         ProjectConfiguration(project=PROJECT, store=str(local_store)),
     ).items():
         target = project_root / name
@@ -175,9 +187,18 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     assert opened.realization.probe["python"] == str(venue / "venv" / "bin" / "python")
     assert not provider.supports_suspension
     session = provider.jobs(driver, request.id)
+
+    def submit_to_venue(selected, folders, reviewed, *, run_keys, token, reuse_completed):
+        assert selected == profile and not reuse_completed
+        return session.delegate(folders, reviewed, run_keys=run_keys, token=token)
+
+    typed_jobs = JobService(
+        host_fixture, new_application_registry_bundle(), targets=targets, submit_session=submit_to_venue,
+    )
     lost_reply.touch()
     with pytest.raises(OSError, match="exited 74"):
-        session.delegate(local_folders, approved, run_keys=(TRAIN, EVALUATE), token="saved-chain")
+        typed_jobs.submit_plan(local_folders, approved, target=profile.id,
+                               run_keys=(TRAIN, EVALUATE), token="saved-chain")
     assert not lost_reply.exists()
     changed_file = next(name for name in approved_files if name.endswith(".json"))
     (project_root / changed_file).write_bytes(approved_files[changed_file] + b"\n")
@@ -193,6 +214,7 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
         local_folders, approved, run_keys=(TRAIN, EVALUATE), token="saved-chain",
     )
     assert all(item.disposition == "admitted" for item in submitted.items), submitted.items
+    assert submitted.target == opened.placement and submitted.target.profile == profile.id
     saved = venue / "projects" / approved.revision / PROJECT
     assert {name: (saved / name).read_bytes() for name in approved_files} == approved_files
     first = session.poll(limit=1)
@@ -204,6 +226,7 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     train_id, evaluate_id = (item.job_id for item in submitted.items)
     venue_rows = reconnected.host.jobs_snapshot(include_launch=True)["jobs"]
     assert len(venue_rows) == 2
+    assert all(attempt_target(row["data"]["target"]) == opened.placement for row in venue_rows)
     assert all(row["launch"]["argv"] == [opened.realization.probe["python"]] for row in venue_rows)
     assert all(row["data"]["manifest_root"] == str(venue / "stores" / PROJECT) for row in venue_rows)
     assert venue_rows[1]["edges"][0]["binding"]["completion"]["producer_job_id"] == train_id
@@ -241,6 +264,11 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
 
     destination = ImmutableArtifactBlobProvider(local_store)
     assert [(ref, destination.get_object(ref)) for ref, _ in original] == original
+    view = SuccessView(destination)
+    assert all(view.read_owned_success(ref).receipt.target == opened.placement for ref, _ in original)
+    recorded = view.read_owned_success(view.attempt_ref(evaluate_id)).receipt
+    subject = recorded.inputs["subject"][0].evaluation_subject
+    assert subject.checkpoints[0].occurrence.run_id == train_id
     result = local_jobs.read_evaluation_result(project=PROJECT, store=local_store, job_id=evaluate_id)
     with result.open_states(verify=True) as states:
         assert states.descriptor.dimensions["checkpoint"] == 1
