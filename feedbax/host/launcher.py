@@ -83,7 +83,20 @@ def _outcome(log: Path, status: int, require_result: bool) -> dict:
     }
 
 
+def _terminal(log: Path, status: int, require_result: bool) -> None:
+    if not log.exists():
+        return
+    with log.open("rb") as stream:
+        accepted = json.loads(stream.readline())
+    if (
+        accepted.get("kind") == "accepted"
+        and accepted["data"].get("token") == os.environ[TOKEN_ENV]
+    ):
+        append(log, "terminal", _outcome(log, status, require_result), sync=True)
+
+
 def main(control_fd: str, profile_path: str) -> int:
+    profile = json.loads(Path(profile_path).read_text())
     control = int(control_fd)
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, lambda *_: None)
@@ -94,20 +107,17 @@ def main(control_fd: str, profile_path: str) -> int:
     )
     os.close(control)
     os.close(write_end)
+    log = None
     with os.fdopen(read_end, "rb") as report:
-        line = report.readline()
+        for line in report:
+            record = json.loads(line)
+            if "event_log" in record:
+                log = Path(record["event_log"])
+            else:
+                assert log is not None
+                _terminal(log, record["status"], require_result=True)
+                log = None
     status = child.wait()
-    if not line:
-        return 0
-    log = Path(json.loads(line)["event_log"])
-    if not log.exists():
-        return 0
-    with log.open("rb") as stream:
-        accepted = json.loads(stream.readline())
-    if (
-        accepted.get("kind") == "accepted"
-        and accepted["data"].get("token") == os.environ[TOKEN_ENV]
-    ):
-        profile = json.loads(Path(profile_path).read_text())
-        append(log, "terminal", _outcome(log, status, bool(profile["warm_entrypoint"])), sync=True)
+    if log is not None:
+        _terminal(log, status, bool(profile["warm_entrypoint"]))
     return 0

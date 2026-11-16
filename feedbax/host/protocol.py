@@ -20,6 +20,8 @@ type State = Literal[
 ]
 type Disposition = Literal["admitted", "attached", "reused", "rejected"]
 
+LIGHT_ENTRYPOINT = "feedbax.light_host_worker:main"
+
 VERSION = 1
 MAX_RPC_BYTES = 32 * 1024 * 1024
 LIVE_STATES = ("queued", "assigned", "running", "stopping")

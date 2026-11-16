@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from hashlib import sha256
-import os
 from pathlib import Path
 
 from feedbax.contracts.base import ParentRef
@@ -19,10 +18,9 @@ from feedbax.contracts.studio_training import (
     PublishedTrainingCheckpoint,
     StudioGraphMethodPayload,
 )
-from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host.checkpoint_selection import selected_coordinates, verify_dependency_files
-from feedbax.host.completion import CompletionFileError, completion_file
+from feedbax.host.completion import CompletionFileError, completion_file, read_completion_bindings
 from feedbax.persistence.array_container import open_array_container
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
@@ -301,11 +299,7 @@ def verify_training_model_product(completion: dict) -> tuple[Product, SemanticMo
 
 def read_host_completion_binding() -> dict:
     """Authenticate the single subject edge supplied to this worker delivery."""
-    path = Path(os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"])
-    raw = path.read_bytes()
-    if sha256(raw).hexdigest() != os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256"]:
-        raise CompletionFileError("Host completion binding changed after assignment.")
-    (binding,) = strict_json_loads(raw)["bindings"]
+    (binding,) = read_completion_bindings()["bindings"]
     return binding
 
 

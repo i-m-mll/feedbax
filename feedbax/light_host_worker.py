@@ -1,0 +1,164 @@
+"""Compute a managed light delivery and submit its staged products to the Host."""
+
+from __future__ import annotations
+
+from contextlib import ExitStack
+from functools import lru_cache
+import os
+from pathlib import Path
+
+import numpy as np
+
+from feedbax.contracts.artifact_custody import ContentRootRecord
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
+from feedbax.contracts.effective_success import Bindings, Product, success_content_ref
+from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
+from feedbax.contracts.request_identity import DecodedRequest
+from feedbax.contracts.request_refs import ContentRef
+from feedbax.contracts.request_specs import (
+    AnalysisRequestSpec,
+    RenderRequestSpec,
+    ReportRequestSpec,
+)
+from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.dataset import Dataset
+from feedbax.host.completion import read_completion_bindings
+from feedbax.host.io import append
+from feedbax.light_jobs import (
+    LightCompletionBindings,
+    LightDelivery,
+    dataset_member,
+    light_operation,
+    light_staging_id,
+    light_staging_target,
+    report_artifacts,
+    validate_light_request,
+)
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
+from feedbax.persistence.effective_success import SuccessView
+from feedbax.plot.dataset_figure import render as render_figure
+
+
+_MAX_CACHED_DATASET_BYTES = 4 * 1024 * 1024
+
+
+@lru_cache(maxsize=2)
+def _decoded_dataset(root: Path, digest: str, size: int, descriptor_sha256: str) -> Dataset:
+    ref = DatasetProductRef(
+        content=ContentRef(sha256=digest, size=size, media_type=DATASET_MEDIA_TYPE),
+        descriptor_sha256=descriptor_sha256,
+    )
+    with open_stored_dataset(ImmutableArtifactBlobProvider(root), ref) as source:
+        descriptor = source.descriptor
+        arrays = {name: np.array(source.data(name), copy=True) for name in descriptor.tensor_names}
+    for array in arrays.values():
+        array.flags.writeable = False
+    return Dataset.bind(
+        descriptor,
+        tensor_shapes={name: array.shape for name, array in arrays.items()},
+        load_tensor=lambda name, index: arrays[name][index],
+    )
+
+
+def _dataset_inputs(
+    store: ImmutableArtifactBlobProvider,
+    bindings: Bindings,
+    stack: ExitStack,
+) -> dict[str, Dataset]:
+    datasets = {}
+    for role, (member,) in bindings.items():
+        ref = dataset_member(member)
+        # The Store binds and verifies the exact object before every cache lookup.
+        datasets[role] = (
+            _decoded_dataset(
+                store.root, ref.content.sha256, ref.content.size, ref.descriptor_sha256
+            )
+            if ref.content.size <= _MAX_CACHED_DATASET_BYTES
+            else stack.enter_context(open_stored_dataset(store, ref))
+        )
+    return datasets
+
+
+def _retain_staged_object(
+    store: ImmutableArtifactBlobProvider, content: ContentRef, attempt: str
+) -> None:
+    store.register_root(
+        ContentRootRecord(
+            root_id=light_staging_id(attempt),
+            root_kind="run",
+            targets=(light_staging_target(success_content_ref(content)),),
+        )
+    )
+
+
+def _compute(
+    store: ImmutableArtifactBlobProvider,
+    request: DecodedRequest,
+    bindings: Bindings,
+    attempt: str,
+    role: str,
+) -> Product:
+    spec = request.spec
+    if isinstance(spec, AnalysisRequestSpec):
+        operation = light_operation(spec.analysis_type)
+        parameters = operation.parameter_model.model_validate(spec.params)
+        with ExitStack() as stack:
+            dataset = operation.function(
+                params=parameters, **_dataset_inputs(store, bindings, stack)
+            )
+            with store._exclusive_lock():
+                ref = publish_dataset(store, dataset)
+                content = ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE})
+                _retain_staged_object(store, content, attempt)
+        return Product(
+            name=role, content=content, descriptor={"descriptor_sha256": ref.descriptor_sha256}
+        )
+    if isinstance(spec, RenderRequestSpec) and spec.document is not None:
+        with ExitStack() as stack:
+            figure = render_figure(spec.document, _dataset_inputs(store, bindings, stack))
+            document = figure.to_json()
+            assert document is not None
+            raw = document.encode()
+        with store._exclusive_lock():
+            ref = store.store_object(raw)
+            content = ContentRef(
+                sha256=ref.sha256, size=ref.size_bytes, media_type=PLOTLY_MEDIA_TYPE
+            )
+            _retain_staged_object(store, content, attempt)
+        return Product(name=role, content=content)
+    if isinstance(spec, ReportRequestSpec):
+        documents, members = report_artifacts(spec, bindings)
+        with store._exclusive_lock():
+            members.update({path: store.store_object(raw) for path, raw in documents.items()})
+            tree, _ = store.publish_rooted_tree(
+                members, root_id=light_staging_id(attempt), root_kind="run"
+            )
+        return Product(
+            name=role,
+            content=ContentRef(
+                sha256=tree.descriptor.sha256, size=tree.descriptor.size_bytes, tree=True
+            ),
+        )
+    raise ValueError("Expected a managed light request")
+
+
+def main(_argv: list[str]) -> int:
+    attempt = os.environ["FEEDBAX_HOST_JOB_ID"]
+    log = Path(os.environ["FEEDBAX_HOST_EVENT_LOG"])
+    payload = Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes()
+    delivery = LightDelivery.model_validate(strict_json_loads(payload))
+    exact = LightCompletionBindings.model_validate(read_completion_bindings())
+    store = ImmutableArtifactBlobProvider(delivery.manifest_root)
+    view = SuccessView(store)
+    request = view.read_request(delivery.request)
+    role = validate_light_request(request)
+    _, bindings = view.bind(delivery.request, origins=exact.origins)
+    product = _compute(store, request, bindings, attempt, role)
+    append(
+        log,
+        "result",
+        {"outcome": "succeeded", "products": {role: [product.model_dump(mode="json")]}},
+        sync=True,
+    )
+    return 0

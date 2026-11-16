@@ -53,8 +53,10 @@ from feedbax.contracts.manifest import (
     load_manifest_bytes,
     training_run_manifest_id,
 )
-from feedbax.contracts.project_plan import PlannedRun, ProjectPlan, RunKey
-from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.project_plan import (
+    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedRow, PlannedRun, ProjectPlan, RunKey,
+)
+from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import BatchSetMember, BestRank, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
@@ -62,7 +64,7 @@ from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, 
 from feedbax.host.checkpoint_selection import is_checkpoint_producer
 from feedbax.host.live_evaluate import DELEGATION_EVENT
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
-from feedbax.host.protocol import can_resume_attempt
+from feedbax.host.protocol import LIGHT_ENTRYPOINT, can_resume_attempt
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
@@ -75,6 +77,7 @@ from feedbax.studio.canonical_train import (
 
 if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ContentObjectRef
+    from feedbax.contracts.effective_success import Success
     from feedbax.persistence.effective_success import SuccessView
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
@@ -104,6 +107,7 @@ _ACTIVE_PLAN_STATUSES = frozenset({
     JobStatus.RUNNING, JobStatus.STOPPING, JobStatus.COLLECTING,
 })
 EVALUATION_SUBJECT_REQUIRED = "select an unambiguous admitted Train subject"
+_LIGHT_KINDS = frozenset({"analyze", "render", "report"})
 
 
 class JobNotFound(LookupError):
@@ -132,6 +136,7 @@ class PlanJobAttempt:
     evaluation_placement: Literal["ordinary", "live"] | None = None
     bound_subject: StudioBoundBestSubject | None = None
     checkpoint_attempt: StudioEvaluationCheckpointAttempt | None = None
+    light_success: Success | None = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,7 @@ class PlanJobAttempts:
     plan_ref: AuthoredTrainPlanRef | None = None
     checkpoint_producers: frozenset[RequestId] = frozenset()
     checkpoint_catalogs: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
+    light_by_address: Mapping[str, tuple[PlanJobAttempt, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -184,6 +190,7 @@ class PlanJobReader:
     def read_plan_attempts(
         self, *, project: str, store: Path, requests: Collection[RequestId],
         stopped_checkpoint_jobs: Sequence[str] = (),
+        light_addresses: Collection[str] = (),
     ) -> PlanJobAttempts:
         """Read saved Plan attempts and authenticate any selected stopped checkpoints."""
         manifest_root = str(store)
@@ -201,8 +208,9 @@ class PlanJobReader:
                 wanted.update(result["request_id"] for result in (row["last"], row["prior"]) if result)
         stopped_jobs = set(stopped_checkpoint_jobs)
         attempts: dict[RequestId, list[PlanJobAttempt]] = {}
+        light_attempts: dict[str, list[PlanJobAttempt]] = {}
         by_id = {
-            job["id"]: job for job in snapshot["jobs"]
+            job["id"]: job for job in cast(list[dict[str, Any]], snapshot["jobs"])
             if job["data"].get("manifest_root") == manifest_root
         }
         producers = Counter(
@@ -221,12 +229,15 @@ class PlanJobReader:
         success_view = None
         for job in by_id.values():
             request_id = job["request"]
-            if request_id not in wanted:
+            light = _is_light_request(request_id)
+            address = job["data"].get("run_key")
+            if request_id not in wanted and not (light and address in light_addresses):
                 continue
             evaluate = request_id.startswith("evaluate:")
             succeeded = job["state"] == "succeeded"
             size = None
             result = None
+            light_success = None
             damage = None
             if succeeded:
                 if success_view is None:
@@ -237,6 +248,10 @@ class PlanJobReader:
             elif evaluate:
                 result = _verified_evaluation_result(job, store) if succeeded else None
                 receipt, size = (result.receipt, result.size) if result is not None else (None, None)
+            elif light and succeeded:
+                assert success_view is not None
+                verified = _verified_light_result(success_view, job)
+                receipt, light_success = verified if verified is not None else (None, None)
             else:
                 receipt = _verified_training_receipt(job, store) if succeeded else None
             completion = (job.get("outcome") or {}).get("completion") or {}
@@ -258,30 +273,33 @@ class PlanJobReader:
                 reason = damage
             stopped_checkpoint = (
                 self.host.stopped_checkpoint(job["id"], project=project, manifest_root=manifest_root)
-                if not evaluate and status == JobStatus.STOPPED and job["id"] in stopped_jobs
+                if request_id.startswith("train:") and status == JobStatus.STOPPED and job["id"] in stopped_jobs
                 else None
             )
-            attempts.setdefault(request_id, []).append(
-                PlanJobAttempt(
-                    job["id"], status, (job.get("phase") or {}).get("phase"),
-                    progress, reason, receipt, binding_sha256,
-                    continues=job["continues"],
-                    checkpoint_source=_train_checkpoint_source(job, by_id),
-                    output_size_bytes=size,
-                    checkpoint_sources=_selected_checkpoint_sources(job) if evaluate and receipt is not None else (),
-                    stopped_checkpoint=stopped_checkpoint,
-                    checkpoint_gaps=result.checkpoint_gaps if result is not None else None,
-                    evaluation_placement=result.placement if result is not None else None,
-                    bound_subject=_best_subject(job) if evaluate and (not succeeded or result is not None) else None,
-                    checkpoint_attempt=_evaluation_checkpoint_attempt(job) if evaluate else None,
-                )
+            attempt = PlanJobAttempt(
+                job["id"], status, (job.get("phase") or {}).get("phase"),
+                progress, reason, receipt, binding_sha256,
+                continues=job["continues"],
+                checkpoint_source=_train_checkpoint_source(job, by_id),
+                output_size_bytes=size,
+                checkpoint_sources=_selected_checkpoint_sources(job) if evaluate and receipt is not None else (),
+                stopped_checkpoint=stopped_checkpoint,
+                checkpoint_gaps=result.checkpoint_gaps if result is not None else None,
+                evaluation_placement=result.placement if result is not None else None,
+                bound_subject=_best_subject(job) if evaluate and (not succeeded or result is not None) else None,
+                checkpoint_attempt=_evaluation_checkpoint_attempt(job) if evaluate else None,
+                light_success=light_success,
             )
+            attempts.setdefault(request_id, []).append(attempt)
+            if light and address in light_addresses:
+                light_attempts.setdefault(address, []).append(attempt)
         return PlanJobAttempts(
             snapshot["cursor"],
             MappingProxyType({request: tuple(rows) for request, rows in attempts.items()}),
             plan_ref,
             frozenset(catalogs),
             MappingProxyType(catalogs),
+            MappingProxyType({address: tuple(rows) for address, rows in light_attempts.items()}),
         )
 
 
@@ -323,6 +341,10 @@ class JobService(PlanJobReader):
             warm_entrypoint="feedbax.training.evaluate_worker:main",
             preload=(*base_worker.preload, "feedbax.plugins.composition"),
         )
+        self._light_worker = Launch(
+            argv=(base_worker.argv[0],), cwd=base_worker.cwd,
+            warm_entrypoint=LIGHT_ENTRYPOINT,
+        )
         self._launch_lock = Lock()
         self._accepting = True
 
@@ -335,6 +357,7 @@ class JobService(PlanJobReader):
         token: str,
         checkpoint_catalog: tuple[int, ...] = (),
         actor: StudioSubmissionActor = StudioSubmissionActor(client="studio"),
+        reuse_completed: bool = False,
     ) -> StudioJobSubmission:
         """Admit selected rows from a server-issued saved Plan."""
         selected = {
@@ -345,6 +368,8 @@ class JobService(PlanJobReader):
             raise JobConflict("Plan admission requires selected runs and a submission token.")
         project = reviewed.project_id
         before = {run.key: run for run in reviewed.plan.runs}
+        light = _planned_light_runs(reviewed.plan, selected.values())
+        light_rows = {key.run for key in light if isinstance(key, ElementKey)}
         kinds = {before[key].kind for key in selected.values() if key in before}
         evaluate = "evaluate" in kinds
         train = "train" in kinds
@@ -355,9 +380,13 @@ class JobService(PlanJobReader):
             "store": str(reviewed.store_path),
             "requests": {
                 name: before[key].request_id if key in before else None
-                for name, key in selected.items()
-            },
+                for name, key in selected.items() if key not in light_rows and key not in light
+            } | {plan_attempt_key(key): node.request_id for key, node in light.items()},
         }
+        if reuse_completed:
+            command["reuse_completed"] = True
+        if light:
+            command["selected_runs"] = list(selected)
         if checkpoint_catalog:
             if evaluate and not train:
                 raise JobConflict("/inputs/subject/checkpoint: checkpoint catalogue belongs to Train.")
@@ -377,7 +406,10 @@ class JobService(PlanJobReader):
             after = {run.key: run for run in current.plan.runs}
             current_catalogs = _planned_checkpoint_catalogs(current.plan) if train else {}
             store = ImmutableArtifactBlobProvider(current.store_path)
-            for name, key in selected.items():
+            heavy_selection = {
+                name: key for name, key in selected.items() if key not in light_rows and key not in light
+            }
+            for name, key in heavy_selection.items():
                 old, run = before.get(key), after.get(key)
                 if old is not None and old.kind == "evaluate":
                     if run is None:
@@ -413,7 +445,7 @@ class JobService(PlanJobReader):
                     items[name] = item
                     continue
                 if old is None or old.kind != "train":
-                    items[name] = _rejected(name, "The reviewed row is not a runnable Train request.")
+                    items[name] = _rejected(name, "The reviewed row has no runnable saved request.")
                     continue
                 if run is None:
                     items[name] = _rejected(name, "The reviewed Train row is no longer runnable.")
@@ -461,10 +493,10 @@ class JobService(PlanJobReader):
                     project, run.request_id, spec, data, current.store_path,
                     canonical_request=binding, checkpoint_catalog=catalog,
                 )
-            order = list(selected)
+            order = list(heavy_selection)
             if checkpoints:
-                order = [names_by_key[run.key] for run in current.plan.runs if run.key in names_by_key]
-                order.extend(name for name, key in selected.items() if key not in after)
+                order = [names_by_key[run.key] for run in current.plan.runs if names_by_key.get(run.key) in items]
+                order.extend(name for name, key in heavy_selection.items() if key not in after)
                 for name in order:
                     if name not in checkpoints:
                         continue
@@ -495,6 +527,29 @@ class JobService(PlanJobReader):
                                 if anchor is not None
                             ))
                         )
+            if light:
+                current_nodes = _planned_light_runs(current.plan, selected.values())
+                row_index = {row.key: row for row in current.plan.rows}
+                for key, old in light.items():
+                    name = plan_attempt_key(key)
+                    order.append(name)
+                    node = current_nodes.get(key)
+                    if node is None:
+                        items[name] = _rejected(name, "The reviewed request is no longer runnable.")
+                        continue
+                    if old.request_id != node.request_id:
+                        path = _changed_request_path(reviewed.plan, old.request_id, current.plan, node.request_id)
+                        items[name] = _rejected(name, f"The selected request changed at {path}.")
+                        continue
+                    row = row_index[key.run if isinstance(key, ElementKey) else key]
+                    try:
+                        item = self._light_item(project, current.plan, store, row, node, items)
+                    except (ValueError, KeyError) as error:
+                        items[name] = _rejected(name, f"cannot_run {error}")
+                        continue
+                    items[name] = item
+                    assert item.job is not None
+                    runs[name] = item.job.data | {"request_id": node.request_id}
             record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
                 "actor": actor.model_dump(mode="json"),
@@ -516,7 +571,11 @@ class JobService(PlanJobReader):
                 record["authored_train_plan"] = {
                     "object": plan.model_dump(mode="json"), "requests": requests,
                 }
-            admitted = self._admit(token, [items[name] for name in order], record)
+            candidates = [items[name] for name in order]
+            admitted = (
+                self._admit_with_reuse(token, candidates, record, reuse_completed=reuse_completed)
+                if light or reuse_completed else self._admit(token, candidates, record)
+            )
         return self._submission_for_action(
             admitted, project=project, continues=None, command=command
         )
@@ -528,6 +587,57 @@ class JobService(PlanJobReader):
             if is_checkpoint_producer(row["launch"], continues=row["continues"], manifest_root=str(root))
         ]
         return anchors[0] if len(anchors) == 1 else None
+
+    def _light_item(
+        self, project: str, plan: ProjectPlan, store: ImmutableArtifactBlobProvider,
+        row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
+    ) -> AdmissionItem:
+        from feedbax.light_jobs import LightDelivery, validate_light_request
+        from feedbax.persistence.effective_success import store_request
+
+        if isinstance(row, (PlannedRun, PlannedAnalyzeRun)) and row.requires:
+            raise ValueError("/requires: unresolved capabilities.")
+        if isinstance(row, PlannedRun) and (problem := row.admission_problem) is not None:
+            raise ValueError(f"{problem.path}: {problem.detail}")
+        raw = plan.requests[node.request_id]
+        decoded = decode_request(raw, plan.documents.__getitem__)
+        validate_light_request(decoded)
+        encoded = encode_request(decoded.spec, decoded.inputs)
+        if encoded.id != node.request_id or encoded.data != raw:
+            raise ValueError("The saved request bytes do not match the Plan identity.")
+        parents = {}
+        for role, binding in node.inputs.items():
+            reference = binding.member.reference
+            if not isinstance(reference, ProductRef):
+                continue
+            source = binding.element or binding.producer
+            candidate = items.get(plan_attempt_key(source)) if source is not None else None
+            if candidate is None:
+                anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
+                anchor = next((job["id"] for job in reversed(anchors) if (
+                    job["data"].get("manifest_root") == str(store.root)
+                    and (job["state"] in _LIVE_STATES or (job["state"] == "succeeded" and self._receipt_matches(job)))
+                )), None)
+            else:
+                anchor = (
+                    candidate.job.id
+                    if candidate.job is not None and candidate.job.request == reference.request_id else None
+                )
+            if anchor is None:
+                raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
+            parents.setdefault(reference.request_id, anchor)
+
+        name = plan_attempt_key(node.key)
+        data = _plan_run_data(name, row)
+        if isinstance(node, PlannedElement):
+            data["label"] = f"{data['label']} · {node.key.name}"
+        payload = LightDelivery(project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded))
+        launch = replace(self._light_worker, payload=payload.model_dump(mode="json"))
+        return AdmissionItem(run_key=name, job=Job(
+            id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot="light",
+            edges=tuple(Edge(anchor) for anchor in parents.values()),
+            data=data | {"manifest_root": str(store.root), "runtime": launch.argv[0]},
+        ))
 
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
@@ -648,23 +758,35 @@ class JobService(PlanJobReader):
         token: str,
         candidates: list[AdmissionItem],
         record: dict[str, Any],
+        *, reuse_completed: bool,
     ) -> Admission:
         for attempt in range(3):
             snapshot = self.host.jobs_snapshot(project=record["project"])
             history: dict[str, list[dict[str, Any]]] = {}
-            for row in snapshot["jobs"]:
-                if _is_studio_job(row):
+            for row in cast(list[dict[str, Any]], snapshot["jobs"]):
+                if _is_studio_job(row) and row["data"].get("manifest_root") == record["command"]["store"]:
                     history.setdefault(row["request"], []).append(row)
             chosen = []
+            reused = {}
             runs = {key: dict(run) for key, run in record["runs"].items()}
             for item in candidates:
                 if item.job is None:
                     chosen.append(item)
-                elif reusable := self._reusable(history.get(item.job.request, ())):
-                    chosen.append(AdmissionItem(run_key=item.run_key, disposition="reused"))
+                    continue
+                job = replace(item.job, edges=tuple(
+                    replace(edge, job_id=reused.get(edge.job_id, edge.job_id)) for edge in item.job.edges
+                ))
+                eligible = reuse_completed or _is_light_request(job.request)
+                if eligible and (reusable := self._reusable(job, history.get(job.request, ()))):
+                    reused[job.id] = reusable
+                    chosen.append(AdmissionItem(
+                        run_key=item.run_key, disposition="reused", checked_through=snapshot["cursor"],
+                    ))
                     runs[item.run_key]["reused_job_id"] = reusable
                 else:
-                    chosen.append(replace(item, checked_through=snapshot["cursor"]))
+                    chosen.append(replace(
+                        item, job=job, checked_through=snapshot["cursor"] if eligible else None,
+                    ))
             try:
                 return self._admit(token, chosen, record | {"runs": runs})
             except HostError as exc:
@@ -781,8 +903,10 @@ class JobService(PlanJobReader):
             if not rows or not _is_studio_job(rows[0]):
                 raise JobNotFound(job_id)
             row = rows[0]
-            if row["request"].startswith("evaluate:"):
-                raise JobConflict("/runs: resubmit the saved Evaluate row to run it again.")
+            kind = row["request"].partition(":")[0]
+            if kind != "train":
+                label = "Analyze" if kind in {"analyze", "render"} else kind.title()
+                raise JobConflict(f"/runs: resubmit the saved {label} row to run it again.")
             if not can_resume_attempt(row["state"], row.get("checkpoint"), row["delivery"]):
                 raise JobConflict("This run has no checkpoint to resume.")
             launch_data = row["launch"]
@@ -914,12 +1038,15 @@ class JobService(PlanJobReader):
             raise JobConflict("This submission token belongs to another action.")
         return _project_submission(response)
 
-    def _reusable(self, jobs: Sequence[dict[str, Any]]) -> str | None:
-        if any(job["state"] in _LIVE_STATES for job in jobs):
-            return None
+    def _reusable(self, candidate: Job, jobs: Sequence[dict[str, Any]]) -> str | None:
+        parents = {edge.job_id for edge in candidate.edges}
         for job in reversed(jobs):
-            if job["state"] == "succeeded":
-                return job["id"] if self._receipt_matches(job) else None
+            if {edge["job_id"] for edge in job["edges"]} != parents:
+                continue
+            if job["state"] in _LIVE_STATES:
+                return None
+            if job["state"] == "succeeded" and self._receipt_matches(job):
+                return job["id"]
         return None
 
     def _receipt_matches(self, job: dict[str, Any]) -> bool:
@@ -927,8 +1054,11 @@ class JobService(PlanJobReader):
 
         root = Path(job["data"]["manifest_root"])
         store = ImmutableArtifactBlobProvider(root)
-        if _owned_result_damage(SuccessView(store), job) is not None:
+        view = SuccessView(store)
+        if _owned_result_damage(view, job) is not None:
             return False
+        if _is_light_request(job["request"]):
+            return _verified_light_result(view, job) is not None
         if job["request"].startswith("evaluate:"):
             return _verified_evaluation_result(job, root) is not None
         return _verified_training_receipt(job, root) is not None
@@ -972,7 +1102,42 @@ class JobService(PlanJobReader):
         return result
 
 
-def _plan_run_data(name: str, run: PlannedRun) -> dict[str, Any]:
+def plan_attempt_key(key: RunKey | ElementKey) -> str:
+    run = key.run if isinstance(key, ElementKey) else key
+    address = plan_run_key(run.variant, run.step, run.row)
+    return f"{address}/elements/{key.name}" if isinstance(key, ElementKey) else address
+
+
+def _is_light_request(request: str) -> bool:
+    return request.partition(":")[0] in _LIGHT_KINDS
+
+
+def _planned_light_runs(
+    plan: ProjectPlan, selected: Collection[RunKey],
+) -> dict[RunKey | ElementKey, PlannedRun | PlannedElement]:
+    nodes = plan.light_requests
+    groups = {row.key: row for row in plan.rows if isinstance(row, PlannedAnalyzeRun)}
+    result: dict[RunKey | ElementKey, PlannedRun | PlannedElement] = {}
+
+    def visit(key: RunKey | ElementKey) -> None:
+        if key in result or (node := nodes.get(key)) is None:
+            return
+        for binding in node.inputs.values():
+            source = binding.element or binding.producer
+            if source is not None:
+                visit(source)
+        result[key] = node
+
+    for key in selected:
+        if (group := groups.get(key)) is not None:
+            for element in group.elements.values():
+                visit(element.key)
+        else:
+            visit(key)
+    return result
+
+
+def _plan_run_data(name: str, run: PlannedRow) -> dict[str, Any]:
     return {
         "run_key": name,
         "stage_id": run.key.step,
@@ -995,7 +1160,7 @@ def _rejected(run_key: str, reason: str) -> AdmissionItem:
 def _can_resume(job: dict[str, Any]) -> bool:
     return (
         not job["continued"]
-        and not job["request"].startswith("evaluate:")
+        and job["request"].startswith("train:")
         and can_resume_attempt(job["state"], job.get("checkpoint"), job["delivery"])
     )
 
@@ -1099,6 +1264,26 @@ def _owned_result_damage(view: SuccessView, job: dict[str, Any]) -> str | None:
         return view.owned_damage(job["id"], ref)
     except (OSError, ValueError, KeyError) as error:
         return f"Cannot authenticate the committed result: {error}"
+
+
+def _verified_light_result(view: SuccessView, job: dict[str, Any]) -> tuple[JobReceipt, Success] | None:
+    from feedbax.contracts.artifact_custody import ContentObjectRef
+
+    try:
+        outcome = job["outcome"]
+        receipt = JobReceipt.model_validate(outcome["receipt"])
+        ref = ContentObjectRef.model_validate(outcome["store_success"])
+        if (
+            view.attempt_ref(job["id"]) != ref or receipt.manifest_id != job["id"]
+            or receipt.manifest_sha256 != ref.sha256
+        ):
+            return None
+        result = view.read_receipt(ref)
+        if result.attempt != job["id"] or result.request.id != job["request"]:
+            return None
+        return receipt, result
+    except (OSError, TypeError, ValueError, KeyError):
+        return None
 
 
 def _verified_evaluation_result(job: dict[str, Any], store: Path) -> _VerifiedEvaluation | None:
@@ -1275,17 +1460,19 @@ def _job_status(
     state = job["state"]
     outcome = job.get("outcome") or {}
     reason = (outcome.get("error") or {}).get("message")
-    evaluate = job["request"].startswith("evaluate:")
+    kind = job["request"].partition(":")[0]
+    evaluate = kind == "evaluate"
     if state == "succeeded" and not receipt_intact:
-        return JobStatus.CORRUPT, (
-            "The evaluation receipt is missing or has changed." if evaluate
-            else "The training receipt is missing or has changed."
-        )
-    if state == "assigned" or (state == "running" and not evaluate and not (
+        label = {"train": "training", "evaluate": "evaluation"}.get(kind, kind)
+        return JobStatus.CORRUPT, f"The {label} receipt is missing or has changed."
+    if state == "assigned" or (state == "running" and kind == "train" and not (
         progress and progress.completed_updates
     )):
         return JobStatus.STARTING, reason
     if state == "queued":
+        if _is_light_request(job["request"]):
+            waiting = any(not edge["satisfied"] for edge in job["edges"])
+            return JobStatus.QUEUED, "Waiting for producer results." if waiting else "Waiting for a light worker slot."
         if evaluate and any(
             edge.get("authenticated_completion") and not edge["satisfied"] for edge in job["edges"]
         ):
@@ -1348,7 +1535,7 @@ def _project_activity(
     if state == "stopping":
         actions = ["force"]
     elif state in _LIVE_STATES:
-        actions = ["checkpoint", "force"]
+        actions = ["force"] if _is_light_request(job["request"]) else ["checkpoint", "force"]
     else:
         actions = ["resume"] if resumable else []
     return StudioActivityJob(

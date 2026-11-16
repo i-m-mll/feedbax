@@ -29,6 +29,7 @@ def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.bin.project_plan import write_diagnostics
     from feedbax.contracts.jobs import StudioSubmissionActor
     from feedbax.contracts.project_io import ProjectReadError, locate_text_project, project_declaration_name
+    from feedbax.contracts.project_plan import PlannedAnalyzeRun, PlannedRun
     from feedbax.host import HostClient, HostError
     from feedbax.jobs import JobConflict, JobService
     from feedbax.plugins.bootstrap import BootstrapError
@@ -48,7 +49,9 @@ def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
                 reviewed.configuration.project,
             ))
             return 2
-        keys = [run.key for run in reviewed.plan.runs]
+        keys = [
+            row.key for row in reviewed.plan.rows if isinstance(row, (PlannedAnalyzeRun, PlannedRun))
+        ]
         selected = dict.fromkeys(keys) if not args.runs else {}
         for selector in args.runs:
             step, separator, row = selector.partition("@")
@@ -67,6 +70,7 @@ def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
         submission = jobs.admit_plan(
             folders, reviewed, run_keys=tuple(selected),
             token=uuid4().hex, actor=StudioSubmissionActor(client="cli", label=args.label),
+            reuse_completed=not args.runs,
         )
     except (BootstrapError, HostError, JobConflict, OSError, ProjectFolderInvalid, ProjectReadError) as error:
         output.failure(error, path=args.project_dir)

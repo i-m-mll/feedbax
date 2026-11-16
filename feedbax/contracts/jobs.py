@@ -238,6 +238,18 @@ class StudioProjectWindowMapCoordinate(StrictModel):
     value: JsonValue
 
 
+class StudioSavedLightResult(StrictModel):
+    job_id: str
+    request_id: str
+    receipt: JobReceipt
+    products: dict[str, str]
+
+
+class StudioSavedLightHistory(StrictModel):
+    result: StudioSavedLightResult | None = None
+    previous: StudioSavedLightResult | None = None
+
+
 class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
     label: str
@@ -246,6 +258,7 @@ class StudioProjectWindowMapRow(StrictModel):
     status: JobStatus
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    light: StudioSavedLightHistory | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioBestRankGroup(StrictModel):
@@ -354,12 +367,13 @@ class StudioProjectWindowMapFigure(StrictModel):
     caption: str | None
 
 
-class StudioProjectWindowMapElement(StrictModel):
+class StudioProjectWindowMapElement(StudioSavedLightHistory):
     key: StudioSavedTrainKey
     name: str
     kind: Literal["analyze", "render"]
     request_id: str
-    status: Literal["not_run"]
+    status: JobStatus
+    reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
     figure: StepReference | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
@@ -386,6 +400,7 @@ class StudioSavedTrainRunRequest(StrictModel):
     revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     run_keys: list[StudioSavedTrainKey] = Field(min_length=1)
     token: Token
+    reuse_completed: bool = False
 
 
 class JobOutcome(StrictModel):
@@ -407,7 +422,7 @@ class StudioActivityJob(StrictModel):
     job_id: str
     project_id: str
     request_id: str
-    kind: Literal["train", "evaluate"]
+    kind: Literal["train", "evaluate", "analyze", "render", "report"]
     run_key: str
     stage_id: str
     scenario_id: str

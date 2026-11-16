@@ -1,4 +1,4 @@
-"""One detached worker. It accepts one delivery before touching its payload."""
+"""Detached worker that accepts each delivery before touching its payload."""
 
 import importlib
 import json
@@ -62,18 +62,35 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
     except Exception as error:  # noqa: BLE001 -- foreign executor boundary
         import_error = (error, traceback.format_exc())
     snapshots = _sources()
-    try:
-        with control:
-            control.sendall(encode({"kind": "ready"}))
-            message = receive(control, MAX_RPC_BYTES)
-    except (OSError, EOFError):
-        return 0
-    if _sources_changed(snapshots):
-        return 0
+    reusable = profile.get("light_affinity") is not None
+    with control:
+        while True:
+            try:
+                control.sendall(encode({"kind": "ready"}))
+                message = receive(control, MAX_RPC_BYTES)
+            except (OSError, EOFError):
+                return 0
+            if _sources_changed(snapshots):
+                return 0
+            if not reusable:
+                control.close()
+            status = _execute(message, report, entrypoint, import_error, reusable=reusable)
+            if not reusable:
+                return status
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.write(report, encode({"status": status}))
+            if import_error is not None:
+                return status
+            snapshots |= {path: info for path, info in _sources().items() if path not in snapshots}
+
+
+def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: bool) -> int:
     paths = message["paths"]
     log = Path(paths["event_log"])
     os.write(report, encode({"event_log": str(log)}))
-    os.close(report)
+    if not reusable:
+        os.close(report)
     if not write_json(
         log, {"kind": "accepted", "data": {"token": os.environ[TOKEN_ENV]}}, exclusive=True
     ):

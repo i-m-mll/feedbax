@@ -8,12 +8,16 @@ from dataclasses import dataclass
 from hashlib import sha256
 from itertools import chain
 import json
+from mimetypes import guess_type
 from types import MappingProxyType
 from typing import NotRequired, TypedDict
+from urllib.parse import quote
 
+from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, report_content_security_policy
 from feedbax.compiler.trial_execution import evaluation_conditions
 from feedbax.contracts._request_codec import same_typed_value
-from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
+from feedbax.contracts.effective_success import success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
@@ -37,6 +41,8 @@ from feedbax.contracts.jobs import (
     StudioSavedEvaluationReplayRequest,
     StudioSavedEvaluationResult,
     StudioSavedEvaluationRow,
+    StudioSavedLightHistory,
+    StudioSavedLightResult,
     StudioSavedTrainAttempt,
     StudioSavedTrainChange,
     StudioSavedTrainKey,
@@ -51,7 +57,7 @@ from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
-    ElementKey, PlannedAnalyzeRun, PlannedRun, RunKey,
+    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedRun, RunKey, authored_request_change_path,
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
@@ -74,9 +80,11 @@ from feedbax.jobs import (
     PlanJobAttempts,
     PlanJobReader,
     active_plan_attempt,
+    plan_attempt_key,
     saved_request_status,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.studio.canonical_evaluate import CannotRun, EvaluationResult, decode_rollout_request, live_objective_series
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
@@ -102,6 +110,21 @@ class PlanStatusRow:
 
 
 @dataclass(frozen=True)
+class LightHistory:
+    status: JobStatus
+    reason: str | None
+    result: StudioSavedLightResult | None
+    previous: StudioSavedLightResult | None
+
+
+@dataclass(frozen=True)
+class SavedLightProduct:
+    content: bytes
+    media_type: str
+    content_security_policy: str | None = None
+
+
+@dataclass(frozen=True)
 class ProjectPlanRead:
     settled: SettledProjectPlan
     jobs: PlanJobAttempts
@@ -109,6 +132,7 @@ class ProjectPlanRead:
     history: Mapping[RunKey, TrainRowHistory]
     evaluations: Mapping[RunKey, StudioSavedEvaluationRow]
     evaluation_problems: tuple[StudioProjectWindowMapProblem, ...]
+    light: Mapping[RunKey | ElementKey, LightHistory]
 
     def status_rows(self) -> Iterator[PlanStatusRow]:
         """Project saved attempt states and the compiler's refused rows and elements."""
@@ -120,7 +144,7 @@ class ProjectPlanRead:
 
         for row in plan.rows:
             label = row.label or row.key.row
-            observed = self.history.get(row.key) or self.evaluations.get(row.key)
+            observed = self.history.get(row.key) or self.evaluations.get(row.key) or self.light.get(row.key)
             if observed is not None:
                 yield PlanStatusRow(row.key, label, observed.status, observed.reason)
                 continue
@@ -133,9 +157,16 @@ class ProjectPlanRead:
                 else:
                     element_problems[problem.element].append(problem)
             if isinstance(row, PlannedAnalyzeRun):
-                yield _planned_status(row.key, label, problems[row.key])
+                states = []
                 for name in dict.fromkeys((*row.elements, *element_problems)):
-                    yield _planned_status(ElementKey(row.key, name), label, element_problems[name])
+                    key = ElementKey(row.key, name)
+                    observed = self.light.get(key)
+                    states.append(
+                        PlanStatusRow(key, label, observed.status, observed.reason) if observed is not None
+                        else _planned_status(key, label, element_problems[name])
+                    )
+                yield _analysis_status(row.key, label, problems[row.key], states)
+                yield from states
             elif isinstance(row, PlannedRun):
                 yield _planned_status(row.key, label, row_problems)
             else:
@@ -145,7 +176,7 @@ class ProjectPlanRead:
     @classmethod
     def without_history(cls, settled: SettledProjectPlan) -> ProjectPlanRead:
         jobs = PlanJobAttempts(0, {})
-        return cls(settled, jobs, {}, _train_history(settled, jobs), {}, ())
+        return cls(settled, jobs, {}, _train_history(settled, jobs), {}, (), {})
 
     def response(
         self, *, include_window_map: bool, variants: tuple[str, ...] | None = None,
@@ -308,6 +339,8 @@ class ProjectPlanRead:
                     label=row.label or row.key.row,
                     status=statuses[row.key].status,
                     reason=statuses[row.key].reason,
+                    light=StudioSavedLightHistory(result=light.result, previous=light.previous)
+                    if (light := self.light.get(row.key)) is not None else None,
                     evaluation_conditions=conditions.get(row.request_id) if isinstance(row, PlannedRun) else None,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
                     if row.kind == "train" else None,
@@ -350,14 +383,17 @@ class ProjectPlanRead:
             analysis_elements=[
                 StudioProjectWindowMapElement(
                     key=StudioSavedTrainKey.model_validate(element.key.run, from_attributes=True),
-                    name=element.key.name, kind=element.kind, request_id=element.request_id, status="not_run",
+                    name=element.key.name, kind=element.kind, request_id=element.request_id,
+                    status=statuses[element.key].status, reason=statuses[element.key].reason,
+                    **({"result": light.result, "previous": light.previous}
+                       if (light := self.light.get(element.key)) is not None else {}),
                     figure=StepReference(
                         step=element.key.run.step, row=element.key.run.row,
                         element=element.key.name, product=PLOTLY_FIGURE_ROLE,
                     ) if isinstance(element.outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
                 )
                 for element in elements
-                if includes(element.key.run.variant) and statuses[element.key].status is JobStatus.NOT_RUN
+                if includes(element.key.run.variant)
             ],
             analysis_figures=[
                 StudioProjectWindowMapFigure(
@@ -409,6 +445,21 @@ def _planned_status(
     return PlanStatusRow(key, label, status, _problem_reasons(problems))
 
 
+def _analysis_status(
+    key: RunKey, label: str, problems: list[ProjectDiagnostic], elements: list[PlanStatusRow],
+) -> PlanStatusRow:
+    if problems or not elements:
+        return _planned_status(key, label, problems)
+    for status in (
+        JobStatus.CORRUPT, JobStatus.CANNOT_RUN, JobStatus.FAILED, JobStatus.BLOCKED,
+        JobStatus.STOPPING, JobStatus.RUNNING, JobStatus.STARTING, JobStatus.QUEUED,
+        JobStatus.INTERRUPTED, JobStatus.STOPPED, JobStatus.STALE, JobStatus.NOT_RUN,
+    ):
+        if (child := next((row for row in elements if row.status == status), None)) is not None:
+            return PlanStatusRow(key, label, status, child.reason)
+    return PlanStatusRow(key, label, JobStatus.SUCCEEDED, None)
+
+
 class ProjectPlanService:
     def __init__(self, folders: ProjectFolderService, jobs: JobService) -> None:
         self.folders = folders
@@ -425,6 +476,43 @@ class ProjectPlanService:
     def response(self, view: ProjectPlanRead, *, include_window_map: bool) -> StudioSavedTrainRuns:
         evaluation_tasks = self.jobs.registries.python_tasks
         return view.response(include_window_map=include_window_map, evaluation_tasks=evaluation_tasks)
+
+    def light_product(
+        self, project: str, revision: str, job_id: str, role: str, member: str,
+    ) -> SavedLightProduct:
+        """Read a product of a current or previous result visible on the saved Plan."""
+        view = self.read(project, revision=revision)
+        visible = next((result for history in view.light.values() for result in (history.result, history.previous)
+                        if result is not None and result.job_id == job_id and role in result.products), None)
+        if visible is None:
+            raise JobNotFound(job_id)
+        store = ImmutableArtifactBlobProvider(view.settled.store_path)
+        success = SuccessView(store)
+        ref = success.attempt_ref(job_id)
+        if ref is None or ref.sha256 != visible.receipt.manifest_sha256:
+            raise JobConflict("The saved result receipt could not be authenticated.")
+        try:
+            receipt = success.read_receipt(ref)
+            product, = receipt.products[role]
+            content = success_content_ref(product.content)
+            if isinstance(content, ContentTreeRef):
+                files = {entry.relative_path: entry.object for entry in store.get_tree(content).files}
+                selected = files.get(member)
+                if selected is None:
+                    raise JobNotFound(job_id)
+                media_type = guess_type(member)[0] or "application/octet-stream"
+                policy = None
+                if member == REPORT_HTML_NAME:
+                    script = files.get(PLOTLY_SCRIPT_NAME)
+                    if script is not None:
+                        store.verify_object(script)
+                    policy = report_content_security_policy(script.sha256 if script is not None else None)
+                return SavedLightProduct(store.get_object(selected), media_type, policy)
+            if role != PLOTLY_FIGURE_ROLE or member != "figure.json":
+                raise JobNotFound(job_id)
+            return SavedLightProduct(store.get_object(content), "application/json")
+        except (OSError, TypeError, ValueError, KeyError) as error:
+            raise JobConflict("The saved product could not be authenticated.") from error
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
         from feedbax.web.services.trial_scope import file_value
@@ -575,10 +663,12 @@ def read_settled_project_plan(
     settled: SettledProjectPlan, reader: PlanJobReader, *, stopped_checkpoint_jobs: Sequence[str] = (),
 ) -> ProjectPlanRead:
     """Join one saved Plan to the verified Host evidence used by Studio."""
-    requests = {run.request_id for run in settled.plan.runs if run.kind in {"train", "evaluate"}}
+    light = settled.plan.light_requests
+    requests = {run.request_id for run in settled.plan.runs} | {node.request_id for node in light.values()}
     jobs = reader.read_plan_attempts(
         project=settled.project_id, store=settled.store_path, requests=requests,
         stopped_checkpoint_jobs=stopped_checkpoint_jobs,
+        light_addresses={plan_attempt_key(key) for key in light},
     )
     evaluations = {}
     evaluation_problems = []
@@ -599,6 +689,51 @@ def read_settled_project_plan(
         _train_history(settled, jobs),
         MappingProxyType(evaluations),
         tuple(evaluation_problems),
+        MappingProxyType({key: _light_history(settled, jobs, node) for key, node in light.items()}),
+    )
+
+
+def _light_history(
+    settled: SettledProjectPlan, jobs: PlanJobAttempts, node: PlannedRun | PlannedElement,
+) -> LightHistory:
+    key = node.key
+    plan = settled.plan
+    attempts = jobs.by_request.get(node.request_id, ())
+    successes = tuple(attempt for attempt in attempts if attempt.light_success is not None)
+    current = successes[-1] if successes else None
+    addressed = jobs.light_by_address.get(plan_attempt_key(key), ())
+    prior = next((attempt for attempt in reversed(addressed) if (
+        attempt.light_success is not None and attempt != current
+    )), None)
+    if prior is None and len(successes) > 1:
+        prior = successes[-2]
+    changed_path = None
+    if prior is not None and not attempts:
+        assert prior.light_success is not None
+        store = ImmutableArtifactBlobProvider(settled.store_path)
+        request = prior.light_success.request
+        old = SuccessView(store).read_request(request)
+        new = decode_request(plan.requests[node.request_id], plan.documents.__getitem__)
+        changed_path = authored_request_change_path(key, old, new)
+    problem = node.admission_problem if isinstance(node, PlannedRun) else None
+    status, reason = saved_request_status(
+        attempts, success=current, changed_path=changed_path,
+        problem=f"{problem.path}: {problem.detail}" if problem else None,
+    )
+    return LightHistory(status, reason, _light_result(settled, current), _light_result(settled, prior))
+
+
+def _light_result(settled: SettledProjectPlan, attempt: PlanJobAttempt | None) -> StudioSavedLightResult | None:
+    if attempt is None or attempt.light_success is None or attempt.successful_receipt is None:
+        return None
+    success = attempt.light_success
+    base = f"/api/projects/{quote(settled.project_id, safe='')}/light-results/{settled.revision}/{attempt.job_id}"
+    products = {}
+    for role, entry in ((PLOTLY_FIGURE_ROLE, "figure.json"), ("report", REPORT_HTML_NAME)):
+        if role in success.products:
+            products[role] = f"{base}/{role}/{entry}"
+    return StudioSavedLightResult(
+        job_id=attempt.job_id, request_id=success.request.id, receipt=attempt.successful_receipt, products=products,
     )
 
 

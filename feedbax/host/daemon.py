@@ -23,7 +23,7 @@ from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, w
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
-from feedbax.host.protocol import LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError
+from feedbax.host.protocol import LIGHT_ENTRYPOINT, LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError, JsonObject
 from feedbax.host.store import Store, StorePublicationPending
 
 LOG_LINE_LIMIT = 8192
@@ -41,6 +41,7 @@ class Worker:
     profile_key: str
     profile_dir: Path
     runtime_owner: str | None
+    reusable: bool
     ready: bool = False
     retiring_since: float | None = None
     job_id: str | None = None
@@ -111,6 +112,9 @@ class Host:
             "slot": slot,
             "runtime_owner": runtime_owner,
         }
+        if slot == "light" and launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+            payload = launch["payload"]
+            profile["light_affinity"] = [payload["project_id"], payload["manifest_root"]]
         return hashlib.sha256(encode(profile)).hexdigest(), profile
 
     def _spawn(self, key: str, profile: dict) -> Worker:
@@ -151,7 +155,10 @@ class Host:
             raise
         finally:
             theirs.close()
-        worker = Worker(process, token, ours, key, profile_dir, profile["runtime_owner"])
+        worker = Worker(
+            process, token, ours, key, profile_dir, profile["runtime_owner"],
+            reusable="light_affinity" in profile,
+        )
         self.workers[process.pid] = worker
         self.loop.add_reader(ours.fileno(), self._worker_ready, worker)
         return worker
@@ -191,7 +198,7 @@ class Host:
         pending = {
             worker.profile_key
             for worker in self.workers.values()
-            if worker.job_id is None and worker.control.fileno() >= 0
+            if (worker.reusable or worker.job_id is None) and worker.control.fileno() >= 0
         }
         # Keep one imported worker per recently used environment. Drop unused profiles
         # before they can grow resident memory with the number of opened projects.
@@ -282,12 +289,33 @@ class Host:
         runtime = data.get("runtime")
         return os.path.realpath(runtime) if isinstance(runtime, str) else None
 
+    def _light_busy(self, key: str) -> bool:
+        if any(worker.profile_key == key and worker.job_id is not None for worker in self.workers.values()):
+            return True
+        # A worker recovered after daemon restart has no control socket here.
+        for active in self.store.active():
+            if active["slot"] != "light" or active["worker_pid"] in self.workers:
+                continue
+            launch = json.loads(active["launch"])
+            if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT and self._profile(
+                launch, "light", self._runtime(json.loads(active["data"])),
+            )[0] == key:
+                return True
+        return False
+
     def _assign(self, row: sqlite3.Row) -> None:
         if self.exiting or self._runtime(json.loads(row["data"])) in self.retiring:
             return
         bindings = self.store.completion_bindings(row["id"])
         launch = json.loads(row["launch"])
+        key, profile = self._profile(launch, row["slot"], self._runtime(json.loads(row["data"])))
+        reusable = "light_affinity" in profile
+        if reusable and self._light_busy(key):
+            return
+        origins = None
         try:
+            if reusable:
+                origins = self.store.light_origins(row)
             train_slots = train_source_slots(launch)
             for binding in bindings:
                 if train_slots is None:
@@ -300,7 +328,6 @@ class Host:
                     row, failure("dependency_corrupt", str(error), outcome="blocked")
                 )
             return
-        key, profile = self._profile(launch, row["slot"], self._runtime(json.loads(row["data"])))
         if launch["warm_entrypoint"]:
             self.profiles.pop(key, None)
             self.profiles[key] = profile
@@ -340,9 +367,11 @@ class Host:
         paths["scratch"].mkdir(parents=True, exist_ok=True)
         write_json(paths["input"], launch["payload"])
         completion_bindings_sha256 = None
-        if bindings:
+        if bindings or origins is not None:
             paths["completion_bindings"] = paths["directory"] / "completion-bindings.json"
-            delivery_bindings = {"bindings": bindings}
+            delivery_bindings: JsonObject = {"bindings": bindings}
+            if origins is not None:
+                delivery_bindings["origins"] = origins
             completion_bindings_sha256 = hashlib.sha256(encode(delivery_bindings)).hexdigest()
             write_json(paths["completion_bindings"], delivery_bindings)
         live_evaluate_sha256 = None
@@ -381,6 +410,7 @@ class Host:
                 data = {"phase": "importing" if launch["warm_entrypoint"] else "starting"}
                 self.store.ingest(row, "phase", data)
         worker.job_id = row["id"]
+        worker.ready = False
         self.wake.set()
         message = encode(
             {
@@ -647,6 +677,12 @@ class Host:
         active = self.store.active()
         for row in active:
             self._observe(row, self._paths(row), recovering=recovering)
+        live = {row["id"] for row in self.store.active()}
+        for worker in self.workers.values():
+            if worker.reusable and worker.job_id is not None and worker.job_id not in live:
+                worker.job_id = None
+                if worker.profile_key not in self.profiles:
+                    self._close_control(worker)
         self.store.resolve_completions()
         self.store.settle_blocked()
         for row in self.store.ready():

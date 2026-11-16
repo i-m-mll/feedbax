@@ -13,12 +13,22 @@ from feedbax._secure_fs import (
     open_existing_file,
 )
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider, content_object_relative_path
 from feedbax.persistence.store_damage import require_sound
 
 
 class CompletionFileError(ValueError):
     """A pinned completion file is absent, malformed or changed."""
+
+
+def read_completion_bindings() -> dict:
+    """Read the binding sidecar authenticated by this Host delivery."""
+    path = Path(os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"])
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256"]:
+        raise CompletionFileError("Host completion binding changed after assignment.")
+    return strict_json_loads(raw)
 
 
 def train_source_slots(launch: dict) -> frozenset[str] | None:
@@ -39,8 +49,6 @@ def train_source_slots(launch: dict) -> frozenset[str] | None:
 
 
 def _checkpoint_slot_paths(binding: dict) -> dict[str, Path]:
-    from feedbax.contracts.strict_json import strict_json_loads
-
     root = Path(binding["manifest_root"])
     checkpoint = binding["checkpoint"]
     pointer = checkpoint["pointer"]

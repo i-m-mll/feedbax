@@ -6,7 +6,7 @@
       "params": {
         "position": "/v1/model/state/plant/effector~1position",
         "velocity": "/v1/model/state/plant/effector~1velocity",
-        "target": "/v1/task/output/reach_target"
+        "target": "/v1/task/output/target_pos"
       },
       "inputs": {"states": {"input": "states"}}
     },
