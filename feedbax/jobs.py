@@ -78,7 +78,7 @@ from feedbax.studio.canonical_train import (
 
 if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ContentObjectRef
-    from feedbax.contracts.effective_success import Success
+    from feedbax.contracts.effective_success import RequestObject, Success
     from feedbax.persistence.effective_success import SuccessView
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
@@ -138,6 +138,7 @@ class PlanJobAttempt:
     bound_subject: StudioBoundBestSubject | None = None
     checkpoint_attempt: StudioEvaluationCheckpointAttempt | None = None
     light_success: Success | None = None
+    train_request: RequestObject | None = None
 
 
 @dataclass(frozen=True)
@@ -217,13 +218,19 @@ class PlanJobReader:
         producers = Counter(
             job["request"] for job in by_id.values()
             if include_producers and job["request"].startswith("train:")
-            and is_checkpoint_producer(job["launch"], continues=job["continues"], manifest_root=manifest_root)
+            and is_checkpoint_producer(
+                job["launch"], continues=job["continues"], manifest_root=manifest_root,
+                collected=job["data"].get("collected_train", False),
+            )
         )
         catalogs = {
             job["request"]: tuple(job["launch"]["payload"].get("checkpoint_catalog", ()))
             for job in by_id.values()
             if producers[job["request"]] == 1
-            and is_checkpoint_producer(job["launch"], continues=job["continues"], manifest_root=manifest_root)
+            and is_checkpoint_producer(
+                job["launch"], continues=job["continues"], manifest_root=manifest_root,
+                collected=job["data"].get("collected_train", False),
+            )
         }
         from feedbax.persistence.effective_success import SuccessView
 
@@ -235,10 +242,12 @@ class PlanJobReader:
             if request_id not in wanted and not (light and address in light_addresses):
                 continue
             evaluate = request_id.startswith("evaluate:")
+            collected_train = _is_collected_train(job)
             succeeded = job["state"] == "succeeded"
             size = None
             result = None
-            light_success = None
+            store_success = None
+            checkpoint_source = None if collected_train else _train_checkpoint_source(job, by_id)
             damage = None
             if succeeded:
                 if success_view is None:
@@ -249,10 +258,12 @@ class PlanJobReader:
             elif evaluate:
                 result = _verified_evaluation_result(job, store) if succeeded else None
                 receipt, size = (result.receipt, result.size) if result is not None else (None, None)
-            elif light and succeeded:
+            elif succeeded and (light or collected_train):
                 assert success_view is not None
-                verified = _verified_light_result(success_view, job)
-                receipt, light_success = verified if verified is not None else (None, None)
+                verified = _verified_store_result(success_view, job)
+                receipt, store_success = verified if verified is not None else (None, None)
+                if collected_train and store_success is not None:
+                    checkpoint_source = _collected_train_checkpoint_source(success_view, store_success)
             else:
                 receipt = _verified_training_receipt(job, store) if succeeded else None
             completion = (job.get("outcome") or {}).get("completion") or {}
@@ -281,7 +292,7 @@ class PlanJobReader:
                 job["id"], status, (job.get("phase") or {}).get("phase"),
                 progress, reason, receipt, binding_sha256,
                 continues=job["continues"],
-                checkpoint_source=_train_checkpoint_source(job, by_id),
+                checkpoint_source=checkpoint_source,
                 output_size_bytes=size,
                 checkpoint_sources=_selected_checkpoint_sources(job) if evaluate and receipt is not None else (),
                 stopped_checkpoint=stopped_checkpoint,
@@ -289,7 +300,8 @@ class PlanJobReader:
                 evaluation_placement=result.placement if result is not None else None,
                 bound_subject=_best_subject(job) if evaluate and (not succeeded or result is not None) else None,
                 checkpoint_attempt=_evaluation_checkpoint_attempt(job) if evaluate else None,
-                light_success=light_success,
+                light_success=store_success if light else None,
+                train_request=store_success.request if collected_train and store_success is not None else None,
             )
             attempts.setdefault(request_id, []).append(attempt)
             if light and address in light_addresses:
@@ -585,7 +597,10 @@ class JobService(PlanJobReader):
         anchors = [
             row["id"]
             for row in self.host.jobs(project=project, request=request, include_launch=True)
-            if is_checkpoint_producer(row["launch"], continues=row["continues"], manifest_root=str(root))
+            if is_checkpoint_producer(
+                row["launch"], continues=row["continues"], manifest_root=str(root),
+                collected=bool(row["data"].get("collected_train")),
+            )
         ]
         return anchors[0] if len(anchors) == 1 else None
 
@@ -898,6 +913,57 @@ class JobService(PlanJobReader):
             for job_id in ids
         ]
 
+    def collect_train_attempt(
+        self, source: ImmutableArtifactBlobProvider, attempt: Mapping[str, Any], *, project: str, store: Path,
+    ) -> StudioActivityJob:
+        """Collect an observed terminal Train and durably mirror its original attempt."""
+        from feedbax.contracts.artifact_custody import ContentObjectRef
+        from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+        from feedbax.persistence.store_sync import collect_success
+        from feedbax.persistence.train_job import collect_train_job
+
+        attempt_id, request_id, state = attempt["id"], attempt["request"], attempt["state"]
+        data = attempt["data"]
+        outcome = attempt["outcome"]
+        if (
+            attempt["project"] != project or data.get("manifest_root") != str(source.root)
+            or state not in {"succeeded", "stopped"} or not request_id.startswith("train:")
+            or not isinstance(outcome, dict) or outcome.get("outcome") != state
+        ):
+            raise JobConflict("Collection requires an exact terminal Train observation from its source Store.")
+        destination = ImmutableArtifactBlobProvider(store)
+        receipt = None
+        if state == "succeeded":
+            receipt = ContentObjectRef.model_validate(outcome["store_success"])
+            result = collect_success(source, destination, receipt, attempt=attempt_id, request_id=request_id)
+            request = result.receipt.request
+        else:
+            stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
+            entry = collect_train_job(
+                source, destination, attempt=attempt_id, request_id=request_id, pointer=stopped.pointer,
+            )
+            request = entry.request
+
+        spec, binding = bind_canonical_train(
+            request_id, destination.get_object(request.object),
+            {ref.sha256: destination.get_object(ref) for ref in request.documents},
+            self.registries.training_programs, destination, registries=self.registries,
+        )
+        item = self._training_item(
+            project, request_id, spec,
+            {key: data[key] for key in ("run_key", "stage_id", "scenario_id", "label", "coordinates")}
+            | {"collected_train": True}, store,
+            canonical_request=binding,
+            checkpoint_catalog=tuple(attempt["launch"]["payload"].get("checkpoint_catalog", ())),
+        )
+        assert item.job is not None
+        job = replace(item.job, id=attempt_id, continues=attempt["continues"])
+        self.host.mirror_collected_train(
+            job, state=state, receipt=receipt.model_dump(mode="json") if receipt is not None else None,
+            progress=attempt["progress"], delivery=attempt["delivery"],
+        )
+        return self._activity_rows(self.host.jobs(job_id=attempt_id))[attempt_id]
+
     def resume(self, job_id: str, token: str) -> StudioActivityJob:
         previous = self._retry(token, continues=job_id)
         if previous is None:
@@ -912,7 +978,13 @@ class JobService(PlanJobReader):
             if not can_resume_attempt(row["state"], row.get("checkpoint"), row["delivery"]):
                 raise JobConflict("This run has no checkpoint to resume.")
             launch_data = row["launch"]
-            payload = launch_data["payload"] | {"resume": row.get("checkpoint")}
+            payload = dict(launch_data["payload"])
+            portable = row["data"].get("collected_train") or payload.get("collected_resume") is not None
+            if portable:
+                payload.pop("resume", None)
+                payload["collected_resume"] = job_id
+            else:
+                payload["resume"] = row.get("checkpoint")
             launch = Launch(**(launch_data | {"payload": payload}))
             key = row["data"]["run_key"]
             job = Job(
@@ -921,7 +993,7 @@ class JobService(PlanJobReader):
                 request=row["request"],
                 launch=launch,
                 continues=job_id,
-                data=row["data"],
+                data={key: value for key, value in row["data"].items() if key != "collected_train"},
             )
             result = self._admit(
                 token,
@@ -1059,8 +1131,8 @@ class JobService(PlanJobReader):
         view = SuccessView(store)
         if _owned_result_damage(view, job) is not None:
             return False
-        if _is_light_request(job["request"]):
-            return _verified_light_result(view, job) is not None
+        if _is_light_request(job["request"]) or _is_collected_train(job):
+            return _verified_store_result(view, job) is not None
         if job["request"].startswith("evaluate:"):
             return _verified_evaluation_result(job, root) is not None
         return _verified_training_receipt(job, root) is not None
@@ -1269,7 +1341,11 @@ def _owned_result_damage(view: SuccessView, job: dict[str, Any]) -> str | None:
         return f"Cannot authenticate the committed result: {error}"
 
 
-def _verified_light_result(view: SuccessView, job: dict[str, Any]) -> tuple[JobReceipt, Success] | None:
+def _is_collected_train(job: dict[str, Any]) -> bool:
+    return job["request"].startswith("train:") and job["data"].get("collected_train") is True
+
+
+def _verified_store_result(view: SuccessView, job: dict[str, Any]) -> tuple[JobReceipt, Success] | None:
     from feedbax.contracts.artifact_custody import ContentObjectRef
 
     try:
@@ -1281,10 +1357,31 @@ def _verified_light_result(view: SuccessView, job: dict[str, Any]) -> tuple[JobR
             or receipt.manifest_sha256 != ref.sha256
         ):
             return None
-        result = view.read_receipt(ref)
+        if _is_collected_train(job):
+            result = view.read_owned_success(ref).receipt
+            if result.continuation is None:
+                return None
+        else:
+            result = view.read_receipt(ref)
         if result.attempt != job["id"] or result.request.id != job["request"]:
             return None
         return receipt, result
+    except (OSError, TypeError, ValueError, KeyError):
+        return None
+
+
+def _collected_train_checkpoint_source(view: SuccessView, result: Success) -> StudioTrainCheckpointSource | None:
+    checkpoints = result.inputs.get("checkpoint", ())
+    if len(checkpoints) != 1 or (selection := checkpoints[0].selection) is None:
+        return None
+    try:
+        source = view.read_receipt(selection.receipt)
+        if source.continuation is None or source.continuation.provenance != selection.occurrence:
+            return None
+        return StudioTrainCheckpointSource(
+            job_id=source.attempt, request_id=source.request.id,
+            completed_updates=source.continuation.clock.completed_batches,
+        )
     except (OSError, TypeError, ValueError, KeyError):
         return None
 

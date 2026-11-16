@@ -146,7 +146,9 @@ def verify_training_completion(
         ):
             raise CompletionFileError("Receipt does not bind the admitted Train execution payload.")
         checkpoint_ref = launch.canonical_request.checkpoint if launch.canonical_request else None
-        if (checkpoint_ref is None) != (launch.checkpoint_input is None):
+        if launch.collected_resume == producer_job_id or (
+            launch.collected_resume is None and (checkpoint_ref is None) != (launch.checkpoint_input is None)
+        ):
             raise CompletionFileError("Completion does not bind its declared Train checkpoint.")
         if launch.checkpoint_input is not None and launch.resume is None:
             provenance = manifest.provenance.metadata if manifest.provenance is not None else {}

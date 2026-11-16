@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
@@ -13,9 +14,10 @@ import time
 import traceback
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
+    from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentObjectRef
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.contracts.worker import ProgressCoordinate
     from feedbax.training.checkpoint_custody import CheckpointWriteResult
@@ -57,6 +59,7 @@ class _Result:
     completion: Mapping[str, Any] | None = None
     model_product: Mapping[str, Any] | None = None
     store_publication_error: Mapping[str, str] | None = None
+    stopped_checkpoints: ContentObjectRef | None = None
 
 
 @dataclass
@@ -144,6 +147,8 @@ class _Events:
             data["model_product"] = result.model_product
         if result.store_publication_error is not None:
             data["store_publication_error"] = result.store_publication_error
+        if result.stopped_checkpoints is not None:
+            data["stopped_checkpoints"] = result.stopped_checkpoints.model_dump(mode="json")
         self.append("result", data, sync=True)
         return int(result.outcome == "failed")
 
@@ -193,21 +198,26 @@ def main(argv: Sequence[str]) -> int:
             raise ValueError("Studio training accepts its request from the host input document")
         if "feedbax.training.managed_studio" not in sys.modules:
             events.phase("importing")
-        result = _run(
-            events,
-            job_id=os.environ["FEEDBAX_HOST_JOB_ID"],
-            input_path=Path(os.environ["FEEDBAX_HOST_INPUT"]),
-            stop_file=Path(os.environ["FEEDBAX_HOST_STOP_FILE"]),
-        )
+        with ExitStack() as recovery_views:
+            result = _run(
+                events,
+                job_id=os.environ["FEEDBAX_HOST_JOB_ID"],
+                input_path=Path(os.environ["FEEDBAX_HOST_INPUT"]),
+                stop_file=Path(os.environ["FEEDBAX_HOST_STOP_FILE"]),
+                recovery_views=recovery_views,
+            )
     except Exception as exc:
         traceback.print_exc()
         result = _Result("failed", error=_error(exc, events.current_phase))
     return events.result(result)
 
 
-def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> _Result:
+def _run(
+    events: _Events, *, job_id: str, input_path: Path, stop_file: Path, recovery_views: ExitStack,
+) -> _Result:
     from feedbax._atomic import write_bytes_atomic
     from feedbax.contracts.base import ParentRef, sha256_file
+    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.checkpoint_initialization import CheckpointInitializationRequest
     from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.manifest import (
@@ -237,11 +247,13 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     from feedbax.studio.canonical_train import (
         BoundStudioTrainingJobInput,
         PinnedTrainCheckpoint,
+        read_collected_train_job,
         resolve_training_request_binding,
     )
     from feedbax.training.checkpoint_custody import (
         CheckpointCustodyError,
         bind_published_checkpoint_content,
+        materialize_checkpoint_content,
         open_published_model_slot,
     )
     from feedbax.training.executor import execute_managed_training_run
@@ -262,12 +274,13 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     if launch.spec.method_ref != STUDIO_GRAPH_METHOD:
         raise ValueError("Studio training jobs require the registered Studio graph method")
     method = StudioGraphMethodPayload.model_validate(launch.spec.method_payload.payload)
-    method.require_supported_launch(resume=launch.resume is not None)
+    method.require_supported_launch(resume=launch.resume is not None or launch.collected_resume is not None)
     if not launch.manifest_root.is_absolute():
         raise ValueError("manifest_root must be absolute")
     manifest_root = launch.manifest_root.resolve()
     if launch.manifest_root != manifest_root:
         raise ValueError("Canonical Train store must be absolute and canonical")
+    checkpoint_store = cast("ArtifactBlobProvider", ImmutableArtifactBlobProvider(manifest_root))
     registries = _training_registries(launch.bootstrap_modules)
     trial = resolve_training_request_binding(launch, registries=registries).trial
     if launch.checkpoint_input is not None:
@@ -288,28 +301,43 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
     checkpoint_ref = launch.canonical_request.checkpoint
     stateful = method.continuation
     source_scope = stateful.source_slots if stateful is not None else "model_only"
-    if launch.resume is None or stateful is None:
-        for dependency in dependencies:
-            verify_bound_training_completion(dependency["completion"], scope=source_scope)
-    if checkpoint_ref is not None:
-        if len(dependencies) != 1:
-            raise CompletionFileError("Train requires one bound predecessor checkpoint.")
-        product = dependencies[0]["completion"]
-        if (
-            product["project_id"] != launch.project_id
-            or product["request_id"] != checkpoint_ref.request_id
-            or product["manifest_root"] != str(manifest_root)
-        ):
-            raise CompletionFileError("Bound Train checkpoint differs from its canonical input.")
-        launch = launch.model_copy(update={"checkpoint_input": PinnedTrainCheckpoint(
-            producer_job_id=product["producer_job_id"],
-            receipt=product["receipt"],
-            checkpoint=PublishedTrainingCheckpoint.model_validate(product["checkpoint"]),
-        )})
-    elif method.checkpoint_initialization is not None:
-        raise ValueError("Checkpoint initialization requires a canonical Train input.")
+    collected = None
     resume = launch.resume
-    if resume is not None:
+    if launch.collected_resume is not None:
+        if dependencies or launch.collected_resume == job_id:
+            raise CompletionFileError("Collected Resume has conflicting recovery authority.")
+        events.current_phase = "restoring"
+        collected = read_collected_train_job(launch)
+        pointer = collected.recovery.pointer
+        updates = pointer.completed_training_batches
+        if updates is None or updates >= method.target_total or pointer.run_id == job_id:
+            raise CompletionFileError("Collected Resume requires a checkpoint before the authored target.")
+        source = recovery_views.enter_context(materialize_checkpoint_content(
+            collected.recovery.content, checkpoint_store, owner=job_id,
+        ))
+        resume = PublishedTrainingCheckpoint(checkpoint_root=source, completed_updates=updates, pointer=pointer)
+    else:
+        if resume is None or stateful is None:
+            for dependency in dependencies:
+                verify_bound_training_completion(dependency["completion"], scope=source_scope)
+        if checkpoint_ref is not None:
+            if len(dependencies) != 1:
+                raise CompletionFileError("Train requires one bound predecessor checkpoint.")
+            product = dependencies[0]["completion"]
+            if (
+                product["project_id"] != launch.project_id
+                or product["request_id"] != checkpoint_ref.request_id
+                or product["manifest_root"] != str(manifest_root)
+            ):
+                raise CompletionFileError("Bound Train checkpoint differs from its canonical input.")
+            launch = launch.model_copy(update={"checkpoint_input": PinnedTrainCheckpoint(
+                producer_job_id=product["producer_job_id"],
+                receipt=product["receipt"],
+                checkpoint=PublishedTrainingCheckpoint.model_validate(product["checkpoint"]),
+            )})
+        elif method.checkpoint_initialization is not None:
+            raise ValueError("Checkpoint initialization requires a canonical Train input.")
+    if resume is not None and collected is None:
         events.current_phase = "restoring"
         parent_root = _attempt_root(manifest_root, resume.pointer.run_id)
         if resume.checkpoint_root != parent_root or parent_root == checkpoint_root:
@@ -321,9 +349,14 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         )
         if launch.model_dump(exclude={"resume"}) != parent_binding.model_dump(exclude={"resume"}):
             raise ValueError("resume inputs differ from the original attempt's binding")
+    if resume is not None:
         events.completed_updates = resume.completed_updates
 
-    start_boundary = stateful.progress.source_completed_batches if stateful and resume is None else 0
+    start_boundary = (
+        resume.completed_updates if collected is not None and resume is not None
+        else stateful.progress.source_completed_batches if stateful and resume is None
+        else 0
+    )
 
     events.current_phase = "binding"
     write_bytes_atomic(binding_path, launch.model_dump_json(exclude_none=True).encode(), replace=False)
@@ -391,6 +424,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         last_frame = -1
         latest_model: Any = None
         stop_requested = False
+        checkpoints: dict[str, PublishedTrainingCheckpoint] = {}
 
         def publish_progress() -> None:
             nonlocal pending, interval_start, last_progress
@@ -493,6 +527,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                     publication["checkpoint_product_error"] = str(exc)
             events.append("publication", publication, sync=True)
             events.checkpoint = checkpoint
+            checkpoints[checkpoint.pointer.transaction_id] = checkpoint
             if evaluate_checkpoint is not None and "checkpoint_product" in publication and latest_model is not None:
                 try:
                     evaluate_checkpoint(checkpoint, latest_model)
@@ -520,7 +555,7 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
         if resume is None and launch.checkpoint_input is not None:
             checkpoint = launch.checkpoint_input.checkpoint
             source_root = checkpoint.checkpoint_root
-            provider = ImmutableArtifactBlobProvider(manifest_root)
+            provider = checkpoint_store
             source, source_content = bind_published_checkpoint_content(
                 source_root, checkpoint.pointer, provider, scope=source_scope,
             )
@@ -579,7 +614,26 @@ def _run(events: _Events, *, job_id: str, input_path: Path, stop_file: Path) -> 
                 "succeeded", receipt=terminal_receipt, completion=completion, model_product=model_product,
             )
         if result.status == "cancelled" and stop_requested and events.checkpoint is not None:
-            return _Result("stopped", receipt=receipt("cancelled"))
+            terminal = events.checkpoint
+            checkpoints[terminal.pointer.transaction_id] = terminal
+            custody = []
+            stopped_receipt = receipt("cancelled")
+            try:
+                for checkpoint in checkpoints.values():
+                    pointer = checkpoint.pointer
+                    if collected is not None and pointer == collected.recovery.pointer:
+                        content = collected.recovery.content
+                    else:
+                        _, content = bind_published_checkpoint_content(checkpoint.checkpoint_root, pointer, checkpoint_store)
+                    custody.append({
+                        "pointer": pointer.model_dump(mode="json"), "content": content.model_dump(mode="json"),
+                    })
+                staged = checkpoint_store.store_object(canonical_json_v2_bytes(custody))
+            except (OSError, ValueError) as exc:
+                return _Result("stopped", receipt=stopped_receipt, store_publication_error={
+                    "code": "publication_failed", "message": str(exc),
+                })
+            return _Result("stopped", receipt=stopped_receipt, stopped_checkpoints=staged)
         if result.status == "failed" and result.manifest.failure_kind == "nan_guard":
             raise FloatingPointError(result.manifest.stop_reason or "non-finite training update")
         raise RuntimeError(f"unexpected training outcome {result.status!r}")

@@ -806,6 +806,7 @@ class Host:
                 | "record_get"
                 | "record_get_many"
                 | "record_put"
+                | "mirror_collected_train"
             ):
                 result = getattr(self.store, op)(**message)
                 self.wake.set()

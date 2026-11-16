@@ -20,9 +20,9 @@ from feedbax.contracts.request_refs import (
 from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.effective_success import SuccessView, store_request
+from feedbax.persistence.effective_success import PublicationConflict, SuccessView, store_request
 from feedbax.persistence.reachability import measure_store
-from feedbax.persistence.store_sync import sync_store
+from feedbax.persistence.store_sync import collect_success, collect_success_evidence, sync_store
 from scripts.proofs.effective_binding_witness import document_product
 
 
@@ -197,3 +197,77 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
     assert destination.get_tree(tree) == source.get_tree(tree)
     [member] = destination.get_tree(tree).files
     assert destination.get_object(member.object) == b"model tree member"
+
+
+def test_collected_success_preserves_exact_receipts_and_destination_tips(tmp_path):
+    source = ImmutableArtifactBlobProvider(tmp_path / "source")
+
+    class InterruptedStore(ImmutableArtifactBlobProvider):
+        def _clone_object_from(self, source, object_ref):
+            if super()._clone_object_from(source, object_ref):
+                raise InterruptedError("transfer interrupted after clone")
+            return False
+
+    destination = ImmutableArtifactBlobProvider(tmp_path / "destination")
+    producer = store_request(
+        source, encode_request(ReportRequestSpec(report_type="proof.collect-producer"), {})
+    )
+    selected = document_product(source, "selected", b'{"kind":"selected"}')
+    sibling = document_product(source, "sibling", b'{"kind":"other"}')
+    exact = SuccessView(source).publish(
+        producer, attempt="producer-1", products={"reports": (selected, sibling)},
+    )
+    consumer = store_request(source, encode_request(
+        ReportRequestSpec(report_type="proof.collect-consumer"),
+        {"reports": (InputMember(key="selected", reference=ProductRef(
+            request_id=producer.id, role="reports", select=NamedMember(member="selected"),
+        )),)},
+    ))
+    first = SuccessView(source).publish(
+        consumer, attempt="consumer-1", products={"reports": (selected,)},
+    )
+    second = SuccessView(source).publish(
+        consumer, attempt="consumer-2", products={"reports": (selected,)},
+    )
+    latest = SuccessView(source).publish(
+        producer, attempt="producer-2", products={"reports": (sibling,)},
+    )
+
+    try:
+        with pytest.raises(InterruptedError, match="transfer interrupted after clone"):
+            collect_success(
+                source, InterruptedStore(destination.root), second.ref,
+                attempt="consumer-2", request_id=consumer.id,
+            )
+    except OSError as error:
+        if error.errno != errno.ENOTSUP:
+            raise
+        pytest.skip("test volume does not support copy-on-write cloning")
+    assert destination.read_ref(INDEX_REF) is None
+
+    assert collect_success(source, destination, second.ref, attempt="consumer-2", request_id=consumer.id) == second
+    installed = SuccessView(destination)
+    assert installed.read_attempt("producer-1") == exact
+    assert installed.read_attempt("producer-2") is None
+    assert installed.authored(producer.id) is None
+    assert installed.read_attempt("consumer-1") == first
+    assert installed.authored(consumer.id) == second
+    assert destination.get_object(second.ref) == source.get_object(second.ref)
+
+    assert collect_success(source, destination, latest.ref, attempt="producer-2", request_id=producer.id) == latest
+    assert collect_success_evidence(
+        source, destination, exact.ref, attempt="producer-1", request_id=producer.id,
+    ) == exact
+    assert SuccessView(destination).authored(producer.id) == latest
+    with pytest.raises(PublicationConflict, match="different authored success"):
+        collect_success(source, destination, first.ref, attempt="consumer-1", request_id=consumer.id)
+    assert SuccessView(destination).authored(consumer.id) == second
+    assert not measure_store(destination, now=datetime.now(UTC), keep_superseded_days=14).gaps
+
+    corrupted = ImmutableArtifactBlobProvider(tmp_path / "corrupted")
+    sibling_ref = success_content_ref(sibling.content)
+    with writable_store_object(source.object_path(sibling_ref)) as path:
+        path.write_bytes(b"x" * sibling_ref.size_bytes)
+    with pytest.raises(ArtifactBlobIntegrityError, match=sibling_ref.sha256):
+        collect_success(source, corrupted, second.ref, attempt="consumer-2", request_id=consumer.id)
+    assert corrupted.read_ref(INDEX_REF) is None

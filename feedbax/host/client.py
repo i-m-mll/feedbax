@@ -19,6 +19,7 @@ from feedbax.host.protocol import (
     AdmissionItem,
     Edge,
     EventPage,
+    Job,
     HostError,
     JobsSnapshot,
     Json,
@@ -193,6 +194,14 @@ class HostClient:
 
     def record_put(self, key: str, value: JsonObject) -> None:
         self._call("record_put", key=key, value=value)
+
+    def mirror_collected_train(
+        self, job: Job, *, state: str, receipt: JsonObject | None, progress: JsonObject | None, delivery: int,
+    ) -> None:
+        self._call(
+            "mirror_collected_train", job=asdict(job), state=state,
+            receipt=receipt, progress=progress, delivery=delivery,
+        )
 
     def submissions(
         self,

@@ -142,9 +142,7 @@ class SuccessView:
     def read_success(self, receipt_ref: ContentObjectRef) -> PublishedSuccess:
         receipt = self.read_receipt(receipt_ref)
         decoded = read_effective_request(receipt, self.store.get_object)
-        for role, members in decoded.inputs.items():
-            for member, bound in zip(members, receipt.inputs[role], strict=True):
-                self._verify_bound(decoded, member, bound)
+        self._verify_inputs(decoded, receipt.inputs)
         if receipt.evaluation_manifest is not None:
             verify_evaluation_success_evidence(self.store, receipt)
         for products in receipt.products.values():
@@ -155,6 +153,18 @@ class SuccessView:
                 require_sound(self.store, slot_ref)
                 self.store.verify_object(slot_ref)
         return PublishedSuccess(receipt_ref, receipt)
+
+    def verify_bindings(self, request: RequestObject, bindings: Bindings) -> EffectiveBindingId:
+        """Authenticate a frozen binding without consulting current producer aliases."""
+        decoded = self.read_request(request)
+        effective = effective_binding_id(decoded, bindings)
+        self._verify_inputs(decoded, bindings)
+        return effective
+
+    def _verify_inputs(self, decoded: DecodedRequest, bindings: Bindings) -> None:
+        for role, members in decoded.inputs.items():
+            for member, bound in zip(members, bindings[role], strict=True):
+                self._verify_bound(decoded, member, bound)
 
     def read_owned_success(self, receipt_ref: ContentObjectRef) -> PublishedSuccess:
         """Verify committed replay evidence without rereading historical inputs."""
@@ -211,6 +221,47 @@ class SuccessView:
             raise ValueError("Effective index entry points to different bindings")
         return result
 
+    def admit_collected(
+        self, receipt_ref: ContentObjectRef, *, attempt: str, request_id: RequestId,
+        supersession_times: Mapping[str, datetime], promote: bool,
+    ) -> PublishedSuccess:
+        """Admit exact transferred bytes and update visibility in one Store generation."""
+        from feedbax.persistence.receipt_closure import ReceiptClosure
+
+        with self.store._exclusive_lock():
+            closure = ReceiptClosure(self.store)
+            receipt = closure.receipt_at(receipt_ref)
+            if (receipt.attempt, receipt.request.id) != (attempt, request_id):
+                raise ValueError("Collected receipt differs from the expected attempt and request")
+            graph = closure.for_admission(receipt_ref)
+            authored = dict(self._index.authored)
+            effective = dict(self._index.effective)
+            attempts = dict(self._index.attempts)
+            times = dict(self._index.supersession_times)
+            current = authored.get(request_id)
+            if promote:
+                if current not in (None, receipt_ref, receipt.supersedes):
+                    raise PublicationConflict("Destination has a different authored success")
+                authored[request_id] = receipt_ref
+                if effective.get(receipt.effective) in (None, receipt_ref, receipt.supersedes):
+                    effective[receipt.effective] = receipt_ref
+
+            for ref, result in graph.receipts:
+                if attempts.setdefault(result.attempt, ref) != ref:
+                    raise PublicationConflict("Destination attempt names a different success receipt")
+                if result.supersedes is not None:
+                    when = supersession_times.get(ref.sha256)
+                    if when is None or times.setdefault(ref.sha256, when) != when:
+                        raise PublicationConflict("Collected receipt has missing or conflicting supersession time")
+
+            for ref in graph.objects:
+                require_sound(self.store, ref)
+                self.store.verify_object(ref, verifier="receipt collection admission")
+            self._commit_index(SuccessIndex(
+                authored=authored, effective=effective, attempts=attempts, supersession_times=times,
+            ))
+        return PublishedSuccess(receipt_ref, receipt)
+
     def publish(
         self, request: RequestObject, *, attempt: str, products: Products
     ) -> PublishedSuccess:
@@ -248,11 +299,7 @@ class SuccessView:
             if bindings is None:
                 effective, inputs = self.bind(request)
             else:
-                decoded = self.read_request(request)
-                effective = effective_binding_id(decoded, bindings)
-                for role, members in decoded.inputs.items():
-                    for member, bound in zip(members, bindings[role], strict=True):
-                        self._verify_bound(decoded, member, bound)
+                effective = self.verify_bindings(request, bindings)
                 inputs = bindings
             previous = self._index.authored.get(request.id)
             if previous is not None:
@@ -298,10 +345,11 @@ class SuccessView:
                 attempts={**self._index.attempts, attempt: ref},
                 supersession_times=times,
             )
-            if not self.store.compare_and_swap_ref(
-                INDEX_REF,
-                expected=self._expected,
-                replacement=updated.model_dump(mode="json"),
-            ):
-                raise PublicationConflict("Successful-result index moved during publication")
+            self._commit_index(updated)
         return PublishedSuccess(ref, receipt)
+
+    def _commit_index(self, updated: SuccessIndex) -> None:
+        if not self.store.compare_and_swap_ref(
+            INDEX_REF, expected=self._expected, replacement=updated.model_dump(mode="json"),
+        ):
+            raise PublicationConflict("Successful-result index moved during publication")
