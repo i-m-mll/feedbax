@@ -5,7 +5,7 @@ import pytest
 
 from feedbax.contracts.project_sweep import Sweep, SweepCoordinate, SweepInputMember, expand_sweep
 from feedbax.dataset import Dataset, Variable
-from feedbax.dataset_sweep import stack_dataset_members
+from feedbax.dataset_sweep import join_rollout_conditions, stack_dataset_members
 
 
 def _bound_members():
@@ -113,3 +113,47 @@ def test_sweep_name_collision_and_conflicting_id_are_refused():
                 (SweepInputMember("two", {"s": SweepCoordinate("same", value=True)}), source),
             ]
         )
+
+
+def test_joined_rollout_keeps_condition_axis_and_refuses_coordinate_drift():
+    reads = []
+
+    def rollout(condition, offset, trials=("right", "left")):
+        resident = Dataset.from_arrays(
+            {"v": Variable((np.arange(6) + offset).reshape((1, 1, 2, 3)), (
+                "checkpoint", "condition", "trial", "state_time",
+            ))},
+            coords={
+                "condition": Variable(np.asarray([condition]), ("condition",)),
+                "trial": Variable(np.asarray(trials), ("trial",)),
+                "state_time": Variable(np.asarray([0., 0.1, 0.2]), ("state_time",)),
+            },
+            attrs={"state_lifetime": "trial", "variation_sha256": condition},
+        )
+
+        def load(name, index):
+            if name == "v":
+                reads.append(condition)
+            return resident.data(name, index)
+
+        return Dataset.bind(
+            resident.descriptor, tensor_shapes={"v": (1, 1, 2, 3), "state_time": (3,)},
+            load_tensor=load,
+        )
+
+    heavy, control = rollout("b", 10), rollout("a", 0)
+    joined = join_rollout_conditions([("heavy", heavy), ("control", control)])
+    assert reads == []
+    assert joined.data("member").tolist() == ["heavy", "control"]
+    assert joined.data("condition").tolist() == ["b", "a"]
+    assert joined.data("trial").tolist() == ["right", "left"]
+    assert joined.descriptor.attrs["condition_provenance"] == {
+        "heavy": {"variation_sha256": "b"}, "control": {"variation_sha256": "a"},
+    }
+    np.testing.assert_array_equal(joined.data("v", (0, 1, 0)), [0, 1, 2])
+    assert reads == ["a"]
+    np.testing.assert_array_equal(joined.data("v", (0, slice(None, None, -1), 0)), [[0, 1, 2], [10, 11, 12]])
+    with pytest.raises(ValueError, match="coordinate|field 'trial'"):
+        join_rollout_conditions([("heavy", heavy), ("control", rollout("a", 0, ("left", "right")))])
+    with pytest.raises(ValueError, match="distinct condition IDs"):
+        join_rollout_conditions([("heavy", heavy), ("alias", heavy)])

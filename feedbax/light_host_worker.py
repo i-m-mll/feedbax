@@ -22,6 +22,7 @@ from feedbax.contracts.request_specs import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.dataset import Dataset
+from feedbax.dataset_sweep import join_rollout_conditions
 from feedbax.host.completion import read_completion_bindings
 from feedbax.host.io import append
 from feedbax.light_jobs import (
@@ -67,16 +68,20 @@ def _dataset_inputs(
     stack: ExitStack,
 ) -> dict[str, Dataset]:
     datasets = {}
-    for role, (member,) in bindings.items():
-        ref = dataset_member(member)
-        # The Store binds and verifies the exact object before every cache lookup.
-        datasets[role] = (
-            _decoded_dataset(
-                store.root, ref.content.sha256, ref.content.size, ref.descriptor_sha256
+    for role, members in bindings.items():
+        inputs = []
+        for member in members:
+            ref = dataset_member(member)
+            # The Store binds and verifies the exact object before every cache lookup.
+            dataset = (
+                _decoded_dataset(
+                    store.root, ref.content.sha256, ref.content.size, ref.descriptor_sha256
+                )
+                if ref.content.size <= _MAX_CACHED_DATASET_BYTES
+                else stack.enter_context(open_stored_dataset(store, ref))
             )
-            if ref.content.size <= _MAX_CACHED_DATASET_BYTES
-            else stack.enter_context(open_stored_dataset(store, ref))
-        )
+            inputs.append((member.key, dataset))
+        datasets[role] = inputs[0][1] if len(inputs) == 1 else join_rollout_conditions(inputs)
     return datasets
 
 

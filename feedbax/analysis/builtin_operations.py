@@ -15,6 +15,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields
 from feedbax.dataset import Dataset, Variable
+from feedbax.dataset_sweep import CONDITION_MEMBER, CONDITION_PROVENANCE
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA
 
 
@@ -114,15 +115,26 @@ def _require_dataset(dataset: Dataset, port: DatasetPort, params: StrictModel) -
 
 
 def _product(port: DatasetPort, source: Dataset, arrays) -> Dataset:
+    coords = {
+        name: Variable(source.data(name), field.dims, units=field.units)
+        for name, field in port.coordinates.items()
+    }
+    descriptor = source.descriptor
+    provenance = descriptor.attrs.get(CONDITION_PROVENANCE)
+    attrs = {}
+    if provenance is not None:
+        member = descriptor.coords[CONDITION_MEMBER]
+        coords[CONDITION_MEMBER] = Variable(source.data(CONDITION_MEMBER), member.dims)
+        attrs[CONDITION_PROVENANCE] = provenance
+        if "source_graph_sha256" in descriptor.attrs:
+            attrs["source_graph_sha256"] = descriptor.attrs["source_graph_sha256"]
     return Dataset.from_arrays(
         {
             name: Variable(arrays[name], field.dims, units=field.units, frame=field.frame)
             for name, field in port.variables.items()
         },
-        coords={
-            name: Variable(source.data(name), field.dims, units=field.units)
-            for name, field in port.coordinates.items()
-        },
+        coords=coords,
+        attrs=attrs,
         schema_id=port.schema_ids[0],
     )
 

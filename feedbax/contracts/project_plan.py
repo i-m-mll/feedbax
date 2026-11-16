@@ -222,7 +222,7 @@ class PlannedElement:
     key: ElementKey
     kind: Literal["analyze", "render"]
     request_id: RequestId
-    inputs: Mapping[str, PlannedInput]
+    inputs: Mapping[str, tuple[PlannedInput, ...]]
     outputs: Mapping[str, DatasetPort | PlotlyFigurePort]
 
     @property
@@ -236,11 +236,19 @@ class PlannedElement:
         return self.key.payload_path(self.kind)
 
 
+def planned_input_groups(
+    node: PlannedRun | PlannedElement,
+) -> Mapping[str, tuple[PlannedInput, ...]]:
+    if isinstance(node, PlannedElement):
+        return node.inputs
+    return {role: (binding,) for role, binding in node.inputs.items()}
+
+
 @dataclass(frozen=True)
 class PlannedAnalyzeRun(PlannedRow):
     elements: Mapping[str, PlannedElement]
     requires: tuple[str, ...]
-    states: PlannedInput
+    states: tuple[PlannedInput, ...]
     figures: Mapping[str, FigureDocument]
 
 
@@ -1375,18 +1383,18 @@ class _Compiler:
         composition: StepComposition,
         key: RunKey,
         row: ExpandedRow,
-        inputs: Mapping[str, PlannedInput],
+        inputs: Mapping[str, tuple[PlannedInput, ...]],
     ) -> SelectedRunDefinition | None:
         def project(reader=None, _previous=None):
             resolved = self.resolve_row(composition, key, row, reader, sources=True)
             if isinstance(resolved, ProjectDiagnostic) or resolved.sources is None:
                 return None
             sources = {f"/payload{path}": source for path, source in resolved.sources.items()}
-            for role, binding in inputs.items():
+            for role, bindings in inputs.items():
                 subset = self.subsets.get((key.variant, key.step, role))
                 if subset is not None and subset.source is not None:
                     sources[pointer(("inputs", role, "where"))] = subset.source.origin
-                if (source := _upstream_source(binding)) is not None:
+                if len(bindings) == 1 and (source := _upstream_source(bindings[0])) is not None:
                     sources[pointer(("inputs", role))] = source
             return SelectedRunDefinition(
                 resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
@@ -1850,6 +1858,13 @@ class _Compiler:
 
         basis = template.row_basis if self.previous is not None else None
         train_rows = _TrainRows() if kind == "train" and not wanted and len(rows) > 1 else None
+        analyze_states = (
+            tuple(binding for binding, _ in members)
+            if kind == "analyze" and (
+                len(members) == 1 or (subset is not None and subset.source is not None and subset.source.rows)
+            )
+            else ()
+        )
         result = []
         tracked_template = template if wanted else None
         for row in rows:
@@ -1873,6 +1888,14 @@ class _Compiler:
                         continue
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
             self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
+            if kind == "analyze":
+                states = (chosen,) if chosen is not None else analyze_states
+                if states:
+                    definition = self.select_definition(template, run_key, row, {"states": states})
+                    analyze = self.lower_analyze_row(template, run_key, row, states, definition)
+                    if analyze is not None:
+                        result.append(analyze)
+                    continue
             if chosen is None and (paired_step is not None or len(members) > 1):
                 candidates = ", ".join(by_key) or "none"
                 detail = f"role requires one row; candidates are {candidates}"
@@ -1926,13 +1949,8 @@ class _Compiler:
                     "reference": reference.model_copy(update={"select": selector}),
                 }))
             inputs = {role.name: chosen} if chosen is not None else {}
-            definition = self.select_definition(template, run_key, row, inputs)
-            if kind == "analyze":
-                assert chosen is not None
-                analyze = self.lower_analyze_row(template, run_key, row, chosen, definition)
-                if analyze is not None:
-                    result.append(analyze)
-                continue
+            definition_inputs = {role: (binding,) for role, binding in inputs.items()}
+            definition = self.select_definition(template, run_key, row, definition_inputs)
             lowered = self.lower_row(
                 template, run_key, row, kind, inputs, basis, definition, train_rows,
             )
@@ -1943,7 +1961,7 @@ class _Compiler:
                     if tracked_template is None:
                         tracked_template = self.compose(variant, name, track=True)
                     if isinstance(tracked_template, StepComposition):
-                        definition = self.project_definition(tracked_template, run_key, row, inputs)
+                        definition = self.project_definition(tracked_template, run_key, row, definition_inputs)
                 origin = definition.sources.get("/payload" + problem.path) if definition is not None else None
                 if origin is not None:
                     problem = self.locate_authored_problem(problem, origin)
@@ -1965,7 +1983,7 @@ class _Compiler:
 
     def select_definition(
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
-        inputs: Mapping[str, PlannedInput],
+        inputs: Mapping[str, tuple[PlannedInput, ...]],
     ) -> SelectedRunDefinition | None:
         if key.row not in self.wanted_sources.get((key.variant, key.step), ()):
             return None
@@ -2055,7 +2073,9 @@ class _Compiler:
                     ))
                     break
             else:
-                definition = self.select_definition(template, key, row, inputs)
+                definition = self.select_definition(
+                    template, key, row, {role: (binding,) for role, binding in inputs.items()},
+                )
                 lowered = self.lower_row(template, key, row, "report", inputs, basis, definition)
                 if (run := self.record_run(key, lowered, inputs, {}, template.requires)) is not None:
                     runs.append(run)
@@ -2066,7 +2086,7 @@ class _Compiler:
         template: StepComposition,
         key: RunKey,
         row: ExpandedRow,
-        source: PlannedInput,
+        sources: tuple[PlannedInput, ...],
         definition: SelectedRunDefinition | None,
     ) -> PlannedAnalyzeRun | None:
         from feedbax.contracts.project_analyze import lower_analyze
@@ -2076,11 +2096,14 @@ class _Compiler:
         if isinstance(resolved, ProjectDiagnostic):
             self.diagnostics.append(replace(resolved, variant=key.variant))
             return None
-        producer = source.member.reference
-        assert isinstance(producer, ProductRef)
-        evaluation = request_identity.decode_request(
-            self.requests[producer.request_id], self.documents.__getitem__,
-        )
+        evaluations = []
+        for source in sources:
+            producer = source.member.reference
+            assert isinstance(producer, ProductRef)
+            evaluation = request_identity.decode_request(
+                self.requests[producer.request_id], self.documents.__getitem__,
+            )
+            evaluations.append(evaluation.spec)
         elements, encoded, problems, figures = lower_analyze(
             key,
             resolved.payload,
@@ -2088,8 +2111,8 @@ class _Compiler:
             resolved.document_pointers,
             self.variants[key.variant].documents,
             tuple(replace(problem, row=key.row, variant=key.variant) for problem in resolved.document_problems),
-            source,
-            evaluation.spec,
+            sources,
+            tuple(evaluations),
             self.operations,
         )
         self.diagnostics.extend(problems)
@@ -2099,7 +2122,7 @@ class _Compiler:
         original = self.rows[key]
         run = PlannedAnalyzeRun(
             key, original.kind, original.label, original.coordinates,
-            MappingProxyType(elements), template.requires, source, MappingProxyType(figures),
+            MappingProxyType(elements), template.requires, sources, MappingProxyType(figures),
             document_ids=MappingProxyType(dict(resolved.document_ids)),
             document_uses=resolved.document_uses,
         )
@@ -2435,8 +2458,8 @@ class _Compiler:
                 run,
             ))
         source = None
-        if terms is not None and role.name == "subject":
-            if terms.best is not None:
+        if terms is not None and role.name in {"subject", "states"}:
+            if terms.best is not None and role.name == "subject":
                 source = SubsetSource(
                     self.subset_origin(variant, name, role.name, subset_document, "best"), reference.step,
                 )
@@ -2529,14 +2552,15 @@ class PlanRequests:
         cls, plan: ProjectPlan, requests: Iterable[PlannedRun | PlannedElement],
     ) -> PlanRequests:
         requests = tuple(requests)
+        inputs = {request.key: planned_input_groups(request) for request in requests}
         entries = {
             request.key: PlanRequest(
                 request.key,
                 request.request_id,
                 {
                     role: element
-                    for role, binding in request.inputs.items()
-                    if (element := binding.element) is not None
+                    for role, bindings in inputs[request.key].items()
+                    if len(bindings) == 1 and (element := bindings[0].element) is not None
                 },
             )
             for request in requests
@@ -2552,12 +2576,21 @@ class PlanRequests:
             producers = {
                 request.key: sources for request in requests
                 if (sources := {
-                    role: source for role, binding in request.inputs.items()
-                    if (source := _upstream_source(binding)) is not None
+                    role: source for role, bindings in inputs[request.key].items()
+                    if (source := (
+                        _upstream_source(bindings[0]) if len(bindings) == 1 else
+                        _analyze_subset_origin(plan, request.key)
+                    )) is not None
                 })
             }
             source_index = PlanSourceIndex(plan.source_snapshot, producers)
         return cls(entries, plan.requests, plan.documents, subset_sources, source_index)
+
+
+def _analyze_subset_origin(plan: ProjectPlan, key: RunKey | ElementKey) -> ValueSource | None:
+    row = key.run if isinstance(key, ElementKey) else key
+    subset = plan.subsets.get((row.variant, row.step, "states"))
+    return subset.source.origin if subset is not None and subset.source is not None else None
 
 
 def diff_analyze_elements(before: ProjectPlan, after: ProjectPlan) -> Mapping[ElementKey, ElementChange]:
