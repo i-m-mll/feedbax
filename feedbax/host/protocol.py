@@ -97,12 +97,19 @@ class Job:
 
 
 @dataclass(frozen=True, slots=True)
+class TerminalReuse:
+    receipt: JsonObject
+    anchor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AdmissionItem:
     run_key: str
     job: Job | None = None
     disposition: Literal["reused", "rejected"] | None = None
     reason: JsonObject | str | None = None
     checked_through: int | None = None
+    terminal_reuse: TerminalReuse | None = None
 
 
 class AdmissionResult(TypedDict):
@@ -141,3 +148,4 @@ class JobsSnapshot(TypedDict):
     oldest_cursor: int
     jobs: list[JsonObject]
     records: NotRequired[dict[str, JsonObject]]
+    terminal_train_receipts: NotRequired[dict[str, JsonObject]]

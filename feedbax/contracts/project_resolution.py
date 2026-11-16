@@ -69,7 +69,6 @@ from feedbax.contracts.strict_json import strict_json_loads
 
 if TYPE_CHECKING:
     from feedbax.contracts.effective_success import TerminalTrainSubject
-    from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.request_refs import RequestId
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 
@@ -191,7 +190,6 @@ class TerminalTrainSource:
     request_id: RequestId
     subject: TerminalTrainSubject
     train: DocumentTrainingRequestSpec
-    graph: GraphSpec
 
 
 @dataclass(frozen=True)

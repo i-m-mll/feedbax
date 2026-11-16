@@ -331,7 +331,7 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     data, descriptors, results = {}, {}, {}
     for name, item in zip(cases, started.items, strict=True):
         row = settled(item.job_id)
-        assert row["edges"][0]["binding"]["completion"] == completion
+        assert row["edges"][0]["binding"]["terminal"]["receipt"] == trained["outcome"]["store_success"]
         if name == "different-dtype":
             assert row["state"] == "failed"
             error = row["outcome"]["error"]

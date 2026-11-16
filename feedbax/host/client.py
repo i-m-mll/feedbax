@@ -203,7 +203,10 @@ class HostClient:
             request = job.launch.payload.get("canonical_request")
             return isinstance(request, dict) and request.get("terminal") is not None
 
-        requires_authentication = any(authenticated(item.job) for item in items if item.job is not None)
+        requires_authentication = any(
+            item.terminal_reuse is not None or (item.job is not None and authenticated(item.job))
+            for item in items
+        )
         return cast(
             Admission,
             self._call(
@@ -245,6 +248,7 @@ class HostClient:
         record_keys: Sequence[str] = (),
         checkpoint_progress_root: str | None = None,
         checkpoint_objective_root: str | None = None,
+        terminal_train: tuple[str, list[str]] | None = None,
     ) -> JobsSnapshot:
         return cast(
             JobsSnapshot,
@@ -257,6 +261,7 @@ class HostClient:
                 job_ids=list(job_ids),
                 include_launch=include_launch,
                 **({"record_keys": list(record_keys)} if record_keys else {}),
+                **({"terminal_train": list(terminal_train)} if terminal_train is not None else {}),
                 **({"checkpoint_progress_root": checkpoint_progress_root} if checkpoint_progress_root is not None else {}),
                 **(
                     {"checkpoint_objective_root": checkpoint_objective_root}

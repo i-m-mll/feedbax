@@ -146,7 +146,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     checkpoint = completions[train]["outcome"]["completion"]
     for run in (baseline, condition):
         (edge,) = completions[run]["edges"]
-        assert edge["binding"]["completion"] == checkpoint
+        assert edge["binding"]["terminal"]["receipt"] == completions[train]["outcome"]["store_success"]
     published = PublishedTrainingCheckpoint.model_validate(checkpoint["checkpoint"])
     slot = open_published_model_slot(published.checkpoint_root, published.pointer)
     assert slot is not None
@@ -356,7 +356,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
         ("condition", varied_force, varied_activation),
     ):
         (edge,) = completions[step]["edges"]
-        assert edge["binding"]["completion"] == checkpoint
+        assert edge["binding"]["terminal"]["receipt"] == completions["train"]["outcome"]["store_success"]
         result = jobs.read_evaluation_result(
             project="thelen", store=snapshot.store_path, job_id=admissions[step].job_id,
         )
@@ -490,8 +490,8 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
         assert row["state"] == "succeeded", row["outcome"]
         return row
 
-    checkpoint = settled(train.job_id)["outcome"]["completion"]
-    published = PublishedTrainingCheckpoint.model_validate(checkpoint["checkpoint"])
+    train_outcome = settled(train.job_id)["outcome"]
+    published = PublishedTrainingCheckpoint.model_validate(train_outcome["completion"]["checkpoint"])
     slot = open_published_model_slot(published.checkpoint_root, published.pointer)
     assert slot is not None and "curl" not in slot.graph.nodes
     documents = decode_request(
@@ -505,7 +505,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     results = {}
     for step, item in zip(("baseline", "curl"), evaluations, strict=True):
         (edge,) = settled(item.job_id)["edges"]
-        assert edge["binding"]["completion"] == checkpoint
+        assert edge["binding"]["terminal"]["receipt"] == train_outcome["store_success"]
         result = jobs.read_evaluation_result(project=project, store=snapshot.store_path, job_id=item.job_id)
         metadata = result._manifest().metadata
         binding = ResolvedRolloutBinding.model_validate(metadata["effective_binding"])

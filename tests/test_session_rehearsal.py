@@ -249,7 +249,9 @@ executor.execute_managed_training_run = execute
             row["id"]: ContentObjectRef.model_validate(row["outcome"]["store_success"]) for row in attempts
         }
         original = {key: source.get_object(ref) for key, ref in receipts.items()}
-        assert attempts[1]["edges"][0]["binding"]["completion"]["producer_job_id"] == train_id
+        (edge,) = attempts[1]["edges"]
+        assert edge["job_id"] == train_id and edge["authenticated_completion"]
+        assert edge["binding"]["terminal"]["receipt"] == receipts[train_id].model_dump(mode="json")
         request_ids = {run.key: run.request_id for run in local_plan.plan.runs}
         assert {row["request"] for row in attempts} == {request_ids[TRAIN], request_ids[EVALUATE]}
         assert all(row["data"]["target"] == state.placement.model_dump(mode="json") for row in attempts)

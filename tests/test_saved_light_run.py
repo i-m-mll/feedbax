@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.checkpoints import CheckpointTransactionManifest
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ElementKey, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
@@ -163,6 +162,29 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
             assert historic.headers["Content-Security-Policy"] == policy
             assert expect(client.get(previous_report_url.replace("report.html", "plotly.min.js"))).content == script.content
 
+        definition["steps"]["baseline"]["inputs"]["subject"] = {"run": by_kind["train"]["request"]}
+        _save_project(folders, project, Project.model_validate(definition))
+        assert main(["run", str(projects / project)]) == 0
+        assert capsys.readouterr().out.count(" reused ") == 6
+        assert {job["id"] for job in host.jobs(project=project)} == set(rerun_jobs)
+
+        (replacement,) = run(revision(), "replace-train", "train")
+        assert replacement["disposition"] == "admitted"
+        (new_train,) = [job for job in terminal(10) if job["id"] == replacement["job_id"]]
+        assert new_train["request"] == by_kind["train"]["request"]
+        assert main(["run", str(projects / project)]) == 0
+        reran = capsys.readouterr().out
+        assert reran.count(" reused ") == 1 and reran.count(" admitted ") == 5
+        (new_evaluate,) = [
+            job for job in terminal(15)
+            if job["request"] == by_kind["evaluate"]["request"] and job["id"] not in rerun_jobs
+        ]
+        assert not new_evaluate["edges"]
+        ref = ContentObjectRef.model_validate(new_evaluate["outcome"]["store_success"])
+        retained = SuccessView(ImmutableArtifactBlobProvider(root)).read_receipt(ref)
+        subject = retained.inputs["subject"][0].evaluation_subject
+        assert subject.terminal_receipt.model_dump(mode="json") == new_train["outcome"]["store_success"]
+
 
 def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
@@ -246,18 +268,19 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     assert {edge["job_id"] for edge in by_request[align.request_id]["edges"]} == {
         by_request[request]["id"] for request in evaluation_ids
     }
-    checkpoints = [receipt.inputs["subject"][0].evaluation_subject.checkpoints for _, receipt in evaluations]
-    assert checkpoints[0] == checkpoints[1] and len(checkpoints[0]) == 1
-    checkpoint = CheckpointTransactionManifest.model_validate_json(
-        store.get_object(checkpoints[0][0].transaction)
-    )
+    train_ref, trained = proof(request_ids[RunKey("default", "train", "default")])
+    assert trained.continuation is not None
+    for _, receipt in evaluations:
+        subject = receipt.inputs["subject"][0].evaluation_subject
+        assert subject is not None and subject.terminal_receipt == train_ref
+        assert subject.terminal_checkpoint == trained.continuation.provenance
 
     conditions, source_attrs, times = [], [], []
     for _, receipt in evaluations:
         with open_stored_dataset(store, dataset_member(receipt.products["states"][0])) as data:
             conditions.extend(data.data("condition").tolist())
             assert data.data("trial").tolist() == trials
-            assert data.data("checkpoint").tolist() == [checkpoint.completed_training_batches]
+            assert data.data("checkpoint").tolist() == [trained.continuation.clock.completed_batches]
             times.append(np.asarray(data.data("state_time")).copy())
             source_attrs.append(data.descriptor.attrs)
     assert len(set(conditions)) == 2

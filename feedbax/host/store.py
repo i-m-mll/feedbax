@@ -11,7 +11,7 @@ from typing import Literal, NamedTuple
 from uuid import uuid4
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.effective_success import RequestObject
+from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubject
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.request_refs import BestRank, ContentRef, LastMember, ProductRef
@@ -679,6 +679,8 @@ class Store:
                 if job is None:
                     disposition = item["disposition"]
                     if disposition == "reused":
+                        if item.get("terminal_reuse") is not None and not allow_completion:
+                            raise HostError("invalid_request", "Terminal Evaluate reuse requires authenticated admission.")
                         self._recheck_reuse(item, record)
                     if disposition not in ("reused", "rejected"):
                         raise HostError(
@@ -724,7 +726,6 @@ class Store:
                 best = isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank"
                 terminal = canonical_request.get("terminal") if evaluate else None
                 if terminal is not None:
-                    from feedbax.contracts.effective_success import TerminalTrainSubject
                     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
                     from feedbax.persistence.evaluation_subject import read_terminal_train_subject
 
@@ -930,7 +931,38 @@ class Store:
                 self._light_receipt(self._success_view(root), row)
             except (ValueError, TypeError, KeyError, OSError) as error:
                 raise HostError("admission_changed", str(error)) from error
+        if (terminal := item.get("terminal_reuse")) is not None:
+            self._recheck_terminal_reuse(row, root, terminal)
         self._require_admission_current(row, cursor)
+
+    def _recheck_terminal_reuse(self, row: sqlite3.Row, root: str, expected: dict) -> None:
+        from feedbax.persistence.effective_success import terminal_train_subject
+
+        try:
+            view = self._success_view(root)
+            attempt = view.read_attempt(row["id"])
+            if attempt is None:
+                raise ValueError("The reused Evaluate receipt is unavailable.")
+            (bound,) = attempt.receipt.inputs["subject"]
+            source = bound.evaluation_subject
+            receipt = ContentObjectRef.model_validate(expected["receipt"])
+            if source is None or source.terminal_receipt != receipt:
+                raise ValueError("The reused Evaluate names a different Train receipt.")
+            if (anchor := expected["anchor"]) is None:
+                pin = terminal_train_subject(view.store, source.producer.id)
+            else:
+                producer = self.get(anchor)
+                if (
+                    producer is None or producer["project"] != row["project"]
+                    or producer["request"] != source.producer.id
+                    or json.loads(producer["data"]).get("manifest_root") != root
+                ):
+                    raise ValueError("The reused Evaluate names a different Train lineage.")
+                pin = self._terminal_train_for_anchor(anchor)
+            if pin is None or pin.receipt != receipt:
+                raise ValueError("The terminal Train receipt changed during admission.")
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise HostError("admission_changed", str(error)) from error
 
     def _advance_authored_train_plan(self, record: dict, results: list[dict]) -> None:
         plan = record.get("authored_train_plan")
@@ -1225,7 +1257,8 @@ class Store:
 
     def jobs_snapshot(
         self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None,
-        checkpoint_objective_root: str | None = None, **filters,
+        checkpoint_objective_root: str | None = None, terminal_train: tuple[str, list[str]] | None = None,
+        **filters,
     ) -> dict:
         snapshot = {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
         if checkpoint_objective_root is not None and not filters.get("job_id"):
@@ -1241,7 +1274,24 @@ class Store:
                     self._checkpoint_progress(job, include_objective=checkpoint_objective_root is not None)
         if record_keys:
             snapshot["records"] = self.record_get_many(record_keys)
+        if terminal_train is not None:
+            root, requests = terminal_train
+            requested = frozenset(requests)
+            receipts = {}
+            for job in snapshot["jobs"]:
+                if (
+                    job["request"] in requested and job["continues"] is None
+                    and job["data"].get("manifest_root") == root and not job["data"].get("collected_train")
+                    and (pin := self._terminal_train_for_anchor(job["id"])) is not None
+                ):
+                    receipts[job["id"]] = pin.receipt.model_dump(mode="json")
+            snapshot["terminal_train_receipts"] = receipts
         return snapshot
+
+    @inspect_without_recording()
+    def _terminal_train_for_anchor(self, anchor: str) -> TerminalTrainSubject | None:
+        binding = self._completion_candidate(anchor, terminal_model=True).binding
+        return TerminalTrainSubject.model_validate(binding["terminal"]) if binding is not None else None
 
     @inspect_without_recording()
     def _checkpoint_progress(self, job: dict, *, include_objective: bool) -> None:
@@ -1551,6 +1601,7 @@ class Store:
     def _completion_candidate(
         self, anchor: str, selection: CheckpointSelection | None = None, *,
         train_slots: frozenset[str] | None = None, tip: str | None = None, observe: bool = False,
+        terminal_model: bool = False,
     ) -> _CompletionCandidate:
         """Select an authenticated final product or exact checkpoint publications.
 
@@ -1660,8 +1711,22 @@ class Store:
             state = attempt["state"]
             if state == "succeeded" and selection is None:
                 try:
+                    if terminal_model:
+                        from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+                        from feedbax.persistence.evaluation_subject import terminal_train_subject_at
+
+                        outcome = json.loads(attempt["outcome"] or "{}")
+                        self._check_completion_identity(attempt, outcome)
+                        ref = ContentObjectRef.model_validate(outcome.get("store_success"))
+                        pin = terminal_train_subject_at(
+                            ImmutableArtifactBlobProvider(Path(payload["manifest_root"])),
+                            ref, attempt["request"], attempt=attempt_id,
+                        )
+                        return _CompletionCandidate(
+                            {"dependency_job_id": anchor, "terminal": pin.model_dump(mode="json")}, None, rejections,
+                        )
                     completion, message = self._completed_product(attempt, train_slots)
-                except CompletionFileError as error:
+                except (CompletionFileError, OSError, KeyError, ValueError) as error:
                     rejections.append(_CompletionRejection(attempt_id, "completion", str(error)))
                 else:
                     if completion is not None:
@@ -1912,10 +1977,15 @@ class Store:
                 if tip is not None and tip["state"] in LIVE_STATES:
                     continue
                 tip_id = tip["id"] if tip is not None else None
-                key = anchor, selection, train_slots, tip_id
+                terminal_model = (
+                    job["request"].startswith("evaluate:") and selection is None
+                    and launch["warm_entrypoint"] == "feedbax.training.evaluate_worker:main"
+                    and isinstance(checkpoint, dict) and (checkpoint.get("select") or {}).get("kind") == "last"
+                )
+                key = anchor, selection, train_slots, tip_id, terminal_model
                 if key not in candidates:
                     candidates[key] = self._completion_candidate(
-                        anchor, selection, train_slots=train_slots, tip=tip_id,
+                        anchor, selection, train_slots=train_slots, tip=tip_id, terminal_model=terminal_model,
                     )
                 candidate = candidates[key]
                 binding, error, rejections = candidate.binding, candidate.error, candidate.rejections

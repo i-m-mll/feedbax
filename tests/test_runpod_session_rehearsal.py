@@ -229,7 +229,10 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     assert all(attempt_target(row["data"]["target"]) == opened.placement for row in venue_rows)
     assert all(row["launch"]["argv"] == [opened.realization.probe["python"]] for row in venue_rows)
     assert all(row["data"]["manifest_root"] == str(venue / "stores" / PROJECT) for row in venue_rows)
-    assert venue_rows[1]["edges"][0]["binding"]["completion"]["producer_job_id"] == train_id
+    train_row, evaluate_row = venue_rows
+    (edge,) = evaluate_row["edges"]
+    assert edge["job_id"] == train_id and edge["authenticated_completion"]
+    assert edge["binding"]["terminal"]["receipt"] == train_row["outcome"]["store_success"]
 
     original = []
     venue_store = ImmutableArtifactBlobProvider(venue / "stores" / PROJECT)
@@ -268,7 +271,8 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     assert all(view.read_owned_success(ref).receipt.target == opened.placement for ref, _ in original)
     recorded = view.read_owned_success(view.attempt_ref(evaluate_id)).receipt
     subject = recorded.inputs["subject"][0].evaluation_subject
-    assert subject.checkpoints[0].occurrence.run_id == train_id
+    assert subject.terminal_receipt == original[0][0]
+    assert subject.terminal_checkpoint.run_id == train_id
     result = local_jobs.read_evaluation_result(project=PROJECT, store=local_store, job_id=evaluate_id)
     with result.open_states(verify=True) as states:
         assert states.descriptor.dimensions["checkpoint"] == 1

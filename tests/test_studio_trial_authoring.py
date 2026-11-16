@@ -219,8 +219,11 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
             row = wait_until(lambda: job_row(host, job, "succeeded") or job_row(host, job, "failed"), timeout=24)
             assert row["state"] == "succeeded", row.get("outcome")
             finished[job] = row
-        checkpoint = finished[trained]["outcome"]["completion"]
-        assert all(finished[job]["edges"][0]["binding"]["completion"] == checkpoint for job in (control, evaluated))
+        train_receipt = finished[trained]["outcome"]["store_success"]
+        assert all(
+            finished[job]["edges"][0]["binding"]["terminal"]["receipt"] == train_receipt
+            for job in (control, evaluated)
+        )
         with jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=control).open_states() as dataset:
             assert dataset.data("trial").tolist() == ["0"]
             assert all(dataset.data(f"objective/coverage/{term}").item() == 1

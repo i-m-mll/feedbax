@@ -121,7 +121,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     ]
     assert trained["state"] == "succeeded", trained["outcome"]
     assert evaluated["state"] == "succeeded", evaluated["outcome"]
-    assert evaluated["edges"][0]["binding"]["completion"] == trained["outcome"]["completion"]
+    assert evaluated["edges"][0]["binding"]["terminal"]["receipt"] == trained["outcome"]["store_success"]
 
 
 def test_addressed_rules_list_conversion_and_scoped_variant(authored):

@@ -142,7 +142,8 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
 
     assert ContentObjectRef.model_validate(result["outcome"]["store_success"]) == committed.ref
     assert SuccessView(store).authored(runs["evaluate"].request_id) == committed
-    assert committed.receipt.inputs["subject"][0].evaluation_subject.checkpoints[0].occurrence.run_id == train.job_id
+    subject = committed.receipt.inputs["subject"][0].evaluation_subject
+    assert subject.terminal_checkpoint.run_id == train.job_id
     original = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=attempt)
     (states,) = committed.receipt.products["states"]
     assert states.content.sha256 == original._manifest().artifacts[0].sha256
@@ -150,6 +151,8 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     states_binding = states_ref(manifest)
     train_success = SuccessView(store).read_attempt(train.job_id)
     assert train_success is not None and train_success.receipt.continuation is not None
+    assert subject.terminal_receipt == train_success.ref
+    assert subject.terminal_checkpoint == train_success.receipt.continuation.provenance
     train_slot = train_success.receipt.continuation.prng.content
     train_path = store.object_path(train_slot)
     train_raw = train_path.read_bytes()
@@ -179,8 +182,8 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     finally:
         parked_request.rename(producer_request)
     checked(["--attempt", train.job_id], 0)
-    from feedbax.host.checkpoint_selection import verify_dependency_files
-    from feedbax.host.completion import CompletionFileError
+    from feedbax.contracts.effective_success import TerminalTrainSubject
+    from feedbax.persistence.evaluation_subject import read_terminal_train_subject
     from feedbax.persistence.receipt_content import success_content_objects
 
     (model,) = train_success.receipt.products["checkpoint"]
@@ -195,8 +198,9 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     try:
         checked(["--attempt", train.job_id], 1)
         binding = next(edge["binding"] for edge in result["edges"] if edge["authenticated_completion"])
-        with pytest.raises(CompletionFileError, match=model_array.sha256):
-            verify_dependency_files(binding)
+        pin = TerminalTrainSubject.model_validate(binding["terminal"])
+        with pytest.raises(ArtifactBlobIntegrityError, match=model_array.sha256):
+            read_terminal_train_subject(store, pin, runs["train"].request_id)
         new_definition = definition("last")
         new_definition["steps"]["baseline"]["base"]["inline"]["params"]["seed"] += 1
         _save_project(folders, project, Project.model_validate(new_definition))

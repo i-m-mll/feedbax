@@ -190,6 +190,11 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     release.touch()
 
     trained = wait_until(lambda: job_row(host, source.job_id, "succeeded"), timeout=24)
+    settled_plan = folders.read_plan(project, revision=None).plan
+    assert settled_plan.requests == plan.plan.requests
+    assert settled_plan.documents == plan.plan.documents
+    cold_plan = ProjectFolderService(folders.root).read_plan(project, revision=None).plan
+    assert cold_plan.requests == settled_plan.requests and cold_plan.documents == settled_plan.documents
     checkpoint = PublishedTrainingCheckpoint.model_validate(trained["outcome"]["completion"]["checkpoint"])
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     assert slot is not None
@@ -229,7 +234,9 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         ), timeout=22)
         assert row["state"] == "succeeded", row.get("outcome")
         assert row["request"] == by_key[key].request_id
-        assert row["edges"][0]["binding"]["completion"]["producer_job_id"] == source.job_id
+        (edge,) = row["edges"]
+        assert edge["job_id"] == source.job_id and edge["authenticated_completion"]
+        assert edge["binding"]["terminal"]["receipt"] == trained["outcome"]["store_success"]
         outcomes[key] = jobs.read_evaluation_result(project=project, store=root, job_id=item.job_id)
 
     joined = ProjectPlanService(folders, jobs).read(project, revision=plan.revision)
@@ -364,6 +371,9 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         job_row(host, observation_attempt.job_id, "succeeded") or job_row(host, observation_attempt.job_id, "failed")
     ))
     assert observation_job["state"] == "succeeded", observation_job.get("outcome")
+    (edge,) = observation_job["edges"]
+    assert edge["job_id"] == source.job_id
+    assert edge["binding"]["terminal"]["receipt"] == trained["outcome"]["store_success"]
     observation_result = jobs.read_evaluation_result(project=project, store=root, job_id=observation_attempt.job_id)
     assert observation_result.size_bytes > 0
     with observation_result.open_states() as dataset:

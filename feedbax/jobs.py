@@ -65,14 +65,14 @@ from feedbax.contracts.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.effective_success import TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.checkpoint_selection import is_checkpoint_producer
 from feedbax.host.live_evaluate import DELEGATION_EVENT
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
-from feedbax.host.protocol import LIGHT_ENTRYPOINT, can_resume_attempt
+from feedbax.host.protocol import LIGHT_ENTRYPOINT, TerminalReuse, can_resume_attempt
 from feedbax.orchestration.session import SessionError
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -860,8 +860,22 @@ class JobService(PlanJobReader):
         record: dict[str, Any],
         *, reuse_completed: bool,
     ) -> Admission:
+        from feedbax.studio.canonical_evaluate import EvaluationRequestBinding
+
+        terminal_inputs = {}
+        for item in candidates if reuse_completed else ():
+            job = item.job
+            if job is not None and job.request.startswith("evaluate:"):
+                binding = EvaluationRequestBinding.model_validate(job.launch.payload["canonical_request"])
+                checkpoint = binding.checkpoint
+                if isinstance(checkpoint, ProductRef) and isinstance(checkpoint.select, LastMember):
+                    terminal_inputs[job.id] = (checkpoint.request_id, binding.terminal)
+        native_requests = sorted({request for request, pin in terminal_inputs.values() if pin is None})
+        terminal_train = (record["command"]["store"], native_requests) if native_requests else None
+
         for attempt in range(3):
-            snapshot = self.host.jobs_snapshot(project=record["project"])
+            snapshot = self.host.jobs_snapshot(project=record["project"], terminal_train=terminal_train)
+            terminal_receipts = snapshot.get("terminal_train_receipts", {})
             history: dict[str, list[dict[str, Any]]] = {}
             attempts: dict[str, dict[str, Any]] = {}
             for row in cast(list[dict[str, Any]], snapshot["jobs"]):
@@ -883,7 +897,24 @@ class JobService(PlanJobReader):
                     for edge in item.job.edges
                 ))
                 eligible = reuse_completed or _is_light_request(job.request)
-                if eligible and (reusable := self._reusable(job, history.get(job.request, ()))):
+                terminal = terminal_inputs.get(job.id)
+                receipt = None
+                anchor = None
+                if terminal is not None:
+                    _, pin = terminal
+                    if pin is not None:
+                        receipt = pin.receipt.model_dump(mode="json")
+                    else:
+                        (edge,) = job.edges
+                        anchor = edge.job_id
+                        receipt = terminal_receipts.get(anchor)
+                reusable = None
+                if eligible and (terminal is None or receipt is not None):
+                    reusable = self._reusable(
+                        job, history.get(job.request, ()),
+                        terminal_receipt=ContentObjectRef.model_validate(receipt) if receipt is not None else None,
+                    )
+                if reusable is not None:
                     reused[job.id] = reusable
                     if job.request.startswith("train:"):
                         # The Host authenticates checkpoint selections through the original Train attempt.
@@ -893,6 +924,7 @@ class JobService(PlanJobReader):
                         checkpoint_roots[job.id] = root["id"]
                     chosen.append(AdmissionItem(
                         run_key=item.run_key, disposition="reused", checked_through=snapshot["cursor"],
+                        terminal_reuse=TerminalReuse(receipt, anchor) if receipt is not None else None,
                     ))
                     runs[item.run_key]["reused_job_id"] = reusable
                 else:
@@ -1404,17 +1436,16 @@ class JobService(PlanJobReader):
             raise JobConflict("This submission token belongs to another action.")
         return _project_submission(response)
 
-    def _reusable(self, candidate: Job, jobs: Sequence[dict[str, Any]]) -> str | None:
+    def _reusable(
+        self, candidate: Job, jobs: Sequence[dict[str, Any]], *, terminal_receipt: ContentObjectRef | None = None,
+    ) -> str | None:
         parents = {edge.job_id for edge in candidate.edges}
-        request_binding = candidate.launch.payload.get("canonical_request")
-        terminal = request_binding.get("terminal") if isinstance(request_binding, dict) else None
-        receipt = TerminalTrainSubject.model_validate(terminal).receipt if terminal is not None else None
         for job in reversed(jobs):
-            if {edge["job_id"] for edge in job["edges"]} != parents:
+            if terminal_receipt is None and {edge["job_id"] for edge in job["edges"]} != parents:
                 continue
             if job["state"] in _LIVE_STATES:
                 return None
-            if job["state"] == "succeeded" and self._receipt_matches(job, terminal_receipt=receipt):
+            if job["state"] == "succeeded" and self._receipt_matches(job, terminal_receipt=terminal_receipt):
                 return job["id"]
         return None
 

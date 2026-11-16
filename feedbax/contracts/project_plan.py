@@ -1450,14 +1450,22 @@ class _Compiler:
         ))
         subject = inputs.get("subject") if kind == "evaluate" else None
         model_source = self.model_sources.get(subject.producer) if subject is not None and subject.producer else None
-        if subject is not None and subject.terminal is not None:
+        if model_source is None and subject is not None and subject.terminal is not None:
             reference = subject.member.reference
             assert isinstance(reference, ProductRef)
             terminal = self.terminal_sources[reference.request_id]
             documents = terminal.train.trial_documents
+            preparation = self.prepare_train_trial(documents)
+            if isinstance(preparation, tuple):
+                return _LoweredRow(None, tuple(ProjectDiagnostic(
+                    ResolutionCode.INVALID_PAYLOAD, "inputs.subject", problem.reason,
+                    key.step, row=key.row, variant=key.variant, model_address=problem.model_address,
+                ) for problem in preparation))
+            evaluation = preparation.evaluation
             model_source = _ModelSource(
-                documents.model_name, documents.model, subject.terminal.receipt.sha256,
-                evaluation_graph=terminal.graph,
+                documents.model_name, documents.model, terminal.request_id,
+                evaluation_graph=evaluation if isinstance(evaluation, GraphSpec) else None,
+                evaluation_problem=evaluation if isinstance(evaluation, ProjectDiagnostic) else None,
             )
         source_stamp = model_source.stamp if model_source is not None else None
         source_problem = model_source.evaluation_problem if model_source is not None else None
