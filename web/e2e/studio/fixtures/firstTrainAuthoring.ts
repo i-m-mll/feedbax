@@ -3,7 +3,10 @@ import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioProje
 import { mapStep } from './canonicalTrain';
 import { activate, number, palette, post, readSaved } from './studioKeyboard';
 
-export async function authorFirstTrain(page: Page, request: APIRequestContext, totalUpdates: number) {
+export async function authorFirstTrain(
+  page: Page, request: APIRequestContext, totalUpdates: number,
+  forceComparison?: { targetY: number; activation: 'softmax' },
+) {
   const creation = post(page, '/api/projects');
   await page.goto('/');
   const created = await creation;
@@ -54,6 +57,10 @@ export async function authorFirstTrain(page: Page, request: APIRequestContext, t
   await expect(model).toBeFocused();
   await page.keyboard.press('Meta+3');
   await setNumber(taskX, 0.22, (project) => taskValues(project)?.x);
+  if (forceComparison) {
+    await setNumber(task.getByRole('spinbutton', { name: 'Target y (m)', exact: true }),
+      forceComparison.targetY, (project) => taskValues(project)?.y);
+  }
   await setNumber(nSteps, 12, (project) => taskValues(project)?.n_steps);
 
   await page.keyboard.press('Meta+2');
@@ -76,15 +83,25 @@ export async function authorFirstTrain(page: Page, request: APIRequestContext, t
   const linear = await add('Linear', 'Runtime');
   const linearId = await linear.getAttribute('data-id');
   expect(linearId).toBeTruthy();
-  function modelField(name: string, field: string, value: number) {
-    return setNumber(inspector.getByRole('textbox', { name, exact: true }), value, (project) => {
-      const model = project.documents?.model?.payload as unknown as ModelDocument | undefined;
-      const component = model?.interior.components?.[linearId!];
-      return component?.kind === 'leaf' ? component.fields?.[field] : undefined;
-    });
+  function linearField(project: StudioProjectSnapshot['project'], field: string) {
+    const model = project.documents?.model?.payload as unknown as ModelDocument | undefined;
+    const component = model?.interior.components?.[linearId!];
+    return component?.kind === 'leaf' ? component.fields?.[field] : undefined;
   }
-  await modelField('Input size', 'input_size', 2);
-  await modelField('Output size', 'output_size', 2);
+  function setLinearSize(name: string, field: string) {
+    return setNumber(inspector.getByRole('textbox', { name, exact: true }), 2, (project) => linearField(project, field));
+  }
+  await setLinearSize('Input size', 'input_size');
+  await setLinearSize('Output size', 'output_size');
+  if (forceComparison) {
+    const activation = inspector.getByRole('combobox', { name: 'Activation', exact: true });
+    // Repeated initials cycle the options. The inspector saves and disables the field between keys.
+    for (const value of ['sigmoid', forceComparison.activation]) {
+      await activate(page, activation, 's');
+      await expect(activation).toHaveValue(value);
+      await expect.poll(async () => linearField((await savedProject()).project, 'activation')).toBe(value);
+    }
+  }
   await page.keyboard.press('Meta+2');
   const plant = await add('PointMass', 'Mechanics');
   const plantId = await plant.getAttribute('data-id');
@@ -156,7 +173,9 @@ export async function authorFirstTrain(page: Page, request: APIRequestContext, t
   } });
   const savedModel = saved.project.documents?.model?.payload as unknown as ModelDocument;
   expect(savedModel.interior.components).toMatchObject({
-    [linearId!]: { kind: 'leaf', type: 'feedbax.Linear', fields: { input_size: 2, output_size: 2 } },
+    [linearId!]: { kind: 'leaf', type: 'feedbax.Linear', fields: {
+      input_size: 2, output_size: 2, ...(forceComparison && { activation: forceComparison.activation }),
+    } },
     [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
   });
   const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'reach_target');
@@ -176,7 +195,9 @@ export async function authorFirstTrain(page: Page, request: APIRequestContext, t
     }),
     expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort!.id } }),
   ]));
-  expect(saved.project.documents?.task?.payload).toMatchObject({ params: { x: 0.22, n_steps: 12 } });
+  expect(saved.project.documents?.task?.payload).toMatchObject({ params: {
+    x: 0.22, n_steps: 12, ...(forceComparison && { y: forceComparison.targetY }),
+  } });
   const [term] = terms(saved.project);
   expect(terms(saved.project)).toHaveLength(1);
   expect(term).toMatchObject({

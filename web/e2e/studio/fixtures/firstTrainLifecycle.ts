@@ -2,13 +2,14 @@ import { expect, type APIRequestContext, type Page, type TestInfo } from '@playw
 import type { StudioActivityJob, StudioJobSnapshot, StudioJobSubmission } from '../../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './canonicalTrain';
 import { authorFirstTrain } from './firstTrainAuthoring';
-import { activate, palette, post } from './studioKeyboard';
+import { activate, palette, post, tabTo } from './studioKeyboard';
 import { hostPid, processExists, type RecoveryStudio } from './studioRecovery';
 
 export async function authorAndRecoverTrain(page: Page, request: APIRequestContext, info: TestInfo, studio: RecoveryStudio) {
   const totalUpdates = 6000;
   const { home } = studio;
-  const authored = await authorFirstTrain(page, request, totalUpdates);
+  // Softmax keeps the total force at one along the diagonal reach, regardless of training.
+  const authored = await authorFirstTrain(page, request, totalUpdates, { targetY: 0.22, activation: 'softmax' });
   const { saved, projectPath, plan, savedProject, plantId } = authored;
   const project = saved.project_id;
   const witness = { module: 'web.e2e.studio.fixtures.managed_lifecycle', home };
@@ -91,12 +92,20 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   for (const region of [footer, results, page.locator('[data-studio-focus-region="map"]')]) {
     await expect(region.getByRole('alert').filter({ hasText: 'Service unreachable' })).toBeVisible();
   }
-  await studio.startBackend();
   const retry = footer.locator('button[data-command-id="retry"]');
-  const restored = page.waitForResponse((response) => response.ok() && response.request().method() === 'GET' &&
-    new URL(response.url()).pathname === '/api/jobs');
-  await activate(page, retry);
-  await restored;
+  await Promise.all([
+    page.waitForResponse((response) => response.status() >= 500 && response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === '/api/jobs'),
+    activate(page, retry),
+  ]);
+  await tabTo(page, retry);
+  await studio.startBackend();
+  // A live event stream can reconnect and remove the Retry control as soon as the backend is up.
+  const retriedAfterRestart = await retry.evaluateAll(([button]) => button === document.activeElement);
+  if (retriedAfterRestart) {
+    await page.keyboard.press('Enter');
+  }
+  await expect(footer.getByRole('alert').filter({ hasText: 'Service unreachable' })).toHaveCount(0);
   expect(await hostPid(home)).toBe(binding.host);
   expect(await job(resumed)).toMatchObject({ status: 'running', request_id: row.request_id });
 
@@ -121,7 +130,9 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   });
   expect(await savedProject()).toMatchObject({ project_id: project, revision: current.revision, project: current.project });
   await info.attach('first Train checkpoint and restart', {
-    body: JSON.stringify({ initial, resumed, checkpoint, oldHost: binding.host, replacementHost, result: final.result }),
+    body: JSON.stringify({
+      initial, resumed, checkpoint, oldHost: binding.host, replacementHost, retriedAfterRestart, result: final.result,
+    }),
     contentType: 'application/json',
   });
   return { home, project, projectPath, plantId, stopped: initial, trained: final.result! };
