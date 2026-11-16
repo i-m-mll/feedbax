@@ -34,6 +34,8 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.studio.canonical_evaluate import (
     ROLLOUT_TYPE,
+    ROLLOUT_JAX_BACKEND,
+    ROLLOUT_JAX_ENABLE_X64,
     STATES_MEDIA_TYPE,
     BoundEvaluationJobInput,
     CannotRun,
@@ -139,7 +141,7 @@ def resolve_rollout(
     documents = spec.trial_documents
     if documents is None or spec.method_ref != STUDIO_GRAPH_METHOD:
         raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
-    if jax.default_backend() != "cpu" or jax.config.jax_enable_x64:
+    if jax.default_backend() != ROLLOUT_JAX_BACKEND or jax.config.jax_enable_x64 != ROLLOUT_JAX_ENABLE_X64:
         raise CannotRun("/numerical_settings", "requires CPU execution with JAX x64 disabled")
     validate_evaluation_source(source_graph)
     method = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)

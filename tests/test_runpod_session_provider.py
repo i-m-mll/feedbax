@@ -16,7 +16,7 @@ from feedbax.orchestration.runpod_session_provider import (
     RunPodAcquisition, RunPodResources, _BOOT_COMMAND, _BOOT_KEY, _fresh_boot_host_key,
 )
 from feedbax.orchestration.session import (
-    KeepOpen, ProviderResource, SessionAuthorization, SessionDriver, SessionError, SessionLaunch,
+    KeepOpen, ProviderResource, ProviderUnreachable, SessionAuthorization, SessionDriver, SessionError, SessionLaunch,
     SessionRequest,
 )
 from tests.support.runpod_session import FakeRunPod, FakeRunPodCutoff, runpod_resources
@@ -57,6 +57,13 @@ def test_runpod_gate_guards_all_mutations(tmp_path):
     assert quote["ephemeral_disk_gb"] == resources.ephemeral_disk_gb
     assert quote["authorized_total_hourly_microusd"] == resources.hourly_microusd
 
+    def unavailable(request):
+        assert request.method == "GET"
+        raise httpx.ConnectError("fixture outage", request=request)
+
+    with pytest.raises(ProviderUnreachable, match="transport failed"):
+        _provider(tmp_path, unavailable, None).review_quote(launch.request)
+
     cutoff = FakeRunPodCutoff(("/usr/bin/true",))
     fake.quoted_rate *= 2
     with pytest.raises(SessionError, match="authorized GPU, rate, CUDA and region"):
@@ -92,21 +99,24 @@ def test_machine_status_uses_owned_provider_state_without_treating_price_as_bill
 def test_runpod_boot_installs_pinned_key_and_arms_guard_before_start(tmp_path):
     private, public = _fresh_boot_host_key()
     start = tmp_path / "start"
-    start.write_text('#!/bin/bash\ntest -z "${RUNPOD_API_KEY:-}" && printf "start\\n"\n')
+    start.write_text('#!/bin/bash\ntest -z "${RUNPOD_API_KEY:-}${LD_LIBRARY_PATH:-}" && printf "start\\n"\n')
     start.chmod(0o700)
     command = ["/bin/bash", "-c", _BOOT_COMMAND, "feedbax-host-key", public, str(tmp_path), str(start)]
-    environment = {**os.environ, _BOOT_KEY: private, "RUNPOD_API_KEY": "fixture-pod-token"}
+    environment = {
+        **os.environ, _BOOT_KEY: private, "RUNPOD_API_KEY": "fixture-pod-token", "LD_LIBRARY_PATH": "/image/cuda",
+    }
     unarmed = subprocess.run(
         [*command, "/usr/bin/false"], env=environment, timeout=5, capture_output=True, text=True,
     )
     assert unarmed.returncode != 0 and unarmed.stdout == ""
     armed = subprocess.run([
         *command, "/bin/bash", "-c",
-        'test -z "${FEEDBAX_BOOT_SSH_KEY:-}" && test "$RUNPOD_API_KEY" = fixture-pod-token'
+        'test -z "${FEEDBAX_BOOT_SSH_KEY:-}${LD_LIBRARY_PATH:-}" && test "$RUNPOD_API_KEY" = fixture-pod-token'
         ' && test ! -e "$1" && printf "armed\\n"',
         "guard", str(tmp_path / "ssh_host_ed25519_key"),
     ], env=environment, timeout=5, capture_output=True, text=True, check=True)
     assert armed.stdout.splitlines() == ["armed", "start"]
+    assert armed.stderr.splitlines() == ["RunPod venue cutoff guard armed.", "RunPod pinned SSH host key installed."]
     assert (tmp_path / "ssh_host_ed25519_key.pub").read_text() == public + "\n"
 
 
@@ -153,7 +163,7 @@ def test_runpod_recovers_exactly_one_create_or_leaves_it_unresolved(tmp_path, pa
     assert fake.requests.count(("POST", "/v2/pods")) == 1
 
 
-@pytest.mark.parametrize("failure", ["deadline", "rejected", "ambiguous"])
+@pytest.mark.parametrize("failure", ["deadline", "read-deadline", "rejected", "ambiguous"])
 def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, monkeypatch, failure):
     resources = runpod_resources()
     fake = FakeRunPod(resources)
@@ -167,16 +177,26 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
         uv_version="1.2.3", snapshot=record, backend="gpu",
     )
     launch = _launch(resources, environment=environment.digest)
+    lost_read = False
 
     def fail(request: httpx.Request) -> httpx.Response:
+        nonlocal lost_read
+        if failure == "read-deadline" and not lost_read and (
+            request.method, request.url.path
+        ) == ("GET", f"/v2/pods/{fake.pod_id}"):
+            lost_read = True
+            expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
+            monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
+            raise httpx.ReadTimeout("SSH readiness poll timed out", request=request)
         if (request.method, request.url.path) == ("POST", "/v2/pods"):
             if failure == "rejected":
                 return httpx.Response(422)
             if failure == "ambiguous":
                 raise httpx.ReadTimeout("lost create response", request=request)
             response = fake.handle(request)
-            expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
-            monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
+            if failure == "deadline":
+                expired = launch.acquired_at_ms + (resources.startup_seconds + 1) * 1000
+                monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: expired)
             return response
         return fake.handle(request)
 
@@ -184,7 +204,8 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
     acquisition = _provider(tmp_path, fail, cutoff)
     provider = RunPodSessionProvider(acquisition, environment, snapshot)
     driver = SessionDriver(tmp_path / "driver", provider, verify_authorization=lambda _: None)
-    expected = {"deadline": "SSH readiness exceeded", "rejected": "rejected pod creation", "ambiguous": "transport failed"}
+    expected = {"deadline": "SSH readiness exceeded", "read-deadline": "SSH readiness exceeded",
+                "rejected": "rejected pod creation", "ambiguous": "transport failed"}
     with pytest.raises(SessionError, match=expected[failure]):
         driver.open(launch.request, launch.authorization, adoption_token="x" * 32)
     session = driver.record(launch.request.id)
@@ -200,7 +221,7 @@ def test_runpod_open_closes_only_definitive_uninitialized_openings(tmp_path, mon
 
 
 def test_runpod_waits_for_direct_ssh_on_the_same_running_pod(tmp_path, monkeypatch):
-    resources = runpod_resources()
+    resources = RunPodResources.model_validate(runpod_resources().model_dump() | {"startup_seconds": 240})
     fake = FakeRunPod(resources)
     launch = _launch(resources)
     cutoff = FakeRunPodCutoff(("/usr/bin/true",))
@@ -213,6 +234,8 @@ def test_runpod_waits_for_direct_ssh_on_the_same_running_pod(tmp_path, monkeypat
 
     def publish_direct_endpoint(seconds: float) -> None:
         sleeps.append(seconds)
+        after_cold_pull = launch.acquired_at_ms + 91_000
+        monkeypatch.setattr(runpod_session_provider, "_epoch_ms", lambda: after_cold_pull)
         pod["ssh"] = ready
 
     monkeypatch.setattr(runpod_session_provider.time, "sleep", publish_direct_endpoint)

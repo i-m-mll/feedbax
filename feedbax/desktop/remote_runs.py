@@ -71,7 +71,10 @@ def load_remote_runs(paths: AppPaths, release: Release) -> StudioRemoteRuns | No
         ssh_key_path=config.ssh_identity, running_cutoff=cutoff,
     )
     snapshot = SealedRepoSnapshot("feedbax", source, source, record)
-    provider = RunPodSessionProvider(acquisition, environment, snapshot, uv_binary=release.resource("runpod_uv"))
+    provider = RunPodSessionProvider(
+        acquisition, environment, snapshot,
+        uv_binary=release.resource("runpod_uv"), install_timeout=480,
+    )
     driver = SessionDriver(root / "controller", provider, verify_authorization=approval.verify)
     venue = StudioVenue(
         driver, environment.digest, provider.jobs, config.authorization_seconds,

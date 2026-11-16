@@ -55,6 +55,11 @@ if TYPE_CHECKING:
     from feedbax.dataset import Dataset
     from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 
+
+ROLLOUT_JAX_BACKEND = "cpu"
+ROLLOUT_JAX_ENABLE_X64 = False
+
+
 class CannotRun(ValueError):
     """A capability required by the authored request is unavailable."""
 

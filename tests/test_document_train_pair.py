@@ -548,7 +548,7 @@ def document_project(authored, *, evaluation=False):
     return raw
 
 
-def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tmp_path, authored):  # noqa: F811
+def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tmp_path, authored, monkeypatch):  # noqa: F811
     host = host_fixture
     from feedbax.contracts.project_plan import RunKey
     from feedbax.jobs import JobService
@@ -575,10 +575,18 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     prepared = accepted["launch"]["payload"]["spec"]
     assert prepared["training_config"]["learning_rate"] == rate
     assert prepared["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] == rate
-    (evaluation_job,) = jobs.admit_plan(
+    # A GPU venue passes its backend and x64 settings to ordinary Jobs admission.
+    with monkeypatch.context() as venue:
+        venue.setenv("JAX_PLATFORMS", "cuda")
+        venue.setenv("JAX_ENABLE_X64", "1")
+        venue_jobs = JobService(host, registry)
+    (evaluation_job,) = venue_jobs.admit_plan(
         folders, plan, run_keys=(evaluate,), token="paired-evaluate"
     ).items
     assert evaluation_job.disposition == "admitted", evaluation_job
+    (accepted_evaluation,) = host.jobs(job_id=evaluation_job.job_id, include_launch=True)
+    assert accepted_evaluation["launch"]["env"]["JAX_PLATFORMS"] == "cpu"
+    assert accepted_evaluation["launch"]["env"]["JAX_ENABLE_X64"] == "0"
 
     def finished(job):
         return wait_until(
