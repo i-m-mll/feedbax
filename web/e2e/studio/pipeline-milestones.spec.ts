@@ -665,15 +665,3 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const restored = (await read()).rows.filter(({ key }) => key.row.startsWith('learning-rate=Slow')).slice(0, 2);
   expect(restored).toEqual(picked);
 });
-
-test('renders analysis and a report, then reruns only results affected by an edit', async ({ page }) => {
-  test.fixme(true, 'M3 · 041aba9, 3c83a61, 9b6cf79, 4d1558c, 6b22472');
-  await page.goto('/');
-  await expect(page.getByRole('option', { name: 'Analyze', exact: true })).toBeVisible();
-});
-
-test('uses a variant and a subset across the outline, map, and inspector', async ({ page }) => {
-  test.fixme(true, 'M3 · 01e4c26, 3e0ceba');
-  await page.goto('/');
-  await expect(page.getByRole('button', { name: 'Pipeline Map', exact: true })).toBeVisible();
-});
