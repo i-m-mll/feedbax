@@ -8,12 +8,14 @@ from pathlib import Path
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
+from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
 from feedbax.contracts.project_io import TextProject
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -26,6 +28,8 @@ from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
     content_object_relative_path,
 )
+from feedbax.persistence.evaluation_subject import read_terminal_train_subject
+from feedbax.persistence.receipt_content import success_content_objects
 from feedbax.persistence.reachability import (
     DEFAULT_SUPERSEDED_DAYS,
     Reachability,
@@ -199,6 +203,7 @@ def _job_roots(
     payload = job["launch"]["payload"]
     refs = []
     pointers = []
+    terminal = None
     if payload.get("canonical_request") is not None and request.startswith("train:"):
         binding = BoundStudioTrainingJobInput.model_validate(payload)
         if (binding.manifest_root, binding.project_id, binding.request_id) != (
@@ -229,12 +234,16 @@ def _job_roots(
         ):
             raise ValueError("Evaluate launch differs from the scoped job")
         refs.append(binding.canonical_request.request)
+        terminal = binding.canonical_request.terminal
     else:
         gaps.append(f"{name}: no typed canonical launch binding")
 
     for edge in job["edges"]:
         if edge.get("authenticated_completion") and edge["satisfied"]:
             bound = edge["binding"]
+            if "terminal" in bound:
+                terminal = TerminalTrainSubject.model_validate(bound["terminal"])
+                continue
             members = (
                 bound["checkpoint_selection"]["members"]
                 if "checkpoint_selection" in bound
@@ -246,7 +255,17 @@ def _job_roots(
                 refs.extend(_receipt_objects(member))
                 pointers.append(PublishedTrainingCheckpoint.model_validate(member["checkpoint"]))
 
-    completion = (job.get("outcome") or {}).get("completion")
+    if terminal is not None:
+        checkpoint = ProductRef.model_validate(payload["canonical_request"]["checkpoint"])
+        store = ImmutableArtifactBlobProvider(root)
+        producer, _ = read_terminal_train_subject(store, terminal, checkpoint.request_id)
+        refs.extend((
+            terminal.receipt, producer.request.object, *producer.request.documents,
+            *success_content_objects(store, terminal.model),
+        ))
+
+    outcome = job.get("outcome") or {}
+    completion = outcome.get("completion")
     if completion is not None:
         if (
             completion["manifest_root"],
@@ -257,7 +276,10 @@ def _job_roots(
             raise ValueError("terminal completion differs from the scoped job")
         refs.extend(_receipt_objects(completion))
     elif job["state"] == "succeeded":
-        gaps.append(f"{name}: canonical terminal product closure is unavailable")
+        if terminal is not None and outcome.get("store_success") is not None:
+            refs.append(ContentObjectRef.model_validate(outcome["store_success"]))
+        else:
+            gaps.append(f"{name}: canonical terminal product closure is unavailable")
 
     if job.get("checkpoint") is not None:
         pointers.append(PublishedTrainingCheckpoint.model_validate(job["checkpoint"]))

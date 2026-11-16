@@ -360,8 +360,24 @@ class Host:
             if reusable:
                 origins = self.store.light_origins(row)
             train_slots = train_source_slots(launch)
-            for binding in bindings:
-                if train_slots is None:
+            payload = launch["payload"]
+            request = payload.get("canonical_request") or {}
+            terminal = request.get("terminal")
+            for binding in bindings if terminal is None else ({"terminal": terminal},):
+                if "terminal" in binding:
+                    from feedbax.contracts.effective_success import TerminalTrainSubject
+                    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+                    from feedbax.persistence.evaluation_subject import read_terminal_train_subject
+
+                    try:
+                        read_terminal_train_subject(
+                            ImmutableArtifactBlobProvider(Path(payload["manifest_root"])),
+                            TerminalTrainSubject.model_validate(binding["terminal"]),
+                            request["checkpoint"]["request_id"],
+                        )
+                    except (OSError, TypeError, ValueError, KeyError) as error:
+                        raise CompletionFileError(str(error)) from error
+                elif train_slots is None:
                     verify_dependency_files(binding)
                 elif row["continues"] is None:
                     verify_completion_files(binding["completion"], train_slots=train_slots)

@@ -44,6 +44,7 @@ PROJECT_COMMANDS = {
         execute="run_saved_project", delegated=True,
     ),
     "describe": ProjectCommand("describe", "Show authored schemas and registry declarations."),
+    "store": ProjectCommand("store", "Inspect the project Store or transfer a local receipt packet."),
 }
 
 

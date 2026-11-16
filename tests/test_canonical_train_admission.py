@@ -35,7 +35,7 @@ from feedbax.training.schedule_eval import (
     learning_rate_from_build_optimizer,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.effective_success import SuccessView, run_ref_name
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
 from feedbax.plugins.application import new_application_registry_bundle
@@ -176,7 +176,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     assert foreign_item["disposition"] == "rejected" and foreign_item["job_id"] is None
     assert "different store" in foreign_item["reason"]
 
-    # Kill Host after the Store CAS but before the terminal outcome and offset commit.
+    # Interrupt the Store-to-Host commit, including a missing run ref after index commit.
     probe = tmp_path / "terminal-probe"
     probe.mkdir()
     marker = probe / "committed"
@@ -188,19 +188,27 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
         from feedbax.persistence.effective_success import SuccessView
 
         finished = Store.finished
+        publish_ref = SuccessView._publish_run_ref
 
         def interrupt(self, row, outcome):
             marker = Path({str(marker)!r})
-            if row['id'] == {attempt!r} and 'store_success' in outcome and not marker.exists():
-                if {damage_committed_state!r}:
-                    store = ImmutableArtifactBlobProvider(Path({str(reviewed.store_path)!r}))
-                    receipt = SuccessView(store).read_attempt(row['id']).receipt
-                    store.object_path(receipt.continuation.prng.content).unlink()
+            if {damage_committed_state!r} and row['id'] == {attempt!r} and 'store_success' in outcome and not marker.exists():
+                store = ImmutableArtifactBlobProvider(Path({str(reviewed.store_path)!r}))
+                receipt = SuccessView(store).read_attempt(row['id']).receipt
+                store.object_path(receipt.continuation.prng.content).unlink()
                 marker.touch()
                 os._exit(81)
             return finished(self, row, outcome)
 
+        def interrupt_ref(self, request_id, *args, **kwargs):
+            marker = Path({str(marker)!r})
+            if not {damage_committed_state!r} and request_id == {request_id!r} and not marker.exists():
+                marker.touch()
+                os._exit(81)
+            return publish_ref(self, request_id, *args, **kwargs)
+
         Store.finished = interrupt
+        SuccessView._publish_run_ref = interrupt_ref
         """))
     repo = Path(__file__).resolve().parents[1]
     with monkeypatch.context() as env:
@@ -211,6 +219,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
         if not damage_committed_state:
             committed = SuccessView(store).read_attempt(attempt)
             assert committed is not None
+            assert store.read_ref(run_ref_name(request_id)) is None
 
         def recovered():
             try:
@@ -226,6 +235,8 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
         assert finished["outcome"]["error"]["code"] == "publication_failed"
         return
     assert finished["delivery"] == 1 and finished["request"] == request_id
+    root = read_store_closure_ref(store.read_ref(run_ref_name(request_id))).roots[0]
+    assert root.receipt == committed.ref
     completion = finished["outcome"]["completion"]
     assert completion["request_id"] == request_id and completion["producer_job_id"] == attempt
     assert completion["checkpoint"]["completed_updates"] == 2

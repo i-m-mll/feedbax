@@ -50,6 +50,13 @@ class Product(ReferenceValue):
     descriptor: JsonValue = None
 
 
+class TerminalTrainSubject(ReferenceValue):
+    """A Train receipt and its selected terminal model on an Evaluate edge."""
+
+    receipt: ContentObjectRef
+    model: Product
+
+
 type Products = dict[Name, Annotated[tuple[Product, ...], Field(min_length=1)]]
 
 
@@ -126,6 +133,9 @@ class EvaluationSubjectSource(ReferenceValue):
     checkpoints: tuple[EvaluationCheckpointSource, ...]
     closure: EvaluationClosure | None = None
     terminal_receipt: ContentObjectRef | None = None
+    terminal_checkpoint: CheckpointOccurrenceRef | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     ranked_candidates: tuple[BestCandidateEvidence, ...] = Field(default=(), exclude_if=lambda items: not items)
 
 

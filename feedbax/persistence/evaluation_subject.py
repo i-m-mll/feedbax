@@ -5,24 +5,88 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoints import CheckpointTransactionManifest
 from feedbax.contracts.effective_success import (
     EVALUATION_SUBJECT_MEDIA_TYPE, BoundMember, EvaluationCheckpointSource,
-    EvaluationSubjectValue, Product, RequestObject, Success, read_success_request, success_content_ref,
+    EvaluationSubjectValue, Product, RequestObject, Success, TerminalTrainSubject,
+    read_effective_request, read_success_object, read_success_request, select_success_product, success_content_ref,
 )
-from feedbax.contracts.base import ParentRef
+from feedbax.contracts.base import ParentRef, Provenance
 from feedbax.contracts.manifest import TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, UpdateSeriesMember
-from feedbax.contracts.request_specs import EvaluationRequestSpec
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.spec_storage import canonical_training_run_spec_projection
-from feedbax.contracts.studio_training import StudioGraphMethodPayload
+from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.studio.canonical_evaluate import decode_evaluation_manifest, evaluation_manifest_id, states_product
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects
+from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects, verify_success_content
 from feedbax.host.best_selection import rank_train_metric
+
+
+def read_terminal_train_subject(
+    store: ImmutableArtifactBlobProvider, pin: TerminalTrainSubject, request_id: RequestId | None = None,
+) -> tuple[Success, DocumentTrainingRequestSpec]:
+    """Authenticate the exact terminal model and its authored Train documents."""
+    success = read_success_object(pin.receipt, store.get_object)
+    decoded = read_effective_request(success, store.get_object)
+    request_id = request_id or decoded.id
+    checkpoint = success.continuation
+    if (
+        decoded.id != request_id or not isinstance(decoded.spec, DocumentTrainingRequestSpec)
+        or decoded.spec.method_ref != STUDIO_GRAPH_METHOD
+        or checkpoint is None or checkpoint.clock.completed_batches <= 0
+        or checkpoint.clock.barrier != "after_train_batch"
+        or pin.model != select_success_product(ProductRef(
+            request_id=request_id, role="checkpoint", select=LastMember(),
+        ), success)
+    ):
+        raise ValueError("Pinned subject differs from the exact terminal Train model")
+    raw_method = decoded.spec.method_payload.payload
+    if decoded.spec.seed is not None:
+        raw_method = raw_method | {"seed": decoded.spec.seed}
+    if StudioGraphMethodPayload.model_validate(raw_method).target_total != checkpoint.clock.completed_batches:
+        raise ValueError("Terminal Train coordinate differs from its authored horizon")
+    verify_success_content(store, pin.model)
+    return success, decoded.spec
+
+
+def terminal_train_subject_at(
+    store: ImmutableArtifactBlobProvider, receipt: ContentObjectRef, request_id: RequestId,
+    *, attempt: str | None = None, selection: ProductRef | None = None,
+) -> TerminalTrainSubject:
+    """Pin the exact committed receipt and its selected model product."""
+    success = read_success_object(receipt, store.get_object)
+    if attempt is not None and attempt != success.attempt:
+        raise ValueError("Pinned Train receipt names a different attempt")
+    model = select_success_product(ProductRef(request_id=request_id, role="checkpoint", select=LastMember()), success)
+    if selection is not None and select_success_product(selection, success) != model:
+        raise ValueError(f"Train {request_id} checkpoint/model was not imported")
+    pin = TerminalTrainSubject(receipt=receipt, model=model)
+    read_terminal_train_subject(store, pin, request_id)
+    return pin
+
+
+def terminal_train_provenance(
+    pin: TerminalTrainSubject, success: Success,
+) -> tuple[list[ParentRef], Provenance]:
+    checkpoint = success.continuation
+    assert checkpoint is not None
+    occurrence = checkpoint.provenance
+    return [ParentRef(
+        kind="Success", id=success.attempt, role="subject",
+        metadata={"manifest_sha256": pin.receipt.sha256, "request_id": success.request.id},
+    )], Provenance(parents=[ParentRef(
+        kind="TrainingCheckpointTransactionManifest", id=occurrence.transaction_id, role="checkpoint",
+        metadata={
+            "manifest_sha256": occurrence.manifest_sha256,
+            "completed_updates": checkpoint.clock.completed_batches,
+            "producer_job_id": occurrence.run_id,
+        },
+    )])
+
 
 
 def checkpoint_transaction(
@@ -215,7 +279,31 @@ def evaluation_subject_objects(
             objects.append(source.closure.receipt)
 
     models = []
-    for checkpoint, item in zip(source.checkpoints, resolved.members if resolved else (), strict=True):
+    if source.terminal_checkpoint is not None:
+        if (
+            not isinstance(selector, LastMember) or source.terminal_receipt is None
+            or source.checkpoints or source.ranked_candidates or resolved is None
+        ):
+            raise ValueError("Malformed terminal Train subject evidence")
+        success = read_success_object(source.terminal_receipt, store.get_object)
+        product = select_success_product(reference, success)
+        pin = TerminalTrainSubject(receipt=source.terminal_receipt, model=product)
+        success, _ = read_terminal_train_subject(store, pin, reference.request_id)
+        occurrence = success.continuation
+        (item,) = resolved.members
+        if (
+            occurrence is None or occurrence.provenance != source.terminal_checkpoint
+            or source.producer != success.request
+            or (occurrence.clock.completed_batches, product.content.sha256) != (item.coordinate, item.model_tree)
+        ):
+            raise ValueError("Evaluate terminal Train evidence differs from the resolved model")
+        if visitors is not None:
+            visitors.object(pin.receipt)
+        models.append(success_content_ref(product.content))
+        objects.extend((pin.receipt, *success_content_objects(store, product, visitors=visitors)))
+    for checkpoint, item in zip(
+        source.checkpoints, resolved.members if resolved and source.terminal_checkpoint is None else (), strict=True,
+    ):
         if visitors is not None:
             visitors.object(checkpoint.transaction)
             visitors.object(checkpoint.train_binding)
@@ -271,15 +359,18 @@ def verify_evaluation_success_evidence(
         or manifest.metadata["canonical_request"] != success.request.object.model_dump(mode="json")
         or manifest.metadata.get("effective_binding") != expected_binding
         or manifest.metadata.get("effective_binding_sha256") != expected_digest
-        or len(manifest.provenance.parents) != len(source.checkpoints)
+        or len(manifest.provenance.parents) != len(source.checkpoints) + int(source.terminal_checkpoint is not None)
     ):
         raise ValueError("Accepted Evaluate manifest differs from the typed Store success")
-    for parent, checkpoint in zip(manifest.provenance.parents, source.checkpoints, strict=True):
-        occurrence = checkpoint.occurrence
+    occurrences = (source.terminal_checkpoint,) if source.terminal_checkpoint is not None else tuple(
+        checkpoint.occurrence for checkpoint in source.checkpoints
+    )
+    for parent, occurrence in zip(manifest.provenance.parents, occurrences, strict=True):
         if (
             parent.kind != "TrainingCheckpointTransactionManifest" or parent.id != occurrence.transaction_id
             or parent.metadata["manifest_sha256"] != occurrence.manifest_sha256
             or parent.metadata["producer_job_id"] != occurrence.run_id
+            or (source.terminal_checkpoint is not None and parent.metadata["completed_updates"] != value.requested[0])
         ):
             raise ValueError("Accepted Evaluate manifest names a different checkpoint occurrence")
     coverage = manifest.provenance.metadata.get("checkpoint_selection")
@@ -321,6 +412,10 @@ def verify_evaluation_success_evidence(
     if terminal is not None and (
         len(manifest.input_training_runs) != 1
         or manifest.input_training_runs[0].metadata["manifest_sha256"] != terminal.sha256
+        or (source.terminal_checkpoint is not None and (
+            manifest.input_training_runs[0].kind != "Success"
+            or manifest.input_training_runs[0].metadata["request_id"] != source.producer.id
+        ))
     ):
         raise ValueError("Accepted Evaluate manifest names a different Train receipt")
     return tuple(evidence)

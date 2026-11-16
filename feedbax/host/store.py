@@ -14,7 +14,7 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import RequestObject
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
-from feedbax.contracts.request_refs import BestRank, ContentRef, ProductRef
+from feedbax.contracts.request_refs import BestRank, ContentRef, LastMember, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
 from feedbax.host.best_selection import BestMetricUnavailable, completion_score
@@ -521,7 +521,11 @@ class Store:
         from feedbax.host.evaluate_success import publish_evaluate_success
 
         payload = json.loads(row["launch"])["payload"]
-        (binding,) = self.completion_bindings(row["id"])
+        terminal = payload["canonical_request"].get("terminal")
+        if terminal is None:
+            (binding,) = self.completion_bindings(row["id"])
+        else:
+            binding = {"terminal": terminal}
         ref = publish_evaluate_success(
             attempt=row["id"], request_id=row["request"], project=row["project"],
             payload=payload, receipt=outcome["receipt"], binding=binding,
@@ -718,7 +722,31 @@ class Store:
                 checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
                 checkpoint_parents = None
                 best = isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank"
-                if best:
+                terminal = canonical_request.get("terminal") if evaluate else None
+                if terminal is not None:
+                    from feedbax.contracts.effective_success import TerminalTrainSubject
+                    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+                    from feedbax.persistence.evaluation_subject import read_terminal_train_subject
+
+                    try:
+                        subject = ProductRef.model_validate(checkpoint)
+                        if (
+                            not allow_completion or job["continues"] is not None or job["edges"]
+                            or subject.role != "checkpoint" or not isinstance(subject.select, LastMember)
+                            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+                        ):
+                            raise ValueError("Store terminal subject requires one pinned last checkpoint.")
+                        pin = TerminalTrainSubject.model_validate(terminal)
+                        read_terminal_train_subject(
+                            ImmutableArtifactBlobProvider(Path(payload["manifest_root"])), pin, subject.request_id,
+                        )
+                    except (OSError, TypeError, ValueError, KeyError) as error:
+                        results.append({
+                            "run_key": run_key, "job_id": None, "disposition": "rejected",
+                            "reason": f"{input_path}: {error}",
+                        })
+                        continue
+                elif best:
                     if not evaluate or job["continues"] is not None:
                         raise HostError("invalid_request", f"{input_path}: Best requires an Evaluate subject.")
                     checkpoint_parents = self._best_parents(job, checkpoint, aliases)
@@ -732,7 +760,7 @@ class Store:
                     checkpoint is None or job["continues"] is not None or len(job["edges"]) != 1
                 ):
                     raise HostError("invalid_request", f"{input_path}: Evaluate requires a Train subject.")
-                if not best and checkpoint is not None and job["continues"] is None:
+                if terminal is None and not best and checkpoint is not None and job["continues"] is None:
                     edges = [edge for edge in job["edges"] if edge.get("authenticated_completion")]
                     if len(edges) != 1 or not isinstance(checkpoint, dict):
                         raise HostError("invalid_request", f"{input_path}: requires one authenticated checkpoint edge.")
@@ -1523,6 +1551,7 @@ class Store:
     def _completion_candidate(
         self, anchor: str, selection: CheckpointSelection | None = None, *,
         train_slots: frozenset[str] | None = None, tip: str | None = None, observe: bool = False,
+        terminal_model: bool = False,
     ) -> _CompletionCandidate:
         """Select an authenticated final product or exact checkpoint publications.
 
@@ -1632,8 +1661,21 @@ class Store:
             state = attempt["state"]
             if state == "succeeded" and selection is None:
                 try:
+                    if terminal_model:
+                        from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+                        from feedbax.persistence.evaluation_subject import terminal_train_subject_at
+
+                        outcome = json.loads(attempt["outcome"] or "{}")
+                        ref = ContentObjectRef.model_validate(outcome.get("store_success"))
+                        pin = terminal_train_subject_at(
+                            ImmutableArtifactBlobProvider(Path(payload["manifest_root"])),
+                            ref, attempt["request"], attempt=attempt_id,
+                        )
+                        return _CompletionCandidate(
+                            {"dependency_job_id": anchor, "terminal": pin.model_dump(mode="json")}, None, rejections,
+                        )
                     completion, message = self._completed_product(attempt, train_slots)
-                except CompletionFileError as error:
+                except (CompletionFileError, OSError, KeyError, ValueError) as error:
                     rejections.append(_CompletionRejection(attempt_id, "completion", str(error)))
                 else:
                     if completion is not None:
@@ -1884,10 +1926,15 @@ class Store:
                 if tip is not None and tip["state"] in LIVE_STATES:
                     continue
                 tip_id = tip["id"] if tip is not None else None
-                key = anchor, selection, train_slots, tip_id
+                terminal_model = (
+                    job["request"].startswith("evaluate:") and selection is None
+                    and launch["warm_entrypoint"] == "feedbax.training.evaluate_worker:main"
+                    and isinstance(checkpoint, dict) and (checkpoint.get("select") or {}).get("kind") == "last"
+                )
+                key = anchor, selection, train_slots, tip_id, terminal_model
                 if key not in candidates:
                     candidates[key] = self._completion_candidate(
-                        anchor, selection, train_slots=train_slots, tip=tip_id,
+                        anchor, selection, train_slots=train_slots, tip=tip_id, terminal_model=terminal_model,
                     )
                 candidate = candidates[key]
                 binding, error, rejections = candidate.binding, candidate.error, candidate.rejections

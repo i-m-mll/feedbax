@@ -325,7 +325,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     assert subject.select == BatchMember(batch=3)
     assert subject.request_id == by_step["train"].request_id
     (held,) = launch("held", "exact", service=JobService(host, registries))
-    assert held.disposition == "rejected" and "/evaluation_type" in held.reason
+    assert held.disposition == "rejected" and "/inputs/subject" in held.reason
     (zero,) = launch("zero", "zero")
     assert zero.disposition == "rejected" and "/inputs/subject/checkpoint" in zero.reason
 
@@ -395,16 +395,18 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         (tmp_path / "finish-train").touch()
     completed = terminal(resumed.job_id, "succeeded")
     final = terminal(last.job_id, "succeeded")
-    completion = final["edges"][0]["binding"]["completion"]
-    assert completion == completed["outcome"]["completion"]
-    assert completion["checkpoint"]["completed_updates"] == 6
+    bound_terminal = final["edges"][0]["binding"]["terminal"]
+    assert bound_terminal["receipt"] == completed["outcome"]["store_success"]
+    last_result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=last.job_id)
+    with last_result.open_states() as states:
+        assert states.data("checkpoint").tolist() == [6]
     assert released["requested"] == [4]
     assert released["lineage"] == [producer.job_id, resumed.job_id]
     (resumed_member,) = released["members"]
     assert resumed_member["producer_job_id"] == resumed.job_id
     restart(host)
     assert job_row(host, exact.job_id)["edges"][0]["binding"] == binding
-    assert job_row(host, last.job_id)["edges"][0]["binding"]["completion"] == completion
+    assert job_row(host, last.job_id)["edges"][0]["binding"]["terminal"] == bound_terminal
 
     result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=exact.job_id)
     receipt = result._manifest()

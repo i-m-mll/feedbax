@@ -7,13 +7,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE as STATES_MEDIA_TYPE, DatasetProductRef
+from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.graph import StudioManifestRef, StudioSelectorRef
 from feedbax.contracts.jobs import (
     JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
@@ -72,6 +73,8 @@ class CannotRun(ValueError):
 class EvaluationRequestBinding(StrictModel):
     request: ContentObjectRef
     checkpoint: ProductRef | BestRank
+    terminal: TerminalTrainSubject | None = Field(default=None, exclude_if=lambda value: value is None)
+    bootstrap_modules: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 class BoundEvaluationJobInput(StrictModel):
@@ -291,6 +294,17 @@ def verify_evaluation_receipt(
     manifest, subject = decode_evaluation_manifest(
         store, store.get_object(manifest_object), manifest_object, attempt, request_id, receipt,
     )
+    if "terminal" in binding:
+        from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
+
+        if not isinstance(subject, ProductRef) or not isinstance(subject.select, LastMember):
+            raise ValueError("Store terminal subject requires an authored last checkpoint")
+        pin = TerminalTrainSubject.model_validate(binding["terminal"])
+        success, _ = read_terminal_train_subject(store, pin, subject.request_id)
+        train, provenance = terminal_train_provenance(pin, success)
+        if manifest.input_training_runs != train or manifest.provenance != provenance or "placement" in manifest.metadata:
+            raise ValueError("Evaluate receipt differs from its exact Store subject provenance")
+        return manifest, subject
     selected_subject = exact_evaluation_subject(subject, binding)
     if (coordinates := evaluation_checkpoint_coordinates(selected_subject)) is not None:
         selection = binding["checkpoint_selection"]

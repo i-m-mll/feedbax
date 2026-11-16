@@ -229,7 +229,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         ), timeout=22)
         assert row["state"] == "succeeded", row.get("outcome")
         assert row["request"] == by_key[key].request_id
-        assert row["edges"][0]["binding"]["completion"]["producer_job_id"] == source.job_id
+        assert row["edges"][0]["binding"]["terminal"]["receipt"] == trained["outcome"]["store_success"]
         outcomes[key] = jobs.read_evaluation_result(project=project, store=root, job_id=item.job_id)
 
     joined = ProjectPlanService(folders, jobs).read(project, revision=plan.revision)
@@ -364,6 +364,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         job_row(host, observation_attempt.job_id, "succeeded") or job_row(host, observation_attempt.job_id, "failed")
     ))
     assert observation_job["state"] == "succeeded", observation_job.get("outcome")
+    assert observation_job["edges"] == []
     observation_result = jobs.read_evaluation_result(project=project, store=root, job_id=observation_attempt.job_id)
     assert observation_result.size_bytes > 0
     with observation_result.open_states() as dataset:

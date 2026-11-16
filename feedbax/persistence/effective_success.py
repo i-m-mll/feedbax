@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import os
+from typing import TYPE_CHECKING
+
+from pydantic import JsonValue, TypeAdapter
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -38,10 +42,18 @@ from feedbax.contracts.request_refs import (
     ProductRef,
     RequestId,
 )
+from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.receipt_content import continuation_objects, verify_success_content
-from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
+from feedbax.persistence.evaluation_subject import (
+    evaluation_subject_objects,
+    terminal_train_subject_at,
+    verify_evaluation_success_evidence,
+)
 from feedbax.persistence.store_damage import KnownDamage, require_sound
+
+if TYPE_CHECKING:
+    from feedbax.contracts.effective_success import TerminalTrainSubject
 
 
 class PublicationConflict(ValueError):
@@ -52,6 +64,35 @@ class PublicationConflict(ValueError):
 class PublishedSuccess:
     ref: ContentObjectRef
     receipt: Success
+
+
+def run_ref_name(request_id: RequestId) -> str:
+    return f"runs/{request_id.partition(':')[0]}/{request_id}"
+
+
+def _receipt_root(selection: StoreClosureRef) -> ReceiptRoot:
+    if len(selection.roots) != 1 or not isinstance(root := selection.roots[0], ReceiptRoot):
+        raise ValueError("A run ref requires one exact receipt root")
+    return root
+
+
+_REQUEST_ID = TypeAdapter(RequestId)
+
+
+def terminal_train_subject(store: ImmutableArtifactBlobProvider, run: str) -> TerminalTrainSubject | None:
+    """Read an exact terminal model using the authoritative run ref."""
+    request_id = _REQUEST_ID.validate_python(run)
+    if not request_id.startswith("train:"):
+        raise ValueError(f"Evaluate subject {request_id!r} is not a Train result")
+    name = run_ref_name(request_id)
+    if not os.path.lexists(store._ref_path(name)):
+        return None
+    with store._exclusive_lock(create=False):
+        value = store.read_ref(name)
+        if value is None:
+            return None
+        root = _receipt_root(read_store_closure_ref(value))
+        return terminal_train_subject_at(store, root.receipt, request_id, selection=root.product)
 
 
 def store_request(store: ImmutableArtifactBlobProvider, request: EncodedRequest) -> RequestObject:
@@ -78,6 +119,28 @@ class SuccessView:
 
     def read_receipt(self, ref: ContentObjectRef) -> Success:
         return read_committed_success(self._index, ref, self.store.get_object)
+
+    def recover_native_train_run(
+        self, request_id: RequestId, receipt_ref: ContentObjectRef,
+    ) -> TerminalTrainSubject:
+        """Install a run ref for an exact committed native success from before run refs."""
+        with self.store._exclusive_lock(create=False):
+            current = terminal_train_subject(self.store, request_id)
+            if current is None:
+                index = decode_success_index(self.store.read_ref(INDEX_REF))
+                if index.authored.get(request_id) != receipt_ref:
+                    raise PublicationConflict(f"Train {request_id} has a different current success")
+                receipt = read_committed_success(index, receipt_ref, self.store.get_object)
+                pin = terminal_train_subject_at(self.store, receipt_ref, request_id, attempt=receipt.attempt)
+                self._publish_run_ref(
+                    request_id, StoreClosureRef(roots=(ReceiptRoot(receipt=receipt_ref),)), previous=None,
+                )
+                current = pin
+            if current.receipt != receipt_ref:
+                raise PublicationConflict(
+                    f"Run {request_id} already has receipt {current.receipt.sha256}; expected {receipt_ref.sha256}"
+                )
+            return current
 
     def resolve(
         self, request: DecodedRequest, member: InputMember, origin: ContentObjectRef | None,
@@ -226,6 +289,7 @@ class SuccessView:
         self, receipt_ref: ContentObjectRef, *, attempt: str, request_id: RequestId,
         supersession_times: Mapping[str, datetime], promote: bool,
         expected_target: AttemptTarget | None = None,
+        selection: StoreClosureRef | None = None,
     ) -> PublishedSuccess:
         """Admit exact transferred bytes and update visibility in one Store generation."""
         from feedbax.persistence.receipt_closure import ReceiptClosure
@@ -237,6 +301,19 @@ class SuccessView:
                 raise ValueError("Collected receipt differs from the expected attempt and request")
             if expected_target is not None and receipt.target != expected_target:
                 raise ValueError("Collected receipt differs from the expected execution target")
+            if selection is not None:
+                if _receipt_root(selection).receipt != receipt_ref or not promote:
+                    raise ValueError("Imported selection differs from the receipt being admitted")
+                current = self._index.authored.get(request_id)
+                if current not in (None, receipt_ref):
+                    raise PublicationConflict(
+                        f"Run {request_id} already has receipt {current.sha256}; incoming receipt is {receipt_ref.sha256}"
+                    )
+                self._verify_collected_objects(closure.walk(selection))
+                if current == receipt_ref:
+                    selection = StoreClosureRef(roots=(ReceiptRoot(receipt=receipt_ref),))
+                self._publish_run_ref(request_id, selection, previous=None, importing=True)
+                return PublishedSuccess(receipt_ref, receipt)
             graph = closure.for_admission(receipt_ref)
             authored = dict(self._index.authored)
             effective = dict(self._index.effective)
@@ -258,13 +335,57 @@ class SuccessView:
                     if when is None or times.setdefault(ref.sha256, when) != when:
                         raise PublicationConflict("Collected receipt has missing or conflicting supersession time")
 
-            for ref in graph.objects:
-                require_sound(self.store, ref)
-                self.store.verify_object(ref, verifier="receipt collection admission")
+            self._verify_collected_objects(graph.objects)
+            if promote:
+                self._check_run_predecessor(request_id, receipt_ref, receipt.supersedes)
             self._commit_index(SuccessIndex(
                 authored=authored, effective=effective, attempts=attempts, supersession_times=times,
             ))
+            if promote:
+                self._publish_run_ref(request_id, StoreClosureRef(roots=(ReceiptRoot(receipt=receipt_ref),)),
+                                      previous=receipt.supersedes)
         return PublishedSuccess(receipt_ref, receipt)
+
+    def _verify_collected_objects(self, objects: tuple[ContentObjectRef, ...]) -> None:
+        for ref in objects:
+            require_sound(self.store, ref)
+            self.store.verify_object(ref, verifier="receipt collection admission")
+
+    def _check_run_predecessor(
+        self, request_id: RequestId, receipt: ContentObjectRef, previous: ContentObjectRef | None,
+    ) -> dict[str, JsonValue] | None:
+        value = self.store.read_ref(run_ref_name(request_id))
+        if value is not None:
+            current = _receipt_root(read_store_closure_ref(value)).receipt
+            if current not in (receipt, previous):
+                raise PublicationConflict(
+                    f"Run {request_id} already has receipt {current.sha256}; incoming receipt is {receipt.sha256}"
+                )
+        return value
+
+    def _publish_run_ref(
+        self, request_id: RequestId, selection: StoreClosureRef, *, previous: ContentObjectRef | None,
+        importing: bool = False,
+    ) -> None:
+        receipt = _receipt_root(selection).receipt
+        expected = self._check_run_predecessor(request_id, receipt, previous)
+        # An identical receipt already admitted by this Store keeps its authority.
+        if importing and expected is not None:
+            return
+        if not self.store.compare_and_swap_ref(
+            run_ref_name(request_id), expected=expected, replacement=selection.model_dump(mode="json"),
+        ):
+            raise PublicationConflict(f"Run {request_id} moved during publication")
+
+    def ensure_published_run_ref(self, ref: ContentObjectRef, receipt: Success) -> None:
+        """Reconcile the ordinary ref when replay observes an already committed result."""
+        with self.store._exclusive_lock():
+            index = decode_success_index(self.store.read_ref(INDEX_REF))
+            if index.authored.get(receipt.request.id) == ref:
+                self._publish_run_ref(
+                    receipt.request.id, StoreClosureRef(roots=(ReceiptRoot(receipt=ref),)),
+                    previous=receipt.supersedes,
+                )
 
     def publish(
         self, request: RequestObject, *, attempt: str, products: Products
@@ -302,6 +423,7 @@ class SuccessView:
                     published.receipt.target,
                 ) != (request, products, bindings, continuation, recovery, evaluation_manifest, target):
                     raise ValueError("Published attempt has different request, bindings, or products")
+                self.ensure_published_run_ref(existing, published.receipt)
                 return published
             if bindings is None:
                 effective, inputs = self.bind(request)
@@ -353,7 +475,9 @@ class SuccessView:
                 attempts={**self._index.attempts, attempt: ref},
                 supersession_times=times,
             )
+            self._check_run_predecessor(request.id, ref, previous)
             self._commit_index(updated)
+            self._publish_run_ref(request.id, StoreClosureRef(roots=(ReceiptRoot(receipt=ref),)), previous=previous)
         return PublishedSuccess(ref, receipt)
 
     def _commit_index(self, updated: SuccessIndex) -> None:

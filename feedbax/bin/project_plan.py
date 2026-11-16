@@ -37,6 +37,7 @@ from feedbax.contracts.project_plan_io import (
     select_plan_requests,
 )
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
+from feedbax.persistence.project_subject import terminal_train_reader
 
 
 def configure_status_parser(parser: argparse.ArgumentParser) -> None:
@@ -153,7 +154,9 @@ def _read_plan(
         return data
 
     read = read_pin if capture_sources else external.read
-    readers = BaseReaders(external=read, figure_external=read)
+    readers = BaseReaders(
+        external=read, figure_external=read, terminal_train=terminal_train_reader(text.store_path),
+    )
     return text, compile_project(
         text.project, operations=operations, readers=readers, capture_sources=capture_sources,
     ), external.paths, observed
