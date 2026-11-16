@@ -1,9 +1,10 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
   ReportDocument, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { authorWalkthroughSweep, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
 
 test.use({
   trace: 'off',
@@ -13,11 +14,14 @@ test.use({
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('runs and reopens saved figures and Report from a selected Evaluate row', async ({ page, request }, info) => {
-  test.setTimeout(130_000);
+async function savedLightGate({ page, request }: { page: Page; request: APIRequestContext }, info: TestInfo, paired: boolean) {
+  test.setTimeout(paired ? 175_000 : 130_000);
   const home = String(info.config.metadata.home);
   const fixture = 'web.e2e.studio.fixtures.managed_light';
-  const project = JSON.parse(await runProjectFixture(fixture, 'seed', home, 'managed-light'));
+  const project = JSON.parse(await runProjectFixture(
+    fixture, paired ? 'seed-variants' : 'seed', home, paired ? 'managed-m3-walkthrough' : 'managed-light',
+  ));
+  const scope = paired ? 'base' : 'default';
   const path = '/api/projects/' + project;
   const runPath = path + '/train-runs';
   const reviewPath = path + '/authoring/analyze';
@@ -95,10 +99,13 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   }
 
   await page.goto(mounted);
-  await runFixtureStep('train');
+  const walkthrough = { page, request, projectPath: path, attempts };
+  const swept = paired ? await authorWalkthroughSweep(walkthrough) : undefined;
+  await runFixtureStep('train', swept?.length ?? 1);
   await runFixtureStep('conditions', 2);
   const initial = await snapshot();
-  const settledEvaluate = (await plan(initial.revision)).evaluations!.filter(({ key }) => key.step === 'conditions');
+  const initialPlan = await plan(initial.revision);
+  const settledEvaluate = initialPlan.evaluations!.filter(({ key }) => key.variant === scope && key.step === 'conditions');
   expect(settledEvaluate.map(({ key }) => key.row).sort()).toEqual(['mass=heavy', 'mass=nominal']);
   expect(new Set(settledEvaluate.map(({ request_id }) => request_id)).size).toBe(2);
   expect(new Set(settledEvaluate.map(({ result }) => result?.job_id)).size).toBe(2);
@@ -108,25 +115,33 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   expect(firstCondition.trials).toEqual(secondCondition.trials);
   const producer = (await request.get(runPath, { params: { revision: initial.revision } }));
   expect(producer.ok(), await producer.text()).toBe(true);
-  const trainId = (await producer.json() as StudioSavedTrainRuns).rows.find(({ key }) => key.step === 'train')!.result!.job_id;
+  const trainId = (await producer.json() as StudioSavedTrainRuns).rows.find(({ key }) =>
+    key.variant === scope && key.step === 'train' && key.row === (swept?.[0].key.row ?? 'default'))!.result!.job_id;
   for (const condition of settledEvaluate) {
     expect(condition.result?.receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(condition.result?.checkpoint_source?.job_id).toBe(trainId);
   }
   const upstream = settledEvaluate.find(({ key }) => key.row === 'mass=heavy')!;
+  const sources = paired ? settledEvaluate : [upstream];
   const admittedJobs = await attempts();
-  expect(admittedJobs).toHaveLength(3);
-  await page.getByRole('table', { name: 'Runs', exact: true })
-    .getByRole('button', { name: upstream.key.row, exact: true }).click();
+  expect(admittedJobs).toHaveLength((swept?.length ?? 1) + settledEvaluate.length);
+  const table = page.getByRole('table', { name: 'Runs', exact: true });
+  await table.getByRole('button', { name: sources[0].key.row, exact: true }).click();
+  if (paired) await table.getByRole('button', { name: sources[1].key.row, exact: true }).click({ modifiers: ['Shift'] });
   await chooseCommand('Analyze');
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
-    kind: 'analyze', base: { document: 'analyze' }, inputs: { states: { step: upstream.key.step, row: upstream.key.row } },
+    kind: 'analyze', base: { document: 'analyze' }, inputs: { states: {
+      step: upstream.key.step,
+      ...(paired ? { where: { axes: { mass: sources.map(({ key }) => key.row.split('=')[1]) } } } : { row: upstream.key.row }),
+    } },
   });
-  expect((await plan(created.revision)).edges).toContainEqual(expect.objectContaining({
-    from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }),
-  }));
+  function expectAnalyzeSources(projection: StudioProjectWindowMap) {
+    const edges = projection.edges.filter(({ to_key }) => to_key.variant === scope && to_key.step === 'analyze');
+    expect(edges.map(({ from_key }) => from_key)).toEqual(sources.map(({ key }) => key));
+  }
+  expectAnalyzeSources(await plan(created.revision));
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
 
   await edit(() => drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click());
@@ -169,11 +184,12 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
-    projection.analysis_elements!.filter(({ key }) => key.step === 'analyze').map(({ name, request_id }) => [name, request_id]),
+    projection.analysis_elements!.filter(({ key }) => key.variant === scope && key.step === 'analyze')
+      .map(({ name, request_id }) => [name, request_id]),
   );
   expect(Object.keys(requests(original)).sort()).toEqual(['aligned_velocity', 'summarize_velocity', 'velocity_summary']);
   expect(original.problems.filter(({ step }) => step === 'analyze')).toEqual([]);
-  expect(original.edges).toContainEqual(expect.objectContaining({ from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }) }));
+  expectAnalyzeSources(original);
   await tab(page, 'Figures').click();
   await figures.getByRole('button', { name: 'velocity_summary', exact: true }).click();
   await chooseCommand('Report');
@@ -195,7 +211,7 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   const settled = await plan(ordered.revision);
   expect(settled.problems.filter(({ step }) => step === 'analyze' || step === 'report')).toEqual([]);
   expect(requests(settled)).toEqual(requests(original));
-  const reportRequest = settled.requests.find(({ key }) => key.step === 'report');
+  const reportRequest = settled.requests.find(({ key }) => key.variant === scope && key.step === 'report');
   expect(reportRequest?.request_id).toMatch(/^report:/);
   expect(settled.edges).toContainEqual(expect.objectContaining({
     from_key: expect.objectContaining({ step: 'analyze' }), to_key: expect.objectContaining({ step: 'report' }),
@@ -203,12 +219,12 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   expect(await attempts()).toEqual(admittedJobs);
 
   function light(projection: StudioProjectWindowMap) {
-    const elements = projection.analysis_elements!;
+    const elements = projection.analysis_elements!.filter(({ key }) => key.variant === scope);
     return {
       aligned: elements.find(({ name }) => name === 'aligned_velocity')!,
       summary: elements.find(({ name }) => name === 'summarize_velocity')!,
       figure: elements.find(({ name }) => name === 'velocity_summary')!,
-      report: projection.rows.find(({ key }) => key.step === 'report')!,
+      report: projection.rows.find(({ key }) => key.variant === scope && key.step === 'report')!,
     };
   }
   function result(projection: StudioProjectWindowMap) {
@@ -277,6 +293,30 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   await showFigure();
   await drawnFigure('Current Result');
   expect((await snapshot()).revision).toBe(ordered.revision);
+  expectAnalyzeSources(await plan(ordered.revision));
+  if (paired) {
+    const memberKeys = sources.map(({ key }) => initialPlan.rows.find(({ key: candidate }) =>
+      candidate.variant === key.variant && candidate.step === key.step && candidate.row === key.row)?.member_key);
+    const retained = JSON.parse(await runProjectFixture(
+      'web.e2e.studio.fixtures.managed_light_walkthrough', home, project, aligned.job_id,
+    ));
+    expect(retained.members).toEqual(sources.map(({ result, request_id }, index) => ({
+      key: memberKeys[index], job_id: result!.job_id, request_id, receipt: result!.receipt.manifest_sha256,
+    })));
+    expect(retained.producers.sort()).toEqual(sources.map(({ result }) => result!.job_id).sort());
+    const traces = (await firstFigure.json()).data.filter(({ showlegend }) => showlegend !== false);
+    expect(traces).toHaveLength(2);
+    expect(traces[0].name).not.toBe(traces[1].name);
+    expect(traces[0].x).toEqual(traces[1].x);
+    expect(traces[0].y).not.toEqual(traces[1].y);
+    const html = await request.get(renderedReport.products.report);
+    expect(html.ok(), await html.text()).toBe(true);
+    const member = /figures\/[a-f0-9]{64}\.json/.exec(await html.text())?.[0];
+    expect(member).toBeDefined();
+    const embedded = await request.get(renderedReport.products.report.replace('report.html', member!));
+    expect(embedded.ok(), await embedded.text()).toBe(true);
+    expect(await embedded.body()).toEqual(figureBody);
+  }
 
   const beforeEdit = [...admittedJobs, ...createdJobs].sort();
   await mapStep(page, 'train').click();
@@ -329,4 +369,14 @@ test('runs and reopens saved figures and Report from a selected Evaluate row', a
   await drawnFigure('Current Result');
   await figures.getByRole('button', { name: 'Previous Result', exact: true }).click();
   await drawnFigure('Previous Result');
-});
+  if (paired) {
+    await test.step('Share the full chain and isolate a compare Model edit', () => verifyWalkthroughVariant(walkthrough));
+    await test.step('Widen the Evaluate subset and continue the exact Train rows', () => verifyWalkthroughSuccessors(walkthrough));
+  }
+}
+
+test('runs and reopens saved figures and Report from a selected Evaluate row', ({ page, request }, info) =>
+  savedLightGate({ page, request }, info, false));
+
+test('walks one saved project through paired results, variants, widened Evaluate and chained Train', ({ page, request }, info) =>
+  savedLightGate({ page, request }, info, true));

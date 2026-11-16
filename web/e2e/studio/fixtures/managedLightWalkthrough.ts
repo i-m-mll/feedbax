@@ -1,0 +1,235 @@
+import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import type {
+  StudioJobSubmission, StudioProjectDocument, StudioProjectPatch, StudioProjectSnapshot,
+  StudioSavedTrainKey, StudioSavedTrainRuns,
+} from '../../../src/generated/studioContracts';
+import { authorLearningRateSweep, enter, mapStep, openResultsSlot } from './canonicalTrain';
+
+type Walkthrough = {
+  page: Page;
+  request: APIRequestContext;
+  projectPath: string;
+  attempts(): Promise<string[]>;
+};
+
+async function snapshot({ request, projectPath }: Walkthrough) {
+  const response = await request.get(projectPath);
+  expect(response.ok(), await response.text()).toBe(true);
+  return await response.json() as StudioProjectSnapshot;
+}
+
+async function plan(context: Walkthrough) {
+  const { request, projectPath } = context;
+  const { revision } = await snapshot(context);
+  const response = await request.get(`${projectPath}/train-runs`, { params: { revision, window_map: 'true' } });
+  expect(response.ok(), await response.text()).toBe(true);
+  return await response.json() as StudioSavedTrainRuns;
+}
+
+const pane = (page: Page) => page.getByRole('tabpanel', { name: 'Runs', exact: true });
+const table = (page: Page) => pane(page).getByRole('table', { name: 'Runs', exact: true });
+const drawer = (page: Page) => page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+const train = (page: Page) => page.getByRole('article', { name: 'Train train', exact: true });
+const variant = (page: Page) => page.getByRole('combobox', { name: 'Variant', exact: true });
+
+async function openRuns(page: Page, step: string) {
+  await mapStep(page, step).click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
+}
+
+function mutation({ page, projectPath }: Walkthrough, method: string, suffix = '') {
+  return page.waitForResponse((response) => response.request().method() === method &&
+    new URL(response.url()).pathname === projectPath + suffix);
+}
+
+export async function authorWalkthroughSweep(context: Walkthrough) {
+  const { page, request, projectPath } = context;
+  await expect(variant(page)).toHaveValue('base');
+  await openRuns(page, 'train');
+  await authorLearningRateSweep(drawer(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
+  const swept = await plan(context);
+  const rows = swept.window_map!.rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
+  expect(rows.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Medium', 'Fast']);
+  const patch: StudioProjectPatch = {
+    revision: swept.revision,
+    address: { kind: 'step', id: 'conditions' },
+    patches: [{ op: 'add', path: '/inputs/subject/where', value: {
+      axes: { 'learning-rate': [rows[0].coordinates['learning-rate'].value_id] },
+    } }],
+  };
+  const bound = await request.patch(projectPath, { data: patch });
+  expect(bound.ok(), await bound.text()).toBe(true);
+  await page.reload();
+  await expect(variant(page)).toHaveValue('base');
+  return rows;
+}
+
+export async function verifyWalkthroughVariant(context: Walkthrough) {
+  const { page, attempts } = context;
+  const scoped = (value: StudioSavedTrainRuns, name: string) => {
+    const window = value.window_map!;
+    const requests = window.requests!.filter(({ key }) => key.variant === name);
+    const current = [
+      ...value.rows.filter(({ key }) => key.variant === name).map(({ result }) => result),
+      ...window.evaluations!.filter(({ key }) => key.variant === name).map(({ result }) => result),
+      ...window.analysis_elements!.filter(({ key }) => key.variant === name).map(({ result }) => result),
+      ...window.rows.filter(({ key }) => key.variant === name && key.step === 'report').map(({ light }) => light?.result),
+    ];
+    return {
+      requests: requests.map(({ key, element, request_id }) => [key.step, key.row, element, request_id]),
+      receipts: current.map((result) => result && [result.job_id, result.receipt.manifest_sha256]),
+      edges: window.edges.filter(({ to_key }) => to_key.variant === name),
+    };
+  };
+  const original = await plan(context);
+  const base = scoped(original, 'base');
+  const compare = scoped(original, 'compare');
+  expect(compare.receipts).toEqual(base.receipts);
+  expect(compare.requests).toEqual(base.requests);
+  expect(base.receipts).toHaveLength(9);
+  expect(base.receipts.every(Boolean)).toBe(true);
+  expect(compare.edges.length).toBeGreaterThan(0);
+  expect(compare.edges.every(({ from_key }) => from_key.variant === 'compare')).toBe(true);
+  const originalAttempts = await attempts();
+
+  await variant(page).selectOption('compare');
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  await model.getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  const mass = page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('textbox', { name: 'Mass', exact: true });
+  const saved = mutation(context, 'PATCH');
+  await enter(mass, '3');
+  const response = await saved;
+  expect(response.ok(), await response.text()).toBe(true);
+  expect(response.request().postDataJSON().address).toEqual({ kind: 'variant', id: 'compare' });
+  const changed = await plan(context);
+  expect(scoped(changed, 'base')).toEqual(base);
+  const delta = scoped(changed, 'compare');
+  expect(delta.edges).toEqual(compare.edges);
+  expect(delta.requests).toEqual(compare.requests.map(([step, row, element, id]) => [
+    step, row, element, expect.not.stringMatching(`^${id}$`),
+  ]));
+  expect(delta.receipts.every((receipt) => receipt == null)).toBe(true);
+  expect(await attempts()).toEqual(originalAttempts);
+  await page.reload();
+  await expect(variant(page)).toHaveValue('base');
+  expect(scoped(await plan(context), 'compare')).toEqual(delta);
+}
+
+export async function verifyWalkthroughSuccessors(context: Walkthrough) {
+  const { page, attempts } = context;
+  const stepRows = (value: StudioSavedTrainRuns, step: string) =>
+    value.rows.filter(({ key }) => key.variant === 'base' && key.step === step);
+  const evaluationRows = (value: StudioSavedTrainRuns, step: string) =>
+    value.window_map!.evaluations!.filter(({ key }) => key.variant === 'base' && key.step === step);
+  const prefix = stepRows(await plan(context), 'train');
+  const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
+  const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
+  const sourceRow = (index: number) => table(page).getByRole('row').filter({ hasText: prefix[index].label }).getByRole('button');
+
+  async function selectTwo() {
+    await openRuns(page, 'train');
+    await sourceRow(0).click();
+    await sourceRow(1).click({ modifiers: ['Shift'] });
+    await expect(train(page)).toContainText('2 of 3');
+  }
+
+  async function addSuccessor(kind: 'Train' | 'Evaluate') {
+    const saved = mutation(context, 'POST', '/files');
+    await train(page).getByRole('button', { name: 'New Step train', exact: true }).click();
+    await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: kind, exact: true }).click();
+    const response = await saved;
+    expect(response.status(), await response.text()).toBe(201);
+    return (await response.json() as StudioProjectDocument).snapshot;
+  }
+
+  async function runSelected(keys: StudioSavedTrainKey[]) {
+    const admitted = mutation(context, 'POST', '/train-runs');
+    await pane(page).getByRole('button', { name: 'Run', exact: true }).click();
+    const response = await admitted;
+    expect(response.status(), await response.text()).toBe(202);
+    expect(response.request().postDataJSON().run_keys).toEqual(keys);
+    const { items } = await response.json() as StudioJobSubmission;
+    expect(items.map(({ disposition }) => disposition)).toEqual(keys.map(() => 'admitted'));
+    return items.map(({ job_id }) => job_id!);
+  }
+
+  await openRuns(page, 'train');
+  if (!await outline.isVisible()) await page.getByRole('button', { name: 'Show Steps', exact: true }).click();
+  await sourceRow(2).click();
+  await expect(used).toHaveCount(0);
+  await sourceRow(0).click();
+  for (const [step, kind, count] of [['conditions', 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
+    await expect(used).toContainText(step);
+    await expect(outline.getByRole('button', { name: `Select ${step} ${kind} ${count}`, exact: true })).toBeVisible();
+    const card = page.getByRole('article', { name: `${kind} ${step}`, exact: true });
+    await expect(card.locator('[data-map-focus="downstream"]')).toHaveCount(count === '2 of 2' ? 2 : 1);
+  }
+
+  await selectTwo();
+  await addSuccessor('Evaluate');
+  const input = drawer(page).getByRole('region', { name: 'Inputs', exact: true });
+  await expect(input).toContainText('2 of 3');
+  const partial = evaluationRows(await plan(context), 'evaluate');
+  expect(partial).toHaveLength(2);
+  await runSelected(partial.map(({ key }) => key));
+  await expect(table(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 24_000 });
+  const settled = evaluationRows(await plan(context), 'evaluate');
+  const beforeWidening = await attempts();
+  const subset = drawer(page).getByRole('group', { name: 'Subject Subset', exact: true });
+  await subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true }).check();
+  const edited = mutation(context, 'PATCH');
+  await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
+  expect((await edited).ok()).toBe(true);
+  await expect(input).toContainText('3 of 3');
+  const widened = evaluationRows(await plan(context), 'evaluate');
+  expect(widened.slice(0, 2)).toEqual(settled);
+  expect(widened).toHaveLength(3);
+  const extra = await runSelected([widened[2].key]);
+  await expect(table(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 24_000 });
+  expect(await attempts()).toEqual([...beforeWidening, ...extra].sort());
+
+  await selectTwo();
+  const continued = await addSuccessor('Train');
+  const child = 'train-continuation';
+  expect(continued.project.steps?.[child]?.kind).toBe('train');
+  const carry = mutation(context, 'PATCH');
+  await drawer(page).getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true })
+    .selectOption({ label: 'Carry training state' });
+  expect((await carry).ok()).toBe(true);
+  const batches = mutation(context, 'PATCH');
+  await enter(drawer(page).getByRole('textbox', { name: 'N Batches', exact: true }), '4');
+  expect((await batches).ok()).toBe(true);
+  const beforeChildren = await attempts();
+  const planned = stepRows(await plan(context), child);
+  expect(planned.map(({ key }) => key.row)).toEqual(prefix.slice(0, 2).map(({ key }) => key.row));
+  const successors = await runSelected(planned.map(({ key }) => key));
+  await expect(table(page).getByText('Done', { exact: true })).toHaveCount(2, { timeout: 28_000 });
+  expect(await attempts()).toEqual([...beforeChildren, ...successors].sort());
+  await page.reload();
+  await openRuns(page, child);
+  const after = await plan(context);
+  expect(stepRows(after, 'train')).toEqual(prefix);
+  expect(evaluationRows(after, 'evaluate').slice(0, 2)).toEqual(settled);
+  const children = stepRows(after, child);
+  for (const [index, row] of children.entries()) {
+    const producer = prefix[index];
+    expect(after.window_map?.edges).toContainEqual({ from_key: producer.key, to_key: row.key });
+    expect(row.attempts).toEqual([expect.objectContaining({
+      job_id: successors[index],
+      checkpoint_source: {
+        job_id: producer.result?.job_id, request_id: producer.request_id, completed_updates: 2,
+      },
+      progress: { completed_updates: 6, total_updates: 6 },
+    })]);
+    await table(page).getByRole('row').filter({ hasText: producer.label }).getByRole('button').click();
+    if (index === 0) await openResultsSlot(page);
+    const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
+    await expect(results.getByRole('img', { name: 'Loss', exact: true }).locator('polyline')).toHaveCount(1);
+    await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
+      'train 1–2', `${child} 3–6`,
+    ]);
+  }
+}
