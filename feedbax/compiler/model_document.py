@@ -28,7 +28,6 @@ from feedbax.contracts.model_document import (
     DelayAttachment, GraphInterior, InterventionAttachment, ModelDocument, ModelPorts,
     PhysicalInterior, ProbeAttachment, SignalInput,
 )
-from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.runtime.task_data_roles import task_data_role
 from feedbax.runtime.model_reset import ModelResetPlan, resolve_model_reset
@@ -65,7 +64,6 @@ class _Signal:
 
 @dataclass
 class _Lower:
-    document: str
     model: ModelDocument
     components: ComponentRegistry
     origins: dict[tuple[str, ...], ModelAddress] = field(default_factory=dict)
@@ -74,7 +72,7 @@ class _Lower:
 
     def address(self, scope, kind, **fields) -> ModelAddress:
         return ModelAddress.model_validate({
-            "document": self.document, "composites": scope, "element": {"kind": kind, **fields},
+            "composites": scope, "element": {"kind": kind, **fields},
         })
 
     def problem(self, scope, kind, detail, **fields) -> ModelCompilationProblem:
@@ -155,7 +153,7 @@ class _Lower:
         signal: _Signal, nodes: Mapping[str, ComponentSpec], subgraphs: Mapping[str, GraphSpec | AcausalGraphSpec],
     ) -> ComponentPortEnd:
         address = ModelAddress.from_text(reference.reference)
-        if address.document != self.document or address.composites != path:
+        if address.composites != path:
             raise ValueError("delay Initial must read a reset output of the same graph")
         element = address.element
         if (
@@ -712,7 +710,7 @@ class LoweredModelDocument:
     plugins: tuple[str, ...]
 
     def interface(
-        self, document: ProjectName, model: ModelDocument, components: ComponentRegistry,
+        self, model: ModelDocument, components: ComponentRegistry,
         *, input_prototypes: Mapping[tuple[str, str], object] | None = None,
     ) -> ResolvedModelInterface:
         """Project resolved sample types for task and objective pairing."""
@@ -722,11 +720,11 @@ class LoweredModelDocument:
         resolution = resolve_graph_parameters(self.graph, prototypes, components)
         return ResolvedModelInterface(
             model.step_seconds,
-            _scoped_ports(document, model, resolution, "inputs"),
-            _scoped_ports(document, model, resolution, "outputs"),
+            _scoped_ports(model, resolution, "inputs"),
+            _scoped_ports(model, resolution, "outputs"),
             self.links,
             self.plugins,
-            resolve_model_reset(document, resolution, components),
+            resolve_model_reset(resolution, components),
         )
 
     def source_address(self, path: str) -> ModelAddress | None:
@@ -767,12 +765,12 @@ class ResolvedModelLink:
 
 
 def _scoped_ports(
-    document: ProjectName, model: ModelDocument, resolved: GraphParameterResolution, direction: str,
+    model: ModelDocument, resolved: GraphParameterResolution, direction: str,
 ) -> tuple[ScopedValue, ...]:
     results = []
     for port in getattr(model.ports, direction):
         address = ModelAddress.model_validate({
-            "document": document, "composites": [],
+            "composites": [],
             "element": {"kind": "port", "end": {"owner": direction, "port": port.id}},
         })
         if direction == "inputs":
@@ -811,12 +809,12 @@ def _scoped_ports(
 
 
 def lower_model_document(
-    document: ProjectName, model: ModelDocument, components: ComponentRegistry,
+    model: ModelDocument, components: ComponentRegistry,
     task: StudioTaskBindingSpec | None = None,
     *, supplied_inputs: frozenset[str] = frozenset(),
 ) -> LoweredModelDocument:
     """Project one authored model through the graph compiler's registered declarations."""
-    lower = _Lower(document, model, components)
+    lower = _Lower(model, components)
     names = frozenset(item.id for item in task.exposed_data if item.bindable) if task else frozenset()
     graph = lower.graph(model.interior, model.ports, (), available=names | supplied_inputs)
     lower.reject_within_step_paths(graph)
@@ -825,7 +823,7 @@ def lower_model_document(
 
 
 def lower_planar_scene_interior(
-    document: ProjectName, model: ModelDocument, path: tuple[str, ...], components: ComponentRegistry,
+    model: ModelDocument, path: tuple[str, ...], components: ComponentRegistry,
 ) -> AcausalGraphSpec:
     """Lower the selected mechanics occurrence without resolving the surrounding model."""
     interior = model.interior
@@ -836,7 +834,7 @@ def lower_planar_scene_interior(
         child = component.interior
         if isinstance(child, PhysicalInterior):
             if child.physical_domain == "planar_multibody" and index == len(path) - 1:
-                return _Lower(document, model, components).physical(
+                return _Lower(model, components).physical(
                     child, component.ports, path, substeps=component.substeps,
                 )
             break

@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.runtime._graph_key_schedule import sample_training_trials
@@ -19,8 +19,7 @@ from feedbax.tasks.document import TaskParameters
 router = APIRouter()
 
 
-class TaskTrialSampleRequest(BaseModel):
-    model_name: ProjectName
+class TaskTrialSampleRequest(StrictModel):
     model: ModelDocument
     task: TaskDocument | None = None
     python_task: PythonTaskSelection | None = None
@@ -69,7 +68,6 @@ async def sample_task_trials(
     selected = payload.task if payload.task is not None else payload.python_task
     assert selected is not None
     paired = compile_trial_execution(
-        payload.model_name,
         payload.model,
         selected,
         bundle.components,

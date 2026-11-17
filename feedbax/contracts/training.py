@@ -81,7 +81,6 @@ class OptimizerSpec(StrictModel):
 
 
 class TrialDocuments(StrictModel):
-    model_name: str
     model: ModelDocument
     task: TaskDocument | None
     objective: ObjectiveDocument

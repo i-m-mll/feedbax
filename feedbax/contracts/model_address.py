@@ -1,4 +1,4 @@
-"""Stable authored addresses for the stored model tree."""
+"""Addresses relative to an authored Model's stored tree."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pydantic import ConfigDict, Field, StrictStr, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.project_inputs import ProjectName
 
 ModelElementId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]+$")]
 FieldIndex = Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
@@ -105,7 +104,6 @@ AddressedElement = Annotated[
 class ModelAddress(StrictModel):
     model_config = ConfigDict(frozen=True)
 
-    document: ProjectName
     composites: tuple[ModelElementId, ...]
     element: AddressedElement
 
@@ -129,7 +127,7 @@ class ModelAddress(StrictModel):
         return (*scope, *element_path(self.element))
 
     def to_text(self) -> str:
-        """Encode a presentation key with the shared canonical JSON codec."""
+        """Encode the relative address with the shared canonical JSON codec."""
         return canonical_json_v2_bytes(self.model_dump(mode="json")).decode("utf-8")
 
     @classmethod
