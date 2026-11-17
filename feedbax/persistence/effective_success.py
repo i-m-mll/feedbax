@@ -135,7 +135,13 @@ class SuccessView:
 
     def __init__(self, store: ImmutableArtifactBlobProvider):
         self.store = store
-        self._expected = store.read_ref(INDEX_REF)
+        try:
+            store._ref_path(INDEX_REF).lstat()
+        except FileNotFoundError:
+            self._expected = None
+        else:
+            with store._exclusive_lock(create=False):
+                self._expected = store.read_ref(INDEX_REF)
         self._index = decode_success_index(self._expected)
 
     def read_request(self, request: RequestObject) -> DecodedRequest:
