@@ -7,6 +7,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
@@ -63,7 +64,8 @@ from feedbax.contracts.project_plan import (
     planned_input_groups,
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
-from feedbax.contracts.effective_success import TerminalTrainSubject
+from feedbax.contracts.receipt_validity import CodeDifference, ReceiptValidity, ValidityJudgement
+from feedbax.contracts.effective_success import EvaluationSubjectValue, TerminalTrainSubject
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
@@ -77,6 +79,7 @@ from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
+from feedbax.validity.admission import QUICK_RECEIPT_DURATION, validity_reason
 from feedbax.studio.canonical_evaluate import ROLLOUT_JAX_BACKEND, ROLLOUT_JAX_ENABLE_X64
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
@@ -87,7 +90,8 @@ from feedbax.studio.canonical_train import (
 if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.contracts.effective_success import RequestObject, Success
-    from feedbax.persistence.effective_success import SuccessView
+    from feedbax.persistence.effective_success import PublishedSuccess, SuccessView
+    from feedbax.validity.project_admission import ObservedReceiptValidity, ProjectValidity
     from feedbax.persistence.store_sync import StoreEndpoint
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
@@ -150,6 +154,7 @@ class PlanJobAttempt:
     train_request: RequestObject | None = None
     collected_evaluate: bool = False
     collection_progress: StoreTransferProgress | None = None
+    validity: ReceiptValidity | None = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +167,7 @@ class PlanJobAttempts:
     checkpoint_producers: frozenset[RequestId] = frozenset()
     checkpoint_catalogs: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
     light_by_address: Mapping[str, tuple[PlanJobAttempt, ...]] = field(default_factory=dict)
+    validity_checks: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -187,9 +193,18 @@ class PlanJobReader:
 
     def __init__(
         self, host: HostClient, *, components: ComponentRegistry | None = None,
+        registries: ApplicationRegistryBundle | None = None,
     ) -> None:
         self.host = host
         self._evaluation_components = components
+        self._validity_registries = registries
+        self._quick_duration = QUICK_RECEIPT_DURATION
+
+    def _validity_observer(self, root: Path) -> ProjectValidity:
+        from feedbax.validity.project_admission import ProjectValidity
+
+        assert self._validity_registries is not None
+        return ProjectValidity(root, self._validity_registries, quick_duration=self._quick_duration)
 
     def evaluation_parameters(
         self, plan: ProjectPlan, run: PlannedRun,
@@ -212,7 +227,7 @@ class PlanJobReader:
     def read_plan_attempts(
         self, *, project: str, store: Path, requests: Collection[RequestId],
         stopped_checkpoint_jobs: Sequence[str] = (),
-        light_addresses: Collection[str] = (),
+        light_addresses: Collection[str] = (), project_root: Path | None = None,
     ) -> PlanJobAttempts:
         """Read saved Plan attempts and authenticate any selected stopped checkpoints."""
         manifest_root = str(store)
@@ -255,6 +270,10 @@ class PlanJobReader:
         from feedbax.persistence.effective_success import SuccessView
 
         success_view = None
+        observer = (
+            self._validity_observer(project_root)
+            if project_root is not None and self._validity_registries is not None else None
+        )
         for job in by_id.values():
             request_id = job["request"]
             light = _is_light_request(request_id)
@@ -289,6 +308,17 @@ class PlanJobReader:
                     checkpoint_source = _collected_train_checkpoint_source(success_view, store_success)
             else:
                 receipt = _verified_training_receipt(job, store) if succeeded else None
+            validity = None
+            if observer is not None and receipt is not None and success_view is not None:
+                from feedbax.persistence.effective_success import PublishedSuccess
+
+                ref = success_view.attempt_ref(job["id"])
+                if ref is not None:
+                    try:
+                        published = PublishedSuccess(ref, store_success or success_view.read_receipt(ref))
+                        validity = observer.inspect(success_view, published).decision
+                    except (KeyError, OSError, ValueError) as error:
+                        damage, receipt = f"Cannot assess the committed result: {error}", None
             completion = (job.get("outcome") or {}).get("completion") or {}
             binding_sha256 = (
                 completion.get("binding_sha256")
@@ -327,7 +357,7 @@ class PlanJobReader:
                 checkpoint_attempt=_evaluation_checkpoint_attempt(job) if evaluate else None,
                 light_success=store_success if light else None,
                 train_request=store_success.request if collected_train and store_success is not None else None,
-                collected_evaluate=collected_evaluate,
+                collected_evaluate=collected_evaluate, validity=validity,
             )
             attempts.setdefault(request_id, []).append(attempt)
             if light and address in light_addresses:
@@ -339,6 +369,7 @@ class PlanJobReader:
             frozenset(catalogs),
             MappingProxyType(catalogs),
             MappingProxyType({address: tuple(rows) for address, rows in light_attempts.items()}),
+            tuple(job for job in by_id.values() if "validity_check" in job["data"]),
         )
 
 
@@ -360,8 +391,12 @@ class JobService(PlanJobReader):
         live_validation_qualifications: Sequence[ValidationQualification] = (),
         targets: TargetRegistry | None = None,
         submit_session: SessionSubmission | None = None,
+        automatic_run: Literal["all", "no_train", "off"] = "all",
+        quick_duration: timedelta = QUICK_RECEIPT_DURATION,
     ) -> None:
-        super().__init__(host, components=registries.components)
+        super().__init__(host, components=registries.components, registries=registries)
+        self._automatic_run = automatic_run
+        self._quick_duration = quick_duration
         self.registries = registries
         self.targets = targets if targets is not None else TargetRegistry()
         self._submit_session = submit_session
@@ -443,6 +478,7 @@ class JobService(PlanJobReader):
         actor: StudioSubmissionActor = StudioSubmissionActor(client="studio"),
         reuse_completed: bool = False,
         placement: AttemptTarget = LOCAL_TARGET,
+        automatic: bool = False,
     ) -> StudioJobSubmission:
         """Admit selected rows from a server-issued saved Plan."""
         selected = {
@@ -453,6 +489,7 @@ class JobService(PlanJobReader):
             raise JobConflict("Plan admission requires selected runs and a submission token.")
         project = reviewed.project_id
         before = {run.key: run for run in reviewed.plan.runs}
+        directly_selected = _selected_requests(reviewed.plan, set(run_keys))
         light = _planned_light_runs(reviewed.plan, selected.values())
         light_rows = {key.run for key in light if isinstance(key, ElementKey)}
         kinds = {before[key].kind for key in selected.values() if key in before}
@@ -467,6 +504,8 @@ class JobService(PlanJobReader):
         )
         if reuse_completed:
             command["reuse_completed"] = True
+        if automatic:
+            command["automatic"] = True
         if light:
             command["selected_runs"] = list(selected)
         if checkpoint_catalog:
@@ -476,6 +515,10 @@ class JobService(PlanJobReader):
             command["checkpoint_catalog"] = list(checkpoint_catalog)
         if previous := self._retry(token, project=project, continues=None, command=command, placement=placement):
             return previous
+
+        if reuse_completed and not automatic:
+            for request in directly_selected:
+                self._check_before_run(reviewed, request)
 
         items = {}
         runs = {}
@@ -658,9 +701,12 @@ class JobService(PlanJobReader):
                 record["authored_train_plan"] = {
                     "object": plan.model_dump(mode="json"), "requests": requests,
                 }
-            candidates = [items[name] for name in order]
+            candidates = [_with_project_root(items[name], current.project_root) for name in order]
             admitted = (
-                self._admit_with_reuse(token, candidates, record, reuse_completed=reuse_completed)
+                self._admit_with_reuse(
+                    token, candidates, record, reuse_completed=reuse_completed,
+                    current=current, automatic=automatic, directly_selected=directly_selected,
+                )
                 if light or reuse_completed else self._admit(token, candidates, record)
             )
         return self._submission_for_action(
@@ -865,15 +911,180 @@ class JobService(PlanJobReader):
             ),
         )
 
+    def _check_before_run(self, plan: SettledProjectPlan, request: RequestId) -> None:
+        from feedbax.validity.checks import settle_check, wait_for_check
+
+        current = self._result_observation(plan, request)
+        if current is None or current[3].decision.state != "unchecked":
+            return
+        _, _, published, observation = current
+        check = self._submit_check(plan, published, observation)
+        result = wait_for_check(self.host, project=plan.project_id, job_id=check)
+        fresh = self._result_observation(plan, request)
+        if fresh is not None:
+            settle_check(fresh[0], fresh[1], result)
+
+    def _result_observation(
+        self, plan: SettledProjectPlan, request: RequestId,
+    ) -> tuple[SuccessView, ProjectValidity, PublishedSuccess, ObservedReceiptValidity] | None:
+        from feedbax.persistence.effective_success import SuccessView
+        from feedbax.persistence.store_damage import KnownDamage
+
+        view = SuccessView(ImmutableArtifactBlobProvider(plan.store_path))
+        try:
+            published = view.authored(request)
+        except (KnownDamage, FileNotFoundError):
+            return None
+        if published is None:
+            return None
+        observer = self._validity_observer(plan.project_root)
+        return view, observer, published, observer.inspect(view, published)
+
+    def _submit_check(
+        self, plan: SettledProjectPlan, result: PublishedSuccess, observation: ObservedReceiptValidity,
+    ) -> str:
+        from feedbax.validity.checks import schedule_check
+
+        request_id = result.receipt.request.id
+        prior = cast(list[dict[str, Any]], self.host.jobs(
+            project=plan.project_id, job_id=result.receipt.attempt, include_launch=True,
+        ))
+        producer = prior[0] if prior else None
+        kind = request_id.partition(":")[0]
+        worker = {
+            "train": self._training_worker,
+            "evaluate": self._evaluation_worker,
+        }.get(kind, self._light_worker)
+        if _is_light_request(request_id) and producer is not None and producer.get("launch"):
+            original = producer["launch"]
+            worker = replace(worker, env=original["env"], preload=tuple(original["preload"]))
+        return schedule_check(
+            self.host, project=plan.project_id, project_root=plan.project_root, store=plan.store_path,
+            observation=observation, request_id=request_id, producer=producer, worker=worker,
+            slot="light" if _is_light_request(request_id) and not worker.preload else "compute",
+        )
+
+    def result_validity_action(
+        self, plan: SettledProjectPlan, request: RequestId, expected_receipt: ContentObjectRef, *,
+        judgement: tuple[tuple[CodeDifference, ...], str, str] | None = None,
+    ) -> ReceiptValidity:
+        from feedbax.persistence.receipt_validity import record_validity
+
+        visible = {run.request_id for run in plan.plan.runs} | {
+            node.request_id for node in plan.plan.light_requests.values()
+        }
+        if request not in visible or (current := self._result_observation(plan, request)) is None:
+            raise JobNotFound(request)
+        view, observer, published, observation = current
+        if published.ref != expected_receipt:
+            raise JobConflict("The latest successful receipt changed.")
+        if judgement is None:
+            if observation.decision.checks:
+                self._submit_check(plan, published, observation)
+            return observation.decision
+        differences, who, why = judgement
+        pending = {
+            difference
+            for reason in observation.decision.reasons if reason.kind == "code"
+            for difference in reason.differences
+        }
+        if not differences or not set(differences) <= pending:
+            raise JobConflict("Judgement must name the exact current code differences.")
+        record_validity(view.store, request, ValidityJudgement(
+            receipt=published.ref, differences=differences, who=who, when=datetime.now(UTC), why=why,
+        ))
+        return observer.inspect(view, published).decision
+
+    def maintain_plan_validity(
+        self, folders: SavedProjectPlans, plan: SettledProjectPlan, attempts: PlanJobAttempts,
+    ) -> bool:
+        from feedbax.persistence.effective_success import PublishedSuccess, SuccessView
+        from feedbax.validity.checks import settle_check
+        from feedbax.validity.project_admission import is_quick
+
+        view = SuccessView(ImmutableArtifactBlobProvider(plan.store_path))
+        observer = self._validity_observer(plan.project_root)
+        available = 2 - sum(row["state"] in _LIVE_STATES for row in attempts.validity_checks)
+        checked = False
+        results = {
+            request: history[-1] for request, history in attempts.by_request.items()
+            if history and history[-1].validity is not None
+        }
+        for row in attempts.validity_checks:
+            scope = row["data"]["validity_check"]
+            attempt = results.get(scope["request_id"])
+            if attempt is not None and attempt.validity is not None and attempt.validity.checks:
+                decided = settle_check(view, observer, row)
+                checked |= decided is not None and decided != attempt.validity
+        if checked or self._automatic_run == "off":
+            return checked
+
+        holds = plan.configuration.settings.get("run_only_on_request", [])
+        held_steps = set(holds) if isinstance(holds, list) and all(isinstance(name, str) for name in holds) else set()
+        automatic = []
+        sources = {}
+
+        def authorized_success(request: RequestId) -> PublishedSuccess | None:
+            if (current := results.get(request)) is None or current.validity is None:
+                return None
+            ref = current.validity.receipt
+            if view.authored_ref(request) != ref:
+                return None
+            return PublishedSuccess(ref, view.read_receipt(ref))
+
+        for row in plan.plan.rows:
+            requests = _selected_requests(plan.plan, {row.key})
+            step = plan.plan.steps[row.key.variant, row.key.step]
+            allow_run = row.key.step not in held_steps and (row.kind != "train" or self._automatic_run != "no_train")
+            needed = []
+            for request in requests:
+                attempt = results.get(request)
+                validity = attempt.validity if attempt is not None else None
+                if validity is None or validity.state != "current":
+                    needed.append(request)
+                if available > 0 and step.sweep is None and validity is not None and validity.checks:
+                    if any(
+                        prior["data"]["validity_check"]["receipt"]["sha256"] == validity.receipt.sha256
+                        and prior["state"] in _LIVE_STATES for prior in attempts.validity_checks
+                    ):
+                        continue
+                    if (result := authorized_success(request)) is not None:
+                        quick_run = allow_run and validity.state != "current" and is_quick(result.receipt, self._quick_duration)
+                        if not quick_run:
+                            self._submit_check(plan, result, observer.inspect(view, result))
+                            available -= 1
+            if allow_run and needed:
+                candidates = [authorized_success(request) for request in needed]
+                if all(candidate is not None and is_quick(candidate.receipt, self._quick_duration) for candidate in candidates):
+                    automatic.append(row.key)
+                    sources.update({
+                        request: results[request].validity.receipt.sha256 for request in needed
+                    })
+        if automatic:
+            identity = sha256(canonical_json_v2_bytes({
+                "revision": plan.revision, "receipts": sources,
+                "reasons": {
+                    request: results[request].validity.model_dump(mode="json") for request in sources
+                },
+            })).hexdigest()
+            self.admit_plan(
+                folders, plan, run_keys=automatic, token=f"automatic:{identity}", reuse_completed=True, automatic=True,
+            )
+        return False
+
     def _admit_with_reuse(
         self,
         token: str,
         candidates: list[AdmissionItem],
         record: dict[str, Any],
-        *, reuse_completed: bool,
+        *, reuse_completed: bool, current: SettledProjectPlan, automatic: bool,
+        directly_selected: Collection[RequestId],
     ) -> Admission:
+        from feedbax.persistence.effective_success import SuccessView
         from feedbax.studio.canonical_evaluate import EvaluationRequestBinding
 
+        view = SuccessView(ImmutableArtifactBlobProvider(current.store_path))
+        observer = self._validity_observer(current.project_root)
         terminal_inputs = {}
         for item in candidates if reuse_completed else ():
             job = item.job
@@ -908,7 +1119,8 @@ class JobService(PlanJobReader):
                     ))
                     for edge in item.job.edges
                 ))
-                eligible = reuse_completed or _is_light_request(job.request)
+                selected = job.request in directly_selected
+                eligible = reuse_completed or not selected
                 terminal = terminal_inputs.get(job.id)
                 receipt = None
                 anchor = None
@@ -923,7 +1135,8 @@ class JobService(PlanJobReader):
                 reusable = None
                 if eligible and (terminal is None or receipt is not None):
                     reusable = self._reusable(
-                        job, history.get(job.request, ()),
+                        job, history.get(job.request, ()), view=view, observer=observer,
+                        attempts=attempts, automatic=automatic, upstream=not selected,
                         terminal_receipt=ContentObjectRef.model_validate(receipt) if receipt is not None else None,
                     )
                 if reusable is not None:
@@ -1407,14 +1620,23 @@ class JobService(PlanJobReader):
         rows = {
             row["id"]: row
             for row in self.host.jobs_snapshot(job_ids=ids)["jobs"]
-            if _is_studio_job(row)
+            if _is_studio_job(row) or "validity_check" in row["data"]
         }
-        return [
-            event for event in visible
-            if (row := rows.get(event["job_id"])) is not None and (
-                event["kind"] != "dependency_bound" or row["data"].get("placement_detail")
-            )
-        ], rows
+        projected = []
+        for event in visible:
+            row = rows.get(event["job_id"])
+            if row is None:
+                continue
+            scope = row["data"].get("validity_check")
+            if scope is not None:
+                if event["kind"] == "terminal":
+                    projected.append(event | {
+                        "kind": "validity", "request": scope["request_id"],
+                        "data": {"receipt": scope["receipt"], "checks": scope["checks"]},
+                    })
+            elif event["kind"] != "dependency_bound" or row["data"].get("placement_detail"):
+                projected.append(event)
+        return projected, rows
 
     def _retry(
         self,
@@ -1453,16 +1675,48 @@ class JobService(PlanJobReader):
         return _project_submission(response)
 
     def _reusable(
-        self, candidate: Job, jobs: Sequence[dict[str, Any]], *, terminal_receipt: ContentObjectRef | None = None,
+        self, candidate: Job, jobs: Sequence[dict[str, Any]], *, view: SuccessView, observer: ProjectValidity,
+        attempts: Mapping[str, dict[str, Any]], automatic: bool, upstream: bool,
+        terminal_receipt: ContentObjectRef | None = None,
     ) -> str | None:
-        parents = {edge.job_id for edge in candidate.edges}
+        from feedbax.persistence.effective_success import PublishedSuccess
+
+        parent_ids = {edge.job_id for edge in candidate.edges}
+        origins = {}
+        for edge in candidate.edges:
+            parent = attempts.get(edge.job_id)
+            if parent is not None and parent["state"] == "succeeded":
+                if (ref := view.attempt_ref(edge.job_id)) is not None:
+                    origins[parent["request"]] = ref
         for job in reversed(jobs):
-            if terminal_receipt is None and {edge["job_id"] for edge in job["edges"]} != parents:
-                continue
             if job["state"] in _LIVE_STATES:
                 return None
-            if job["state"] == "succeeded" and self._receipt_matches(job, terminal_receipt=terminal_receipt):
+            if job["state"] != "succeeded":
+                continue
+            ref = view.attempt_ref(job["id"])
+            if ref is None or view.authored_ref(candidate.request) != ref or not self._receipt_matches(
+                job, terminal_receipt=terminal_receipt,
+            ):
+                return None
+            old_parents = {edge["job_id"] for edge in job["edges"]}
+            if (
+                terminal_receipt is None and old_parents != parent_ids
+                and (not _is_light_request(candidate.request) or len(origins) != len(candidate.edges))
+            ):
+                return None
+            from feedbax.validity.project_admission import is_quick
+
+            retained = view.read_receipt(ref)
+            result = observer.inspect(view, PublishedSuccess(ref, retained), origins=origins).decision
+            if result.state == "current":
                 return job["id"]
+            if upstream and all(reason.kind in ("code", "environment") for reason in result.reasons) and (
+                result.state == "unchecked" or not is_quick(retained, self._quick_duration)
+            ):
+                return job["id"]
+            if result.state == "unchecked" and not automatic:
+                raise JobConflict("The result changed during admission. Check the current result and retry Run.")
+            return None
         return None
 
     def _receipt_matches(
@@ -1533,8 +1787,26 @@ def _saved_plan_command(
             "store": store, "requests": dict(requests)}
 
 
+def _with_project_root(item: AdmissionItem, project_root: Path) -> AdmissionItem:
+    if item.job is None:
+        return item
+    job = item.job
+    return replace(item, job=replace(job, launch=replace(job.launch, project_root=str(project_root))))
+
+
 def _is_light_request(request: str) -> bool:
     return request.partition(":")[0] in _LIGHT_KINDS
+
+
+def _selected_requests(plan: ProjectPlan, selected: Collection[RunKey]) -> tuple[RequestId, ...]:
+    return tuple(dict.fromkeys(
+        request
+        for row in plan.rows if row.key in selected
+        for request in (
+            tuple(element.request_id for element in row.elements.values())
+            if isinstance(row, PlannedAnalyzeRun) else (row.request_id,) if isinstance(row, PlannedRun) else ()
+        )
+    ))
 
 
 def _planned_light_runs(
@@ -1779,8 +2051,14 @@ def _verified_evaluation_result(
         manifest_object = success.evaluation_manifest
         (bound,) = success.inputs["subject"]
         subject = bound.evaluation_subject
-        if terminal_receipt is not None and (subject is None or subject.terminal_receipt != terminal_receipt):
-            return None
+        if terminal_receipt is not None:
+            from feedbax.persistence.evaluation_subject import terminal_train_subject_at
+
+            parsed = EvaluationSubjectValue.model_validate(bound.descriptor)
+            if subject is None or not parsed.matches_terminal_model(
+                terminal_train_subject_at(view.store, terminal_receipt, subject.producer.id).model.content
+            ):
+                return None
         terminal = subject is not None and subject.terminal_checkpoint is not None
         if job["data"].get("collected_evaluate") is True or terminal or subject is None:
             return _verify_stored_evaluation(view.store, success, receipt, manifest_object)
@@ -2061,6 +2339,11 @@ def saved_request_status(
             notice = None
             if latest != success:
                 notice = latest.reason or f"A later attempt was {latest.status.value.replace('_', ' ')}."
+            if success.validity is not None:
+                validity = validity_reason(success.validity)
+                notice = " ".join(filter(None, (validity, notice))) or None
+                if success.validity.state == "stale":
+                    return JobStatus.STALE, notice
             return JobStatus.SUCCEEDED, notice
         return latest.status, latest.reason
     if changed_path is not None:

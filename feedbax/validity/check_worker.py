@@ -1,0 +1,62 @@
+"""Host entrypoint for read-only result checks and quick environment replay."""
+
+from pathlib import Path
+import os
+
+from feedbax.contracts.receipt_validity import CheckOutcome, ValidityCheckDelivery, ValidityCheckEvidence
+from feedbax.host.io import append
+from feedbax.validity.environment import read_environment
+
+
+VALIDITY_ENTRYPOINT = "feedbax.validity.check_worker:main"
+
+
+def main(argv: list[str]) -> int:
+    delivery = ValidityCheckDelivery.model_validate_json(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes())
+    log = Path(os.environ["FEEDBAX_HOST_EVENT_LOG"])
+    try:
+        read_environment(delivery.project_root, verify_installation=True)
+        evidence = _check(delivery)
+    except (OSError, ValueError) as error:
+        evidence = ValidityCheckEvidence(**{
+            domain: CheckOutcome(outcome="unavailable", detail=str(error) or type(error).__name__)
+            for domain in delivery.checks
+        })
+    append(log, "result", {"outcome": "succeeded", "validity_evidence": evidence.model_dump(mode="json")}, sync=True)
+    return 0
+
+
+def _check(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
+    match delivery.request_id.partition(":")[0]:
+        case "train":
+            from feedbax.training_host_worker import check_train
+
+            return check_train(delivery)
+        case "evaluate":
+            from feedbax.training.evaluate_worker import check_evaluate
+
+            return check_evaluate(delivery)
+        case _:
+            return _check_light(delivery)
+
+
+def _check_light(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
+    from feedbax.light_host_worker import check_light_environment
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.effective_success import SuccessView
+
+    store = ImmutableArtifactBlobProvider(delivery.store_root)
+    view = SuccessView(store)
+    previous = view.read_success(delivery.receipt).receipt
+    if previous.request.id != delivery.request_id or delivery.checks != ("environment",):
+        raise ValueError("Quick replay needs the exact successful request and environment check")
+    view.verify_bindings(previous.request, previous.inputs)
+    matches = check_light_environment(
+        store, view.read_request(previous.request), previous.inputs, previous.products,
+        os.environ["FEEDBAX_HOST_JOB_ID"],
+    )
+    return ValidityCheckEvidence(environment=CheckOutcome(
+        outcome="equal" if matches else "different",
+        detail="Quick replay reproduced the retained products within tolerance." if matches
+        else "The quick replay's products differ from the retained products.",
+    ))
