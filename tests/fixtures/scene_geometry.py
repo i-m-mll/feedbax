@@ -111,7 +111,7 @@ def native_scene_samples(root: Path, document: str):
 
     saved = load_text_project(root)
     document_model = ModelDocument.model_validate(saved.project.documents[document].payload)
-    interior = lower_planar_scene_interior(document, document_model, ("mechanics",), ComponentRegistry())
+    interior = lower_planar_scene_interior(document_model, ("mechanics",), ComponentRegistry())
     compiled = compile_planar_model(interior)
     model = compiled.model
     samples = []

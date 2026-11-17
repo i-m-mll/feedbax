@@ -84,7 +84,7 @@ def test_scientific_projection_preserves_declared_meaning_on_rename() -> None:
 
 def test_model_address_canonical_text_distinguishes_a_port_and_field_path() -> None:
     address = ModelAddress.model_validate({
-        "document": "model", "composites": ["outer", "inner"],
+        "composites": ["outer", "inner"],
         "element": {
             "kind": "field",
             "parent": {"kind": "port", "end": {
@@ -94,7 +94,7 @@ def test_model_address_canonical_text_distinguishes_a_port_and_field_path() -> N
         },
     })
     assert address.to_text() == (
-        '{"composites":["outer","inner"],"document":"model","element":{"kind":"field",'
+        '{"composites":["outer","inner"],"element":{"kind":"field",'
         '"parent":{"end":{"component":"same","direction":"input","owner":"component",'
         '"port":"value"},"kind":"port"},"path":["fields","array/length",0]}}'
     )
@@ -103,3 +103,5 @@ def test_model_address_canonical_text_distinguishes_a_port_and_field_path() -> N
         ModelAddress.from_text(address.to_text() + " ")
     with pytest.raises(ValidationError, match="path"):
         ModelAddress.from_text(address.to_text().replace(",0]", ",true]"))
+    with pytest.raises(ValidationError, match="document"):
+        ModelAddress.from_text(address.to_text().replace(',"element"', ',"document":"model","element"'))

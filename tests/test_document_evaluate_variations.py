@@ -165,7 +165,6 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     variant = resolve_evaluation_variant(slot.graph, documents.task, params.variation, components=registry.components)
     task_hash = sha256(canonical_json_v2_bytes(variant.task.model_dump(mode="json"))).hexdigest()
     paired = compile_trial_execution(
-        documents.model_name,
         documents.model,
         variant.task,
         registry.components,
@@ -213,7 +212,6 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
 
 def _owner_field(owner, field):
     return ModelAddress.model_validate({
-        "document": "reach-model",
         "composites": (),
         "element": {
             "kind": "field", "parent": {"kind": "component", "id": owner},
@@ -255,7 +253,7 @@ def _thelen_project(documents):
         _end("muscle", "force"), {"owner": "outputs", "port": "muscle-force"},
     )
     address = ModelAddress.model_validate({
-        "document": "reach-model", "composites": (),
+        "composites": (),
         "element": {"kind": "port", "end": {"owner": "outputs", "port": "muscle-force"}},
     })
     term = ObjectiveTerm(id="muscle-force", measure=NameValue(reference=address.to_text()))
@@ -321,7 +319,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
     expected_overrides = {semantic_key("model", "value", ("muscle",), "optimal_muscle_length"): 0.24}
     assert variant.source_overrides == expected_overrides
     paired = compile_trial_execution(
-        documents.model_name, documents.model, documents.task_source,
+        documents.model, documents.task_source,
         registry.components, registry.expression_functions,
         input_overrides=documents.input_overrides, graph_override=variant.graph,
     )
@@ -394,7 +392,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     (problem,) = plan.diagnostics
     assert problem.step == "baseline"
     assert problem.model_address == ModelAddress.model_validate({
-        "document": "reach-model", "composites": ["wrapper", "controller"],
+        "composites": ["wrapper", "controller"],
         "element": {"kind": "component", "id": "passthrough"},
     })
     assert problem.path == "/inputs/subject/graph/subgraphs/wrapper/subgraphs/controller/nodes/passthrough"
@@ -424,7 +422,7 @@ def _curl_addition():
     return [
         {
             "op": "add_component",
-            "address": {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": "curl"}},
+            "address": {"composites": [], "element": {"kind": "component", "id": "curl"}},
             "component": {
                 "kind": "leaf", "name": "Curl field", "type": "feedbax.CurlField",
                 "fields": {"active": True, "scale": 2.0},

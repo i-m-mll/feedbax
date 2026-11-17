@@ -213,7 +213,7 @@ def _prepare_model_rollout(
     documents: TrialDocuments, params: RolloutParameters, slot: SemanticModelSlot, coordinate: int,
     *, seed: int, registry: ApplicationRegistryBundle,
 ) -> PreparedRollout:
-    initial = InitialModelSource(model_name=documents.model_name, document=documents.model, seed=seed)
+    initial = InitialModelSource(document=documents.model, seed=seed)
     resolved = resolve_rollout(
         initial, documents.task_source, documents.objective, slot.graph, params, registry=registry,
         model_assets=slot.provider, input_overrides=documents.input_overrides,

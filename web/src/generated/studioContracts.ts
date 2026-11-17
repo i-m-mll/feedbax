@@ -546,7 +546,6 @@ export interface FieldElement {
 }
 
 export interface ModelAddress {
-  document: string;
   composites: string[];
   element: GraphElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
 }
@@ -957,6 +956,7 @@ export interface ModelUndoRequest {
 
 export interface ModelConnectionReviewRequest {
   revision: unknown;
+  document: string;
   graph: ModelAddress;
   source: ComponentPortEnd | InputBoundaryEnd | TaskSignalSource;
 }
@@ -1009,6 +1009,7 @@ export interface ModelTaskSignal {
 
 export interface ModelFieldRequest {
   revision: unknown;
+  document: string;
   owner: ModelAddress;
   run?: StudioSavedTrainKey | null;
   evaluate_scope?: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
@@ -2179,7 +2180,6 @@ export interface SampledTaskTrial {
 }
 
 export interface TaskTrialSampleRequest {
-  model_name: string;
   model: ModelDocument;
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
@@ -3824,7 +3824,7 @@ export type StudioTrainStep = {
 export type StudioTrialAuthoring = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "model": string;
+  "model": string | null;
   "task_document": string | null;
   "objective_document": string | null;
   "task": TaskDocument | PythonTaskSelection;
@@ -3983,7 +3983,6 @@ export type TextSpan = {
 };
 
 export type TrialDocuments = {
-  "model_name": string;
   "model": ModelDocument;
   "task": TaskDocument | null;
   "objective": ObjectiveDocument;
@@ -5007,7 +5006,6 @@ export const FieldElementSchema: z.ZodType<FieldElement> = z.lazy(() =>
 export const ModelAddressSchema: z.ZodType<ModelAddress> = z.lazy(() =>
   z
     .object({
-      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "composites": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$"))),
       "element": z.union([GraphElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
     })
@@ -5769,6 +5767,7 @@ export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReview
   z
     .object({
       "revision": z.unknown(),
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "graph": ModelAddressSchema,
       "source": z.union([z.union([ComponentPortEndSchema, InputBoundaryEndSchema]), TaskSignalSourceSchema]),
     })
@@ -5857,6 +5856,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
   z
     .object({
       "revision": z.unknown(),
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "owner": ModelAddressSchema,
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "evaluate_scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]).nullable().optional(),
@@ -7969,7 +7969,6 @@ export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "model_name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "model": ModelDocumentSchema,
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
@@ -10235,7 +10234,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "model": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "model": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "task_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "objective_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
     "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
@@ -10402,7 +10401,7 @@ export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
 ) as unknown as z.ZodType<SweepSample>;
 
 export const SweepTargetSchema: z.ZodType<SweepTarget> = z.lazy(() =>
-  z.string().regex(new RegExp("^(?:(?:steps\\.[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
+  z.string().regex(new RegExp("^(?:(?:(?:steps|documents)\\.[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
 ) as unknown as z.ZodType<SweepTarget>;
 
 export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
@@ -10440,7 +10439,6 @@ export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
 
 export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
   z.object({
-    "model_name": z.string(),
     "model": ModelDocumentSchema,
     "task": z.union([TaskDocumentSchema, z.null()]),
     "objective": ObjectiveDocumentSchema,

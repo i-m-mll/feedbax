@@ -3,7 +3,6 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
   AuthoredFileAddress,
-  ModelAddress,
   ModelEditCommand,
   ModelEditRequest,
   ModelEditResponse,
@@ -25,6 +24,7 @@ import {
   type AuthoredProject, type ProjectEditContent,
 } from './authoredEdits';
 import { modelSchema } from './model/modelGraph';
+import type { ModelSelection } from './model/modelSelection';
 
 export interface ProjectEditTransport {
   read: (id: string, signal?: AbortSignal) => Promise<StudioProjectDocument>;
@@ -380,7 +380,7 @@ export class ProjectEditController {
     return this.replay('redo');
   }
 
-  private replay(direction: 'undo' | 'redo'): Promise<readonly ModelAddress[]> | undefined {
+  private replay(direction: 'undo' | 'redo'): Promise<ModelSelection | undefined> | undefined {
     this.requireEditable();
     const gesture = this.history[direction].at(-1);
     if (!gesture) return;
@@ -391,7 +391,7 @@ export class ProjectEditController {
         const source = gesture[direction === 'undo' ? 'redo' : 'undo'];
         const latest = await this.publishReplay(before, replayFiles(source, target, before), target);
         this.adopt(latest, moveHistory(this.savedHistory, gesture, direction));
-        return [];
+        return undefined;
       });
     }
     if ('token' in gesture) {
@@ -407,7 +407,7 @@ export class ProjectEditController {
         this.adopt({ ...this.document, snapshot: result.snapshot }, {
           ...history, [destination]: [...history[destination].slice(0, -1), { ...gesture, token: result.undo_token }],
         });
-        return result.changed;
+        return { document: gesture.document, addresses: result.changed };
       });
     }
     const files = historyFiles(gesture, direction, this.draft);

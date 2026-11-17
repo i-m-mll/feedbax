@@ -360,7 +360,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
     ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
   } };
   const documents = (model: string) => ({
-    model_name: model, model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+    model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
   });
   const step = (id: string, model: string) => ({
     ...template, id, step: { ...template.step, base: { inline: {

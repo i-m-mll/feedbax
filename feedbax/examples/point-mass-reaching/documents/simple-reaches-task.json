@@ -193,7 +193,7 @@
     ],
     "links": [
       {
-        "model_field": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"reset\",\"effector\",\"position\"]}}",
+        "model_field": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"reset\",\"effector\",\"position\"]}}",
         "variable": "start"
       }
     ],

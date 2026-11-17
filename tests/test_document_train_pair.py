@@ -86,7 +86,6 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
     seed = 10
     validation_key = jr.key(3)
     paired = compile_trial_execution(
-        "reach-model",
         model,
         task,
         registry,
@@ -193,13 +192,13 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
     _two_optimizer_rates(raw)
     other = deepcopy(raw["steps"]["train"])
     other["base"]["inline"]["trial_documents"].update(
-        model_name="other-model", model={"document": "other-model"},
+        model={"document": "other-model"},
     )
     raw["steps"]["other"] = other
 
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
     assert not plan.runs
-    assert len(prepared_trials) == 2
+    assert len(prepared_trials) == 1
     assert len(plan.diagnostics) == 4
     for issue in plan.diagnostics:
         document = {"train": "reach-model", "other": "other-model"}[issue.step]
@@ -207,7 +206,7 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
         assert issue.row in {"rate=low", "rate=high"}
         assert issue.document == document
         assert issue.model_address == ModelAddress.model_validate({
-            "document": document, "composites": [], "element": {"kind": "component", "id": "plant"},
+            "composites": [], "element": {"kind": "component", "id": "plant"},
         })
 
 
@@ -222,11 +221,11 @@ def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, a
     raw["sweep"] = {"rows": {"base": {}, "compare": {"from": "base"}, "follow": {"from": "compare"}}}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "variant", Project.model_validate(raw))
-    owner = {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": "plant"}}
+    owner = {"composites": [], "element": {"kind": "component", "id": "plant"}}
     revision = folders.read("variant").revision
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         result = client.post("/api/projects/variant/model/fields", json={
-            "revision": revision, "owner": owner, "lit_steps": ["train"],
+            "revision": revision, "document": "reach-model", "owner": owner, "lit_steps": ["train"],
             "run": {"variant": "compare", "step": "train", "row": "default"},
             "address": owner | {"element": {"kind": "field", "parent": owner["element"], "path": ["fields", "mass"]}},
             "edit": {"kind": "text", "text": "2"},
@@ -399,7 +398,7 @@ def test_saved_window_keeps_verification_for_wide_float_requests(authored, tmp_p
 def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, prepared_trials):
     raw = document_project(authored)
     mass = ModelAddress.model_validate({
-        "document": "reach-model", "composites": [],
+        "composites": [],
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
     })
     task = "documents.task.payload.id"
@@ -421,7 +420,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
             model.interior.components["plant"].fields["mass"], task_source.id,
             kwargs["objective"].terms[0].weight.value, kwargs["input_overrides"]["reach_target"],
         )
-        for (_, model, task_source, *_), kwargs in prepared_trials
+        for (model, task_source, *_), kwargs in prepared_trials
     } == {
         (original_mass, "delayed-reaches", 1, "target_pos"),
         (2.0, "delayed-reaches", 1, "target_pos"),
@@ -481,7 +480,6 @@ def document_project(authored, *, evaluation=False):
         "steps": {
             "train": {"kind": "train", "base": {"inline": {
                 "trial_documents": {
-                    "model_name": "reach-model",
                     "model": {"document": "reach-model"},
                     "task": {"document": "task"},
                     "objective": {"document": "objective"},

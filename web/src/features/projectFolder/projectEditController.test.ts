@@ -127,7 +127,7 @@ it('binds the first compatible documents by name and scaffolds only the missing 
     } },
     expect.objectContaining({ kind: 'step', id: 'train', step: expect.objectContaining({
       base: { inline: expect.objectContaining({ trial_documents: {
-        model_name: 'a-model', model: { document: 'a-model' }, task: { document: 'a-task' },
+        model: { document: 'a-model' }, task: { document: 'a-task' },
         objective: { document: 'objective-2' },
       } }) },
     }) }),
