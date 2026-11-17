@@ -23,7 +23,9 @@ from feedbax.contracts.migrations import (
 )
 from feedbax.contracts.representation import validate_representation_against_component
 from feedbax.registry_errors import RegistryCollisionError
-from feedbax.plugins.declarations import DistributionSource, missing_declaration
+from feedbax.plugins.declarations import (
+    DeclarationRegistry, DistributionSource, ResolvedDeclaration, missing_declaration,
+)
 
 from .migration_routes import migration_route, source_endpoint, validate_migration_routes
 from .declarations import DeclaredComponent
@@ -62,8 +64,7 @@ class ComponentRegistry:
     def __init__(
         self, declarations: Iterable[tuple[type[ComponentOwner], DistributionSource]] | None = None,
     ) -> None:
-        self._sealed = False
-        self._components: Dict[str, DeclaredComponent] = {}
+        self._components = DeclarationRegistry[DeclaredComponent]("component")
         self._component_migrations: Dict[tuple[str, int | str | None], ComponentMigration] = {}
         self._migration_owners: Dict[str, set[str]] = {}
         self._history_names: dict[str, type] = {}
@@ -81,8 +82,8 @@ class ComponentRegistry:
         self, declarations: Iterable[tuple[type[ComponentOwner], DistributionSource]],
     ) -> None:
         """Compile all declarations before making any of them visible."""
-        self._require_mutable()
-        components = dict(self._components)
+        self._components.require_mutable()
+        components = self._components.copy()
         migrations = dict(self._component_migrations)
         migration_owners = {owner: set(types) for owner, types in self._migration_owners.items()}
         reserved_names = dict(self._history_names)
@@ -119,10 +120,11 @@ class ComponentRegistry:
                     f"({conflict.name!r}, {meta.name!r})"
                 )
             self._validate_representation(meta)
-            components[key] = replace(
-                meta, source_paths=(*definition_sources, *_declared_source_paths(meta)),
+            components.add(
+                key, source, owner,
+                replace(meta, source_paths=(*definition_sources, *_declared_source_paths(meta))),
             )
-        changed_targets = set(components) - self._components.keys()
+        changed_targets = set(components.keys()) - set(self._components.keys())
         for migration in edges:
             if not migration.owner:
                 raise ValueError("Component migration owner must be non-empty")
@@ -140,9 +142,10 @@ class ComponentRegistry:
             migrations,
             {name: meta.revision for name, meta in components.items()},
         )
-        for target in changed_targets & components.keys():
-            components[target] = self._with_migrations(
-                components[target], self._migration_infos_for_target(target, migrations.values())
+        for target in changed_targets.intersection(components.keys()):
+            state = components.resolve(target).value
+            components.replace_value(
+                target, self._with_migrations(state, self._migration_infos_for_target(target, migrations.values())),
             )
         self._components = components
         self._component_migrations = migrations
@@ -185,11 +188,16 @@ class ComponentRegistry:
             {name: meta.revision for name, meta in self._components.items()},
             require_current_terminal=True,
         )
-        self._sealed = True
+        self._components.seal()
 
-    def _require_mutable(self) -> None:
-        if self._sealed:
-            raise RuntimeError("component registry is sealed")
+    def declaration_record(self, key: str) -> ResolvedDeclaration[DeclaredComponent]:
+        return self._components.resolve(key)
+
+    def _component(self, key: str) -> DeclaredComponent | None:
+        try:
+            return self.declaration_record(key).value
+        except KeyError:
+            return None
 
     def resolve_component_spec(
         self,
@@ -213,7 +221,7 @@ class ComponentRegistry:
         endpoint = revision if revision is not None else legacy_token
 
         def current_revision(name: str) -> int | None:
-            component = self._components.get(name)
+            component = self._component(name)
             return component.revision if component is not None else None
 
         source = source_endpoint(
@@ -227,7 +235,7 @@ class ComponentRegistry:
         (resolved_type, resolved_version), chain = migration_route(
             self._component_migrations, current_revision, source
         )
-        meta = self._components.get(resolved_type)
+        meta = self._component(resolved_type)
         if meta is None or resolved_version != meta.revision:
             owner = self._owner_for_missing_type(resolved_type, meta)
             if owner is not None and not self._has_owner(owner):
@@ -283,7 +291,7 @@ class ComponentRegistry:
         return "." in type_id
 
     def get(self, name: str) -> Optional[DeclaredComponent]:
-        meta = self._components.get(name)
+        meta = self._component(name)
         return deepcopy(meta) if meta is not None else None
 
     def dynamic_port_layout(
@@ -293,7 +301,7 @@ class ComponentRegistry:
     ) -> DynamicPortLayout | None:
         """Derive a component's dynamic ports from an isolated parameter snapshot."""
 
-        meta = self._components.get(name)
+        meta = self._component(name)
         if meta is None or meta.dynamic_port_policy is None:
             return None
         effective_params = meta.params.require(params).model_dump(mode="python")
@@ -319,7 +327,7 @@ class ComponentRegistry:
                 f"GraphNode {type(component).__name__!r} executes in Python but has no portable Component contract"
             )
         if type_id is not None:
-            meta = self._components.get(type_id)
+            meta = self._component(type_id)
             if meta is None:
                 raise ValueError(f"Unknown bound component type {type_id!r}")
             if revision != meta.revision:
@@ -341,7 +349,7 @@ class ComponentRegistry:
                     f"registered runtime type; runtime={type(component).__name__!r}, "
                     f"matches={names!r}"
                 )
-            meta = matches[0]
+            meta = self.declaration_record(matches[0].name).value
         return meta.name, meta.params.dump(component), meta.revision
 
     def component_classification(self) -> dict[str, str]:
@@ -353,7 +361,7 @@ class ComponentRegistry:
         }
 
     def names(self) -> List[str]:
-        return sorted(self._components)
+        return list(self._components.keys())
 
     def executable_names(self) -> List[str]:
         return sorted(
@@ -447,7 +455,7 @@ class ComponentRegistry:
                     )
                 continue
 
-            node_meta = self._components.get(node_type)
+            node_meta = self._component(node_type)
             if node_meta is None:
                 issues.append(
                     TemplateBuilderIssue(

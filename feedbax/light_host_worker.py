@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import ExitStack
 from functools import lru_cache
 import os
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -107,9 +109,10 @@ def _compute(
     spec = request.spec
     if isinstance(spec, AnalysisRequestSpec):
         operation = light_operation(spec.analysis_type)
-        parameters = operation.parameter_model.model_validate(spec.params)
+        parameters = operation.value.parameter_model.model_validate(spec.params)
+        compute = cast(Callable[..., Dataset], operation.defining_object)
         with ExitStack() as stack:
-            dataset = operation.function(
+            dataset = compute(
                 params=parameters, **_dataset_inputs(store, bindings, stack)
             )
             with store._exclusive_lock():

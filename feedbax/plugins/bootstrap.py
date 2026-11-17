@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -51,7 +51,6 @@ class RegistryKey(Generic[T]):
 @dataclass(frozen=True)
 class PluginProvenance:
     source: DistributionSource
-    registered_keys: Mapping[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)

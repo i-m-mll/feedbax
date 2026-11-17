@@ -63,8 +63,8 @@ def test_registered_operations_publish_typed_products_from_saved_states(tmp_path
     states_ref = publish_dataset(store, states)
     bundle = new_application_registry_bundle()
     bundle.seal()
-    align = bundle.operations.resolve("feedbax.aligned_velocity").definition
-    summarize = bundle.operations.resolve("feedbax.summarize_velocity").definition
+    align = bundle.operations.resolve("feedbax.aligned_velocity").value.definition
+    summarize = bundle.operations.resolve("feedbax.summarize_velocity").value.definition
     assert align.inputs["states"].selected_variables["velocity"].units == "m/s"
     assert align.outputs["velocity"].model_dump() == summarize.inputs["velocity"].model_dump(exclude={"kind"})
     assert summarize.outputs["summary"].variables["mean"].dims == ("checkpoint", "condition", "state_time")
@@ -81,12 +81,12 @@ def test_registered_operations_publish_typed_products_from_saved_states(tmp_path
         store.open_owned_object(states_ref.object_ref) as path,
         open_dataset(path, expected_descriptor_sha256=states_ref.descriptor_sha256) as saved,
     ):
-        velocity = run.function(saved, run.parameter_model.model_validate(_PARAMETERS.model_dump()))
+        velocity = run.defining_object(saved, run.value.parameter_model.model_validate(_PARAMETERS.model_dump()))
     np.testing.assert_allclose(velocity.data("parallel_velocity"), parallel, atol=1e-6)
     np.testing.assert_allclose(velocity.data("lateral_velocity"), lateral, atol=1e-6)
     run = bundle.operations.resolve(summarize.key)
     for ddof, scale in ((0, 0.5), (1, 2.0)):
-        product = run.function(velocity, run.parameter_model.model_validate({"ddof": ddof, "bounds_scale": scale}))
+        product = run.defining_object(velocity, run.value.parameter_model.model_validate({"ddof": ddof, "bounds_scale": scale}))
         assert set(product.descriptor.variables) == set(summarize.outputs["summary"].variables)
         result_ref = publish_dataset(store, product)
         with (

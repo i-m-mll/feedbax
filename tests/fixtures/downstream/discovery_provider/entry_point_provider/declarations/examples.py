@@ -51,7 +51,7 @@ def ExternalMethod(state, ctx):
 _PORT = DatasetPort(schema_ids=("fixture.series.v1",), variables={"value": FieldDescriptor(dims=("step",))})
 
 
-@operation(settings=Settings, revision=2, renamed_from=("entry_point_provider.offset_series",))
+@operation(settings=Settings, renamed_from=("entry_point_provider.offset_series",))
 def shift_series(
     source: Annotated[Dataset, _PORT], params: Settings,
 ) -> Annotated[Dataset, DatasetOutput("shifted", _PORT)]:
@@ -61,7 +61,7 @@ def shift_series(
     )
 
 
-@figure_template(settings=Settings, revision=4)
+@figure_template(settings=Settings)
 def external_plot(settings: Settings) -> FigureDocument:
     return FigureDocument(
         data=("source",),
