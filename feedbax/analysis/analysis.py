@@ -82,15 +82,14 @@ from feedbax.analysis.result_cache import (
     ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
     RESULTS_CACHE_SUBDIR,
     AnalysisResultCacheCorruption,
-    _UnsupportedCacheInput,
     _CACHE_LOAD_ERRORS,
     _CACHE_SAVE_ERRORS,
     _fingerprint_cache_inputs,
-    _fingerprint_semantic_values,
     _load_analysis_result_cache,
     _write_analysis_result_cache,
 )
 from feedbax.contracts.computation_revision import validate_computation_revision
+from feedbax.persistence.semantic_fingerprint import UnsupportedSemanticValue, fingerprint_semantic_values
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
@@ -566,7 +565,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 inputs_hash = _fingerprint_cache_inputs(
                     type(self), computation_revision, config, prepped_data, prepped_kwargs
                 )
-            except _UnsupportedCacheInput as exc:
+            except UnsupportedSemanticValue as exc:
                 logger.debug("Skipping result cache for %s: %s", self.name, exc)
                 return _run_compute()
 
@@ -1496,7 +1495,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             for kind, ops in self._final_ops_by_type.items()
         }
         cls = type(self)
-        fingerprint = _fingerprint_semantic_values(
+        fingerprint = fingerprint_semantic_values(
             self._hashable_inputs(),
             self._field_params,
             prep_params,

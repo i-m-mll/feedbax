@@ -41,8 +41,7 @@ def read_terminal_train_subject(
     checkpoint = success.continuation
     if (
         decoded.id != request_id or not isinstance(decoded.spec, DocumentTrainingRequestSpec)
-        or checkpoint is None or checkpoint.clock.completed_batches <= 0
-        or checkpoint.clock.barrier != "after_train_batch"
+        or checkpoint is None or checkpoint.clock.completed_updates != decoded.spec.target_total
         or pin.model != select_success_product(ProductRef(
             request_id=request_id, role="checkpoint", select=LastMember(),
         ), success)
@@ -81,7 +80,7 @@ def terminal_train_provenance(
         kind="TrainingCheckpointTransactionManifest", id=occurrence.transaction_id, role="checkpoint",
         metadata={
             "manifest_sha256": occurrence.manifest_sha256,
-            "completed_updates": checkpoint.clock.completed_batches,
+            "completed_updates": checkpoint.clock.completed_updates,
             "producer_job_id": occurrence.run_id,
         },
     )])
@@ -293,7 +292,7 @@ def evaluation_subject_objects(
         if (
             occurrence is None or occurrence.provenance != source.terminal_checkpoint
             or source.producer != success.request
-            or (occurrence.clock.completed_batches, product.content.sha256) != (item.coordinate, item.model_tree)
+            or (occurrence.clock.completed_updates, product.content.sha256) != (item.coordinate, item.model_tree)
         ):
             raise ValueError("Evaluate terminal Train evidence differs from the resolved model")
         if visitors is not None:

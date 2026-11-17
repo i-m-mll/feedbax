@@ -368,7 +368,7 @@ class Store:
         stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
         ref = ContentObjectRef.model_validate(staged)
         checkpoints = TypeAdapter(tuple[TrainJobCheckpoint, ...]).validate_json(view.store.get_object(ref))
-        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_training_batches:
+        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_updates:
             raise ValueError("Train Stop differs from its staged recovery publication")
         accepted = {
             PublishedTrainingCheckpoint.model_validate(data["checkpoint"]).pointer.transaction_id: data["checkpoint"]
@@ -432,7 +432,7 @@ class Store:
                 raise HostError("invalid_request", "Collected Train Stop differs from its stored binding.")
             if ref is not None:
                 outcome["store_job_entry"] = ref.model_dump(mode="json")
-            checkpoint = {"completed_updates": entry.recovery.pointer.completed_training_batches}
+            checkpoint = {"completed_updates": entry.recovery.pointer.completed_updates}
         self._mirror_collected_terminal(job, state, outcome, progress, checkpoint, delivery)
 
     def mirror_collected_evaluate(

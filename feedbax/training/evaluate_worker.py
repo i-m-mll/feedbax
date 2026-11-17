@@ -181,24 +181,20 @@ def resolve_rollout(
 def prepare_rollout(
     source: BoundStudioTrainingJobInput, checkpoint: PublishedTrainingCheckpoint, params: RolloutParameters,
 ) -> PreparedRollout:
-    from feedbax.training.checkpoint_custody import _published_model_slot
-    from feedbax.training.model_checkpoint import SemanticModelSlot
+    from feedbax.training.method_checkpoint import read_method_checkpoint
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 
     documents = source.spec.trial_documents
     request = source.canonical_request
     if request is None:
         raise CannotRun("/inputs/subject", "Managed Evaluate needs an authored Train checkpoint.")
-    transaction, model_slot = _published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
-    if model_slot is None:
-        raise CannotRun("/inputs/subject/checkpoint/model", "requires a semantic model")
     registry = load_application().bundle
-    slot = SemanticModelSlot.open(transaction, model_slot, components=registry.components)
+    slot = read_method_checkpoint(checkpoint.checkpoint_root, checkpoint.pointer, components=registry.components).model
     store = ImmutableArtifactBlobProvider(source.manifest_root)
     authored = read_success_request(
         RequestObject(id=source.request_id, object=request.request, documents=request.documents), store.get_object,
     ).spec
-    if not isinstance(authored, DocumentTrainingRequestSpec):
+    if not isinstance(authored, DocumentTrainingRequestSpec) or authored != source.spec:
         raise CannotRun("/inputs/subject", "Managed Evaluate needs an authored Train checkpoint.")
     return _prepare_model_rollout(
         documents, params, slot, checkpoint.completed_updates,
@@ -553,7 +549,7 @@ def main(argv: Sequence[str]) -> int:
             slot = SemanticModelSlot.open_store(
                 store, tree, SemanticModelEncoding.model_validate(model.descriptor), components=registry.components,
             )
-            coordinate = occurrence.clock.completed_batches
+            coordinate = occurrence.clock.completed_updates
             members = ((coordinate, partial(
                 _prepare_model_rollout, authored.trial_documents, params, slot, coordinate,
                 seed=authored.seed or 0, registry=registry,

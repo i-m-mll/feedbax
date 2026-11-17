@@ -158,6 +158,7 @@ class _DelegatedProjectPlans:
                 text, project_id=self.request.project, store=self.store, readers=BaseReaders(figure_external=read_pin),
                 operations=self.bundle.operations, components=self.bundle.components,
                 functions=self.bundle.expression_functions, python_tasks=self.bundle.python_tasks,
+                training_methods=self.bundle.training_methods,
             )
 
     def read_plan(self, project_id: str, *, revision: str | None) -> SettledProjectPlan:

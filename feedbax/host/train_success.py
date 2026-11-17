@@ -5,24 +5,16 @@ from pathlib import Path, PurePosixPath
 import re
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
-from feedbax.contracts.checkpoint_projection import (
-    STANDARD_TRAIN_STATE_MEDIA_TYPE,
-    CarriedOptimizer,
-    CheckpointClock,
-    CheckpointOccurrenceRef,
-    ContinuationOccurrence,
-    ContinuationSlot,
-)
-from feedbax.contracts.checkpoints import PHASE_BOUNDARY_DECISION_METADATA_KEY, CheckpointTransactionManifest
+from feedbax.contracts.checkpoint_projection import CarriedMethodState, CheckpointOccurrenceRef, ContinuationOccurrence
+from feedbax.contracts.method_checkpoint import CheckpointLatestPointer, MethodCheckpointManifest, method_checkpoint_extra_path
 from feedbax.contracts.effective_success import (
     Bindings, Product, RequestObject, read_success_object, select_success_product,
     success_content_ref,
 )
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
-from feedbax.contracts.request_refs import ProductRef
+from feedbax.contracts.request_refs import ContentRef, ProductRef
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.strict_json import strict_model_validate_json
-from feedbax.contracts.studio_training import StudioGraphMethodPayload
-from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host.completion import completion_file
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
@@ -41,7 +33,7 @@ def publish_train_success(
     checkpoint = completion["checkpoint"]
     pointer = checkpoint["pointer"]
     owner = pointer["run_id"]
-    relative = PurePosixPath(pointer["manifest_relative_path"])
+    relative = PurePosixPath(CheckpointLatestPointer.model_validate(pointer).manifest_relative_path)
     checkpoint_root = store_root / "checkpoints" / owner
     if (
         not re.fullmatch(r"[A-Za-z0-9_-]+", owner)
@@ -67,13 +59,19 @@ def publish_train_success(
             raise ValueError("Collected Resume differs from its original Train request")
         recovery = _occurrence(collected.recovery.pointer.model_dump(mode="json"))
     store = ImmutableArtifactBlobProvider(store_root)
+    metrics = completion.get("metrics")
+    products = {"checkpoint": (product,)}
+    if metrics is not None:
+        products["metrics"] = (Product(name="updates", content=ContentRef(
+            sha256=metrics["sha256"], size=metrics["size_bytes"], media_type="application/x-ndjson",
+        )),)
     with store._exclusive_lock():
         view = SuccessView(store)
         if existing := view.attempt_ref(attempt):
             committed = view.read_owned_success(existing).receipt
             if (
                 committed.attempt != attempt or committed.request != request or committed.target != target
-                or committed.products != {"checkpoint": (product,)}
+                or committed.products != products
                 or committed.continuation is None
                 or committed.continuation.provenance != _occurrence(pointer)
                 or committed.recovery != recovery
@@ -106,49 +104,24 @@ def publish_train_success(
 
         for ref in success_content_objects(source, product):
             retain(source.object_path(ref), ref.sha256, ref.size_bytes)
-        slots = {slot.slot: slot for slot in manifest.slots}
-        if any(
-            name not in slots or slots[name].media_type != STANDARD_TRAIN_STATE_MEDIA_TYPE
-            for name in ("batch_counter", "optimizer", "prng")
-        ):
-            raise ValueError("Train result lacks typed batch counter, optimizer, or PRNG state")
-        arrays = {
-            name: ContinuationSlot(
-                content=retain(manifest_path.parent / slot.relative_path, slot.sha256, slot.size_bytes),
-                array_descriptor_sha256=slot.metadata["array_descriptor_sha256"],
-                semantic_abi_sha256=slot.semantic_abi.fingerprint_sha256,
-            )
-            for name in ("batch_counter", "optimizer", "prng")
-            for slot in (slots[name],)
-        }
-        coordinate = manifest.completed_coordinate
-        boundary = manifest.metadata.get(PHASE_BOUNDARY_DECISION_METADATA_KEY)
-        source_spec = TrainingRunSpec.model_validate(
-            manifest.run_contract_binding.canonical_projection["training_run_spec"]
-        )
-        optimizer = StudioGraphMethodPayload.model_validate(source_spec.method_payload.payload).optimizer
+        extra = manifest.extra
+        retain(manifest_path.parent / method_checkpoint_extra_path(extra), extra.object.sha256, extra.object.size_bytes)
+        if metrics is not None:
+            expected_metrics = store_root / "checkpoints" / attempt / "metrics.jsonl"
+            if metrics["path"] != expected_metrics.relative_to(store_root).as_posix():
+                raise ValueError("Train metric history belongs to a different attempt")
+            store._store_file(expected_metrics, sha256=metrics["sha256"], size_bytes=metrics["size_bytes"])
         continuation = ContinuationOccurrence(
             provenance=_occurrence(pointer),
-            learning_rate=optimizer.lr_schedule or optimizer.params["learning_rate"],
-            carried_optimizer=CarriedOptimizer.from_spec(optimizer, source_spec.training_config.grad_clip),
-            clock=CheckpointClock(
-                completed_batches=manifest.completed_training_batches,
-                segment_start_batch=manifest.segment_lineage.start_batch,
-                phase=coordinate.phase,
-                barrier=manifest.barrier,
-                program_step=coordinate.program_step,
-                inner_step=coordinate.inner_step,
-                outer_step=coordinate.outer_step,
-                schedule_origin_step=coordinate.schedule_origin_step,
-                phase_boundary=None if boundary is None else (boundary["next_phase"],),
+            clock=manifest.clock,
+            state=CarriedMethodState(
+                method_key=manifest.identity.method_key,
+                method_revision=manifest.identity.method_revision,
+                extra=manifest.extra,
             ),
-            model_semantic_abi_sha256=slots["model"].semantic_abi.fingerprint_sha256,
-            batch_counter=arrays["batch_counter"],
-            optimizer=arrays["optimizer"],
-            prng=arrays["prng"],
         )
         published = view.publish_bound(
-            request, attempt=attempt, products={"checkpoint": (product,)}, bindings=bindings,
+            request, attempt=attempt, products=products, bindings=bindings,
             continuation=continuation, recovery=recovery, target=target,
         )
     return published.ref.model_dump(mode="json")
@@ -163,21 +136,21 @@ def _occurrence(pointer: dict) -> CheckpointOccurrenceRef:
 
 def _check_model_slot(
     root: Path, manifest_path: Path, pointer: dict, product: Product,
-) -> CheckpointTransactionManifest:
+) -> MethodCheckpointManifest:
     with completion_file(root, manifest_path.relative_to(root).as_posix()) as (stream, _):
         raw = stream.read()
     if sha256(raw).hexdigest() != pointer["manifest_sha256"]:
         raise ValueError("Train checkpoint manifest changed before Store publication")
-    manifest = strict_model_validate_json(CheckpointTransactionManifest, raw)
-    (slot,) = (slot for slot in manifest.slots if slot.slot == "model")
-    content = product.content
+    manifest = strict_model_validate_json(MethodCheckpointManifest, raw)
+    identity = CheckpointLatestPointer.model_validate(pointer)
+    model = manifest.model
     if (
-        manifest.transaction_id != pointer["transaction_id"]
-        or (slot.role, slot.media_type, slot.sha256, slot.size_bytes)
-        != ("model", content.media_type, content.sha256, content.size)
-        or slot.metadata["semantic_model"] != product.descriptor
+        manifest.transaction_id != identity.transaction_id or manifest.run_id != identity.run_id
+        or manifest.state_sha256 != identity.transaction_root_sha256
+        or model.tree != success_content_ref(product.content)
+        or model.encoding.model_dump(mode="json") != product.descriptor
     ):
-        raise ValueError("Train model product differs from the authenticated checkpoint slot")
+        raise ValueError("Train model product differs from the authenticated checkpoint")
     return manifest
 
 
@@ -199,7 +172,7 @@ def bind_train_inputs(view: SuccessView, request: RequestObject, predecessor: tu
     model = select_success_product(reference, parent)
     if model.model_dump(mode="json") != outcome.get("model_product"):
         raise ValueError("Pinned predecessor typed product differs from the accepted Train outcome")
-    if isinstance(decoded.spec.method_payload.payload.get("checkpoint_initialization"), dict):
+    if isinstance(decoded.spec, DocumentTrainingRequestSpec) and decoded.spec.continuation is not None:
         if parent.continuation is None:
             raise ValueError("Pinned predecessor has no typed continuation evidence")
         if parent.continuation.provenance != _occurrence(completion["checkpoint"]["pointer"]):
