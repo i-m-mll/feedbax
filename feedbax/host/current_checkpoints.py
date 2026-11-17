@@ -85,7 +85,7 @@ class CurrentCheckpoints:
             "SELECT * FROM jobs WHERE project=? AND request=? ORDER BY seq DESC",
             (self.project, request),
         ):
-            if not self._belongs(row, request):
+            if row["state"] == "reused" or not self._belongs(row, request):
                 continue
             data = json.loads(row["data"])
             if data.get("collected_train") and row["state"] == "stopped":

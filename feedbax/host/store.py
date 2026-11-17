@@ -1640,6 +1640,7 @@ class Store:
     def stop(self, job_ids: list[str], mode: str, *, service: bool = False) -> list[dict]:
         if mode not in ("checkpoint", "force") and not (service and mode == "interrupt"):
             raise HostError("invalid_request", "Unknown stop mode.")
+        strength = {None: 0, "checkpoint": 1, "interrupt": 2, "force": 3}
         results = []
         with self.db:
             for job_id in job_ids:
@@ -1652,23 +1653,19 @@ class Store:
                         }
                     )
                     continue
-                state = self.request_stop(row, mode)
+                state = row["state"]
+                if state in LIVE_STATES and strength[mode] > strength[row["stop_mode"]]:
+                    mode_for_job = "checkpoint" if state == "queued" and mode == "interrupt" else mode
+                    self.db.execute("UPDATE jobs SET stop_mode=? WHERE id=?", (mode_for_job, job_id))
+                    if state == "queued":
+                        self.finished(row, {"outcome": "stopped"})
+                        state = "stopped"
+                    else:
+                        self.db.execute("UPDATE jobs SET state='stopping' WHERE id=?", (job_id,))
+                        self.append(row, "stopping", {"mode": "force" if mode == "interrupt" else mode})
+                        state = "stopping"
                 results.append({"job_id": job_id, "state": state})
         return results
-
-    def request_stop(self, row: sqlite3.Row, mode: str) -> str:
-        strength = {None: 0, "checkpoint": 1, "interrupt": 2, "force": 3}
-        state, job_id = row["state"], row["id"]
-        if state not in LIVE_STATES or strength[mode] <= strength[row["stop_mode"]]:
-            return state
-        mode_for_job = "checkpoint" if state == "queued" and mode == "interrupt" else mode
-        self.db.execute("UPDATE jobs SET stop_mode=? WHERE id=?", (mode_for_job, job_id))
-        if state == "queued":
-            self.finished(row, {"outcome": "stopped"})
-            return "stopped"
-        self.db.execute("UPDATE jobs SET state='stopping' WHERE id=?", (job_id,))
-        self.append(row, "stopping", {"mode": "force" if mode == "interrupt" else mode})
-        return "stopping"
 
     def _completed_product(
         self, attempt: sqlite3.Row, train_slots: frozenset[str] | None = None,

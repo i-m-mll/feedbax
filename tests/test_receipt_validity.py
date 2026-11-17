@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import os
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,7 @@ from feedbax.persistence.effective_success import PublicationConflict, SuccessVi
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.receipt_validity import read_validity_records, record_validity
 from feedbax.validity.admission import decide_validity, observe_differences
+from feedbax.validity.environment import read_environment
 from feedbax.validity.light_products import light_product_matches
 from feedbax.validity.project_admission import is_quick
 from feedbax.validity.source import SourceCatalog
@@ -39,6 +41,23 @@ def _observe(
         [trace], catalog=SourceCatalog({"project": project}), registry={},
         environment=environment, read_object=store.get_object,
     )[0]
+
+
+def test_atomic_lock_replacement_changes_observed_environment_with_equal_size_and_mtime(tmp_path):
+    path = tmp_path / "uv.lock"
+    path.write_text('[[package]]\nname = "numpy"\nversion = "1.0"\n')
+    observed = read_environment(tmp_path, installed={})
+    original = path.stat()
+
+    replacement = tmp_path / "next.lock"
+    replacement.write_text('[[package]]\nname = "numpy"\nversion = "2.0"\n')
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+    replacement.replace(path)
+
+    current = read_environment(tmp_path, installed={})
+    assert observed.versions == {"numpy": "1.0"}
+    assert current.versions == {"numpy": "2.0"}
+    assert current.lock_sha256 != observed.lock_sha256
 
 
 def test_environment_confirmation_never_accepts_code_and_joint_proof_expires(tmp_path):

@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.execution_target import attempt_target
+from feedbax.contracts.request_refs import BestRank
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection
 from feedbax.host.live_evaluate import PLACEMENT_EVENT
 from feedbax.host.protocol import DeferredReuse, HostError, LIGHT_ENTRYPOINT, MANAGED_ENTRYPOINTS
@@ -200,7 +201,7 @@ class DeferredAdmissions:
         try:
             traces = receipt_traces(view.store, published.receipt)
             if not projection.current(traces):
-                self._block(row, "admission_changed", f"The operation registry changed. {_RETRY_MESSAGE}")
+                self._execute_or_block(row, pending, quick=pending["policy"] != "automatic" or quick())
                 return
             files = projection.observe_files(root, traces)
             records = view.store.read_ref(name)
@@ -218,7 +219,14 @@ class DeferredAdmissions:
             return
         match disposition:
             case "reuse":
-                self.db.execute("UPDATE deferred_reuses SET projection=NULL WHERE job=?", (row["id"],))
+                updated = self.db.execute(
+                    """UPDATE deferred_reuses SET projection=NULL WHERE job=? AND projection=?
+                       AND EXISTS (SELECT 1 FROM jobs WHERE id=? AND state='queued' AND delivery=0
+                                   AND stop_mode IS NULL AND outcome IS NULL)""",
+                    (row["id"], pending["projection"], row["id"]),
+                )
+                if not updated.rowcount:
+                    return
                 self._drop_projection(pending["projection"])
                 self.store.finished(row, {"outcome": "reused", "retained_attempt": pending["attempt"]})
             case "execute":
@@ -244,7 +252,12 @@ class DeferredAdmissions:
         bindings = self.store.completion_bindings(row["id"])
         self.store.verify_completion_bindings(row, launch, bindings)
         for binding in bindings:
-            if "terminal" in binding:
+            if "best_rank" in binding:
+                from feedbax.studio.canonical_evaluate import best_bound_rank
+
+                rank = BestRank.model_validate(launch["payload"]["canonical_request"]["checkpoint"])
+                best_bound_rank(rank, binding, verify_metrics=True)
+            elif "terminal" in binding:
                 pin = TerminalTrainSubject.model_validate(binding["terminal"])
                 predecessor = launch["payload"]["canonical_request"]["checkpoint"]["request_id"]
                 origins[predecessor] = pin.receipt
@@ -267,7 +280,9 @@ class DeferredAdmissions:
             (binding,) = bindings
             if compare_pinned_checkpoint(published.receipt, binding) is not None:
                 return False
-        return not current_input_differences(view, published.receipt, origins=origins)
+        return not current_input_differences(
+            view, published.receipt, origins=origins, authenticate_origins=True,
+        )
 
     def _execute_or_block(self, row: sqlite3.Row, pending: sqlite3.Row, *, quick: bool) -> None:
         if pending["policy"] == "automatic" and not quick:

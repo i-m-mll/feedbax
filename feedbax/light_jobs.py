@@ -148,6 +148,8 @@ def validate_light_request(
 def validate_light_requirements(request: DecodedRequest, definition: OperationDefinition | None) -> str:
     """Validate admitted ports from declaration metadata and authored input references."""
     spec = request.spec
+    if definition is not None and not isinstance(spec, AnalysisRequestSpec):
+        raise ValueError("Only managed Analyze accepts operation metadata.")
     if isinstance(spec, AnalysisRequestSpec):
         if definition is None or definition.key != spec.analysis_type:
             raise ValueError("Managed Analyze requires metadata for its canonical operation.")

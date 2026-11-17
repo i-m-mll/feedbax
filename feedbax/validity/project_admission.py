@@ -197,20 +197,25 @@ def is_quick(receipt: Success, duration: timedelta, store: ImmutableArtifactBlob
 def current_input_differences(
     view: SuccessView, receipt: Success, *,
     origins: Mapping[str, ContentObjectRef] | None = None,
+    authenticate_origins: bool = False,
 ) -> tuple[InputDifference, ...]:
     decoded = view.read_request(receipt.request)
     differences = []
     for role, members in decoded.inputs.items():
         for member, bound in zip(members, receipt.inputs[role], strict=True):
             reference = member.reference
+            if isinstance(reference, ContentRef) and authenticate_origins:
+                view.resolve(decoded, member, None)
             if not isinstance(reference, ProductRef) or bound.checkpoint_model is not None:
                 continue
             if bound.evaluation_subject is not None and not isinstance(reference.select, LastMember):
                 continue
             origin = origins.get(reference.request_id) if origins is not None else None
+            if authenticate_origins and origin is None:
+                raise ValueError(f"Missing admitted producer for {role}/{bound.key}.")
             if origin is None:
                 origin = view.authored_ref(reference.request_id)
-            if bound.selection is not None and bound.selection.receipt == origin:
+            if not authenticate_origins and bound.selection is not None and bound.selection.receipt == origin:
                 continue
 
             content: ContentRef | None = None
@@ -222,12 +227,16 @@ def current_input_differences(
                 if terminal is not None:
                     content = terminal.model.content
             elif origin is not None:
-                try:
-                    producer = view.read_receipt(origin)
-                    product, _ = select_bound_product(decoded, reference, producer)
-                    content, descriptor = product.content, product.descriptor
-                except (KeyError, OSError, ValueError):
-                    pass
+                if authenticate_origins:
+                    selected = view.resolve(decoded, member, origin)
+                    content, descriptor = selected.content, selected.descriptor
+                else:
+                    try:
+                        producer = view.read_receipt(origin)
+                        product, _ = select_bound_product(decoded, reference, producer)
+                        content, descriptor = product.content, product.descriptor
+                    except (KeyError, OSError, ValueError):
+                        pass
             if bound.evaluation_subject is not None:
                 value = EvaluationSubjectValue.model_validate(bound.descriptor)
                 if content is not None and value.matches_terminal_model(content):
