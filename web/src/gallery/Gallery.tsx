@@ -1,14 +1,17 @@
 import { installTooltips } from '@window-shell/browser/tooltip';
 import {
-  Box, ChartLine, ChevronDown, FileText, FlaskConical, Maximize, Plus, Search, Settings, ZoomIn, ZoomOut,
+  Box, ChartLine, ChevronDown, Circle, FileText, FlaskConical, Layers, Maximize, Plus, Search, Settings, Waypoints,
+  ZoomIn, ZoomOut,
 } from 'lucide-react';
-import { useLayoutEffect, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { setAppearance } from '@/appearance/appearance';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
+import { Chip } from '@/components/ui/Chip';
 import { Combobox } from '@/components/ui/Combobox';
 import { Dialog } from '@/components/ui/Dialog';
+import { InlineEdit } from '@/components/ui/InlineEdit';
 import { ListRow } from '@/components/ui/ListRow';
 import {
   ContextMenu, ContextMenuContent, ContextMenuTrigger, Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem,
@@ -20,9 +23,11 @@ import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/compone
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { Slider } from '@/components/ui/Slider';
 import { Select, type Option } from '@/components/ui/Select';
+import { StatusMark, type StatusMarkStatus } from '@/components/ui/StatusMark';
 import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
 import { TextField } from '@/components/ui/TextField';
 import { ValueFieldGallery } from './ValueFieldGallery';
+import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 
 type Theme = 'light' | 'dark';
 type Density = 'compact' | 'regular';
@@ -39,6 +44,73 @@ const kinds = [
 const optimizers: Option<string>[] = [
   'adam', 'adamw', 'adabelief', 'adagrad', 'lamb', 'lion', 'nadam', 'radam', 'rmsprop', 'sgd',
 ].map((value) => ({ value, label: value }));
+
+const statuses: [StatusMarkStatus, string][] = [
+  ['succeeded', 'Done'], ['running', 'Running'], ['queued', 'Queued'], ['failed', 'Failed'], ['cannot_run', "Can't run"],
+  ['stale', 'Out of date'], ['unchecked', 'Unchecked'], ['checking', 'Checking'], ['environment', 'Environment'],
+  ['not_run', 'Not run'], ['starting', 'Starting'], ['stopping', 'Stopping'], ['collecting', 'Downloading'],
+  ['awaiting_authorization', 'Needs approval'], ['blocked', 'Blocked'], ['stopped', 'Stopped'],
+  ['interrupted', 'Interrupted'], ['corrupt', 'Damaged'],
+];
+
+type Outline = { id: string; name: string; kind: 'composite' | 'component' | 'attachment'; status?: StatusMarkStatus; children?: Outline[] };
+
+const outline: Outline[] = [
+  { id: 'model', name: 'Model', kind: 'composite', children: [
+    { id: 'encoder', name: 'Encoder', kind: 'composite', children: [
+      { id: 'embed', name: 'Embed', kind: 'component' },
+      { id: 'gru', name: 'GRU', kind: 'component', status: 'stale', children: [
+        { id: 'noise', name: 'Noise', kind: 'attachment' },
+      ] },
+      { id: 'readout', name: 'Readout', kind: 'component' },
+    ] },
+    { id: 'mechanics', name: 'Mechanics', kind: 'composite', children: [
+      { id: 'arm', name: 'Arm', kind: 'component', status: 'failed' },
+      { id: 'muscles', name: 'Muscles', kind: 'component' },
+    ] },
+    { id: 'feedback', name: 'Feedback', kind: 'component' },
+  ] },
+  { id: 'objective', name: 'Objective', kind: 'component', status: 'succeeded' },
+];
+
+const kindGlyphs = { composite: <Layers />, component: <Box />, attachment: <Waypoints /> };
+
+function treeNodes(items: readonly Outline[], names: Readonly<Record<string, string>>): TreeNode[] {
+  return items.map((item) => ({
+    id: item.id,
+    name: names[item.id] ?? item.name,
+    glyph: kindGlyphs[item.kind],
+    trailing: item.status ? <StatusMark status={item.status} /> : undefined,
+    children: item.children && treeNodes(item.children, names),
+  }));
+}
+
+function TreeDemo() {
+  const tree = useRef<TreeHandle>(null);
+  const [selected, setSelected] = useState<string[]>(['gru']);
+  const [names, setNames] = useState<Record<string, string>>({});
+  const rename = (id: string, name: string) => setNames((current) => ({ ...current, [id]: name }));
+  return (
+    <div className="grid gap-2">
+      <div className="h-72 w-72 overflow-auto rounded-control border border-shell-divider">
+        <Tree ref={tree} aria-label="Outline" nodes={treeNodes(outline, names)} defaultExpanded={['model']}
+          selected={selected} onSelectedChange={setSelected} onRename={rename}
+          menu={(node) => (
+            <>
+              <MenuItem onClick={() => tree.current?.rename(node.id)}>Rename</MenuItem>
+              <MenuItem>Duplicate</MenuItem>
+              <MenuItem>Remove</MenuItem>
+            </>
+          )} />
+      </div>
+      <div className="flex gap-2">
+        <Button onClick={() => { setSelected(['noise']); }}>Select Noise</Button>
+        <Button onClick={() => tree.current?.reveal('muscles')}>Reveal Muscles</Button>
+      </div>
+      <span className="text-xs text-shell-muted" data-testid="tree-selection">{selected.join(', ')}</span>
+    </div>
+  );
+}
 
 function Section({ name, children }: { name: string; children: ReactNode }) {
   return (
@@ -75,6 +147,8 @@ export function Gallery() {
   const [expanded, setExpanded] = useState(true);
   const [dialog, setDialog] = useState(false);
   const [chosen, setChosen] = useState('');
+  const [title, setTitle] = useState('model 2');
+  const [editingTitle, setEditingTitle] = useState(false);
 
   return (
     <main className="min-h-screen bg-shell-surface text-shell-foreground">
@@ -227,6 +301,37 @@ export function Gallery() {
         </Section>
 
         <ValueFieldGallery />
+
+        <Section name="Tree">
+          <TreeDemo />
+        </Section>
+
+        <Section name="InlineEdit">
+          <State name={editingTitle ? 'editing' : 'closed'}>
+            <div className="flex h-row w-48 items-center rounded-row px-1 hover:bg-shell-hover" tabIndex={0}
+              onKeyDown={(event) => { if (event.key === 'Enter') setEditingTitle(true); }}
+              onDoubleClick={() => setEditingTitle(true)}>
+              <InlineEdit aria-label="Name" value={title} editing={editingTitle} onEditingChange={setEditingTitle} onCommit={setTitle} />
+            </div>
+          </State>
+        </Section>
+
+        <Section name="StatusMark">
+          <div className="grid grid-cols-3 gap-x-6 gap-y-1">
+            {statuses.map(([status, label]) => (
+              <span key={status} className="flex h-row items-center gap-2 text-sm">
+                <StatusMark status={status} label={label} />{label}
+              </span>
+            ))}
+          </div>
+        </Section>
+
+        <Section name="Chip">
+          <State name="document"><Chip glyph={<Box />}>policy</Chip></State>
+          <State name="output"><Chip glyph={<Circle />} trailing={<StatusMark status="succeeded" />}>Train · checkpoint</Chip></State>
+          <State name="selected"><Chip glyph={<Box />} selected>policy</Chip></State>
+          <State name="long"><Chip glyph={<Box />} className="w-32">a very long document name</Chip></State>
+        </Section>
 
         <Section name="Table">
           <div className="w-full max-w-xl overflow-hidden rounded-control border border-shell-divider">
