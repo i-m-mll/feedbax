@@ -117,9 +117,6 @@ def _template_bundle_payload(
     ).model_dump(mode="json", exclude_none=True)
 
 
-# --- Half one: a path-accepting bundle entrypoint -------------------------------------
-
-
 def test_bundle_subcommand_executes_json_bundle_file_without_registered_package(
     tmp_path: Path,
     capsys,
