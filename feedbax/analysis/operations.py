@@ -5,14 +5,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from inspect import Parameter, signature
-from typing import Annotated, get_args, get_origin, get_type_hints
+from typing import Annotated, Literal, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
-from feedbax.analysis.validation import validate_namespaced_type_key
-from feedbax.component_registry.declarations import parameter_schema_from_model
-from feedbax.contracts.operation import DatasetPort, OperationDefinition
+from feedbax.contracts.operation import (
+    DatasetInputPort, DatasetPort, JaxOperation, ModelPort, OperationDefinition, OperationInputPort, TaskPort,
+)
 from feedbax.dataset import Dataset
+from feedbax.contracts.task_document import TaskDocument
+from feedbax.plugins.declarations import (
+    CallableDeclaration, DistributionSource, mark_callable, settings_schema, validate_declaration_key,
+)
+from feedbax.tasks.registry import PythonTaskInstance
 
 
 @dataclass(frozen=True)
@@ -21,19 +26,64 @@ class DatasetOutput:
     port: DatasetPort
 
 
+@dataclass(frozen=True, kw_only=True)
+class OperationDeclaration(CallableDeclaration):
+    family: Literal["operations"] = "operations"
+    numerical: JaxOperation | None = None
+
+
+def operation(
+    *,
+    settings: type[BaseModel],
+    key: str | None = None,
+    label: str | None = None,
+    revision: int = 1,
+    renamed_from: tuple[str, ...] = (),
+    numerical: JaxOperation | None = None,
+):
+    """Declare a dataset-producing function for discovery by the package scanner."""
+    declaration = OperationDeclaration(
+        key=key, label=label, settings_model=settings, revision=revision,
+        renamed_from=renamed_from, numerical=numerical,
+    )
+    return lambda function: mark_callable(function, declaration)
+
+
 @dataclass(frozen=True)
 class RegisteredOperation:
     function: Callable[..., Dataset]
     parameter_model: type[BaseModel]
     definition: OperationDefinition
+    source: DistributionSource
+    task_parameters: type[BaseModel] | None
 
 
-def _dataset_metadata(annotation: object, metadata_type: type):
-    if get_origin(annotation) is Annotated:
-        value_type, *metadata = get_args(annotation)
-        if value_type is Dataset and len(metadata) == 1 and isinstance(metadata[0], metadata_type):
-            return metadata[0]
-    raise TypeError(f"expected a Dataset annotation with {metadata_type.__name__} metadata")
+def _port_annotation(annotation: object) -> tuple[object, object]:
+    if get_origin(annotation) is Annotated and len(parts := get_args(annotation)) == 2:
+        return parts[0], parts[1]
+    raise TypeError("expected a type annotation with operation port metadata")
+
+
+def _input_port(annotation: object) -> tuple[OperationInputPort, type[BaseModel] | None]:
+    value_type, metadata = _port_annotation(annotation)
+    if value_type is Dataset and isinstance(metadata, DatasetPort):
+        return DatasetInputPort(**metadata.model_dump(exclude={"kind"})), None
+    if isinstance(metadata, ModelPort):
+        from feedbax.runtime.graph import Graph
+
+        if value_type is Graph:
+            return metadata, None
+        raise TypeError("a model input must take a Feedbax Graph")
+    if isinstance(metadata, TaskPort):
+        if metadata.task_key is None and value_type is TaskDocument:
+            return metadata, None
+        if metadata.task_key is not None and get_origin(value_type) is PythonTaskInstance:
+            validate_declaration_key(metadata.task_key)
+            (settings,) = get_args(value_type)
+            if isinstance(settings, type) and issubclass(settings, BaseModel):
+                return metadata, settings
+        raise TypeError("a task input must take a TaskDocument or a declared PythonTaskInstance")
+    raise TypeError("expected a Dataset, ModelPort, or TaskPort annotation")
 
 
 class OperationRegistry:
@@ -43,20 +93,22 @@ class OperationRegistry:
         self._entries: dict[str, RegisteredOperation] = {}
         self._sealed = False
 
-    def register(
-        self, key: str, function: Callable[..., Dataset], *, label: str, owner: str,
+    def register_declaration(
+        self, function: Callable[..., Dataset], declaration: OperationDeclaration, *,
+        key: str, source: DistributionSource,
     ) -> None:
         if self._sealed:
             raise RuntimeError("Operation registry is sealed")
-        validate_namespaced_type_key(key, field="operation key")
+        validate_declaration_key(key)
         if key in self._entries:
             raise ValueError(f"Operation {key!r} is already registered")
         annotations = get_type_hints(function, include_extras=True)
         parameters = signature(function).parameters
-        model = annotations.get("params")
-        if "params" not in parameters or not isinstance(model, type) or not issubclass(model, BaseModel):
-            raise TypeError("operation requires a Pydantic model annotation for params")
+        model = declaration.settings_model
+        if "params" not in parameters or annotations.get("params") is not model:
+            raise TypeError("operation params annotation must match its declared settings model")
         inputs = {}
+        task_parameters = None
         for name, parameter in parameters.items():
             if (
                 parameter.kind not in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
@@ -64,29 +116,44 @@ class OperationRegistry:
             ):
                 raise TypeError("operation arguments must be required and callable by name")
             if name != "params":
-                inputs[name] = _dataset_metadata(annotations.get(name), DatasetPort)
+                port, settings = _input_port(annotations.get(name))
+                inputs[name] = port
+                if settings is not None:
+                    task_parameters = settings
         if not inputs:
-            raise TypeError("operation requires a named dataset input")
-        output = _dataset_metadata(annotations.get("return"), DatasetOutput)
+            raise TypeError("operation requires a named input")
+        if sum(isinstance(port, ModelPort) for port in inputs.values()) > 1:
+            raise TypeError("operation accepts at most one model input")
+        if sum(isinstance(port, TaskPort) for port in inputs.values()) > 1:
+            raise TypeError("operation accepts at most one task input")
+        if declaration.numerical is None and any(isinstance(port, ModelPort) for port in inputs.values()):
+            raise TypeError("a model-consuming operation requires a numerical worker declaration")
+        value_type, output = _port_annotation(annotations.get("return"))
+        if value_type is not Dataset or not isinstance(output, DatasetOutput):
+            raise TypeError("expected a Dataset return annotation with DatasetOutput metadata")
         for port in inputs.values():
-            if missing := port.selected_variables.keys() - model.model_fields.keys():
-                raise TypeError(f"dataset selectors are missing from params: {sorted(missing)}")
-        static_parameters = tuple(
-            name for name, field in model.model_fields.items()
-            if (field.json_schema_extra or {}).get("feedbax", {}).get("static") is True
-        )
+            if isinstance(port, DatasetInputPort):
+                if missing := port.selected_variables.keys() - model.model_fields.keys():
+                    raise TypeError(f"dataset selectors are missing from params: {sorted(missing)}")
+        schema = settings_schema(model)
         definition = OperationDefinition(
             key=key,
-            owner=owner,
-            label=label,
+            owner=source.distribution,
+            owner_version=source.version,
+            revision=declaration.revision,
+            renamed_from=declaration.renamed_from,
+            label=declaration.label or function.__name__,
             description=function.__doc__ or "",
-            param_schema=list(parameter_schema_from_model(model)),
-            parameter_json_schema=model.model_json_schema(),
-            static_parameters=static_parameters,
+            param_schema=list(schema.param_schema),
+            parameter_json_schema=schema.parameter_json_schema,
+            static_parameters=schema.static_parameters,
             inputs=inputs,
             outputs={output.name: output.port},
+            numerical=declaration.numerical,
         )
-        self._entries[key] = RegisteredOperation(function, model, definition.model_copy(deep=True))
+        self._entries[key] = RegisteredOperation(
+            function, model, definition.model_copy(deep=True), source, task_parameters,
+        )
 
     def keys(self) -> tuple[str, ...]:
         return tuple(sorted(self._entries))
@@ -94,7 +161,8 @@ class OperationRegistry:
     def resolve(self, key: str) -> RegisteredOperation:
         entry = self._entries[key]
         return RegisteredOperation(
-            entry.function, entry.parameter_model, entry.definition.model_copy(deep=True)
+            entry.function, entry.parameter_model, entry.definition.model_copy(deep=True), entry.source,
+            entry.task_parameters,
         )
 
     def definitions(self) -> tuple[OperationDefinition, ...]:

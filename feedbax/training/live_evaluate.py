@@ -21,17 +21,18 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
 from feedbax.studio.canonical_evaluate import BoundEvaluationJobInput, decode_rollout_request
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-from feedbax.training.checkpoint_custody import open_published_model_slot
-from feedbax.training.evaluate_worker import prepare_rollout, rollout_dataset
+from feedbax.training.method_checkpoint import read_method_checkpoint
+from feedbax.training.evaluate_worker import _prepare_model_rollout, rollout_dataset
 from feedbax.training_host_worker import _Events, _error
 
 if TYPE_CHECKING:
     from feedbax.runtime.graph import Graph
+    from feedbax.plugins.application import ApplicationRegistryBundle
 
 
 def live_evaluation_callback(
-    launch: BoundStudioTrainingJobInput, events: _Events,
-) -> Callable[[PublishedTrainingCheckpoint, Graph], None] | None:
+    launch: BoundStudioTrainingJobInput, events: _Events, *, registry: ApplicationRegistryBundle,
+) -> Callable[[PublishedTrainingCheckpoint, tuple[Graph, ...]], None] | None:
     sidecar = os.environ.get("FEEDBAX_HOST_LIVE_EVALUATE")
     if sidecar is None:
         return None
@@ -57,36 +58,49 @@ def live_evaluation_callback(
     prepared = None
     compiled = None
 
-    def score(checkpoint: PublishedTrainingCheckpoint, model: Graph) -> None:
+    def score(checkpoint: PublishedTrainingCheckpoint, models: tuple[Graph, ...]) -> None:
         nonlocal prepared, compiled
         if checkpoint.completed_updates not in coordinates or train_stop.exists() or evaluation_stop.exists():
             return
         try:
+            slot = read_method_checkpoint(
+                checkpoint.checkpoint_root, checkpoint.pointer, components=registry.components,
+            ).model
             if compiled is None:
-                prepared = prepare_rollout(launch, checkpoint, params)
-                compiled = prepared.scorer.lower(model, capture_state=prepared.layout.capture).compile()
-                slot = prepared.slot
-            else:
-                slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
-                if slot is None or slot.graph != prepared.slot.graph:
-                    raise ValueError("Live Evaluate model layout changed after preparation.")
-            if train_stop.exists() or evaluation_stop.exists():
-                return
-            evaluated = jax.block_until_ready(compiled(model))
-            if train_stop.exists() or evaluation_stop.exists():
-                return
+                prepared = _prepare_model_rollout(
+                    launch.spec.trial_documents, params, slot, checkpoint.completed_updates,
+                    seed=launch.spec.seed, registry=registry,
+                )
+                compiled = prepared.scorer.lower(models[0], capture_state=prepared.layout.capture).compile()
+            elif slot.graph != prepared.slot.graph or slot.replica_ids != prepared.slot.replica_ids:
+                raise ValueError("Live Evaluate model layout changed after preparation.")
             member = prepared.member.model_copy(update={
                 "coordinate": checkpoint.completed_updates, "model_tree": slot.tree.descriptor.sha256,
             })
-            bound = replace(prepared, graph=model, slot=slot, member=member)
-            dataset = rollout_dataset(bound, evaluated, params, update_axis="update")
+            datasets = []
+            totals = []
+            for model, _ in zip(models, slot.replica_ids, strict=True):
+                if train_stop.exists() or evaluation_stop.exists():
+                    return
+                evaluated = jax.block_until_ready(compiled(model))
+                bound = replace(prepared, graph=model, slot=slot, member=member)
+                datasets.append(rollout_dataset(bound, evaluated, params, update_axis="update"))
+                totals.append(float(evaluated.objective.loss))
+            if train_stop.exists() or evaluation_stop.exists():
+                return
+            if len(datasets) > 1:
+                from feedbax.dataset_replicates import stack_replicates
+
+                dataset = stack_replicates(slot.replica_ids, datasets, after="update")
+            else:
+                (dataset,) = datasets
             with store._exclusive_lock():
                 states = publish_dataset(store, dataset)
                 point = LiveEvaluationPoint(
                     evaluation_job_id=assignment["evaluation_job_id"], checkpoint=checkpoint,
                     result=ScoredEvaluationPoint(
-                        states=states, member=member, objective=bound.objective,
-                        total=float(evaluated.objective.loss),
+                        states=states, member=member, objective=prepared.objective,
+                        total=sum(totals) / len(totals),
                     ),
                 )
                 store.register_root(ContentRootRecord(

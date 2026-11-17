@@ -205,22 +205,22 @@ class AnalysisJobService:
             self._active -= 1
 
     def submit_operation(
-        self, manifest_id: str, *, operation: dict[str, Any], bootstrap_modules: tuple[str, ...]
+        self, manifest_id: str, *, operation: dict[str, Any]
     ) -> str:
         """Run a validated Studio operation in a cancellable child of this service."""
         assert self._job_root is not None
         return self.submit(
-            manifest_id, _ProcessOperation(self, operation, bootstrap_modules)
+            manifest_id, _ProcessOperation(self, operation)
         )
 
     def _run_operation(
-        self, request_id: str, operation: dict[str, Any], bootstrap_modules: tuple[str, ...]
+        self, request_id: str, operation: dict[str, Any]
     ) -> AnalysisJobResult:
         assert self._job_root is not None
         job_dir = self._job_root / request_id
         with self._worker_lease(request_id) as lease_fd:
             write_job_json(job_dir / "operation.json", {
-                "operation": operation, "bootstrap_modules": bootstrap_modules,
+                "operation": operation,
             })
             read_fd, write_fd = os.pipe()
             try:
@@ -307,10 +307,9 @@ class AnalysisJobService:
 class _ProcessOperation:
     service: AnalysisJobService
     operation: dict[str, Any]
-    bootstrap_modules: tuple[str, ...]
 
     def run(self, request_id: str) -> AnalysisJobResult:
-        return self.service._run_operation(request_id, self.operation, self.bootstrap_modules)
+        return self.service._run_operation(request_id, self.operation)
 
 
 @contextmanager

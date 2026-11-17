@@ -383,12 +383,9 @@ def resolve_science_repo_import_revisions(
     )
     revisions: dict[str, str] = {}
     for provenance in plugin_provenance:
-        module_name = str(getattr(provenance, "entry_point_value", "")).partition(":")[0]
-        if not isinstance(module_name, str) or not module_name:
-            continue
-        top_level = module_name.split(".", 1)[0]
+        module_name = provenance.source.package
         try:
-            spec = importlib.util.find_spec(top_level)
+            spec = importlib.util.find_spec(module_name)
         except (ImportError, ValueError, AttributeError):
             continue
         origin = getattr(spec, "origin", None) if spec is not None else None

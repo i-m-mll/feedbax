@@ -334,7 +334,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             arrays[key] = pos, tgt, dataset.data("condition")[0]
     base_pos, base_tgt, base_condition = arrays[baseline]
     with outcomes[baseline].open_states() as dataset:
-        from feedbax.analysis.builtin_operations import AlignedVelocityParameters, aligned_velocity
+        from feedbax.builtins.operations import AlignedVelocityParameters, aligned_velocity
 
         analysis = aligned_velocity(dataset, AlignedVelocityParameters(
             position=position, velocity=state_key("plant", "effector/velocity"), target=target,

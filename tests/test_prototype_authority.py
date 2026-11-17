@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from feedbax.component_registry import ComponentPack
+from tests.support.component_owners import register_owners
 
 import jax
 import jax.numpy as jnp
@@ -33,7 +33,7 @@ def test_custom_nested_prototype_drives_compiler_and_studio_dimensions(declared_
         def __call__(self, inputs, state, *, key):
             return {"output": jnp.zeros(self.width)}, state
 
-    components.ingest(ComponentPack(namespace="test", components=(VectorSource,)))
+    register_owners(components, "test", VectorSource)
     child = GraphSpec(
         nodes={"source": ComponentSpec(type="test.VectorSource", output_ports=["output"])},
         output_ports=["output"],
@@ -181,7 +181,7 @@ def test_stateful_dtype_survives_scan_and_serialization(component_type, nested) 
 
 def test_stateful_prototype_declarations_and_schema_migration() -> None:
     from feedbax.compiler.prototypes import infer_node_input_prototypes, validate_or_add_input_shape
-    from feedbax.runtime.components import DelayLine
+    from feedbax.builtins.runtime.components import DelayLine
 
     components = ComponentRegistry()
     for kind in ("feedbax.DelayLine", "feedbax.Channel", "feedbax.FirstOrderFilter"):
@@ -247,7 +247,7 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
 
 
 def test_direct_filter_preserves_structured_signal_dtypes() -> None:
-    from feedbax.runtime.filters import LowPassFilter
+    from feedbax.builtins.runtime.filters import LowPassFilter
     from feedbax.runtime.graph import init_state_from_component
 
     with jax.experimental.enable_x64():
@@ -281,7 +281,7 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
 
 @pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_, jnp.complex64])
 def test_filter_rejects_non_real_floating_state_leaves(dtype) -> None:
-    from feedbax.runtime.filters import LowPassFilter
+    from feedbax.builtins.runtime.filters import LowPassFilter
 
     registry = ComponentRegistry()
     invalid = jnp.zeros(2, dtype=dtype)
@@ -372,7 +372,7 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
         def __call__(self, inputs, state, *, key):
             return {"output": jnp.ones(self.width)}, state
 
-    registry.ingest(ComponentPack(namespace="test", components=(NormalizedSource,)))
+    register_owners(registry, "test", NormalizedSource)
 
     class DerivedRelay(Component):
         config = RelayParams
@@ -388,7 +388,7 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
         def __call__(self, inputs, state, *, key):
             return {"output": inputs["input"]}, state
 
-    registry.ingest(ComponentPack(namespace="test", components=(DerivedRelay,)))
+    register_owners(registry, "test", DerivedRelay)
     typed = SourceParams(width=2)
     direct = NormalizedSource.from_config(typed)
     assert typed.width == direct.width == direct.configuration().width == 3
@@ -496,7 +496,7 @@ def test_parameter_normalizer_cannot_contradict_derived_dimension() -> None:
         def __call__(self, inputs, state, *, key):
             return {"output": inputs["input"]}, state
 
-    registry.ingest(ComponentPack(namespace="test", components=(ContradictoryRelay,)))
+    register_owners(registry, "test", ContradictoryRelay)
     spec = GraphSpec(
         nodes={
             "relay": ComponentSpec(

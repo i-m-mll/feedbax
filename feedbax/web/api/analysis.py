@@ -232,7 +232,6 @@ async def generate_figure(
             request_id = jobs.submit_operation(
                 manifest_id,
                 operation={"kind": kind, "spec": spec.model_dump(mode="json")},
-                bootstrap_modules=request.app.state.bootstrap_modules,
             )
         else:
             request_id = jobs.submit(manifest_id, work)

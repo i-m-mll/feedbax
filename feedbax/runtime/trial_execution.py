@@ -22,7 +22,7 @@ from feedbax.tasks.document import TaskParameters, Trial, TrialSource
 
 
 class TrialEvaluation(NamedTuple):
-    objective: ObjectiveResult
+    objective: ObjectiveResult | None
     trials: Trial
     retained: Mapping[str, jax.Array]
     history: Mapping[str, jax.Array] | None
@@ -88,7 +88,7 @@ class TrialExecution:
     def score(
         self,
         graph: Graph,
-        objective: ObjectiveExecutor,
+        objective: ObjectiveExecutor | None,
         trials: Trial,
         *,
         run_key: jax.Array,
@@ -99,7 +99,7 @@ class TrialExecution:
             graph, trials, trial_keys, capture_state=capture_state,
         )
         return TrialEvaluation(
-            objective.evaluate(retained, trials, run_key=run_key, trial_keys=trial_keys),
+            None if objective is None else objective.evaluate(retained, trials, run_key=run_key, trial_keys=trial_keys),
             trials,
             retained,
             history,
@@ -118,7 +118,9 @@ class TrialExecution:
         trials, keys = self.sample_trials(
             parameters, run_key=run_key, update_key=update_key, count=count,
         )
-        return self.score(graph, objective, trials, run_key=run_key, trial_keys=keys).objective
+        scored = self.score(graph, objective, trials, run_key=run_key, trial_keys=keys)
+        assert scored.objective is not None
+        return scored.objective
 
     def validation(
         self,
@@ -136,7 +138,7 @@ class TrialExecution:
         )
 
     def evaluate(
-        self, graph: Graph, objective: ObjectiveExecutor, parameters: TaskParameters, *,
+        self, graph: Graph, objective: ObjectiveExecutor | None, parameters: TaskParameters, *,
         key: jax.Array, trial_ids: tuple[str, ...], capture_state: Callable | None = None,
     ) -> TrialEvaluation:
         keys = jnp.stack([derive_key(key, "evaluate-trial", trial) for trial in trial_ids])

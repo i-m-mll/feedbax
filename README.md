@@ -70,16 +70,18 @@ Keep reusable problem-domain facilities outside whichever method first used them
 
 Keep authored inputs, frozen inputs, and generated outputs distinct. Preserve frozen input bytes and their pinned provenance exactly. Let the compiler produce resolved outputs and locks, and retain execution evidence through the artifact and custody interfaces. Moving source can change source-derived identities: refresh active authoring and regenerate its outputs through the existing public authoring and compilation tools while preserving frozen inputs.
 
-Both editable development installs and installed wheels can provide plugins. Configure resource, output, and custody locations through the relevant public interfaces rather than assuming the installed package is a writable repository checkout. The [downstream stability inventory](docs/design/downstream_interface_stability.md) lists the implemented interfaces during the rebuild and links the historical ratification. The [downstream conformance kit](docs/design/downstream_conformance_kit.md) documents the test helpers available to extension packages.
+Editable installs and wheels can supply declarations. Configure resources, outputs, and custody through their public interfaces so the package can run from a read-only installation.
 
 Declare your plugin entry point in `pyproject.toml`, for example:
 
 ```toml
 [project.entry-points."feedbax.plugins"]
-my_project = "my_project.plugin:PLUGIN_REGISTRATION"
+my_project = "my_project.declarations"
 ```
 
-The entry point exports a typed `PluginRegistration` with a `PluginDeclaration`, an explicit downstream protocol version, required registry families, and a registration callback. Keep this assembly in a dedicated module loaded by the application's outer layer through the public bootstrap. Numerical modules remain independent of plugin assembly. Register components through explicitly namespaced `ComponentPack` objects; keep component migration records apart from runtime code and associate their histories with current class objects when assembling the pack. A current owner with no history needs no migration record.
+Feedbax imports the named package and its submodules and collects concrete component and Python task classes and functions decorated with `@operation`, `@training_method`, or `@figure_template`. Define declarations inside the scanned package. Keep optional imports inside the functions that use them so every declaration can load with the package's base dependencies.
+
+The default key is the top-level import package followed by the class or function name, such as `my_project.Scale`. Declare any custom key, settings, computation revision, and current rename history on the class or decorator. The catalog records the installed distribution's name and version. Run `feedbax describe` to see the declarations available in the active environment.
 
 ## Development
 

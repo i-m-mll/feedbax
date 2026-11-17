@@ -6,9 +6,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from feedbax.contracts.portable import ComponentOwner, GraphTemplate
+
 from feedbax.contracts.component import (
     ComponentDefinition,
-    ComponentIdentity,
     ComponentMigrationInfo,
     DynamicPortLayout,
     derive_dynamic_port_layout,
@@ -22,10 +23,12 @@ from feedbax.contracts.migrations import (
 )
 from feedbax.contracts.representation import validate_representation_against_component
 from feedbax.registry_errors import RegistryCollisionError
+from feedbax.plugins.declarations import DistributionSource, missing_declaration
 
 from .migration_routes import migration_route, source_endpoint, validate_migration_routes
 from .declarations import DeclaredComponent
-from .discovery import ComponentPack, compile_owner, discover_modules, source_path
+from .discovery import compile_owner, component_declaration_key, source_path
+from .history import History
 
 
 logger = logging.getLogger(__name__)
@@ -56,121 +59,69 @@ class TemplateBuilderIssue:
 
 
 class ComponentRegistry:
-    def __init__(self) -> None:
+    def __init__(
+        self, declarations: Iterable[tuple[type[ComponentOwner], DistributionSource]] | None = None,
+    ) -> None:
         self._sealed = False
         self._components: Dict[str, DeclaredComponent] = {}
         self._component_migrations: Dict[tuple[str, int | str | None], ComponentMigration] = {}
         self._migration_owners: Dict[str, set[str]] = {}
         self._history_names: dict[str, type] = {}
-        self._register_builtins()
+        if declarations is None:
+            from feedbax.plugins.bootstrap import installed_declarations
 
-    def _register_builtins(self) -> None:
-        from .builtins import builtin_component_packs
+            declarations = (
+                (owner, package.source)
+                for package in installed_declarations()
+                for owner in package.components
+            )
+        self.register_declarations(declarations)
 
-        for pack in builtin_component_packs():
-            self.ingest(pack, provenance="feedbax")
-
-    discover_modules = staticmethod(discover_modules)
-
-    def ingest(self, pack: ComponentPack, *, provenance: str | None = None) -> None:
-        """Compile and validate a complete batch before publishing its entries."""
+    def register_declarations(
+        self, declarations: Iterable[tuple[type[ComponentOwner], DistributionSource]],
+    ) -> None:
+        """Compile all declarations before making any of them visible."""
         self._require_mutable()
         components = dict(self._components)
         migrations = dict(self._component_migrations)
         migration_owners = {owner: set(types) for owner, types in self._migration_owners.items()}
         reserved_names = dict(self._history_names)
         edges = []
-        discovered = (
-            discover_modules(*pack.modules, namespace=pack.namespace, histories=pack.histories)
-            if pack.modules
-            else None
-        )
-        batch = tuple(
-            {
-                id(item): item
-                for item in (*pack.components, *(discovered.components if discovered else ()))
-            }.values()
-        )
-        unknown_history = pack.histories.keys() - {item for item in batch if isinstance(item, type)}
-        if unknown_history:
-            raise ValueError(f"History supplied for undiscovered owners: {unknown_history!r}")
-        from feedbax.contracts.portable import GraphTemplate
-        batch = tuple(sorted(batch, key=lambda item: isinstance(item, type) and issubclass(item, GraphTemplate)))
-        for definition in batch:
-            definition_sources: tuple[Path | None, ...] = ()
-            owner_class = None
-            owner_class = definition
-            if pack.namespace is not None:
-                from .history import History
-
-                history = pack.histories.get(definition, History())
-                identities = {
-                    identity
-                    for identity, _revision in history.endpoints(
-                        pack.namespace, definition.__name__
-                    ).values()
-                } | {endpoint.type_id for endpoint in history.legacy}
-                for identity in sorted(identities):
-                    if (
-                        identity in reserved_names
-                        and reserved_names[identity] is not definition
-                    ):
-                        raise RegistryCollisionError(
-                            f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}"
-                        )
-                    reserved_names[identity] = definition
+        for owner, source in sorted(declarations, key=lambda item: issubclass(item[0], GraphTemplate)):
+            key = component_declaration_key(owner, source)
+            namespace, _, local_name = key.rpartition(".")
+            history = vars(owner).get("component_history") or History()
+            identities = {identity for identity, _ in history.endpoints(namespace, local_name).values()}
+            for identity in sorted(identities):
+                if identity in reserved_names:
+                    raise RegistryCollisionError(
+                        f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}"
+                    )
+                reserved_names[identity] = owner
             compilation = copy(self)
             compilation._components = components
             compilation._component_migrations = {
                 **migrations,
                 **{(edge.source_type, edge.source_param_schema_version): edge for edge in edges},
             }
-            definitions, definition_sources, owner_edges = compile_owner(
-                definition, namespace=pack.namespace, history=pack.histories.get(definition), registry=compilation
+            meta, definition_sources, owner_edges = compile_owner(
+                owner, key=key, source=source, history=history, registry=compilation,
             )
             edges.extend(owner_edges)
-            for declared in definitions:
-                meta = deepcopy(declared)
-                if owner_class in pack.presentation:
-                    meta = replace(meta, studio=replace(meta.studio, **pack.presentation[owner_class].as_kwargs()))
-                    definition_sources = (*definition_sources, meta.studio.source)
-                if meta.provenance is None:
-                    origin = provenance
-                    if origin is None and owner_class is not None:
-                        origin = f"package:{owner_class.__module__.split('.')[0]}"
-                    meta = replace(meta, provenance=origin)
-                meta = self._complete_identity(meta)
-                component_sources = (
-                    *definition_sources,
-                    *pack.sources,
-                    *_declared_source_paths(meta),
+            runtime_type = meta.params.runtime_type
+            conflict = next(
+                (item for item in components.values() if item.params.runtime_type is runtime_type),
+                None,
+            )
+            if conflict is not None:
+                raise RegistryCollisionError(
+                    f"Component runtime type already registered: {runtime_type!r} "
+                    f"({conflict.name!r}, {meta.name!r})"
                 )
-                if meta.name in components:
-                    existing = components[meta.name]
-                    raise RegistryCollisionError(
-                        f"component type already registered: {meta.name!r} "
-                        f"({existing.owner!r} from {existing.source_paths!r}; "
-                        f"{meta.owner!r} from {component_sources!r})"
-                    )
-                runtime_type = meta.params.runtime_type
-                if runtime_type is not None and meta.alias_of is None:
-                    conflict = next(
-                        (
-                            item
-                            for item in components.values()
-                            if item.alias_of is None
-                            and item.params.runtime_type is runtime_type
-                            and (meta.owner_class is not None or item.owner_class is not None)
-                        ),
-                        None,
-                    )
-                    if conflict is not None:
-                        raise RegistryCollisionError(
-                            f"component runtime type already registered: {runtime_type!r} "
-                            f"({conflict.name!r}, {meta.name!r})"
-                        )
-                self._validate_representation(meta)
-                components[meta.name] = replace(meta, source_paths=component_sources)
+            self._validate_representation(meta)
+            components[key] = replace(
+                meta, source_paths=(*definition_sources, *_declared_source_paths(meta)),
+            )
         changed_targets = set(components) - self._components.keys()
         for migration in edges:
             if not migration.owner:
@@ -281,9 +232,7 @@ class ComponentRegistry:
             owner = self._owner_for_missing_type(resolved_type, meta)
             if owner is not None and not self._has_owner(owner):
                 raise MissingComponentOwner(
-                    "Component type requires an owner migration pack that is not loaded: "
-                    f"type={resolved_type!r}, owner={owner!r}, "
-                    "install or enable the owning Feedbax component package"
+                    missing_declaration("component", resolved_type)
                 )
             owner_context = f", owner={owner!r}" if owner is not None else ""
             raise UnsupportedComponentMigration(
@@ -521,18 +470,6 @@ class ComponentRegistry:
                 )
         return issues
 
-    def _complete_identity(self, meta: DeclaredComponent) -> DeclaredComponent:
-        details = _identity_from_provenance(meta.name, meta.provenance)
-        declaration = meta.declaration
-        if declaration.owner == "local" and details.owner is not None:
-            declaration = replace(
-                declaration,
-                owner=details.owner,
-                schema_id=f"{details.owner}.component.{meta.name}",
-            )
-        identity = meta.identity or details.model_copy(update={"owner": declaration.owner})
-        return replace(meta, declaration=declaration, identity=identity)
-
     @staticmethod
     def _with_migrations(
         meta: DeclaredComponent,
@@ -658,51 +595,6 @@ def _declared_source_paths(meta: DeclaredComponent) -> tuple[Path | None, ...]:
         *meta.source_paths,
         *(source_path(rule) for rule in rules if rule is not None),
     )
-
-
-def _identity_from_provenance(type_id: str, provenance: str | None) -> ComponentIdentity:
-    if provenance == "feedbax":
-        return ComponentIdentity(
-            type_id=type_id,
-            owner="feedbax",
-            provenance=provenance,
-            provenance_kind="feedbax",
-            package="feedbax",
-            stable=True,
-        )
-    if provenance and provenance.startswith("package:"):
-        package = provenance.removeprefix("package:")
-        return ComponentIdentity(
-            type_id=type_id,
-            owner=package,
-            provenance=provenance,
-            provenance_kind="package",
-            package=package,
-            stable=True,
-        )
-    if provenance and provenance.startswith("file:"):
-        return ComponentIdentity(
-            type_id=type_id,
-            owner="local",
-            provenance=provenance,
-            provenance_kind="file",
-            stable=False,
-        )
-    if provenance and provenance.startswith("entry-point:"):
-        return ComponentIdentity(
-            type_id=type_id,
-            provenance=provenance,
-            provenance_kind="package",
-            stable=False,
-        )
-    if provenance:
-        return ComponentIdentity(
-            type_id=type_id,
-            provenance=provenance,
-            provenance_kind="local",
-            stable=False,
-        )
-    return ComponentIdentity(type_id=type_id)
 
 
 def required_interior_domain(node_type: str, registry: Any) -> str | None:

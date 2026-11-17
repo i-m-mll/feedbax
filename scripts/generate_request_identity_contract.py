@@ -14,7 +14,7 @@ from feedbax.contracts.request_identity_guard import (
 )
 
 _CONTRACT = Path("feedbax/contracts/request_identity_contract.json")
-_RETIREMENTS = frozenset({"m2-train-v1-retirement"})
+_RETIREMENTS = frozenset({"m2-train-v1-retirement", "declared-train-methods-retirement"})
 
 
 def main() -> None:

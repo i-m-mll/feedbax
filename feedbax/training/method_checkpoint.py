@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, fields, is_dataclass
+from inspect import getattr_static
 import os
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
+from types import BuiltinFunctionType, FunctionType
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -99,6 +102,17 @@ def _checkpoint_metadata(value):
         return value.shape, str(value.dtype), value.weak_type
     if isinstance(value, type) and "<locals>" not in value.__qualname__:
         return value.__module__, value.__qualname__
+    if isinstance(value, (FunctionType, BuiltinFunctionType)):
+        module = value.__module__
+        path = value.__qualname__.split(".")
+        bound = sys.modules.get(module)
+        if bound is not None and all(part.isidentifier() for part in path):
+            for part in path:
+                bound = getattr_static(bound, part, None)
+            if isinstance(bound, staticmethod):
+                bound = bound.__func__
+            if bound is value:
+                return module, value.__qualname__
     if isinstance(value, jax.tree_util.GetAttrKey):
         return value.name
     if isinstance(value, jax.tree_util.SequenceKey):

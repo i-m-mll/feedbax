@@ -101,7 +101,7 @@ def read_checkpoint_file(path: Path, expected: ContentObjectRef | None = None) -
         raise CheckpointCustodyError(f"{path}: checkpoint file cannot be read: {error}") from error
 
 
-def _manifest_from_bytes(raw: bytes, pointer: CheckpointLatestPointer) -> MethodCheckpointManifest:
+def parse_method_checkpoint_manifest(raw: bytes, pointer: CheckpointLatestPointer) -> MethodCheckpointManifest:
     manifest = strict_model_validate_json(MethodCheckpointManifest, raw)
     if raw != canonical_json_v2_bytes(manifest.model_dump(mode="json")):
         raise CheckpointCustodyError("Method checkpoint manifest is not canonical")
@@ -115,7 +115,7 @@ def _local_manifest(
 ) -> tuple[Path, MethodCheckpointManifest, ContentObjectRef]:
     relative = Path(pointer.manifest_relative_path)
     raw = read_checkpoint_file(root / relative)
-    return relative, _manifest_from_bytes(raw, pointer), _checkpoint_ref(raw)
+    return relative, parse_method_checkpoint_manifest(raw, pointer), _checkpoint_ref(raw)
 
 
 def read_method_checkpoint_manifest(root: Path, pointer: CheckpointLatestPointer) -> MethodCheckpointManifest:
@@ -180,7 +180,7 @@ def verify_method_checkpoint_content(
     manifest_ref = members.get(relative.as_posix())
     if manifest_ref is None:
         raise CheckpointCustodyError("Checkpoint binding has no transaction manifest")
-    manifest = _manifest_from_bytes(store.get_object(manifest_ref), pointer)
+    manifest = parse_method_checkpoint_manifest(store.get_object(manifest_ref), pointer)
     expected = _member_files(relative, manifest, manifest_ref, store, include_extra=include_extra)
     if members.keys() != {LATEST_NAME, *(path.as_posix() for path in expected)}:
         raise CheckpointCustodyError("Checkpoint binding has an incomplete or unexpected member closure")

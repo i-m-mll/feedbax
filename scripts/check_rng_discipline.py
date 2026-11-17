@@ -39,7 +39,7 @@ CHECKS = (
         "HOLD raw target sampling must not reuse the REACH target key",
     ),
     Check(
-        "feedbax/runtime/signal_transforms.py",
+        "feedbax/builtins/runtime/signal_transforms.py",
         "lambda x: self.noise_func(key, x)",
         "AddNoise must split the call key per PyTree signal leaf",
     ),
