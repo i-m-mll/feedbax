@@ -157,7 +157,6 @@ from feedbax.contracts.studio_api import (
     DomainListResponse,
     ComponentListPayload,
     ComponentListResponse,
-    ComponentRefreshPayload,
     PenzaiBuilderInfo,
     PenzaiBuilderListPayload,
     PenzaiBuilderListResponse,
@@ -176,10 +175,8 @@ from feedbax.contracts.studio_api import (
     AnalysisBundleDryRunResult,
 )
 from feedbax.contracts.training import (
-    BatchScheduleOriginSpec,
     LrScheduleSpec,
     OptimizerSpec,
-    TrainingConfig,
 )
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.jobs import (
@@ -410,7 +407,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectSnapshot,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
-from feedbax.contracts.request_specs import TrialDocuments
+from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
@@ -734,10 +731,10 @@ MODEL_TYPES: list[type[BaseModel]] = [
     WorkspaceReplayRequiredSelector,
     ResolvedWorkspaceReplayScene,
     ComponentDefinition,
-    BatchScheduleOriginSpec,
+    DocumentTrainingConfig,
+    TrainContinuation,
     LrScheduleSpec,
     OptimizerSpec,
-    TrainingConfig,
     TaskTimelineCue,
     SampledTaskTrial,
     TaskTrialSampleRequest,
@@ -752,7 +749,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ComponentListPayload,
     ComponentListResponse,
     ComponentDetailResponse,
-    ComponentRefreshPayload,
     DomainListResponse,
     PenzaiBuilderInfo,
     PenzaiBuilderListPayload,
@@ -938,7 +934,6 @@ MIGRATION_OR_NORMALIZATION_VALIDATORS = {
     ("StudioTaskBindingSpec", "reject_legacy_task_binding_contract"),
     ("PortType", "migrate_legacy_signal_port"),
     ("ComponentDefinition", "migrate_legacy_definition"),
-    ("LrScheduleSpec", "_migrate_v1_origin"),
     ("SelectionSpec", "_normalize_mode_fields"),
 }
 

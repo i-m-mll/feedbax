@@ -1346,10 +1346,6 @@ MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
 
 
 def _manifest_model_for_kind(kind: str) -> type[BaseModel] | None:
-    if kind == "TrainingCheckpointTransactionManifest":
-        from feedbax.contracts.checkpoints import CheckpointTransactionManifest
-
-        return CheckpointTransactionManifest
     return MANIFEST_MODELS.get(kind)
 
 

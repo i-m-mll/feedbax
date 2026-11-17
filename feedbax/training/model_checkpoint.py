@@ -15,8 +15,6 @@ import numpy as np
 
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.artifact_custody import (
-    CONTENT_OBJECT_REF_PREFIX,
-    CONTENT_TREE_REF_PREFIX,
     ArtifactBlobCustodyError,
     ContentObjectRef,
     ContentTreeRef,
@@ -42,13 +40,11 @@ from feedbax.persistence.array_container import (
 )
 from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
-    decode_content_tree_descriptor,
 )
 from feedbax.persistence.model_tree import (
     MODEL_CHECKPOINT_STORE as _MODEL_STORE,
     ModelTreeLayoutError,
     ModelTreeReplica,
-    checkpoint_model_object_path as _slot_path,
     model_tree_asset_path,
     read_model_tree,
 )
@@ -59,32 +55,14 @@ from feedbax.training.checkpoint_errors import CheckpointCustodyError
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider
-    from feedbax.contracts.checkpoints import CheckpointSlotBlobRef
 
 
-MODEL_TREE_SERIALIZER = "feedbax.semantic-model-tree.v2"
 
 
 class ModelCheckpointError(CheckpointCustodyError):
     def __init__(self, path: str, message: str):
         self.path = path
         super().__init__(f"{path}: {message}")
-
-
-def _slot_tree(slot: CheckpointSlotBlobRef) -> ContentTreeRef:
-    if slot.slot != "model" or slot.role != "model" or slot.media_type != MODEL_TREE_MEDIA_TYPE:
-        raise ModelCheckpointError("/v1/model", "invalid semantic model slot")
-    descriptor = ContentObjectRef(
-        object_id=f"{CONTENT_OBJECT_REF_PREFIX}{slot.sha256}",
-        sha256=slot.sha256,
-        size_bytes=slot.size_bytes,
-    )
-    if slot.relative_path != _slot_path(descriptor).as_posix():
-        raise ModelCheckpointError("/v1/model", "semantic model tree path disagrees with its digest")
-    return ContentTreeRef(
-        tree_id=f"{CONTENT_TREE_REF_PREFIX}{slot.sha256}",
-        descriptor=descriptor,
-    )
 
 
 def effective_model_graph(authored: GraphSpec, model: Graph) -> GraphSpec:
@@ -162,14 +140,6 @@ class SemanticModelWriter:
         return MethodCheckpointModel(tree=tree, encoding=encoding)
 
 
-def semantic_model_member_files(
-    slot: CheckpointSlotBlobRef, raw_tree: bytes,
-) -> dict[Path, ContentObjectRef]:
-    """List the member closure from an already hash-checked slot descriptor."""
-    tree = decode_content_tree_descriptor(raw_tree, _slot_tree(slot))
-    return {_slot_path(file.object): file.object for file in tree.files}
-
-
 @dataclass(frozen=True)
 class ModelRestoreTarget:
     """A resolved variant and its authorized scalar source-value overrides."""
@@ -187,21 +157,6 @@ class SemanticModelSlot:
     encoding: SemanticModelEncoding
     tree: ContentTreeRef
     components: ComponentRegistry
-
-    @classmethod
-    def open(
-        cls, transaction: Path, slot: CheckpointSlotBlobRef, *, components: ComponentRegistry,
-    ) -> SemanticModelSlot:
-        try:
-            return cls.open_store(
-                ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE), _slot_tree(slot),
-                SemanticModelEncoding.model_validate(slot.metadata["semantic_model"]),
-                components=components,
-            )
-        except ModelCheckpointError:
-            raise
-        except (ValueError, KeyError, OSError) as exc:
-            raise ModelCheckpointError("/v1/model", str(exc)) from exc
 
     @classmethod
     def open_store(
