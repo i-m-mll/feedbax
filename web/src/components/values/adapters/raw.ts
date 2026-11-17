@@ -33,7 +33,7 @@ export function rawField({ id, label, type, value, unit, origin, change, parts }
   });
   return {
     id, label, type, unit, origin, value: value ?? undefined, text: rawText(value), kind: 'value',
-    kinds: [{ kind: 'value', enabled: !!commit }], differs: false, names: [], functions: [], parts, commit,
+    kinds: [{ kind: 'value', enabled: !!commit }], names: [], functions: [], parts, commit,
   };
 }
 
