@@ -141,7 +141,7 @@ def _product(port: DatasetPort, source: Dataset, arrays) -> Dataset:
     )
 
 
-@operation(settings=AlignedVelocityParameters, key="feedbax.aligned_velocity", label="Aligned velocity")
+@operation(settings=AlignedVelocityParameters, label="Aligned velocity")
 def aligned_velocity(
     states: Annotated[Dataset, _STATES],
     params: AlignedVelocityParameters,
@@ -192,7 +192,7 @@ def _summarize_trials(values, ddof, bounds_scale):
     }
 
 
-@operation(settings=VelocitySummaryParameters, key="feedbax.summarize_velocity", label="Trial summary")
+@operation(settings=VelocitySummaryParameters, label="Trial summary")
 def summarize_velocity(
     velocity: Annotated[Dataset, _VELOCITY],
     params: VelocitySummaryParameters,
@@ -212,5 +212,5 @@ def register_builtin_operations(registry: OperationRegistry) -> None:
     source = DistributionSource("feedbax", "feedbax", version("feedbax"))
     for function in (aligned_velocity, summarize_velocity):
         declaration = callable_declaration(function)
-        assert isinstance(declaration, OperationDeclaration) and declaration.key is not None
-        registry.register_declaration(function, declaration, key=declaration.key, source=source)
+        assert isinstance(declaration, OperationDeclaration)
+        registry.register_declaration(function, declaration, key=f"feedbax.{function.__name__}", source=source)

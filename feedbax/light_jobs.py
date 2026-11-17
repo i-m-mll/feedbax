@@ -67,7 +67,7 @@ _ORIGINS = TypeAdapter(dict[RequestId, ContentObjectRef])
 
 @lru_cache(maxsize=1)
 def _operations() -> OperationRegistry:
-    from feedbax.analysis.builtin_operations import register_builtin_operations
+    from feedbax.builtins.operations import register_builtin_operations
 
     registry = OperationRegistry()
     register_builtin_operations(registry)

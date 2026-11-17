@@ -9,7 +9,7 @@ from plotly.offline import get_plotlyjs
 import pytest
 from pydantic import ValidationError
 
-from feedbax.analysis.builtin_operations import register_builtin_operations
+from feedbax.builtins.operations import register_builtin_operations
 from feedbax.analysis.figure_presets import velocity_summary_figure
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.analysis.report_document import render as render_report

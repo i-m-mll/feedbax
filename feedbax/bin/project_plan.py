@@ -143,7 +143,7 @@ def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
 def _read_plan(
     project_dir: Path, *, capture_sources: bool = False,
 ) -> tuple[ProjectFolderLocation, TextProject, ProjectPlan, set[Path], dict[str, bytes]]:
-    from feedbax.analysis.builtin_operations import register_builtin_operations
+    from feedbax.builtins.operations import register_builtin_operations
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.project_folder import ProjectFolderInvalid, ProjectFolderLocation, ProjectFolderNotFound
 

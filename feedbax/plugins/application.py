@@ -165,7 +165,7 @@ APPLICATION_REGISTRY_KEYS = (
 
 def new_application_registry_bundle() -> ApplicationRegistryBundle:
     """Construct fresh built-in registries before plugin registration."""
-    from feedbax.analysis.builtin_operations import register_builtin_operations
+    from feedbax.builtins.operations import register_builtin_operations
     from feedbax.expression_builtins import register_builtins
 
     operations = OperationRegistry()
