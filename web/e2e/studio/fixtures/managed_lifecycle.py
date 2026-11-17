@@ -90,13 +90,17 @@ def declare_variants(paths, project, revision):
     return {"revision": load_text_project(root).revision}
 
 
-def completed_receipt(host, project, attempt, successor):
+def completed_train(host, project, attempt, successor):
     from feedbax.job_completion import verify_bound_training_completion
 
     completed = read_job(host, project, successor)
     assert completed["continues"] == attempt
     verify_bound_training_completion(completed["outcome"]["completion"])
-    return completed["outcome"]["receipt"]
+    return completed
+
+
+def completed_receipt(host, project, attempt, successor):
+    return completed_train(host, project, attempt, successor)["outcome"]["receipt"]
 
 
 def result(paths, host, project, attempt, successor, revision, evaluation, trial):
@@ -107,17 +111,16 @@ def result(paths, host, project, attempt, successor, revision, evaluation, trial
     from feedbax.plugins.application import new_application_registry_bundle
     from feedbax.web.services.project_folder import ProjectFolderService
 
-    completed_receipt(host, project, attempt, successor)
+    train = completed_train(host, project, attempt, successor)
     folders = ProjectFolderService(paths.web / "projects")
     plan = folders.read_plan(project, revision=revision)
     jobs = JobService(host, new_application_registry_bundle())
     result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluation)
-    train = read_job(host, project, successor)
     rollout = read_job(host, project, evaluation)
     train_ref = ContentObjectRef.model_validate(train["outcome"]["store_success"])
     rollout_ref = ContentObjectRef.model_validate(rollout["outcome"]["store_success"])
     view = SuccessView(ImmutableArtifactBlobProvider(plan.store_path))
-    receipt = view.read_owned_success(rollout_ref).receipt
+    receipt = view.read_receipt(rollout_ref)
     assert receipt.attempt == evaluation
     (bound,) = receipt.inputs["subject"]
     assert bound.evaluation_subject is not None

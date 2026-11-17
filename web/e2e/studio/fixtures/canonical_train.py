@@ -260,7 +260,7 @@ def observe_swept(home: Path, project: str, successors: list[str]):
                 "transaction_id": predecessor.pointer.transaction_id,
                 "manifest_sha256": predecessor.pointer.manifest_sha256,
             },
-            "schedule_origin_step": manifest.clock.schedule_origin,
+            "schedule_origin": manifest.clock.schedule_origin,
             "initialization": policy.model_dump(mode="json"),
             "last_loss": interval["metrics"]["train_loss"]["last"],
         }
