@@ -359,54 +359,6 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     assert set(row["id"] for row in host.jobs(project=review.project_id)) == job_ids | {check["id"]}
 
     lock.unlink()
-    data_file = review.project_root / "assemble-calibration.txt"
-    data_file.write_text("first calibration")
-    marker = '    ((actuation,),) = task.parameters.disturbance_matrix'
-    source.write_text(original.replace(
-        marker, f'    with open({str(data_file)!r}) as calibration:\n        calibration.read()\n{marker}', 1,
-    ))
-    assert marker in original
-
-    def light_result(plan, name):
-        element = ElementKey(selected[2], name)
-        return read_settled_project_plan(plan, jobs).light[element].result
-
-    changed_assemble = light_result(review, "assemble")
-    assert changed_assemble.validity.state == "stale"
-    assert any(
-        "assemble" in difference.functions
-        for reason in changed_assemble.validity.reasons if reason.kind == "code"
-        for difference in reason.differences
-    )
-    upstream_only = _project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    del upstream_only["documents"]["gain-analysis"]["payload"]["operations"]["gain"]
-    _save_project(folders, project, Project.model_validate(upstream_only))
-    upstream_plan = folders.read_plan(project, revision=None)
-    assert not upstream_plan.plan.diagnostics, upstream_plan.plan.diagnostics
-    assert identify("assemble", selected[2]) == upstream_plan.plan.elements[ElementKey(selected[2], "assemble")].request_id
-    upstream_run = jobs.admit_plan(
-        folders, upstream_plan, run_keys=(selected[2],), token="refresh-assemble", reuse_completed=True,
-    )
-    by_address = {item.run_key: item for item in upstream_run.items}
-    rebuilt = by_address[plan_attempt_key(ElementKey(selected[2], "assemble"))]
-    assert rebuilt.disposition == "admitted"
-
-    def rebuilt_result():
-        return next((row for row in host.jobs(job_id=rebuilt.job_id) if row["outcome"] is not None), None)
-
-    completed = wait_until(rebuilt_result, timeout=16)
-    assert completed["state"] == "succeeded", completed["outcome"]
-    fresh_view = SuccessView(store)
-    old_product = view.authored(assemble).receipt.products["system"]
-    new_product = fresh_view.authored(assemble).receipt.products["system"]
-    assert new_product == old_product
-
-    _save_project(folders, project, _project())
-    downstream_plan = folders.read_plan(project, revision=None)
-    assert not downstream_plan.plan.diagnostics, downstream_plan.plan.diagnostics
-    still_current = light_result(downstream_plan, "gain")
-    assert still_current.validity.state == "current"
-    assert still_current.receipt == initial.result.receipt
     settings = registry.operations.resolve(f"{witness.PACKAGE}.power_iteration").value.parameter_model
 
     def unexpected_settings_validation(*args, **kwargs):
@@ -414,13 +366,85 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
 
     with monkeypatch.context() as unchanged:
         unchanged.setattr(settings, "model_validate", unexpected_settings_validation)
-        acknowledged = folders.read_plan(project, revision=downstream_plan.revision)
-        downstream_run = jobs.admit_plan(
-            folders, acknowledged, run_keys=(selected[2],), token="reuse-gain", reuse_completed=True,
+        acknowledged = folders.read_plan(project, revision=review.revision)
+        unchanged_run = jobs.submit_plan(
+            folders, acknowledged, run_keys=(selected[2],), token="reuse-unchanged-gain", reuse_completed=True,
         )
-    assert {item.disposition for item in downstream_run.items} == {"reused"}
+    assert {item.disposition for item in unchanged_run.items} == {"reused"}
+
+    old_system = view.authored(assemble).receipt.products["system"]
+    old_gain = view.authored(gain)
+    retained_id = old_gain.receipt.attempt
+    data_file = review.project_root / "assemble-calibration.txt"
+    data_file.write_text("first calibration")
+    marker = "    ((actuation,),) = task.parameters.disturbance_matrix"
+    assert marker in original
+    same_output = original.replace(
+        marker, f"    with open({str(data_file)!r}) as calibration:\n        calibration.read()\n{marker}", 1,
+    )
+    source.write_text(same_output)
+
+    assemble_key = ElementKey(selected[2], "assemble")
+    changed_assemble = read_settled_project_plan(review, jobs).light[assemble_key].result
+    assert changed_assemble.validity.state == "stale"
+    assert any(
+        "assemble" in difference.functions
+        for reason in changed_assemble.validity.reasons if reason.kind == "code"
+        for difference in reason.differences
+    )
+    assert retained().status is JobStatus.SUCCEEDED
+
+    def run_together(token):
+        submission = jobs.submit_plan(
+            folders, review, run_keys=(selected[2],), token=token, reuse_completed=True,
+        )
+        items = {item.run_key: item for item in submission.items}
+        producer = items[plan_attempt_key(assemble_key)]
+        assert producer.disposition == "admitted"
+        assert items[plan_attempt_key(gain_key)].disposition != "rejected"
+
+        def settled_jobs():
+            rows = [row for row in host.jobs(project=review.project_id) if row["request"] in (assemble, gain)]
+            if all(row["state"] not in {"queued", "assigned", "running", "stopping"} for row in rows):
+                return rows
+
+        rows = wait_until(settled_jobs, timeout=20)
+        rebuilt = next(row for row in rows if row["id"] == producer.job_id)
+        assert rebuilt["state"] == "succeeded", rebuilt["outcome"]
+        return producer.job_id, [row for row in rows if row["request"] == gain]
+
+    producer_id, gain_attempts = run_together("refresh-assemble-same-output")
+    equal = SuccessView(store)
+    unchanged_system = equal.authored(assemble).receipt
+    assert unchanged_system.attempt == producer_id
+    assert unchanged_system.products["system"] == old_system
+    assert {row["id"] for row in gain_attempts if row["delivery"]} == {retained_id}
+    assert {row["id"] for row in gain_attempts if equal.attempt_ref(row["id"])} == {retained_id}
+    assert equal.authored_ref(gain) == old_gain.ref
+    still_current = retained()
+    assert still_current.status is JobStatus.SUCCEEDED
+    assert still_current.result.job_id == retained_id
+    assert still_current.result.receipt == initial.result.receipt
+
+    source.write_text(same_output.replace(marker, f"{marker}\n    actuation *= 2", 1))
+    assert read_settled_project_plan(review, jobs).light[assemble_key].status is JobStatus.STALE
+    assert retained().status is JobStatus.SUCCEEDED
+    producer_id, gain_attempts = run_together("refresh-assemble-changed-output")
+    changed = SuccessView(store)
+    changed_system = changed.authored(assemble).receipt
+    rebuilt_gain = changed.authored(gain).receipt
+    assert changed_system.attempt == producer_id
+    assert changed_system.products["system"] != unchanged_system.products["system"]
+    assert rebuilt_gain.attempt != retained_id
+    assert {row["id"] for row in gain_attempts if row["delivery"]} == {retained_id, rebuilt_gain.attempt}
+    current = retained()
+    assert current.status is JobStatus.SUCCEEDED
+    assert current.result.job_id == rebuilt_gain.attempt
+    (product,) = rebuilt_gain.products["gain"]
+    with open_stored_dataset(store, dataset_member(product)) as dataset:
+        assert dataset.data("gain").item() == pytest.approx(6.0 * (1 + np.sqrt(2)), rel=1e-10)
 
     data_file.write_text("second calibration")
-    file_change = light_result(downstream_plan, "assemble").validity
+    file_change = read_settled_project_plan(review, jobs).light[assemble_key].result.validity
     assert file_change.state == "stale"
     assert {(reason.kind, reason.path.path) for reason in file_change.reasons} == {("file", data_file.name)}

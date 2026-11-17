@@ -13,25 +13,34 @@ from pathlib import Path
 import platform
 import sys
 from threading import local
+from time import time_ns
 from types import ModuleType
+from uuid import UUID
 
 from packaging.utils import canonicalize_name
 
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import (
-    AttemptProvenance, CodeTrace, ComputationUnavailable, FileSnapshot, ReceiptEvidence, SourcePath, SourceSnapshot,
+    AttemptProvenance, CheckpointComputation, CheckpointEvidence, CheckpointEvidenceRoot, CodeTrace,
+    ComputationUnavailable, ExecutionEvidenceRef, FileSnapshot, ObservationGeneration,
+    ReceiptEvidence, SourcePath, SourceSnapshot,
 )
-from feedbax.contracts.computation_validity import ComputationTrace
+from feedbax.contracts.computation_validity import ComputationPrograms, ComputationTrace
 from feedbax.host.source_roster import SourceRoster
 from feedbax.orchestration.revision import resolve_feedbax_provenance
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.declarations import ResolvedDeclaration, observe_declarations
-from feedbax.validity.environment import EnvironmentMismatch, EnvironmentSnapshot, installed_versions, read_environment
+from feedbax.validity.environment import EnvironmentMismatch, EnvironmentSnapshot, InstalledInventory, read_environment
 from feedbax.validity.registry import registry_binding
 from feedbax.validity.source import SourceFile, plugin_packages, source_catalog
 
 
 type ComputationSnapshot = Callable[[], ComputationTrace | ComputationUnavailable | None]
+
+
+def _source_key(source: SourcePath) -> tuple[str, str]:
+    return source.scope, source.path
 
 
 @dataclass
@@ -43,10 +52,15 @@ class _Attempt:
     excluded: tuple[Path, ...]
     resolutions: dict[tuple[str, str, int], ResolvedDeclaration] = field(default_factory=dict)
     files: dict[SourcePath, str] = field(default_factory=dict)
-    indeterminate: set[SourcePath] = field(default_factory=set)
     indeterminate_files: set[SourcePath] = field(default_factory=set)
-    prefixes: list[ContentObjectRef] = field(default_factory=list)
+    prefixes: list[ExecutionEvidenceRef] = field(default_factory=list)
     computation: ComputationSnapshot | None = None
+    store_id: UUID | None = None
+    generation: ContentObjectRef | None = None
+    generation_index: int = -1
+    previous_sources: dict[SourcePath, SourceSnapshot] = field(default_factory=dict)
+    previous_observations: dict = field(default_factory=dict)
+    programs: tuple[ComputationPrograms, ContentObjectRef] | None = None
 
     def observe(self, family: str, key: str, definition: ResolvedDeclaration) -> None:
         self.resolutions[family, key, id(definition.defining_object)] = definition
@@ -75,8 +89,10 @@ class WorkerRecorder:
         self.project: Path | None = None
         self._environment_root: Path | None = None
         self.catalog = source_catalog(None)
-        self.boot_ns = boot_ns
-        self.installed = installed_versions()
+        self._delivery_started_ns = boot_ns
+        self._source_witnesses: dict[SourcePath, int] = {}
+        self.installation = InstalledInventory()
+        self.installed = self.installation.versions(fresh=True)
         self.feedbax = resolve_feedbax_provenance()
         self.entered = entered
         self.host = SourceRoster(4, "Feedbax host product source")
@@ -84,6 +100,8 @@ class WorkerRecorder:
         self._source_names: dict[str, SourcePath | None] = {}
         self._archived: dict[Path, tuple[int, ...]] = {}
         self.loaded: dict[SourcePath, SourceFile] = {}
+        self._source_records: dict[SourcePath, SourceSnapshot] = {}
+        self._indeterminate: set[SourcePath] = set()
         self.attempt: _Attempt | None = None
         self._audit = local()
         self._numerical_depth = 0
@@ -154,10 +172,19 @@ class WorkerRecorder:
             host.update(self.host.names.get(name, ()))
         return result
 
-    def note_preloaded_sources(self) -> None:
-        for source in self._source_paths():
-            if source not in self.loaded and (present := self.catalog.read(source)) is not None:
-                self.loaded[source] = present
+    def observe_new_sources(self) -> bool:
+        """Capture newly loaded files and report changes after their witness."""
+        changed = False
+        for path in self._source_paths():
+            if path not in self.loaded:
+                self._current_source(path)
+                changed |= path in self._indeterminate
+        return changed
+
+    def start_delivery(self) -> None:
+        started = time_ns()
+        self.observe_new_sources()
+        self._delivery_started_ns = started
 
     def bind_project(self, project: Path, *, environment_root: Path | None = None) -> None:
         root = project.resolve(strict=True)
@@ -165,12 +192,12 @@ class WorkerRecorder:
         if self.project is None:
             self.project = root
             self._environment_root = lock_root
-            self.note_preloaded_sources()
+            self.observe_new_sources()
         elif self.project != root or self._environment_root != lock_root:
             raise ValueError("A managed worker cannot change its project or environment authority")
 
     def changed(self) -> bool:
-        if installed_versions() != self.installed:
+        if self.installation.versions() != self.installed:
             return True
         for source, expected in self.loaded.items():
             try:
@@ -183,7 +210,7 @@ class WorkerRecorder:
 
     @contextmanager
     def delivery(self, job: str, store_root: Path, scratch: Path) -> Iterator[None]:
-        environment = self._current_environment()
+        environment = self._current_environment(fresh=True)
         store = ImmutableArtifactBlobProvider(store_root)
         excluded = (store_root.resolve(), scratch.resolve(), *self._interpreter_roots)
         with self._scope(_Attempt(job, store, environment, datetime.now(UTC), excluded)):
@@ -240,67 +267,123 @@ class WorkerRecorder:
         finally:
             self._audit.reading = False
 
-    def snapshot(self, store: ImmutableArtifactBlobProvider) -> ReceiptEvidence:
+    @contextmanager
+    def _capture(self, store: ImmutableArtifactBlobProvider) -> Iterator[_Attempt]:
         attempt = self.attempt
         assert attempt is not None
         if store.root != attempt.store.root:
             raise ValueError("An execution snapshot must use its attempt's Store")
         self._audit.reading = True
         try:
-            return self._snapshot(attempt, store)
+            yield attempt
         finally:
             self._audit.reading = False
 
-    def _snapshot(self, attempt: _Attempt, store: ImmutableArtifactBlobProvider) -> ReceiptEvidence:
+    def snapshot(self, store: ImmutableArtifactBlobProvider) -> ReceiptEvidence:
+        with self._capture(store) as attempt:
+            sources, observations, computation, provenance = self._observe(attempt, store)
+            return ReceiptEvidence(
+                attempt=attempt.id, provenance=provenance,
+                trace=CodeTrace(
+                    sources=tuple(sources.values()), **observations, prefixes=tuple(attempt.prefixes),
+                    computation=computation if isinstance(computation, ComputationTrace) else None,
+                    computation_unavailable=computation if isinstance(computation, ComputationUnavailable) else None,
+                ),
+            )
+
+    def checkpoint(self, store: ImmutableArtifactBlobProvider, completed_updates: int) -> CheckpointEvidenceRoot:
+        with self._capture(store) as attempt:
+            sources, observations, computation, provenance = self._observe(attempt, store)
+            if attempt.store_id is None:
+                attempt.store_id = UUID(store.store_id)
+            changes = tuple(
+                source for path, source in sources.items() if attempt.previous_sources.get(path) is not source
+            )
+            changed_observations = {
+                name: value for name, value in observations.items() if attempt.previous_observations.get(name) != value
+            }
+            generation = attempt.generation
+            next_index = attempt.generation_index
+            if generation is None or changes or changed_observations:
+                next_index += 1
+                record = ObservationGeneration(
+                    store_id=attempt.store_id, attempt=attempt.id, index=next_index,
+                    previous=generation, sources=changes, **changed_observations,
+                )
+                generation = store.store_object(canonical_json_v2_bytes(record.model_dump(mode="json")))
+            if isinstance(computation, ComputationTrace):
+                programs = ComputationPrograms(
+                    normalization_version=computation.normalization_version,
+                    reference_platform=computation.reference_platform, driver=computation.driver,
+                    starts=computation.starts, programs=computation.programs,
+                )
+                if attempt.programs is None or attempt.programs[0] != programs:
+                    program_ref = store.store_object(canonical_json_v2_bytes(programs.model_dump(mode="json")))
+                    attempt.programs = programs, program_ref
+                proof = CheckpointComputation(
+                    programs=attempt.programs[1], completed_steps=computation.completed_steps, prefix=computation.prefix,
+                )
+            else:
+                proof = computation
+            endpoint = CheckpointEvidence(
+                store_id=attempt.store_id, attempt=attempt.id, completed_updates=completed_updates,
+                generation=generation, provenance=provenance, prefixes=tuple(attempt.prefixes), computation=proof,
+            )
+            ref = store.store_object(canonical_json_v2_bytes(endpoint.model_dump(mode="json")))
+            attempt.generation, attempt.generation_index = generation, next_index
+            attempt.previous_sources, attempt.previous_observations = sources, observations
+            return CheckpointEvidenceRoot(
+                evidence=ref, store_id=attempt.store_id, attempt=attempt.id, completed_updates=completed_updates,
+            )
+
+    def _observe(self, attempt: _Attempt, store: ImmutableArtifactBlobProvider):
         self._verify_environment(attempt)
         computation = attempt.computation() if attempt.computation is not None else None
-        archived = {}
-        def order(source: SourcePath) -> tuple[str, str]:
-            return source.scope, source.path
 
         initial_roster = self._source_paths()
-        for path in sorted(initial_roster, key=order):
+        archived = {}
+        for path in sorted(initial_roster.keys() | self.loaded.keys(), key=_source_key):
             source = self._current_source(path)
             if source is None:
-                attempt.indeterminate.add(path)
                 continue
-            if source.modified_ns > self.boot_ns:
-                attempt.indeterminate.add(path)
-            ref = ContentObjectRef(
+            previous = self._source_records.get(path)
+            ref = previous.content if previous is not None else ContentObjectRef(
                 object_id=CONTENT_OBJECT_REF_PREFIX + source.sha256,
                 sha256=source.sha256, size_bytes=len(source.data),
             )
-            self._archive_source(store, ref, source.data)
+            if attempt.generation is None or path not in attempt.previous_sources:
+                self._archive_source(store, ref, source.data)
             archived[path] = ref
         self._verify_file_reads(attempt)
         roster = self._source_paths()
-        sources = tuple(
-            SourceSnapshot(path=path, content=ref, entered=tuple(sorted(entered)), host_product=tuple(sorted(host)))
-            for path, ref in archived.items()
-            for entered, host in (roster.get(path, initial_roster[path]),)
+        sources = {}
+        for path, ref in archived.items():
+            entered, host = roster.get(path, initial_roster.get(path, ((), ())))
+            previous = self._source_records.get(path)
+            if previous is not None:
+                entered = set(entered).union(previous.entered)
+                host = set(host).union(previous.host_product)
+                if len(entered) == len(previous.entered) and len(host) == len(previous.host_product):
+                    sources[path] = previous
+                    continue
+            record = SourceSnapshot(path=path, content=ref, entered=tuple(sorted(entered)), host_product=tuple(sorted(host)))
+            sources[path] = self._source_records[path] = record
+        observations = {
+            "registry": tuple(sorted({
+                registry_binding(family, key, value, self.catalog)
+                for (family, key, _), value in attempt.resolutions.items()
+            }, key=lambda binding: (binding.family, binding.requested_key, binding.module, binding.qualified_name))),
+            "files": tuple(FileSnapshot(path=path, sha256=attempt.files[path]) for path in sorted(attempt.files, key=_source_key)),
+            "environment": self._loaded_environment(attempt.environment),
+            "indeterminate": tuple(sorted(self._indeterminate, key=_source_key)),
+            "indeterminate_files": tuple(sorted(attempt.indeterminate_files, key=_source_key)),
+        }
+        provenance = AttemptProvenance(
+            feedbax_commit=self.feedbax.revision, feedbax_dirty=self.feedbax.dirty,
+            lock_sha256=attempt.environment.lock_sha256, platform=platform.platform(),
+            started_at=attempt.started, ended_at=datetime.now(UTC),
         )
-        return ReceiptEvidence(
-            attempt=attempt.id,
-            trace=CodeTrace(
-                sources=sources,
-                registry=tuple(sorted({
-                    registry_binding(family, key, value, self.catalog)
-                    for (family, key, _), value in attempt.resolutions.items()
-                }, key=lambda binding: (binding.family, binding.requested_key, binding.module, binding.qualified_name))),
-                files=tuple(FileSnapshot(path=path, sha256=attempt.files[path]) for path in sorted(attempt.files, key=order)),
-                environment=self._loaded_environment(attempt.environment),
-                indeterminate=tuple(sorted(attempt.indeterminate, key=order)),
-                indeterminate_files=tuple(sorted(attempt.indeterminate_files, key=order)),
-                prefixes=tuple(attempt.prefixes),
-                computation=computation if isinstance(computation, ComputationTrace) else None,
-                computation_unavailable=computation if isinstance(computation, ComputationUnavailable) else None,
-            ),
-            provenance=AttemptProvenance(
-                feedbax_commit=self.feedbax.revision, feedbax_dirty=self.feedbax.dirty,
-                lock_sha256=attempt.environment.lock_sha256, platform=platform.platform(),
-                started_at=attempt.started, ended_at=datetime.now(UTC),
-            ),
-        )
+        return sources, observations, computation, provenance
 
     def _archive_source(self, store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, data: bytes) -> None:
         path = store.object_path(ref)
@@ -320,18 +403,19 @@ class WorkerRecorder:
             self._archived[path] = occurrence()
 
     def _current_source(self, path: SourcePath) -> SourceFile | None:
+        witness = self._source_witnesses.setdefault(path, self._delivery_started_ns)
         try:
             present = self.catalog.read(path)
         except OSError:
             present = None
-        if (captured := self.loaded.get(path)) is not None:
-            if present is None or present.sha256 != captured.sha256 or present.modified_ns > self.boot_ns:
-                assert self.attempt is not None
-                self.attempt.indeterminate.add(path)
-            return captured
-        if present is not None:
+        captured = self.loaded.get(path)
+        if present is None or present.modified_ns > witness or (
+            captured is not None and present.sha256 != captured.sha256
+        ):
+            self._indeterminate.add(path)
+        if captured is None and present is not None:
             self.loaded[path] = present
-        return present
+        return captured if captured is not None else present
 
     def _verify_file_reads(self, attempt: _Attempt) -> None:
         for path, digest in attempt.files.items():
@@ -342,9 +426,9 @@ class WorkerRecorder:
             if not stable:
                 attempt.indeterminate_files.add(path)
 
-    def _current_environment(self) -> EnvironmentSnapshot:
+    def _current_environment(self, *, fresh: bool = False) -> EnvironmentSnapshot:
         assert self._environment_root is not None
-        installed = installed_versions()
+        installed = self.installation.versions(fresh=fresh)
         if installed != self.installed:
             changed = [
                 f"{name} ({self.installed.get(name, 'absent')} to {installed.get(name, 'absent')})"
@@ -363,15 +447,13 @@ class WorkerRecorder:
         assert attempt is not None and self.project is not None
         self._audit.reading = True
         try:
-            for path in self._source_paths():
-                source = self._current_source(path)
-                if source is None or source.modified_ns > self.boot_ns:
-                    attempt.indeterminate.add(path)
+            for path in self._source_paths().keys() | self.loaded.keys():
+                self._current_source(path)
             self._verify_file_reads(attempt)
             self._verify_environment(attempt)
         finally:
             self._audit.reading = False
-        if attempt.indeterminate or attempt.indeterminate_files:
+        if self._indeterminate or attempt.indeterminate_files:
             raise ValueError("Source files or read dependencies changed during the computation check")
 
     def _loaded_environment(self, environment: EnvironmentSnapshot) -> dict[str, str]:
@@ -409,7 +491,7 @@ def record_computation(snapshot: ComputationSnapshot) -> None:
         attempt.computation = snapshot
 
 
-def set_execution_prefix(ref: ContentObjectRef) -> None:
+def set_execution_prefix(ref: ExecutionEvidenceRef) -> None:
     if _recorder is not None and (attempt := _recorder.attempt) is not None and ref not in attempt.prefixes:
         attempt.prefixes.append(ref)
 
@@ -418,6 +500,12 @@ def snapshot_execution(store: ImmutableArtifactBlobProvider) -> ReceiptEvidence 
     if _recorder is None or _recorder.attempt is None:
         return None
     return _recorder.snapshot(store)
+
+
+def checkpoint_execution_endpoint(store: ImmutableArtifactBlobProvider, completed_updates: int) -> CheckpointEvidenceRoot | None:
+    if _recorder is None or _recorder.attempt is None:
+        return None
+    return _recorder.checkpoint(store, completed_updates)
 
 
 def assert_execution_unchanged() -> None:

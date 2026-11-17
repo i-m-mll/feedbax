@@ -31,7 +31,7 @@ from feedbax.contracts.effective_success import (
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigureProduct
 from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, DocumentInput, read_document_input
-from feedbax.contracts.operation import DatasetPort, ModelPort, TaskPort
+from feedbax.contracts.operation import DatasetPort, ModelPort, OperationDefinition, TaskPort
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId
 from feedbax.contracts.request_specs import (
@@ -133,7 +133,26 @@ def validate_light_request(
     if isinstance(spec, AnalysisRequestSpec):
         registry = registry or operation_application()
         operation = resolve_analysis_operation(spec, registry)
-        definition = operation.value.definition
+    output = validate_light_requirements(request, operation.value.definition if operation is not None else None)
+    if operation is not None and read_document is not None:
+        assert registry is not None
+        for role, port in operation.value.definition.inputs.items():
+            if isinstance(port, TaskPort):
+                reference = request.inputs[role][0].reference
+                assert isinstance(reference, ContentRef)
+                installed = registry.python_tasks.resolve(port.task_key) if port.task_key is not None else None
+                require_task_source(role, read_document(reference), installed.key if installed else port.task_key)
+    return output, operation
+
+
+def validate_light_requirements(request: DecodedRequest, definition: OperationDefinition | None) -> str:
+    """Validate admitted ports from declaration metadata and authored input references."""
+    spec = request.spec
+    if definition is not None and not isinstance(spec, AnalysisRequestSpec):
+        raise ValueError("Only managed Analyze accepts operation metadata.")
+    if isinstance(spec, AnalysisRequestSpec):
+        if definition is None or definition.key != spec.analysis_type:
+            raise ValueError("Managed Analyze requires metadata for its canonical operation.")
         roles = definition.inputs.keys()
         (output,) = definition.outputs
     elif isinstance(spec, RenderRequestSpec):
@@ -152,16 +171,10 @@ def validate_light_request(
     for role, members in request.inputs.items():
         if not members:
             raise ValueError(f"Managed light input {role!r} requires a member")
-        if operation is not None:
-            port = operation.value.definition.inputs[role]
+        if definition is not None:
+            port = definition.inputs[role]
             if not _typed_operation_input(port, members):
                 raise ValueError(f"Operation input {role!r} differs from its declared {port.kind} port")
-            if isinstance(port, TaskPort) and read_document is not None:
-                assert registry is not None
-                reference = members[0].reference
-                assert isinstance(reference, ContentRef)
-                installed = registry.python_tasks.resolve(port.task_key) if port.task_key is not None else None
-                require_task_source(role, read_document(reference), installed.key if installed else port.task_key)
         if len(members) > 1 and (
             isinstance(spec, ReportRequestSpec) or not all(
                 isinstance(member.reference, ProductRef)
@@ -181,7 +194,7 @@ def validate_light_request(
                 PlotlyFigureProduct(content=reference)
                 continue
             raise ValueError(f"Input {member.key!r} requires a typed producer product")
-    return output, operation
+    return output
 
 
 def dataset_member(member: BoundMember | Product) -> DatasetProductRef:

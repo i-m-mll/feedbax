@@ -14,11 +14,13 @@ type State = Literal[
     "running",
     "stopping",
     "succeeded",
+    "reused",
     "stopped",
     "failed",
     "interrupted",
 ]
 type Disposition = Literal["admitted", "attached", "reused", "rejected"]
+type ReusePolicy = Literal["selected", "automatic", "prerequisite"]
 
 LIGHT_ENTRYPOINT = "feedbax.light_host_worker:main"
 VALIDITY_CHECK_ENTRYPOINT = "feedbax.validity.check_worker:main"
@@ -29,7 +31,7 @@ MANAGED_ENTRYPOINTS = frozenset({
 VERSION = 1
 MAX_RPC_BYTES = 32 * 1024 * 1024
 LIVE_STATES = ("queued", "assigned", "running", "stopping")
-TERMINAL_STATES = ("succeeded", "stopped", "failed", "interrupted", "blocked")
+TERMINAL_STATES = ("succeeded", "reused", "stopped", "failed", "interrupted", "blocked")
 
 
 def can_resume_attempt(state: str, checkpoint: object, delivery: int) -> bool:
@@ -108,6 +110,14 @@ class TerminalReuse:
 
 
 @dataclass(frozen=True, slots=True)
+class DeferredReuse:
+    attempt: str
+    receipt: JsonObject
+    policy: ReusePolicy
+    quick_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class AdmissionItem:
     run_key: str
     job: Job | None = None
@@ -115,6 +125,9 @@ class AdmissionItem:
     reason: JsonObject | str | None = None
     checked_through: int | None = None
     terminal_reuse: TerminalReuse | None = None
+    deferred_reuse: DeferredReuse | None = None
+    force_execution: bool = False
+    light_definition: JsonObject | None = None
 
 
 class AdmissionResult(TypedDict):

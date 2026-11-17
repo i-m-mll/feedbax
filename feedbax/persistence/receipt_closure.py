@@ -20,7 +20,8 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
 from feedbax.persistence.checkpoint_publication import checkpoint_model_objects
 from feedbax.persistence.receipt_content import ClosureVisitors, continuation_objects, success_content_objects, tree_objects
-from feedbax.validity.evidence import evidence_objects
+from feedbax.contracts.code_validity import CheckpointEvidenceRoot
+from feedbax.validity.evidence import checkpoint_evidence_objects, evidence_objects
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,9 @@ class ReceiptClosure:
         for root in closure.roots:
             if isinstance(root, ReceiptRoot):
                 pending.append((root, None))
+            elif isinstance(root, CheckpointEvidenceRoot):
+                for ref in checkpoint_evidence_objects(self.store, root):
+                    add(ref)
             elif isinstance(root, ContentObjectRef):
                 add(root)
             else:

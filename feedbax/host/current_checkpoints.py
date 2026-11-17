@@ -85,7 +85,7 @@ class CurrentCheckpoints:
             "SELECT * FROM jobs WHERE project=? AND request=? ORDER BY seq DESC",
             (self.project, request),
         ):
-            if not self._belongs(row, request):
+            if row["state"] == "reused" or not self._belongs(row, request):
                 continue
             data = json.loads(row["data"])
             if data.get("collected_train") and row["state"] == "stopped":
@@ -269,6 +269,26 @@ class CurrentCheckpoints:
 
 class _SelectionUnavailable(ValueError):
     pass
+
+
+def compare_pinned_checkpoint(receipt: Success, binding: dict) -> InputDifference | None:
+    """Compare scientific values from an already authenticated Host selection."""
+    if "terminal" in binding:
+        return None  # Ordinary product comparison uses the pinned terminal receipt.
+    for role, members in receipt.inputs.items():
+        for bound in members:
+            if bound.checkpoint_model is None and bound.evaluation_subject is None:
+                continue
+            if "best_rank" in binding:
+                completion = binding["completion"]
+                selected = completion["request_id"], (_native_model(completion),)
+            else:
+                selection = binding["checkpoint_selection"]
+                publications = selection["members"]
+                source = publications[0] if publications else selection["closure"]["product"]
+                selected = source["request_id"], tuple(_native_model(member) for member in publications)
+            return CurrentCheckpoints._compare_member(role, bound, selected)
+    raise ValueError("The retained result does not name an authenticated checkpoint input.")
 
 
 def _native_model(publication: dict) -> tuple[int, Product]:

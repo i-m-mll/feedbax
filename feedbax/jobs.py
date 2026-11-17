@@ -73,7 +73,7 @@ from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.live_evaluate import DELEGATION_EVENT
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
-from feedbax.host.protocol import LIGHT_ENTRYPOINT, JobsSnapshot, TerminalReuse, can_resume_attempt
+from feedbax.host.protocol import DeferredReuse, LIGHT_ENTRYPOINT, JobsSnapshot, ReusePolicy, TerminalReuse, can_resume_attempt
 from feedbax.orchestration.session import SessionError
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -114,6 +114,7 @@ _ACTIVITY_EVENTS = frozenset(
         "stopping",
         "blocked",
         "terminal",
+        "reused",
     }
 ) | _CHECKPOINT_ACTIVITY_EVENTS
 _ACTIVE_PLAN_STATUSES = frozenset({
@@ -264,6 +265,8 @@ class PlanJobReader:
             if project_root is not None and self._validity_registries is not None else None
         )
         for job in by_id.values():
+            if job["state"] == "reused":
+                continue
             request_id = job["request"]
             light = _is_light_request(request_id)
             address = job["data"].get("run_key")
@@ -698,7 +701,12 @@ class JobService(PlanJobReader):
                 record["authored_train_plan"] = {
                     "object": plan.model_dump(mode="json"), "requests": requests,
                 }
-            candidates = [_with_project_root(items[name], current.project_root) for name in order]
+            candidates = []
+            for name in order:
+                item = _with_project_root(items[name], current.project_root)
+                if not reuse_completed and item.job is not None and item.job.request in directly_selected:
+                    item = replace(item, force_execution=True)
+                candidates.append(item)
             admitted = (
                 self._admit_with_reuse(
                     token, candidates, record, reuse_completed=reuse_completed,
@@ -770,11 +778,15 @@ class JobService(PlanJobReader):
         )
         profile = self._light_worker
         slot = "light"
-        if operation is not None and (numerical := operation.value.definition.numerical) is not None:
-            profile = replace(profile, env=numerical.environment(), preload=("jax",))
-            slot = "compute"
+        metadata = None
+        if operation is not None:
+            definition = operation.value.definition
+            metadata = definition.model_dump(mode="json")
+            if (numerical := definition.numerical) is not None:
+                profile = replace(profile, env=numerical.environment(), preload=("jax",))
+                slot = "compute"
         launch = replace(profile, payload=payload.model_dump(mode="json"))
-        return AdmissionItem(run_key=name, job=Job(
+        return AdmissionItem(run_key=name, light_definition=metadata, job=Job(
             id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot=slot,
             edges=tuple(parents.values()),
             data=data | {"manifest_root": str(store.root), "runtime": launch.argv[0]},
@@ -1157,11 +1169,13 @@ class JobService(PlanJobReader):
                         anchor = edge.job_id
                         receipt = terminal_receipts.get(anchor)
                 reusable = None
-                if eligible and (terminal is None or receipt is not None):
+                if eligible:
+                    policy = "prerequisite" if not selected else "automatic" if automatic else "selected"
                     reusable = self._reusable(
                         job, history.get(job.request, ()), view=view, observer=observer,
-                        attempts=attempts, snapshot=snapshot, automatic=automatic, upstream=not selected,
+                        attempts=attempts, snapshot=snapshot, policy=policy,
                         terminal_receipt=ContentObjectRef.model_validate(receipt) if receipt is not None else None,
+                        requires_terminal_receipt=terminal is not None,
                     )
                 if automatic and selected and reusable is None:
                     from feedbax.validity.project_admission import is_quick
@@ -1170,7 +1184,7 @@ class JobService(PlanJobReader):
                     if latest is None or not is_quick(view.read_receipt(latest), self._quick_duration, view.store):
                         chosen.append(_rejected(item.run_key, "This request requires explicit Run."))
                         continue
-                if reusable is not None:
+                if isinstance(reusable, str):
                     reused[job.id] = reusable
                     if job.request.startswith("train:"):
                         # The Host authenticates checkpoint selections through the original Train attempt.
@@ -1186,9 +1200,13 @@ class JobService(PlanJobReader):
                 else:
                     chosen.append(replace(
                         item, job=job, checked_through=snapshot["cursor"] if eligible else None,
+                        deferred_reuse=reusable,
                     ))
             try:
-                return self._admit(token, chosen, record | {"runs": runs})
+                admission_record = record | {"runs": runs}
+                if any(item.deferred_reuse is not None for item in chosen):
+                    admission_record["deferred_projection"] = observer.projection.model_dump(mode="json")
+                return self._admit(token, chosen, admission_record)
             except HostError as exc:
                 if exc.code != "admission_changed" or attempt == 2:
                     raise
@@ -1713,19 +1731,24 @@ class JobService(PlanJobReader):
 
     def _reusable(
         self, candidate: Job, jobs: Sequence[dict[str, Any]], *, view: SuccessView, observer: ProjectValidity,
-        attempts: Mapping[str, dict[str, Any]], snapshot: JobsSnapshot, automatic: bool, upstream: bool,
+        attempts: Mapping[str, dict[str, Any]], snapshot: JobsSnapshot, policy: ReusePolicy,
         terminal_receipt: ContentObjectRef | None = None,
-    ) -> str | None:
+        requires_terminal_receipt: bool = False,
+    ) -> str | DeferredReuse | None:
         from feedbax.persistence.effective_success import PublishedSuccess
+        from feedbax.validity.project_admission import is_quick, reuse_disposition
 
         parents = tuple(edge for edge in candidate.edges if not edge.authenticated_completion)
         parent_ids = {edge.job_id for edge in parents}
-        if any(edge.job_id not in attempts for edge in candidate.edges):
-            return None
+        pending = any(
+            (parent := attempts.get(edge.job_id)) is None or parent["state"] in _LIVE_STATES
+            for edge in candidate.edges
+        )
         origins = {}
         for edge in parents:
-            parent = attempts[edge.job_id]
-            if parent["state"] == "succeeded" and (ref := view.attempt_ref(edge.job_id)) is not None:
+            if (parent := attempts.get(edge.job_id)) is not None and parent["state"] == "reused":
+                parent = attempts.get(parent["outcome"]["retained_attempt"])
+            if parent is not None and parent["state"] == "succeeded" and (ref := view.attempt_ref(parent["id"])) is not None:
                 origins[parent["request"]] = ref
         for job in reversed(jobs):
             if job["state"] in _LIVE_STATES:
@@ -1737,28 +1760,28 @@ class JobService(PlanJobReader):
                 job, terminal_receipt=terminal_receipt,
             ):
                 return None
+            if pending:
+                return DeferredReuse(job["id"], ref.model_dump(mode="json"), policy, self._quick_duration.total_seconds())
+            if requires_terminal_receipt and terminal_receipt is None:
+                return None
             old_parents = {edge["job_id"] for edge in job["edges"] if not edge.get("authenticated_completion")}
             if (
                 terminal_receipt is None and old_parents != parent_ids
                 and (not _is_light_request(candidate.request) or len(origins) != len(parents))
             ):
                 return None
-            from feedbax.validity.project_admission import is_quick
-
             retained = view.read_receipt(ref)
             result = observer.inspect(
                 view, PublishedSuccess(ref, retained), origins=origins,
                 checkpoint_differences=_checkpoint_differences(snapshot, job["id"]),
             ).decision
-            if result.state == "current":
-                return job["id"]
-            if upstream and all(reason.kind in ("code", "environment") for reason in result.reasons) and (
-                result.state == "unchecked" or not is_quick(retained, self._quick_duration, view.store)
-            ):
-                return job["id"]
-            if result.state == "unchecked" and not automatic:
-                raise JobConflict("The result changed during admission. Check the current result and retry Run.")
-            return None
+            match reuse_disposition(result, policy, quick=lambda: is_quick(retained, self._quick_duration, view.store)):
+                case "reuse":
+                    return job["id"]
+                case "check":
+                    raise JobConflict("The result changed during admission. Check the current result and retry Run.")
+                case "explicit_run" | "execute":
+                    return None
         return None
 
     def _receipt_matches(
@@ -1803,12 +1826,24 @@ class JobService(PlanJobReader):
             for run_key, run in record["runs"].items():
                 current.setdefault((record["project"], run_key), run["request_id"])
         result = {}
+        retained_ids = {row["outcome"]["retained_attempt"] for row in rows if row["state"] == "reused"}
+        retained = {row["id"]: row for row in rows if row["id"] in retained_ids}
+        if missing := retained_ids - retained.keys():
+            retained.update({
+                row["id"]: row for row in self.host.jobs_snapshot(job_ids=tuple(missing))["jobs"]
+            })
         for row in rows:
             key = (row["project"], row["data"]["run_key"])
             request_id = row["request"]
+            reused = row["state"] == "reused"
+            source = retained.get(row["outcome"]["retained_attempt"]) if reused else row
+            intact = source is not None and (
+                self._receipt_matches(source) if source["state"] == "succeeded" else not reused
+            )
             result[row["id"]] = _project_activity(
                 row,
-                receipt_intact=row["state"] != "succeeded" or self._receipt_matches(row),
+                receipt_intact=intact,
+                reused_receipt=source["outcome"]["receipt"] if reused and intact else None,
                 seen=_seen_key(row["id"]) in seen,
                 earlier_definition=current.get(key, request_id) != request_id,
                 actor=actors.get(row["id"]),
@@ -2400,12 +2435,18 @@ def _project_activity(
     seen: bool,
     earlier_definition: bool,
     actor: StudioSubmissionActor | None,
+    reused_receipt: dict | None = None,
 ) -> StudioActivityJob:
     state = job["state"]
     phase = (job.get("phase") or {}).get("phase")
     outcome = job.get("outcome")
     progress = _job_progress(job)
-    status, reason = _job_status(job, progress=progress, receipt_intact=receipt_intact)
+    if state == "reused":
+        status = JobStatus.SUCCEEDED if receipt_intact else JobStatus.CORRUPT
+        reason = "Reused the retained result." if receipt_intact else "The retained result is unavailable."
+        outcome = {"outcome": "succeeded", "receipt": reused_receipt} if receipt_intact else None
+    else:
+        status, reason = _job_status(job, progress=progress, receipt_intact=receipt_intact)
     resumable = _can_resume(job)
     if state == "stopping":
         actions = ["force"]
