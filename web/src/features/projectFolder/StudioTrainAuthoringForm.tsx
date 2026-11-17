@@ -19,6 +19,7 @@ import type {
   StudioTrainAuthoringRequest, TrainFieldRequest,
 } from '@/generated/studioContracts';
 import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
+import { supervisedTrainMethod } from './createFirstTrain';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 
 interface Props {
@@ -39,10 +40,15 @@ interface Props {
 function formFields(projection: StudioTrainAuthoring, { view, step, selection }: Props): StudioDefinitionField[] {
   const selected = step && selection?.kind !== 'steps' ? selectedRuns(step, selection ?? null) : [];
   const fields = view
-    ? projection.fields.filter(({ id }) => ['/training_config', '/method_ref', '/method_payload']
+    ? projection.fields.filter(({ id }) => ['/training_config', '/method', '/settings', '/seed', '/checkpoint_initialization']
       .some((path) => id === path || id.startsWith(`${path}/`)))
     : projection.fields;
-  return fields.map(({ id, label, value, source, control, sweep, can_sweep }) => {
+  return fields.map(({ id, label, value, source, control: authoredControl, sweep, can_sweep }) => {
+    const control = id === '/method' && authoredControl?.kind === 'choice'
+      ? value === supervisedTrainMethod
+        ? { ...authoredControl, options: authoredControl.options.filter(({ value }) => value === supervisedTrainMethod) }
+        : null
+      : authoredControl;
     const canEdit = !selection || selection.kind === 'steps';
     const actions: FieldEdit['kind'][] = control && !sweep && canEdit ? ['set'] : [];
     if (can_sweep && (!selection || selection.kind === 'steps')) actions.push('toSweep');

@@ -86,10 +86,11 @@ export function useManagedAnalyze({
   const selected = element.selectedId;
   const operation = selected ? operations[selected] : undefined;
   const figure = selected ? figures[selected] : undefined;
+  const inlineFigure = figure && 'data' in figure.figure;
   const resolvedFigures = new Map(projection?.window_map?.analysis_figures
     ?.filter(({ key }) => savedRunId(key) === id).map((view) => [view.name, view]));
   function figureDefinition(name: string, source: NonNullable<AnalysisDocument['views']>[string]['figure']) {
-    return resolvedFigures.get(name) ?? ('document' in source ? undefined : source);
+    return resolvedFigures.get(name) ?? ('data' in source ? source : undefined);
   }
   const selectedFigure = selected && figure ? figureDefinition(selected, figure.figure) : undefined;
   const definition = operation && definitions.get(operation.operation);
@@ -221,10 +222,10 @@ export function useManagedAnalyze({
     {figure && selected && selectedFigure && <label className="grid gap-1">
       {studioName('caption')}
       <input className={control} key={JSON.stringify([saved.revision, selected, selectedFigure.caption])}
-        defaultValue={selectedFigure.caption ?? ''} disabled={!canEdit || 'document' in figure.figure}
+        defaultValue={selectedFigure.caption ?? ''} disabled={!canEdit || !inlineFigure}
         onBlur={({ currentTarget }) => {
           const caption = currentTarget.value;
-          if (!('document' in figure.figure) && caption !== (selectedFigure.caption ?? '')) {
+          if (inlineFigure && caption !== (selectedFigure.caption ?? '')) {
             void perform(() => save(studioName('caption'), [file(['views', selected, 'figure', 'caption'], caption)]));
           }
         }}

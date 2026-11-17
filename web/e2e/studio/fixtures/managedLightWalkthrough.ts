@@ -145,10 +145,11 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     await expect(train(page)).toContainText('2 of 3');
   }
 
-  async function addSuccessor(kind: 'Train' | 'Evaluate', id: string) {
+  async function addSuccessor(kind: 'Train' | 'Evaluate', id: string, producer = 'train') {
     const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
       new URL(response.url()).pathname === context.projectPath + '/files' && response.request().postDataJSON().file.id === id);
-    await activate(page, train(page).locator('button[data-command-id="newStep"]'));
+    const card = page.getByRole('article', { name: 'Train ' + producer, exact: true });
+    await activate(page, card.locator('button[data-command-id="newStep"]'));
     await activate(page, page.getByRole('dialog', { name: 'New Step', exact: true })
       .getByRole('button', { name: kind, exact: true }));
     const response = await saved;
@@ -225,6 +226,13 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const carried = await carry;
   expect(carried.ok(), await carried.text()).toBe(true);
   expect(carried.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
+  const carriedChild = (await carried.json() as StudioProjectSnapshot).project.steps?.[child];
+  expect(carriedChild?.deltas?.at(-1)?.patches).toEqual([{
+    op: 'replace', path: 'checkpoint_initialization', value: {
+      mode: 'continue_from', source_completed_updates: sourceUpdates,
+      state: 'preserve', schedule: 'continue', rng: 'carry',
+    },
+  }]);
   await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
   const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
   await expect(batchCount).toBeEditable();
@@ -236,8 +244,6 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps[child];
   expect(editedChild.deltas?.at(-1)?.patches).toEqual([
     { op: 'replace', path: 'training_config.n_batches', value: additionalUpdates },
-    { op: 'replace', path: 'method_payload.payload.target_total', value: childUpdates },
-    { op: 'replace', path: 'method_payload.payload.checkpoint_initialization.progress.additional_batches', value: additionalUpdates },
   ]);
   const beforeChildren = await attempts();
   const planned = stepRows(await plan(context), child);
@@ -272,4 +278,22 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       `train 1–${sourceUpdates}`, `${child} ${sourceUpdates + 1}–${childUpdates}`,
     ]);
   }
+
+  const producer = children[0];
+  await openRuns(page, child);
+  await activate(page, table(page).getByRole('button', { name: producer.label, exact: true }));
+  const nested = child + '-continuation';
+  await addSuccessor('Train', nested, child);
+  await openRuns(page, nested);
+  const [target] = stepRows(await plan(context), nested);
+  const [initialized] = await runSelected([target.key]);
+  await expect(table(page).getByText('Done', { exact: true })).toHaveCount(1, { timeout: 24_000 });
+  const [result] = stepRows(await plan(context), nested);
+  expect(result.result).toMatchObject({
+    job_id: initialized,
+    checkpoint_source: {
+      job_id: producer.result!.job_id, request_id: producer.request_id, completed_updates: childUpdates,
+    },
+    progress: { completed_updates: additionalUpdates, total_updates: additionalUpdates },
+  });
 }
