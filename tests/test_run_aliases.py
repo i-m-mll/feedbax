@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -39,14 +38,8 @@ from feedbax.contracts.run_aliases import (
     RunAliasCatalog,
     resolve_run_aliases,
 )
-from feedbax.plugins import (
-    ANALYSIS_RECIPES,
-    FamilyRequirement,
-    PluginDeclaration,
-    PluginRegistration,
-    bootstrap_application,
-    new_registration_context,
-)
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.bootstrap import BootstrapState
 from tests.support.analysis_fixtures import (
     ToyAnalysis,
     build_toy_analysis_data,
@@ -57,25 +50,10 @@ pytestmark = [pytest.mark.feedbax_contract]
 
 
 def _analysis_state(analysis_type: str, recipe):
-    def register(context) -> None:
-        context.registry(ANALYSIS_RECIPES).register(analysis_type, recipe)
-
-    return asyncio.run(
-        bootstrap_application(
-            new_registration_context(),
-            registrations=(
-                PluginRegistration(
-                    PluginDeclaration(
-                        "tests.run_aliases",
-                        "1",
-                        2,
-                        families=(FamilyRequirement("analysis_recipes"),),
-                    ),
-                    register,
-                ),
-            ),
-        )
-    )
+    bundle = new_application_registry_bundle()
+    bundle.analysis_recipes.register(analysis_type, recipe)
+    bundle.seal()
+    return BootstrapState(bundle, ())
 
 
 def _authenticated_parent(*, digest: str = "a" * 64) -> ParentRef:
