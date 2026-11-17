@@ -279,15 +279,25 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     ]);
   }
 
+  async function openFocusedRuns(step: string) {
+    await activate(page, mapStep(page, step));
+    await palette(page, 'runs', 'Runs');
+    const focusedTable = pane(page).and(page.locator('[data-focused]')).getByRole('table', { name: 'Runs', exact: true });
+    await expect(focusedTable).toBeVisible();
+    return focusedTable;
+  }
+
   const producer = children[0];
-  await openRuns(page, child);
-  await activate(page, table(page).getByRole('button', { name: producer.label, exact: true }));
+  const producerTable = await openFocusedRuns(child);
+  await activate(page, producerTable.getByRole('rowheader', { name: producer.label, exact: true }).getByRole('button'));
   const nested = child + '-continuation';
   await addSuccessor('Train', nested, child);
-  await openRuns(page, nested);
-  const [target] = stepRows(await plan(context), nested);
+  const nestedTable = await openFocusedRuns(nested);
+  const targets = stepRows(await plan(context), nested);
+  expect(targets).toHaveLength(1);
+  const [target] = targets;
   const [initialized] = await runSelected([target.key]);
-  await expect(table(page).getByText('Done', { exact: true })).toHaveCount(1, { timeout: 24_000 });
+  await expect(nestedTable.getByText('Done', { exact: true })).toHaveCount(1, { timeout: 24_000 });
   const [result] = stepRows(await plan(context), nested);
   expect(result.result).toMatchObject({
     job_id: initialized,
