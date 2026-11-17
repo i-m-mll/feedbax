@@ -582,7 +582,7 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids(monkeypatch):
         project = Project.model_validate(raw)
         encode.reset_mock()
         incremental = compile_project(project, memo=memo, source_runs=(train_key,))
-        calls = encode.call_count
+        calls = sum(call.kwargs.get("document_memo") is not None for call in encode.call_args_list)
         assert incremental == compile_project(project, source_runs=(train_key,))
         return incremental, calls
 
