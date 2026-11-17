@@ -89,7 +89,6 @@ def series_definition(updates):
     raw = definition({"every": 2})
     source = raw["steps"]["train"]["base"]["inline"]
     source["training_config"]["n_batches"] = updates
-    source["method_payload"]["payload"]["target_total"] = updates
     return Project.model_validate(raw)
 
 

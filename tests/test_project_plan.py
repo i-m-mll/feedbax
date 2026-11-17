@@ -26,7 +26,7 @@ from tests.support.managed_train_fixture import (
 )
 
 
-LEARNING_RATE = "method_payload.payload.optimizer.params.learning_rate"
+LEARNING_RATE = "settings.optimizer.params.learning_rate"
 
 
 def _project_data():
@@ -193,7 +193,6 @@ def _chained_train_data():
     steps["rewarm"]["deltas"] = [
         {"layer_id": "rewarm", "patches": [
             {"path": "training_config.n_batches", "value": 50},
-            {"path": "method_payload.payload.target_total", "value": 50},
         ]}
     ]
     return data
@@ -207,7 +206,6 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
             "alternate": {
                 "patches": {
                     "steps.fit.base.inline.training_config.n_batches": {"value": 40},
-                    "steps.fit.base.inline.method_payload.payload.target_total": {"value": 40},
                 }
             },
         }
@@ -245,7 +243,6 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
             "where": {"axes": {"seed": ["b"], "rate": ["fast"]}},
             "patches": {
                 "training_config.n_batches": {"value": 80},
-                "method_payload.payload.target_total": {"value": 80},
             },
         }
     }
@@ -450,7 +447,7 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
         "axes": {
             "seed": {
                 "values": {
-                    name: {"patches": {"method_payload.payload.optimizer.params.learning_rate": {"value": value}}}
+                    name: {"patches": {"settings.optimizer.params.learning_rate": {"value": value}}}
                     for name, value in (("a", .001), ("b", .002), ("c", .003))
                 }
             }

@@ -92,7 +92,7 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
         observed_entry = ContentObjectRef.model_validate(stopped["outcome"]["store_job_entry"])
         exact = read_train_job(source, stopped_id)
         assert exact.object_ref == observed_entry
-        assert exact.recovery.pointer.completed_training_batches == 3
+        assert exact.recovery.pointer.completed_updates == 3
         (selected,) = exact.inputs["checkpoint"]
         assert selected.selection.receipt == original_producer.ref
         close_venue()
@@ -217,6 +217,5 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
             run_id=recovered.run_id, transaction_id=recovered.transaction_id, manifest_sha256=recovered.manifest_sha256,
         )
         assert result.products == control.products
-        assert result.continuation.clock.completed_batches == control.continuation.clock.completed_batches
-        for slot in ("optimizer", "prng", "batch_counter"):
-            assert getattr(result.continuation, slot) == getattr(control.continuation, slot)
+        assert result.continuation.clock == control.continuation.clock
+        assert result.continuation.state == control.continuation.state

@@ -20,7 +20,6 @@ def test_checkpoint_rule_sweep_keeps_subject_fanout_and_replans_horizons(tmp_pat
         "short": {},
         "long": {"patches": {
             "training_config.n_batches": {"value": 6},
-            "method_payload.payload.target_total": {"value": 6},
         }},
     }}}}
     evaluate = raw["steps"]["baseline"]

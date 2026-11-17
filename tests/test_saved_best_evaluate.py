@@ -30,7 +30,7 @@ host = host_fixture
 
 def authored_best():
     raw = definition("last")
-    path = "method_payload.payload.optimizer.params.learning_rate"
+    path = "settings.optimizer.params.learning_rate"
     raw["steps"]["train"]["sweep"] = {"axes": {"rate": {"values": {
         name: {"value": value, "patches": {path: {"value": value}}}
         for name, value in (("a", 0.003), ("b", 0.002), ("c", 0.001))
@@ -49,7 +49,7 @@ def test_best_plan_identity_changes_with_candidates_and_refuses_unsupported_rule
     decoded, _ = load_plan_requests(dump_plan_requests(plan_requests, None))
     assert decoded == plan_requests
     leaf = raw["steps"]["train"]["sweep"]["axes"]["rate"]["values"]
-    edit = "method_payload.payload.optimizer.params.learning_rate"
+    edit = "settings.optimizer.params.learning_rate"
     leaf["d"] = {"patches": {edit: {"value": .004}}}
     after = compile_project(Project.model_validate(raw))
     assert not after.diagnostics

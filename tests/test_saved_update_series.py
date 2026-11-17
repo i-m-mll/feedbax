@@ -30,7 +30,6 @@ host = host_fixture
 def definition(rule):
     raw = document_project(authored_documents(), evaluation=True)
     raw["steps"]["train"]["base"]["inline"]["training_config"].update(n_batches=4, snapshot_interval=2)
-    raw["steps"]["train"]["base"]["inline"]["method_payload"]["payload"]["target_total"] = 4
     raw["steps"]["baseline"]["inputs"]["subject"]["checkpoint"] = rule
     return raw
 
