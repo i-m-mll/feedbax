@@ -375,7 +375,7 @@ def test_analyze_collects_static_rows_in_each_named_variant():
     plan = compile_project(project, operations=operations)
     assert not plan.diagnostics
     sources = {
-        run.key.variant: tuple(binding.producer for binding in run.states)
+        run.key.variant: tuple(binding.producer for binding in run.inputs["states"])
         for run in plan.rows if isinstance(run, PlannedAnalyzeRun)
     }
     assert sources == {

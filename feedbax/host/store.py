@@ -689,6 +689,7 @@ class Store:
                     raise HostError("invalid_request", "Submission token belongs to a different execution target.")
                 return saved
             results, aliases, inserted = [], {}, []
+            considered = set()
             light_parents_by_job: dict[str, tuple[str, ...]] = {}
             live_drivers: set[str] = set()
             projects = set(record.get("projects", ()))
@@ -724,6 +725,17 @@ class Store:
                 payload = job["launch"]["payload"]
                 canonical_request = payload.get("canonical_request")
                 light = job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT
+                refused_parents = [
+                    edge["job_id"] for edge in job["edges"]
+                    if edge["job_id"] in considered and edge["job_id"] not in aliases
+                ]
+                considered.add(job["id"])
+                if light and refused_parents:
+                    results.append({
+                        "run_key": run_key, "job_id": None, "disposition": "rejected",
+                        "reason": f"The exact upstream attempt {refused_parents[0]} was rejected.",
+                    })
+                    continue
                 evaluate = job["request"].startswith("evaluate:") and canonical_request is not None
                 input_path = "/inputs/subject" if evaluate else "/inputs/checkpoint"
                 if canonical_request is not None and not isinstance(canonical_request, dict):
