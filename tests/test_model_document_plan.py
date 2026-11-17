@@ -539,7 +539,7 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids():
     params = RolloutParameters.model_validate(
         decode_request(plan.requests[evaluate.request_id], plan.documents.__getitem__).spec.params,
     )
-    variant = resolve_evaluation_variant(graph, documents.task_source, params.variation)
+    variant = resolve_evaluation_variant(graph, documents.task_source, params.variation, components=registry)
     child = variant.graph.subgraphs["wrapper"].subgraphs["controller"]
     (outgoing,) = (wire for wire in child.wires if wire.id == "decode")
     (incoming,) = (wire for wire in child.wires if wire.target_node == outgoing.source_node)

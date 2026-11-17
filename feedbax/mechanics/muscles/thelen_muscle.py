@@ -30,6 +30,7 @@ from jaxtyping import PRNGKeyArray, PyTree
 from feedbax.mechanics.hill_muscles import ActivationDynamics
 from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component
+from feedbax.contracts.model_values import ModelFacts, ModelValue, StateValue
 from feedbax.contracts.portable import Ports, ComponentOptions
 from typing import Annotated
 from pydantic import Field
@@ -99,6 +100,13 @@ class RigidTendonHillMuscleThelen(Component):
             name: PortType(dtype="any")
             for name in ("force", "activation", "fiber_length", "fiber_velocity")
         },
+    )
+    model_facts = ModelFacts(
+        values=tuple(ModelValue(name, name, "source") for name in (
+            "max_isometric_force", "optimal_muscle_length", "tendon_slack_length",
+            "vmax_factor", "min_activation", "tau_activation", "tau_deactivation", "dt",
+        )),
+        states=(StateValue("activation", (), "1", "muscle"),),
     )
     component_options = ComponentOptions(output_prototype_fn=thelen_muscle_output_prototype)
 

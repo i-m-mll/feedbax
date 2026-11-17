@@ -18,6 +18,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax.contracts.component import PortType
 from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.graph import Component
+from feedbax.contracts.model_values import ModelFacts, TrialParameter
 from feedbax.contracts.portable import (
     ConfigBinding,
     Ports,
@@ -269,6 +270,16 @@ class CurlFieldConfig(BaseModel):
 
 class CurlField(Component):
     """Velocity-dependent curl field added to a force signal."""
+
+    model_facts = ModelFacts(
+        checkpointable=False,
+        configuration_slots=("params_index",),
+        trial_parameters=(
+            TrialParameter("active", "boolean"), TrialParameter("scale", "real"),
+            TrialParameter("amplitude", "real"),
+        ),
+        trial_parameter_override_port="params_override",
+    )
 
     config: ClassVar = CurlFieldConfig
     config_bindings: ClassVar = (
