@@ -23,6 +23,7 @@ from feedbax.analysis.execution_context import (
 from feedbax.analysis.fulfillment import FulfillmentAdmissionError, artifact_bytes_path
 from feedbax.analysis.specs import (
     AnalysisEvaluationStatesResolutionError,
+    AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
     ManifestKindMismatch,
     ManifestLocationError,
@@ -144,6 +145,40 @@ def _completed_analysis_run(tmp_path: Path, application_registry_bundle):
     assert manifest.status == "completed"
     assert calls == [3]
     return spec, manifest, path, calls
+
+
+
+def test_failed_analysis_retries_at_the_same_id(tmp_path: Path, application_registry_bundle) -> None:
+    calls = []
+
+    def recipe(*_args):
+        calls.append("run")
+        if len(calls) == 1:
+            raise RuntimeError("transient analysis failure")
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy")},
+            data=build_toy_analysis_data(value=4),
+        )
+
+    application_registry_bundle.analysis_recipes.register(ADMISSION_ANALYSIS_TYPE, recipe)
+    spec = AnalysisRunSpec(
+        analysis_type=ADMISSION_ANALYSIS_TYPE,
+        params={"requested_outputs": ["toy"]},
+    )
+
+    with pytest.raises(AnalysisRecipeExecutionError) as failure:
+        _run_analysis(spec, tmp_path, application_registry_bundle=application_registry_bundle)
+
+    failed = failure.value.manifest
+    assert failed.status == "failed"
+    completed, path = _run_analysis(
+        spec, tmp_path, application_registry_bundle=application_registry_bundle
+    )
+
+    assert completed.status == "completed"
+    assert completed.id == failed.id
+    assert path == failure.value.path
+    assert calls == ["run", "run"]
 
 
 def test_cached_analysis_manifest_with_a_substituted_spec_is_refused(
