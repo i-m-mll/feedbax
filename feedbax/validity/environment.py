@@ -51,9 +51,9 @@ class InstalledInventory:
         paths = sys.path if self._paths is None else self._paths
         named = tuple(Path(path).absolute() for path in paths)
         search_stamp = tuple((path, occurrence(path)) for path in named)
-        if fresh or search_stamp != self._search_stamp:
+        if search_stamp != self._search_stamp:
             # The filesystem finder otherwise caches search-directory contents by mtime alone.
-            metadata.MetadataPathFinder.invalidate_caches(metadata.MetadataPathFinder)
+            metadata.MetadataPathFinder.invalidate_caches()
             self._entries = tuple(metadata.distributions(path=named))
             if tuple((path, occurrence(path)) for path in named) != search_stamp:
                 raise EnvironmentMismatch("Distribution search paths changed during discovery")
