@@ -11,6 +11,18 @@
 :root {
   --studio-shell-accent: #5d4b87;
   --studio-shell-selection: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  --studio-row-fill: var(--neutral-alpha-05);
+  --studio-scroll-fade: 1.5rem;
+  --card-surface: var(--surface-main);
+  --card-border: var(--app-divider);
+  --card-border-hover: var(--studio-control-border);
+  --card-radius: var(--radius-md);
+  --card-head-fill: transparent;
+  --card-selected-head-fill: var(--neutral-alpha-06);
+  --card-selected-border: var(--text-primary);
+  --card-selected-width: 1.5px;
+  --card-selected-outset: 1px;
+  --card-focus: var(--studio-shell-accent);
   --shell-focus-color: var(--studio-shell-accent);
   --studio-scrim: rgba(15, 23, 42, 0.3);
   --studio-logo-ink: #000000;
@@ -35,6 +47,11 @@
   --studio-objective-lightness: 0.48;
   --studio-shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.08);
   --studio-shadow-lift: 0 18px 40px rgba(15, 23, 42, 0.12);
+}
+
+:root[data-card='ring'] {
+  --card-selected-head-fill: transparent;
+  --card-selected-outset: 4px;
 }
 
 :root[data-theme='dark'] {
@@ -94,6 +111,67 @@
   --row-padding-inline: var(--space-2);
   --panel-header-height: 36px;
   --panel-header-padding-inline: var(--space-3);
+}
+
+.studio-scroll-fade {
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  --fade-left: 0px;
+  --fade-right: 0px;
+  -webkit-mask-image:
+    linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent),
+    linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
+  mask-image:
+    linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent),
+    linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+.studio-scroll-fade[data-overflow-top] { --fade-top: var(--studio-scroll-fade); }
+.studio-scroll-fade[data-overflow-bottom] { --fade-bottom: var(--studio-scroll-fade); }
+.studio-scroll-fade[data-overflow-left] { --fade-left: var(--studio-scroll-fade); }
+.studio-scroll-fade[data-overflow-right] { --fade-right: var(--studio-scroll-fade); }
+
+.studio-card {
+  position: relative;
+  border: 1px solid var(--card-border);
+  border-radius: var(--card-radius);
+  background: var(--card-surface);
+  color: var(--text-primary);
+}
+
+.studio-card:hover {
+  border-color: var(--card-border-hover);
+}
+
+.studio-card::after {
+  content: '';
+  position: absolute;
+  inset: calc(-1 * var(--card-selected-outset));
+  border-radius: calc(var(--card-radius) + var(--card-selected-outset) - 1px);
+  box-shadow: inset 0 0 0 var(--card-selected-width) var(--card-selected-border);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.studio-card[data-selected]::after {
+  opacity: 1;
+}
+
+.studio-card:focus-visible,
+.studio-card:has(> .studio-card__head :focus-visible) {
+  outline: var(--card-selected-width) solid var(--card-focus);
+  outline-offset: calc(var(--card-selected-outset) + 2px);
+}
+
+.studio-card__head {
+  border-radius: calc(var(--card-radius) - 1px) calc(var(--card-radius) - 1px) 0 0;
+  background: var(--card-head-fill);
+}
+
+.studio-card[data-selected] > .studio-card__head {
+  background: var(--card-selected-head-fill);
 }
 
 .studio-running-progress {

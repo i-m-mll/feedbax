@@ -22,6 +22,7 @@ export default {
           foreground: 'var(--text-primary)',
           muted: 'var(--text-muted)',
           hover: 'var(--surface-hover)',
+          row: 'var(--studio-row-fill)',
           accent: 'var(--studio-shell-accent)',
           selected: 'var(--studio-shell-selection)',
           scrim: 'var(--studio-scrim)',
