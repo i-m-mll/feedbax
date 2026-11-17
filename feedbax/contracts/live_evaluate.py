@@ -24,6 +24,10 @@ def rollout_slot(coordinate: int | None, replica: str) -> str:
     return pointer(("initial" if coordinate is None else str(coordinate), replica))
 
 
+def live_point_root_id(evaluation_job_id: str, transaction_id: str) -> str:
+    return f"evaluate-point:{evaluation_job_id}:{transaction_id}"
+
+
 def require_evaluation_coverage(
     computation: ComputationTrace | ComputationUnavailable | None, slots: tuple[str, ...],
 ) -> None:
@@ -66,7 +70,7 @@ class LiveEvaluationPoint(StrictModel):
 
     @property
     def root_id(self) -> str:
-        return f"evaluate-point:{self.evaluation_job_id}:{self.checkpoint.pointer.transaction_id}"
+        return live_point_root_id(self.evaluation_job_id, self.checkpoint.pointer.transaction_id)
 
 
 
