@@ -1,0 +1,40 @@
+.field-row {
+  container-type: inline-size;
+  min-width: 0;
+}
+
+.field-row-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
+}
+
+.field-row-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field-row-value,
+.field-row-below {
+  min-width: 0;
+}
+
+.field-row-below {
+  display: grid;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+}
+
+@container (min-width: 15rem) {
+  :root[data-inspector-labels='beside'] .field-row-grid {
+    grid-template-columns: 40% minmax(0, 1fr);
+  }
+
+  :root[data-inspector-labels='beside'] .field-row-below {
+    grid-column: 2;
+  }
+}

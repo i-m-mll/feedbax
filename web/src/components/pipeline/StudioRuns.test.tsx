@@ -17,15 +17,15 @@ const train: PlanStepView = {
     { id: "seed", label: "Seed", values: [{ id: "one", label: "1" }, { id: "two", label: "2" }] },
   ],
   runs: [
-    { id: "a", label: "A", values: { rate: "low", seed: "one" }, status: "succeeded" },
-    { id: "b", label: "B", values: { rate: "high", seed: "one" }, status: "succeeded" },
-    { id: "c", label: "C", values: { rate: "high", seed: "two" }, status: "stale", reason: "Learning rate 0.001 → 0.003" },
+    { id: "a", label: "A", values: { rate: "low", seed: "one" }, status: "succeeded", state: "succeeded", results: [] },
+    { id: "b", label: "B", values: { rate: "high", seed: "one" }, status: "succeeded", state: "succeeded", results: [] },
+    { id: "c", label: "C", values: { rate: "high", seed: "two" }, status: "stale", state: "stale", results: [], reason: "Learning rate 0.001 → 0.003" },
   ],
   statusCounts: { succeeded: 2, stale: 1 },
 };
 const evaluate: PlanStepView = {
   id: "eval", kind: "evaluate", label: "Test reach", inputs: [], sweeps: [], statusCounts: { not_run: 1 },
-  runs: [{ id: "a", label: "Straight reach", values: {}, status: "not_run" }],
+  runs: [{ id: "a", label: "Straight reach", values: {}, status: "not_run", state: "not_run", results: [] }],
 };
 const plan: PlanView = {
   steps: [train, evaluate],
@@ -120,7 +120,7 @@ it("virtualizes an authoritative 1,000-row result and keeps its full accessible 
 });
 
 it("names pivot cells from both axes and retains explicit rows without coordinates", () => {
-  showRuns({ ...train, runs: [...train.runs, { id: "explicit", label: "Custom reach", values: {}, status: "not_run" }] });
+  showRuns({ ...train, runs: [...train.runs, { id: "explicit", label: "Custom reach", values: {}, status: "not_run", state: "not_run", results: [] }] });
   fireEvent.click(screen.getByRole("button", { name: "Pivot" }));
   const pivot = within(screen.getByRole("table", { name: "Pivot" }));
   const run = pivot.getByRole("button", { name: "Select Rate 0.003 · Seed 1 · Done" });

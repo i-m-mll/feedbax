@@ -11,7 +11,8 @@ import {
   type StudioFieldCommand,
 } from '@/components/pipeline/StudioDefinitionForm';
 import { StudioSweepPicker } from '@/components/pipeline/StudioSweepOverview';
-import { StudioFieldControl } from '@/components/values/StudioFieldControl';
+import { ValueField } from '@/components/values/ValueField';
+import { fromFieldView } from '@/components/values/adapters/fieldView';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
 import type {
@@ -21,6 +22,7 @@ import type {
 import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { supervisedTrainMethod } from './createFirstTrain';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
+import { sweepValueRuns, useRunRemoval } from './runRemoval';
 
 interface Props {
   readonly editor: ProjectEditController;
@@ -134,7 +136,6 @@ export function StudioTrainAuthoringForm(props: Props) {
   const definition = useQuery({
     queryKey: ['train-authoring', projectId, stepId, revision],
     queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision }, signal),
-    retry: false,
     placeholderData: (previous) => previous?.project_id === projectId && previous.step_id === stepId ? previous : undefined,
   });
   const [editError, setEditError] = useState<string | null>(null);
@@ -152,15 +153,15 @@ export function StudioTrainAuthoringForm(props: Props) {
     queryKey: ['train-fields', projectId, stepId, numericBody],
     queryFn: ({ signal }) => projectTrainFields(projectId, stepId, numericBody, signal),
     enabled: showNumeric,
-    retry: false,
     placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
   });
 
+  const confirmRemoval = useRunRemoval();
   async function editNumeric(field: string, edit: NonNullable<TrainFieldRequest['edit']>) {
     try {
       const recipe = await projectTrainFields(projectId, stepId, { ...numericBody, field, edit, rows: [...props.fieldRows ?? []] }, editor.signal);
       if (recipe.problems.length) return recipe.problems[0].reason;
-      if (recipe.files.length) {
+      if (recipe.files.length && await confirmRemoval(sweepValueRuns(recipe.removed_values))) {
         editor.editFiles('Set Field', recipe.files, {
           reviewedRevision: revision,
           dependencies: recipe.dependencies.map((id) => ({ kind: 'document', id })),
@@ -239,14 +240,19 @@ export function StudioTrainAuthoringForm(props: Props) {
         'definition', numeric.data, numeric.error, () => { void numeric.refetch(); },
       )} />}
       {shared.length > 0 && <div ref={numericRegion} className="grid gap-2 px-3 py-2">
-        {shared.map((field) => <StudioFieldControl key={JSON.stringify([projectId, stepId, props.fieldRows, field.id])} field={field}
-          commit={!numeric.isPlaceholderData && !pending && !outside ? (edit) => editNumeric(field.id, edit) : undefined}
-          rowSelection={!!props.fieldRows?.length}
-          multipleRows={(props.fieldRows?.length ?? 0) > 1}
-          selectedValues={new Set(props.step && field.sweep && selection.kind !== 'steps'
-            ? selectedRuns(props.step, selection).map((row) => row.values[field.sweep!.id]).filter(Boolean) : [])}
-          onChooseValue={field.sweep && onChooseSweepValue
-            ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined} />)}
+        {shared.map((field) => {
+          const id = JSON.stringify([projectId, stepId, props.fieldRows, field.id]);
+          return <ValueField key={id} model={fromFieldView(field, {
+            id,
+            commit: !numeric.isPlaceholderData && !pending && !outside ? (edit) => editNumeric(field.id, edit) : undefined,
+            rowSelection: !!props.fieldRows?.length,
+            multipleRows: (props.fieldRows?.length ?? 0) > 1,
+            selectedMembers: new Set(props.step && field.sweep && selection.kind !== 'steps'
+              ? selectedRuns(props.step, selection).map((row) => row.values[field.sweep!.id]).filter(Boolean) : []),
+            chooseMember: field.sweep && onChooseSweepValue
+              ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined,
+          })} />;
+        })}
       </div>}
       <StudioRegion state={studioReadState(
         'definition', shown, definition.error, () => { void definition.refetch(); },

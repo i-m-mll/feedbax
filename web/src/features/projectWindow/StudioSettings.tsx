@@ -1,10 +1,12 @@
-import { useSyncExternalStore } from 'react';
-import { studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
+import { useState, useSyncExternalStore } from 'react';
+import { studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { Dialog } from '@/components/ui/Dialog';
+import { NumberField } from '@/components/ui/NumberField';
+import { setRemovalThreshold, useRemovalThreshold } from '@/features/projectFolder/runRemoval';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { Select } from '@/components/ui/Select';
 import {
-  resolveAppearance, setAppearance, subscribeAppearance, type AppearanceChoice, type AppearanceValue,
+  resolveAppearance, setAppearance, subscribeAppearance, type AppearanceValue, type SettingChoice,
 } from '@/appearance/appearance';
 
 const rows = {
@@ -12,8 +14,12 @@ const rows = {
   face: { control: 'select', values: { system: 'system', 'work-sans': 'faceWorkSans', 'space-grotesk': 'faceSpaceGrotesk' } },
   size: { control: 'segments', values: { 12: 'pixels12', 13: 'pixels13', 14: 'pixels14' } },
   density: { control: 'segments', values: { compact: 'compact', regular: 'regular' } },
+  card: {
+    control: 'select',
+    values: { flow: 'cardFlowName', 'flow-ui': 'cardFlowUiName', turbo: 'cardTurboName', quiet: 'cardQuietName', ring: 'cardRingName' },
+  },
 } as const satisfies {
-  [Choice in AppearanceChoice]: {
+  [Choice in SettingChoice]: {
     control: 'segments' | 'select';
     values: Record<AppearanceValue<Choice>, StudioNameId>;
   }
@@ -21,11 +27,11 @@ const rows = {
 
 const subscribe = (notify: () => void) => subscribeAppearance(window, notify);
 
-function useAppearance<Choice extends AppearanceChoice>(choice: Choice) {
-  return useSyncExternalStore(subscribe, () => resolveAppearance(choice, window.localStorage));
+function useAppearance<Choice extends SettingChoice>(choice: Choice) {
+  return useSyncExternalStore(subscribe, () => resolveAppearance(choice, window));
 }
 
-function SettingRow<Choice extends AppearanceChoice>({ choice }: { choice: Choice }) {
+function SettingRow<Choice extends SettingChoice>({ choice }: { choice: Choice }) {
   const value = useAppearance(choice);
   const row = rows[choice];
   const items = Object.entries(row.values).map(([value, name]) => ({
@@ -43,11 +49,28 @@ function SettingRow<Choice extends AppearanceChoice>({ choice }: { choice: Choic
   );
 }
 
+function ThresholdRow() {
+  const seconds = useRemovalThreshold();
+  const [draft, setDraft] = useState<number | null>();
+  return (
+    <>
+      <span aria-hidden="true" className="text-shell-muted">{studioName('removalThreshold')}</span>
+      <span className="flex items-center gap-1.5">
+        <NumberField aria-label={studioName('removalThreshold')} className="w-20" min={0} step={1} value={draft === undefined ? seconds : draft}
+          onValueChange={setDraft}
+          onValueCommitted={(next) => { setDraft(undefined); if (next !== null) setRemovalThreshold(next); }} />
+        <span className="text-shell-muted">{studioUnit('second')}</span>
+      </span>
+    </>
+  );
+}
+
 export function StudioSettings({ close }: { close(): void }) {
   return (
     <Dialog ariaLabel={studioName('settings')} onClose={close} manageFocus
       panelClassName="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 p-4">
-      {(Object.keys(rows) as AppearanceChoice[]).map((choice) => <SettingRow key={choice} choice={choice} />)}
+      {(Object.keys(rows) as SettingChoice[]).map((choice) => <SettingRow key={choice} choice={choice} />)}
+      <ThresholdRow />
     </Dialog>
   );
 }

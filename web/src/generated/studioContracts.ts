@@ -1023,6 +1023,7 @@ export interface ModelFieldResponse {
   fields?: ModelFieldView[];
   files?: StudioProjectFilePatch[];
   problems?: Problem[];
+  removed_values?: Record<string, string[]>;
   command?: ModelEditCommand | null;
 }
 
@@ -1126,6 +1127,7 @@ export interface TrainFieldResponse {
   files?: StudioProjectFilePatch[];
   dependencies?: string[];
   problems?: Problem[];
+  removed_values?: Record<string, string[]>;
 }
 
 export interface SparseCooEntrySpec {
@@ -4050,6 +4052,21 @@ export type ValidationTrial = {
 
 export type ValidationValue = Scalar | Array<ValidationValue>;
 
+export type ValidityAcceptance = {
+  "revision": string;
+  "request_id": string;
+  "receipt": ContentObjectRef;
+  "differences": Array<CodeDifference>;
+  "who": string;
+  "why": string;
+};
+
+export type ValidityAction = {
+  "revision": string;
+  "request_id": string;
+  "receipt": ContentObjectRef;
+};
+
 export type ValidityReason = CodeReason | EnvironmentReason | FileDifference | InputDifference;
 
 export type ValueBase = "real" | "integer" | "boolean";
@@ -5909,6 +5926,7 @@ export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(()
       "fields": z.array(ModelFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "problems": z.array(ProblemSchema).optional(),
+      "removed_values": z.record(z.string(), z.array(z.string())).optional(),
       "command": ModelEditCommandSchema.nullable().optional(),
     })
     .strict()
@@ -6060,6 +6078,7 @@ export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(()
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "dependencies": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "problems": z.array(ProblemSchema).optional(),
+      "removed_values": z.record(z.string(), z.array(z.string())).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainFieldResponse>;
@@ -10566,6 +10585,25 @@ export const ValidationValueSchema: z.ZodType<ValidationValue> = z.lazy(() =>
   z.union([ScalarSchema, z.array(ValidationValueSchema)])
 ) as unknown as z.ZodType<ValidationValue>;
 
+export const ValidityAcceptanceSchema: z.ZodType<ValidityAcceptance> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "request_id": z.string().regex(new RegExp("^(train|evaluate|analyze|render|report):[0-9a-f]{64}$")),
+    "receipt": ContentObjectRefSchema,
+    "differences": z.array(CodeDifferenceSchema).min(1),
+    "who": z.string().min(1),
+    "why": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<ValidityAcceptance>;
+
+export const ValidityActionSchema: z.ZodType<ValidityAction> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "request_id": z.string().regex(new RegExp("^(train|evaluate|analyze|render|report):[0-9a-f]{64}$")),
+    "receipt": ContentObjectRefSchema,
+  }).strict()
+) as unknown as z.ZodType<ValidityAction>;
+
 export const ValidityReasonSchema: z.ZodType<ValidityReason> = z.lazy(() =>
   z.union([CodeReasonSchema, EnvironmentReasonSchema, FileDifferenceSchema, InputDifferenceSchema])
 ) as unknown as z.ZodType<ValidityReason>;
@@ -10684,6 +10722,9 @@ export const contractSchemas = {
   EvaluateAttachmentState: EvaluateAttachmentStateSchema,
   EvaluateAttachmentEdit: EvaluateAttachmentEditSchema,
   ModelUndoRequest: ModelUndoRequestSchema,
+  ReceiptValidity: ReceiptValiditySchema,
+  ValidityAction: ValidityActionSchema,
+  ValidityAcceptance: ValidityAcceptanceSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   TaskDocument: TaskDocumentSchema,
   PythonTaskSelection: PythonTaskSelectionSchema,
@@ -10834,6 +10875,9 @@ export interface ContractTypeMap {
   EvaluateAttachmentState: EvaluateAttachmentState;
   EvaluateAttachmentEdit: EvaluateAttachmentEdit;
   ModelUndoRequest: ModelUndoRequest;
+  ReceiptValidity: ReceiptValidity;
+  ValidityAction: ValidityAction;
+  ValidityAcceptance: ValidityAcceptance;
   AnalysisDocument: AnalysisDocument;
   TaskDocument: TaskDocument;
   PythonTaskSelection: PythonTaskSelection;

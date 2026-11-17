@@ -19,6 +19,8 @@ export interface SelectProps<Value extends string> {
   placeholder?: string;
   disabled?: boolean;
   'aria-label'?: string;
+  'aria-labelledby'?: string;
+  'aria-describedby'?: string;
   id?: string;
   className?: string;
 }

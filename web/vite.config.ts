@@ -102,6 +102,7 @@ export default defineConfig({
       workbox: {
         skipWaiting: true,
         navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/gallery\.html/],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         runtimeCaching: [
           {
@@ -148,6 +149,9 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
+      input: isDesktop
+        ? path.resolve(__dirname, 'index.html')
+        : { main: path.resolve(__dirname, 'index.html'), gallery: path.resolve(__dirname, 'gallery.html') },
       output: {
         manualChunks(id) {
           if (id.includes('/node_modules/@xyflow/')) {
@@ -170,6 +174,8 @@ export default defineConfig({
             target: `http://${apiAddress}`,
             changeOrigin: true,
             configure(proxy) {
+              // A stopped backend answers nothing; the page must see that, not the proxy's 500.
+              proxy.on('error', (_error, request) => { request.socket.destroy(); });
               proxy.on('proxyRes', (upstream, _request, downstream) => {
                 if (!upstream.headers['content-type']?.startsWith('text/event-stream')) return;
                 upstream.once('close', () => {

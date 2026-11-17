@@ -1,4 +1,4 @@
-export const appearanceChoices = {
+export const settingChoices = {
   theme: { initial: 'system', commands: { system: 'themeSystem', light: 'themeLight', dark: 'themeDark' } },
   face: {
     initial: 'work-sans',
@@ -6,10 +6,24 @@ export const appearanceChoices = {
   },
   size: { initial: '13', commands: { 12: 'size12', 13: 'size13', 14: 'size14' } },
   density: { initial: 'regular', commands: { compact: 'densityCompact', regular: 'densityRegular' } },
+  card: {
+    initial: 'ring',
+    commands: { flow: 'cardFlow', 'flow-ui': 'cardFlowUi', turbo: 'cardTurbo', quiet: 'cardQuiet', ring: 'cardRing' },
+  },
 } as const;
+
+/** Design comparisons for the owner, switched from the command palette and overridable per window by query parameter. */
+export const comparisonChoices = {
+  unchecked: { initial: 'hollow', commands: { hollow: 'uncheckedHollow', badge: 'uncheckedBadge' } },
+  'inspector-labels': { initial: 'beside', commands: { beside: 'inspectorLabelsBeside', above: 'inspectorLabelsAbove' } },
+  'value-mark': { initial: 'hover', commands: { hover: 'valueMarkHover', quiet: 'valueMarkQuiet' } },
+} as const;
+
+export const appearanceChoices = { ...settingChoices, ...comparisonChoices } as const;
 
 type Choices = typeof appearanceChoices;
 export type AppearanceChoice = keyof Choices;
+export type SettingChoice = keyof typeof settingChoices;
 export type AppearanceValue<Choice extends AppearanceChoice> = keyof Choices[Choice]['commands'] & string;
 export type AppearanceCommandId = {
   [Choice in AppearanceChoice]: Choices[Choice]['commands'][keyof Choices[Choice]['commands']]
@@ -25,17 +39,23 @@ function valid<Choice extends AppearanceChoice>(choice: Choice, value: string | 
 
 const changeEvent = 'feedbax-appearance';
 
+function compared(choice: AppearanceChoice) {
+  return Object.prototype.hasOwnProperty.call(comparisonChoices, choice);
+}
+
 export function resolveAppearance<Choice extends AppearanceChoice>(
-  choice: Choice, storage: Pick<Storage, 'getItem'>,
+  choice: Choice, view: Pick<Window, 'localStorage' | 'location'>,
 ): AppearanceValue<Choice> {
-  const stored = storage.getItem(storageKey(choice));
+  const query = compared(choice) ? new URLSearchParams(view.location.search).get(choice) : null;
+  if (valid(choice, query)) return query;
+  const stored = view.localStorage.getItem(storageKey(choice));
   return valid(choice, stored) ? stored : appearanceChoices[choice].initial as AppearanceValue<Choice>;
 }
 
 export function applyAppearance(view: Window) {
   const root = view.document.documentElement;
   for (const choice of choiceNames) {
-    const value = resolveAppearance(choice, view.localStorage);
+    const value = resolveAppearance(choice, view);
     if (choice !== 'theme') {
       root.setAttribute(`data-${choice}`, value);
       continue;
@@ -53,7 +73,13 @@ export function installAppearance(view: Window) {
 }
 
 export function setAppearance<Choice extends AppearanceChoice>(view: Window, choice: Choice, value: AppearanceValue<Choice>) {
-  view.localStorage.setItem(storageKey(choice), value);
+  const url = new URL(view.location.href);
+  if (compared(choice) && url.searchParams.has(choice)) {
+    url.searchParams.set(choice, value);
+    view.history.replaceState(view.history.state, '', url);
+  } else {
+    view.localStorage.setItem(storageKey(choice), value);
+  }
   applyAppearance(view);
   view.dispatchEvent(new Event(changeEvent));
 }

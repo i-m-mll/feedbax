@@ -1,5 +1,5 @@
-import type { StudioRunStatusId } from "@/components/activity/studioVocabulary";
-import type { StudioActivityJob } from "@/generated/studioContracts";
+import type { StudioResultState, StudioRunStatusId } from "@/components/activity/studioVocabulary";
+import type { ReceiptValidity, StudioActivityJob } from "@/generated/studioContracts";
 
 export interface RunAddress {
   readonly stepId: string;
@@ -22,11 +22,21 @@ export interface PlanSweepView {
   readonly values: readonly PlanSweepValueView[];
 }
 
+/** A retained result of a run whose validity the backend reports. */
+export interface PlanResultView {
+  readonly requestId: string;
+  readonly jobId: string;
+  readonly validity: ReceiptValidity;
+}
+
 export interface PlanRunView {
   readonly id: string;
   readonly label: string;
   readonly values: Readonly<Record<string, string>>;
   readonly status: StudioRunStatusId;
+  /** The status with the results' validity folded in; what the run's mark draws. */
+  readonly state: StudioResultState;
+  readonly results: readonly PlanResultView[];
   readonly reason?: string;
   readonly openingReason?: string;
   readonly openingErrors?: readonly string[];
@@ -62,7 +72,7 @@ export interface PlanStepView {
   readonly inputs: readonly PlanInputView[];
   readonly documentIds?: Readonly<Record<string, string>>;
   readonly documentUses?: readonly string[];
-  readonly statusCounts: Readonly<Partial<Record<StudioRunStatusId, number>>>;
+  readonly statusCounts: Readonly<Partial<Record<StudioResultState, number>>>;
 }
 
 // Presentation input for the regions. IDs, values, status and edges are supplied
@@ -70,4 +80,26 @@ export interface PlanStepView {
 export interface PlanView {
   readonly steps: readonly PlanStepView[];
   readonly edges: readonly PlanRunEdge[];
+}
+
+const settled = new Set<StudioRunStatusId>(["succeeded", "stale"]);
+
+export function runResultState(
+  status: StudioRunStatusId, results: readonly PlanResultView[], checking: ReadonlySet<string>,
+): StudioResultState {
+  if (!settled.has(status) || !results.length) return status;
+  if (results.some(({ requestId }) => checking.has(requestId))) return "checking";
+  const states = new Set(results.map(({ validity }) => validity.state));
+  return states.has("stale") ? "stale" : states.has("unchecked") ? "unchecked" : status;
+}
+
+/** Whether Check can run on a result: the backend lists the checks it would perform. */
+export function resultCheckable({ validity }: PlanResultView) {
+  return validity.state !== "current" && (validity.checks?.length ?? 0) > 0;
+}
+
+/** The code differences an Accept must name: every one the result's current reasons list. */
+export function resultCodeDifferences({ validity }: PlanResultView) {
+  if (validity.state === "current") return [];
+  return (validity.reasons ?? []).flatMap((reason) => "basis" in reason ? reason.differences : []);
 }

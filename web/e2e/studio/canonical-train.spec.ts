@@ -405,10 +405,10 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const authored = (await plan()).window_map!;
   expect(authored.problems).toEqual([]);
   expect(authored.rows).toHaveLength(3);
-  const selected = authored.rows.filter(({ coordinates }) => coordinates['learning-rate'].label !== 'Medium');
+  const selected = authored.rows.filter(({ coordinates }) => coordinates['learning-rate'].value !== 0.002);
   const valueIds = selected.map(({ coordinates }) => coordinates['learning-rate'].value_id);
   const rowKeys = selected.map(({ key }) => key.row);
-  expect(selected.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Fast']);
+  expect(selected.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.003]);
   const run = async (step: string) => {
     const response = submitted(page, runsPath);
     await runs.getByRole('button', { name: 'Run', exact: true }).click();
@@ -426,12 +426,11 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
 
   await sweep.click();
   const valueButton = (name: string) => source.getByRole('listitem').getByRole('button', { name: `Select learning-rate ${name}`, exact: true });
-  await valueButton('Slow · 0.001').click();
-  await valueButton('Fast · 0.003').click({ modifiers: ['Shift'] });
-  await expect(valueButton('Slow · 0.001')).toHaveAttribute('aria-pressed', 'true');
-  await expect(valueButton('Fast · 0.003')).toHaveAttribute('aria-pressed', 'true');
-  await expect(valueButton('Medium · 0.002')).toHaveAttribute('aria-pressed', 'false');
-  await expect(source).toContainText('2 of 3');
+  await valueButton('0.001').click();
+  await valueButton('0.003').click({ modifiers: ['Shift'] });
+  await expect(valueButton('0.001')).toHaveAttribute('aria-pressed', 'true');
+  await expect(valueButton('0.003')).toHaveAttribute('aria-pressed', 'true');
+  await expect(valueButton('0.002')).toHaveAttribute('aria-pressed', 'false');
   await sweep.click();
   await page.keyboard.press('Tab');
   const mark = source.locator('.studio-map-run-mark').first();
@@ -527,8 +526,8 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
 
   await mapStep(page, 'train').click();
   await sweep.click();
-  await valueButton('Slow · 0.001').click();
-  await valueButton('Fast · 0.003').click({ modifiers: ['Shift'] });
+  await valueButton('0.001').click();
+  await valueButton('0.003').click({ modifiers: ['Shift'] });
   await sweep.click();
   await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
   await expect(source.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(0);

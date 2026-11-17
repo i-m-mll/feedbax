@@ -45,7 +45,6 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
   const figure = useQuery({
     queryKey: ['saved-plotly-figure', url],
     queryFn: async ({ signal }) => figureProduct.parse(await requestJson(url, { signal })),
-    retry: false,
   });
   useEffect(() => {
     const node = target.current;

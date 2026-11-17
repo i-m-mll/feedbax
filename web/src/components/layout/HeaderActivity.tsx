@@ -1,6 +1,6 @@
 import { Activity, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef } from 'react';
-import { StudioActivityPane, useStudioActivityCount } from '@/components/activity/StudioActivity';
+import { StudioActivityPane, useStudioActivityCount, type ActivityResultState } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { StudioActivityJob } from '@/generated/studioContracts';
@@ -14,6 +14,7 @@ export function HeaderActivity({
   projectNames,
   placement = 'below',
   command,
+  resultState,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -22,6 +23,7 @@ export function HeaderActivity({
   projectNames: ReadonlyMap<string, string>;
   placement?: 'above' | 'below';
   command?: StudioCommand;
+  resultState?: ActivityResultState;
 }) {
   const panelId = useId();
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -69,7 +71,7 @@ export function HeaderActivity({
             <h2 className="font-semibold">{studioName('activity')}</h2>
             <IconButton ref={close} label={studioName('close')} icon={<X aria-hidden="true" />} onClick={closePanel} />
           </header>
-          <StudioActivityPane projectNames={projectNames} onClose={onClose} onOpenRun={onOpenRun} />
+          <StudioActivityPane projectNames={projectNames} onClose={onClose} onOpenRun={onOpenRun} resultState={resultState} />
         </section>
       )}
     </div>

@@ -10,7 +10,7 @@ import {
   normalizeTrainingTrajectoryPayload,
 } from '@/features/scenario/liveTraining';
 import { workspaceReplayPolyline } from '@/features/scenario/workspaceReplay';
-import { useStudioJobActions, useStudioJobConnection, useStudioJobHistory, useStudioJobs } from '@/hooks/useStudioJobs';
+import { useStudioJobActions, useStudioJobHistory, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
 import { studioName, studioReason } from './studioVocabulary';
@@ -69,12 +69,11 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
   const jobs = useStudioJobs().data?.jobs ?? emptyJobs;
   const history = useStudioJobHistory(job.project_id);
   const events = history.data ?? emptyEvents;
-  const connection = useStudioJobConnection();
   const actions = useStudioJobActions();
   const data = useMemo(() => studioRunHistory(job, jobs, events), [job, jobs, events]);
   const retry = () => { void actions.refresh(); };
-  const state: StudioRegionState = connection === 'disconnected' || history.isError
-    ? { kind: 'failed', issue: studioRegionIssue('inspector', history.error, connection === 'disconnected'), retry }
+  const state: StudioRegionState = history.isError
+    ? { kind: 'failed', issue: studioRegionIssue('inspector', history.error), retry }
     : history.isPending
       ? { kind: 'loading' }
       : events.length > 0

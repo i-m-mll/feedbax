@@ -341,23 +341,8 @@
   white-space: nowrap;
 }
 
-.studio-map-card[data-map-selection='steps'] {
-  outline: 2px solid var(--text-primary);
-}
-
-.studio-map-card[data-map-selection='steps'] .studio-map-card__head,
-.studio-map-line-step[data-map-selection='steps'] {
-  color: var(--surface-main);
-  background: var(--text-primary);
-}
-
-.studio-map-card[data-map-selection='steps'] [data-map-kind-label],
-.studio-map-line-step[data-map-selection='steps'] [data-map-kind-label] {
-  color: inherit;
-}
-
 .studio-project-window .studio-map-card__head:focus-visible {
-  outline-offset: 2px;
+  outline: none;
 }
 
 .studio-map-group-box {
@@ -385,14 +370,14 @@
 .studio-map-run-mark[data-group-member]::after {
   position: absolute;
   inset: auto 1px -1px;
-  border-bottom: 2px solid var(--text-primary);
+  border-bottom: 1.5px solid var(--text-primary);
   content: '';
 }
 
 .studio-map-run-mark[data-boxed]::after {
   position: absolute;
   inset: -2px;
-  border: 2px solid var(--text-primary);
+  border: 1.5px solid var(--text-primary);
   border-radius: var(--radius-sm);
   content: '';
 }

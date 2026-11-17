@@ -14,7 +14,8 @@ import { Menu, MenuContent, MenuItem } from '@/components/ui/Menu';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
-import { StudioFieldControl } from '@/components/values/StudioFieldControl';
+import { ValueField } from '@/components/values/ValueField';
+import { fromFieldView } from '@/components/values/adapters/fieldView';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
@@ -30,6 +31,7 @@ import {
   modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Port,
 } from './modelGraph';
 import { selectModel, type ModelSelectionStore } from './modelSelection';
+import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
 type Operation = ModelEditCommand['operation'];
 type Difference = EvaluateAttachmentRequest['difference'];
@@ -45,6 +47,7 @@ type Props = {
   fieldRows?: readonly string[];
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
+  confirmRunRemoval: ConfirmRunRemoval;
   evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
@@ -134,7 +137,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
+export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
   const selected = useStore(state, (current) => current.selection);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -169,7 +172,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
-    enabled: active && !!projectionBody && !evaluate, retry: false,
+    enabled: active && !!projectionBody && !evaluate,
   });
   const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   const markedPorts = useMemo(() => new Map([
@@ -179,7 +182,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const attachments = useQuery({
     queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
     queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
-    enabled: active && !!model && !!readBody, retry: false,
+    enabled: active && !!model && !!readBody,
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
   const shownModel = evaluate ? effectiveModel : model?.value;
@@ -209,7 +212,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const fields = useQuery({
     queryKey: ['model-fields', saved.project_id, fieldBody],
     queryFn: ({ signal }) => projectModelFields(saved.project_id, fieldBody!, signal),
-    enabled: active && !!fieldBody, retry: false, placeholderData: (previous, query) => {
+    enabled: active && !!fieldBody, placeholderData: (previous, query) => {
       const previousBody = query?.queryKey[2] as typeof fieldBody;
       return previousBody && fieldBody && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
         && JSON.stringify(previousBody.evaluate_scope) === JSON.stringify(fieldBody.evaluate_scope)
@@ -227,7 +230,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         const applied = await editor.editModel('Set Value', address.document, result.command, saved);
         return applied.status === 'refused' ? applied.problem.detail : undefined;
       }
-      if (result.files.length) {
+      if (result.files.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
         const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
         const dependencies = variant ? saved.file_revisions.map(({ address: file }) => file).filter((file) =>
           (file.kind === 'document' && file.id === address.document) ||
@@ -246,17 +249,20 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const projectedFields = fields.data?.fields ?? [];
   const projectedNames = new Set(projectedFields.flatMap(({ address }) =>
     address.element.kind === 'field' && typeof address.element.path.at(-1) === 'string' ? [String(address.element.path.at(-1))] : []));
-  const fieldControls = projectedFields.map((field) => <StudioFieldControl
-    key={JSON.stringify([saved.project_id, fieldRun?.variant, fieldRun?.step, fieldRows, addressKey(field.address)])}
-    field={field}
-    planSources={field.sources}
-    source={attachments.data?.field_sources?.[addressKey(field.address)] ??
-      (fieldOwner && attachments.data?.field_sources?.[addressKey(fieldOwner)]) ??
-      attachments.data?.source ?? undefined}
-    commit={canEditField && !fields.isPlaceholderData ? (edit) => editField(field.address, edit) : undefined}
-    rowSelection={!!fieldRows?.length}
-    multipleRows={!evaluate && (fieldRows?.length ?? 0) > 1}
-    selectedValues={field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined} />);
+  const fieldControls = projectedFields.map((field) => {
+    const id = JSON.stringify([saved.project_id, fieldRows, addressKey(field.address)]);
+    return <ValueField key={id} model={fromFieldView(field, {
+      id,
+      planSources: field.sources,
+      source: attachments.data?.field_sources?.[addressKey(field.address)] ??
+        (fieldOwner && attachments.data?.field_sources?.[addressKey(fieldOwner)]) ??
+        attachments.data?.source ?? undefined,
+      commit: canEditField && !fields.isPlaceholderData ? (edit) => editField(field.address, edit) : undefined,
+      rowSelection: !!fieldRows?.length,
+      multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,
+      selectedMembers: field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined,
+    })} />;
+  });
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...(problems ?? []), { address: issue.address, reason: issue.reason }] : problems ?? []) {
     let address = item.address;

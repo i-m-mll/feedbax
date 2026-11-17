@@ -419,6 +419,20 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
             assert resolved.payload["settings"]["optimizer"]["params"]["learning_rate"] == pytest.approx(expected)
             assert resolved.sources["/payload" + field_path].kind == "sweep_value"
 
+        body = {"revision": reopened["revision"]}
+        edit = lambda text: client.post(endpoint, json=body | {"field": field_path, "edit": {"kind": "text", "text": text}}).json()
+        listed = edit("0.0001, 0.01")
+        assert not listed["problems"], listed
+        assert {axis: len(values) for axis, values in listed["removed_values"].items()} == {"learning-rate": 3}
+        single = edit("0.0001")
+        assert not single["problems"], single
+        assert {axis: len(values) for axis, values in single["removed_values"].items()} == {"learning-rate": 4}
+        updated = client.patch(url, json=body | {"files": single["files"]})
+        assert updated.status_code == 200, updated.text
+        reduced = client.get(url + "/open").json()["snapshot"]
+        assert not any(((reduced["project"]["steps"]["train"].get("sweep") or {}).get("axes") or {}).values())
+        assert len(folders.read_plan("managed-rate", revision=reduced["revision"]).plan.rows) == 1
+
 
 def _group_reaching_pipeline(raw, registry):
     payload = raw["documents"]["reach-model"]["payload"]

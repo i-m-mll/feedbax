@@ -16,21 +16,18 @@ export type StudioRegionState =
   | { kind: 'result'; missing: ReadonlyArray<{ status: StudioRunStatusId; count: number }> };
 
 export function studioReadState(
-  name: StudioNameId, data: unknown, error: unknown, retry: () => void, disconnected = false,
+  name: StudioNameId, data: unknown, error: unknown, retry: () => void,
 ): StudioRegionState {
-  if (error || disconnected) return { kind: 'failed', issue: studioRegionIssue(name, error, disconnected), retry };
+  if (error) return { kind: 'failed', issue: studioRegionIssue(name, error), retry };
   return data === undefined ? { kind: 'loading' } : { kind: 'result', missing: [] };
 }
 
-export function studioRegionIssue(name: StudioNameId, error: unknown, disconnected = false): StudioRegionIssue {
+export function studioRegionIssue(name: StudioNameId, error: unknown): StudioRegionIssue {
   const message = error instanceof Error ? error.message : undefined;
-  const serviceUnavailable = disconnected || (error instanceof ApiRequestError && error.kind === 'network');
   return {
-    reason: serviceUnavailable
-      ? studioReason('unreachable', studioName('service'))
-      : message && !(error instanceof ApiRequestError && (error.status ?? 0) >= 500)
-        ? studioReason('observed', message)
-        : studioReason('unavailable', studioName(name)),
+    reason: message && !(error instanceof ApiRequestError && (error.status ?? 0) >= 500)
+      ? studioReason('observed', message)
+      : studioReason('unavailable', studioName(name)),
     detail: message,
   };
 }

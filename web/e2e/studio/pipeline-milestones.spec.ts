@@ -165,7 +165,7 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   await authorLearningRateSweep(rate);
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
-  const picked = runs(page).getByRole('button', { name: /Medium/ });
+  const picked = runs(page).getByRole('row').filter({ hasText: '0.002' }).getByRole('button');
   await picked.click();
   const submitted = await admit(page, projectPath);
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(1);
@@ -396,7 +396,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(sweep).toHaveText('learning-rate 3');
   const definition = await readPlan();
   const sourceRows = definition.window_map!.rows.filter(({ key }) => key.step === 'train');
-  expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Medium', 'Fast']);
+  expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   expect(sourceRows.map(({ key, member_key }) => member_key === key.row)).toEqual([true, true, true]);
   const authoredRows = sourceRows.map(({ key: { variant, row }, member_key }) => ({ key: member_key, variant, row }));
   const ids = sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value_id);
@@ -409,9 +409,8 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const value = (name: string) => train.getByRole('listitem').getByRole('button', {
     name: `Select learning-rate ${name}`, exact: true,
   });
-  await value('Slow · 0.001').click();
-  await value('Medium · 0.002').click({ modifiers: ['Shift'] });
-  await expect(train).toContainText('2 of 3');
+  await value('0.001').click();
+  await value('0.002').click({ modifiers: ['Shift'] });
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
@@ -423,7 +422,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
     sweep: { axes: { subject: { input: 'subject' } } },
   });
   const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
-  await expect(inputs).toContainText('learning-rate Slow · 0.001, Medium · 0.002 · 2 of 3');
+  await expect(inputs).toContainText('learning-rate 0.001, 0.002 · 2 of 3');
   const members = inputs.getByRole('list', { name: 'Members', exact: true });
   await expect(members.getByRole('listitem')).toHaveText(sourceRows.slice(0, 2).map(({ label }) => label));
   const trialSet = drawer.getByRole('group', { name: 'Trial Set', exact: true });
@@ -451,11 +450,11 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(runButton(page)).toBeDisabled();
 
   await select(page, 'train');
-  const fast = runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button');
+  const fast = runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button');
   await fast.click();
   await expect(primary(page).getByRole('region', { name: 'Used By' })).toHaveCount(0);
   await expect(steps.getByRole('button', { name: 'Select evaluate Evaluate 0 of 2', exact: true })).toBeVisible();
-  const slow = runs(page).getByRole('row').filter({ hasText: 'Slow' }).getByRole('button');
+  const slow = runs(page).getByRole('row').filter({ hasText: '0.001' }).getByRole('button');
   await slow.click();
   await expect(primary(page).getByRole('region', { name: 'Used By' })).toContainText('1 of 2');
   await expect(steps.getByRole('button', { name: 'Select evaluate Evaluate 1 of 2', exact: true })).toBeVisible();
@@ -463,7 +462,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
 
   await select(page, 'evaluate');
   const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
-  await subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true }).check();
+  await subset.getByRole('checkbox', { name: '0.003', exact: true }).check();
   const subsetEdit = edited('/inputs/subject/where');
   await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
   const savedSubset = await subsetEdit;
@@ -481,7 +480,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await select(page, 'evaluate');
   await expect(inputs).toContainText('3 of 3');
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3);
-  await runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button').click();
+  await runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button').click();
   await expect(primary(page).getByRole('region', { name: 'Made From' })).toContainText('1 of 3');
   await expect(steps.getByRole('button', { name: 'Select train Train 1 of 3', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Show Map', exact: true }).click();
@@ -564,7 +563,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
     name: `Select learning-rate ${model} · task ${task} · ${status}`, exact: true,
   });
   await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
-  await expect(pivot.getByRole('rowheader')).toHaveText(['Slow · 0.001', 'Fast · 0.003']);
+  await expect(pivot.getByRole('rowheader')).toHaveText(['0.001', '0.003']);
   await expect(pivot.getByRole('button', { name: /Can't run$/ })).toHaveCount(4);
 
   await select(page, 'train');
@@ -573,12 +572,12 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const trainDone = (await read()).rows;
   await select(page, 'evaluate');
   await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
-  const sampled = cell('Fast · 0.003', 'Long Task', 'Not run');
+  const sampled = cell('0.003', 'Long Task', 'Not run');
   const target = rows[3].key;
   await sampled.click();
   await expect(sampled).toHaveAttribute('aria-pressed', 'true');
   await launchRows(page, projectPath, [target]);
-  await expect(cell('Fast · 0.003', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
+  await expect(cell('0.003', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
   await expect(pivot.getByRole('button', { name: /Not run$/ })).toHaveCount(3);
   const lineage = primary(page).getByRole('region', { name: 'Made From', exact: true });
   const complete = await read();
@@ -603,7 +602,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
   await expect(mass).toHaveAccessibleDescription('Document · reach-model');
   const rate = primary(page).getByRole('group', { name: 'learning-rate', exact: true });
-  await rate.getByRole('button', { name: 'Fast · 0.003', exact: true }).click();
+  await rate.getByRole('button', { name: '0.003', exact: true }).click();
   await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '2');

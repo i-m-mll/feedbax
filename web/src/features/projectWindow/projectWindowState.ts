@@ -23,6 +23,18 @@ export interface ProjectWindowState {
   inspectorWidth: number;
   secondaryWidth: number;
   modelPaths?: Partial<Record<ProjectWindowSlot, { document: string; path: string[] }>>;
+  sections?: Partial<Record<ProjectWindowSection, boolean>>;
+}
+
+/** A drawer section, named by its view. */
+export type ProjectWindowSection = `${ProjectWindowView}.${string}`;
+
+export function sectionOpen(state: ProjectWindowState, section: ProjectWindowSection, initially = true) {
+  return state.sections?.[section] ?? initially;
+}
+
+export function withSectionOpen(state: ProjectWindowState, section: ProjectWindowSection, open: boolean): ProjectWindowState {
+  return { ...state, sections: { ...state.sections, [section]: open } };
 }
 
 declare global {
@@ -103,6 +115,10 @@ function windowArrangement(value: unknown): ProjectWindowState {
     if (entry && typeof entry.document === 'string' && Array.isArray(entry.path) &&
         entry.path.every((id) => typeof id === 'string')) modelPaths[slot] = entry;
   }
+  const sections: NonNullable<ProjectWindowState['sections']> = {};
+  for (const [key, open] of Object.entries(prefs.sections ?? {})) {
+    if (typeof open === 'boolean' && isView(key.split('.')[0])) sections[key as ProjectWindowSection] = open;
+  }
   return {
     mode: prefs.mode === 'map' || prefs.mode === 'details' ? prefs.mode : 'both',
     primaryView: isView(prefs.primaryView) ? prefs.primaryView : defaultProjectWindowState.primaryView,
@@ -117,6 +133,7 @@ function windowArrangement(value: unknown): ProjectWindowState {
     inspectorWidth: preferredSize('inspectorWidth'),
     secondaryWidth: preferredSize('secondaryWidth'),
     modelPaths,
+    sections,
   };
 }
 

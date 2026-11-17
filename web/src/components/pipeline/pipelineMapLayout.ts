@@ -124,13 +124,17 @@ export function layoutPipelineMap(plan: PlanView) {
 
 const unfoldedMarkCapacity = 1_000;
 
+/** The card's sweeps in shape-line order: the first runs down, the second across. Unless arranged, the longer of the first two runs across. */
 export function orderedMapSweeps(step: PlanStepView, presentation: PipelineCardPresentation) {
   const byId = new Map(step.sweeps.map((sweep) => [sweep.id, sweep]));
   const order = new Set([...(presentation.sweepOrder ?? []), ...byId.keys()]);
-  return [...order].flatMap((id) => {
+  const sweeps = [...order].flatMap((id) => {
     const sweep = byId.get(id);
     return sweep ? [sweep] : [];
   });
+  const [down, across] = sweeps;
+  if (presentation.sweepOrder || !across || down.values.length <= across.values.length) return sweeps;
+  return [across, down, ...sweeps.slice(2)];
 }
 
 export function foldedMapSweep(

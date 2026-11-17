@@ -26,6 +26,7 @@ import type { ProblemReveal } from './projectWindowProblems';
 import type { ProjectEditController } from './projectEditController';
 import { useElementSelection } from './ManagedDocumentCanvas';
 import { useStoredModelView } from './model/ModelView';
+import type { ConfirmRunRemoval } from './runRemoval';
 import { modelSchema } from './model/modelGraph';
 import type { ModelSelectionStore } from './model/modelSelection';
 import { Select } from '@/components/ui/Select';
@@ -61,6 +62,7 @@ interface DetailInputs {
   readonly evaluationReplay: ReturnType<typeof useSavedEvaluationScene>;
   readonly namedRun?: StudioSavedTrainKey;
   readonly selectedSweepValues: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly confirmRunRemoval: ConfirmRunRemoval;
   readonly fieldRows?: readonly string[];
   readonly fieldAxes?: Record<string, string[]>;
   readonly documentScopes: Readonly<Record<'graph' | 'task', NamedDocumentScope | undefined>>;
@@ -146,7 +148,6 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
       return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial, checkpoint }, signal);
     },
     enabled: visible && !!trial && (!evaluation?.checkpoint_series || checkpoint !== undefined),
-    retry: false,
   });
   const replayDrawing = useMemo(() => replay.data && evaluationScene(replay.data), [replay.data]);
   const view: SceneView = replay.error
@@ -260,6 +261,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     model: activeView === 'model' ? stored : undefined, editor, saved, window: input.modelWindow,
     active: activeView === 'model',
     selectedSweepValues: input.selectedSweepValues,
+    confirmRunRemoval: input.confirmRunRemoval,
     fieldLitSteps: graphScope?.lit,
     fieldRows: input.fieldRows,
     fieldAxes: input.fieldAxes,

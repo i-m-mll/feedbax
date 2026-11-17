@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { palette } from './fixtures/studioKeyboard';
 
 test.use({ channel: 'chrome', viewport: { width: 1440, height: 900 } });
 
@@ -138,8 +139,7 @@ for (const { scope, element, composites, target } of [
     expect(problem?.detail).toBeTruthy();
     if (!problem?.detail) throw new Error('Expected an addressed Plan problem');
     const reason = problem.detail.startsWith(problem.path + ': ') ? problem.detail.slice(problem.path.length + 2) : problem.detail;
-    await page.getByRole('article', { name: 'Train train', exact: true })
-      .getByRole('button', { name: /Can't run/ }).and(page.locator('[aria-haspopup="dialog"]')).click();
+    await palette(page, 'problems', 'Problems');
     await page.getByRole('dialog', { name: 'Problems' }).getByRole('button').filter({ hasText: reason }).click();
     await expect(target(modelPanel(page))).toHaveCount(1);
     await expect(modelPanel(page).getByText(reason, { exact: false }).first()).toBeFocused();

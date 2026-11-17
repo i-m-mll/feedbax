@@ -7,12 +7,11 @@ import { DocumentPicker, type DocumentPickerModel } from './DocumentPicker';
 import type { ProjectWindowView } from './projectWindowState';
 
 /** A slot's header: the view's glyph, the picker of the document it shows, the path or controls inside it. */
-export function SlotHeader({ view, icon: Icon, picker, children, hidden, trailing }: {
+export function SlotHeader({ view, icon: Icon, picker, children, trailing }: {
   view: ProjectWindowView;
   icon: LucideIcon;
   picker?: DocumentPickerModel;
   children?: ReactNode;
-  hidden: boolean;
   trailing: ReactNode;
 }) {
   const name = studioName(view);
@@ -22,7 +21,7 @@ export function SlotHeader({ view, icon: Icon, picker, children, hidden, trailin
       <Icon aria-hidden="true" />
       <span className="sr-only">{name}</span>
     </h2>
-    <div className="studio-window-slot__controls" hidden={hidden}>
+    <div className="studio-window-slot__controls">
       <StudioRegionBoundary key={view} name={view}>
         {picker && <DocumentPicker model={picker} editing={editing} setEditing={setEditing} />}
         {children}

@@ -1,7 +1,7 @@
 """One projection and edit recipe for numeric Studio fields."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from math import isfinite
 
 from feedbax.contracts.expression_units import UNITS
@@ -45,7 +45,7 @@ class NumericField:
         if self.duration:
             duration = self.duration_value(node)
             if duration.unit != self.unit:
-                raise ValueError(f"{self.label} sweep values must use {self.unit}. Set the field's unit first.")
+                raise ValueError(f"{self.label} sweep values are in {self.unit}.")
             return duration.value
         value = node.value
         if node.unit == "st":
@@ -72,6 +72,7 @@ class NumericField:
 
 def _list_axis(sweep: FieldSweeps, values: list[int | float]) -> NamedAxis:
     previous = sweep.covering[0][1] if len(sweep.covering) == 1 else None
+    named = isinstance(previous, NamedAxis)
     if isinstance(previous, ListedAxis | RangeAxis | SampledAxis):
         previous = sweep.to_list(previous)
     old = previous.values if isinstance(previous, NamedAxis) else {}
@@ -87,12 +88,14 @@ def _list_axis(sweep: FieldSweeps, values: list[int | float]) -> NamedAxis:
     old_keys = list(old)
     for index, (value, identity) in enumerate(zip(values, identities, strict=True)):
         key = by_value.get(identity)
+        # A name belongs to its value: it stays with the value, never with a reused id, and a rule's values have none.
+        label = old[key].label if key is not None and named else None
         if key is None and index < len(old_keys) and old_keys[index] not in retained:
             key = old_keys[index]
         if key is None:
             key = sweep._fresh_id(f"value-{index + 1}", reserved)
             reserved.add(key)
-        entries[key] = sweep.target.entry(value, old[key].label if key in old else None)
+        entries[key] = sweep.target.entry(value, label)
     return NamedAxis(values=entries)
 
 
@@ -182,28 +185,76 @@ def project_numeric_field[View: StudioFieldView](
     )
 
 
+@dataclass(frozen=True)
+class _Rewrite:
+    """Patches that replace the covering sweep: by `after`, or by the field's single value `kept`."""
+
+    patches: list[SetProjectValue]
+    after: NamedAxis | None = None
+    kept: int | float | None = None
+
+
+@dataclass(frozen=True)
+class PreparedField:
+    """A constant for the owner to write, sweep patches, or field problems.
+
+    `removed` names, per sweep, the values whose runs leave the project. A run whose value keeps its id stays,
+    and so does a run of the value a sweep is reduced to, since its request is unchanged.
+    """
+
+    result: int | float | LiteralValue | list[SetProjectValue] | tuple[Problem, ...]
+    removed: dict[str, list[str]] = dataclass_field(default_factory=dict)
+
+
+def _named(sweep: FieldSweeps, axis: object) -> NamedAxis | None:
+    if isinstance(axis, ListedAxis | RangeAxis | SampledAxis):
+        try:
+            return sweep.to_list(axis)
+        except ValueError:
+            return None
+    return axis if isinstance(axis, NamedAxis) else None
+
+
+def _removed(sweep: FieldSweeps | None, rewrite: _Rewrite) -> dict[str, list[str]]:
+    if sweep is None or len(sweep.covering) != 1:
+        return {}
+    axis_id, previous = sweep.covering[0]
+    before = _named(sweep, previous)
+    if before is None:
+        return {}
+    if rewrite.after is not None:
+        gone = [value_id for value_id in before.values if value_id not in rewrite.after.values]
+    else:
+        kept = None if rewrite.kept is None else sweep_value_identity_bytes(rewrite.kept)
+        gone = [value_id for value_id, entry in before.values.items()
+                if entry is None or sweep_value_identity_bytes(entry.value) != kept]
+    return {axis_id: gone} if gone else {}
+
+
 def prepare_numeric_field(
     field: NumericField, axis: FieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
     functions: FunctionRegistry, *, period: float | None = None, rows: tuple[str, ...] = (),
     keep_value: Callable[[int | float], list[SetProjectValue]] | None = None,
     selection: SweepExceptionTerms | None = None,
-) -> int | float | LiteralValue | list[SetProjectValue] | tuple[Problem, ...]:
-    """Return a constant for the owner to write, sweep patches, or field problems."""
+) -> PreparedField:
     try:
-        return _prepare(field, axis, edit, functions, period=period,
-                        selection=selection or (SweepExceptionTerms(rows=list(rows)) if rows else None),
-                        keep_value=keep_value)
+        result = _prepare(field, axis, edit, functions, period=period,
+                          selection=selection or (SweepExceptionTerms(rows=list(rows)) if rows else None),
+                          keep_value=keep_value)
     except ValueError as error:
-        return (Problem(code=ProblemCode.STRUCTURE, reason=str(error)),)
+        return PreparedField((Problem(code=ProblemCode.STRUCTURE, reason=str(error)),))
+    if isinstance(result, _Rewrite):
+        return PreparedField(result.patches, _removed(axis, result))
+    return PreparedField(result)
 
 
 def _prepare(
     field: NumericField, axis: FieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
     functions: FunctionRegistry, *, period: float | None, selection: SweepExceptionTerms | None,
     keep_value: Callable[[int | float], list[SetProjectValue]] | None,
-) -> int | float | LiteralValue | list[SetProjectValue] | tuple[Problem, ...]:
+) -> int | float | LiteralValue | list[SetProjectValue] | _Rewrite | tuple[Problem, ...]:
     if selection is not None and edit.kind not in ("text", "name_value"):
-        raise ValueError("Select the Train step to change the field kind.")
+        raise ValueError(f"{field.label} has one kind for every run.")
     covered = axis.covering if axis else []
     previous = covered[0][1] if len(covered) == 1 else None
 
@@ -217,7 +268,7 @@ def _prepare(
         return sweep().edit(command, field.validate)
     if edit.kind == "name_value":
         if previous is None:
-            raise ValueError("Choose a saved sweep value.")
+            raise ValueError(f"{field.label} is not swept.")
         command = StudioAuthoringSweepChange(field=field.label, edit=StudioNameSweepValue(
             kind="nameSweepValue", sweep_id=covered[0][0], value_id=edit.value_id,
             label=edit.label.strip() or None if edit.label else None,
@@ -225,7 +276,7 @@ def _prepare(
         return sweep().edit(command, field.validate)
     if edit.kind == "to_list":
         if previous is None:
-            raise ValueError("Choose a saved sweep.")
+            raise ValueError(f"{field.label} is not swept.")
         command = StudioAuthoringSweepChange(
             field=field.label, edit=StudioSweepEdit(kind="toList", sweep_id=covered[0][0]),
         )
@@ -235,11 +286,11 @@ def _prepare(
         named = owner.to_list(previous) if isinstance(previous, ListedAxis | RangeAxis | SampledAxis) else previous
         entry = named.values.get(edit.value_id) if isinstance(named, NamedAxis) and edit.value_id else None
         if entry is None or not owner._editable_list(named) or keep_value is None:
-            raise ValueError("Choose one value of this sweep to keep.")
-        return [
+            raise ValueError(f"{field.label} has no such sweep value.")
+        return _Rewrite([
             *keep_value(entry.value),
             SetProjectValue(op="replace", path=pointer(("sweep", "axes", covered[0][0])), value=None),
-        ]
+        ], kept=entry.value)
     assert isinstance(edit, FieldTextEdit)
     parsed = read_field(edit.text, field.site, functions)
     if not isinstance(parsed, ParsedField):
@@ -260,13 +311,14 @@ def _prepare(
         return sweep().edit(command, field.validate)
     if isinstance(value, SweepList | SweepRange | SweepSample):
         if selection is not None:
-            raise ValueError("Select the Train step to change the sweep.")
+            raise ValueError(f"{field.label} has one sweep for every run.")
         owner = sweep()
         if isinstance(value, SweepList):
-            return owner.write_axis(_list_axis(owner, [number(item) for item in value.members]))
+            listed = _list_axis(owner, [number(item) for item in value.members])
+            return _Rewrite(owner.write_axis(listed), after=listed)
         path = owner.target.generated_path
         if path is None:
-            raise ValueError("This field writes more than one setting. Enter a sweep list.")
+            raise ValueError(f"{field.label} writes more than one setting and takes a list.")
         if isinstance(value, SweepRange):
             generated = RangeAxis(path=path, range=RangeValues(
                 start=number(value.first), stop=number(value.last), count=value.count, scale=value.spacing,
@@ -274,13 +326,21 @@ def _prepare(
             for member in owner.to_list(generated).values.values():
                 assert member is not None and type(member.value) in (float, int)
                 field.validate(member.value)
-            return owner.write_axis(generated)
+            return _Rewrite(owner.write_axis(generated), after=_named(owner, generated))
         if field.duration and value.draw.family not in {"uniform", "loguniform", "normal", "choice", "truncexp"}:
-            raise ValueError("Choose a draw with scalar duration parameters.")
+            raise ValueError(f"{field.label} takes draws with scalar durations.")
         seed = edit.seed if edit.seed is not None else previous.sampler.seed if isinstance(previous, SampledAxis) else 0
-        return owner.write_axis(_sample_axis(value, field, functions, period, seed, path))
+        sampled = _sample_axis(value, field, functions, period, seed, path)
+        return _Rewrite(owner.write_axis(sampled), after=_named(owner, sampled))
     if covered and selection is None:
-        raise ValueError("Choose Value from the kind menu to keep one sweep member.")
+        if len(covered) != 1:
+            raise ValueError(f"{field.label} is swept by {len(covered)} sweeps.")
+        assert keep_value is not None
+        kept = number(value)
+        return _Rewrite([
+            *keep_value(kept),
+            SetProjectValue(op="replace", path=pointer(("sweep", "axes", covered[0][0])), value=None),
+        ], kept=kept)
     if field.duration and selection is None:
         return field.duration_value(value)
     numeric = number(value)
@@ -289,7 +349,7 @@ def _prepare(
     owner = sweep()
     authored = owner.step.sweep
     if authored is None:
-        raise ValueError("Select the Train step to edit its single value.")
+        raise ValueError(f"{field.label} is not swept.")
     if len(selection.axes) == 1:
         (axis_id, values), = selection.axes.items()
         existing = authored.axes.get(axis_id)

@@ -2,14 +2,17 @@ import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/featur
 import { useState } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
-import { StudioJobsProvider, useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
+import { StudioJobsProvider, useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
 import {
   studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
-  studioStep, type StudioRunStatusId,
+  studioStep, type StudioResultState, type StudioRunStatusId,
 } from './studioVocabulary';
+
+/** The state a finished job's result is in, where the window knows its validity. */
+export type ActivityResultState = (job: StudioActivityJob) => StudioResultState | undefined;
 import { Button } from '@/components/ui/Button';
 
 const liveStatuses = new Set<StudioRunStatusId>([
@@ -34,6 +37,7 @@ function ActivityRun({
   project,
   selected,
   machine,
+  resultState,
   onOpen,
   onClose,
 }: {
@@ -41,6 +45,7 @@ function ActivityRun({
   project?: string;
   selected: boolean;
   machine?: string;
+  resultState?: StudioResultState;
   onOpen: () => Promise<boolean>;
   onClose: () => void;
 }) {
@@ -103,7 +108,7 @@ function ActivityRun({
           </span>
           <span className="block break-words font-medium">{job.label}</span>
         </Button>
-        <StudioRunStatus status={job.status} />
+        <StudioRunStatus status={resultState ?? job.status} />
       </div>
       {(coordinates.length > 0 || actor || machine) && (
         <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-shell-muted">
@@ -225,6 +230,7 @@ interface StudioActivityPaneProps {
   onOpenRun: (job: StudioActivityJob) => Promise<boolean>;
   onClose: () => void;
   standalone?: boolean;
+  resultState?: ActivityResultState;
 }
 
 export function StudioActivityPane(props: StudioActivityPaneProps) {
@@ -235,10 +241,9 @@ export function StudioActivityPane(props: StudioActivityPaneProps) {
   );
 }
 
-function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: StudioActivityPaneProps) {
+function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultState }: StudioActivityPaneProps) {
   const snapshot = useStudioJobs();
   const actions = useStudioJobActions();
-  const connection = useStudioJobConnection();
   const [selection, setSelection] = useState<string | null>(null);
   const jobs = snapshot.data?.jobs ?? [];
   const selected = jobs.find((job) => job.job_id === selection);
@@ -256,12 +261,8 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
       <dd className="text-shell-muted">{studioMachineStatus(machine.state)}</dd>
     </dl>
   );
-  const state: StudioRegionState = connection === 'disconnected' || snapshot.isError
-    ? {
-        kind: 'failed',
-        issue: studioRegionIssue('activity', snapshot.error, connection === 'disconnected'),
-        retry: actions.refresh,
-      }
+  const state: StudioRegionState = snapshot.isError
+    ? { kind: 'failed', issue: studioRegionIssue('activity', snapshot.error), retry: actions.refresh }
     : snapshot.isPending
       ? { kind: 'loading' }
       : visible.length > 0
@@ -290,6 +291,7 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
             project={projectNames.get(job.project_id) ?? job.project_id}
             selected={job === selected}
             machine={machineByJob.get(job.job_id)}
+            resultState={resultState?.(job)}
             onClose={onClose}
             onOpen={async () => {
               const opened = await onOpenRun(job);
@@ -308,6 +310,5 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
 
 export function useStudioActivityCount() {
   const snapshot = useStudioJobs();
-  const connection = useStudioJobConnection();
-  return connection === 'connected' ? snapshot.data?.jobs.filter(isLive).length ?? 0 : 0;
+  return snapshot.data?.jobs.filter(isLive).length ?? 0;
 }
