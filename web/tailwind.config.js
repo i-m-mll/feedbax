@@ -48,7 +48,6 @@ export default {
         }
       },
       spacing: {
-        'shell-header': 'var(--app-header-height)',
         'shell-inset': 'var(--space-3)'
       },
       borderRadius: {

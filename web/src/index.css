@@ -2,13 +2,13 @@
 
 @import "@window-shell/browser/tokens.css";
 @import "@window-shell/browser/frame.css";
+@import "@window-shell/browser/titlebar.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --studio-native-controls: 0px;
   --studio-shell-accent: #5d4b87;
   --studio-shell-selection: color-mix(in srgb, var(--text-primary) 10%, transparent);
   --shell-focus-color: var(--studio-shell-accent);
