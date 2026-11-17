@@ -220,8 +220,9 @@ class TrainingLoop:
                     raise ValueError("Training update changed the fixed structure or metadata of method state")
                 return dynamic, jax.tree.map(_metric_array, dict(metrics))
 
+            @jax.jit
             def propose(current, step):
-                return single_update(current, step_keys, run_keys, jnp.broadcast_to(step, (self._replica_count,)))
+                return single_update(current, step_keys, run_keys, jnp.broadcast_to(step, (len(replica_ids),)))
 
             _, metrics_shape = jax.eval_shape(propose, arrays, completed)
             # Rejected and unattempted metric rows are sliced away at the host boundary.
