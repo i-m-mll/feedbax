@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
@@ -57,10 +58,11 @@ from feedbax.contracts.project_io import (
     text_project_fingerprint,
 )
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
-from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.contracts.request_identity import request_codec_authority
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.project_documents import references_document, rename_document
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
@@ -74,6 +76,8 @@ from feedbax.contracts.studio_project import (
     SetProjectValue,
     StudioAuthoredDeclaration,
     StudioAuthoredFileRevision,
+    StudioDocumentCommand,
+    StudioDocumentCommandResult,
     StudioPresentationWrite,
     StudioProjectDocument,
     StudioProjectCreateFile,
@@ -536,6 +540,18 @@ def _publish_patch(folder: _LockedProjectFolder, files: list[_PendingFile], guar
             before_publish=guard,
         )
         _finish_patch_at(folder.path, folder.descriptor)
+
+
+def _diagnostic_counts(diagnostics: Iterable[ProjectDiagnostic]) -> Counter:
+    return Counter((item.code, item.step, item.variant, item.row, item.element) for item in diagnostics)
+
+
+def _free_document_name(project: dict, document: str) -> str:
+    stem = re.sub(r"-[0-9]+$", "", document)
+    index = 2
+    while (name := f"{stem}-{index}") in project["documents"] or references_document(project, name):
+        index += 1
+    return name
 
 
 def _check_file_spellings(root: Path, files: Iterable[str]) -> None:
@@ -1041,6 +1057,16 @@ class ProjectFolder:
                             data=b64encode(data).decode("ascii") if data is not None else None,
                             encoding="base64",
                         ))
+                presentation_data, presentation_revision = _read_presentation(root)
+                if body.presentation is not None:
+                    check_revision("presentation", body.presentation.before, presentation_revision)
+                    data = _encode_presentation(body.presentation.after)
+                    if data != presentation_data:
+                        pending.append(_PendingFile(
+                            address=PRESENTATION_ADDRESS,
+                            before=sha256_bytes(presentation_data) if presentation_data is not None else None,
+                            data=data.decode(),
+                        ))
                 if pending:
                     _check_file_spellings(root, proposed)
                     validated = parse_text_project_files(root, proposed)
@@ -1052,10 +1078,92 @@ class ProjectFolder:
                     raise
                 raise ProjectFolderInvalid(str(error)) from error
 
+            def guard() -> None:
+                check_revision("project", text.revision, self._load(root).revision)
+                if body.presentation is not None:
+                    check_revision("presentation", presentation_revision, _read_presentation(root)[1])
+
             if pending:
-                _publish_patch(folder, pending, lambda: check_revision("project", text.revision, self._load(root).revision))
+                _publish_patch(folder, pending, guard)
                 text = self._load(root)
             return self._snapshot(folder.location, text)
+
+    def document_command(self, project_id: str, body: StudioDocumentCommand) -> StudioDocumentCommandResult:
+        """Rename or duplicate a document with its references and presentation in one write."""
+        command = body.command
+        with self._locked_folder(project_id) as folder:
+            root = folder.path
+            text = self._load(root)
+            check_revision("project", body.revision, text.revision)
+            presentation_data, presentation_revision = _read_presentation(root)
+            check_revision("presentation", body.presentation_revision, presentation_revision)
+            if command.document not in text.project.documents:
+                raise ProjectFolderNotFound(command.document)
+            source = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+            shown_before = _decode_presentation(presentation_data).model_dump(mode="json", exclude_unset=True)
+            shown = dict(shown_before)
+            name = command.name or _free_document_name(source, command.document)
+            if name in text.project.documents:
+                raise ProjectFileExists(f"documents/{name}.json")
+            if references_document(source, name):
+                raise ProjectFolderInvalid(f"A reference already names {name}; rename it first.")
+            if command.kind == "rename":
+                project, shown = rename_document(source, shown, command.document, name)
+            else:
+                project = {**source, "documents": {**source["documents"], name: source["documents"][command.document]}}
+                if command.document in shown.get("documents", {}):
+                    shown["documents"] = {**shown["documents"], name: shown["documents"][command.document]}
+            try:
+                validated = Project.model_validate(project)
+                presentation = PresentationDocument.model_validate(shown)
+            except ValueError as error:
+                raise ProjectFolderInvalid(str(error)) from error
+            if command.kind == "rename":
+                plan = compile_project(
+                    validated, readers=self._base_readers(folder.location, text), operations=self.operations,
+                    components=self.components, functions=self.functions, python_tasks=self.python_tasks,
+                    figure_templates=self.figure_templates, training_methods=self.training_methods,
+                )
+                introduced = _diagnostic_counts(plan.diagnostics) - _diagnostic_counts(
+                    self._compile(folder.location, text).plan.diagnostics,
+                )
+                if introduced:
+                    raise ProjectFolderInvalid(
+                        f"Renaming {command.document} leaves a reference this rename does not rewrite.",
+                    )
+            original = dump_text_project(text.project, text.configuration)
+            encoded = dump_text_project(validated, text.configuration)
+            copied = f"documents/{name}.json"
+            if encoded[copied] == original[f"documents/{command.document}.json"]:
+                encoded[copied] = text.files[f"documents/{command.document}.json"]
+            pending = []
+            for relative in sorted(original.keys() | encoded.keys()):
+                if original.get(relative) == encoded.get(relative):
+                    continue
+                path = Path(relative)
+                data = encoded.get(relative)
+                pending.append(_PendingFile(
+                    address=_PendingDeclarationAddress(kind="declaration", id=text.configuration.project)
+                    if relative == text.declaration
+                    else AuthoredFileAddress(kind=_KINDS[path.parent.name], id=path.stem),
+                    before=text.file_revisions.get(relative),
+                    data=b64encode(data).decode("ascii") if data is not None else None,
+                    encoding="base64",
+                ))
+            if shown != shown_before:
+                pending.append(_PendingFile(
+                    address=PRESENTATION_ADDRESS,
+                    before=sha256_bytes(presentation_data) if presentation_data is not None else None,
+                    data=_encode_presentation(presentation).decode(),
+                ))
+            _check_file_spellings(root, encoded)
+
+            def guard() -> None:
+                check_revision("project", text.revision, self._load(root).revision)
+                check_revision("presentation", presentation_revision, _read_presentation(root)[1])
+
+            _publish_patch(folder, pending, guard)
+            return StudioDocumentCommandResult(document=name, snapshot=self._snapshot(folder.location, self._load(root)))
 
     def apply_model_command(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,

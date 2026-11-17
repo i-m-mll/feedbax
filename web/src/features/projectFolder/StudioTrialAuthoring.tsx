@@ -78,7 +78,7 @@ export function TrialTaskPicker({ view, commit }: { view: StudioTrialAuthoring; 
         value: document, label: document + (problems.length ? ' · ' + problems[0].reason : ''),
       }))}
       onValueChange={async (document) => {
-        setError(await commit?.(studioAccessibleName('select', studioName('task')), { kind: 'select_task', document }));
+        setError(await commit?.(studioAccessibleName('select', studioName('task')), { kind: 'select_document', role: 'task', document }));
       }} />
     {error && <span role="alert">{error}</span>}
   </>;

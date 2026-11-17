@@ -173,11 +173,11 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         choices = {choice.document: choice.problems for choice in evaluated_task.tasks}
         assert not choices["probe-task"]
         assert any("reach_target" in problem.reason for problem in choices["unbound-task"])
-        incompatible = author(revision, {"kind": "select_task", "document": "unbound-task"},
+        incompatible = author(revision, {"kind": "select_document", "role": "task", "document": "unbound-task"},
                               selected=test_run, scope=scope)
         assert not incompatible.files
         assert any("reach_target" in problem.reason for problem in incompatible.problems)
-        revision = save(author(revision, {"kind": "select_task", "document": "test-task"},
+        revision = save(author(revision, {"kind": "select_document", "role": "task", "document": "test-task"},
                                selected=test_run, scope=scope))
         chosen = author(revision, selected=test_run)
         assert chosen.task_document == "test-task"
@@ -187,7 +187,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         ]}, selected=test_run, scope=scope))
         assert author(revision, selected=test_run).task.params["x"] == 0.38
         assert folders.read(project).project.documents["test-task"].payload["params"]["x"] == 0.31
-        revision = save(author(revision, {"kind": "select_task", "document": "probe-task"},
+        revision = save(author(revision, {"kind": "select_document", "role": "task", "document": "probe-task"},
                                selected=test_run, scope=scope))
         probe = author(revision, selected=test_run)
         assert not probe.problems and probe.objective is None

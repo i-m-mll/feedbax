@@ -24,11 +24,13 @@ from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
     StudioTrialDocumentEdit, StudioTrialExpressionEdit, StudioTrialField, StudioTrialInput,
-    StudioTrialOutput, StudioTrialReset, StudioTrialSelectTask, StudioTrialStepScope,
+    StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope,
 )
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Epoch, PythonTaskSelection, TaskDocument,
 )
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training import TrialDocuments
 from feedbax.expression_check import references
 from feedbax.expression_site import project_site, read_field
@@ -305,7 +307,15 @@ def _task_field_writes(definition, task, origins, change):
 
 def _train_writes(change, project, definition, documents, projection):
     raw = definition.payload["trial_documents"]
-    if isinstance(change, StudioTrialSelectTask):
+    if isinstance(change, StudioTrialSelectDocument) and change.role != "task":
+        _chosen_document(project, change.document, change.role)
+        writes = [_override(f"trial_documents.{change.role}", "replace" if change.role in raw else "add",
+                            {"document": change.document})]
+        if change.role == "model":
+            writes.append(_override("trial_documents.model_name", "replace" if "model_name" in raw else "add",
+                                    change.document))
+        return writes
+    if isinstance(change, StudioTrialSelectDocument):
         task = _chosen_task(project, change.document)
         field = _task_field(task)
         if field == "python_task":
@@ -344,6 +354,15 @@ def _train_writes(change, project, definition, documents, projection):
         return []
     field, value = _changed_value(documents, definition, change.kind)
     return _value_writes(f"trial_documents.{field}", value, change)
+
+
+_DOCUMENT_SCHEMAS = {"model": MODEL_DOCUMENT_SCHEMA_ID, "objective": OBJECTIVE_DOCUMENT_SCHEMA_ID}
+
+
+def _chosen_document(project, document, role):
+    entry = project.documents.get(document)
+    if entry is None or entry.schema_id != _DOCUMENT_SCHEMAS[role]:
+        raise ProjectFolderInvalid(f"The selected document is not a{'n' if role == 'objective' else ''} {role.title()}.")
 
 
 def _chosen_task(project, document):
@@ -491,7 +510,9 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         settled = folders.read_plan(project_id, revision=body.revision, source_runs=selected)
     evaluate_field = (step.kind == "evaluate" and isinstance(change, StudioTrialDocumentEdit) and change.kind == "task")
     if step.kind == "evaluate":
-        if isinstance(change, StudioTrialSelectTask):
+        if isinstance(change, StudioTrialSelectDocument):
+            if change.role != "task":
+                raise ProjectFolderInvalid("An Evaluate reads its Model and Objective from its subject.")
             _chosen_task(project, change.document)
             files = [scoped_file(project, key, scope, _task_selection_writes(definition, {"document": change.document}))]
         elif evaluate_field:
@@ -588,13 +609,14 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
             expected = type(old_value).model_validate(_edit_value(raw, requested))
             if expected != new_value:
                 raise ProjectFolderInvalid("A selected value is controlled by a different authored source.")
-        elif isinstance(change, StudioTrialSelectTask):
+        elif isinstance(change, StudioTrialSelectDocument):
             step = candidate.steps[key.variant, key.step]
             definition = candidate.selected_definitions[key]
-            path = (f"payload.trial_documents.{_task_field(new.task_source)}" if step.kind == "train"
+            field = _task_field(new.task_source) if change.role == "task" else change.role
+            path = (f"payload.trial_documents.{field}" if step.kind == "train"
                     else _evaluation_task_path(definition))
             if definition.document_ids.get(path) != change.document:
-                raise ProjectFolderInvalid("A selected task is controlled by a different authored source.")
+                raise ProjectFolderInvalid(f"A selected {change.role} is controlled by a different authored source.")
         elif isinstance(change, StudioTrialBindingEdit):
             binding = next((row for row in _input_rows(new, after) if row.address == change.input), None)
             if binding is None:
