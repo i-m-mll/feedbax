@@ -185,6 +185,30 @@ def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_t
     }
 
 
+def test_plan_reports_every_component_with_invalid_parameters(authored):
+    raw = document_project(authored)
+    interior = raw["documents"]["reach-model"]["payload"]["interior"]
+    for name in ("left", "right"):
+        interior["components"][name] = {
+            "kind": "leaf", "name": name.title(), "type": "feedbax.equinox.Linear", "fields": {},
+        }
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert sorted(
+        issue.model_address.element.id for issue in plan.diagnostics
+        if issue.model_address is not None and issue.model_address.element.kind == "component"
+    ) == ["left", "right"]
+
+
+def test_plan_reports_every_unwired_required_input(authored):
+    raw = document_project(authored)
+    model = raw["documents"]["reach-model"]["payload"]
+    controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+    del controller["interior"]["wires"]["decode"]
+    del controller["interior"]["wires"]["target"]
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert sorted(issue.path.rsplit(".", 1)[-1] for issue in plan.diagnostics) == ["cell", "readout"]
+
+
 def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_trials):
     raw = document_project(authored)
     model = raw["documents"]["reach-model"]

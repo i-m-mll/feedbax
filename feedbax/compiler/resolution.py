@@ -51,6 +51,14 @@ class ParameterResolutionError(ValueError):
         self.cause = cause
 
 
+class ParameterResolutionErrors(ParameterResolutionError):
+    """Every authored node whose parameters failed; it reads as the first where one failure is expected."""
+
+    def __init__(self, errors: tuple[ParameterResolutionError, ...]):
+        super().__init__(errors[0].authored_path, errors[0].cause)
+        self.errors = errors
+
+
 @dataclass(frozen=True)
 class GraphParameterResolution:
     graph: GraphSpec
@@ -622,5 +630,5 @@ def resolve_graph_parameters(
         pass
     result = state.finish()
     if result.errors and not allow_incomplete:
-        raise result.errors[0] from result.errors[0].cause
+        raise ParameterResolutionErrors(result.errors) from result.errors[0].cause
     return result
