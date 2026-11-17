@@ -52,7 +52,7 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
       return {
         id, ariaLabel: studioAccessibleName('select', id),
         data: { selectionId, label: <span className="break-words" title={problem}>{label}{problem &&
-          <span aria-label={problem} className="text-red-700"> !</span>}</span> },
+          <span aria-label={problem} className="text-shell-status-failure"> !</span>}</span> },
         position: positions?.[id] ?? { x: x - 75, y: y - 25 },
       };
     });

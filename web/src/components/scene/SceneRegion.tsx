@@ -194,7 +194,7 @@ function SceneDrawingCanvas({
       })}
       <g transform={`translate(28 ${viewportHeight - 32})`} pointerEvents="none" aria-hidden="true">
         <path d={`M 0 -5 V 5 M 0 0 H ${meters * scale} M ${meters * scale} -5 V 5`} stroke="var(--text-primary)" strokeWidth={2} />
-        <text y={-9} className="fill-shell-muted text-[11px] font-medium">
+        <text y={-9} className="fill-shell-muted text-xs font-medium">
           {meters >= 1 ? `${meters} ${studioUnit('meter')}` : `${Math.round(meters * 100)} ${studioUnit('centimeter')}`}
         </text>
       </g>

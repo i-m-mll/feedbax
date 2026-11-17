@@ -23,7 +23,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
-import { IconButton } from '@/components/ui/Button';
+import { Button, IconButton } from '@/components/ui/Button';
 import { ListRow } from '@/components/ui/ListRow';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
@@ -107,7 +107,6 @@ export interface StudioPipelineMapProps {
 }
 
 const emptyPresentation: PipelineCardPresentation = {};
-const smallButton = 'rounded border border-shell-control bg-shell-surface p-1 text-shell-muted hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-shell-accent';
 
 function stepRunSelection(selection: PipelineSelection | null, stepId: string) {
   return selection?.kind !== 'steps' && selection?.stepId === stepId ? selection : null;
@@ -135,8 +134,8 @@ function StatusCounts({ id, counts, onProblems }: {
         const mark = <><StudioRunMark status={status} />
           {count > 0 ? `${count} ` : ''}{studioRunStatus(status)}</>;
         return problem
-          ? <button type="button" key={status} className={`${className} underline`} aria-haspopup="dialog"
-            onClick={(event) => problem(event.currentTarget)}>{mark}</button>
+          ? <Button variant="bare" size="content" key={status} className={`${className} underline`} aria-haspopup="dialog"
+            onClick={(event) => problem(event.currentTarget)}>{mark}</Button>
           : <span key={status} className={className}>{mark}</span>;
       })}
     </span>
@@ -167,9 +166,9 @@ export function bindSweepFold(
 }
 
 function FoldSweep({ command }: { command: StudioCommand }) {
-  return <button type="button" className={smallButton} {...commandAttributes(command)} onClick={command.invoke}>
+  return <Button size="mark" {...commandAttributes(command)} onClick={command.invoke}>
     {studioName(command.name)}
-  </button>;
+  </Button>;
 }
 
 function StepShape({
@@ -218,9 +217,10 @@ function StepShape({
           <div key={sweep.id} className="inline-flex items-center gap-1">
             {index > 0 && <span aria-hidden="true">×</span>}
             <div className="relative">
-              <button
-                type="button"
-                className="rounded px-1 py-0.5 hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-shell-accent aria-expanded:bg-shell-subtle"
+              <Button
+                variant="ghost"
+                size="mark"
+                className="aria-expanded:bg-shell-selected"
                 aria-label={studioAccessibleName('sweep', label)}
                 aria-expanded={openSweep === sweep.id}
                 draggable={Boolean(onPresentationChange)}
@@ -237,7 +237,7 @@ function StepShape({
                 onDrop={(event) => dropSweep(event, index)}
               >
                 {isFolded ? `(${label})` : label}
-              </button>
+              </Button>
               {openSweep === sweep.id && (
                 <div className="absolute left-0 top-full z-20 w-max max-w-56 rounded-md border border-shell-divider bg-shell-surface p-2 shadow-md">
                   <ul className="nowheel max-h-36 space-y-0.5 overflow-y-auto">
@@ -256,24 +256,12 @@ function StepShape({
                   {onPresentationChange && (
                     <div className="mt-2 flex items-center gap-1 border-t border-shell-divider pt-1">
                       <FoldSweep command={bindSweepFold(step.id, sweep, isFolded, presentation, onPresentationChange)} />
-                      <button
-                        type="button"
-                        className={smallButton}
-                        aria-label={studioAccessibleName('moveEarlier', sweep.label)}
-                        disabled={index === 0}
-                        onClick={() => moveSweep(index, index - 1)}
-                      >
-                        <ArrowLeft aria-hidden="true" className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        className={smallButton}
-                        aria-label={studioAccessibleName('moveLater', sweep.label)}
-                        disabled={index === sweeps.length - 1}
-                        onClick={() => moveSweep(index, index + 1)}
-                      >
-                        <ArrowRight aria-hidden="true" className="h-3 w-3" />
-                      </button>
+                      <IconButton variant="default" size="mark" label={studioAccessibleName('moveEarlier', sweep.label)}
+                        icon={<ArrowLeft aria-hidden="true" />} disabled={index === 0}
+                        onClick={() => moveSweep(index, index - 1)} />
+                      <IconButton variant="default" size="mark" label={studioAccessibleName('moveLater', sweep.label)}
+                        icon={<ArrowRight aria-hidden="true" />} disabled={index === sweeps.length - 1}
+                        onClick={() => moveSweep(index, index + 1)} />
                     </div>
                   )}
                 </div>
@@ -283,10 +271,8 @@ function StepShape({
         );
       })}
       {newSweep && (
-        <button type="button" className={smallButton} {...commandAttributes(newSweep)}
-          disabled={!newSweep.enabled} onClick={newSweep.invoke}>
-          <Plus aria-hidden="true" className="h-3 w-3" />
-        </button>
+        <IconButton variant="default" size="mark" label={newSweep.label} icon={<Plus aria-hidden="true" />}
+          {...commandAttributes(newSweep)} disabled={!newSweep.enabled} onClick={newSweep.invoke} />
       )}
     </div>
   );
@@ -355,8 +341,9 @@ const StepCard = memo(function StepCard({
       <header className="relative">
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-3 top-1/2" />
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-3 top-1/2" />
-        <button
-          type="button"
+        <Button
+          variant="bare"
+          size="content"
           data-canvas-focus
           className="studio-map-card__head w-full rounded px-1 py-1 text-left hover:bg-shell-hover"
           aria-label={studioAccessibleName('select', stepLabel(step, compact ? step.runs.length : undefined))}
@@ -367,7 +354,7 @@ const StepCard = memo(function StepCard({
         >
           {compact ? <span className="flex items-center gap-1"><StepName step={step} />{' '}
             <span className="ml-auto tabular-nums text-xs">{step.runs.length}</span></span> : <StepName step={step} />}
-        </button>
+        </Button>
       </header>
       {related > 0 && <span id={`${id}-related`} className="sr-only">{studioCountOf(related, step.runs.length)}</span>}
       {compact ? <>
@@ -554,8 +541,9 @@ function MapDrawer({
           const level = documentLevel(documentScope, step.id);
           return (
             <li key={step.id}>
-              <button
-                type="button"
+              <Button
+                variant="bare"
+                size="content"
                 className={`w-full space-y-1 rounded border border-transparent p-1.5 text-left text-sm hover:bg-shell-hover aria-[current=step]:bg-shell-divider data-[map-dimmed=true]:border-dashed data-[map-dimmed=true]:border-shell-divider data-[document-scope=faint]:border-shell-divider ${documentLevelStyle} ${!scope ? documentLitStyle : ''}`}
                 aria-current={scope ? 'step' : undefined}
                 aria-label={studioAccessibleName('select', stepLabel(step, summary))}
@@ -566,7 +554,7 @@ function MapDrawer({
               >
                 <StepName step={step} />{' '}
                 {summary && <span className="block text-xs tabular-nums">{summary}</span>}
-              </button>
+              </Button>
               <div className="px-1.5"><StatusCounts counts={step.statusCounts}
                 onProblems={problemSteps?.has(step.id) && onProblems ? (opener) => onProblems(step.id, opener) : undefined} /></div>
             </li>
@@ -624,10 +612,11 @@ function MapLine({
         <div key={index} className="flex shrink-0 items-center gap-2">
           {index > 0 && <ChevronRight aria-hidden="true" className="h-4 w-4 text-shell-muted" />}
           {steps.map((step) => (
-            <button
+            <Button
               key={step.id}
-              type="button"
-              className={`studio-map-line-step ${smallButton} border-2 text-sm ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
+              variant="bare"
+              size="content"
+              className={`studio-map-line-step rounded border-2 bg-shell-surface p-1 text-sm text-shell-muted hover:bg-shell-hover ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
               style={{ borderColor: stepSelection(selection, step.id)?.kind === 'steps' ? 'var(--text-primary)' : studioStep(step.kind).tint }}
               aria-label={studioAccessibleName('select', stepLabel(step))}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
@@ -637,7 +626,7 @@ function MapLine({
               {...selectionButton((extend) => chooseStep(step.id, extend))}
             >
               <StepName step={step} />
-            </button>
+            </Button>
           ))}
         </div>
       ))}

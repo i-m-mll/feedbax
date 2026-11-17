@@ -33,7 +33,7 @@ const integer = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 export function StudioRunMark({ status, count }: { status: StudioRunStatusId; count?: number }) {
   const [color, path] = statusMarks[status];
   return (
-    <span aria-hidden="true" data-run-status-mark={status} className={`flex h-4 min-w-4 items-center justify-center rounded-sm text-white ${color}`}
+    <span aria-hidden="true" data-run-status-mark={status} className={`flex h-4 min-w-4 items-center justify-center rounded-sm text-shell-status-ink ${color}`}
       style={count === undefined ? undefined : { flexGrow: count } satisfies CSSProperties}>
       <svg className="size-4 shrink-0" viewBox="0 0 12 12">
         <path d={path} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />

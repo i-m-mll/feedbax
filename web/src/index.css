@@ -23,6 +23,7 @@
   --studio-status-running: #2459c4;
   --studio-status-success: #27713f;
   --studio-status-failure: #af2b32;
+  --studio-status-ink: var(--surface-main);
   --studio-kind-train: #a17d66;
   --studio-kind-evaluate: #a17385;
   --studio-kind-analyze: #85758d;
@@ -31,6 +32,9 @@
   --studio-scene-guide: #917967;
   --studio-scene-outline: var(--text-muted);
   --studio-scene-grid: color-mix(in srgb, var(--app-divider) 60%, var(--surface-main));
+  --studio-objective-lightness: 0.48;
+  --studio-shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.08);
+  --studio-shadow-lift: 0 18px 40px rgba(15, 23, 42, 0.12);
 }
 
 :root[data-theme='dark'] {
@@ -39,6 +43,23 @@
   --studio-logo-ink: var(--text-primary);
   --studio-logo-paper: var(--surface-header);
   --studio-logo-accent: #6d88e2;
+  --studio-status-warning: #af760e;
+  --studio-status-running: #457dec;
+  --studio-status-success: #478f5b;
+  --studio-status-failure: #e35d5d;
+  --studio-kind-train: #926f58;
+  --studio-kind-evaluate: #986b7d;
+  --studio-kind-analyze: #807188;
+  --studio-kind-report: #797775;
+  --studio-scene-feature: #99688a;
+  --studio-scene-guide: #8a7260;
+  --studio-objective-lightness: 0.68;
+  --studio-shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.32);
+  --studio-shadow-lift: 0 18px 40px rgba(0, 0, 0, 0.44);
+}
+
+.studio-objective {
+  color: oklch(var(--studio-objective-lightness) 0.16 var(--studio-objective-hue));
 }
 
 :root[data-face='work-sans'] { --font-ui: 'Work Sans Variable', system-ui, sans-serif; }
@@ -106,6 +127,28 @@ body {
   width: 100%;
   min-height: 100vh;
   overflow-x: hidden;
+}
+
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-background-pattern-dots-color: var(--app-divider);
+  --xy-background-pattern-lines-color: var(--app-divider);
+  --xy-background-pattern-cross-color: var(--app-divider);
+  --xy-edge-stroke: var(--text-muted);
+  --xy-edge-stroke-selected: var(--text-primary);
+  --xy-connectionline-stroke: var(--text-muted);
+  --xy-node-color: var(--text-primary);
+  --xy-node-border: 1px solid var(--studio-control-border);
+  --xy-node-background-color: var(--surface-header);
+  --xy-node-group-background-color: var(--surface-hover);
+  --xy-node-boxshadow-selected: 0 0 0 1px var(--text-primary);
+  --xy-handle-background-color: var(--text-muted);
+  --xy-handle-border-color: var(--surface-main);
+  --xy-selection-background-color: var(--studio-shell-selection);
+  --xy-selection-border: 1px dotted var(--text-muted);
+  --xy-edge-label-background-color: var(--surface-main);
+  --xy-edge-label-color: var(--text-primary);
+  --xy-resize-background-color: var(--text-muted);
 }
 
 .react-flow__node {

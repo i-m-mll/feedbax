@@ -2,6 +2,7 @@ import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from '
 import { ApiRequestError } from '@/api/request';
 import { reportStudioRenderFailure } from '@/api/studioDiagnostics';
 import { studioName, studioReason, studioRunStatus, type StudioNameId, type StudioRunStatusId } from './studioVocabulary';
+import { Button } from '@/components/ui/Button';
 
 export interface StudioRegionIssue {
   reason: string;
@@ -85,16 +86,14 @@ function RegionFailure({ issue, retry, recoveryLabel = 'retry' }: {
   return (
     <div className="space-y-2 rounded-md border border-shell-divider bg-shell-subtle p-3 text-sm">
       <p role="alert" className="text-shell-status-failure">{issue.reason}</p>
-      <button
-        type="button"
-        className="rounded-md border border-shell-control bg-shell-surface px-2 py-1 font-medium hover:bg-shell-hover"
+      <Button
         onClick={(event) => {
           event.currentTarget.closest<HTMLElement>('[data-studio-focus-region]')?.focus();
           retry();
         }}
       >
         {studioName(recoveryLabel)}
-      </button>
+      </Button>
       {issue.detail && issue.detail !== issue.reason && (
         <details className="text-xs text-shell-muted">
           <summary className="cursor-pointer">{studioName('details')}</summary>

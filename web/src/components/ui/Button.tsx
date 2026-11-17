@@ -4,28 +4,35 @@ import clsx from 'clsx';
 import { forwardRef, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { disabledLook, focusRing, glyph } from './styles';
 
-export type ButtonVariant = 'default' | 'primary' | 'ghost';
-export type ButtonSize = 'control' | 'mark';
+export type ButtonVariant = 'default' | 'primary' | 'ghost' | 'bare';
+export type ButtonSize = 'control' | 'mark' | 'content';
 export type ButtonAlign = 'center' | 'start';
 
+const pressedLook = 'text-shell-foreground aria-pressed:bg-shell-selected aria-pressed:font-medium';
 const variants: Record<ButtonVariant, string> = {
-  default:
-    'border border-shell-control bg-shell-surface hover:[&:not([data-disabled])]:bg-shell-hover active:[&:not([data-disabled])]:bg-shell-selected',
+  default: clsx(pressedLook,
+    'border border-shell-control bg-shell-surface hover:[&:not([data-disabled])]:bg-shell-hover active:[&:not([data-disabled])]:bg-shell-selected'),
   primary:
     'border border-shell-foreground bg-shell-foreground font-medium text-shell-surface hover:[&:not([data-disabled])]:opacity-90 active:[&:not([data-disabled])]:opacity-80',
-  ghost:
-    'border border-transparent bg-transparent hover:[&:not([data-disabled])]:bg-shell-hover active:[&:not([data-disabled])]:bg-shell-selected',
+  ghost: clsx(pressedLook,
+    'border border-transparent bg-transparent hover:[&:not([data-disabled])]:bg-shell-hover active:[&:not([data-disabled])]:bg-shell-selected'),
+  bare: '',
 };
 
-const textSizes: Record<ButtonSize, string> = { control: 'h-control px-control-inline', mark: 'h-[1.5em] px-1 text-xs' };
+const frame = clsx('inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-control', glyph);
+const textSizes: Record<ButtonSize, string> = {
+  control: clsx(frame, 'h-control px-control-inline'),
+  mark: clsx(frame, 'h-[1.5em] px-1 text-xs'),
+  content: '',
+};
 const alignments: Record<ButtonAlign, string> = { center: 'justify-center', start: 'justify-start text-left' };
-const iconSizes: Record<ButtonSize, string> = { control: 'h-control w-control', mark: 'size-[1.5em] text-xs' };
+const iconSizes: Record<ButtonSize, string> = {
+  control: clsx(frame, 'h-control w-control'),
+  mark: clsx(frame, 'size-[1.5em] text-xs'),
+  content: '',
+};
 
-const base = clsx(
-  'inline-flex shrink-0 select-none items-center gap-1.5 whitespace-nowrap rounded-control text-shell-foreground',
-  'aria-pressed:bg-shell-selected aria-pressed:font-medium',
-  focusRing, glyph, disabledLook,
-);
+const base = clsx('select-none', focusRing, disabledLook);
 
 type BaseProps = Omit<ComponentPropsWithoutRef<typeof BaseButton>, 'className'> & { className?: string };
 
