@@ -43,10 +43,10 @@ from feedbax.persistence.artifact_custody import (
     ArtifactBlobIntegrityError,
     ImmutableArtifactBlobProvider,
 )
+from tests.support.store_damage import writable_store_object
 from tests.support.analysis_fixtures import (
     ARTIFACT_PRODUCER_CALLS,
     ToyAnalysis,
-    ToyArtifactProducer,
     build_toy_artifact_analyses,
     build_toy_analysis_data,
     execute_toy_evaluation,
@@ -77,7 +77,7 @@ def test_headless_analysis_context_writes_manifest_figures_and_rebuildable_index
     )
 
     _all_analyses, all_results, _all_figs = run_analyses_with_context(
-        {"toy": ToyAnalysis(variant="toy", cache_result=True)},
+        {"toy": ToyAnalysis(variant="toy")},
         build_toy_analysis_data(),
         context,
         fig_dump_formats=["json"],
@@ -100,7 +100,6 @@ def test_headless_analysis_context_writes_manifest_figures_and_rebuildable_index
     assert manifest.artifacts[0].role == "figure"
     assert manifest.artifacts[0].media_type == "application/json"
     assert Path(manifest.artifacts[0].uri).exists()
-    assert list(context.results_cache_dir.glob("*.pkl"))
 
     index_path = rebuild_manifest_index(tmp_path)
     with sqlite3.connect(index_path) as conn:
@@ -153,40 +152,6 @@ def test_analysis_context_publishes_inherited_figures(tmp_path: Path, monkeypatc
         assert payload["data"][0]["y"] == [2, 3]
 
 
-def test_analysis_result_cache_corruption_recomputes_with_versioned_payload(
-    tmp_path: Path,
-) -> None:
-    reset_artifact_producer_calls()
-    spec = AnalysisRunSpec(
-        analysis_type="toy_artifact_analysis",
-        params={"outputs": ["artifact_producer"]},
-    )
-    context = AnalysisRunContext(spec=spec, root=tmp_path)
-
-    run_analyses_with_context(
-        {"artifact_producer": ToyArtifactProducer(variant="toy", cache_result=True)},
-        build_toy_analysis_data(),
-        context,
-        requested_outputs={"artifact_producer"},
-    )
-
-    cache_files = list(context.results_cache_dir.glob("*.pkl"))
-    assert len(cache_files) == 1
-    cache_files[0].write_bytes(b"not a valid result cache")
-
-    rerun_context = AnalysisRunContext(spec=spec, root=tmp_path)
-    _all_analyses, cached_results, _all_figs = run_analyses_with_context(
-        {"artifact_producer": ToyArtifactProducer(variant="toy", cache_result=True)},
-        build_toy_analysis_data(),
-        rerun_context,
-        requested_outputs={"artifact_producer"},
-    )
-
-    assert ARTIFACT_PRODUCER_CALLS["count"] == 2
-    assert cached_results["artifact_producer"]["value"] == 4
-    assert b"schema_version" in cache_files[0].read_bytes()
-
-
 def test_analysis_md5_identity_includes_dependency_wiring() -> None:
     left = IdentityNode(inputs=SinglePort(input="left_dependency"))
     right = IdentityNode(inputs=SinglePort(input="right_dependency"))
@@ -217,7 +182,7 @@ def test_requested_outputs_empty_intersection_raises_clear_error(
 
     with pytest.raises(ValueError, match="requested_outputs=\\['missing'\\]") as excinfo:
         run_analyses_with_context(
-            {"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            {"toy": ToyAnalysis(variant="toy")},
             build_toy_analysis_data(),
             context,
             requested_outputs={"missing"},
@@ -249,7 +214,7 @@ def test_requested_outputs_partial_intersection_runs_matching_outputs(
     )
 
     all_analyses, all_results, _all_figs = run_analyses_with_context(
-        {"toy": ToyAnalysis(variant="toy", cache_result=True)},
+        {"toy": ToyAnalysis(variant="toy")},
         build_toy_analysis_data(),
         context,
         fig_dump_formats=["json"],
@@ -376,7 +341,6 @@ def test_analysis_context_records_grouped_artifacts_cache_and_downstream_consump
     assert (tmp_path / arrays_ref.metadata["relative_path"]).exists()
     assert Path(summary_ref.uri).exists()
     assert Path(arrays_ref.uri).exists()
-    assert list(context.results_cache_dir.glob("*.pkl"))
 
     index_path = rebuild_manifest_index(tmp_path)
     with sqlite3.connect(index_path) as conn:
@@ -395,22 +359,22 @@ def test_analysis_context_records_grouped_artifacts_cache_and_downstream_consump
         ("analysis_summary", "toy/summary.json", "application/json"),
     ]
 
-    cached_context = AnalysisRunContext(
+    rerun_context = AnalysisRunContext(
         spec=spec,
         root=tmp_path,
         issues=["c3bce34"],
     )
-    _all_analyses, cached_results, _all_figs = run_analyses_with_context(
+    _all_analyses, rerun_results, _all_figs = run_analyses_with_context(
         build_toy_artifact_analyses(),
         build_toy_analysis_data(),
-        cached_context,
+        rerun_context,
     )
 
-    assert ARTIFACT_PRODUCER_CALLS["count"] == 1
-    assert cached_results["artifact_consumer"] == all_results["artifact_consumer"]
-    cached_manifest = load_manifest(cached_context.manifest_path)
-    assert cached_manifest.summary_metrics["artifact_count"] == 2
-    assert {artifact.artifact_id for artifact in cached_manifest.artifacts} == {
+    assert ARTIFACT_PRODUCER_CALLS["count"] == 2
+    assert rerun_results["artifact_consumer"] == all_results["artifact_consumer"]
+    rerun_manifest = load_manifest(rerun_context.manifest_path)
+    assert rerun_manifest.summary_metrics["artifact_count"] == 2
+    assert {artifact.artifact_id for artifact in rerun_manifest.artifacts} == {
         summary_ref.artifact_id,
         arrays_ref.artifact_id,
     }
@@ -686,7 +650,8 @@ def test_record_data_product_finalization_fails_closed_on_tampered_payload(
         logical_name="peak_velocity_scalar",
     )
     payload_path = tmp_path / product.artifacts[0].metadata["local_relative_path"]
-    payload_path.write_bytes(b'{"value": 9.5}\n')
+    with writable_store_object(payload_path):
+        payload_path.write_bytes(b'{"value": 9.5}\n')
 
     with pytest.raises(ArtifactBlobIntegrityError, match="artifact size mismatch|sha256 mismatch"):
         context.finalize()
@@ -720,11 +685,11 @@ def test_context_materializer_records_embedded_refs_groups_and_regeneration_spec
     context = AnalysisRunContext(spec=spec, root=tmp_path)
 
     def materialize(run_context: AnalysisRunContext) -> MaterializationResult:
-        existing_path = run_context.results_cache_dir / "existing-summary.json"
+        existing_path = run_context.artifacts_dir / "existing-summary.json"
         existing_path.parent.mkdir(parents=True, exist_ok=True)
         existing_path.write_text('{"summary": true}\n', encoding="utf-8")
 
-        group_dir = run_context.results_cache_dir / "bulk"
+        group_dir = run_context.artifacts_dir / "bulk"
         group_dir.mkdir(parents=True, exist_ok=True)
         bulk_path = group_dir / "unit.npz"
         np.savez_compressed(bulk_path, values=np.asarray([1, 2, 3], dtype=np.int64))

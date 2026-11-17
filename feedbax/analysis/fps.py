@@ -1,7 +1,7 @@
 from collections.abc import Callable, Hashable
 from functools import partial
 from struct import pack
-from typing import Any, ClassVar, Optional, TypeVar
+from typing import Any, Optional, TypeVar
 
 import equinox as eqx
 import jax
@@ -22,7 +22,6 @@ from feedbax.analysis.fp_finder import (
     FixedPointFinder,
     fp_adam_optimizer,
 )
-from feedbax.contracts.computation_revision import ANALYSIS_ENGINE_REVISION
 
 T = TypeVar("T")
 
@@ -102,13 +101,11 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
     """
 
     Ports = FixedPointsPorts
-    computation_revision: ClassVar[str] = ANALYSIS_ENGINE_REVISION
     inputs: FixedPointsPorts = eqx.field(
         default_factory=FixedPointsPorts, converter=FixedPointsPorts.converter
     )
 
     variant: Optional[str] = "full"
-    cache_result: bool = True
 
     # ss_fn: Callable = get_ss_rnn_fn
     fp_tol: Scalar = eqx.field(default=1e-7, converter=jnp.array)

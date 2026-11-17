@@ -86,7 +86,7 @@ def toy_analysis_recipe(application_registry_bundle, monkeypatch):
     def recipe(_spec, _root, inputs, _execution_context):
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=value),
         )
 
@@ -110,7 +110,7 @@ def custody_analysis_recipe(application_registry_bundle, monkeypatch):
         )
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=value),
         )
 

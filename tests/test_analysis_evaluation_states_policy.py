@@ -81,7 +81,7 @@ def _register_analysis(application_registry_bundle) -> None:
     def recipe(_spec, _root, inputs, _execution_context):
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="policy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="policy")},
             data=build_toy_analysis_data(value=value),
         )
 

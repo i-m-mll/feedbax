@@ -135,14 +135,8 @@ def _compile_plan(
     def visit(analysis: AbstractAnalysis, params: dict[str, Any]) -> str:
         node_id = analysis.md5_str
         if node_id in seen:
-            previous = seen[node_id]
-            if type(previous) is not type(analysis) and vars(type(previous)).get(
-                "computation_revision"
-            ) != vars(type(analysis)).get("computation_revision"):
-                raise ValueError(
-                    f"Analysis {analysis.name!r} has conflicting computation revisions "
-                    f"for logical node {node_id}"
-                )
+            if type(seen[node_id]) is not type(analysis):
+                raise ValueError(f"Distinct analysis types share logical node {node_id}")
             if node_id not in plan:
                 raise ValueError(f"Circular dependency detected at node {node_id}")
             return node_id
@@ -285,13 +279,10 @@ def _run_preflight_memory_estimation(
 
     if preflight_mode != "off":
         try:
-            # Avoid caching during the eval_shape pass
-            preflight_inst = eqx.tree_at(lambda obj: obj.cache_result, dep_instance, False)
-
             if preflight_mode == "final":
                 final_shapes = eqx.filter_eval_shape(
                     lambda obj, d, **kw: obj._compute_with_ops(d, **kw),
-                    preflight_inst,
+                    dep_instance,
                     data,
                     **dep_kwargs,
                 )
@@ -299,7 +290,7 @@ def _run_preflight_memory_estimation(
                 logger.info(f"Estimated final memory usage for {log_name}: {final_gb:.2f} GB")
 
             elif preflight_mode == "stages":
-                ops = preflight_inst._final_ops_by_type.get("results", ())
+                ops = dep_instance._final_ops_by_type.get("results", ())
 
                 collected_fn = partial(_stage_collector, ops)
                 tap = _FinalOp(
@@ -310,7 +301,7 @@ def _run_preflight_memory_estimation(
                     is_leaf=None,
                     metadata=dict(label="shape-mem-tap"),
                 )
-                tapped = _replace_results_final_ops(preflight_inst, (tap,))
+                tapped = _replace_results_final_ops(dep_instance, (tap,))
 
                 stages_shapes = eqx.filter_eval_shape(
                     lambda inst, d, **kw: inst._compute_with_ops(d, **kw),

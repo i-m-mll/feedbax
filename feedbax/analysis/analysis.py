@@ -6,7 +6,7 @@ from collections.abc import Callable, Hashable, Mapping, Sequence
 from functools import cached_property, partial, wraps
 from itertools import chain
 from pathlib import Path, PurePath
-from types import EllipsisType, FunctionType, MappingProxyType
+from types import EllipsisType, MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -36,7 +36,7 @@ from feedbax._vendor.jax_cookbook._func import wrap_to_accept_var_kwargs
 from feedbax._vendor.jax_cookbook._vmap import AxisSpec, expand_axes_spec
 from jaxtyping import PyTree
 
-from feedbax.config import PATHS, STRINGS
+from feedbax.config import STRINGS
 from feedbax.config.namespace import TreeNamespace
 from feedbax.config.utils import deep_merge
 from feedbax.analysis.support import (
@@ -78,18 +78,7 @@ from feedbax.analysis.inputs import (
     Transformed,
     _DataField,
 )
-from feedbax.analysis.result_cache import (
-    ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
-    RESULTS_CACHE_SUBDIR,
-    AnalysisResultCacheCorruption,
-    _CACHE_LOAD_ERRORS,
-    _CACHE_SAVE_ERRORS,
-    _fingerprint_cache_inputs,
-    _load_analysis_result_cache,
-    _write_analysis_result_cache,
-)
-from feedbax.contracts.computation_revision import validate_computation_revision
-from feedbax.persistence.semantic_fingerprint import UnsupportedSemanticValue, fingerprint_semantic_values
+from feedbax.persistence.semantic_fingerprint import fingerprint_semantic_values
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
@@ -105,8 +94,6 @@ __all__ = [
     "AbstractAnalysis",
     "AbstractAnalysisPorts",
     "AnalysisRef",
-    "AnalysisResultCacheCorruption",
-    "ANALYSIS_RESULT_CACHE_SCHEMA_VERSION",
     "CallWithDeps",
     "Data",
     "ExpandTo",
@@ -118,12 +105,9 @@ __all__ = [
     "LiteralInput",
     "NoPorts",
     "PortsType",
-    "RESULTS_CACHE_SUBDIR",
     "SinglePort",
     "Transformed",
     "_AnalysisVmapSpec",
-    "_CACHE_LOAD_ERRORS",
-    "_CACHE_SAVE_ERRORS",
     "_DataField",
     "_FigOp",
     "_FinalOp",
@@ -132,8 +116,6 @@ __all__ = [
     "_apply_fig_ops",
     "_apply_final_ops",
     "_call_fig_params_fn",
-    "_load_analysis_result_cache",
-    "_write_analysis_result_cache",
 ]
 
 
@@ -316,17 +298,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
     Class attributes:
         Ports: The structure and defaults for the input ports of the analysis subclass.
-        computation_revision: Revision of the raw computation, including its implementation
-            dependencies. Declare it as a ClassVar on each cacheable concrete class and change it when
-            the computation changes. Subclasses must declare their own revision.
 
     Fields:
         inputs: The port->input mapping for the analysis instance.
         variant: Label of the evaluation variant this analysis uses (primarily).
-        cache_result: Reuse raw computation results for a declared computation revision
-            and supported prepared values. Cached computations must treat their inputs
-            as read-only values. Opaque inputs such as Python functions run without
-            result-cache reads or writes.
 
     Treat node parameters as read-only once used in an analysis graph.
     Registering a caller-supplied operation callback separately creates a distinct live node.
@@ -335,7 +310,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     _exclude_fields = (
         "inputs",
         "fig_params",
-        "cache_result",
         "_prep_ops",
         "_fig_ops",
         "_final_ops_by_type",
@@ -344,7 +318,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     )
 
     Ports: ClassVar[type[PortsType]] = NoPorts  # type: ignore
-    computation_revision: ClassVar[str | None] = None
     inputs: PortsType = field(default_factory=NoPorts, converter=NoPorts.converter)
 
     variant: Optional[str] = (
@@ -352,7 +325,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     )
     #! TODO: Rename to `default_fig_params`
     fig_params: Mapping[str, Any] = MappingProxyType(dict())
-    cache_result: bool = False
 
     #! TODO: Make these `init=False` so they don't appear in the constructor signature IDE
     #! suggestions. (However, this leads to issues with `eqx.tree_at` for some reason.)
@@ -372,10 +344,6 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     _map_make_figs_spec: Optional[tuple[Callable[[Any], bool], Optional[str | Sequence[str]]]] = (
         field(default=None)
     )
-
-    def __check_init__(self) -> None:
-        if any(member.name == "computation_revision" for member in dataclasses.fields(self)):
-            raise TypeError("computation_revision must be declared as a ClassVar")
 
     def __post_init__(self):
         """Validate inputs instance and check for unresolved required inputs."""
@@ -550,63 +518,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 result = _compute_core(prepped_data, prepped_kwargs)
                 return result
 
-        def _compute_cached(computation_revision: str):
-            # Declared default functions are part of the stable analysis implementation.
-            config = {
-                name: value
-                for name, value in self._field_params.items()
-                if name != "_map_make_figs_spec"
-                and not (
-                    isinstance(value, FunctionType)
-                    and value is self.__dataclass_fields__[name].default
-                )
-            }
-            try:
-                inputs_hash = _fingerprint_cache_inputs(
-                    type(self), computation_revision, config, prepped_data, prepped_kwargs
-                )
-            except UnsupportedSemanticValue as exc:
-                logger.debug("Skipping result cache for %s: %s", self.name, exc)
-                return _run_compute()
-
-            cache_root = (
-                analysis_context.results_cache_dir
-                if analysis_context is not None
-                else PATHS.cache / RESULTS_CACHE_SUBDIR
-            )
-            cache_path = cache_root / f"{ANALYSIS_RESULT_CACHE_SCHEMA_VERSION}_{inputs_hash}.pkl"
-            try:
-                result = _load_analysis_result_cache(cache_path, inputs_hash=inputs_hash)
-            except FileNotFoundError:
-                pass
-            except AnalysisResultCacheCorruption as exc:
-                logger.warning(
-                    "Ignoring invalid cached result for %s at %s (will recompute): %s",
-                    self.name,
-                    cache_path,
-                    exc,
-                )
-            else:
-                logger.info("Loaded cached result for %s from %s", self.name, cache_path)
-                return result
-
-            result = _run_compute()
-            try:
-                _write_analysis_result_cache(cache_path, inputs_hash=inputs_hash, result=result)
-                logger.info("Saved cache for %s to %s", self.name, cache_path)
-            except _CACHE_SAVE_ERRORS as exc:
-                logger.warning("Could not save cache for %s: %s", self.name, exc)
-            return result
-
-        use_result_cache = self.cache_result and (
-            analysis_context is None or analysis_context.use_result_cache
-        )
-        computation_revision = (
-            validate_computation_revision(vars(type(self)).get("computation_revision"))
-            if use_result_cache
-            else None
-        )
-        result = _compute_cached(computation_revision) if computation_revision else _run_compute()
+        result = _run_compute()
 
         result = _apply_final_ops(self, "results", result, data=prepped_data, **prepped_kwargs)
         if analysis_context is not None:

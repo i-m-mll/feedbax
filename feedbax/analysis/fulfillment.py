@@ -58,7 +58,6 @@ from feedbax.contracts.base import (
     canonical_json_bytes,
 )
 from feedbax.contracts.manifest import (
-    AnalysisComputation,
     AnalysisRunManifest,
     AnalysisRunSpec,
     AnyManifest,
@@ -106,7 +105,6 @@ AdmissionCriterion = Literal[
     "status_completed",
     "kind_matches",
     "identity_recomputed",
-    "computation_matches",
     "spec_matches",
     "parents_match",
     "runtime_bindings_match",
@@ -120,8 +118,6 @@ AdmissionFailureCode = Literal[
     "status_not_completed",
     "kind_mismatch",
     "identity_mismatch",
-    "computation_authority_absent",
-    "computation_mismatch",
     "spec_kind_mismatch",
     "spec_invalid",
     "spec_mismatch",
@@ -1007,41 +1003,16 @@ def admit_analysis_receipt(
     spec: AnalysisRunSpec,
     *,
     root: Path | str,
-    computation: AnalysisComputation | None = None,
     manifest: AnalysisRunManifest | None = None,
     path: Path | str | None = None,
     expected_parents: Sequence[ParentRef] | None = None,
     required_output_roles: Sequence[str] = (),
     capture: AdmittedManifestBytes | None = None,
 ) -> AdmissionOutcome:
-    """Admit a receipt against the computation resolved by the caller.
-
-    A stored manifest cannot supply its own reuse authority. An unversioned
-    execution can verify a fresh receipt using the nonce it reserved up front.
-    """
+    """Admit a receipt against the authored spec, parents and artifact bytes."""
     root_path = Path(root)
-    manifest_id = analysis_run_manifest_id(spec, computation=computation)
+    manifest_id = analysis_run_manifest_id(spec)
     explicit_path = Path(path) if path is not None else None
-    if computation is None:
-        collector = _FailureCollector(
-            node_kind="analysis",
-            manifest_id=manifest_id,
-            manifest_kind="AnalysisRunManifest",
-            manifest_path=explicit_path,
-        )
-        collector.add(
-            "computation_matches",
-            "computation_authority_absent",
-            "analysis receipt reuse requires a registered computation revision",
-        )
-        return _outcome(
-            collector,
-            node_kind="analysis",
-            manifest_id=manifest_id,
-            manifest_kind="AnalysisRunManifest",
-            manifest_path=explicit_path,
-            manifest_present=manifest is not None,
-        )
     candidate = _load_candidate(
         "analysis",
         manifest_id,
@@ -1074,18 +1045,6 @@ def admit_analysis_receipt(
     found = candidate.manifest
     _check_common(collector, found, expected_kind="AnalysisRunManifest", expected_id=manifest_id)
     if isinstance(found, AnalysisRunManifest):
-        if found.computation != computation:
-            collector.add(
-                "computation_matches",
-                "computation_mismatch",
-                "stored analysis computation differs from the resolved computation",
-                expected=computation.model_dump(mode="json", exclude_none=True),
-                observed=(
-                    found.computation.model_dump(mode="json", exclude_none=True)
-                    if found.computation is not None
-                    else None
-                ),
-            )
         _check_embedded_spec(
             collector,
             found.analysis_spec,
