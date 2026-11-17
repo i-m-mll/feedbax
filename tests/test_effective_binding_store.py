@@ -12,7 +12,6 @@ from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, Conte
 from feedbax.contracts.effective_success import INDEX_REF, decode_success_index
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import InputMember, LastMember, NamedMember, ProductRef
-from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import (
     PublicationConflict,
@@ -20,7 +19,7 @@ from feedbax.persistence.effective_success import (
     store_request,
 )
 from feedbax.persistence.reachability import measure_store
-from scripts.proofs.effective_binding_witness import document_product, prepare, summarize
+from scripts.proofs.effective_binding_witness import document_product, prepare, report_request, summarize
 
 
 SUPPLIER = b'{"kind":"EvaluationRunManifest","id":"evaluation-1"}'
@@ -52,7 +51,7 @@ def test_frozen_and_rule_lookup_require_the_same_exact_ordered_binding(tmp_path,
         )
         for key, name in (("rank-1", "analysis"), ("rank-2", "supplier"))
     )
-    synopsis = ReportRequestSpec(report_type="proof.ordered-manifest-synopsis")
+    synopsis = report_request("ordered-manifest-synopsis")
     reordered = store_request(store, encode_request(synopsis, {"documents": frozen_members[::-1]}))
     rekeyed = store_request(
         store,
@@ -237,10 +236,10 @@ def test_digest_frozen_input_keeps_its_result_when_the_rule_resolves_to_new_byte
     store = ImmutableArtifactBlobProvider(tmp_path)
     original = document_product(store, "analysis", ANALYSIS).model_copy(update={"descriptor": None})
     producer = store_request(
-        store, encode_request(ReportRequestSpec(report_type="proof.source"), {})
+        store, encode_request(report_request("source"), {})
     )
     SuccessView(store).publish(producer, attempt="producer-01", products={"manifests": (original,)})
-    spec = ReportRequestSpec(report_type="proof.synopsis")
+    spec = report_request("synopsis")
     rule = store_request(
         store,
         encode_request(

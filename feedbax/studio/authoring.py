@@ -16,7 +16,6 @@ from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, O
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSource
-from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import (
     DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
@@ -144,7 +143,6 @@ def authoring_surface(
             payload_schema=TypeAdapter(FigureSource | ExternalBase).json_schema(),
         ),
         "report": _family(ReportDocument, ReportDocument.model_fields["schema_version"].default),
-        "comparison-policy": _family(ComparisonPolicySpec, COMPARISON_POLICY_SCHEMA_ID),
         "subset": _family(SubsetTerms, "subset"),
     }
     task_records = [bundle.python_tasks.declaration_record(key) for key in bundle.python_tasks.keys()]

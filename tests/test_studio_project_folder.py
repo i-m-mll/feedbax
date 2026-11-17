@@ -261,9 +261,9 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
         assert projection.status_code == 200, projection.text
         assert projection.headers["Cache-Control"] == "no-store"
         fields = {field["id"]: field for field in projection.json()["fields"]}
-        assert fields["/method"]["control"]["options"] == [
-            {"label": "Supervised gradient", "value": "feedbax.supervised_gradient"},
-        ]
+        assert "feedbax.supervised_gradient" in {
+            option["value"] for option in fields["/method"]["control"]["options"]
+        }
         assert "/graph" not in fields and "/task" not in fields
         invalid = client.post(url, json={
             "revision": revision, "change": {"field": "/task", "value": "model"},

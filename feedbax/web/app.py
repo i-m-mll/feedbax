@@ -20,8 +20,6 @@ from feedbax.plugins.composition import compose_application
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION
 
 from feedbax.web.api import (
-    analysis,
-    analyses,
     components,
     domains,
     execution,
@@ -35,7 +33,6 @@ from feedbax.web.api import (
     trajectories,
 )
 from feedbax.web.config import BASE_DIR
-from feedbax.web.services.analysis_service import AnalysisJobService
 from feedbax.web.services.desktop_jobs import StudioJobLifecycle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
@@ -56,7 +53,6 @@ async def _maintain_remote_runs(advance: Callable[[], None], failure: str) -> No
 
 def create_app(
     *,
-    desktop_job_root: Path | None = None,
     desktop_release: Path | None = None,
     projects_dir: Path | None = None,
     targets: TargetRegistry | None = None,
@@ -88,12 +84,8 @@ def create_app(
             remote_runs.project_attempts if remote_runs is not None else None,
             remote_runs.opening_rows if remote_runs is not None else None,
         )
-        analysis_jobs = AnalysisJobService(
-            job_root=desktop_job_root / "analysis" if desktop_job_root is not None else None
-        )
-        app.state.analysis_jobs = analysis_jobs
-        if desktop_job_root is not None:
-            app.state.desktop_jobs = StudioJobLifecycle(analysis_jobs, app.state.job_service, desktop_release)
+        if desktop_release is not None:
+            app.state.desktop_jobs = StudioJobLifecycle(app.state.job_service, desktop_release)
         maintenance = () if remote_runs is None else (
             asyncio.create_task(_maintain_remote_runs(
                 partial(remote_runs.advance_openings, app.state.project_folders), "Could not advance approved machines.",
@@ -113,9 +105,6 @@ def create_app(
                     await task
             if remote_runs is not None:
                 await asyncio.to_thread(remote_runs.stop_collection)
-            if desktop_job_root is not None:
-                analysis_jobs.begin_stop(force=True)
-            await analysis_jobs.aclose()
 
     app = FastAPI(
         title="Feedbax Web API",
@@ -164,9 +153,6 @@ def create_app(
     )
 
     app.include_router(figures.router, prefix="/api/figures", tags=["figures"])
-    app.include_router(analysis.router, prefix="/api/analyses/jobs", tags=["analysis-jobs"])
-
-    app.include_router(analyses.router, prefix="/api/analyses", tags=["analyses"])
 
     return app
 

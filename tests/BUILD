@@ -15,9 +15,6 @@ python_tests(
         "test_request_identity.py": {"dependencies": [":request_corpus"]},
         "test_runpod_transport.py": {"dependencies": [":runpod_errors"]},
         "test_managed_derivative_operations.py": {"dependencies": [":derivative_references"]},
-        "test_dataset_figure.py": {
-            "dependencies": ["web/e2e/studio/fixtures:velocity_summary_report"],
-        },
         "test_project_analyze_plan.py": {
             "dependencies": ["web/e2e/studio/fixtures:velocity_analysis"],
         },

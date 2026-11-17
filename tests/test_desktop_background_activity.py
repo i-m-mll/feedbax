@@ -45,7 +45,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
     _project(projects / "reach", batches=160)
     _project(projects / "long", batches=3000)
     release = Path(sys.executable).resolve().parent.parent
-    app = create_app(projects_dir=projects, desktop_job_root=tmp_path / "desktop-jobs", desktop_release=release)
+    app = create_app(projects_dir=projects, desktop_release=release)
     transport, control, browser = _desktop_clients(app)
     register_activity(app, "fixture")
     control.headers["X-Feedbax-Release"] = "fixture"
@@ -271,7 +271,7 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
     projects = tmp_path / "projects"
     _project(projects / "reach", batches=1000)
     folders = ProjectFolderService(projects)
-    app = create_app(projects_dir=projects, desktop_job_root=tmp_path / "jobs", desktop_release=release)
+    app = create_app(projects_dir=projects, desktop_release=release)
     host = HostClient(root)
     owner = host.ping()["pid"]
     plan = folders.read_plan("reach", revision=None)

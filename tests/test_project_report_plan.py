@@ -67,7 +67,7 @@ def test_report_binds_the_typed_figure_and_preserves_other_requests():
     assert figure.datasets == {}
     report = _report_run(plan)
     request = decode_request(plan.requests[report.request_id], plan.documents.__getitem__)
-    assert request.kind == "report" and request.spec.report_type is None
+    assert request.kind == "report"
     assert request.spec.document.completeness == "complete"
     assert request.spec.document.figure_roles == ("velocity_summary",)
     assert request.inputs["velocity_summary"][0].reference == ProductRef(

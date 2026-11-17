@@ -47,7 +47,6 @@ from feedbax.training.methods import TrainingState
 from feedbax.training.model_checkpoint import (
     ModelCheckpointError,
     SemanticModelWriter,
-    effective_model_graph,
 )
 
 
@@ -284,8 +283,6 @@ def test_asset_backed_model_slot_round_trips_from_checkpoint_closure(tmp_path):
     pointer.write_text(written.latest_pointer.model_dump_json())
     expected = _spatial_step(model)
     rmtree(imported.root)
-    selected = _open(written.root, written.latest_pointer).model
-    assert selected.graph == effective_model_graph(graph, model)
     output = tmp_path / "restored.json"
     subprocess.run(
         [
@@ -298,6 +295,7 @@ def test_asset_backed_model_slot_round_trips_from_checkpoint_closure(tmp_path):
         np.testing.assert_array_equal(actual, reference)
 
     authored_path, asset = next(model_asset_refs(graph))
+    selected = _open(written.root, written.latest_pointer).model
     physical = selected.provider.object_path(asset)
     exact = physical.read_bytes()
     physical.unlink()

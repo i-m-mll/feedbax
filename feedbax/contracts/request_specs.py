@@ -7,7 +7,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from feedbax.contracts.figure_document import FigureDocument
-from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.training import TrialDocuments as TrialDocuments
@@ -95,32 +94,11 @@ class EvaluationRequestSpec(RequestSpec):
 class AnalysisRequestSpec(RequestSpec):
     analysis_type: Name
     params: dict[str, JsonValue] = Field(default_factory=dict)
-    evaluation_states_policy: Literal["recompute", "require_durable"] = "recompute"
 
 
 class RenderRequestSpec(RequestSpec):
-    figure: FigureSpec | None
-    document: FigureDocument | None = None
-
-    @model_validator(mode="after")
-    def _require_lowered_inputs(self) -> RenderRequestSpec:
-        if (self.figure is None) == (self.document is None):
-            raise ValueError("Declare one render figure or dataset figure document.")
-        if self.figure is not None and (self.figure.inputs or self.figure.input_authorities):
-            raise ValueError("Lower figure input authorities to kernel inputs before encoding")
-        return self
+    document: FigureDocument
 
 
 class ReportRequestSpec(RequestSpec):
-    report_type: Name | None
-    params: dict[str, JsonValue] = Field(default_factory=dict)
-    narrative: str | None = None
-    document: ReportDocument | None = None
-
-    @model_validator(mode="after")
-    def _require_one_report(self) -> ReportRequestSpec:
-        if (self.report_type is None) == (self.document is None):
-            raise ValueError("Declare one report recipe type or Report document.")
-        if self.document is not None and (self.params or self.narrative is not None):
-            raise ValueError("Report documents cannot carry recipe parameters or narrative.")
-        return self
+    document: ReportDocument

@@ -17,33 +17,10 @@ _PUBLIC_ATTR_MODULES = {
     "BootstrapState": ".bootstrap",
     "PluginProvenance": ".bootstrap",
     "RegistryKey": ".bootstrap",
-    "ExperimentRegistry": ".registry",
-    "EvaluationAuthoringSchema": "feedbax.analysis.evaluation",
-    "EvaluationBatchItem": "feedbax.analysis.evaluation",
-    "EvaluationBatchRecipe": "feedbax.analysis.evaluation",
-    "EvaluationBatchRowError": "feedbax.analysis.evaluation",
-    "EvaluationRecipe": "feedbax.analysis.evaluation",
-    "EvaluationRecipeRegistry": "feedbax.analysis.evaluation",
-    "EvaluationRecipeResult": "feedbax.analysis.evaluation",
-    "EvaluationBatchConsumer": "feedbax.analysis.evaluation_compaction",
-    "EvaluationBatchConsumerInput": "feedbax.analysis.evaluation_compaction",
-    "EvaluationBatchConsumerRegistry": "feedbax.analysis.evaluation_compaction",
-    "EvaluationBatchFinalizeInput": "feedbax.analysis.evaluation_compaction",
-    "EvaluationBatchFragment": "feedbax.analysis.evaluation_compaction",
-    "EvaluationBatchMergeInput": "feedbax.analysis.evaluation_compaction",
-    "EvaluationBatchMergeState": "feedbax.analysis.evaluation_compaction",
-    "EvaluationCompactProductUnionFinalizerRegistry": "feedbax.analysis.evaluation_product_union",
-    "EvaluationCompactProductUnionInput": "feedbax.analysis.evaluation_product_union",
-    "AnalysisRecipe": "feedbax.analysis.specs",
-    "AnalysisRecipeRegistry": "feedbax.analysis.specs",
-    "AnalysisRecipeResult": "feedbax.analysis.specs",
-    "EMPTY_STAGED_EXECUTION_CONTEXT": "feedbax.analysis.execution_context",
-    "StagedExecutionContext": "feedbax.analysis.execution_context",
-    "EvaluationStatesStructureProviderProtocol": "feedbax.analysis.validation",
 }
 
 # Submodules the eager facade used to bind as attributes of this package.
-_PUBLIC_SUBMODULES = ("application", "bootstrap", "registry")
+_PUBLIC_SUBMODULES = ("application", "bootstrap")
 
 __all__ = list(_PUBLIC_ATTR_MODULES)
 

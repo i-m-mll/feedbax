@@ -24,6 +24,7 @@ from feedbax.light_jobs import LightDelivery, publish_light_success
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request
+from feedbax.web.api.figures import router as figure_router
 from feedbax.web.api.projects import router
 from feedbax.plugins.composition import load_application
 from tests.support.installed_package import install_discovery_fixture
@@ -46,9 +47,11 @@ def test_installed_package_appears_in_cli_and_studio_catalogs(installed_site, mo
     state = load_application()
     app = FastAPI()
     app.include_router(router)
+    app.include_router(figure_router, prefix="/api/figures")
     app.state.bootstrap_state = state
 
-    response = TestClient(app).get("/api/projects/authoring/catalog")
+    client = TestClient(app)
+    response = client.get("/api/projects/authoring/catalog")
     assert response.status_code == 200
     assert main(["describe"]) == 0
     catalog = response.json()
@@ -74,6 +77,17 @@ def test_installed_package_appears_in_cli_and_studio_catalogs(installed_site, mo
         if family == "operations":
             assert entry["static_parameters"] == ["unit"]
             assert "default" not in entry["parameter_json_schema"]["properties"]["increments"]
+
+    templates = client.get("/api/figures/templates")
+    assert templates.status_code == 200
+    (external_plot,) = [
+        item for item in templates.json() if item["name"] == "entry_point_provider.external_plot"
+    ]
+    metadata = external_plot["metadata"]
+    assert metadata["distribution"] == "feedbax-discovery-fixture"
+    assert metadata["version"] == "2.7.1"
+    increments = metadata["settings_schema"]["properties"]["increments"]
+    assert (increments["type"], increments["items"]["type"]) == ("array", "integer")
 
     resolved = state.bundle.operations.resolve("entry_point_provider.offset_series")
     from entry_point_provider.declarations.examples import shift_series

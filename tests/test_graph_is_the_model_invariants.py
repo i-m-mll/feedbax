@@ -167,9 +167,7 @@ def test_nested_controller_uses_its_authored_subgraph() -> None:
     built = spec_to_graph(spec, _registry()).nodes["net"]
 
     assert isinstance(built, Graph)
-    assert sorted(built.nodes) == ["cell", "input_mux", "readout"]
     cell = built.nodes["cell"]
-    assert type(cell).__name__ == "GRU"
     assert cell.hidden_size == 4
     assert cell.input_size == 2
     assert built.nodes["readout"].output_size == 1

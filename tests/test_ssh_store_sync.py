@@ -7,12 +7,11 @@ from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError
 from feedbax.contracts.effective_success import INDEX_REF, success_content_ref
 from feedbax.contracts.execution_target import LOCAL_TARGET, SessionTarget, TargetRealization
 from feedbax.contracts.request_identity import encode_request
-from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider, content_object_relative_path
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.persistence.store_sync import collect_success, sync_store
-from scripts.proofs.effective_binding_witness import document_product
+from scripts.proofs.effective_binding_witness import document_product, report_request
 from tests.support.store_transport import loopback_store
 
 
@@ -60,7 +59,7 @@ def test_ssh_collection_verifies_the_bytes_before_admitting_success(tmp_path):
     venue = ImmutableArtifactBlobProvider(tmp_path / "venue")
     connection = loopback_store(venue.root, tmp_path / "connection")
     local = ImmutableArtifactBlobProvider(tmp_path / "local")
-    request = store_request(venue, encode_request(ReportRequestSpec(report_type="proof.ssh"), {}))
+    request = store_request(venue, encode_request(report_request("ssh"), {}))
     product = document_product(venue, "report", b'{"kind":"report"}')
     original = SuccessView(venue).publish(request, attempt="first", products={"reports": (product,)})
     target = SessionTarget(

@@ -136,7 +136,7 @@ def _compute(
         return Product(
             name=role, content=content, descriptor={"descriptor_sha256": ref.descriptor_sha256}
         )
-    if isinstance(spec, RenderRequestSpec) and spec.document is not None:
+    if isinstance(spec, RenderRequestSpec):
         with ExitStack() as stack:
             figure = render_figure(spec.document, _dataset_inputs(store, bindings, stack))
             document = figure.to_json()

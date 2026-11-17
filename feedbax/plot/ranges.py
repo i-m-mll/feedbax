@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from numbers import Real
-from typing import Any
 
 import numpy as np
 
 
 def calculate_array_minmax(
-    arrays: Mapping[Any, Any] | Iterable[Any],
-    indices: Any = None,
-    padding: float = 0.05,
+    arrays: Iterable[object],
+    *,
+    padding: float,
 ) -> tuple[float, float]:
     """Return the finite union range with symmetric proportional padding.
 
@@ -21,9 +20,7 @@ def calculate_array_minmax(
     scale while retaining the authored padding fraction.
 
     Args:
-        arrays: Numeric arrays, either as mapping values or an iterable.
-        indices: Optional selection applied to the last dimension of every
-            array before reduction.
+        arrays: The coordinate samples rendered on the grouped axes.
         padding: Non-negative finite fraction of the union span added at both
             ends.
 
@@ -40,15 +37,12 @@ def calculate_array_minmax(
     if not np.isfinite(padding_value) or padding_value < 0.0:
         raise ValueError("range padding must be a finite non-negative number")
 
-    values = arrays.values() if isinstance(arrays, Mapping) else arrays
     finite_parts: list[np.ndarray] = []
-    for position, value in enumerate(values):
+    for position, value in enumerate(arrays):
         try:
             array = np.asarray(value, dtype=float)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"range input {position} is not numeric") from exc
-        if indices is not None:
-            array = array[..., indices]
         finite = array.reshape(-1)
         finite_parts.append(finite[np.isfinite(finite)])
 

@@ -124,7 +124,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
             "distributions": distributions,
         }
     app = create_app(
-        desktop_job_root=paths.state / "jobs", desktop_release=release.contents,
+        desktop_release=release.contents,
         remote_runs=load_remote_runs(paths, release),
     )
     endpoint = Endpoint.create(studio_socket.getsockname()[1])

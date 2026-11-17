@@ -5,11 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.contracts.graph import (
-    GRAPH_SPEC_SCHEMA_ID,
-    GRAPH_SPEC_SCHEMA_VERSION,
-    LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-)
 from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
@@ -31,68 +26,8 @@ from feedbax.contracts.migrations import (
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
 
 
-def _legacy_graph_spec_inline() -> dict[str, object]:
-    return {
-        "metadata": {
-            "name": "legacy",
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z",
-            "version": LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-        },
-        "nodes": {
-            "network": {
-                "type": "SimpleStagedNetwork",
-                "params": {"output_size": 2},
-                "input_ports": ["target"],
-                "output_ports": ["output"],
-            }
-        },
-        "wires": [],
-    }
-
-
 def _write_manifest(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
-
-
-def test_load_manifest_migrates_embedded_graph_spec_and_preserves_source_hash(
-    tmp_path: Path,
-) -> None:
-    legacy_inline = _legacy_graph_spec_inline()
-    source_sha256 = sha256_bytes(canonical_json_bytes(legacy_inline))
-    manifest_path = tmp_path / "graph-manifest.json"
-    _write_manifest(
-        manifest_path,
-        {
-            "kind": "GraphSpecManifest",
-            "id": "feedbax-graph:test",
-            "graph_spec": {
-                "kind": "GraphSpec",
-                "inline": legacy_inline,
-                "sha256": source_sha256,
-            },
-        },
-    )
-
-    loaded = load_manifest(manifest_path)
-    payload = loaded.graph_spec
-
-    assert payload.schema_id == GRAPH_SPEC_SCHEMA_ID
-    assert payload.schema_version == GRAPH_SPEC_SCHEMA_VERSION
-    assert payload.inline["schema_id"] == GRAPH_SPEC_SCHEMA_ID
-    assert payload.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert payload.inline["nodes"]["network"]["type"] == "feedbax.Subgraph"
-    assert payload.sha256 == sha256_bytes(canonical_json_bytes(payload.inline))
-    assert payload.source_sha256 == source_sha256
-    assert [record.migration_id for record in payload.migration_records] == [
-        "graph-spec-legacy-v1-to-v2",
-        "graph-spec-v2-to-v3-derived-dimensions",
-        "graph-spec-v3-to-v4-discriminated-subgraphs",
-        "graph-spec-v4-to-v5-component-param-array-values",
-        "graph-spec-v5-to-v6-component-revisions",
-    ]
-    assert payload.migration_records[0].metadata["graph_path"] == "graph_spec"
-    assert payload.migration_records[0].metadata["spec_payload_path"] == "graph_spec"
 
 
 def test_load_manifest_rejects_unsupported_non_graph_embedded_spec_with_path(
