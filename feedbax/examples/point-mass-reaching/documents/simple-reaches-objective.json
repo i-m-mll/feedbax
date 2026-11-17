@@ -15,7 +15,7 @@
               "args": [
                 {
                   "kind": "name",
-                  "reference": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"hand\"},\"kind\":\"port\"}}"
+                  "reference": "{\"composites\":[],\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"hand\"},\"kind\":\"port\"}}"
                 },
                 {
                   "kind": "name",
@@ -155,7 +155,7 @@
           "args": [
             {
               "kind": "name",
-              "reference": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"velocity\"},\"kind\":\"port\"}}"
+              "reference": "{\"composites\":[],\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"velocity\"},\"kind\":\"port\"}}"
             }
           ]
         },
@@ -176,7 +176,7 @@
           "args": [
             {
               "kind": "name",
-              "reference": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"command\"},\"kind\":\"port\"}}"
+              "reference": "{\"composites\":[],\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"command\"},\"kind\":\"port\"}}"
             }
           ]
         },
@@ -194,7 +194,7 @@
           "args": [
             {
               "kind": "name",
-              "reference": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"activity\"},\"kind\":\"port\"}}"
+              "reference": "{\"composites\":[],\"element\":{\"end\":{\"owner\":\"outputs\",\"port\":\"activity\"},\"kind\":\"port\"}}"
             }
           ]
         },

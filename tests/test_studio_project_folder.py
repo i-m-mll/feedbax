@@ -38,7 +38,7 @@ _MODEL = "point-mass"
 _SETTINGS = "settings"
 _VALUE = "/payload/value"
 _MASS_ADDRESS = ModelAddress.model_validate({
-    "document": _MODEL, "composites": [],
+    "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
 })
 _SEED = "seed"
@@ -411,12 +411,12 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         path.write_bytes(data)
 
     before = _read(client)
-    owner = {"document": _MODEL, "composites": [], "element": {"kind": "component", "id": "plant"}}
+    owner = {"composites": [], "element": {"kind": "component", "id": "plant"}}
     field = ModelAddress.model_validate(owner | {"element": {
         "kind": "field", "parent": owner["element"], "path": ["fields", "mass"],
     }})
     key = {"variant": "compare", "step": "fit", "row": "seed=10"}
-    body = {"revision": before["revision"], "run": key, "owner": owner}
+    body = {"revision": before["revision"], "run": key, "document": _MODEL, "owner": owner}
     change = {
         "address": field.model_dump(mode="json"), "edit": {"kind": "text", "text": "3"},
         "lit_steps": ["fit", "other"],
@@ -440,14 +440,15 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         assert reviewed.status_code == 200, reviewed.text
         recipe, = reviewed.json()["files"]
         assert recipe["address"] == {"kind": "variant", "id": "compare"}
-        assert recipe["patches"][0]["value"][field.to_text()] == {"op": "replace", "value": 3}
+        target = f"documents.{_MODEL}.{field.to_text()}"
+        assert recipe["patches"][0]["value"][target] == {"op": "replace", "value": 3}
         snapshot = client.patch(_URL, json={"revision": before["revision"], **recipe})
         assert snapshot.status_code == 200, snapshot.text
         after = snapshot.json()
         assert after["project"]["documents"] == before["project"]["documents"]
         assert after["project"]["steps"] == before["project"]["steps"]
         sweep = before["project"]["sweep"]
-        sweep["rows"]["compare"]["patches"][field.to_text()] = {"op": "replace", "value": 3}
+        sweep["rows"]["compare"]["patches"][target] = {"op": "replace", "value": 3}
         assert after["project"]["sweep"] == sweep
         stale = review(**change)
         assert stale.status_code == 409, stale.text
@@ -717,7 +718,7 @@ def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(tmp
         "document": "point-mass",
         "command": {"operation": {
             "op": "set_field", "value": 2,
-            "address": {"document": "point-mass", "composites": [], "element": {
+            "address": {"composites": [], "element": {
                 "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
             }},
         }},

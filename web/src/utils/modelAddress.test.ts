@@ -4,7 +4,7 @@ import { ModelAddressSchema, ModelDocumentSchema } from '@/generated/studioContr
 import { canonicalJsonV2 } from './canonicalJsonV2';
 
 it('round-trips the canonical address of a field on a nested port', () => {
-  const text = '{"composites":["outer","inner"],"document":"model","element":{"kind":"field",'
+  const text = '{"composites":["outer","inner"],"element":{"kind":"field",'
     + '"parent":{"end":{"component":"same","direction":"input","owner":"component",'
     + '"port":"value"},"kind":"port"},"path":["fields","array/length",0]}}';
   expect(canonicalJsonV2(ModelAddressSchema.parse(JSON.parse(text)))).toBe(text);

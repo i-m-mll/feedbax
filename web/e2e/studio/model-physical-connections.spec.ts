@@ -32,7 +32,7 @@ test('edits a conserving connection only inside its physical interior', async ({
   const boundaryPort = model.locator('[data-boundary="true"] [data-handleid="physical:free"]');
   const massPort = card(model, 'mass').locator('[data-handleid="physical:flange"]');
   const connectionLine = model.locator('.react-flow__connection-path');
-  const root = { document: 'reach-model', composites: ['equations'], element: { kind: 'graph' } };
+  const root = { composites: ['equations'], element: { kind: 'graph' } };
   const stored = (current: StudioProjectDocument['snapshot']) => {
     const document = current.project.documents?.['reach-model'].payload as unknown as ModelDocument;
     const component = document.interior.components?.equations;
@@ -132,7 +132,7 @@ for (const { scope, element, composites, target } of [
     expect(response.ok(), await response.text()).toBe(true);
     const { window_map: map } = await response.json() as StudioSavedTrainRuns;
     expect(map?.rows.find((row) => row.key.step === 'train')?.status).toBe('cannot_run');
-    const address = { document: 'reach-model', composites, element };
+    const address = { composites, element };
     const problem = map?.problems.find((candidate) => candidate.step === 'train');
     expect(problem?.model_address).toMatchObject(address);
     expect(problem?.detail).toBeTruthy();

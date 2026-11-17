@@ -64,7 +64,7 @@ def initial_rollout(tmp_path):
     _, model, task, objective = authored_documents()
     store = ImmutableArtifactBlobProvider(tmp_path / "store")
     definition = {
-        "subject": InitialModelSource(model_name="reach-model", document=model, seed=19),
+        "subject": InitialModelSource(document=model, seed=19),
         "task": task,
         "objective": objective,
     }

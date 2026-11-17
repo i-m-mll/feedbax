@@ -119,7 +119,7 @@ def _model_payload(*, curl=False, writable_gru=False, rename=False):
         controller["wires"]["decode"]["attachments"] = [{
             "kind": "delay", "id": "read-delay", "delay": {"value": 2, "unit": "st"},
             "initial": {"kind": "name", "reference": ModelAddress.model_validate({
-                "document": "reach-model", "composites": ["wrapper", "controller"],
+                "composites": ["wrapper", "controller"],
                 "element": {"kind": "port", "end": {
                     "owner": "component", "component": "cell", "port": "output", "direction": "output",
                 }},
@@ -134,10 +134,10 @@ def _model_payload(*, curl=False, writable_gru=False, rename=False):
 def _pair_model(**options):
     model = ModelDocument.model_validate(_model_payload(**options))
     registry = ComponentRegistry()
-    lowered = lower_model_document("reach-model", model, registry)
+    lowered = lower_model_document(model, registry)
     source = lowered.graph.input_bindings["reach_target"]
     prototypes = {source: jax.ShapeDtypeStruct((2,), jnp.float32)}
-    interface = lowered.interface("reach-model", model, registry, input_prototypes=prototypes)
+    interface = lowered.interface(model, registry, input_prototypes=prototypes)
     graph = compile_graph(
         GraphDocument(graph=lowered.graph),
         registry,

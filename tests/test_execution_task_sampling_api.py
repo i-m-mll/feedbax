@@ -27,7 +27,6 @@ def authored_preview(kind, expression_functions):
     interface, _ = _pair_model()
     document, _ = example(kind, expression_functions, interface=interface)
     return {
-        "model_name": "reach-model",
         "model": _model_payload(),
         "task": document.model_dump(mode="json"),
         "input_overrides": {"reach_target": "target_pos"},
