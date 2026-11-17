@@ -23,7 +23,7 @@ from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
-from tests.support.finite_train import _damaged_prng, install_finite_gate
+from tests.support.finite_train import damaged_method_state, install_finite_gate
 
 host = host_fixture
 
@@ -32,7 +32,6 @@ def _train(step, batches):
     step = deepcopy(step)
     payload = step["base"]["inline"]
     payload["training_config"].update(n_batches=batches, snapshot_interval=2)
-    payload["method_payload"]["payload"]["target_total"] = batches
     return step
 
 
@@ -376,7 +375,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
             row["edges"][0]["binding"] if (row := job_row(host, late.job_id, "queued")) else None
         ))
         assert pinned == binding
-        with _damaged_prng(checkpoint):
+        with damaged_method_state(checkpoint):
             assert host.stopped_checkpoint(producer.job_id, project=plan.project_id, manifest_root=str(plan.store_path)) is None
             # A fresh admission detects corruption at selection. The earlier pin also
             # detects the same damage before delivery.

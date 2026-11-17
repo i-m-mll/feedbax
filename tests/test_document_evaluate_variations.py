@@ -30,7 +30,7 @@ from feedbax.jobs import JobService
 from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import CannotRun
-from feedbax.training.checkpoint_custody import open_published_model_slot
+from feedbax.training.method_checkpoint import read_method_checkpoint
 from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
 from feedbax.web.services.evaluate_attachment import (
     EvaluateAttachmentRefused,
@@ -147,7 +147,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
         (edge,) = completions[run]["edges"]
         assert edge["binding"]["terminal"]["receipt"] == completions[train]["outcome"]["store_success"]
     published = PublishedTrainingCheckpoint.model_validate(checkpoint["checkpoint"])
-    slot = open_published_model_slot(published.checkpoint_root, published.pointer)
+    slot = read_method_checkpoint(published.checkpoint_root, published.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     source_hash = sha256(canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))).hexdigest()
     train_request = decode_request(
@@ -301,7 +301,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
         completions[step] = done
     checkpoint = completions["train"]["outcome"]["completion"]
     published = PublishedTrainingCheckpoint.model_validate(checkpoint["checkpoint"])
-    slot = open_published_model_slot(published.checkpoint_root, published.pointer)
+    slot = read_method_checkpoint(published.checkpoint_root, published.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     assert slot.graph.nodes["muscle"].params["vmax_factor"] == config["vmax_factor"]
     assert slot.graph.nodes["muscle"].params["optimal_muscle_length"] == config["optimal_muscle_length"]
@@ -493,7 +493,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
 
     train_outcome = settled(train.job_id)["outcome"]
     published = PublishedTrainingCheckpoint.model_validate(train_outcome["completion"]["checkpoint"])
-    slot = open_published_model_slot(published.checkpoint_root, published.pointer)
+    slot = read_method_checkpoint(published.checkpoint_root, published.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None and "curl" not in slot.graph.nodes
     documents = decode_request(
         snapshot.plan.requests[next(run.request_id for run in snapshot.plan.runs if run.key == keys["train"])],

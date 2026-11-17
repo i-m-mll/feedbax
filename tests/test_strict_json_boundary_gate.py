@@ -61,14 +61,6 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
     ("feedbax/contracts/portable.py", "validate_configuration"): (
         "Field validation consumes json.dumps of the current in-memory runtime value."
     ),
-    (
-        "feedbax/contracts/manifest.py",
-        "TrainingManifestMetadataProjectionCustody._validate_custody",
-    ): (
-        "Round-trip of the canonical serialization of ``self.values``, produced "
-        "in this process one expression earlier. The document that carried "
-        "``self.values`` was already admitted by ``load_manifest_bytes``."
-    ),
     ("feedbax/contracts/evaluation_states.py", "_encode_mixed_leaves"): (
         "Round-trip of ``_canonical_metadata_leaf_bytes`` output for an "
         "in-memory leaf; canonical serialization emits each member once."
@@ -83,25 +75,6 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
     ("feedbax/analysis/evaluation_inputs.py", "_validate_training_manifest"): (
         "Pydantic re-validates candidate.raw_bytes only after those exact bytes were admitted by "
         "strict_json_loads in _load_candidate."
-    ),
-    ("feedbax/analysis/harness.py", "_execute_evaluation_batch_partition"): (
-        "Deep copy of in-memory declaration parameters through json.dumps output."
-    ),
-    ("feedbax/orchestration/conformance.py", "_canonical_training_payload"): (
-        "Normalization round-trips of the in-memory observed and expected mappings through "
-        "json.dumps output."
-    ),
-    ("feedbax/orchestration/executor_family.py", "evaluation_lifecycle_payload"): (
-        "Projection of a model admitted by strict_model_validate_json immediately beforehand."
-    ),
-    ("feedbax/training/authoring.py", "_project_domain"): (
-        "Round-trip of the projector mapping through json.dumps output in the same try block."
-    ),
-    ("feedbax/training/executor.py", "prepare_training_manifest_metadata_projection"): (
-        "Round-trips of canonical bytes serialized from models or mappings already held here."
-    ),
-    ("feedbax/training/run_matrix.py", "_planned_run_id"): (
-        "Fresh copies of canonical bytes serialized from the admitted payload and coordinates."
     ),
 }
 

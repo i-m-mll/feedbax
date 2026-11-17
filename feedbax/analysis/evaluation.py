@@ -115,7 +115,6 @@ from feedbax.analysis.declared_versions import migrate_authored_document
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
-    StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedExecutionContextError,
     resolve_evaluation_states,
@@ -622,7 +621,6 @@ def execute_evaluation_run_matrix(
     parent_manifest_root: Path | str | None = None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     execution_context: StagedExecutionContext | None = None,
     batch: EvaluationBatchExecution | None = None,
     matrix_metadata: Mapping[str, Any] | None = None,
@@ -655,7 +653,6 @@ def execute_evaluation_run_matrix(
         parent_manifest_root=parent_manifest_root,
         execution_descriptor=execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
-        checkpoint_custody_bindings=checkpoint_custody_bindings,
         execution_context=execution_context,
         batch=batch,
         matrix_metadata=matrix_metadata,
@@ -672,7 +669,6 @@ def _execute_evaluation_run_plan(
     parent_manifest_root: Path | str | None = None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     execution_context: StagedExecutionContext | None = None,
     batch: EvaluationBatchExecution | None = None,
     matrix_metadata: Mapping[str, Any] | None = None,
@@ -684,7 +680,6 @@ def _execute_evaluation_run_plan(
         parent_manifest_root=parent_manifest_root,
         execution_descriptor=execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
-        checkpoint_custody_bindings=checkpoint_custody_bindings,
         execution_context=execution_context,
     )
     matrix_metadata = {**(matrix_metadata or {}), **plan.metadata}
@@ -704,10 +699,6 @@ def _execute_evaluation_run_plan(
         "artifact_provider_bindings": [
             {"name": name, "root": str(provider.root)}
             for name, provider in execution_context.opened_artifact_providers.items()
-        ],
-        "checkpoint_custody_bindings": [
-            {"name": name, "root": str(bound_root)}
-            for name, bound_root in execution_context.checkpoint_custody_roots.items()
         ],
         "staged_parents": (
             matrix_metadata.get("staged_parents", {}) if plan.staged_parents is not None else {}
@@ -1166,14 +1157,12 @@ def _resolve_matrix_staged_parents(
     parent_manifest_root: Path | str | None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding],
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding],
     execution_context: StagedExecutionContext | None = None,
 ) -> StagedExecutionContext:
     """Bind and authenticate matrix parents before any row root or recipe effect."""
     if execution_context is not None and (
         execution_descriptor is not None
         or artifact_provider_bindings
-        or checkpoint_custody_bindings
     ):
         raise StagedExecutionContextError(
             "pre-resolved execution_context cannot be combined with raw staged bindings"
@@ -1181,7 +1170,6 @@ def _resolve_matrix_staged_parents(
     context = execution_context or resolve_staged_execution_context(
         execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
-        checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
     if staged_parents is None:
         return context

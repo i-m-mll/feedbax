@@ -20,18 +20,12 @@ from feedbax.analysis.bundles import (
     BundleStageOutputSpec,
     BundleStageSpec,
     ManifestPredicate,
-    execute_analysis_bundle,
 )
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
     execute_evaluation_run_spec,
 )
-from feedbax.analysis.execution_context import (
-    StagedCheckpointCustodyRootBinding,
-    StagedExecutionContextError,
-)
 from feedbax.analysis.specs import (
-    AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
 )
 from feedbax.bin import analysis as analysis_cli
@@ -51,12 +45,6 @@ from feedbax.contracts.manifest import (
     load_manifest,
     write_manifest,
 )
-from feedbax.contracts.staged_execution import (
-    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-    StagedCheckpointCustodySpec,
-    StagedExecutionDescriptor,
-)
 from feedbax.plugins.bootstrap import BootstrapState
 from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
@@ -64,9 +52,7 @@ from tests.support.application_registry import registry_bundle_fixture as regist
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
 
 BUNDLE_CLI_ANALYSIS_TYPE = "feedbax.test.bundle_cli_analysis"
-BUNDLE_CLI_CUSTODY_ANALYSIS_TYPE = "feedbax.test.bundle_cli_custody_analysis"
 BUNDLE_CLI_EVALUATION_TYPE = "feedbax.test.bundle_cli_eval"
-CUSTODY_BINDING_NAME = "capture-checkpoints"
 
 
 @pytest.fixture
@@ -97,30 +83,6 @@ def toy_analysis_recipe(application_registry_bundle, monkeypatch):
 
     monkeypatch.setattr(analysis_cli, "compose_application", compose_application)
     return application_registry_bundle.analysis_recipes
-
-
-@pytest.fixture
-def custody_analysis_recipe(application_registry_bundle, monkeypatch):
-    """A recipe that cannot run without a bound checkpoint custody root."""
-    seen_roots: list[Path] = []
-
-    def recipe(spec, _root, inputs, execution_context):
-        seen_roots.append(
-            execution_context.checkpoint_custody_root(spec.params["checkpoint_custody_binding"])
-        )
-        value = sum(int(resolved.states["value"]) for resolved in inputs)
-        return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy")},
-            data=build_toy_analysis_data(value=value),
-        )
-
-    application_registry_bundle.analysis_recipes.register(BUNDLE_CLI_CUSTODY_ANALYSIS_TYPE, recipe)
-
-    async def compose_application(**_kwargs):
-        return BootstrapState(application_registry_bundle, ())
-
-    monkeypatch.setattr(analysis_cli, "compose_application", compose_application)
-    return seen_roots
 
 
 def _execute_toy_eval(root: Path, registry, *, n_trials: int = 4):
@@ -158,19 +120,6 @@ def _template_bundle_payload(
                 params=params or {},
             )
         ],
-    ).model_dump(mode="json", exclude_none=True)
-
-
-def _checkpoint_descriptor_payload() -> dict:
-    return StagedExecutionDescriptor(
-        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-        artifact_providers={},
-        checkpoint_custody={
-            CUSTODY_BINDING_NAME: StagedCheckpointCustodySpec(
-                backend="feedbax-checkpoint-transaction-tree"
-            )
-        },
     ).model_dump(mode="json", exclude_none=True)
 
 
@@ -348,7 +297,7 @@ def test_bundle_subcommand_requires_execution_descriptor_for_bindings(tmp_path: 
 
     with pytest.raises(
         ValueError,
-        match="--artifact-provider and --checkpoint-custody require --execution-descriptor",
+        match="--artifact-provider requires --execution-descriptor",
     ):
         analysis_cli.main(
             [
@@ -356,8 +305,8 @@ def test_bundle_subcommand_requires_execution_descriptor_for_bindings(tmp_path: 
                 str(spec_path),
                 "--root",
                 str(tmp_path),
-                "--checkpoint-custody",
-                f"{CUSTODY_BINDING_NAME}={tmp_path}",
+                "--artifact-provider",
+                f"evidence={tmp_path}",
             ]
         )
 
@@ -375,166 +324,3 @@ def test_existing_bundle_registry_key_form_is_unchanged() -> None:
 
 
 # --- Half two: staged execution bindings on `execute_analysis_bundle` -----------------
-
-
-def test_bundle_subcommand_binds_checkpoint_custody_for_template_recipe(
-    tmp_path: Path,
-    capsys,
-    toy_evaluation_recipe,
-    custody_analysis_recipe,
-) -> None:
-    """A template bundle whose recipe needs checkpoint custody now executes end to end."""
-    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=7)
-    checkpoint_root = tmp_path / "retained" / "checkpoints"
-    checkpoint_root.mkdir(parents=True)
-    spec_path = tmp_path / "bundle.json"
-    spec_path.write_text(
-        json.dumps(
-            _template_bundle_payload(
-                evaluation.id,
-                analysis_type=BUNDLE_CLI_CUSTODY_ANALYSIS_TYPE,
-                params={"checkpoint_custody_binding": CUSTODY_BINDING_NAME},
-            ),
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    descriptor_path = tmp_path / "execution.json"
-    descriptor_path.write_text(
-        json.dumps(_checkpoint_descriptor_payload(), sort_keys=True),
-        encoding="utf-8",
-    )
-
-    analysis_cli.main(
-        [
-            "bundle",
-            str(spec_path),
-            "--root",
-            str(tmp_path),
-            "--fig-dump-dir",
-            str(tmp_path / "figures"),
-            "--fig-dump-formats",
-            "json",
-            "--execution-descriptor",
-            str(descriptor_path),
-            "--checkpoint-custody",
-            f"{CUSTODY_BINDING_NAME}={checkpoint_root}",
-        ]
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert len(payload) == 1
-    assert load_manifest(Path(payload[0]["manifest_path"])).status == "completed"
-    assert custody_analysis_recipe == [checkpoint_root]
-
-
-def test_execute_analysis_bundle_forwards_checkpoint_custody_bindings(
-    tmp_path: Path,
-    application_registry_bundle,
-    toy_evaluation_recipe,
-    custody_analysis_recipe,
-) -> None:
-    """The Python API is fixed independently of the CLI."""
-    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=8)
-    checkpoint_root = tmp_path / "checkpoints"
-    checkpoint_root.mkdir()
-    bundle = AnalysisBundleSpec.model_validate(
-        _template_bundle_payload(
-            evaluation.id,
-            analysis_type=BUNDLE_CLI_CUSTODY_ANALYSIS_TYPE,
-            params={"checkpoint_custody_binding": CUSTODY_BINDING_NAME},
-        )
-    )
-
-    outputs = execute_analysis_bundle(
-        bundle,
-        root=tmp_path,
-        fig_dump_path=tmp_path / "figures",
-        fig_dump_formats=("json",),
-        execution_descriptor=StagedExecutionDescriptor.model_validate(
-            _checkpoint_descriptor_payload()
-        ),
-        checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding(CUSTODY_BINDING_NAME, checkpoint_root)
-        ],
-        registries=application_registry_bundle,
-    )
-
-    assert len(outputs) == 1
-    _expansion, manifest, _path = outputs[0]
-    assert manifest.status == "completed"
-    assert custody_analysis_recipe == [checkpoint_root]
-
-
-def test_execute_analysis_bundle_without_bindings_still_lacks_custody(
-    tmp_path: Path,
-    application_registry_bundle,
-    toy_evaluation_recipe,
-    custody_analysis_recipe,
-) -> None:
-    """Guard the defect this fixes: no bindings means the recipe still cannot resolve custody."""
-    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=9)
-    bundle = AnalysisBundleSpec.model_validate(
-        _template_bundle_payload(
-            evaluation.id,
-            analysis_type=BUNDLE_CLI_CUSTODY_ANALYSIS_TYPE,
-            params={"checkpoint_custody_binding": CUSTODY_BINDING_NAME},
-        )
-    )
-
-    with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
-        execute_analysis_bundle(
-            bundle,
-            root=tmp_path,
-            fig_dump_path=tmp_path / "figures",
-            fig_dump_formats=("json",),
-            registries=application_registry_bundle,
-        )
-
-    cause = excinfo.value.__cause__
-    assert isinstance(cause, StagedExecutionContextError)
-    assert "capture-checkpoints" in str(cause)
-    assert custody_analysis_recipe == []
-
-
-def test_execute_analysis_bundle_rejects_unknown_binding_before_recipe(
-    tmp_path: Path,
-    application_registry_bundle,
-    toy_evaluation_recipe,
-) -> None:
-    """Per-spec binding preflight runs for bundle templates, as it does for run specs."""
-    analysis_type = "feedbax.test.bundle_cli_unknown_binding"
-    calls: list[object] = []
-
-    def recipe(*args):
-        calls.append(args)
-        raise AssertionError("recipe must not run")
-
-    evaluation, _path = _execute_toy_eval(tmp_path, toy_evaluation_recipe, n_trials=10)
-    checkpoint_root = tmp_path / "checkpoints"
-    checkpoint_root.mkdir()
-    bundle = AnalysisBundleSpec.model_validate(
-        _template_bundle_payload(
-            evaluation.id,
-            analysis_type=analysis_type,
-            params={"checkpoint_custody_binding": "unknown"},
-        )
-    )
-
-    application_registry_bundle.analysis_recipes.register(analysis_type, recipe)
-    with pytest.raises(StagedExecutionContextError, match="unavailable.*unknown"):
-        execute_analysis_bundle(
-            bundle,
-            root=tmp_path,
-            fig_dump_path=tmp_path / "figures",
-            fig_dump_formats=("json",),
-            execution_descriptor=StagedExecutionDescriptor.model_validate(
-                _checkpoint_descriptor_payload()
-            ),
-            checkpoint_custody_bindings=[
-                StagedCheckpointCustodyRootBinding(CUSTODY_BINDING_NAME, checkpoint_root)
-            ],
-            registries=application_registry_bundle,
-        )
-
-    assert calls == []

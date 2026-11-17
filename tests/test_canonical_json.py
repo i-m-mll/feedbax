@@ -2,32 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from feedbax.contracts.canonical_json import (
-    CANONICAL_JSON_V1,
     CANONICAL_JSON_V2,
     CanonicalJsonError,
     canonical_json_v1_bytes,
     canonical_json_v2_bytes,
 )
 from feedbax.contracts.manifest import canonical_json_bytes
-from feedbax.contracts.worker import (
-    CONSISTENCY_PREDICATE_GENERATOR_HASH,
-    CONSISTENCY_PREDICATE_SCHEMA_ID,
-    CONSISTENCY_PREDICATE_SCHEMA_VERSION,
-    CONSISTENCY_PREDICATE_SCHEMA_VERSION_V2,
-    ConsistencyPredicateSpec,
-    derive_consistency_predicate,
-    toy_minimax_method_contract,
-)
 
 
 VECTOR_PATH = Path(__file__).resolve().parents[1] / "tests/fixtures/canonical_json_v2.json"
@@ -94,55 +82,3 @@ def test_canonical_json_v1_bytes_are_permanently_unchanged() -> None:
     )
     assert canonical_json_v1_bytes(value) == expected
     assert canonical_json_bytes(value) == expected
-
-
-def test_consistency_predicate_v2_migration_preserves_and_pins_its_digest() -> None:
-    legacy_digest = "a" * 64
-    migrated = ConsistencyPredicateSpec.model_validate(
-        {
-            "schema_id": CONSISTENCY_PREDICATE_SCHEMA_ID,
-            "schema_version": CONSISTENCY_PREDICATE_SCHEMA_VERSION_V2,
-            "generator_hash": CONSISTENCY_PREDICATE_GENERATOR_HASH,
-            "rules": [],
-            "phase_program_digest": legacy_digest,
-        }
-    )
-    assert migrated.schema_version == CONSISTENCY_PREDICATE_SCHEMA_VERSION
-    assert migrated.phase_program_digest == legacy_digest
-    assert migrated.pin_algorithm == CANONICAL_JSON_V1
-
-
-def test_new_consistency_predicates_pin_canonical_json_v2() -> None:
-    program = toy_minimax_method_contract().phase_program
-    predicate = derive_consistency_predicate(program)
-    expected = hashlib.sha256(
-        canonical_json_v2_bytes(program.model_dump(mode="json", exclude_none=True))
-    ).hexdigest()
-    assert predicate.schema_version == CONSISTENCY_PREDICATE_SCHEMA_VERSION
-    assert predicate.pin_algorithm == CANONICAL_JSON_V2
-    assert predicate.phase_program_digest == expected
-
-
-def test_consistency_predicate_unknown_pin_fails_closed() -> None:
-    with pytest.raises(ValidationError, match="pin_algorithm"):
-        ConsistencyPredicateSpec.model_validate(
-            {
-                "schema_id": CONSISTENCY_PREDICATE_SCHEMA_ID,
-                "schema_version": CONSISTENCY_PREDICATE_SCHEMA_VERSION,
-                "rules": [],
-                "phase_program_digest": "a" * 64,
-                "pin_algorithm": "canonical_json_v3",
-            }
-        )
-
-
-def test_consistency_predicate_current_schema_requires_an_explicit_pin() -> None:
-    with pytest.raises(ValidationError, match="pin_algorithm"):
-        ConsistencyPredicateSpec.model_validate(
-            {
-                "schema_id": CONSISTENCY_PREDICATE_SCHEMA_ID,
-                "schema_version": CONSISTENCY_PREDICATE_SCHEMA_VERSION,
-                "rules": [],
-                "phase_program_digest": "a" * 64,
-            }
-        )

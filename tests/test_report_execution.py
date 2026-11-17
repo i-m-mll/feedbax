@@ -479,7 +479,6 @@ def test_an_authored_report_executes_against_an_already_resolved_context(
                 schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
                 schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
                 artifact_providers={},
-                checkpoint_custody={},
             ),
             manifest_root_bindings=[StagedManifestRootBinding("retained", retained)],
         ),

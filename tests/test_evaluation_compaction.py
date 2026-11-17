@@ -20,11 +20,6 @@ from feedbax.analysis.evaluation_compaction import (
     reclaim_evaluation_batch_caches,
 )
 from feedbax.analysis.execution_context import EMPTY_STAGED_EXECUTION_CONTEXT
-from feedbax.analysis.execution_context import (
-    StagedCheckpointCustodyRootBinding,
-    StagedExecutionContextError,
-    resolve_staged_execution_context,
-)
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchConsumerDeclaration,
     EvaluationLifecycleRowOutcome,
@@ -43,12 +38,6 @@ from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     evaluation_states_cache_path,
     load_manifest,
-)
-from feedbax.contracts.staged_execution import (
-    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-    STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-    StagedCheckpointCustodySpec,
-    StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
@@ -371,141 +360,6 @@ def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context
         EvaluationBatchConsumerDeclaration.model_validate(
             {**declaration.model_dump(mode="json"), "parameters": {"gain": float("nan")}}
         )
-
-
-def test_consumer_callback_resolves_exact_authenticated_checkpoint_binding(
-    tmp_path: Path,
-) -> None:
-    registry = EvaluationBatchConsumerRegistry()
-    from tests.test_checkpoint_custody import (
-        _resolver_parent_ref,
-        _write_resolver_checkpoint,
-    )
-
-    checkpoint_root = tmp_path / "checkpoint-custody"
-    checkpoint = _write_resolver_checkpoint(checkpoint_root)
-    parent = _resolver_parent_ref(checkpoint)
-    parent = parent.model_copy(
-        update={
-            "metadata": {
-                **parent.metadata,
-                "checkpoint_custody_binding": "checkpoints",
-            }
-        }
-    )
-    descriptor = StagedExecutionDescriptor(
-        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-        artifact_providers={},
-        checkpoint_custody={
-            "checkpoints": StagedCheckpointCustodySpec(
-                backend="feedbax-checkpoint-transaction-tree"
-            )
-        },
-    )
-    context = resolve_staged_execution_context(
-        descriptor,
-        checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding("checkpoints", checkpoint_root)
-        ],
-    )
-    declaration = _declaration("velocity").model_copy(
-        update={
-            "parameters": {
-                "checkpoint_binding": "checkpoints",
-                "checkpoint_ref": parent.model_dump(mode="json"),
-            }
-        }
-    )
-    observed_contexts = []
-
-    def compact(value: EvaluationBatchConsumerInput) -> EvaluationBatchFragment:
-        observed_contexts.append(value.execution_context)
-        ref = ParentRef.model_validate(value.parameters["checkpoint_ref"])
-        resolved = value.execution_context.resolve_checkpoint_custody_ref(
-            ref,
-            binding_name=str(value.parameters["checkpoint_binding"]),
-            slot_names=["batch_counter"],
-        )
-        assert resolved.parent_ref == ref
-        assert set(resolved.slots) == {"batch_counter"}
-        return EvaluationBatchFragment(
-            payload={"transaction_id": resolved.manifest.transaction_id},
-            schema_id=declaration.compact_product_schema_id,
-            schema_version=declaration.compact_product_schema_version,
-            role=declaration.compact_product_role,
-        )
-
-    registry.register(
-        declaration.consumer_id,
-        declaration.consumer_version,
-        compact=compact,
-        merge=lambda _value: EvaluationBatchMergeState(
-            payload={},
-            schema_id=declaration.merge_state_schema_id,
-            schema_version=declaration.merge_state_schema_version,
-        ),
-        finalize=lambda _value: EvaluationBatchFragment(
-            payload={},
-            schema_id=declaration.compact_product_schema_id,
-            schema_version=declaration.compact_product_schema_version,
-            role=declaration.compact_product_role,
-        ),
-    )
-    batch = EvaluationMatrixBatchUnit(
-        batch_id="checkpoint-binding",
-        ordered_row_ids=("row-a",),
-        required_leaf_ids=("velocity",),
-    )
-    outcomes, manifests = _batch_fixture(tmp_path / "raw", batch)
-
-    def consumer_input(
-        configured: EvaluationBatchConsumerDeclaration,
-        execution_context,
-    ) -> EvaluationBatchConsumerInput:
-        return EvaluationBatchConsumerInput(
-            matrix_intent_hash="a" * 64,
-            batch=batch,
-            outcomes=outcomes,
-            manifests=manifests,
-            states=({"value": 1},),
-            parent_authorities=_parent_authorities(outcomes),
-            parameters=configured.parameters,
-            execution_context=execution_context,
-        )
-
-    fragment = compact_evaluation_batch(
-        declaration,
-        consumer_input(declaration, context),
-        registry=registry,
-        custody_root=tmp_path / "published",
-    )
-    assert observed_contexts == [context]
-    assert fragment.metadata["consumer_parameters"] == declaration.parameters
-
-    for binding, execution_context in (
-        ("wrong", context),
-        ("checkpoints", EMPTY_STAGED_EXECUTION_CONTEXT),
-    ):
-        configured = declaration.model_copy(
-            update={
-                "parameters": {
-                    **declaration.parameters,
-                    "checkpoint_binding": binding,
-                }
-            }
-        )
-        custody_root = tmp_path / f"rejected-{binding}-{len(observed_contexts)}"
-        with pytest.raises(StagedExecutionContextError):
-            compact_evaluation_batch(
-                configured,
-                consumer_input(configured, execution_context),
-                registry=registry,
-                custody_root=custody_root,
-            )
-        assert not custody_root.exists()
-    cache_path = Path(manifests[0]["metadata"]["cache"]["states_path"])
-    assert cache_path.is_file()
 
 
 def test_ordered_merge_waits_for_every_leaf_then_reclaims_and_publishes(tmp_path: Path) -> None:

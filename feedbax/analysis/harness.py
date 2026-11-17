@@ -743,7 +743,6 @@ def main(
     parser.add_argument("--parent-manifest-root")
     parser.add_argument("--execution-descriptor")
     parser.add_argument("--artifact-provider", action="append", default=[])
-    parser.add_argument("--checkpoint-custody", action="append", default=[])
     parser.add_argument(
         "--batch",
         action="store_true",
@@ -786,7 +785,6 @@ def main(
     )
     from feedbax.analysis.execution_context import (
         StagedArtifactProviderRootBinding,
-        StagedCheckpointCustodyRootBinding,
     )
     def binding_parts(value: str, *, option: str) -> tuple[str, str]:
         name, separator, root = value.partition("=")
@@ -875,10 +873,6 @@ def main(
         artifact_provider_bindings=[
             StagedArtifactProviderRootBinding(*binding_parts(value, option="--artifact-provider"))
             for value in args.artifact_provider
-        ],
-        checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
-            for value in args.checkpoint_custody
         ],
         batch=EvaluationBatchExecution() if args.batch else None,
         matrix_metadata=policy_metadata,

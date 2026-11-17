@@ -14,6 +14,7 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubject
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.request_refs import BestRank, ContentRef, LastMember, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
@@ -154,8 +155,12 @@ def require_text(value, field: str) -> str:
     return value
 
 
-def _scheduled_checkpoint(update: int, interval: int, horizon: int) -> bool:
-    return update <= horizon and (update == horizon or update % interval == 0)
+def _scheduled_checkpoint(update: int, spec: DocumentTrainingRequestSpec) -> bool:
+    origin = spec.continuation.source_completed_updates if spec.continuation else 0
+    return (
+        origin < update <= spec.target_total
+        and (update == spec.target_total or (update - origin) % spec.training_config.snapshot_interval == 0)
+    )
 
 
 def _pending_checkpoint(attempt: sqlite3.Row, boundary: dict | None, absent: Sequence[int]) -> dict:
@@ -169,13 +174,14 @@ def _pending_checkpoint(attempt: sqlite3.Row, boundary: dict | None, absent: Seq
         latest = json.loads(attempt["checkpoint"] or "{}")
         published = max(published, latest.get("completed_updates", 0))
         completed = max(published, progress.get("completed_updates", 0))
-    spec = json.loads(attempt["launch"])["payload"].get("spec", {})
-    horizon = spec.get("method_payload", {}).get("payload", {}).get("target_total")
-    interval = spec.get("checkpoint_progress", {}).get("checkpoint_interval")
+    payload = json.loads(attempt["launch"])["payload"]
+    spec = DocumentTrainingRequestSpec.model_validate(payload["spec"])
+    catalogue = set(payload.get("checkpoint_catalog", ()))
     next_update = min((
         update for update in absent
-        if update > published and update >= completed and _scheduled_checkpoint(update, interval, horizon)
-    ), default=None) if type(horizon) is int and type(interval) is int and interval > 0 else None
+        if update > published and update >= completed
+        and (update in catalogue or _scheduled_checkpoint(update, spec))
+    ), default=None)
     return {
         "producer_job_id": attempt["id"],
         "producer_request_id": attempt["request"],
@@ -1931,17 +1937,13 @@ class Store:
 
         source = json.loads(producer["launch"])
         payload = source["payload"]
-        spec = payload.get("spec", {})
-        interval = spec.get("checkpoint_progress", {}).get("checkpoint_interval")
-        method = spec.get("method_payload", {}).get("payload", {})
-        horizon = method.get("target_total")
+        spec = DocumentTrainingRequestSpec.model_validate(payload["spec"])
         # Live dispatch never changes the Train publication schedule.
         supported = (
             source.get("warm_entrypoint") == "feedbax.training_host_worker:main"
             and producer["continues"] is None
-            and method.get("checkpoint_initialization") is None
-            and type(interval) is int and interval > 0 and type(horizon) is int
-            and all(_scheduled_checkpoint(update, interval, horizon) for update in selection.coordinates)
+            and spec.checkpoint_initialization is None
+            and all(_scheduled_checkpoint(update, spec) for update in selection.coordinates)
         )
         qualification = None
         if raw := job["data"].pop("validation_qualification", None):

@@ -5,7 +5,6 @@ from importlib import import_module
 
 _PUBLIC_ATTR_MODULES = {
     "ApplicationRegistryBundle": ".application",
-    "TrainingProgramCatalog": ".application",
     "TRAINING_METHODS": ".application",
     "OPERATIONS": ".application",
     "FIGURE_TEMPLATES": ".application",
@@ -13,7 +12,6 @@ _PUBLIC_ATTR_MODULES = {
     "load_application": ".composition",
     "COMPONENTS": ".application",
     "PYTHON_TASKS": ".application",
-    "TRAINING_PROGRAMS": ".application",
     "BootstrapError": ".bootstrap",
     "BootstrapErrorCode": ".bootstrap",
     "BootstrapState": ".bootstrap",
@@ -42,20 +40,6 @@ _PUBLIC_ATTR_MODULES = {
     "EMPTY_STAGED_EXECUTION_CONTEXT": "feedbax.analysis.execution_context",
     "StagedExecutionContext": "feedbax.analysis.execution_context",
     "EvaluationStatesStructureProviderProtocol": "feedbax.analysis.validation",
-    "DeclaredTrainingProgram": "feedbax.contracts.training",
-    "TrainingProgramDeclaration": "feedbax.contracts.training",
-    "TrainingProgramRuntimeFacet": "feedbax.contracts.training",
-    "TrainingProgramPreparationFacet": "feedbax.contracts.training",
-    "TrainingProgramProjectionFacet": "feedbax.contracts.training",
-    "declare_training_program": "feedbax.contracts.training",
-    "TrainingMethodMetadataProjector": "feedbax.contracts.training",
-    "TrainingMethodScheduleProjector": "feedbax.contracts.training",
-    "TrainingProgramRegistry": "feedbax.contracts.training",
-    "ExecutionPreparationPlan": "feedbax.training.preparation",
-    "NumericalUpdateKernel": "feedbax.training.phase_executor",
-    "ExecutionPreparationProvider": "feedbax.training.preparation",
-    "ExecutionPreparationRequest": "feedbax.training.preparation",
-    "ExecutionPreparationResult": "feedbax.training.preparation",
 }
 
 # Submodules the eager facade used to bind as attributes of this package.

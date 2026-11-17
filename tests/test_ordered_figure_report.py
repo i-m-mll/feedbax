@@ -56,7 +56,6 @@ from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-    StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -205,7 +204,6 @@ def _provider_descriptor(*names: str) -> StagedExecutionDescriptor:
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={name: ImmutableArtifactBlobProviderSpec() for name in names},
-        checkpoint_custody={},
     )
 
 
@@ -310,9 +308,7 @@ def test_authored_report_cli_executes_exact_parents_without_reauthoring(
 ) -> None:
     root = tmp_path / "report-root"
     provider_root = tmp_path / "provider"
-    checkpoint_root = tmp_path / "checkpoints"
     root.mkdir()
-    checkpoint_root.mkdir()
     provider = ImmutableArtifactBlobProvider(provider_root)
 
     plotly_json = store_json_artifact(
@@ -445,9 +441,6 @@ def test_authored_report_cli_executes_exact_parents_without_reauthoring(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={"evidence": ImmutableArtifactBlobProviderSpec()},
-        checkpoint_custody={
-            "capture": StagedCheckpointCustodySpec(backend="feedbax-checkpoint-transaction-tree")
-        },
     )
     descriptor_path = tmp_path / "execution.json"
     descriptor_path.write_text(descriptor.model_dump_json(indent=2), encoding="utf-8")
@@ -464,8 +457,6 @@ def test_authored_report_cli_executes_exact_parents_without_reauthoring(
             str(descriptor_path),
             "--artifact-provider",
             f"evidence={provider_root}",
-            "--checkpoint-custody",
-            f"capture={checkpoint_root}",
         ]
     )
 
@@ -1395,7 +1386,10 @@ def test_ordered_figure_report_html_verifies_plotly_json_digest(
         for artifact in first_manifest.artifacts
         if artifact.metadata.get("format") == "plotly-json"
     )
-    Path(str(plotly_artifact.uri)).write_text("{}", encoding="utf-8")
+    artifact_path = Path(str(plotly_artifact.uri))
+    artifact_path.unlink()
+    artifact_path.write_text("{}", encoding="utf-8")
+    artifact_path.chmod(0o444)
     params = _params()
     params["output_name"] = "ordered-evidence.html"
 

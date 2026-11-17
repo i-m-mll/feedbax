@@ -32,7 +32,6 @@ from feedbax.analysis.bundles import (
 from feedbax.analysis.exact_parents import migrate_staged_exact_parents
 from feedbax.analysis.execution_context import (
     StagedArtifactProviderRootBinding,
-    StagedCheckpointCustodyRootBinding,
     StagedManifestRootBinding,
 )
 from feedbax.analysis.evaluation import (
@@ -145,13 +144,6 @@ def build_run_arg_parser() -> argparse.ArgumentParser:
         help="Bind one authenticated-manifest artifact provider root.",
     )
     parser.add_argument(
-        "--checkpoint-custody",
-        action="append",
-        default=[],
-        metavar="NAME=ROOT",
-        help="Bind one named checkpoint custody root.",
-    )
-    parser.add_argument(
         "--manifest-root",
         action="append",
         default=[],
@@ -170,11 +162,11 @@ def run_analysis_run_spec_file(argv: list[str], state: BootstrapState) -> None:
         RunAliasCatalog.model_validate(_load_spec_document(path, label="run alias catalog"))
         for path in args.run_aliases
     ]
-    if (args.artifact_provider or args.manifest_root or args.checkpoint_custody) and (
+    if (args.artifact_provider or args.manifest_root) and (
         args.execution_descriptor is None
     ):
         raise ValueError(
-            "--artifact-provider, --manifest-root, and --checkpoint-custody "
+            "--artifact-provider and --manifest-root "
             "require --execution-descriptor"
         )
     execution_descriptor = None
@@ -193,10 +185,6 @@ def run_analysis_run_spec_file(argv: list[str], state: BootstrapState) -> None:
         StagedManifestRootBinding(*binding_parts(value, option="--manifest-root"))
         for value in args.manifest_root
     ]
-    checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
-        for value in args.checkpoint_custody
-    ]
     with _bundle_human_output_to_stderr():
         manifest, path = execute_analysis_run_spec(
             spec,
@@ -209,7 +197,6 @@ def run_analysis_run_spec_file(argv: list[str], state: BootstrapState) -> None:
             execution_descriptor=execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
             manifest_root_bindings=manifest_root_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
     payload = {
         "manifest_id": manifest.id,
@@ -285,13 +272,6 @@ def build_evaluate_arg_parser() -> argparse.ArgumentParser:
         metavar="NAME=ROOT",
         help="Bind one authenticated-manifest artifact provider root.",
     )
-    parser.add_argument(
-        "--checkpoint-custody",
-        action="append",
-        default=[],
-        metavar="NAME=ROOT",
-        help="Bind one named checkpoint custody root.",
-    )
     return parser
 
 
@@ -300,9 +280,9 @@ def run_evaluation_spec_file(argv: list[str], state: BootstrapState) -> None:
     args = build_evaluate_arg_parser().parse_args(argv)
     _apply_plotly_template_default()
     spec = _load_spec_document(args.spec, label="EvaluationRunMatrixSpec")
-    if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
+    if (args.artifact_provider) and (args.execution_descriptor is None):
         raise ValueError(
-            "--artifact-provider and --checkpoint-custody require --execution-descriptor"
+            "--artifact-provider requires --execution-descriptor"
         )
     execution_descriptor = None
     if args.execution_descriptor is not None:
@@ -312,10 +292,6 @@ def run_evaluation_spec_file(argv: list[str], state: BootstrapState) -> None:
     artifact_provider_bindings = [
         StagedArtifactProviderRootBinding(*binding_parts(value, option="--artifact-provider"))
         for value in args.artifact_provider
-    ]
-    checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
-        for value in args.checkpoint_custody
     ]
     batch = None
     if args.rows is not None:
@@ -333,7 +309,6 @@ def run_evaluation_spec_file(argv: list[str], state: BootstrapState) -> None:
             parent_manifest_root=args.parent_manifest_root,
             execution_descriptor=execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
             batch=batch,
         )
     payload = {
@@ -391,13 +366,6 @@ def build_report_arg_parser() -> argparse.ArgumentParser:
         metavar="NAME=ROOT",
         help="Bind one authenticated-manifest artifact provider root.",
     )
-    parser.add_argument(
-        "--checkpoint-custody",
-        action="append",
-        default=[],
-        metavar="NAME=ROOT",
-        help="Bind one named checkpoint custody root.",
-    )
     return parser
 
 
@@ -429,9 +397,9 @@ def run_authored_report_spec_file(argv: list[str], state: BootstrapState) -> Non
             f"schema_version; missing {', '.join(missing_schema)}"
         )
     exact_parents = migrate_staged_exact_parents(exact_payload)
-    if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
+    if (args.artifact_provider) and (args.execution_descriptor is None):
         raise ValueError(
-            "--artifact-provider and --checkpoint-custody require --execution-descriptor"
+            "--artifact-provider requires --execution-descriptor"
         )
     execution_descriptor = None
     if args.execution_descriptor is not None:
@@ -445,10 +413,6 @@ def run_authored_report_spec_file(argv: list[str], state: BootstrapState) -> Non
         StagedArtifactProviderRootBinding(*binding_parts(value, option="--artifact-provider"))
         for value in args.artifact_provider
     ]
-    checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
-        for value in args.checkpoint_custody
-    ]
     try:
         with _bundle_human_output_to_stderr():
             manifest, path = execute_authored_report_spec(
@@ -458,7 +422,6 @@ def run_authored_report_spec_file(argv: list[str], state: BootstrapState) -> Non
                 root=args.root,
                 execution_descriptor=execution_descriptor,
                 artifact_provider_bindings=artifact_provider_bindings,
-                checkpoint_custody_bindings=checkpoint_custody_bindings,
             )
     except ReportRecipeExecutionError as exc:
         print(
@@ -480,7 +443,6 @@ def _execute_authored_analysis_bundle(
     exact_parents_path: Path | None,
     execution_descriptor_path: Path | None,
     artifact_provider: list[str],
-    checkpoint_custody: list[str],
     dry_run: bool,
     state: BootstrapState,
 ) -> object:
@@ -507,10 +469,6 @@ def _execute_authored_analysis_bundle(
         StagedArtifactProviderRootBinding(*binding_parts(value, option="--artifact-provider"))
         for value in artifact_provider
     ]
-    checkpoint_custody_bindings = [
-        StagedCheckpointCustodyRootBinding(*binding_parts(value, option="--checkpoint-custody"))
-        for value in checkpoint_custody
-    ]
     execution_kwargs = {
         "root": root,
         "repo_root": repo_root,
@@ -522,7 +480,6 @@ def _execute_authored_analysis_bundle(
     binding_kwargs = {
         "execution_descriptor": execution_descriptor,
         "artifact_provider_bindings": artifact_provider_bindings,
-        "checkpoint_custody_bindings": checkpoint_custody_bindings,
     }
     if bundle.templates and not bundle.stages:
         if exact_parents_path is not None:
@@ -658,13 +615,6 @@ def build_bundle_arg_parser() -> argparse.ArgumentParser:
         help="Bind one authenticated-manifest artifact provider root.",
     )
     parser.add_argument(
-        "--checkpoint-custody",
-        action="append",
-        default=[],
-        metavar="NAME=ROOT",
-        help="Bind one named checkpoint custody root.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preflight a staged bundle without recipe, cache, output, or manifest effects.",
@@ -676,9 +626,9 @@ def run_analysis_bundle_spec_file(argv: list[str], state: BootstrapState) -> Non
     """Execute one serialized ``AnalysisBundleSpec`` file and print its JSON payload."""
     args = build_bundle_arg_parser().parse_args(argv)
     _apply_plotly_template_default()
-    if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
+    if (args.artifact_provider) and (args.execution_descriptor is None):
         raise ValueError(
-            "--artifact-provider and --checkpoint-custody require --execution-descriptor"
+            "--artifact-provider requires --execution-descriptor"
         )
     if args.exact_parents is not None and args.root is None:
         raise ValueError("--exact-parents requires --root")
@@ -696,7 +646,6 @@ def run_analysis_bundle_spec_file(argv: list[str], state: BootstrapState) -> Non
         exact_parents_path=args.exact_parents,
         execution_descriptor_path=args.execution_descriptor,
         artifact_provider=args.artifact_provider,
-        checkpoint_custody=args.checkpoint_custody,
         dry_run=args.dry_run,
         state=state,
     )
@@ -787,13 +736,6 @@ def build_arg_parser():
         help="Bind one logical immutable artifact provider to an absolute runtime root.",
     )
     parser.add_argument(
-        "--checkpoint-custody",
-        action="append",
-        default=[],
-        metavar="NAME=ROOT",
-        help="Bind one logical checkpoint custody authority to an absolute runtime root.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preflight a staged bundle without recipe, cache, output, or manifest effects.",
@@ -839,8 +781,8 @@ def main(
         parser.error("--execution-descriptor is only valid with --bundle")
     if args.dry_run and args.bundle is None:
         parser.error("--dry-run is only valid with --bundle")
-    if (args.artifact_provider or args.checkpoint_custody) and (args.execution_descriptor is None):
-        parser.error("--artifact-provider and --checkpoint-custody require --execution-descriptor")
+    if (args.artifact_provider) and (args.execution_descriptor is None):
+        parser.error("--artifact-provider requires --execution-descriptor")
 
     _apply_plotly_template_default(args.plotly_template)
 
@@ -859,7 +801,6 @@ def main(
             Path(args.execution_descriptor) if args.execution_descriptor is not None else None
         ),
         artifact_provider=args.artifact_provider,
-        checkpoint_custody=args.checkpoint_custody,
         dry_run=args.dry_run,
         state=state,
     )
