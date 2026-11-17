@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from functools import cache, cached_property
@@ -26,6 +26,8 @@ from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFEREN
 from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_input import InitialModelSource, authored_document_input, encode_document_input
+from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
@@ -36,14 +38,18 @@ from feedbax.contracts.project_inputs import (
     CheckpointRule,
     CheckpointBatches,
     CheckpointCadence,
+    DocumentInputReference,
+    InitialModelReference,
     InputBinding,
     NamedSubset,
     OmittedReference,
+    ObjectiveDocumentReference,
     RunReference,
     SelectedRow,
     StepReference,
     SubsetSelectionError,
     SubsetTerms,
+    TaskDocumentReference,
     producer_member_key,
     select_step_rows,
 )
@@ -98,6 +104,7 @@ from feedbax.contracts.request_specs import (
     DocumentTrainingRequestSpec,
     ReportRequestSpec,
 )
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.train_settings import normalize_train_method
 
 if TYPE_CHECKING:
@@ -180,6 +187,14 @@ class PlannedInput:
     @property
     def element(self) -> ElementKey | None:
         return ElementKey(self.producer, self.producer_element) if self.producer and self.producer_element else None
+
+
+def plan_document_input(
+    reference: DocumentInputReference, document: Document, objects: MutableMapping[str, bytes],
+) -> PlannedInput:
+    content, raw = encode_document_input(authored_document_input(reference, document))
+    objects[content.sha256] = raw
+    return PlannedInput(None, InputMember(key=reference.source.document, reference=content))
 
 
 def _upstream_source(binding: PlannedInput) -> ValueSource | None:
@@ -287,6 +302,7 @@ class SelectedRunDefinition:
     document_uses: frozenset[str]
     document_pointers: Mapping[str, str] = field(default_factory=dict)
     document_problems: tuple[ProjectDiagnostic, ...] = ()
+    input_documents: Mapping[str, Document] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1425,6 +1441,7 @@ class _Compiler:
                 resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
                 MappingProxyType(resolved.document_pointers),
                 resolved.document_problems,
+                MappingProxyType(resolved.input_documents),
             )
 
         if self.previous is None:
@@ -1592,9 +1609,10 @@ class _Compiler:
         )
         if (prepared := self.trial_preparations.get(identity)) is not None:
             return prepared
+        components = self.components or _builtin_model_registry()
         paired = compile_trial_execution(
             authored.model_name, authored.model, authored.task_source,
-            self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
+            components, self.functions or _builtin_expression_registry(),
             python_tasks=self.python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
         )
         result: _TrainPreparation | tuple[Problem, ...]
@@ -1603,12 +1621,12 @@ class _Compiler:
         else:
             graph = paired.executable.resolved.graph
             checkpoint_problem = None
-            if problem := model_owner_problem(graph, "checkpoint"):
+            if problem := model_owner_problem(graph, "checkpoint", components):
                 address = paired.lowered.source_address(pointer(problem.path))
                 path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
                 checkpoint_problem = RunProblem(pointer(path), problem.reason, address)
             evaluation: GraphSpec | ProjectDiagnostic = graph
-            if problem := model_owner_problem(graph, "evaluate"):
+            if problem := model_owner_problem(graph, "evaluate", components):
                 address = paired.lowered.source_address(pointer(problem.path))
                 evaluation = ProjectDiagnostic(
                     ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
@@ -1681,6 +1699,100 @@ class _Compiler:
                 return _authored_variation_problem(result, tuple(sorted(named)))
         return result
 
+    def lower_initial_evaluate(
+        self, template: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
+        from feedbax.compiler.model_attachment import resolve_effective_model
+        from feedbax.compiler.trial_execution import pair_trial_source, validate_python_task
+        from feedbax.studio.canonical_evaluate import CannotRun
+        from feedbax.tasks.reaching import builtin_python_tasks
+        from feedbax.training.evaluation_variant import resolve_evaluation_variant
+
+        resolved = self.resolve_row(template, key, row, None)
+        if isinstance(resolved, ProjectDiagnostic):
+            return _LoweredRow(None, (replace(resolved, variant=key.variant),)), {}
+        path = "inputs.subject"
+        try:
+            if resolved.payload.get("evaluation_type") != ROLLOUT_TYPE:
+                raise ValueError("An initial Model subject requires a rollout Evaluate")
+            subject_ref = template.inputs["subject"]
+            assert isinstance(subject_ref, InitialModelReference)
+            source = authored_document_input(subject_ref, resolved.input_documents["subject"])
+            assert isinstance(source, InitialModelSource)
+            payload, differences = _model_differences(resolved.payload)
+            components = self.components or _builtin_model_registry()
+            functions = self.functions or _builtin_expression_registry()
+            tasks = self.python_tasks or builtin_python_tasks()
+            if differences:
+                edited = resolve_effective_model(
+                    source.model_name, source.document, components, differences, functions=functions,
+                )
+                source = source.model_copy(update={"document": edited})
+            path = "inputs.task"
+            task_ref = template.inputs.get("task")
+            if not isinstance(task_ref, TaskDocumentReference):
+                raise ValueError("Declare the Task document for the initial Model rollout")
+            task = authored_document_input(task_ref, resolved.input_documents["task"])
+            assert isinstance(task, (TaskDocument, PythonTaskSelection))
+            if isinstance(task, PythonTaskSelection):
+                validated = validate_python_task(task, tasks)
+                if isinstance(validated[0], Problem):
+                    raise ValueError(validated[0].reason)
+                definition, params = validated
+                task = PythonTaskSelection(type=definition.key, params=params.model_dump(mode="json"))
+            sources = {"subject": (subject_ref, source), "task": (task_ref, task)}
+            if (objective_ref := template.inputs.get("objective")) is not None:
+                path = "inputs.objective"
+                if not isinstance(objective_ref, ObjectiveDocumentReference):
+                    raise ValueError("Declare an Objective document input")
+                objective = authored_document_input(objective_ref, resolved.input_documents["objective"])
+                assert isinstance(objective, ObjectiveDocument)
+                sources["objective"] = objective_ref, objective
+            path = "payload.params"
+            raw = payload["params"]
+            if not isinstance(raw, dict) or "trial_set" not in raw or "trials" in raw:
+                raise ValueError("Declare a trial-set rule for managed Evaluate")
+            settings = authored_rollout_settings(raw)
+            if problem := _authored_graph_variation_problem(key, payload):
+                return _LoweredRow(None, (problem,)), {}
+            paired = pair_trial_source(
+                source.model_name, source.document, task, components, functions,
+                python_tasks=tasks, input_overrides=settings.input_overrides,
+            )
+            if isinstance(paired, tuple) or paired.problems:
+                raise ValueError((paired if isinstance(paired, tuple) else paired.problems)[0].reason)
+            variant = resolve_evaluation_variant(paired.lowered.graph, task, settings.variation)
+            if variant.task != task:
+                paired = pair_trial_source(
+                    source.model_name, source.document, variant.task, components, functions,
+                    python_tasks=tasks, input_overrides=settings.input_overrides, graph_override=variant.graph,
+                )
+                if isinstance(paired, tuple) or paired.problems:
+                    raise variant.task_refusal((paired if isinstance(paired, tuple) else paired.problems)[0])
+            trials = resolve_trial_ids(raw["trial_set"], paired.task.condition_ids)
+            payload = payload | {"params": {
+                **{name: value for name, value in raw.items() if name != "trial_set"},
+                "trials": list(trials),
+            }}
+            inputs = {}
+            for role, (reference, value) in sources.items():
+                content, data = encode_document_input(value)
+                self.documents[content.sha256] = data
+                inputs[role] = PlannedInput(None, InputMember(key=reference.source.document, reference=content))
+            narrowed = _encode_row(
+                key, "evaluate", payload, inputs, None, self.work.request_documents, self.prepare_train_trial,
+            )
+            return replace(
+                narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
+            ), inputs
+        except (KeyError, ValueError) as error:
+            return _LoweredRow(None, (ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD,
+                error.path if isinstance(error, CannotRun) else path,
+                error.reason if isinstance(error, CannotRun) else str(error),
+                key.step, row=key.row, variant=key.variant,
+            ),)), {}
+
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
     ) -> Payload | ProjectDiagnostic:
@@ -1742,6 +1854,7 @@ class _Compiler:
             documents = train.trial_documents
             variant = resolve_evaluation_variant(
                 model_source.evaluation_graph, documents.task_source, settings.variation,
+                components=self.components or _builtin_model_registry(),
             )
             if any(target[0] == "task" for target in variant.edit_origins):
                 pairing = pair_trial_source(
@@ -1814,7 +1927,9 @@ class _Compiler:
             if isinstance(prior, dict):
                 prior = tuple(prior[name] for name in sorted(prior))
             variation = (*prior, *derived)
-            effective = resolve_evaluation_variant(before.graph, documents.task_source, variation)
+            effective = resolve_evaluation_variant(
+                before.graph, documents.task_source, variation, components=components,
+            )
             issues = validate_graph_connection_schema(
                 effective.graph, "/graph",
                 component_registry=components,
@@ -1871,7 +1986,9 @@ class _Compiler:
         if kind == "report":
             return self.compile_report_step(variant, name, template, active)
         assert role is not None
-        extra_roles = sorted(template.inputs.keys() - {role.name})
+        initial = kind == "evaluate" and isinstance(template.inputs.get("subject"), InitialModelReference)
+        roles = {"subject", "task", "objective"} if initial else {role.name}
+        extra_roles = sorted(template.inputs.keys() - roles)
         if extra_roles:
             self.diagnostics.extend(
                 ProjectDiagnostic(
@@ -1884,7 +2001,7 @@ class _Compiler:
                 for extra in extra_roles
             )
             return ()
-        selected = self.select_input(variant, name, template, role, active)
+        selected = ((), {}, None) if initial else self.select_input(variant, name, template, role, active)
         if isinstance(selected, ProjectDiagnostic):
             self.diagnostics.append(replace(selected, variant=variant))
             return ()
@@ -1928,6 +2045,20 @@ class _Compiler:
                         continue
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
             self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
+            if initial:
+                if has_checkpoint_axis:
+                    self.diagnostics.append(ProjectDiagnostic(
+                        ResolutionCode.BAD_REFERENCE, "inputs.subject", "Initial models have no checkpoint axis",
+                        name, variant=variant,
+                    ))
+                    break
+                lowered, inputs = self.lower_initial_evaluate(template, run_key, row)
+                self.select_definition(template, run_key, row, {
+                    name: (binding,) for name, binding in inputs.items()
+                })
+                if (run := self.record_run(run_key, lowered, inputs, {}, template.requires)) is not None:
+                    result.append(run)
+                continue
             if kind == "analyze":
                 states = (chosen,) if chosen is not None else gathered
                 if states:

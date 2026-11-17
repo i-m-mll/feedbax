@@ -61,7 +61,9 @@ def _write_resolver_checkpoint(root):
         ),
         slots=state,
         completed_training_batches=1,
-        semantic_model=SemanticModelWriter.for_graph(GraphSpec.model_validate(spec.graph.inline), None),
+        semantic_model=SemanticModelWriter.for_graph(
+            GraphSpec.model_validate(spec.graph.inline), None, registries.components,
+        ),
     )
 
 
