@@ -20,6 +20,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
 from feedbax.persistence.checkpoint_publication import checkpoint_model_objects
 from feedbax.persistence.receipt_content import ClosureVisitors, continuation_objects, success_content_objects, tree_objects
+from feedbax.validity.evidence import evidence_objects
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,8 @@ class ReceiptClosure:
         """Resolve evidence owned by the result, independent of previously read inputs."""
         receipt = self.receipt_at(ref)
         objects = [ref, receipt.request.object, *receipt.request.documents]
+        if receipt.trace is not None:
+            objects.extend(evidence_objects(self.store, receipt.trace))
         if receipt.evaluation_manifest is not None:
             objects.append(receipt.evaluation_manifest)
         for group in receipt.products.values():
@@ -156,6 +159,9 @@ class ReceiptClosure:
             visited.add(key)
             for ref in (receipt.request.object, *receipt.request.documents):
                 add(ref)
+            if receipt.trace is not None:
+                for ref in evidence_objects(self.store, receipt.trace):
+                    add(ref)
             decoded = self._request_at(root.receipt, receipt)
             if receipt.evaluation_manifest is not None:
                 add(receipt.evaluation_manifest)

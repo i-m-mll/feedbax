@@ -415,11 +415,13 @@ class SuccessView:
         evaluation_manifest: ContentObjectRef | None = None,
         provider: DistributionSource | None = None,
         target: AttemptTarget = LOCAL_TARGET,
+        execution_evidence: ContentObjectRef | None = None,
     ) -> PublishedSuccess:
         """Commit an accepted attempt using its pinned bindings, including on replay."""
         return self._publish(
             request, attempt, products, bindings=bindings, continuation=continuation, recovery=recovery,
             evaluation_manifest=evaluation_manifest, provider=provider, target=target,
+            execution_evidence=execution_evidence,
         )
 
     def _publish(
@@ -429,7 +431,10 @@ class SuccessView:
         evaluation_manifest: ContentObjectRef | None = None,
         provider: DistributionSource | None = None,
         target: AttemptTarget = LOCAL_TARGET,
+        execution_evidence: ContentObjectRef | None = None,
     ) -> PublishedSuccess:
+        from feedbax.validity.evidence import read_staged_evidence, release_staged_evidence, verify_execution_replay
+
         with self.store._exclusive_lock():
             if existing := self._index.attempts.get(attempt):
                 if bindings is None:
@@ -441,8 +446,12 @@ class SuccessView:
                     published.receipt.provider, published.receipt.target,
                 ) != (request, products, bindings, continuation, recovery, evaluation_manifest, provider, target):
                     raise ValueError("Published attempt has different request, bindings, or products")
+                verify_execution_replay(published.receipt, execution_evidence)
                 self.ensure_published_run_ref(existing, published.receipt)
                 return published
+            evidence = None if execution_evidence is None else read_staged_evidence(
+                self.store, attempt, execution_evidence,
+            )
             if bindings is None:
                 effective, inputs = self.bind(request)
             else:
@@ -471,6 +480,8 @@ class SuccessView:
                 recovery=recovery,
                 evaluation_manifest=evaluation_manifest,
                 provider=provider,
+                trace=evidence.trace if evidence is not None else None,
+                provenance=evidence.provenance if evidence is not None else None,
             )
             if evaluation_manifest is not None:
                 verify_evaluation_success_evidence(self.store, receipt)
@@ -497,6 +508,8 @@ class SuccessView:
             self._check_run_predecessor(request.id, ref, previous)
             self._commit_index(updated)
             self._publish_run_ref(request.id, StoreClosureRef(roots=(ReceiptRoot(receipt=ref),)), previous=previous)
+            if evidence is not None:
+                release_staged_evidence(self.store, attempt)
         return PublishedSuccess(ref, receipt)
 
     def _commit_index(self, updated: SuccessIndex) -> None:

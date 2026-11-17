@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.computation_validity import ComputationTrace
 from feedbax.contracts.request_refs import Name, ReferenceValue, Sha256
 
 
@@ -73,7 +74,9 @@ class CodeTrace(ReferenceValue):
     files: tuple[FileSnapshot, ...]
     environment: dict[Name, Name]
     indeterminate: tuple[SourcePath, ...]
+    indeterminate_files: tuple[SourcePath, ...] = Field(default=(), exclude_if=lambda value: not value)
     prefixes: tuple[ContentObjectRef, ...] = Field(default=(), exclude_if=lambda value: not value)
+    computation: ComputationTrace | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class AttemptProvenance(ReferenceValue):

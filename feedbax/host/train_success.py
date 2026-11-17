@@ -30,6 +30,7 @@ def publish_train_success(
     store_root: Path, attempt: str, request_id: str, launch: dict, outcome: dict,
     predecessor: tuple[dict, dict] | None, *, collected: TrainJobEntry | None = None,
     target: AttemptTarget = LOCAL_TARGET,
+    execution_evidence: ContentObjectRef | None = None,
 ) -> dict:
     """Use only the accepted completion and the producer pinned at Host delivery."""
     completion = outcome["completion"]
@@ -126,6 +127,7 @@ def publish_train_success(
         published = view.publish_bound(
             request, attempt=attempt, products=products, bindings=bindings,
             continuation=continuation, recovery=recovery, provider=provider, target=target,
+            execution_evidence=execution_evidence,
         )
     return published.ref.model_dump(mode="json")
 

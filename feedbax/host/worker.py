@@ -1,5 +1,6 @@
 """Detached worker that accepts each delivery before touching its payload."""
 
+from contextlib import nullcontext
 import importlib
 import json
 import os
@@ -10,7 +11,8 @@ import time
 import traceback
 from pathlib import Path
 
-from .io import TOKEN_ENV, append, encode, receive, write_json
+from .io import EVIDENCE_FILE, TOKEN_ENV, append, encode, receive, write_json
+from .launcher import _outcome
 from .protocol import MAX_RPC_BYTES
 
 
@@ -53,6 +55,16 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
     profile = json.loads(Path(profile_path).read_text())
     control = socket.socket(fileno=int(control_fd))
     report = int(report_fd)
+    recorder = None
+    if project := profile.get("project_root"):
+        from feedbax.validity.recording import WorkerRecorder
+
+        recorder = WorkerRecorder(Path(project))
+    with (recorder.monitor() if recorder is not None else nullcontext()):
+        return _serve(profile, control, report, recorder)
+
+
+def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
     entrypoint, import_error = None, None
     try:
         for module in profile["preload"]:
@@ -62,7 +74,9 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
             entrypoint = getattr(importlib.import_module(module_name), function)
     except Exception as error:  # noqa: BLE001 -- foreign executor boundary
         import_error = (error, traceback.format_exc())
-    snapshots = _sources()
+    snapshots = _sources() if recorder is None else None
+    if recorder is not None:
+        recorder.note_preloaded_sources()
     reusable = profile.get("light_affinity") is not None
     with control:
         while True:
@@ -71,11 +85,11 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
                 message = receive(control, MAX_RPC_BYTES)
             except (OSError, EOFError):
                 return 0
-            if _sources_changed(snapshots):
+            if (recorder.changed() if recorder is not None else _sources_changed(snapshots)):
                 return 0
             if not reusable:
                 control.close()
-            status = _execute(message, report, entrypoint, import_error, reusable=reusable)
+            status = _execute(message, report, entrypoint, import_error, reusable=reusable, recorder=recorder)
             if not reusable:
                 return status
             sys.stdout.flush()
@@ -83,10 +97,11 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
             os.write(report, encode({"status": status}))
             if import_error is not None:
                 return status
-            snapshots |= {path: info for path, info in _sources().items() if path not in snapshots}
+            if snapshots is not None:
+                snapshots |= {path: info for path, info in _sources().items() if path not in snapshots}
 
 
-def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: bool) -> int:
+def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: bool, recorder) -> int:
     paths = message["paths"]
     log = Path(paths["event_log"])
     os.write(report, encode({"event_log": str(log)}))
@@ -154,7 +169,9 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
         argv = message["argv"]
         if entrypoint is None:
             os.execvpe(argv[0], argv, os.environ)
-        return int(entrypoint(argv[1:]) or 0)
+        if recorder is None:
+            return int(entrypoint(argv[1:]) or 0)
+        return _record_execution(message, recorder, log, entrypoint, argv[1:])
     except Exception as error:  # noqa: BLE001 -- foreign executor boundary
         traceback.print_exc()
         append(
@@ -167,6 +184,30 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
                     "message": str(error),
                 },
             },
+            sync=True,
+        )
+        return 1
+
+
+def _record_execution(message, recorder, log: Path, entrypoint, argv) -> int:
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.validity.environment import EnvironmentMismatch
+    from feedbax.validity.evidence import stage_evidence
+
+    root = Path(message["store_root"])
+    try:
+        with recorder.delivery(message["job_id"], root, log.parent):
+            status = int(entrypoint(argv) or 0)
+            if status == 0 and _outcome(log, status, require_result=True)["outcome"] == "succeeded":
+                store = ImmutableArtifactBlobProvider(root)
+                with store._exclusive_lock():
+                    evidence = recorder.snapshot(store)
+                    ref = stage_evidence(store, evidence)
+                write_json(log.with_name(EVIDENCE_FILE), ref.model_dump(mode="json"))
+            return status
+    except EnvironmentMismatch as error:
+        append(
+            log, "result", {"outcome": "failed", "error": {"code": "environment_lock_mismatch", "message": str(error)}},
             sync=True,
         )
         return 1

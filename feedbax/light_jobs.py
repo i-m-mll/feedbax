@@ -301,6 +301,7 @@ def publish_light_success(
     checkpoint_bindings: tuple[dict, ...] = (),
     provider: object = None,
     target: AttemptTarget = LOCAL_TARGET,
+    execution_evidence: ContentObjectRef | None = None,
 ) -> dict:
     """Bind the same exact inputs independently and commit the Host-accepted attempt."""
     from feedbax.host.model_checkpoint_input import bind_managed_inputs
@@ -333,6 +334,7 @@ def publish_light_success(
             success = view.publish_bound(
                 delivery.request, attempt=job_id, products=result, bindings=bindings,
                 provider=provider_trace, target=target,
+                execution_evidence=execution_evidence,
             )
         store.release_root(root_id)
     return success.ref.model_dump(mode="json")

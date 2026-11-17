@@ -9,9 +9,9 @@ from copy import copy
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
-from hashlib import sha256
+from hashlib import file_digest, sha256
 from importlib import metadata
-from os import stat_result
+from os import path as os_path, stat_result
 from pathlib import Path
 import stat
 import symtable
@@ -39,6 +39,7 @@ class SourceCatalog:
 
     def __init__(self, roots: Mapping[str, Path]):
         self._files: dict[Path, tuple[tuple[int, int], SourceFile]] = {}
+        self._digests: dict[Path, tuple[tuple[int, int], str]] = {}
         self.set_roots(roots)
 
     def set_roots(self, roots: Mapping[str, Path]) -> None:
@@ -48,17 +49,43 @@ class SourceCatalog:
         ))
 
     def locate(self, path: Path) -> SourcePath | None:
-        path = path.resolve()
+        named = Path(os_path.abspath(path))
+        target = named.resolve()
+        if not any(target.is_relative_to(root) for root in self.roots.values()):
+            return None
         for name, root in self.roots.items():
-            if path != root and path.is_relative_to(root):
-                return SourcePath(scope=name, path=path.relative_to(root).as_posix())
+            if named != root and named.is_relative_to(root):
+                return SourcePath(scope=name, path=named.relative_to(root).as_posix())
+        for name, root in self.roots.items():
+            if target != root and target.is_relative_to(root):
+                return SourcePath(scope=name, path=target.relative_to(root).as_posix())
         return None
 
     def resolve(self, source: SourcePath) -> Path | None:
         if (root := self.roots.get(source.scope)) is None:
             return None
         path = (root / source.path).resolve()
-        return path if path.is_relative_to(root) else None
+        return path if any(path.is_relative_to(item) for item in self.roots.values()) else None
+
+    def file_digest(self, source: SourcePath) -> str | None:
+        path = self.resolve(source)
+        if path is None:
+            return None
+        try:
+            metadata = path.stat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        stamp = _stamp(metadata)
+        if (cached := self._digests.get(path)) is not None and cached[0] == stamp:
+            return cached[1]
+        with path.open("rb") as stream:
+            digest = file_digest(stream, "sha256").hexdigest()
+        if _stamp(path.stat()) != stamp or self.resolve(source) != path:
+            raise OSError(f"File changed while it was read: {source.scope}/{source.path}")
+        self._digests[path] = stamp, digest
+        return digest
 
     def read(self, source: SourcePath) -> SourceFile | None:
         path = self.resolve(source)
@@ -99,9 +126,10 @@ class SourceCatalog:
 def plugin_packages() -> dict[str, str]:
     """Read declared plugin package owners without importing their packages."""
     return {
-        entry.value: canonicalize_name(entry.dist.name)
+        entry.value: distribution
         for entry in metadata.entry_points(group="feedbax.plugins")
-        if entry.dist is not None and entry.dist.name and entry.value != "feedbax"
+        if entry.dist is not None and entry.dist.name
+        and (distribution := canonicalize_name(entry.dist.name)) != "feedbax"
     }
 
 
