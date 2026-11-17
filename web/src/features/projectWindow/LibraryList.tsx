@@ -1,7 +1,8 @@
 import { Search } from 'lucide-react';
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { ListRow } from '@/components/ui/ListRow';
 import { TextField } from '@/components/ui/TextField';
+import { studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { DrawerSection, type DrawerSections } from './DrawerForms';
 import type { ProjectWindowSection } from './projectWindowState';
 
@@ -19,7 +20,8 @@ export interface LibraryListProps {
   sections: DrawerSections;
   /** The key of the section that holds the list; its groups are kept under it. */
   section: ProjectWindowSection;
-  searchLabel: string;
+  /** Names the search field. */
+  searchName: StudioNameId;
   selected?: string;
   /** A click or the arrow keys: the item is shown, not placed. */
   onInspect: (id: string) => void;
@@ -34,8 +36,9 @@ function matches(item: LibraryItem, query: string) {
 }
 
 /** A drawer's catalog: a search field and groups of rows, folded until opened or searched. */
-export function LibraryList({ items, sections, section, searchLabel, selected, onInspect, onPlace, dragType }: LibraryListProps) {
+export function LibraryList({ items, sections, section, searchName, selected, onInspect, onPlace, dragType }: LibraryListProps) {
   const [query, setQuery] = useState('');
+  const names = useId();
   const [focused, setFocused] = useState<string>();
   const rows = useRef(new Map<string, HTMLDivElement>());
   const search = query.trim().toLowerCase();
@@ -70,11 +73,11 @@ export function LibraryList({ items, sections, section, searchLabel, selected, o
 
   return <>
     <div className="p-1">
-      <TextField aria-label={searchLabel} leading={<Search />} value={query} onValueChange={setQuery} />
+      <TextField aria-label={studioName(searchName)} leading={<Search />} value={query} onValueChange={setQuery} />
     </div>
-    {[...groups].map(([group, list]) => <DrawerSection key={group} sections={sections} id={groupKey(group)}
-        name={group} count={list.length} initially={false} forceOpen={!!search} nested>
-        <div role="listbox" aria-label={group} className="grid gap-px p-1">
+    {[...groups].map(([group, list], index) => <DrawerSection key={group} sections={sections} id={groupKey(group)}
+        name={group} nameId={`${names}-${index}`} count={list.length} initially={false} forceOpen={!!search} nested>
+        <div role="listbox" aria-labelledby={`${names}-${index}`} className="grid gap-px p-1">
           {list.map((item) => <ListRow key={item.id} role="option" depth={1} name={item.name} glyph={item.glyph}
             ref={(element) => {
               if (element) rows.current.set(item.id, element);
