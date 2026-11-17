@@ -326,11 +326,10 @@ def test_retired_train_envelope_is_refused():
 def test_shared_spec_keeps_canonical_error_order_and_paths():
     authored = next(row["spec"] for row in _read_corpus() if row["kind"] == "render")
     spec = RenderRequestSpec.model_validate_json(json.dumps(authored))
-    malformed = spec.model_copy(
-        update={
-            "document": spec.document.model_copy(update={"caption": chr(0xD800)}),
-        }
-    )
+    panel = spec.document.layout[0].model_copy(update={"name": chr(0xD800)})
+    malformed = spec.model_copy(update={
+        "document": spec.document.model_copy(update={"layout": (panel,)}),
+    })
     member = InputMember.model_construct(
         key=chr(0xD800),
         reference=ProductRef(request_id="train:" + "a" * 64, role="checkpoint"),
@@ -338,7 +337,7 @@ def test_shared_spec_keeps_canonical_error_order_and_paths():
     with pytest.raises(CanonicalJsonError) as error:
         encode_request(malformed, {"initial": (member,)})
     assert error.value.code == CanonicalJsonErrorCode.LONE_SURROGATE
-    assert error.value.path == "/spec/document/caption"
+    assert error.value.path == "/spec/document/layout/0/name"
 
     with pytest.raises(CanonicalJsonError) as error:
         encode_request(spec, {"initial": (member,)})

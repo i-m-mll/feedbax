@@ -29,6 +29,7 @@ class StudioJobLifecycle:
         self, disposition: StopDisposition, timeout_seconds: float = 30
     ) -> dict:
         if disposition == "interrupt":
+            self._closing = True
             return await self._stop_runtime(disposition, timeout_seconds)
         async with self._lock:
             return await self._stop_runtime(disposition, timeout_seconds)

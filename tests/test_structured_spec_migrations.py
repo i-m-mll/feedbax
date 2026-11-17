@@ -321,13 +321,11 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
     spec_kinds = {
         "GraphSpec",
         "PopulationStructureSpec",
-        "AnalysisDataProductRequirement",
         "VariableDescriptor",
         "ComponentDescriptor",
         "DescriptorBasisIdentity",
         "EvaluationRunSpec",
         "PathExpression",
-        "ExtractionProductSpec",
         "StudioApiTransport",
         "StudioTaskBindingSpec",
     }
@@ -338,7 +336,6 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ArrayStorePayload",
         "ArrayRecord",
         "TrainingRunManifest",
-        "AnalysisDataProduct",
         "WorkspaceReplayProduct",
     }
 
