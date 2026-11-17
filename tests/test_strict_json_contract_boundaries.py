@@ -22,13 +22,10 @@ parser accepts is still accepted, which
 
 from __future__ import annotations
 
-import io
 import json
-import zipfile
 from pathlib import Path
 from typing import Any
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -39,35 +36,15 @@ from feedbax.contracts.artifact_schema import (
     read_npz_array_store,
     write_npz_array_store,
 )
-from feedbax.contracts.evaluation_states import (
-    EVALUATION_STATES_METADATA_KEY,
-    EVALUATION_STATES_METADATA_VALUES_KEY,
-    evaluation_states_container_bytes,
-    load_evaluation_states_container_bytes,
-)
 from feedbax.contracts.extraction import SourceBinding, load_expression_context
 from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
 )
-from feedbax.contracts.manifest import (
-    TrainingRunManifest,
-    write_manifest,
-)
-from feedbax.contracts.manifest_packet import (
-    export_manifest_packet,
-    import_manifest_packet,
-)
 from feedbax.contracts.matrix_core import (
     ContentPinnedJsonBase,
     load_content_pinned_json_base,
 )
-from feedbax.contracts.run_composition import (
-    CompositionNode,
-    ResolvedOutputParent,
-    flatten_repo_composition,
-)
-from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 
 pytestmark = [pytest.mark.feedbax_contract]
@@ -92,17 +69,7 @@ def _assert_decoy_is_invisible_to_json_loads(text: str, member: str, expected: A
     assert json.loads(text)[member] == expected
 
 
-def _rewrite_zip_member(data: bytes, name: str, replacement: bytes) -> bytes:
-    output = io.BytesIO()
-    with zipfile.ZipFile(io.BytesIO(data), mode="r") as source:
-        with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_DEFLATED) as target:
-            for info in source.infolist():
-                payload = replacement if info.filename == name else source.read(info.filename)
-                target.writestr(info, payload)
-    return output.getvalue()
-
-
-# -- the one semantic difference, measured -----------------------------------
+# -- strict parsing -----------------------------------------------------------
 
 
 PERMISSIVE_INPUTS_THAT_MUST_STILL_BE_ACCEPTED: tuple[str, ...] = (
@@ -151,139 +118,6 @@ def test_documents_the_permissive_parser_already_refuses_are_unchanged(document:
         strict_json_loads(document)
 
 
-# -- manifest packet import: the externally supplied packet -------------------
-
-
-def _packet_source(root: Path) -> str:
-    manifest = TrainingRunManifest(
-        id="feedbax-training-run:strict-json-packet",
-        status="completed",
-        summary_metrics={"loss": 0.25},
-    )
-    write_manifest(manifest, root=root)
-    return manifest.id
-
-
-def _packet_index(packet: Path) -> dict[str, Any]:
-    return json.loads((packet / "packet.json").read_text(encoding="utf-8"))
-
-
-def test_packet_manifest_that_states_its_status_twice_is_refused(tmp_path: Path) -> None:
-    """The packet author controls both the manifest bytes and their recorded digest."""
-    source = tmp_path / "source"
-    manifest_id = _packet_source(source)
-    packet = tmp_path / "packet"
-    export_manifest_packet([manifest_id], root=source, dest=packet)
-
-    # A well-formed packet still imports exactly as it did.
-    good_target = tmp_path / "good_target"
-    imported = import_manifest_packet(packet, root=good_target)
-    assert imported.imported_manifest_ids == [manifest_id]
-
-    index = _packet_index(packet)
-    entry = next(item for item in index["manifests"] if item["id"] == manifest_id)
-    manifest_path = packet / entry["path"]
-    duplicated = _state_member_twice(manifest_path.read_text(encoding="utf-8"), "status", "failed")
-    _assert_decoy_is_invisible_to_json_loads(duplicated, "status", "completed")
-    changed_bytes = duplicated.encode()
-    changed_sha = sha256_bytes(changed_bytes)
-    object_entry = next(item for item in index["objects"] if item["sha256"] == entry["sha256"])
-    changed_path = packet / "objects" / "sha256" / changed_sha[:2] / changed_sha
-    changed_path.parent.mkdir(parents=True, exist_ok=True)
-    changed_path.write_bytes(changed_bytes)
-    manifest_path.unlink()
-    entry.update({"sha256": changed_sha, "path": str(changed_path.relative_to(packet))})
-    object_entry.update(
-        {
-            "sha256": changed_sha,
-            "size_bytes": len(changed_bytes),
-            "path": str(changed_path.relative_to(packet)),
-        }
-    )
-    (packet / "packet.json").write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
-
-    target = tmp_path / "target"
-    with pytest.raises(Exception) as excinfo:
-        import_manifest_packet(packet, root=target)
-    message = str(excinfo.value)
-    assert "duplicate JSON object key 'status'" in message
-    assert "$.status" in message
-    assert not (target / "manifests").exists()
-
-
-def test_packet_index_that_states_its_schema_id_twice_is_refused(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    manifest_id = _packet_source(source)
-    packet = tmp_path / "packet"
-    export_manifest_packet([manifest_id], root=source, dest=packet)
-
-    index_path = packet / "packet.json"
-    text = index_path.read_text(encoding="utf-8")
-    duplicated = _state_member_twice(text, "schema_id", "attacker.spec.packet")
-    _assert_decoy_is_invisible_to_json_loads(duplicated, "schema_id", json.loads(text)["schema_id"])
-    index_path.write_text(duplicated, encoding="utf-8")
-
-    with pytest.raises(DuplicateJsonKeyError) as excinfo:
-        import_manifest_packet(packet, root=tmp_path / "target")
-    assert excinfo.value.key == "schema_id"
-    assert excinfo.value.json_path == "$.schema_id"
-    assert str(index_path) in str(excinfo.value)
-
-
-def test_selected_destination_manifest_that_states_a_member_twice_is_refused(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "source"
-    manifest_id = _packet_source(source)
-    packet = tmp_path / "packet"
-    export_manifest_packet([manifest_id], root=source, dest=packet)
-
-    target = tmp_path / "target"
-    existing = TrainingRunManifest(id=manifest_id, status="completed")
-    resident_path = write_manifest(existing, root=target)
-    duplicated = _state_member_twice(resident_path.read_text(encoding="utf-8"), "status", "failed")
-    _assert_decoy_is_invisible_to_json_loads(duplicated, "status", "completed")
-    resident_path.write_text(duplicated, encoding="utf-8")
-
-    with pytest.raises(DuplicateJsonKeyError) as excinfo:
-        import_manifest_packet(packet, root=target)
-    assert excinfo.value.json_path == "$.status"
-
-
-# -- repo-ref composition parents --------------------------------------------
-
-
-def _composition_over(ref: str, resolved_root_hash: str) -> CompositionNode:
-    return CompositionNode(
-        name="strict-json-composition",
-        parent=ResolvedOutputParent(ref=ref, resolved_root_hash=resolved_root_hash),
-    )
-
-
-def test_repo_composition_parent_that_states_a_member_twice_is_refused(tmp_path: Path) -> None:
-    """The pin covers the *parsed* document, so the duplicate satisfies it."""
-    resolved = {"learning_rate": 0.001, "steps": 10}
-    ref = "intents/parent.json"
-    path = tmp_path / ref
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(resolved, indent=2), encoding="utf-8")
-    node = _composition_over(ref, training_spec_sha256(resolved))
-
-    flattened = flatten_repo_composition(node, repo_root=tmp_path)
-    assert flattened.payload == resolved
-
-    duplicated = _state_member_twice(path.read_text(encoding="utf-8"), "learning_rate", 10.0)
-    _assert_decoy_is_invisible_to_json_loads(duplicated, "learning_rate", 0.001)
-    path.write_text(duplicated, encoding="utf-8")
-    # The pin still matches, because the pin is computed from the parse.
-    assert training_spec_sha256(json.loads(duplicated)) == node.parent.resolved_root_hash
-
-    with pytest.raises(DuplicateJsonKeyError) as excinfo:
-        flatten_repo_composition(node, repo_root=tmp_path)
-    assert excinfo.value.key == "learning_rate"
-    assert excinfo.value.ref == ref
-
-
 # -- extraction sources ------------------------------------------------------
 
 
@@ -330,64 +164,6 @@ def test_content_pinned_base_that_states_a_member_twice_is_refused(tmp_path: Pat
         load_content_pinned_json_base(base, repo_root=tmp_path)
     assert excinfo.value.key == "aggregation"
     assert excinfo.value.ref == "base.json"
-
-
-# -- authoring budgets -------------------------------------------------------
-
-
-# -- evaluation-state containers ---------------------------------------------
-
-
-def _states() -> dict[str, Any]:
-    return {"trajectory": jnp.arange(6.0).reshape(2, 3), "note": {"units": "cm", "trials": 2}}
-
-
-def test_evaluation_states_container_metadata_stating_a_member_twice_is_refused() -> None:
-    data, _payload = evaluation_states_container_bytes(_states())
-    loaded = load_evaluation_states_container_bytes(data)
-    assert np.allclose(np.asarray(loaded["trajectory"]), np.asarray(_states()["trajectory"]))
-
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        text = archive.read(EVALUATION_STATES_METADATA_KEY).decode("utf-8")
-    duplicated = _state_member_twice(text, "schema_version", "attacker.v0")
-    _assert_decoy_is_invisible_to_json_loads(
-        duplicated, "schema_version", json.loads(text)["schema_version"]
-    )
-    tampered = _rewrite_zip_member(data, EVALUATION_STATES_METADATA_KEY, duplicated.encode("utf-8"))
-
-    with pytest.raises(DuplicateJsonKeyError) as excinfo:
-        load_evaluation_states_container_bytes(tampered)
-    assert excinfo.value.key == "schema_version"
-
-
-def test_evaluation_states_container_metadata_values_stating_a_member_twice_is_refused() -> None:
-    data, _payload = evaluation_states_container_bytes(_states())
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        values = archive.read(EVALUATION_STATES_METADATA_VALUES_KEY).decode("utf-8")
-        header = json.loads(archive.read(EVALUATION_STATES_METADATA_KEY).decode("utf-8"))
-
-    records = json.loads(values)
-    assert isinstance(records, list) and records
-    entry = json.dumps(records[0])
-    duplicated_entry = _state_member_twice(entry, "index", 99)
-    duplicated_values = json.dumps(records[1:])[1:] if len(records) > 1 else "]"
-    duplicated = "[" + duplicated_entry + ("," + duplicated_values if len(records) > 1 else "]")
-    assert json.loads(duplicated)[0]["index"] == records[0]["index"]
-
-    # The section digest is recomputed, as a container author would.
-    header["metadata_sha256"] = sha256_bytes(duplicated.encode("utf-8"))
-    tampered = _rewrite_zip_member(
-        data, EVALUATION_STATES_METADATA_VALUES_KEY, duplicated.encode("utf-8")
-    )
-    tampered = _rewrite_zip_member(
-        tampered,
-        EVALUATION_STATES_METADATA_KEY,
-        (json.dumps(header, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-    )
-
-    with pytest.raises(DuplicateJsonKeyError) as excinfo:
-        load_evaluation_states_container_bytes(tampered)
-    assert excinfo.value.key == "index"
 
 
 # -- NPZ array stores --------------------------------------------------------

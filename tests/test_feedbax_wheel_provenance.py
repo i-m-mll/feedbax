@@ -115,7 +115,7 @@ import sys
 
 sys.path.append(sys.argv[1])
 import feedbax
-import feedbax.analysis.exact_parents
+from feedbax import pca
 import feedbax.models.cde as cde
 import feedbax.models.feedback as feedback
 from feedbax.orchestration.revision import assert_feedbax_revision_exact, resolve_feedbax_revision
@@ -129,7 +129,7 @@ assert "feedbax.aligned_velocity" in registry.operations.keys()
 assert "feedbax.VelocitySummary" in registry.figure_templates.keys()
 print(json.dumps({
     "package_root": str(Path(feedbax.__file__).resolve().parent),
-    "models": [str(Path(module.__file__).resolve()) for module in (cde, feedback)],
+    "models": [str(Path(module.__file__).resolve()) for module in (cde, feedback, pca)],
     "revision": resolve_feedbax_revision(),
 }))
 """

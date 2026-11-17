@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import tempfile
 from collections.abc import Callable, Sequence
@@ -20,12 +21,14 @@ from feedbax.contracts.artifact_custody import (
     ContentTree,
     ContentTreeRef,
 )
-from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
     copy_content_file,
     verify_content_file,
 )
+
+
+_BINDING_NAME = re.compile(r"[a-z][a-z0-9_.-]*")
 
 
 class InputMaterializationError(ValueError):
@@ -100,8 +103,10 @@ def compile_content_input_projection(
     objects = {ref.descriptor.sha256: ref.descriptor for ref in tree_claims.values()}
     descriptor_digests = set(objects)
     for binding in ordered:
-        validate_staged_binding_name(binding.root_kind)
-        validate_staged_binding_name(binding.binding_name)
+        if _BINDING_NAME.fullmatch(binding.binding_name) is None:
+            raise InputMaterializationError(
+                f"invalid content binding name: {binding.binding_name!r}"
+            )
         if binding.root_kind not in {
             "artifact-provider",
             "checkpoint-custody",
