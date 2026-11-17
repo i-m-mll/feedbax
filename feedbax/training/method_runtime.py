@@ -155,7 +155,7 @@ class TrainingContext[S: BaseModel]:
         return build_step_optimizer(spec, gradient_clip=gradient_clip)
 
     def optimizer_step[AuxT](
-        self, optimizer: optax.GradientTransformationExtraArgs, model: Graph, state: optax.OptState,
+        self, optimizer: optax.GradientTransformation, model: Graph, state: optax.OptState,
         loss_fn: Callable[[Graph], tuple[jax.Array, AuxT]],
     ) -> OptimizerStep[AuxT]:
         """Differentiate the loss on learned graph parameters, then project constraints."""
@@ -168,7 +168,8 @@ class TrainingContext[S: BaseModel]:
             return loss_fn(eqx.combine(values, frozen))
 
         (loss, aux), grads = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)(trainable)
-        updates, state = optimizer.update(grads, state, trainable, schedule_step=self.step - self.start_step)
+        update = optax.with_extra_args_support(optimizer).update
+        updates, state = update(grads, state, trainable, schedule_step=self.step - self.start_step)
         model = apply_parameter_constraints(eqx.combine(eqx.apply_updates(trainable, updates), frozen))
         return OptimizerStep(model, state, loss, aux, optax.global_norm(grads))
 
