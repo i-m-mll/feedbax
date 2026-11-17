@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
 from typing import Annotated, Literal
 
 import jax
@@ -10,13 +11,14 @@ import numpy as np
 from pydantic import Field
 
 from feedbax.analysis.aligned import project_onto_direction
-from feedbax.analysis.operations import DatasetOutput, OperationRegistry
+from feedbax.analysis.operations import DatasetOutput, OperationDeclaration, OperationRegistry, operation
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields
 from feedbax.dataset import Dataset, Variable
 from feedbax.dataset_sweep import CONDITION_MEMBER, CONDITION_PROVENANCE
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA
+from feedbax.plugins.declarations import DistributionSource, callable_declaration
 
 
 _MEMBER_AXES = ("checkpoint", "condition", "trial")
@@ -139,6 +141,7 @@ def _product(port: DatasetPort, source: Dataset, arrays) -> Dataset:
     )
 
 
+@operation(settings=AlignedVelocityParameters, key="feedbax.aligned_velocity", label="Aligned velocity")
 def aligned_velocity(
     states: Annotated[Dataset, _STATES],
     params: AlignedVelocityParameters,
@@ -189,6 +192,7 @@ def _summarize_trials(values, ddof, bounds_scale):
     }
 
 
+@operation(settings=VelocitySummaryParameters, key="feedbax.summarize_velocity", label="Trial summary")
 def summarize_velocity(
     velocity: Annotated[Dataset, _VELOCITY],
     params: VelocitySummaryParameters,
@@ -205,5 +209,8 @@ def summarize_velocity(
 
 
 def register_builtin_operations(registry: OperationRegistry) -> None:
-    registry.register("feedbax.aligned_velocity", aligned_velocity, label="Aligned velocity", owner="feedbax")
-    registry.register("feedbax.summarize_velocity", summarize_velocity, label="Trial summary", owner="feedbax")
+    source = DistributionSource("feedbax", "feedbax", version("feedbax"))
+    for function in (aligned_velocity, summarize_velocity):
+        declaration = callable_declaration(function)
+        assert isinstance(declaration, OperationDeclaration) and declaration.key is not None
+        registry.register_declaration(function, declaration, key=declaration.key, source=source)

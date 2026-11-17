@@ -1,6 +1,7 @@
-"""Portable discovery of pure operations and their labelled dataset ports."""
+"""Portable discovery of operations and their typed ports."""
 
 from collections.abc import Mapping
+from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue
 
@@ -18,18 +19,44 @@ class DatasetPort(StrictModel):
     coordinates: dict[str, FieldDescriptor] = Field(default_factory=dict)
 
 
+class DatasetInputPort(DatasetPort):
+    kind: Literal["dataset"] = "dataset"
+
+
+class ModelPort(StrictModel):
+    kind: Literal["model"] = "model"
+
+
+class TaskPort(StrictModel):
+    kind: Literal["task"] = "task"
+
+
+OperationInputPort = Annotated[DatasetInputPort | ModelPort | TaskPort, Field(discriminator="kind")]
+
+
+class JaxOperation(StrictModel):
+    """The numerical worker required to execute an operation."""
+
+    backend: Literal["cpu", "gpu"]
+    floating_point_bits: Literal[32, 64]
+
+
 class OperationDefinition(StrictModel):
     """Data needed to discover, wire, and author a registered operation."""
 
     key: str
     owner: str
+    owner_version: str
+    revision: int = Field(ge=1)
+    renamed_from: tuple[str, ...] = ()
     label: str
     description: str
     param_schema: list[ParamSchema]
     parameter_json_schema: dict[str, JsonValue]
     static_parameters: tuple[str, ...]
-    inputs: dict[str, DatasetPort]
+    inputs: dict[str, OperationInputPort]
     outputs: dict[str, DatasetPort]
+    numerical: JaxOperation | None = None
 
 
 def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> None:
