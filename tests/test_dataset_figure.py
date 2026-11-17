@@ -9,9 +9,8 @@ from plotly.offline import get_plotlyjs
 import pytest
 from pydantic import ValidationError
 
-from feedbax.analysis.builtin_operations import register_builtin_operations
 from feedbax.analysis.figure_presets import velocity_summary_figure
-from feedbax.analysis.operations import OperationRegistry
+from feedbax.plugins.composition import load_application
 from feedbax.analysis.report_document import render as render_report
 from feedbax.contracts.figure_document import (
     FigureDocument,
@@ -35,8 +34,7 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
     monkeypatch,
 ):
     document = velocity_summary_figure()
-    registry = OperationRegistry()
-    register_builtin_operations(registry)
+    registry = load_application().bundle.operations
     port = registry.resolve("feedbax.summarize_velocity").definition.outputs["summary"]
     validate_figure_bindings(document, {"summary": port})
 
@@ -157,8 +155,7 @@ def test_report_shares_repeated_figure_content_and_checks_omissions_before_rende
 def test_unknown_band_channel_is_refused_against_the_operation_declaration():
     document = velocity_summary_figure().model_dump(mode="json")
     document["layers"][0]["encode"]["upper"] = "missing_upper"
-    registry = OperationRegistry()
-    register_builtin_operations(registry)
+    registry = load_application().bundle.operations
     port = registry.resolve("feedbax.summarize_velocity").definition.outputs["summary"]
     with pytest.raises(ValueError, match="trial-summary.*upper.*missing_upper"):
         validate_figure_bindings(FigureDocument.model_validate(document), {"summary": port})

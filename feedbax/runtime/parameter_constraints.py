@@ -8,7 +8,7 @@ from typing import Any, Callable
 import equinox as eqx
 import jax.numpy as jnp
 
-from feedbax.runtime.components import GRU, LSTM, LinearLayer
+from feedbax.builtins.runtime.components import GRU, LSTM, LinearLayer
 from feedbax.contracts.graph import ParameterConstraintSpec
 from feedbax.runtime.graph import Graph, GraphNode
 

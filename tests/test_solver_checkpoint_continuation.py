@@ -19,7 +19,7 @@ from feedbax.mechanics import DiffraxBackend, Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE
-from feedbax.runtime.filters import LowPassFilter
+from feedbax.builtins.runtime.filters import LowPassFilter
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.state import CartesianState
 

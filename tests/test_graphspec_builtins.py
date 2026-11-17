@@ -11,11 +11,11 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from feedbax.runtime.feedback import SelectState
-from feedbax.runtime.channel import Channel, toggle_channel_noise
+from feedbax.builtins.runtime.feedback import SelectState
+from feedbax.builtins.runtime.channel import Channel, toggle_channel_noise
 from feedbax.component_registry import ComponentRegistry
-from feedbax.runtime.affine_composer import AffineValueComposer
-from feedbax.runtime.components import Demux, ElementwiseAffineModulator
+from feedbax.builtins.runtime.affine_composer import AffineValueComposer
+from feedbax.builtins.runtime.components import Demux, ElementwiseAffineModulator
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -28,7 +28,7 @@ from feedbax.runtime.iteration import run_component
 from feedbax.runtime.task_bindings import (
     expose_task_inputs,
 )
-from feedbax.mechanics.force_fields import (
+from feedbax.builtins.mechanics.force_fields import (
     CurlField,
     CurlFieldParams,
     DynamicsMatrixPerturb,

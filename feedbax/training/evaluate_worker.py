@@ -238,7 +238,7 @@ def rollout_dataset(
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.dataset import Dataset, Variable
     from feedbax.runtime.raw_state import scene_position_key
-    from feedbax.tasks.reaching import is_world_target
+    from feedbax.builtins.reaching import is_world_target
 
     paired, variant, graph = prepared.paired, prepared.variant, prepared.graph
     effective_graph = paired.executable.resolved.graph

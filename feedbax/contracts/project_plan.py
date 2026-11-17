@@ -728,11 +728,11 @@ def _integer_model_site(
 
 
 def _integer_train_site(path: str, payload: Payload, python_tasks: PythonTaskRegistry | None) -> bool:
-    from feedbax.tasks.reaching import builtin_python_tasks
+    from feedbax.tasks.registry import application_python_tasks
     from feedbax.tasks.registry import python_task_parameter_site
 
     documents = payload.get("trial_documents")
-    site = python_task_parameter_site(path, documents, python_tasks or builtin_python_tasks())
+    site = python_task_parameter_site(path, documents, python_tasks or application_python_tasks())
     if site is not None:
         return site.expected.base is ValueBase.INTEGER and not site.expected.shape
     annotation = DocumentTrainingRequestSpec
@@ -812,13 +812,13 @@ def _encode_row(
         model_source = prepared_train.model
     elif kind == "train":
         from feedbax.compiler.trial_execution import validate_python_task
-        from feedbax.tasks.reaching import builtin_python_tasks
+        from feedbax.tasks.registry import application_python_tasks
         from feedbax.contracts.request_specs import TrialDocuments
 
         try:
             authored = TrialDocuments.model_validate(payload.get("trial_documents"))
             if authored.python_task is not None:
-                resolved = validate_python_task(authored.python_task, python_tasks or builtin_python_tasks())
+                resolved = validate_python_task(authored.python_task, python_tasks or application_python_tasks())
                 if isinstance(resolved[0], Problem):
                     return _LoweredRow(None, tuple(ProjectDiagnostic(
                         ResolutionCode.INVALID_PAYLOAD,

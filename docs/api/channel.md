@@ -1,7 +1,7 @@
 # Delayed, noisy channels
 
-::: feedbax.runtime.channel.ChannelState
+::: feedbax.builtins.runtime.channel.ChannelState
 
-::: feedbax.runtime.channel.ChannelSpec
+::: feedbax.builtins.runtime.channel.ChannelSpec
 
-::: feedbax.runtime.channel.Channel
+::: feedbax.builtins.runtime.channel.Channel

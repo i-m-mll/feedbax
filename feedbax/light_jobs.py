@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 
 from pydantic import TypeAdapter, field_validator
 
-from feedbax.analysis.operations import OperationRegistry, RegisteredOperation
+from feedbax.analysis.operations import RegisteredOperation
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, render as render_report
 from feedbax.contracts.artifact_custody import (
     ContentObjectRef,
@@ -65,21 +64,14 @@ _PRODUCTS = TypeAdapter(Products)
 _ORIGINS = TypeAdapter(dict[RequestId, ContentObjectRef])
 
 
-@lru_cache(maxsize=1)
-def _operations() -> OperationRegistry:
-    from feedbax.analysis.builtin_operations import register_builtin_operations
-
-    registry = OperationRegistry()
-    register_builtin_operations(registry)
-    registry.seal()
-    return registry
-
-
 def light_operation(key: str) -> RegisteredOperation:
+    from feedbax.plugins.composition import load_application
+    from feedbax.plugins.declarations import missing_declaration
+
     try:
-        return _operations().resolve(key)
+        return load_application().bundle.operations.resolve(key)
     except KeyError as error:
-        raise ValueError(f"Unknown managed Analysis operation {key!r}") from error
+        raise ValueError(missing_declaration("operation", key)) from error
 
 
 def validate_light_request(request: DecodedRequest) -> str:
@@ -99,7 +91,7 @@ def validate_light_request(request: DecodedRequest) -> str:
         roles = spec.document.figure_roles
         output = "report"
     else:
-        raise ValueError("Expected a built-in Analysis, dataset Figure, or Report document")
+        raise ValueError("Expected an Analysis, dataset Figure, or Report document")
 
     if request.inputs.keys() != set(roles):
         raise ValueError("Managed light inputs must match the declared roles")

@@ -39,7 +39,7 @@ def selected_model(definition: SelectedRunDefinition, document: str) -> object:
 def selected_model_and_task(folders: ProjectFolder, project_id: str, body: ModelProjectionRequest):
     from feedbax.compiler.trial_execution import resolve_python_task
     from feedbax.project_folder import ProjectFolderInvalid
-    from feedbax.tasks.reaching import builtin_python_tasks
+    from feedbax.tasks.registry import application_python_tasks
 
     key = RunKey(body.run.variant, body.run.step, body.run.row)
     plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
@@ -50,7 +50,7 @@ def selected_model_and_task(folders: ProjectFolder, project_id: str, body: Model
     assert isinstance(managed, dict)
     if managed.get("python_task") is not None:
         selection = PythonTaskSelection.model_validate(managed["python_task"])
-        template = resolve_python_task(selection, folders.python_tasks or builtin_python_tasks())
+        template = resolve_python_task(selection, folders.python_tasks or application_python_tasks())
         signals = {} if isinstance(template, tuple) else template.signals
     elif managed.get("task") is not None:
         task = TaskDocument.model_validate(managed["task"])
