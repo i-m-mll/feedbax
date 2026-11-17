@@ -3,7 +3,8 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fitProjectWindow } from './projectWindowLayout';
 import {
-  defaultProjectWindowState, projectWindowSlotView, showProjectWindowView, useProjectWindowState,
+  defaultProjectWindowState, projectWindowSlotView, sectionOpen, showProjectWindowView, useProjectWindowState,
+  withSectionOpen,
 } from './projectWindowState';
 
 afterEach(() => {
@@ -44,7 +45,7 @@ describe('Studio window arrangement', () => {
     vi.stubGlobal('fetch', fetch);
     const first = renderHook(() => useProjectWindowState('one'));
     act(() => first.result.current[1]((state) => ({
-      ...showProjectWindowView(state, 'scene', 'secondary'),
+      ...withSectionOpen(showProjectWindowView(state, 'scene', 'secondary'), 'model.library', false),
       mode: 'details',
       mapHeight: 305,
       mapDrawerOpen: false,
@@ -63,6 +64,8 @@ describe('Studio window arrangement', () => {
       mapDrawerOpen: false,
       detailsDrawerWidth: 193,
     }));
+    expect(sectionOpen(reopened.result.current[0], 'model.library')).toBe(false);
+    expect(sectionOpen(reopened.result.current[0], 'model.outline')).toBe(true);
     expect(preferences.values().next().value).not.toHaveProperty('focusedSlot');
     expect(preferences.values().next().value).not.toHaveProperty('extraProjectData');
     await act(async () => reopened.rerender({ id: 'two' }));

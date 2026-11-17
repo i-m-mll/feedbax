@@ -7,6 +7,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { setAppearance } from '@/appearance/appearance';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { Button, IconButton } from '@/components/ui/Button';
+import { Card, CardHead } from '@/components/ui/Card';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Chip } from '@/components/ui/Chip';
 import { Combobox } from '@/components/ui/Combobox';
@@ -19,6 +20,8 @@ import {
 } from '@/components/ui/Menu';
 import { NumberField } from '@/components/ui/NumberField';
 import { PanelHeader } from '@/components/ui/PanelHeader';
+import { ScrollFade } from '@/components/ui/ScrollFade';
+import { Section } from '@/components/ui/Section';
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { Slider } from '@/components/ui/Slider';
@@ -30,6 +33,7 @@ import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 
 type Theme = 'light' | 'dark';
 type Density = 'compact' | 'regular';
+type CardStyle = 'quiet' | 'ring';
 
 const kinds = [
   { value: 'train', label: 'Train', glyph: <Box /> },
@@ -109,7 +113,91 @@ function TreeDemo() {
   );
 }
 
-function Section({ name, children }: { name: string; children: ReactNode }) {
+const components = ['Linear', 'GRU', 'LSTM', 'MLP', 'Noise', 'Delay', 'Arm', 'Muscles', 'Point Mass', 'Feedback'];
+
+function DrawerDemo() {
+  const [shown, setShown] = useState(true);
+  const [open, setOpen] = useState<Record<string, boolean>>({ library: true, outline: true });
+  const [selected, setSelected] = useState<string[]>(['gru']);
+  const fold = (section: string) => ({
+    open: open[section], onOpenChange: (next: boolean) => setOpen((now) => ({ ...now, [section]: next })),
+  });
+  return (
+    <div className="grid gap-2">
+      <div className="flex h-96 w-64 flex-col rounded-control border border-shell-divider" data-testid="drawer">
+        {shown ? <>
+          <Section name="Library" count={components.length} {...fold('library')}
+            actions={<IconButton size="mark" label="New Component" icon={<Plus />} />}>
+            <div className="grid gap-px p-1">
+              {components.map((name) => <ListRow key={name} tabIndex={0} name={name} glyph={<Box />} />)}
+            </div>
+          </Section>
+          <Section name="Outline" {...fold('outline')}>
+            <Tree aria-label="Outline" nodes={treeNodes(outline, {})} defaultExpanded={['model', 'encoder']}
+              selected={selected} onSelectedChange={setSelected} />
+          </Section>
+          <Section name="Exceptions" count={0} defaultOpen={false}>
+            <div className="p-2 text-sm text-shell-muted">None</div>
+          </Section>
+        </> : null}
+      </div>
+      <Button onClick={() => setShown(!shown)}>{shown ? 'Hide' : 'Show'}</Button>
+    </div>
+  );
+}
+
+const sweep = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048];
+
+function ScrollFadeDemo() {
+  return (
+    <>
+      <State name="horizontal">
+        <div className="w-72 rounded-control border border-shell-divider">
+          <ScrollFade axis="x" data-testid="fade-x">
+            <div className="flex w-max gap-1 p-1">
+              {sweep.map((value) => <Chip key={value}>{value}</Chip>)}
+            </div>
+          </ScrollFade>
+        </div>
+      </State>
+      <State name="vertical">
+        <div className="flex h-40 w-48 flex-col rounded-control border border-shell-divider">
+          <ScrollFade data-testid="fade-y">
+            <div className="grid gap-px p-1">
+              {components.map((name) => <ListRow key={name} tabIndex={0} name={name} glyph={<Box />} />)}
+            </div>
+          </ScrollFade>
+        </div>
+      </State>
+    </>
+  );
+}
+
+function CardDemo() {
+  const [selected, setSelected] = useState('train');
+  const steps = [['train', 'train', <Box key="g" />], ['evaluate', 'evaluate', <FlaskConical key="g" />]] as const;
+  return (
+    <>
+      {steps.map(([id, name, icon]) => (
+        <State key={id} name={selected === id ? 'selected' : 'default'}>
+          <Card selected={selected === id} className="w-52">
+            <CardHead>
+              <Button variant="bare" size="content" align="start" onClick={() => setSelected(id)}
+                className="flex h-row w-full items-center gap-1.5 rounded-row px-2 [&_svg]:text-shell-muted">
+                {icon}{name}
+              </Button>
+            </CardHead>
+            <div className="flex gap-1 px-2 pb-2 pt-1">
+              {[0, 1, 2, 3].map((run) => <StatusMark key={run} status={run === 3 ? 'running' : 'succeeded'} />)}
+            </div>
+          </Card>
+        </State>
+      ))}
+    </>
+  );
+}
+
+function Group({ name, children }: { name: string; children: ReactNode }) {
   return (
     <section className="grid gap-2" aria-label={name}>
       <h2 className="text-sm font-medium text-shell-muted">{name}</h2>
@@ -131,6 +219,11 @@ export function Gallery() {
   useLayoutEffect(() => installTooltips(), []);
   const theme = useRootAttribute<Theme>('data-theme');
   const density = useRootAttribute<Density>('data-density');
+  const [cardStyle, setCardStyle] = useState<CardStyle>('quiet');
+  useLayoutEffect(() => {
+    if (cardStyle === 'quiet') delete document.documentElement.dataset.card;
+    else document.documentElement.dataset.card = cardStyle;
+  }, [cardStyle]);
   const [text, setText] = useState('policy');
   const [number, setNumber] = useState<number | null>(0.001);
   const [position, setPosition] = useState(0.6);
@@ -154,9 +247,11 @@ export function Gallery() {
         <SegmentedControl<Density> aria-label="Density" value={density}
           onValueChange={(value) => setAppearance(window, 'density', value)}
           items={[{ value: 'compact', label: 'Compact' }, { value: 'regular', label: 'Regular' }]} />
+        <SegmentedControl<CardStyle> aria-label="Card" value={cardStyle} onValueChange={setCardStyle}
+          items={[{ value: 'quiet', label: 'Quiet' }, { value: 'ring', label: 'Ring' }]} />
       </header>
       <div className="grid max-w-5xl gap-6 p-6">
-        <Section name="Button">
+        <Group name="Button">
           <State name="default"><Button>Train</Button></State>
           <State name="primary"><Button variant="primary">Run</Button></State>
           <State name="ghost"><Button variant="ghost">Cancel</Button></State>
@@ -166,58 +261,58 @@ export function Gallery() {
           <State name="pressed"><Button variant="ghost" pressed>Outline</Button></State>
           <State name="start"><Button variant="ghost" align="start" className="w-40">GRU</Button></State>
           <State name="mark"><Button size="mark">3</Button></State>
-        </Section>
+        </Group>
 
-        <Section name="IconButton">
+        <Group name="IconButton">
           <State name="ghost"><IconButton label="Fit" icon={<Maximize />} /></State>
           <State name="default"><IconButton variant="default" label="Settings" icon={<Settings />} /></State>
           <State name="pressed"><IconButton label="Zoom in" icon={<ZoomIn />} pressed /></State>
           <State name="disabled"><IconButton label="Zoom out" icon={<ZoomOut />} disabled /></State>
           <State name="mark"><IconButton size="mark" label="Add Port" icon={<Plus />} /></State>
-        </Section>
+        </Group>
 
-        <Section name="TextField">
+        <Group name="TextField">
           <State name="default"><TextField aria-label="Name" value={text} onValueChange={setText} /></State>
           <State name="placeholder"><TextField aria-label="Search" placeholder="Search" leading={<Search />} /></State>
           <State name="invalid"><TextField aria-label="Invalid" defaultValue="2x" invalid /></State>
           <State name="read-only"><TextField aria-label="Read-only" value="checkpoint-12" readOnly /></State>
           <State name="disabled"><TextField aria-label="Disabled" value="policy" disabled /></State>
-        </Section>
+        </Group>
 
-        <Section name="NumberField">
+        <Group name="NumberField">
           <State name="default"><NumberField aria-label="Learning rate" value={number} onValueChange={setNumber} step={0.001} /></State>
           <State name="bounded"><NumberField aria-label="Batch size" value={64} onValueChange={() => undefined} min={1} max={64} /></State>
           <State name="invalid"><NumberField aria-label="Epochs" value={-1} onValueChange={() => undefined} invalid /></State>
           <State name="read-only"><NumberField aria-label="Seed" value={7} onValueChange={() => undefined} readOnly /></State>
           <State name="disabled"><NumberField aria-label="Steps" value={100} onValueChange={() => undefined} disabled /></State>
-        </Section>
+        </Group>
 
-        <Section name="Slider">
+        <Group name="Slider">
           <State name="default"><Slider aria-label="Position" value={position} onValueChange={setPosition} min={0} max={1} step={0.01} className="w-48" /></State>
           <State name="disabled"><Slider aria-label="Locked" value={0.3} onValueChange={() => undefined} min={0} max={1} step={0.01} disabled className="w-48" /></State>
-        </Section>
-        <Section name="Checkbox">
+        </Group>
+        <Group name="Checkbox">
           <State name="checked"><Checkbox label="Shuffle" checked={checked} onCheckedChange={setChecked} /></State>
           <State name="unchecked"><Checkbox label="Clip" checked={false} onCheckedChange={() => undefined} /></State>
           <State name="indeterminate"><Checkbox label="All" checked={false} indeterminate onCheckedChange={() => undefined} /></State>
           <State name="disabled"><Checkbox label="Resume" checked disabled onCheckedChange={() => undefined} /></State>
           <State name="unlabelled"><Checkbox aria-label="Select row" checked onCheckedChange={() => undefined} /></State>
-        </Section>
+        </Group>
 
-        <Section name="Select">
+        <Group name="Select">
           <State name="value"><Select aria-label="Kind" items={kinds} value={kind} onValueChange={setKind} className="w-40" /></State>
           <State name="placeholder"><Select aria-label="Kind" items={kinds} value={null} placeholder="Kind" onValueChange={() => undefined} className="w-40" /></State>
           <State name="disabled"><Select aria-label="Kind" items={kinds} value="train" disabled onValueChange={() => undefined} className="w-40" /></State>
-        </Section>
+        </Group>
 
-        <Section name="Combobox">
+        <Group name="Combobox">
           <State name="value"><Combobox aria-label="Optimizer" items={optimizers} value={optimizer} onValueChange={setOptimizer} className="w-48" /></State>
           <State name="placeholder"><Combobox aria-label="Optimizer" items={optimizers} value={null} placeholder="Optimizer" onValueChange={() => undefined} className="w-48" /></State>
           <State name="invalid"><Combobox aria-label="Optimizer" items={optimizers} value={null} invalid onValueChange={() => undefined} className="w-48" /></State>
           <State name="disabled"><Combobox aria-label="Optimizer" items={optimizers} value="sgd" disabled onValueChange={() => undefined} className="w-48" /></State>
-        </Section>
+        </Group>
 
-        <Section name="Menu">
+        <Group name="Menu">
           <State name={chosen || 'closed'}>
             <Menu>
               <MenuTrigger render={<Button />}><Plus />Step<ChevronDown /></MenuTrigger>
@@ -247,9 +342,9 @@ export function Gallery() {
               </ContextMenuContent>
             </ContextMenu>
           </State>
-        </Section>
+        </Group>
 
-        <Section name="Popover">
+        <Group name="Popover">
           <Popover>
             <PopoverTrigger render={<Button />}>Sweep</PopoverTrigger>
             <PopoverContent aria-label="Sweep" className="grid w-64 gap-2">
@@ -257,9 +352,9 @@ export function Gallery() {
               <PopoverClose render={<Button variant="primary" />}>Apply</PopoverClose>
             </PopoverContent>
           </Popover>
-        </Section>
+        </Group>
 
-        <Section name="SegmentedControl">
+        <Group name="SegmentedControl">
           <State name="text">
             <SegmentedControl aria-label="Panel" value={library} onValueChange={setLibrary}
               items={[{ value: 'library', label: 'Library' }, { value: 'outline', label: 'Outline' }]} />
@@ -276,9 +371,9 @@ export function Gallery() {
             <SegmentedControl aria-label="Disabled" value="library" onValueChange={() => undefined} disabled
               items={[{ value: 'library', label: 'Library' }, { value: 'outline', label: 'Outline' }]} />
           </State>
-        </Section>
+        </Group>
 
-        <Section name="ListRow">
+        <Group name="ListRow">
           <div className="w-72 rounded-control border border-shell-divider p-1" role="tree" aria-label="Steps">
             <ListRow role="treeitem" tabIndex={0} name="Pipeline" glyph={<Box />} expanded={expanded} onExpandedChange={setExpanded} trailing="3" />
             {expanded ? <>
@@ -287,13 +382,25 @@ export function Gallery() {
               <ListRow role="treeitem" tabIndex={0} depth={1} name="Report" glyph={<FileText />} disabled />
             </> : null}
           </div>
-        </Section>
+        </Group>
 
-        <Section name="Tree">
+        <Group name="Tree">
           <TreeDemo />
-        </Section>
+        </Group>
 
-        <Section name="InlineEdit">
+        <Group name="Section">
+          <DrawerDemo />
+        </Group>
+
+        <Group name="ScrollFade">
+          <ScrollFadeDemo />
+        </Group>
+
+        <Group name="Card">
+          <CardDemo />
+        </Group>
+
+        <Group name="InlineEdit">
           <State name={editingTitle ? 'editing' : 'closed'}>
             <div className="flex h-row w-48 items-center rounded-row px-1 hover:bg-shell-hover" tabIndex={0}
               onKeyDown={(event) => { if (event.key === 'Enter') setEditingTitle(true); }}
@@ -301,9 +408,9 @@ export function Gallery() {
               <InlineEdit aria-label="Name" value={title} editing={editingTitle} onEditingChange={setEditingTitle} onCommit={setTitle} />
             </div>
           </State>
-        </Section>
+        </Group>
 
-        <Section name="StatusMark">
+        <Group name="StatusMark">
           <div className="grid grid-cols-3 gap-x-6 gap-y-1">
             {statuses.map(([status, label]) => (
               <span key={status} className="flex h-row items-center gap-2 text-sm">
@@ -311,16 +418,16 @@ export function Gallery() {
               </span>
             ))}
           </div>
-        </Section>
+        </Group>
 
-        <Section name="Chip">
+        <Group name="Chip">
           <State name="document"><Chip glyph={<Box />}>policy</Chip></State>
           <State name="output"><Chip glyph={<Circle />} trailing={<StatusMark status="succeeded" />}>Train · checkpoint</Chip></State>
           <State name="selected"><Chip glyph={<Box />} selected>policy</Chip></State>
           <State name="long"><Chip glyph={<Box />} className="w-32">a very long document name</Chip></State>
-        </Section>
+        </Group>
 
-        <Section name="Table">
+        <Group name="Table">
           <div className="w-full max-w-xl overflow-hidden rounded-control border border-shell-divider">
             <Table>
               <thead><tr><TableHeaderCell>Run</TableHeaderCell><TableHeaderCell>Seed</TableHeaderCell><TableHeaderCell>Loss</TableHeaderCell></tr></thead>
@@ -331,16 +438,16 @@ export function Gallery() {
               </tbody>
             </Table>
           </div>
-        </Section>
+        </Group>
 
-        <Section name="PanelHeader">
+        <Group name="PanelHeader">
           <div className="w-80 rounded-control border border-shell-divider">
             <PanelHeader title="Details" glyph={<FileText />}
               actions={<><IconButton label="Fit" icon={<Maximize />} /><IconButton label="Settings" icon={<Settings />} /></>} />
           </div>
-        </Section>
+        </Group>
 
-        <Section name="Dialog">
+        <Group name="Dialog">
           <Button onClick={() => setDialog(true)}>Rename</Button>
           {dialog ? (
             <Dialog ariaLabel="Rename" manageFocus onClose={() => setDialog(false)} panelClassName="grid w-72 gap-3">
@@ -351,7 +458,7 @@ export function Gallery() {
               </div>
             </Dialog>
           ) : null}
-        </Section>
+        </Group>
       </div>
     </main>
   );
