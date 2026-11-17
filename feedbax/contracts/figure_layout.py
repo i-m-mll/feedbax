@@ -13,11 +13,7 @@ DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION = "feedbax.spec.data_derived_axis_range.v
 
 
 class AxisLabels(StrictModel):
-    """Per-panel axis labels.
-
-    ``z`` labels the third axis of a ``scene`` panel and has no meaning on a
-    Cartesian one, so declaring it elsewhere is rejected rather than dropped.
-    """
+    """Per-panel axis label overrides. Cartesian panels accept x and y."""
 
     x: str | None = None
     y: str | None = None
