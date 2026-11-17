@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 import { availableParallelism } from 'node:os';
+import { requireBrowserTestRunner } from './e2e/runner';
+
+requireBrowserTestRunner();
 
 export default defineConfig({
   testDir: './e2e/studio',

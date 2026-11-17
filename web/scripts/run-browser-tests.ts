@@ -10,7 +10,7 @@ const allowed = [
   'FEEDBAX_STUDIO_MEASURE',
 ] as const;
 
-const env: Record<string, string> = {};
+const env: Record<string, string> = { FEEDBAX_BROWSER_TEST_RUNNER: '1' };
 for (const name of allowed) {
   const value = process.env[name];
   if (value !== undefined) env[name] = value;

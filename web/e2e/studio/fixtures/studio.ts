@@ -2,7 +2,7 @@ import { expect, test as base } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -154,6 +154,14 @@ export const test = base.extend<{}, WorkerFixtures>({
   },
 });
 
+async function workerLogs(home: string) {
+  const root = join(home, 'state', 'host', 'workers');
+  const tokens = await readdir(root).catch(() => []);
+  const logs = await Promise.all(tokens.map(async (token) =>
+    `\n--- Host worker ${token}\n` + await readFile(join(root, token, 'startup.log'), 'utf8').catch(() => '')));
+  return logs.join('');
+}
+
 /** Each test owns its Studio, for tests that stop and restart the backend. */
 export const isolatedTest = base.extend<{ studio: Studio }>({
   studio: [async ({}, use, info) => {
@@ -161,11 +169,15 @@ export const isolatedTest = base.extend<{ studio: Studio }>({
     try {
       await use(studio);
     } finally {
+      const failed = info.status !== info.expectedStatus;
+      const workers = failed ? await workerLogs(studio.home) : '';
       try {
         await close();
       } finally {
-        if (info.status !== info.expectedStatus) {
-          await info.attach('Studio process log', { body: studio.serviceLog(), contentType: 'text/plain' });
+        if (failed) {
+          const path = info.outputPath('studio.log');
+          await writeFile(path, studio.serviceLog() + workers);
+          await info.attach('Studio process log', { path, contentType: 'text/plain' });
         }
       }
     }
