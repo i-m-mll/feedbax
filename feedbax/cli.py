@@ -36,18 +36,6 @@ DELEGATED_COMMANDS: tuple[DelegatedCommand, ...] = (
         "main",
         "Admit saved project runs.",
     ),
-    DelegatedCommand(
-        "analysis",
-        "feedbax.bin.analysis",
-        "main",
-        "Execute analysis, evaluation, report, and bundle specs.",
-    ),
-    DelegatedCommand(
-        "figure",
-        "feedbax.bin.figure",
-        "main",
-        "Execute and resolve figure specs.",
-    ),
 )
 
 DELEGATED_BY_NAME: dict[str, DelegatedCommand] = {

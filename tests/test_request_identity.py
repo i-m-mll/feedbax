@@ -11,7 +11,6 @@ from feedbax.contracts.canonical_json import (
     CanonicalJsonErrorCode,
     canonical_json_v2_bytes,
 )
-from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.request_identity import (
     REQUEST_KINDS,
     RequestDocumentMemo,
@@ -32,6 +31,7 @@ from feedbax.contracts.request_refs import (
     SlotMember,
 )
 from feedbax.contracts.request_specs import (
+    AnalysisRequestSpec,
     EvaluationRequestSpec,
     NumericalSettings,
     RenderRequestSpec,
@@ -56,12 +56,10 @@ def _managed_train():
     return spec
 
 
-def test_downstream_identity_corpus_round_trips():
+def test_managed_light_request_identity_corpus_round_trips():
     rows = _read_corpus()
-    assert set(REQUEST_KINDS) == {row["kind"] for row in rows}
+    assert set(REQUEST_KINDS) - {"train"} == {row["kind"] for row in rows}
     for row in rows:
-        if row["kind"] == "train":
-            continue
         spec_type = REQUEST_KINDS[row["kind"]].spec_type
         spec = spec_type.model_validate_json(json.dumps(row["spec"]))
         request = encode_request(spec, row["inputs"])
@@ -292,24 +290,14 @@ def test_request_references_and_runtime_settings_are_typed_identity():
         encode_request(spec, {"initial": (first, first)})
 
 
-def test_figure_raw_mapping_cannot_collide_with_a_typed_expression():
-    figure = FigureSpec.model_validate(
-        {
-            "name": "example",
-            "assembler": "plot",
-            "traces": [
-                {
-                    "name": "one",
-                    "constructor": "sample",
-                    "data": {"map": {"$family": "opaque-data", "value": 42}},
-                }
-            ],
-        }
+def test_operation_settings_preserve_literal_family_keys():
+    spec = AnalysisRequestSpec(
+        analysis_type="fixture.settings",
+        params={"value": {"$family": "literal-data", "value": 42}},
     )
-    request = encode_request(RenderRequestSpec(figure=figure), {})
+    request = encode_request(spec, {})
     decoded = decode_request(request.data, request.documents.__getitem__)
-    assert isinstance(decoded.spec, RenderRequestSpec)
-    assert decoded.spec.figure == figure
+    assert decoded.spec == spec
 
 
 def test_managed_training_preserves_seed_and_factored_settings():
@@ -328,21 +316,20 @@ def test_managed_training_preserves_seed_and_factored_settings():
 
 
 def test_retired_train_envelope_is_refused():
-    legacy = next(row for row in _read_corpus() if row["kind"] == "train")
     data = canonical_json_v2_bytes(
-        {"schema": "feedbax.request.v1", "kind": "train", "spec": legacy["spec"], "inputs": {}}
+        {"schema": "feedbax.request.v1", "kind": "train", "spec": {}, "inputs": {}}
     )
     with pytest.raises(ValueError, match="Unsupported stored request envelope"):
         decode_request(data, {}.__getitem__)
 
 
 def test_shared_spec_keeps_canonical_error_order_and_paths():
-    spec = RenderRequestSpec(figure=FigureSpec(name="example", assembler="plot", traces=[]))
-    malformed = spec.model_copy(
-        update={
-            "figure": spec.figure.model_copy(update={"name": chr(0xD800)}),
-        }
-    )
+    authored = next(row["spec"] for row in _read_corpus() if row["kind"] == "render")
+    spec = RenderRequestSpec.model_validate_json(json.dumps(authored))
+    panel = spec.document.layout[0].model_copy(update={"name": chr(0xD800)})
+    malformed = spec.model_copy(update={
+        "document": spec.document.model_copy(update={"layout": (panel,)}),
+    })
     member = InputMember.model_construct(
         key=chr(0xD800),
         reference=ProductRef(request_id="train:" + "a" * 64, role="checkpoint"),
@@ -350,7 +337,7 @@ def test_shared_spec_keeps_canonical_error_order_and_paths():
     with pytest.raises(CanonicalJsonError) as error:
         encode_request(malformed, {"initial": (member,)})
     assert error.value.code == CanonicalJsonErrorCode.LONE_SURROGATE
-    assert error.value.path == "/spec/figure/name"
+    assert error.value.path == "/spec/document/layout/0/name"
 
     with pytest.raises(CanonicalJsonError) as error:
         encode_request(spec, {"initial": (member,)})

@@ -78,7 +78,12 @@ def validate_identity_transition(old: dict, new: dict, *, migrations: Collection
             if bool(old_families) != bool(active_families) or not old_families <= active_families:
                 raise ValueError(f"Identity family discriminator changed: {model}.{name}")
             if _absent(prior) != _absent(active):
-                raise ValueError(f"Identity absent value changed: {model}.{name}")
+                if (
+                    "absent" not in prior
+                    or "absent" in active
+                    or (model, name, canonical_json_v2_bytes(prior["absent"])) not in new_values
+                ):
+                    raise ValueError(f"Identity absent value changed: {model}.{name}")
             accepted = {canonical_json_v2_bytes(value) for value in active.get("values", [])}
             for value in prior.get("values", []):
                 encoded = canonical_json_v2_bytes(value)

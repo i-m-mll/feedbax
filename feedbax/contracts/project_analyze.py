@@ -256,7 +256,6 @@ class _Lowerer:
                 AnalysisRequestSpec(
                     analysis_type=registered.key,
                     params=params.model_dump(mode="json"),
-                    evaluation_states_policy="require_durable",
                 ),
                 inputs,
                 definition.outputs,
@@ -326,7 +325,7 @@ class _Lowerer:
             validate_figure_bindings(figure, schemas)
             self._record(
                 name,
-                RenderRequestSpec(figure=None, document=figure),
+                RenderRequestSpec(document=figure),
                 inputs,
                 {PLOTLY_FIGURE_ROLE: PlotlyFigurePort()},
             )

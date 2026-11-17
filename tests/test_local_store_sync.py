@@ -17,13 +17,12 @@ from feedbax.contracts.request_refs import (
     ProductRef,
     SlotMember,
 )
-from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import PublicationConflict, SuccessView, store_request
 from feedbax.persistence.reachability import measure_store
 from feedbax.persistence.store_sync import collect_success, collect_success_evidence, sync_store
-from scripts.proofs.effective_binding_witness import document_product
+from scripts.proofs.effective_binding_witness import document_product, report_request
 
 
 def _interrupt_after_clone(
@@ -48,7 +47,7 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
     source = ImmutableArtifactBlobProvider(tmp_path / "source")
     destination = ImmutableArtifactBlobProvider(tmp_path / "destination")
     producer = store_request(
-        source, encode_request(ReportRequestSpec(report_type="proof.sync-producer"), {})
+        source, encode_request(report_request("sync-producer"), {})
     )
     kept, sibling, last = (
         document_product(source, name, f'{{"kind":"fixture","id":"{name}"}}'.encode())
@@ -60,7 +59,7 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
     consumer = store_request(
         source,
         encode_request(
-            ReportRequestSpec(report_type="proof.sync-consumer"),
+            report_request("sync-consumer"),
             {
                 "documents": tuple(
                     InputMember(
@@ -210,7 +209,7 @@ def test_collected_success_preserves_exact_receipts_and_destination_tips(tmp_pat
 
     destination = ImmutableArtifactBlobProvider(tmp_path / "destination")
     producer = store_request(
-        source, encode_request(ReportRequestSpec(report_type="proof.collect-producer"), {})
+        source, encode_request(report_request("collect-producer"), {})
     )
     selected = document_product(source, "selected", b'{"kind":"selected"}')
     sibling = document_product(source, "sibling", b'{"kind":"other"}')
@@ -218,7 +217,7 @@ def test_collected_success_preserves_exact_receipts_and_destination_tips(tmp_pat
         producer, attempt="producer-1", products={"reports": (selected, sibling)},
     )
     consumer = store_request(source, encode_request(
-        ReportRequestSpec(report_type="proof.collect-consumer"),
+        report_request("collect-consumer"),
         {"reports": (InputMember(key="selected", reference=ProductRef(
             request_id=producer.id, role="reports", select=NamedMember(member="selected"),
         )),)},
