@@ -1,7 +1,6 @@
 """Reset, reconstruction and optimizer contracts for complete prepared models."""
 
 import pickle
-from types import SimpleNamespace
 
 import diffrax as dfx
 import equinox as eqx
@@ -11,23 +10,15 @@ import jax.tree as jt
 import optax
 import pytest
 
+from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.components import GRU, RateLimiter
 from feedbax.runtime.filters import LowPassFilter
 from feedbax.runtime.graph import Graph
-from feedbax.compiler.trainability import compile_trainability
-
-
-def _prepare_studio_gru(key):
-    graph = Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
-    registry = ComponentRegistry()
-    _, trainable_filter = compile_trainability(graph_to_spec(graph, registry), graph, registry)
-    return SimpleNamespace(
-        graph=graph,
-        trainable_filter=trainable_filter,
-        training_spec=SimpleNamespace(batch_size=1),
-    )
+from feedbax.compiler.trainability import model_trainability
+from feedbax.tasks.document import TaskParameters
+from feedbax.training.method_runtime import TrainingContext
 
 
 def test_prepared_gru_reconstruction_reuses_trace_and_retains_weight_updates():
@@ -121,11 +112,13 @@ def test_filter_change_input_preserves_solver_configuration_and_mixed_float_rese
             original.change_input(jnp.zeros(2, dtype=jnp.int32))
 
 
-def test_studio_update_trains_weights_and_keeps_reset_template_fixed():
-    from feedbax.training.studio_executor import StudioUpdateKernel
-
-    compiled = _prepare_studio_gru(jax.random.PRNGKey(0))
-    graph = compiled.graph
+def test_gradient_update_trains_weights_and_keeps_reset_template_fixed():
+    key = jax.random.key(0)
+    registry = ComponentRegistry()
+    authored = Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=())
+    graph = compile_graph(
+        GraphDocument(graph=graph_to_spec(authored, registry)), registry, initialization_key=key,
+    ).graph
     optimizer = optax.sgd(0.1)
 
     def rollout(model, plan, key):
@@ -149,20 +142,14 @@ def test_studio_update_trains_weights_and_keeps_reset_template_fixed():
         graph.nodes["cell"].state_index.init.hidden,
     )
 
-    kernel = StudioUpdateKernel(
-        compiled=compiled, optimizer=optimizer, batch_size=1,
-        score_batch=lambda model, key, _count: loss(None, rollout(model, None, key)),
+    _, mask = model_trainability(graph)
+    context = TrainingContext(None, jnp.uint32(0), 0, key, key, None, None, TaskParameters(), 1)
+    update = eqx.filter_jit(
+        lambda model, state: context.optimizer_step(
+            optimizer, model, state, lambda candidate: loss(None, rollout(candidate, None, key)),
+        )
     )
-    trainable, _ = eqx.partition(graph, compiled.trainable_filter)
-    slots = kernel(
-        {
-            "model": graph,
-            "optimizer": optimizer.init(trainable),
-            "prng": jax.random.PRNGKey(0),
-            "batch_counter": jnp.array(0),
-        }
-    )
-    trained = slots["model"].nodes["cell"]
+    trained = update(graph, optimizer.init(eqx.filter(graph, mask))).model.nodes["cell"]
     assert not jnp.array_equal(trained.cell.weight_ih, graph.nodes["cell"].cell.weight_ih)
     assert all(
         jnp.array_equal(before, after)

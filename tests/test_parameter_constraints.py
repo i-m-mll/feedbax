@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 from feedbax.component_registry import ComponentRegistry
 
@@ -31,7 +30,9 @@ from feedbax.runtime.components import Linear
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.compiler.serialization import graph_to_spec
-from feedbax.training.studio_executor import StudioUpdateKernel
+from feedbax.compiler.trainability import model_trainability
+from feedbax.tasks.document import TaskParameters
+from feedbax.training.method_runtime import TrainingContext
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -166,7 +167,8 @@ def test_nested_parameter_constraints_survive_gradient_updates() -> None:
     key = jax.random.PRNGKey(0)
     inputs = jnp.ones(2)
     optimizer = optax.sgd(0.1)
-    opt_state = optimizer.init(eqx.filter(graph, eqx.is_inexact_array))
+    _, mask = model_trainability(graph)
+    opt_state = optimizer.init(eqx.filter(graph, mask))
 
     def weight(model):
         return model.nodes["outer"].nodes["inner"].nodes["readout"].layer.weight
@@ -181,15 +183,12 @@ def test_nested_parameter_constraints_survive_gradient_updates() -> None:
     assert jnp.array_equal(weight(graph), jnp.array([[0.25, 0.0]]))
     # With all-ones inputs and initial output 0.25, both weights have gradient -1.5.
 
-    kernel = StudioUpdateKernel(
-        compiled=SimpleNamespace(graph=graph, trainable_filter=eqx.is_inexact_array),
-        optimizer=optimizer,
-        batch_size=1,
-        score_batch=lambda model, key, _count: (squared_error(predict(model, inputs, key)), {}),
-    )
-    trained = kernel(
-        {"model": graph, "optimizer": opt_state, "prng": key, "batch_counter": jnp.int32(0)}
-    )["model"]
+    context = TrainingContext(None, jnp.uint32(0), 0, key, key, None, None, TaskParameters(), 1)
+    trained = eqx.filter_jit(
+        lambda model, state: context.optimizer_step(
+            optimizer, model, state, lambda candidate: (squared_error(predict(candidate, inputs, key)), {}),
+        )
+    )(graph, opt_state).model
 
     assert weight(trained)[0, 0] == 0.25
     assert float(weight(trained)[0, 1]) == pytest.approx(0.15)

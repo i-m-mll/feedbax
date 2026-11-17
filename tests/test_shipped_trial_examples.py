@@ -7,22 +7,22 @@ import jax.random as jr
 import numpy as np
 
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
-from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_checkpoint import MODEL_CHECKPOINT_STORE
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.examples import load_shipped_projects
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_train import lower_canonical_train
+from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
-from feedbax.training.checkpoint_custody import open_published_model_slot, write_checkpoint_transaction
-from feedbax.training.managed_studio import prepare_managed_training
-from feedbax.training.model_checkpoint import SemanticModelWriter
+from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
+from feedbax.training.model_checkpoint import SemanticModelSlot, SemanticModelWriter
 
 
 _VALIDATION_COUNTS = {"simple-reaches": 28, "delayed-reaches": 28, "stabilization": 4}
@@ -50,6 +50,7 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
     registries = new_application_registry_bundle()
     plan = compile_project(
         project, components=registries.components, functions=registries.expression_functions,
+        python_tasks=registries.python_tasks, training_methods=registries.training_methods,
     )
     assert not plan.diagnostics, plan.diagnostics
     assert {run.key.step for run in plan.runs} == _VALIDATION_COUNTS.keys()
@@ -62,49 +63,41 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
         documents = request.trial_documents
         assert documents.model_name == "point-mass"
         assert documents.task.id == documents.objective.id == name
-        spec = lower_canonical_train(request, registries.training_programs, registries=registries)
-        prepared = prepare_managed_training(spec, registries)
-        update = prepared.kernel_context["studio_graph_update"]
-        slots = prepared.initial_slots
-        initial_model = slots["model"]
-        for _ in range(spec.training_config.n_batches):
-            slots = update(slots)
-            assert isfinite(float(slots["train_loss"]))
-            grad_norm = float(slots["grad_norm"])
-            assert grad_norm > 0 and isfinite(grad_norm)
-        assert int(slots["batch_counter"]) == 2
-        assert not eqx.tree_equal(initial_model, slots["model"])
-
-        writer = SemanticModelWriter.for_graph(
-            GraphSpec.model_validate(spec.graph.inline), None, registries.components,
-        )
-        assert writer is not None
-        checkpoint = write_checkpoint_transaction(
-            tmp_path / name,
-            run_spec=spec,
-            phase_program=spec.worker_execution.effective_phase.phase_program,
-            barrier_name="after_train_batch",
-            coordinate=ProgressCoordinate(
-                run_id=name, phase="train_batch", program_step=2,
-                completed_barrier="after_train_batch",
-            ),
-            slots=slots,
-            semantic_model=writer,
-        )
-        retained_model = open_published_model_slot(checkpoint.root, checkpoint.latest_pointer)
-        assert retained_model is not None
-        model = retained_model.restore()
-        assert eqx.tree_equal(model, slots["model"])
-
+        normalized, method, settings = normalize_train_method(request, registries.training_methods)
+        seed = normalized.seed or 0
         paired = compile_trial_execution(
-            documents.model_name, documents.model, documents.task,
-            registries.components, registries.expression_functions,
+            documents.model_name, documents.model, documents.task_source,
+            registries.components, registries.expression_functions, python_tasks=registries.python_tasks,
             objective=documents.objective, input_overrides=documents.input_overrides,
+            initialization_key=model_initialization_key(seed),
         )
         assert isinstance(paired, PreparedTrialExecution), paired
         assert paired.objective is not None
+        initial_model = paired.executable.graph
+        ids = ("0",)
+        state = initialize_method(method, settings, models=(initial_model,), seed=seed, replica_ids=ids)
+        trained = TrainingLoop(
+            method, settings, execution=paired.execution, objective=paired.objective,
+            batch_size=request.training_config.batch_size, seed=seed, replica_ids=ids,
+        ).run_block(state, completed=0, count=request.target_total)
+        assert trained.completed == request.target_total == 2
+        assert np.isfinite(trained.metrics["train_loss"]).all()
+        grad_norm = trained.metrics["grad_norm"]
+        assert np.isfinite(grad_norm).all() and (grad_norm > 0).all()
+        model = replica_value(trained.state.model, 0)
+        assert not eqx.tree_equal(initial_model, model)
+
+        writer = SemanticModelWriter.for_graph(paired.executable.resolved.graph, None, registries.components)
+        assert writer is not None
+        transaction = tmp_path / name
+        retained = writer.publish(transaction, (model,), templates=(initial_model,), replica_ids=ids)
+        provider = ImmutableArtifactBlobProvider(transaction / MODEL_CHECKPOINT_STORE)
+        slot = SemanticModelSlot.open_store(provider, retained.tree, retained.encoding, components=registries.components)
+        restored = slot.restore(initial_model)
+        assert eqx.tree_equal(restored, model)
+
         result = paired.execution.validation(
-            model, paired.objective, TaskParameters(), key=jr.key(27),
+            restored, paired.objective, TaskParameters(), key=jr.key(27),
         )
         expected_terms = _REACH_TERMS | (
             {"effector_fixation"} if name == "delayed-reaches" else set()
