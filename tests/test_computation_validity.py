@@ -8,6 +8,8 @@ import sys
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax._src.interpreters.mlir import make_ir_context
+from jaxlib.mlir import ir
 import numpy as np
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -28,6 +30,7 @@ from feedbax.contracts.computation_validity import (
     UnidentifiedCall,
 )
 from feedbax.validity.computation import (
+    _canonical_asm,
     argument_signature,
     bounded_program_archive,
     capture_arguments,
@@ -104,6 +107,20 @@ def test_private_rename_keeps_exact_computation_but_numeric_edit_and_driver_bump
     assert compare_computation(original, bumped) == ComputationDifferent(
         changes=(DriverChanged(previous=original.driver, present=bumped.driver),)
     )
+
+
+def test_private_symbol_references_in_array_and_dictionary_attributes_are_renamed():
+    def module(symbol):
+        return ir.Module.parse(
+            f'module attributes {{feedbax.references = [{{callee = @{symbol}, label = "external"}}]}} '
+            f"{{func.func private @{symbol}() {{return}}}}"
+        )
+
+    with make_ir_context():
+        former = _canonical_asm(module("alpha").operation)
+        current = _canonical_asm(module("beta").operation)
+        reserved = _canonical_asm(module("__feedbax_func_0").operation)
+    assert former == current == reserved
 
 
 def test_cpu_reference_does_not_hide_an_execution_platform_edit():

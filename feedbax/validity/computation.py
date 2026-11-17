@@ -295,11 +295,10 @@ def _canonical_asm(module: ir.Operation) -> bytes:
             def rewrite(op):
                 attributes = op.attributes
                 updates = []
-                for named in attributes:
-                    original = named.attr
+                for name, original in attributes.items():
                     updated = _replace_symbol_refs(original, replacements)
                     if updated is not original:
-                        updates.append((named.name, updated))
+                        updates.append((name, updated))
                 for name, updated in updates:
                     attributes[name] = updated
                 return ir.WalkResult.ADVANCE
