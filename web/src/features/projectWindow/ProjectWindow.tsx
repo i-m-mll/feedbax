@@ -3,6 +3,7 @@ import {
   Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Settings2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
+import { StudioLogo } from '../../components/StudioLogo';
 import {
   useEffect, useId, useLayoutEffect, useRef, useState,
   type CSSProperties, type Dispatch, type ReactNode, type SetStateAction,
@@ -344,7 +345,7 @@ export function ProjectWindow({
       }}>
       <header ref={bar} className="shell-frame__bar studio-window-bar" data-studio-focus-region="top" tabIndex={-1} data-shell-drag-region>
         <div className="shell-frame__cell shell-titlebar__leading studio-window-bar__controls">
-          <span className="shell-titlebar__logo"><img src="/icon.svg" alt="" /></span>
+          <span className="shell-titlebar__logo"><StudioLogo /></span>
           {layoutModes.map(({ mode, icon, command }) => (
             <WindowButton key={mode} command={command} icon={icon} pressed={state.mode === mode} />
           ))}

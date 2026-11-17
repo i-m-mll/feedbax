@@ -13,6 +13,9 @@
   --studio-shell-selection: color-mix(in srgb, var(--text-primary) 10%, transparent);
   --shell-focus-color: var(--studio-shell-accent);
   --studio-scrim: rgba(15, 23, 42, 0.3);
+  --studio-logo-ink: #000000;
+  --studio-logo-paper: #ffffff;
+  --studio-logo-accent: #213082;
   --studio-control-border: color-mix(in srgb, var(--text-muted) 45%, var(--surface-main));
   --studio-status-idle: var(--neutral-8);
   --studio-status-neutral: var(--text-muted);
@@ -33,6 +36,9 @@
 :root[data-theme='dark'] {
   --studio-shell-accent: #c1aedf;
   --studio-scrim: rgba(0, 0, 0, 0.5);
+  --studio-logo-ink: var(--text-primary);
+  --studio-logo-paper: var(--surface-header);
+  --studio-logo-accent: #6d88e2;
 }
 
 :root[data-face='work-sans'] { --font-ui: 'Work Sans Variable', system-ui, sans-serif; }
