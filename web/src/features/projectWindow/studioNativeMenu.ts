@@ -5,6 +5,7 @@ import {
 } from './studioCommands';
 
 const groups = {
+  App: ['settings'],
   File: ['rename'],
   Edit: [
     'undo', 'redo', 'addComponent', 'connectPorts', 'exposeOutput', 'modelSelectAll', 'modelRemove',

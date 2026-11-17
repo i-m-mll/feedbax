@@ -17,6 +17,7 @@ const primary = (key: string, modifiers: Omit<Shortcut, 'key' | 'primary'> = {})
 
 const shortcuts = {
   commandPalette: primary('K'),
+  settings: primary(','),
   undo: primary('Z'),
   redo: primary('Z', { shift: true }),
   run: primary('R'),
@@ -111,7 +112,7 @@ export function commandAttributes(command: StudioCommand, placement?: 'bottom' |
 }
 
 const punctuation: Record<string, string> = {
-  Backslash: '\\', BracketLeft: '[', BracketRight: ']', Period: '.',
+  Backslash: '\\', Comma: ',', BracketLeft: '[', BracketRight: ']', Period: '.',
 };
 
 export function matchesShortcut(event: KeyboardEvent, shortcut: Shortcut | undefined) {
