@@ -13,7 +13,7 @@ const sources = [
   resolve(src, 'App.tsx'),
   resolve(src, 'main.tsx'),
   resolve(src, 'components/layout/HeaderActivity.tsx'),
-  resolve(src, 'components/values/StudioFieldControl.tsx'),
+  ...new Bun.Glob('components/values/**/*.{ts,tsx}').scanSync({ cwd: src, absolute: true }),
 ].filter((path) => !path.endsWith('.test.tsx'));
 const errors: string[] = [];
 const retired = new RegExp(`\\b(?:${vocabulary.retired.join('|')})s?\\b`, 'i');

@@ -156,7 +156,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await expect(rateText).toHaveValue('0.001,');
   await number(page, rateText, '0.001, 0.002, 0.003');
-  await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');
+  await expect(rate.getByText('0.003', { exact: true })).toBeVisible();
   const swept = await savedProject();
   const sourceRows = (await plan(swept.revision)).window_map!.rows.filter(({ key }) => key.step === 'train');
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
@@ -578,7 +578,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   await expect(rateText).toHaveValue('0.001,');
   await number(page, rateText, '0.001, 0.002, 0.003');
-  await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');
+  await expect(rate.getByText('0.003', { exact: true })).toBeVisible();
   const savedSweep = await request.get(projectPath);
   expect(savedSweep.ok()).toBe(true);
   const swept = await savedSweep.json() as StudioProjectSnapshot;

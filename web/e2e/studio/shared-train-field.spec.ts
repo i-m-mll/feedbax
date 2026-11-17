@@ -45,8 +45,7 @@ test('Training and Runs edit the same saved values and project the selected sour
     const patches = entry.patches;
     expect(Object.keys(patches)).toEqual(['method_payload.payload.optimizer.params.learning_rate']);
   }
-  const second = rate.getByRole('textbox', { name: 'Learning Rate value 2', exact: true });
-  await enter(second, '0.0025');
+  await enter(rateText, '0.001, 0.0025, 0.003');
   await expect.poll(async () => (await plan())?.rows.filter((row, index) => row.request_id !== before[index].request_id).length).toBe(1);
   const after = (await plan())!.rows;
   expect(after.map(({ key }) => key)).toEqual(before.map(({ key }) => key));

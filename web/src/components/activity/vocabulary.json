@@ -137,6 +137,7 @@
     "reachGoal": "Reach Goal",
     "remaining": "Remaining",
     "remove": "Remove",
+    "removalThreshold": "Removal Threshold",
     "rename": "Rename",
     "report": "Report",
     "rerun": "Rerun",
@@ -361,13 +362,17 @@
     "shape": "Shape",
     "selectedRuns": "Selected Runs",
     "selectedValue": "Selected Value",
-    "newValue": "New Value",
     "spacing": "Spacing",
-    "keepValue": "Keep Value",
     "reload": "Reload",
     "check": "Check",
     "uncheckedHollow": "Unchecked Outline",
-    "uncheckedBadge": "Unchecked Dot"
+    "uncheckedBadge": "Unchecked Dot",
+    "mixed": "Mixed",
+    "completions": "Completions",
+    "inspectorLabelsBeside": "Labels Beside",
+    "inspectorLabelsAbove": "Labels Above",
+    "valueMarkHover": "Hover Marks",
+    "valueMarkQuiet": "Quiet Marks"
   },
   "unit": {
     "second": "s",
@@ -460,7 +465,9 @@
     "positiveUpdates": "{value} contains a nonpositive or invalid update",
     "reversedUpdates": "{value} ends before it begins",
     "invalidUpdateList": "{value} has repeated or out-of-range updates",
-    "invalidCheckpointRule": "{value} has invalid syntax"
+    "invalidCheckpointRule": "{value} has invalid syntax",
+    "takesNumber": "{value} takes a number",
+    "takesInteger": "{value} takes a whole number"
   },
   "format": {
     "bestSubset": "{order} {metric} · {count}",
@@ -492,8 +499,11 @@
     "fieldLabel": "{label} {name}",
     "fieldKind": "{label} {name}: {value}",
     "runAnnouncement": "{run}: {status}",
-    "fieldValue": "{label} {name} {index}",
-    "fieldValueName": "{label} {name} {index} {nameField}"
+    "removeTrainingRun": "Remove {count} training run?",
+    "removeTrainingRuns": "Remove {count} training runs?",
+    "removeRun": "Remove {count} run?",
+    "removeRuns": "Remove {count} runs?",
+    "removedResultsRemain": "Existing results remain on disk but disappear from the project."
   },
   "step": {
     "train": { "glyph": "flask" },

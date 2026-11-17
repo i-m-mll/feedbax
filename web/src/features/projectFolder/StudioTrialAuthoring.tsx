@@ -8,7 +8,8 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Select } from '@/components/ui/Select';
 import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
-import { StudioFieldControl } from '@/components/values/StudioFieldControl';
+import { ValueField } from '@/components/values/ValueField';
+import { fromFieldView } from '@/components/values/adapters/fieldView';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
   JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
@@ -132,12 +133,15 @@ function expressionControl(view: StudioTrialAuthoring, term: ObjectiveTerm, fiel
   const label = humanizeLabel(field);
   const value = term[field];
   const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
-  return <StudioFieldControl valueKind={kind} field={{
+  return <ValueField model={fromFieldView({
     label, text: projection.text ?? '',
     site: { ...projection.projection, kinds: projection.projection.kinds.filter((kind) => kind !== 'sweep') },
-  }} commit={commit && ((edit) => edit.kind === 'text'
-    ? commit('Set ' + label, { kind: 'expression', term: term.id, field, text: edit.text })
-    : Promise.resolve(undefined))} />;
+  }, {
+    id: term.id + field, kind,
+    commit: commit && ((edit) => edit.kind === 'text'
+      ? commit('Set ' + label, { kind: 'expression', term: term.id, field, text: edit.text })
+      : Promise.resolve(undefined)),
+  })} form="cell" />;
 }
 
 export function TrialObjectiveTable({ view, commit, selected, select }: {

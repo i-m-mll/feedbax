@@ -29,10 +29,13 @@ import { Select, type Option } from '@/components/ui/Select';
 import { StatusMark, type StatusMarkStatus } from '@/components/ui/StatusMark';
 import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
 import { TextField } from '@/components/ui/TextField';
+import { ValueFieldGallery } from './ValueFieldGallery';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 
 type Theme = 'light' | 'dark';
 type Density = 'compact' | 'regular';
+type Labels = 'beside' | 'above';
+type ValueMark = 'hover' | 'quiet';
 type CardStyle = 'quiet' | 'ring';
 
 const kinds = [
@@ -219,6 +222,8 @@ export function Gallery() {
   useLayoutEffect(() => installTooltips(), []);
   const theme = useRootAttribute<Theme>('data-theme');
   const density = useRootAttribute<Density>('data-density');
+  const labels = useRootAttribute<Labels>('data-inspector-labels');
+  const valueMark = useRootAttribute<ValueMark>('data-value-mark');
   const [cardStyle, setCardStyle] = useState<CardStyle>('quiet');
   useLayoutEffect(() => {
     if (cardStyle === 'quiet') delete document.documentElement.dataset.card;
@@ -247,6 +252,12 @@ export function Gallery() {
         <SegmentedControl<Density> aria-label="Density" value={density}
           onValueChange={(value) => setAppearance(window, 'density', value)}
           items={[{ value: 'compact', label: 'Compact' }, { value: 'regular', label: 'Regular' }]} />
+        <SegmentedControl<Labels> aria-label="Inspector labels" value={labels}
+          onValueChange={(value) => setAppearance(window, 'inspector-labels', value)}
+          items={[{ value: 'beside', label: 'Beside' }, { value: 'above', label: 'Above' }]} />
+        <SegmentedControl<ValueMark> aria-label="Value mark" value={valueMark}
+          onValueChange={(value) => setAppearance(window, 'value-mark', value)}
+          items={[{ value: 'hover', label: 'Hover' }, { value: 'quiet', label: 'Quiet' }]} />
         <SegmentedControl<CardStyle> aria-label="Card" value={cardStyle} onValueChange={setCardStyle}
           items={[{ value: 'quiet', label: 'Quiet' }, { value: 'ring', label: 'Ring' }]} />
       </header>
@@ -392,6 +403,8 @@ export function Gallery() {
             </> : null}
           </div>
         </Group>
+
+        <ValueFieldGallery />
 
         <Group name="Tree">
           <TreeDemo />

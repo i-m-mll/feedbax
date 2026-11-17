@@ -36,12 +36,6 @@ export function studioFieldLabel(id: StudioNameId, label: string) {
   return studioFormat('fieldLabel', { label, name: studioName(id).toLowerCase() });
 }
 
-export function studioFieldValueLabel(label: string, index: number, naming = false) {
-  const values = { label, name: studioName('value').toLowerCase(), index };
-  return naming ? studioFormat('fieldValueName', { ...values, nameField: studioName('name').toLowerCase() })
-    : studioFormat('fieldValue', values);
-}
-
 export function studioFieldKindLabel(label: string, kind: FieldKind) {
   return studioFormat('fieldKind', { label, name: studioName('kind').toLowerCase(), value: studioName(kind) });
 }

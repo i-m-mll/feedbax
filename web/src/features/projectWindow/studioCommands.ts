@@ -1,6 +1,6 @@
 import { appTip } from '@window-shell/browser/tooltip';
 import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
-import type { AppearanceCommandId, ComparisonCommandId } from '@/appearance/appearance';
+import type { AppearanceCommandId } from '@/appearance/appearance';
 import { projectWindowViews, type ProjectWindowView } from './projectWindowState';
 
 interface Shortcut {
@@ -48,7 +48,7 @@ const shortcuts = {
   leave: primary('ArrowUp'),
 } satisfies Partial<Record<StudioNameId, Shortcut>>;
 
-export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId | ComparisonCommandId |
+export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
   'check' | 'accept' | 'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |

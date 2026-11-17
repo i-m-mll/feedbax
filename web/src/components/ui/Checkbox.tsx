@@ -11,6 +11,8 @@ export interface CheckboxProps {
   disabled?: boolean;
   label?: ReactNode;
   'aria-label'?: string;
+  'aria-labelledby'?: string;
+  'aria-describedby'?: string;
   className?: string;
 }
 

@@ -15,7 +15,7 @@ export async function authorEvaluateConditions({
   train: StudioSavedTrainKey;
   selectComponent: () => Promise<void>;
   field: string;
-  conditions: readonly { label: string; value: number }[];
+  conditions: readonly number[];
 }) {
   const initial = await request.get(projectPath);
   expect(initial.ok(), await initial.text()).toBe(true);
@@ -63,12 +63,7 @@ export async function authorEvaluateConditions({
   await edit(() => activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true })));
   await expect(control.getByRole('button', { name: field + ' kind: Sweep', exact: true })).toBeVisible();
   await expect(value).toBeEditable();
-  let authored = await edit(() => number(page, value, conditions.map(({ value }) => value).join(', ')));
-  for (const [index, { label }] of conditions.entries()) {
-    const name = control.getByRole('textbox', { name: field + ' value ' + (index + 1) + ' name', exact: true });
-    await expect(name).toBeEditable();
-    authored = await edit(() => number(page, name, label));
-  }
+  const authored = await edit(() => number(page, value, conditions.join(', ')));
 
   const projection = (await plan(authored.revision)).window_map!;
   const rows = projection.rows.filter(({ key }) => key.step === stepId && key.variant === train.variant);
