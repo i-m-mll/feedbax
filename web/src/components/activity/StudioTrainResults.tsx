@@ -6,7 +6,7 @@ import type {
   StudioSavedEvaluationRow, StudioSavedTrainAttempt, StudioSavedTrainKey,
   StudioSavedTrainResult, StudioSavedTrainRow,
 } from '@/generated/studioContracts';
-import { useStudioJobActions, useStudioJobConnection, useStudioJobHistory } from '@/hooks/useStudioJobs';
+import { useStudioJobActions, useStudioJobHistory } from '@/hooks/useStudioJobs';
 import { heldOutTracks, type ObjectiveStage } from './heldOutObjective';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue } from './StudioRegion';
 import { LossPlot, studioRunHistory, type LossResultName, type LossSeries, type LossStage } from './StudioTrainingLoss';
@@ -108,7 +108,6 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
 }) {
   const history = useStudioJobHistory(project);
   const events = history.data ?? emptyEvents;
-  const connection = useStudioJobConnection();
   const actions = useStudioJobActions();
   const queryClient = useQueryClient();
   const stages = useMemo(() => {
@@ -134,7 +133,6 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
       fetchSavedEvaluationObjective(project, { revision, key, job_id: jobId }, signal),
     staleTime: (query: { state: { data?: StudioEvaluationObjectiveSeries } }) =>
       receipt && query.state.data?.receipt?.manifest_sha256 === receipt.manifest_sha256 ? Infinity : 0,
-    retry: false,
   }));
   const objectives = useQueries({ queries });
   const versions = reads.map(({ receipt, points }, index) => {
@@ -174,8 +172,8 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   });
   const objectiveError = objectives.find((query) => query.isError)?.error;
   const retry = () => { actions.refresh(); };
-  const state = history.isError || connection === 'disconnected'
-    ? { kind: 'failed' as const, issue: studioRegionIssue('results', history.error, connection === 'disconnected'), retry }
+  const state = history.isError
+    ? { kind: 'failed' as const, issue: studioRegionIssue('results', history.error), retry }
     : history.isPending
       ? { kind: 'loading' as const }
       : stages === null

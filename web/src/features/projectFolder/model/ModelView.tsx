@@ -172,7 +172,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
-    enabled: active && !!projectionBody && !evaluate, retry: false,
+    enabled: active && !!projectionBody && !evaluate,
   });
   const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   const markedPorts = useMemo(() => new Map([
@@ -182,7 +182,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const attachments = useQuery({
     queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
     queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
-    enabled: active && !!model && !!readBody, retry: false,
+    enabled: active && !!model && !!readBody,
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
   const shownModel = evaluate ? effectiveModel : model?.value;
@@ -212,7 +212,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const fields = useQuery({
     queryKey: ['model-fields', saved.project_id, fieldBody],
     queryFn: ({ signal }) => projectModelFields(saved.project_id, fieldBody!, signal),
-    enabled: active && !!fieldBody, retry: false, placeholderData: (previous, query) => {
+    enabled: active && !!fieldBody, placeholderData: (previous, query) => {
       const previousBody = query?.queryKey[2] as typeof fieldBody;
       return previousBody && fieldBody && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
         && JSON.stringify(previousBody.evaluate_scope) === JSON.stringify(fieldBody.evaluate_scope)

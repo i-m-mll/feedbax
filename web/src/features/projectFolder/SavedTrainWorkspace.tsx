@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
-import { ApiRequestError, apiErrorMessage } from '@/api/request';
+import { apiErrorMessage, isUnanswered } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -37,7 +37,7 @@ import {
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
   type StudioCheckpointRuleRequest,
 } from '@/generated/studioContracts';
-import { useStudioConnection } from '@/hooks/useStudioConnection';
+import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdits';
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
@@ -188,25 +188,17 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const snapshot = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { saved, configuration, pending, outside } = snapshot;
   const jobs = useStudioJobs();
-  const connection = useStudioConnection();
+  const connected = useConnection().kind === 'connected';
   const queries = useQueryClient();
-  const wasDisconnected = useRef(false);
-  useEffect(() => {
-    if (connection.isError) wasDisconnected.current = true;
-    if (!connection.isSuccess || !wasDisconnected.current) return;
-    wasDisconnected.current = false;
-    void queries.refetchQueries({
-      type: 'active',
-      predicate: ({ state: { error } }) => error instanceof ApiRequestError &&
-        (error.kind === 'network' || (error.status ?? 0) >= 500),
-    });
-  }, [connection.isError, connection.isSuccess, queries]);
   const actions = useStudioJobActions();
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
   const modelWindow = useModelSelectionStore();
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
+  const commandFailed = (error: unknown) => {
+    if (!isUnanswered(error)) setCommandError(apiErrorMessage(error));
+  };
   const [machines, setMachines] = useState<Readonly<Record<string, string>>>({});
   const [machineQuote, setMachineQuote] = useState<StudioMachineQuote>();
   const [rename, setRename] = useState<{ name: string; revision: string }>();
@@ -246,13 +238,12 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal),
     placeholderData: keepPreviousData,
     gcTime: 0,
-    retry: false,
   });
   const data = projection.data?.revision === saved.revision ? projection.data : undefined;
   const refetchProjection = projection.refetch;
   const refreshProjection = useCallback(() => refetchProjection(), [refetchProjection]);
   const validity = useResultValidity({
-    projectId: saved.project_id, revision: saved.revision, refresh: refreshProjection, onError: setCommandError,
+    projectId: saved.project_id, revision: saved.revision, refresh: refreshProjection, onError: commandFailed,
   });
   const variants = useMemo(() => planVariants(projection.data), [projection.data]);
   const variant = selection.variantId ?? variants[0] ?? null;
@@ -329,7 +320,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const selectedAttempt = row && resultAttempt?.runId === savedRunId(row.key)
     ? row.attempts.find(({ job_id }) => job_id === resultAttempt?.jobId) : undefined;
   const attempt = selectedAttempt ?? row?.attempts.at(-1);
-  const ready = Boolean(data && !pending && !outside && !connection.isError && !projection.error);
+  const ready = Boolean(data && !pending && !outside && connected && !projection.error);
   const canAuthorContinuation = ready && primaryVariant;
   const checkpointAttempt = !saved.project.sweep && windowState.mode !== 'map' &&
     state.selection?.kind === 'rows' && state.selection.runIds.length === 1 &&
@@ -342,7 +333,6 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal, checkpointAttempt),
     enabled: ready && checkpointAttempt !== undefined,
     gcTime: 0,
-    retry: false,
   });
   useEffect(() => {
     if (!ready || !focusFirstModel || step?.id !== focusFirstModel) return;
@@ -376,7 +366,6 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     queryKey: ['execution-targets', machineKinds],
     queryFn: ({ signal }) => fetchExecutionTargets(machineKinds, signal),
     enabled: machineKinds.length > 0,
-    retry: false,
   });
   const machineCatalogVersion = jobs.data?.machine_catalog_version;
   useEffect(() => {
@@ -547,7 +536,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     try {
       await work();
     } catch (cause) {
-      setCommandError(apiErrorMessage(cause));
+      commandFailed(cause);
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -696,13 +685,12 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     try {
       await session.savePresentation(updated);
     } catch (error) {
-      setCommandError(apiErrorMessage(error));
+      commandFailed(error);
     }
   }
 
   const projectFailure = snapshot.error ?? stoppedPlan.error;
-  const serviceIssue = connection.isError ? studioRegionIssue('service', connection.error, true) : undefined;
-  const failure = serviceIssue?.reason ?? commandError ?? (projectFailure ? apiErrorMessage(projectFailure) : null);
+  const failure = commandError ?? (projectFailure && !isUnanswered(projectFailure) ? apiErrorMessage(projectFailure) : null);
   const retryPlan = () => {
     void projection.refetch();
   };
@@ -717,12 +705,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     : body;
   function retry() {
     setCommandError(undefined);
-    if (connection.isError) {
-      connection.refetch();
-      return;
-    }
-    if (snapshot.error && snapshot.pending) void editor.flush().catch((error) => setCommandError(apiErrorMessage(error)));
-    connection.refetch();
+    if (snapshot.error && snapshot.pending) void editor.flush().catch((error) => commandFailed(error));
+    actions.refresh();
     void projection.refetch();
     if (checkpointAttempt) void stoppedPlan.refetch();
   }
@@ -736,7 +720,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       }
       await editor.flush();
     } catch (error) {
-      setCommandError(apiErrorMessage(error));
+      commandFailed(error);
     }
   }
 
@@ -1106,7 +1090,6 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
           onToggle={activity.invoke}
           onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} resultState={activityResultState} />}
-        serviceFailure={serviceIssue && { kind: 'failed', issue: serviceIssue, retry: connection.refetch }}
         renderView={(view, slot) => {
           const details = slot === 'primary' ? primary : secondary;
           const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot

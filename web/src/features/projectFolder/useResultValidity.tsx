@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { acceptResult, checkResult } from '@/api/resultValidity';
-import { apiErrorMessage } from '@/api/request';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { Popover, PopoverContent } from '@/components/ui/Popover';
 import { TextField } from '@/components/ui/TextField';
@@ -32,7 +31,7 @@ export function useResultValidity({ projectId, revision, refresh, onError }: {
   projectId: string;
   revision: string;
   refresh: () => Promise<unknown>;
-  onError: (message: string) => void;
+  onError: (error: unknown) => void;
 }) {
   const history = useStudioJobHistory(projectId);
   const cursor = history.data?.at(-1)?.cursor ?? 0;
@@ -68,7 +67,7 @@ export function useResultValidity({ projectId, revision, refresh, onError }: {
         decided.state !== result.validity.state || !decided.checks?.length ? [result.requestId] : []));
     } catch (error) {
       settle(results.map(({ requestId }) => requestId));
-      onError(apiErrorMessage(error));
+      onError(error);
     }
   }
 
@@ -80,7 +79,7 @@ export function useResultValidity({ projectId, revision, refresh, onError }: {
         differences: resultCodeDifferences(result).map(tagged), who: author, why,
       })));
     } catch (error) {
-      onError(apiErrorMessage(error));
+      onError(error);
     }
     await refresh();
   }

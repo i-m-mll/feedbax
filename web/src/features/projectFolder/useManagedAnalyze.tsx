@@ -78,7 +78,6 @@ export function useManagedAnalyze({
     queryFn: ({ signal }) => readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
     enabled: !!document && !!key && key.row === 'default' && key.variant === projection?.window_map?.variants[0],
     staleTime: 30_000,
-    retry: false,
   });
   const catalog = authoring.data;
   const canEdit = !!analysis && !!document && !!key && !!catalog && catalog.document === document &&

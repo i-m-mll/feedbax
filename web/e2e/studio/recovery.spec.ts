@@ -13,63 +13,81 @@ test.use({
   viewport: { width: 1440, height: 900 },
 });
 
-test('reports that the backend stopped and recovers in the same window', async ({ page, studio, request }) => {
+const unreachable = 'Service unreachable';
+
+test('shows a lost service once in the bottom bar and reconnects by itself', async ({ page, studio, request }) => {
   test.setTimeout(50_000);
-  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
   await page.goto(studio.origin + '/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
-  const secondary = page.locator('[data-slot="secondary"]').getByRole('tabpanel');
+  const runs = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Runs', exact: true });
+  const table = runs.getByRole('table', { name: 'Runs', exact: true });
+  await expect(table).toBeVisible();
+  await runs.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const model = page.locator('[data-slot="secondary"]').getByRole('tabpanel', { name: 'Model', exact: true });
+  const modelNode = model.locator('.react-flow__node').first();
+  await expect(modelNode).toBeVisible();
+  const footer = page.locator('[data-studio-focus-region="bottom"]');
+  const run = runs.getByRole('button', { name: 'Run', exact: true });
+  await expect(run).toBeEnabled();
+
+  await studio.stopBackend();
+  await expect(footer.getByRole('alert')).toHaveText(new RegExp(unreachable));
+  await expect(page.getByText(unreachable)).toHaveCount(1);
+  await expect(footer.getByRole('button', { name: 'Retry', exact: true })).toBeEnabled();
+  await expect(table).toBeVisible();
+  await expect(modelNode).toBeVisible();
+  await expect(mapStep(page, 'train')).toBeVisible();
+  await expect(run).toBeDisabled();
+  for (const region of [runs, model, page.locator('[data-studio-focus-region="map"]')]) {
+    await expect(region.getByRole('alert')).toHaveCount(0);
+  }
+
+  const refetched = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === projectPath + '/train-runs' && response.request().method() === 'GET', { timeout: 20_000 });
+  await studio.startBackend();
+  await expect(footer.getByRole('alert')).toHaveCount(0, { timeout: 6_000 });
+  expect((await refetched).ok()).toBe(true);
+  await expect(run).toBeEnabled();
+  await expect(table).toBeVisible();
+  await expect(modelNode).toBeVisible();
+});
+
+test('a page loaded without the service shows its regions loading and the reason in the bottom bar', async ({
+  page, studio, request,
+}) => {
+  test.setTimeout(50_000);
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
+  await studio.stopBackend();
+  await page.goto(studio.origin + '/?project=' + snapshot.project_id);
+  const footer = page.locator('[data-studio-focus-region="bottom"]');
+  await expect(footer.getByRole('alert')).toHaveText(new RegExp(unreachable));
+  await expect(page.getByText(unreachable)).toHaveCount(1);
+  await expect(page.locator('[data-studio-focus-region="map"] [aria-busy="true"]')).toBeVisible();
+
+  await studio.startBackend();
+  await expect(mapStep(page, 'train')).toBeVisible({ timeout: 8_000 });
+  await expect(footer.getByRole('alert')).toHaveCount(0);
+});
+
+test('an endpoint answering with an error fails its own region only', async ({ page, studio, request }) => {
+  test.setTimeout(50_000);
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
+  await page.route((url) => url.pathname.endsWith('/model/projection'), (route) =>
+    route.fulfill({ status: 500, contentType: 'application/json', body: '{"detail":"projection failed"}' }));
+  await page.goto(studio.origin + '/?project=' + snapshot.project_id);
+  await mapStep(page, 'train').click();
   const runs = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Runs', exact: true });
   await expect(runs.getByRole('table', { name: 'Runs', exact: true })).toBeVisible();
   await runs.getByRole('button', { name: 'Split Details', exact: true }).click();
-  const tab = (name: string) => page.getByRole('tab', { name, exact: true });
-  await tab('Task').click();
-  const task = secondary.getByRole('button', { name: /^Task Document / });
-  await expect(task).toBeVisible();
-  const footer = page.locator('[data-studio-focus-region="bottom"]');
-  const activity = page.getByRole('region', { name: 'Activity', exact: true });
-  const openActivity = footer.getByRole('button', { name: 'Activity', exact: true });
-  await openActivity.click();
-  await expect(activity.getByRole('list', { name: 'Runs', exact: true })).toBeVisible();
-  await studio.stopBackend();
-  const failure = footer.getByRole('alert');
-  const unreachable = (region: ReturnType<typeof page.locator>) =>
-    expect(region.getByRole('alert').filter({ hasText: 'Service unreachable' })).toBeVisible();
-  await unreachable(activity);
-  await activity.getByRole('button', { name: 'Close', exact: true }).click();
-  await unreachable(footer);
-  await unreachable(runs);
-  await unreachable(secondary);
-  await unreachable(page.locator('[data-studio-focus-region="map"]'));
-  await unreachable(page.locator('[data-studio-focus-region="steps"]'));
-  await expect(task).toBeHidden();
-  await expect(runs.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
-  await runs.focus();
-  await unreachable(page.getByRole('complementary', { name: 'Details Drawer', exact: true }));
-  await unreachable(page.getByRole('complementary', { name: 'Inspector', exact: true }));
-  // Visit the remaining data-backed M2 views in the second slot during the same outage.
-  await secondary.focus();
-  for (const view of ['Model', 'Objective', 'Scene', 'Results', 'Training']) {
-    await tab(view).click();
-    await expect(secondary).toHaveAccessibleName(view);
-    await unreachable(secondary);
-  }
-  const retry = footer.getByRole('button', { name: 'Retry', exact: true });
-  await expect(retry).toBeEnabled();
-  const batchCount = secondary.getByRole('textbox', { name: 'N Batches', exact: true });
-  await studio.startBackend();
-  await expect(batchCount).toBeEnabled();
-  await tab('Task').click();
-  await expect(task).toBeVisible();
-  await expect(failure).toHaveCount(0);
-  await expect(runs.getByRole('table', { name: 'Runs', exact: true })).toBeVisible();
-  await expect(runs.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
-  await expect(mapStep(page, 'train')).toBeVisible();
-  await expect(page.locator('[data-studio-focus-region="steps"]').getByRole('alert')).toHaveCount(0);
-  await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true }).getByRole('alert')).toHaveCount(0);
-  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('alert')).toHaveCount(0);
-  await openActivity.click();
-  await expect(activity.getByRole('list', { name: 'Runs', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const model = page.locator('[data-slot="secondary"]').getByRole('tabpanel', { name: 'Model', exact: true });
+  await expect(model.getByRole('alert')).toHaveText('Model unavailable');
+  await expect(model.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+  await expect(page.locator('[data-studio-focus-region="bottom"]').getByRole('alert')).toHaveCount(0);
+  await expect(runs.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(1);
 });
 
 test('a mounted Model render failure reports to the service and retries only its slot', async ({

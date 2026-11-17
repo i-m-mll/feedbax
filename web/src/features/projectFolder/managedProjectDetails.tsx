@@ -148,7 +148,6 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
       return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial, checkpoint }, signal);
     },
     enabled: visible && !!trial && (!evaluation?.checkpoint_series || checkpoint !== undefined),
-    retry: false,
   });
   const replayDrawing = useMemo(() => replay.data && evaluationScene(replay.data), [replay.data]);
   const view: SceneView = replay.error
