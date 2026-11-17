@@ -3,6 +3,7 @@ import { Menu as BaseMenu } from '@base-ui/react/menu';
 import clsx from 'clsx';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import { popupItem, popupSurface } from './styles';
+import { usePopupLayer } from './popupLayer';
 
 export const Menu = BaseMenu.Root;
 export const MenuTrigger = BaseMenu.Trigger;
@@ -26,7 +27,7 @@ export interface MenuContentProps {
 
 export function MenuContent({ children, side = 'bottom', align = 'start', anchor, finalFocus, className, ...aria }: MenuContentProps) {
   return (
-    <BaseMenu.Portal>
+    <BaseMenu.Portal container={usePopupLayer()}>
       <BaseMenu.Positioner className="z-50 outline-none" side={side} align={align} sideOffset={4} anchor={anchor}>
         <BaseMenu.Popup className={clsx(popupSurface, 'min-w-[10rem]', className)} finalFocus={finalFocus} {...aria}>{children}</BaseMenu.Popup>
       </BaseMenu.Positioner>
@@ -36,7 +37,7 @@ export function MenuContent({ children, side = 'bottom', align = 'start', anchor
 
 export function ContextMenuContent({ children, className }: Pick<MenuContentProps, 'children' | 'className'>) {
   return (
-    <BaseContextMenu.Portal>
+    <BaseContextMenu.Portal container={usePopupLayer()}>
       <BaseContextMenu.Positioner className="z-50 outline-none">
         <BaseContextMenu.Popup className={clsx(popupSurface, 'min-w-[10rem]', className)}>{children}</BaseContextMenu.Popup>
       </BaseContextMenu.Positioner>

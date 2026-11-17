@@ -70,7 +70,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   const document = page.getByRole('tabpanel', { name: 'Document', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const boundsScale = inspector.getByRole('spinbutton', { name: 'Edit Bounds Scale', exact: true });
+  const boundsScale = inspector.getByRole('textbox', { name: 'Edit Bounds Scale', exact: true });
   const mutation = (method: string, route: string) => page.waitForResponse((response) =>
     response.request().method() === method && new URL(response.url()).pathname === route);
 
@@ -228,7 +228,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   await addOperation('Trial summary');
   await selectElement('summarize_velocity');
   await edit(() => number(page, boundsScale, '1.5'));
-  const beforeRefusal = await edit(() => number(page, inspector.getByRole('spinbutton', { name: 'Edit Ddof', exact: true }), '0'));
+  const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Edit Ddof', exact: true }), '0'));
   await chooseSource('states');
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
     Boolean(response.request().postDataJSON()?.wire));
@@ -570,14 +570,14 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(first.trials.length).toBeGreaterThan(0);
   expect(second.trials).toEqual(first.trials);
 
-  await pick(page, variants, 'compare');
+  await pick(variants, 'compare');
   await selectPair();
   await expect(palette.getByRole('option', { name: 'New Step', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await openRuns('train');
   await expect(train.getByRole('button', { name: 'New Step train', exact: true })).toHaveCount(0);
 
-  await pick(page, variants, 'base');
+  await pick(variants, 'base');
   await selectPair();
   const creating = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === path + '/files'

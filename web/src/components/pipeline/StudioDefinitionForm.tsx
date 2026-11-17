@@ -3,6 +3,11 @@ import { Circle, Info, Pencil, Plus } from "lucide-react";
 import { studioAccessibleName, studioName } from "@/components/activity/studioVocabulary";
 import type { JsonPrimitive } from "@/generated/studioContracts";
 import { selectionButton, type PipelineSelection } from "@/features/pipeline/selection";
+import { Button, IconButton } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { NumberField } from "@/components/ui/NumberField";
+import { Select } from "@/components/ui/Select";
+import { TextField } from "@/components/ui/TextField";
 
 export type StudioFieldControl =
   | { readonly kind: "number"; readonly min?: number; readonly max?: number; readonly step?: number }
@@ -56,8 +61,6 @@ interface FormProps {
   onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
 }
 
-const controlClass = "min-w-0 max-w-full rounded border border-shell-control bg-shell-surface px-1.5 py-0.5 disabled:opacity-60";
-
 function scalarText(value: JsonPrimitive) {
   if (typeof value === "boolean") return studioName(value ? "true" : "false");
   return value === null ? "—" : String(value);
@@ -71,34 +74,37 @@ function ScalarEditor({ control, name, value, onChange }: {
 }) {
   if (!control || !onChange) return <span className="tabular-nums">{value.label ?? scalarText(value.value)}</span>;
   if (control.kind === "boolean") {
-    return <input type="checkbox" aria-label={studioAccessibleName("edit", name)} checked={value.value === true} onChange={(event) => onChange(event.currentTarget.checked)} />;
+    return <Checkbox aria-label={studioAccessibleName("edit", name)} checked={value.value === true} onCheckedChange={onChange} />;
   }
   if (control.kind === "choice") {
     const selected = control.options.findIndex((option) => option.value === value.value);
     return (
-      <select
-        className={controlClass} aria-label={studioAccessibleName("edit", name)} value={selected < 0 ? "" : selected}
-        onChange={(event) => {
-          const option = control.options[Number(event.currentTarget.value)];
+      <Select
+        className="max-w-full" aria-label={studioAccessibleName("edit", name)}
+        items={control.options.map((option, index) => ({ value: String(index), label: option.label }))}
+        value={selected < 0 ? null : String(selected)} placeholder={value.label ?? scalarText(value.value)}
+        onValueChange={(index) => {
+          const option = control.options[Number(index)];
           if (option) onChange(option.value);
         }}
-      >
-        {selected < 0 && <option value="" disabled>{value.label ?? scalarText(value.value)}</option>}
-        {control.options.map((option, index) => <option key={index} value={index}>{option.label}</option>)}
-      </select>
+      />
     );
   }
+  return <NumberEditor key={String(value.value)} control={control} name={name} value={value.value} onChange={onChange} />;
+}
+
+function NumberEditor({ control, name, value, onChange }: {
+  control: Extract<StudioFieldControl, { kind: "number" }>;
+  name: string;
+  value: JsonPrimitive;
+  onChange: (value: JsonPrimitive) => void;
+}) {
+  const [draft, setDraft] = useState(typeof value === "number" ? value : null);
   return (
-    <input
-      key={String(value.value)}
-      type="number" aria-label={studioAccessibleName("edit", name)} className={`${controlClass} w-28 tabular-nums`}
-      defaultValue={typeof value.value === "number" ? value.value : ""}
-      min={control.min} max={control.max} step={control.step ?? "any"}
-      onBlur={({ currentTarget }) => {
-        const next = currentTarget.valueAsNumber;
-        if (currentTarget.validity.valid && Number.isFinite(next) && next !== value.value) onChange(next);
-      }}
-      onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }}
+    <NumberField
+      aria-label={studioAccessibleName("edit", name)} className="w-28"
+      value={draft} onValueChange={setDraft} min={control.min} max={control.max} step={control.step}
+      onValueCommitted={(next) => { if (next !== null && Number.isFinite(next) && next !== value) onChange(next); }}
     />
   );
 }
@@ -107,7 +113,7 @@ function ValueSource({ value }: { value: FieldValue }) {
   return (
     <>
       {value.changedFrom && <span className="text-shell-muted"><s>{value.changedFrom.label}</s> →</span>}
-      {value.source && <span className="rounded bg-shell-subtle px-1.5 text-xs text-shell-muted">{value.source}</span>}
+      {value.source && <span className="rounded-row bg-shell-subtle px-1.5 text-xs text-shell-muted">{value.source}</span>}
       {value.reason && <span className="text-xs text-shell-status-failure">{value.reason}</span>}
     </>
   );
@@ -125,11 +131,7 @@ function RuleField({ sweep, canList, onEdit }: { sweep: Exclude<FieldSweep, { ki
           <div key={name} className="flex gap-1 tabular-nums"><dt>{studioName(name)}</dt><dd>{value}</dd></div>
         ))}
       </dl>
-      {canList && (
-        <button type="button" className={controlClass} onClick={() => onEdit({ kind: "toList", sweepId: sweep.id })}>
-          {studioName("toList")}
-        </button>
-      )}
+      {canList && <Button onClick={() => onEdit({ kind: "toList", sweepId: sweep.id })}>{studioName("toList")}</Button>}
     </div>
   );
 }
@@ -148,9 +150,8 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
       <div className="flex items-start gap-1">
         <span id={labelId} className="min-w-0 font-medium">{field.label}</span>
         {!sweep && onlyValue && can("toSweep") && (
-          <button type="button" className="rounded p-0.5" aria-label={studioAccessibleName("toSweep", field.label)} onClick={() => edit({ kind: "toSweep", value: onlyValue.value })}>
-            <Circle aria-hidden="true" size={15} />
-          </button>
+          <IconButton label={studioAccessibleName("toSweep", field.label)} icon={<Circle aria-hidden="true" />}
+            onClick={() => edit({ kind: "toSweep", value: onlyValue.value })} />
         )}
       </div>
       {!sweep && (
@@ -175,32 +176,28 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
               const Icon = editable ? Pencil : Info;
               return (
                 <li key={value.id} data-selected={value.selected || undefined}
-                  className="flex max-w-full items-center rounded border border-shell-divider data-[selected=true]:border-shell-foreground data-[selected=true]:bg-shell-selected">
+                  className="flex max-w-full items-center rounded-control border border-shell-divider data-[selected=true]:border-shell-foreground data-[selected=true]:bg-shell-selected">
                   {onChooseSweepValue
-                    ? <button type="button" aria-pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)}
+                    ? <Button variant="ghost" pressed={value.selected ?? false} aria-label={studioAccessibleName("select", name)}
                       aria-description={description || undefined}
                       {...selectionButton((extend) => onChooseSweepValue(sweep.id, value.id, extend))}
-                      className="min-w-0 truncate px-1.5 py-0.5 tabular-nums">{label}</button>
-                    : <span className="min-w-0 truncate px-1.5 py-0.5 tabular-nums">{label}</span>}
-                  {(editable || description) && <button type="button" aria-label={studioAccessibleName(editable ? "edit" : "details", name)}
+                      className="min-w-0 tabular-nums"><span className="truncate">{label}</span></Button>
+                    : <span className="min-w-0 truncate px-control-inline tabular-nums">{label}</span>}
+                  {(editable || description) && <IconButton label={studioAccessibleName(editable ? "edit" : "details", name)}
                     aria-expanded={edited?.id === value.id} aria-controls={valueEditorId}
                     onClick={() => setEditingValue(edited?.id === value.id ? undefined : value.id)}
-                    className="shrink-0 rounded p-1 hover:bg-shell-hover">
-                    <Icon aria-hidden="true" size={12} />
-                  </button>}
+                    icon={<Icon aria-hidden="true" />} />}
                 </li>
               );
             })}
             {can("addValue") && <li>
-              <button type="button" className={controlClass} aria-label={studioAccessibleName("addValue", field.label)}
-                onClick={() => edit({ kind: "addValue", sweepId: sweep.id })}>
-                <Plus aria-hidden="true" size={15} />
-              </button>
+              <IconButton variant="default" label={studioAccessibleName("addValue", field.label)} icon={<Plus aria-hidden="true" />}
+                onClick={() => edit({ kind: "addValue", sweepId: sweep.id })} />
             </li>}
           </ul>
           {edited && <div id={valueEditorId} className="flex min-w-0 flex-wrap items-center gap-1" key={edited.id}>
             {can("nameSweepValue") && (
-              <input key={edited.label ?? ""} type="text" className={`${controlClass} w-24`}
+              <TextField key={edited.label ?? ""} className="w-24"
                 aria-label={studioAccessibleName("name", `${field.label} ${edited.label ?? scalarText(edited.value)}`)}
                 defaultValue={edited.label ?? ""}
                 onBlur={({ currentTarget }) => {
@@ -214,11 +211,10 @@ export function StudioDefinitionFieldEditor({ field, selection, onEdit, onChoose
               control={field.control} onChange={can("setSweepValue") ? (next) => edit({ kind: "setSweepValue", sweepId: sweep.id, valueId: edited.id, value: next }) : undefined} />
             <ValueSource value={edited} />
             {can("toField") && (
-              <button type="button" className={controlClass}
-                aria-label={studioAccessibleName("toField", `${field.label} ${edited.label ?? scalarText(edited.value)}`)}
+              <Button aria-label={studioAccessibleName("toField", `${field.label} ${edited.label ?? scalarText(edited.value)}`)}
                 onClick={() => edit({ kind: "toField", sweepId: sweep.id, keepValueId: edited.id })}>
                 {studioName("toField")}
-              </button>
+              </Button>
             )}
           </div>}
         </div>

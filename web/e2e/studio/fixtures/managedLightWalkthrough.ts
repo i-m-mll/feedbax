@@ -97,7 +97,7 @@ export async function verifyWalkthroughVariant(context: Walkthrough, plantId: st
   expect(compare.edges.every(({ from_key }) => from_key.variant === 'compare')).toBe(true);
   const originalAttempts = await attempts();
 
-  await pick(page, variant(page), 'compare');
+  await pick(variant(page), 'compare');
   await activate(page, mapStep(page, 'train'));
   await openView(page, 'model');
   await selectModelComponent(page, plantId);
@@ -233,7 +233,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       state: 'preserve', schedule: 'continue', rng: 'carry',
     },
   }]);
-  await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
+  await expect(carryover).toHaveText('Carry training state');
   const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
   await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');

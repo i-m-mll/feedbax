@@ -1,5 +1,7 @@
 import { useId, useLayoutEffect, useMemo, useRef, type PointerEvent, type ReactNode, type SVGProps } from 'react';
 import { LocateFixed, ZoomIn, ZoomOut } from 'lucide-react';
+import { Button, IconButton } from '@/components/ui/Button';
+import { Select } from '@/components/ui/Select';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { liveTrainingEffectorTrack, liveTrainingTargetTrack } from '@/features/scenario/liveTraining';
@@ -249,18 +251,17 @@ export function SceneHeaderControls({
     !sceneTrack(view)?.samples.length) return null;
   const overlays = new Set(view.scene.entities.filter((entity) => drawableIds.has(entity.id)).map(sceneEntityOverlay));
   const control = (id: StudioNameId, button: ReactNode) => renderControl ? renderControl(id, button) : button;
-  const buttonClass = 'rounded px-2 py-1 text-xs font-medium text-shell-muted hover:bg-shell-hover aria-pressed:bg-shell-selected';
   return (
     <div className="studio-scene-controls flex flex-wrap items-center gap-1">
-      {control('zoomIn', <button type="button" aria-label={studioName('zoomIn')} className={buttonClass} onClick={() => onCameraChange(zoomScene(camera, 1.2))}><ZoomIn className="size-4" aria-hidden="true" /></button>)}
-      {control('zoomOut', <button type="button" aria-label={studioName('zoomOut')} className={buttonClass} onClick={() => onCameraChange(zoomScene(camera, 1 / 1.2))}><ZoomOut className="size-4" aria-hidden="true" /></button>)}
-      {control('fitView', <button type="button" aria-label={studioName('fitView')} className={buttonClass} onClick={() => onCameraChange(fittedCamera)}><LocateFixed className="size-4" aria-hidden="true" /></button>)}
+      {control('zoomIn', <IconButton label={studioName('zoomIn')} icon={<ZoomIn aria-hidden="true" />} onClick={() => onCameraChange(zoomScene(camera, 1.2))} />)}
+      {control('zoomOut', <IconButton label={studioName('zoomOut')} icon={<ZoomOut aria-hidden="true" />} onClick={() => onCameraChange(zoomScene(camera, 1 / 1.2))} />)}
+      {control('fitView', <IconButton label={studioName('fitView')} icon={<LocateFixed aria-hidden="true" />} onClick={() => onCameraChange(fittedCamera)} />)}
       {(['objectives', 'observables', 'overlays'] as const).filter((overlay) => overlays.has(overlay)).map((overlay) => (
         <span key={overlay}>
           {control(overlay, (
-            <button type="button" className={buttonClass} aria-pressed={!hiddenOverlays.has(overlay)} onClick={() => onToggleOverlay(overlay)}>
+            <Button variant="ghost" pressed={!hiddenOverlays.has(overlay)} onClick={() => onToggleOverlay(overlay)}>
               {studioName(overlay)}
-            </button>
+            </Button>
           ))}
         </span>
       ))}
@@ -316,20 +317,18 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials, chec
   return (
     <div className="space-y-3">
       {checkpoints && (
-        <label className="grid gap-1 px-2 text-sm">
+        <label className="grid gap-1 px-2">
           {studioName('checkpoint')}
-          <select value={checkpoints.selected} onChange={(event) => checkpoints.onSelect(Number(event.currentTarget.value))}>
-            {checkpoints.choices.map((coordinate) => <option key={coordinate} value={coordinate}>{coordinate}</option>)}
-          </select>
+          <Select aria-label={studioName('checkpoint')} value={String(checkpoints.selected)}
+            items={checkpoints.choices.map((coordinate) => ({ value: String(coordinate), label: String(coordinate) }))}
+            onValueChange={(value) => checkpoints.onSelect(Number(value))} />
         </label>
       )}
       {trials && trials.choices.length > 0 && (
-        <label className="grid gap-1 px-2 text-sm">
+        <label className="grid gap-1 px-2">
           {studioName('trials')}
-          <select value={trials.selectedId ?? ''} onChange={(event) => trials.onSelect(event.currentTarget.value)}>
-            {trials.selectedId === null && <option value="" disabled>{studioName('choose')}</option>}
-            {trials.choices.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-          </select>
+          <Select aria-label={studioName('trials')} value={trials.selectedId} placeholder={studioName('choose')}
+            items={trials.choices.map(({ id, label }) => ({ value: id, label }))} onValueChange={trials.onSelect} />
         </label>
       )}
       {drawerGroups.map((group) => {
@@ -341,10 +340,9 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials, chec
             <ul>
               {items.map((item) => (
                 <li key={item.id}>
-                  <button type="button" aria-pressed={item.id === selectedId} onClick={() => onSelect(item.id)}
-                    className="w-full rounded px-2 py-1 text-left text-sm text-shell-foreground hover:bg-shell-hover aria-pressed:bg-shell-selected">
-                    {item.label}
-                  </button>
+                  <Button variant="ghost" align="start" pressed={item.id === selectedId} onClick={() => onSelect(item.id)} className="w-full">
+                    <span className="truncate">{item.label}</span>
+                  </Button>
                   <SceneIssues issues={issuesByEntity.get(item.id) ?? []} />
                 </li>
               ))}

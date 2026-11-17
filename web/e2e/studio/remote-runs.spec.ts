@@ -5,6 +5,7 @@ import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioMachineApprovalReceipt, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
 test.skip(process.env.FEEDBAX_STUDIO_E2E_REMOTE_FIXTURE !== '1', 'Requires the disposable machine provider');
 
@@ -24,8 +25,8 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   const machine = page.getByRole('combobox', { name: 'Machine' });
-  await expect(machine).toHaveValue('local');
-  await machine.selectOption('rehearsal');
+  await expect(machine).toHaveText(/^This Mac/);
+  await pick(machine, /^Rehearsal Machine/);
   const run = page.getByRole('button', { name: 'Run', exact: true });
   await run.click();
   const approval = page.getByRole('dialog', { name: 'Needs approval' });
@@ -166,7 +167,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   };
   const command = (name: string) => page.getByRole('button', { name, exact: true });
 
-  await page.getByRole('combobox', { name: 'Machine' }).selectOption('rehearsal');
+  await pick(page.getByRole('combobox', { name: 'Machine' }), /^Rehearsal Machine/);
   await command('Run').click();
   const approval = page.getByRole('dialog', { name: 'Needs approval' });
   await expect(approval.getByRole('listitem')).toHaveCount(6);
@@ -247,7 +248,7 @@ test('Opening refusal survives reload on the exact approved row', async ({ page,
   const runs = page.getByRole('table', { name: 'Runs', exact: true });
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
-  await page.getByRole('combobox', { name: 'Machine' }).selectOption('rehearsal');
+  await pick(page.getByRole('combobox', { name: 'Machine' }), /^Rehearsal Machine/);
   await page.getByRole('button', { name: 'Run', exact: true }).click();
   const approval = page.getByRole('dialog', { name: 'Needs approval' });
   await writeFile(refusal, '');
@@ -279,19 +280,17 @@ test('The Machine picker follows provider failure and recovery without reload', 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   const machine = page.getByRole('combobox', { name: 'Machine' });
-  const option = machine.locator('option[value="rehearsal"]');
   const run = page.getByRole('button', { name: 'Run', exact: true });
-  await expect(option).toHaveText('Rehearsal Machine · Ready');
-  await machine.selectOption('rehearsal');
+  await pick(machine, 'Rehearsal Machine · Ready');
   await writeFile(outage, '');
   try {
     await run.click();
-    await expect(option).toHaveText('Rehearsal Machine · Unreachable');
+    await expect(machine).toHaveText('Rehearsal Machine · Unreachable');
     await expect(machine).toHaveAccessibleDescription('The provider did not answer.');
     await expect(run).toBeDisabled();
   } finally {
     await unlink(outage);
   }
-  await expect(option).toHaveText('Rehearsal Machine · Ready', { timeout: 12_000 });
+  await expect(machine).toHaveText('Rehearsal Machine · Ready', { timeout: 12_000 });
   await expect(run).toBeEnabled();
 });

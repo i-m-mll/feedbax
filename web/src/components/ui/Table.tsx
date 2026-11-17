@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import type { HTMLAttributes, TdHTMLAttributes, ThHTMLAttributes } from 'react';
+import { forwardRef, type HTMLAttributes, type TdHTMLAttributes, type ThHTMLAttributes } from 'react';
 
 export function Table({ className, ...props }: HTMLAttributes<HTMLTableElement>) {
   return <table className={clsx('w-full border-separate border-spacing-0 text-shell-foreground', className)} {...props} />;
@@ -22,9 +22,12 @@ export interface TableRowProps extends HTMLAttributes<HTMLTableRowElement> {
   related?: boolean;
 }
 
-export function TableRow({ selected, related, className, ...props }: TableRowProps) {
+export const TableRow = forwardRef<HTMLTableRowElement, TableRowProps>(function TableRow(
+  { selected, related, className, ...props }, ref,
+) {
   return (
     <tr
+      ref={ref}
       aria-selected={selected}
       data-selected={selected || undefined}
       data-related={related || undefined}
@@ -36,8 +39,14 @@ export function TableRow({ selected, related, className, ...props }: TableRowPro
       {...props}
     />
   );
-}
+});
+
+const cell = 'h-row truncate border-b border-shell-divider px-row-inline';
 
 export function TableCell({ className, ...props }: TdHTMLAttributes<HTMLTableCellElement>) {
-  return <td className={clsx('h-row truncate border-b border-shell-divider px-row-inline', className)} {...props} />;
+  return <td className={clsx(cell, className)} {...props} />;
+}
+
+export function TableRowHeader({ className, ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
+  return <th scope="row" className={clsx(cell, 'text-left font-medium', className)} {...props} />;
 }

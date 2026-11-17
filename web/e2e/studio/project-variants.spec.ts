@@ -54,7 +54,7 @@ test('a Model value edit changes only its authored variant and keeps exact share
     expect(initial[variant].result).toEqual(initial.base.result);
   }
 
-  await pick(page, variants, 'compare');
+  await pick(variants, 'compare');
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(variants).toHaveText('base');
@@ -116,7 +116,7 @@ test('a Model value edit changes only its authored variant and keeps exact share
 
   await page.reload();
   await expect(variants).toHaveText('base');
-  await pick(page, variants, 'compare');
+  await pick(variants, 'compare');
   await mapStep(page, 'train').click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
   await selectPlant();

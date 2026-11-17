@@ -233,7 +233,7 @@ test('persists an attachment in the selected project variant', async ({ page, re
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'variant');
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
-  await pick(page, page.getByRole('combobox', { name: 'Variant', exact: true }), 'treated');
+  await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'treated');
   await mapStep(page, 'baseline').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });

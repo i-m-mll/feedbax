@@ -4,6 +4,7 @@ import { Check, ChevronDown } from 'lucide-react';
 import { useMemo } from 'react';
 import type { Option } from './Select';
 import { fieldBox, fieldInput, glyph, popupItem, popupSurface } from './styles';
+import { usePopupLayer } from './popupLayer';
 
 export interface ComboboxProps<Value extends string> {
   items: readonly Option<Value>[];
@@ -38,7 +39,7 @@ export function Combobox<Value extends string>(
           <ChevronDown />
         </BaseCombobox.Trigger>
       </BaseCombobox.InputGroup>
-      <BaseCombobox.Portal>
+      <BaseCombobox.Portal container={usePopupLayer()}>
         <BaseCombobox.Positioner className="z-50 outline-none" sideOffset={4} align="start">
           <BaseCombobox.Popup className={clsx(popupSurface, 'w-[var(--anchor-width)] max-w-[var(--available-width)] data-[empty]:hidden')}>
             <BaseCombobox.List className="max-h-[min(22rem,var(--available-height))] overflow-y-auto">

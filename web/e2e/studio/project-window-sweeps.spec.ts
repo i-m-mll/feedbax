@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
 test.use({
   trace: 'off',
@@ -109,8 +110,7 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   await mapStep(page, 'train').click();
   await rate.getByRole('button', { name: 'Learning Rate kind: Sweep' }).click();
   await page.getByRole('menuitem', { name: 'Value' }).click();
-  await rate.getByRole('combobox', { name: 'Keep Value Learning Rate' }).click();
-  await page.getByRole('option', { name: '0.00275', exact: true }).click();
+  await pick(rate.getByRole('combobox', { name: 'Keep Value Learning Rate' }), '0.00275');
   await rate.getByRole('button', { name: 'Keep Value' }).click();
   await expect(rate.getByRole('textbox', { name: 'Learning Rate', exact: true })).toHaveValue('0.00275');
   await expect(table).toHaveAttribute('aria-rowcount', '3');

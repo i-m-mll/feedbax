@@ -55,7 +55,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   async function addFigure(name: string) {
     await document.getByRole('button', { name: 'Add Figure', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Add Figure', exact: true });
-    await dialog.getByRole('combobox', { name: 'Figures' }).selectOption({ label: 'analyze · ' + name });
+    await pick(dialog.getByRole('combobox', { name: 'Figures' }), 'analyze · ' + name);
     return edit(() => dialog.getByRole('button', { name: 'Add Figure', exact: true }).click());
   }
 
@@ -87,12 +87,12 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   expect(original.report.base).toMatch(/^report:/);
   expect(original.report.compare).toBe(original.report.base);
 
-  await pick(page, variants, 'compare');
+  await pick(variants, 'compare');
   await mapStep(page, 'report').click();
   await page.getByRole('tab', { name: 'Document', exact: true }).click();
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toBeDisabled();
-  await pick(page, variants, 'base');
+  await pick(variants, 'base');
   await mapStep(page, 'report').click();
   await page.getByRole('tab', { name: 'Document', exact: true }).click();
 
@@ -122,7 +122,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   expect(report(redone)).toEqual(report(removed));
   expect(inputs(redone)).toEqual(inputs(removed));
 
-  const permissive = await edit(() => document.getByRole('combobox', { name: 'Completeness' }).selectOption('allow_omissions'));
+  const permissive = await edit(() => pick(document.getByRole('combobox', { name: 'Completeness' }), 'Allow Omissions'));
   const changed = await requests(permissive.revision);
   expect(changed.report.base).toMatch(/^report:/);
   expect(changed.report.base).not.toBe(original.report.base);
@@ -144,7 +144,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   await page.reload();
   await mapStep(page, 'report').click();
   await page.getByRole('tab', { name: 'Document', exact: true }).click();
-  await expect(document.getByRole('combobox', { name: 'Completeness' })).toHaveValue('allow_omissions');
+  await expect(document.getByRole('combobox', { name: 'Completeness' })).toHaveText('Allow Omissions');
   await expect(blocks).toHaveCount(3);
   const reopened = await snapshot();
   expect(reopened.revision).toBe(permissive.revision);

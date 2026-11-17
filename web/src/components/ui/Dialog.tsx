@@ -1,5 +1,6 @@
 import clsx from 'clsx';
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { PopupLayer } from './popupLayer';
 
 const panelStyle = 'rounded-surface border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-lift outline-none';
 
@@ -26,12 +27,15 @@ export function Dialog({
 }: DialogProps) {
   const panel = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
+  const [layer, setLayer] = useState<HTMLDialogElement | null>(null);
   function tabbable(container: HTMLElement) {
     return [...container.querySelectorAll<HTMLElement>(
       'button, input, select, textarea, a[href], summary, [tabindex]',
     )].filter((element) => element.tabIndex >= 0 && !element.matches(':disabled') &&
       !element.closest('[hidden], [inert]') && element.getClientRects().length > 0);
   }
+
+  useLayoutEffect(() => setLayer(manageFocus ? dialog.current : null), [manageFocus]);
 
   useLayoutEffect(() => {
     const container = panel.current;
@@ -94,7 +98,7 @@ export function Dialog({
             (boundary ?? event.currentTarget).focus();
           }
         } : undefined}>
-        {children}
+        <PopupLayer.Provider value={layer}>{children}</PopupLayer.Provider>
       </div>
     </dialog>
   );

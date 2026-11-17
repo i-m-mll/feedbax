@@ -89,23 +89,24 @@ export async function number(page: Page, target: Locator, value: string) {
   await page.keyboard.press('Enter');
 }
 
+/** Chooses `label` in a Select of the control layer by keyboard: open, walk from the first option, Enter. */
 export async function chooseOption(page: Page, select: Locator, label: string | RegExp) {
-  const option = select.getByRole('option', { name: label, exact: true });
-  await expect(option).toHaveCount(1);
-  const { keys, value } = await option.evaluate((element) => {
-    const option = element as HTMLOptionElement;
-    const choices = [...option.closest('select')!.options].filter((item) => !item.disabled);
-    const name = option.label.trim().toLowerCase();
-    let length = 1;
-    while (length < name.length &&
-      choices.filter((item) => item.label.trim().toLowerCase().startsWith(name.slice(0, length))).length > 1) {
-      length += 1;
-    }
-    return { keys: name.slice(0, length), value: option.value };
-  });
+  await expect(select).toBeEnabled();
   await tabTo(page, select);
-  await page.keyboard.type(keys);
-  await expect(select).toHaveValue(value);
+  await page.keyboard.press('ArrowDown');
+  const listbox = page.getByRole('listbox');
+  await expect(listbox).toBeVisible();
+  const option = listbox.getByRole('option', { name: label, exact: true });
+  await expect(option).toHaveCount(1);
+  await page.keyboard.press('Home');
+  const options = await listbox.getByRole('option').count();
+  for (let index = 0; index < options && !await option.evaluate((element) => element.hasAttribute('data-highlighted')); index += 1) {
+    await page.keyboard.press('ArrowDown');
+  }
+  await expect(option).toHaveAttribute('data-highlighted');
+  await page.keyboard.press('Enter');
+  await expect(listbox).toBeHidden();
+  await expect(select).toHaveText(label);
 }
 
 export function post(page: Page, path: string) {

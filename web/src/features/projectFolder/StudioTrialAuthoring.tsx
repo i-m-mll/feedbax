@@ -3,6 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { ArrowUp } from 'lucide-react';
+import { Button, IconButton } from '@/components/ui/Button';
+import { Checkbox } from '@/components/ui/Checkbox';
+import { Select } from '@/components/ui/Select';
+import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
 import { StudioFieldControl } from '@/components/values/StudioFieldControl';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
@@ -14,8 +19,6 @@ import type { ProjectEditController } from './projectEditController';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 type Commit = (name: string, change: Change) => Promise<string | undefined>;
-const control = 'min-w-0 rounded border border-shell-divider bg-shell-chrome px-2 py-1 text-sm';
-const button = 'rounded px-2 py-1 text-sm hover:bg-shell-hover disabled:opacity-50';
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
 
 function parameterValue(value: JsonValue | undefined) {
@@ -69,16 +72,14 @@ export function useTrialAuthoring(
 export function TrialTaskPicker({ view, commit }: { view: StudioTrialAuthoring; commit?: Commit }) {
   const [error, setError] = useState<string>();
   return <>
-    <select className={control} aria-label={studioName('taskDocument')} value={view.task_document ?? ''}
-      disabled={!commit || view.tasks.length === 0} onChange={async (event) => {
-        const document = event.currentTarget.value;
-        if (document) setError(await commit?.(studioAccessibleName('select', studioName('task')), { kind: 'select_task', document }));
-      }}>
-      {!view.task_document && <option value="">{studioName('inlineTask')}</option>}
-      {view.tasks.map(({ document, problems }) => <option key={document} value={document}>
-        {document}{problems.length ? ' · ' + problems[0].reason : ''}
-      </option>)}
-    </select>
+    <Select className="min-w-0" aria-label={studioName('taskDocument')} value={view.task_document ?? null}
+      placeholder={studioName('inlineTask')} disabled={!commit || view.tasks.length === 0}
+      items={view.tasks.map(({ document, problems }) => ({
+        value: document, label: document + (problems.length ? ' · ' + problems[0].reason : ''),
+      }))}
+      onValueChange={async (document) => {
+        setError(await commit?.(studioAccessibleName('select', studioName('task')), { kind: 'select_task', document }));
+      }} />
     {error && <span role="alert">{error}</span>}
   </>;
 }
@@ -126,13 +127,14 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
       <h3 className="font-medium">{studioName('modelInputs')}</h3>
       {view.inputs.map(({ address, name, signal }) => <label key={name} className="flex items-center gap-2">
         {name}
-        <select className={control} aria-label={studioAccessibleName('bind', name)} value={signal ?? ''} disabled={!commit}
-          onChange={async (event) => setError(await commit?.('Bind Task Signal', {
-            kind: 'binding', input: address, signal: event.currentTarget.value || null,
-          }))}>
-          <option value="">{studioDefinitionStatus('unbound')}</option>
-          {view.signals.map(({ id, name }) => <option key={id} value={name}>{humanizeLabel(name)}</option>)}
-        </select>
+        <Select className="min-w-0" aria-label={studioAccessibleName('bind', name)} value={signal ?? ''} disabled={!commit}
+          items={[
+            { value: '', label: studioDefinitionStatus('unbound') },
+            ...view.signals.map(({ name }) => ({ value: name, label: humanizeLabel(name) })),
+          ]}
+          onValueChange={async (value) => setError(await commit?.('Bind Task Signal', {
+            kind: 'binding', input: address, signal: value || null,
+          }))} />
       </label>)}
     </section>}
     {error && <p role="alert">{error}</p>}
@@ -166,12 +168,9 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
     setError(await commit?.(name, { kind: 'objective', edits: [edit] }));
   return <div className="grid gap-3 overflow-auto p-3 text-sm">
     <div className="flex items-center gap-2">
-      <select className={control} aria-label={studioName('measureSource')} value={chosen?.id ?? ''} disabled={!commit || !sources.length}
-        onChange={(event) => setSource(event.currentTarget.value)}>
-        {!sources.length && <option value="" />}
-        {sources.map(({ id, name }) => <option key={id} value={id}>{humanizeLabel(name)}</option>)}
-      </select>
-      <button type="button" className={button} disabled={!commit || !chosen} onClick={async () => {
+      <Select className="min-w-0" aria-label={studioName('measureSource')} value={chosen?.id ?? null} disabled={!commit || !sources.length}
+        items={sources.map(({ id, name }) => ({ value: id, label: humanizeLabel(name) }))} onValueChange={setSource} />
+      <Button disabled={!commit || !chosen} onClick={async () => {
         if (!commit || !chosen) return;
         const id = crypto.randomUUID();
         const value = {
@@ -188,46 +187,47 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
         const reason = await commit(studioName('addTerm'), { kind: 'objective', edits });
         setError(reason);
         if (!reason) select(id);
-      }}>{studioName('addTerm')}</button>
+      }}>{studioName('addTerm')}</Button>
     </div>
     {error && <p role="alert">{error}</p>}
-    <table className="w-full text-left" aria-label={studioName('objectiveTerms')}>
+    <Table aria-label={studioName('objectiveTerms')}>
       <thead><tr>{(['term', 'measure', 'window', 'weight'] as const).map((id) =>
-        <th scope="col" className="border-b border-shell-divider p-2 font-medium" key={id}>{studioName(id)}</th>)}
-        <th scope="col" className="border-b border-shell-divider" />
+        <TableHeaderCell scope="col" key={id}>{studioName(id)}</TableHeaderCell>)}
+        <TableHeaderCell scope="col" />
       </tr></thead>
       <tbody>{terms.map((term, index) => {
         const path = '/terms/' + index;
         const set = (field: keyof ObjectiveTerm, value: JsonValue, name: string) =>
           save(name, write(path + '/' + field, value, has(term, field)));
-        return <tr key={term.id} className="border-b border-shell-divider align-top" aria-selected={selected === term.id}>
-          <td className="p-2">
-            <button type="button" className={button} onClick={() => select(term.id)}>{term.name ?? studioAccessibleName('term', index + 1)}</button>
-            <label className="flex items-center gap-1"><input type="checkbox" checked={term.enabled ?? true} disabled={!commit}
-              onChange={(event) => { void set('enabled', event.currentTarget.checked, studioName('enabled')); }} />{studioName('enabled')}</label>
-          </td>
-          <td className="min-w-40 p-2">{expressionControl(view, term, 'measure', commit)}</td>
-          <td className="p-2"><select className={control} aria-label={studioName('window')} disabled={!commit}
+        return <tr key={term.id} className="align-top" aria-selected={selected === term.id}>
+          <TableCell className="py-1">
+            <Button variant="ghost" align="start" onClick={() => select(term.id)}>{term.name ?? studioAccessibleName('term', index + 1)}</Button>
+            <Checkbox label={studioName('enabled')} checked={term.enabled ?? true} disabled={!commit}
+              onCheckedChange={(checked) => { void set('enabled', checked, studioName('enabled')); }} />
+          </TableCell>
+          <TableCell className="min-w-40 overflow-visible py-1">{expressionControl(view, term, 'measure', commit)}</TableCell>
+          <TableCell className="py-1"><Select aria-label={studioName('window')} disabled={!commit}
             value={term.epochs?.length === 1 ? term.epochs[0] : term.epochs?.length ? '@multiple' : ''}
-            onChange={(event) => { const epoch = event.currentTarget.value; void set('epochs', epoch ? [epoch] : [], 'Set Window'); }}>
-            <option value="">{studioName('wholeTrial')}</option>
-            {term.epochs && term.epochs.length > 1 && <option value="@multiple" disabled>{term.epochs.join(', ')}</option>}
-            {view.epochs.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
-          </select></td>
-          <td className="min-w-24 p-2">{expressionControl(view, term, 'weight', commit)}</td>
-          <td className="p-2">
-            <button type="button" className={button} disabled={!commit || index === 0} aria-label={studioName('moveEarlier')} onClick={() => {
+            items={[
+              { value: '', label: studioName('wholeTrial') },
+              ...term.epochs && term.epochs.length > 1 ? [{ value: '@multiple', label: term.epochs.join(', '), disabled: true }] : [],
+              ...view.epochs.map(({ id, name }) => ({ value: id, label: name })),
+            ]}
+            onValueChange={(epoch) => { void set('epochs', epoch ? [epoch] : [], 'Set Window'); }} /></TableCell>
+          <TableCell className="min-w-24 overflow-visible py-1">{expressionControl(view, term, 'weight', commit)}</TableCell>
+          <TableCell className="py-1">
+            <IconButton label={studioName('moveEarlier')} icon={<ArrowUp aria-hidden="true" />} disabled={!commit || index === 0} onClick={() => {
               const reordered = [...terms];
               [reordered[index - 1], reordered[index]] = [reordered[index], reordered[index - 1]];
               void save(studioName('moveEarlier'), write('/terms', reordered as unknown as JsonValue, true));
-            }}>↑</button>
-            <button type="button" className={button} disabled={!commit} onClick={() => {
+            }} />
+            <Button variant="ghost" disabled={!commit} onClick={() => {
               void save(studioAccessibleName('remove', studioName('term')), { op: 'remove', path });
-            }}>{studioName('remove')}</button>
-          </td>
+            }}>{studioName('remove')}</Button>
+          </TableCell>
         </tr>;
       })}</tbody>
-    </table>
+    </Table>
   </div>;
 }
 
@@ -244,11 +244,10 @@ export function TrialObjectiveInspector({ view, commit, selected }: {
   return <div className="grid gap-2 p-2 text-sm">
     <Field key={term.id} label={studioName('name')} value={term.name ?? ''} parse={(raw) => raw.trim() || undefined}
       commit={commit && ((value) => { void save('name', value); })} />
-    <label>{studioName('reduction')} <select className={control} value={term.reduction ?? 'mean'} disabled={!commit}
-      onChange={(event) => { void save('reduction', event.currentTarget.value); }}>
-      {([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const).map(([value, name]) =>
-        <option value={value} key={value}>{studioName(name)}</option>)}
-    </select></label>
+    <label className="grid gap-1">{studioName('reduction')} <Select aria-label={studioName('reduction')} value={term.reduction ?? 'mean'} disabled={!commit}
+      items={([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const).map(([value, name]) =>
+        ({ value, label: studioName(name) }))}
+      onValueChange={(value) => { void save('reduction', value); }} /></label>
     {error && <p role="alert">{error}</p>}
   </div>;
 }

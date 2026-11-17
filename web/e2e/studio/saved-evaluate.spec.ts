@@ -164,7 +164,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
   const trials = drawer.getByRole('combobox', { name: 'Trials' });
   const response = posted(page, path, trialId);
-  await trials.selectOption(trialId);
+  await pick(trials, trialId);
   const reply = await response;
   expect(reply.ok(), await reply.text()).toBe(true);
   expect(reply.request().postDataJSON()).toMatchObject({
@@ -698,7 +698,7 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   const before = await plan(initial.revision);
   await page.goto(`/?project=${project}`);
   await chooseStep(page, 'evaluate');
-  await pick(page, page.getByRole('combobox', { name: 'Variant', exact: true }), 'comparison');
+  await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'comparison');
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
   const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
@@ -720,7 +720,7 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   expect(comparison.checkpoint_series?.requested).toEqual([4]);
   expect(revised.rows.map(({ request_id }) => request_id)).toEqual(before.rows.map(({ request_id }) => request_id));
   await expect(field).toHaveValue('every 2 from 3');
-  await pick(page, page.getByRole('combobox', { name: 'Variant', exact: true }), 'base');
+  await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'base');
   await expect(field).toHaveValue('last');
 });
 
@@ -952,16 +952,16 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await plans(page).getByRole('button', { name: labels.get(JSON.stringify(finiteRow.key))!, exact: true }).click();
   await tab(page, 'Scene').click();
   const checkpoints = page.getByRole('combobox', { name: 'Checkpoint', exact: true });
-  await expect(checkpoints).toHaveValue('2');
+  await expect(checkpoints).toHaveText('2');
   const finiteTrials = page.getByRole('combobox', { name: 'Trials', exact: true });
   let selectedReplay = posted(page, replayPath, trialId);
-  await finiteTrials.selectOption(trialId);
+  await pick(finiteTrials, trialId);
   let selected = await selectedReplay;
   expect(selected.ok(), await selected.text()).toBe(true);
   expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 2 });
   expect((await selected.json() as WorkspaceReplayTrial).tracks![0].samples).toEqual(fromCheckpoint.checkpoints[0].samples);
   selectedReplay = posted(page, replayPath, trialId);
-  await checkpoints.selectOption('1');
+  await pick(checkpoints, '1');
   selected = await selectedReplay;
   expect(selected.ok(), await selected.text()).toBe(true);
   expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 1 });
@@ -974,7 +974,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await expect(cursors).toHaveCount(2);
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   await expect(clock).toHaveCount(1);
-  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveValue(trialId);
+  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveText(trialId);
   // Each slot projects the same trial into its own fitted viewport.
   const frame = (end: boolean) => cursors.evaluateAll((points, end) => points.map((point) => {
     const cursor = point as SVGCircleElement;

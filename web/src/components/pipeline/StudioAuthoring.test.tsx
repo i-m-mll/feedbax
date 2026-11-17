@@ -35,7 +35,7 @@ it("keeps the current typed value when turning the field into a sweep, then edit
   expect(choose).toHaveBeenLastCalledWith("learning-rate", "stable-b", true);
   fireEvent.click(screen.getByRole("button", { name: "Edit Learning rate 0.003" }));
   expect(screen.getByText("Fast rate")).toBeDefined();
-  const value = screen.getByRole("spinbutton", { name: "Edit Learning rate 0.003" });
+  const value = screen.getByRole("textbox", { name: "Edit Learning rate 0.003" });
   fireEvent.change(value, { target: { value: "0.005125" } });
   fireEvent.blur(value);
   expect(edit).toHaveBeenLastCalledWith({ fieldId: "rate-field", selection, edit: { kind: "setSweepValue", sweepId: "learning-rate", valueId: "stable-b", value: 0.005125 } });
@@ -50,7 +50,7 @@ it("displays the authored range and sends a rule conversion instead of expanding
   }]} selection={selection} onEdit={edit} />);
   expect(screen.getByText("0.001125")).toBeDefined();
   expect(screen.getByText("0.015125")).toBeDefined();
-  expect(screen.queryByRole("spinbutton")).toBeNull();
+  expect(screen.queryByRole("textbox")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "To List" }));
   expect(edit).toHaveBeenLastCalledWith({ fieldId: "rate-field", selection, edit: { kind: "toList", sweepId: "rate" } });
 });

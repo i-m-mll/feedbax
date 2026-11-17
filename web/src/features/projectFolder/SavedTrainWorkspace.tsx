@@ -13,8 +13,11 @@ import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/Ste
 import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
 import { StudioMachineApproval, StudioRunMachine } from '@/components/pipeline/StudioRunMachine';
 import { StudioSweepOverview } from '@/components/pipeline/StudioSweepOverview';
+import { X } from 'lucide-react';
+import { Button, IconButton } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
+import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
 import type { PlanView } from '@/features/pipeline/planView';
@@ -97,7 +100,6 @@ const viewsByKind = {
   report: ['runs', 'document'],
 } as const satisfies Record<string, readonly ProjectWindowView[]>;
 const emptyViews: readonly ProjectWindowView[] = [];
-const control = 'rounded px-2 py-1 hover:bg-shell-hover focus-visible:outline-2';
 const noView = <p className="p-3 text-sm text-shell-muted" role="status">{studioName('unavailable')}</p>;
 
 function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResult'; result: NonNullable<SavedRow['result']> }) {
@@ -107,14 +109,14 @@ function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResul
     {result.progress && <dl className="space-y-1">
       <div><dt>{studioName('updates')}</dt><dd>{result.progress.completed_updates}</dd></div>
     </dl>}
-    <button type="button" className={control} onClick={async () => {
+    <Button onClick={async () => {
       setCopyError(false);
       try {
         await navigator.clipboard.writeText(JSON.stringify(result, null, 2));
       } catch {
         setCopyError(true);
       }
-    }}>{studioName('copyDetails')}</button>
+    }}>{studioName('copyDetails')}</Button>
     {copyError && <p role="alert">{studioReason('copyFailed', studioName('details'))}</p>}
   </section>;
 }
@@ -132,7 +134,7 @@ function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTr
   return (
     <>
       {selection && <StudioTrainResults {...plot} row={row} selection={selection} />}
-      {results.length > 0 && <details className="mt-3 rounded border border-shell-divider p-3 text-sm"
+      {results.length > 0 && <details className="mt-3 rounded-surface border border-shell-divider p-3 text-sm"
         onToggle={(event) => setComparing(event.currentTarget.open)}>
         <summary className="cursor-pointer font-medium">
           {studioName(results.length === 2 ? 'compareResults' : results[0].name)}
@@ -169,7 +171,7 @@ export default function StudioProjectWorkspace({
   if (!load) return <main aria-busy="true" />;
   if ('error' in load) return (
     <main className="p-4"><p role="alert">{load.error}</p>
-      <button type="button" className={control} onClick={() => setRetry((attempt) => attempt + 1)}>{studioName('retry')}</button>
+      <Button onClick={() => setRetry((attempt) => attempt + 1)}>{studioName('retry')}</Button>
     </main>
   );
   return <ManagedProjectWindow session={load.session} onNewStep={onNewStep} onNewSweep={onNewSweep} />;
@@ -629,9 +631,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     const producer = producers?.length === 1 ? producers[0] : undefined;
     const label = checkpointLabel(exactSource.completed_updates);
     return <div className="ps-2">
-      {producer ? <button type="button" className="hover:underline" onClick={() => showRun(producer.key, exactSource.job_id)}>
+      {producer ? <Button variant="ghost" className="-ml-control-inline" onClick={() => showRun(producer.key, exactSource.job_id)}>
         {label}
-      </button> : <span>{label}</span>}
+      </Button> : <span>{label}</span>}
     </div>;
   }
 
@@ -1000,7 +1002,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       overlay={<>
         {rename && <Dialog ariaLabel={studioName('rename')} manageFocus
           onClose={() => { if (!busy) setRename(undefined); }}
-          panelClassName="w-[min(22rem,90vw)] rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
+          panelClassName="w-[min(22rem,90vw)]">
           <form className="grid gap-2" onSubmit={(event) => {
             event.preventDefault();
             void perform(async () => {
@@ -1010,15 +1012,15 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           }}>
             <label className="grid gap-1">
               {studioName('name')}
-              <input data-dialog-autofocus className={control} value={rename.name} disabled={busy} required
-                onChange={(event) => setRename({ ...rename, name: event.target.value })} />
+              <TextField data-dialog-autofocus value={rename.name} disabled={busy} required
+                onValueChange={(name) => setRename({ ...rename, name })} />
             </label>
             {rename.revision !== saved.revision || outside
               ? <div role="alert">{studioReason('nameChangedDuringEdit', studioName('project'))}</div>
               : commandError && <div role="alert">{commandError}</div>}
-            <button type="submit" className={control} disabled={busy || !!outside || rename.revision !== saved.revision}>
+            <Button type="submit" className="justify-self-end" disabled={busy || !!outside || rename.revision !== saved.revision}>
               {studioName('rename')}
-            </button>
+            </Button>
           </form>
         </Dialog>}
         {focusedModel?.overlay}
@@ -1031,17 +1033,18 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           }} />}
         {primaryVariant && reportChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('report')} manageFocus
           onClose={() => setReportChoices(undefined)}
-          panelClassName="grid w-[min(24rem,90vw)] gap-1 rounded-shell-control border border-shell-divider bg-shell-chrome p-2 text-shell-foreground shadow-xl">
-          {reportChoices.figures.map((figure) => <button type="button" className={control}
+          panelClassName="grid w-[min(24rem,90vw)] gap-px p-1">
+          {reportChoices.figures.map((figure) => <Button variant="ghost" align="start"
             key={JSON.stringify([figure.key, figure.name])}
             onClick={() => chooseReportFigure(reportChoices.revision, figure)}>
             {figure.name}{figure.key.row !== 'default' && ' · ' + figure.key.row}
-          </button>)}
+          </Button>)}
         </Dialog>}
         {insertMenu.menu}
         {sweepStep && <Dialog ariaLabel={studioName('newSweep')} onClose={() => setSweepStep(undefined)} manageFocus
-          panelClassName="grid max-h-[75dvh] w-[min(24rem,90vw)] gap-2 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl">
-          <button type="button" className={`${control} justify-self-end`} data-dialog-autofocus onClick={() => setSweepStep(undefined)}>{studioName('close')}</button>
+          panelClassName="grid max-h-[75dvh] w-[min(24rem,90vw)] gap-2 overflow-auto">
+          <IconButton className="justify-self-end" label={studioName('close')} icon={<X aria-hidden="true" />}
+            data-dialog-autofocus onClick={() => setSweepStep(undefined)} />
           <StudioTrainAuthoringForm editor={editor} stepId={sweepStep} picker={() => {
             const current = latestState.current;
             if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
@@ -1054,7 +1057,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       clock={evaluationReplay.clock}
       failure={failure && <div role="alert" className="flex min-w-0 items-center gap-1">
         <span className="min-w-0 break-words">{failure}</span>
-        <button type="button" className={control} {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</button>
+        <Button {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</Button>
       </div>}
       problems={<StudioProblems command={problemCommand} count={problems.length} open={!!problemPanel}
         opener={problemPanel?.opener ?? null} onClose={() => setPanel(null)}
@@ -1076,10 +1079,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       renderView={(view, slot) => {
         const details = slot === 'primary' ? primary : secondary;
         const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot
-          ? <ProblemDestination reveal={revealed} action={graphRepair && <button type="button" className={control}
+          ? <ProblemDestination reveal={revealed} action={graphRepair && <Button
             disabled={!ready || snapshot.saving || busy} onClick={removeRefusedVariation}>
             {studioName('removeVariation')}
-          </button>}>{body}</ProblemDestination> : body;
+          </Button>}>{body}</ProblemDestination> : body;
         if (view === 'analysis' || view === 'figures') {
           const detail = analyze[view];
           return { ...detail, body: withProblem(detail.body) };
@@ -1214,10 +1217,10 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
         };
         if (view === 'results' && row && ready) return { body: <div className="p-3">
           {stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}
-            className="flex items-baseline gap-2 text-sm">
+            className="flex items-center gap-2">
             <h3 id={stoppedCheckpointId} className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
-            <button type="button" className={control} {...commandAttributes(stoppedNewStep)}
-              disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</button>
+            <Button {...commandAttributes(stoppedNewStep)}
+              disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</Button>
           </section>}
           <TrainResults key={savedRunId(row.key)} project={saved.project_id} revision={saved.revision}
             evaluations={data?.window_map?.evaluations ?? []} mapRows={data?.window_map?.rows ?? []}
@@ -1268,8 +1271,8 @@ function ProblemList({ problems, onChoose, canReveal, showVariant }: {
       </>;
       return <li key={index} className="break-words">
         {canReveal(problem)
-          ? <button className={`${control} w-full text-left`} type="button" onClick={() => onChoose(problem)}>{entry}</button>
-          : <div className="px-2 py-1">{entry}</div>}
+          ? <Button variant="ghost" align="start" className="block w-full !h-auto py-1 !whitespace-normal" onClick={() => onChoose(problem)}>{entry}</Button>
+          : <div className="px-control-inline py-1">{entry}</div>}
       </li>;
     })}</ul>
   </section>)}</div>;

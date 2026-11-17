@@ -11,6 +11,7 @@ import type {
   StudioProjectSnapshot,
   StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
+import { pick } from './fixtures/controls';
 
 test.use({ trace: 'off', launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] } });
 
@@ -463,10 +464,10 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const methodTarget = 'method_payload.payload.target_total';
   const checkpointInput = snapshot.project.steps?.[childId]?.inputs?.checkpoint;
   const beforeCarry = await plan();
-  await expect(carryover.locator('option:checked')).toHaveText('Initialize model only');
+  await expect(carryover).toHaveText('Initialize model only');
   const carryEdit = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  await carryover.selectOption({ label: 'Carry training state' });
+  await pick(carryover, 'Carry training state');
   const carried = await carryEdit;
   expect(carried.ok(), await carried.text()).toBe(true);
   expect(carried.request().postDataJSON()).toMatchObject({ address: { kind: 'step', id: childId } });
@@ -479,7 +480,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     } },
     { op: 'replace', path: methodTarget, value: 4 },
   ]);
-  await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
+  await expect(carryover).toHaveText('Carry training state');
   const afterCarry = await plan();
   expect(afterCarry.rows.filter(({ key }) => key.step === 'train'))
     .toEqual(beforeCarry.rows.filter(({ key }) => key.step === 'train'));
