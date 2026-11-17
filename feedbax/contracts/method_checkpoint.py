@@ -48,6 +48,19 @@ class MethodCheckpointExtra(ReferenceValue):
     descriptor_sha256: Sha256
 
 
+class TrainMetricPrefix(ReferenceValue):
+    start_exclusive: int = Field(ge=0, strict=True)
+    end_inclusive: int = Field(gt=0, strict=True)
+    rows: ContentObjectRef
+    previous: ContentObjectRef | None = None
+
+    @model_validator(mode="after")
+    def _ordered_chunk(self) -> "TrainMetricPrefix":
+        if self.end_inclusive <= self.start_exclusive or not self.rows.size_bytes:
+            raise ValueError("A metric history chunk must advance the completed Train coordinate")
+        return self
+
+
 class MethodCheckpointManifest(ReferenceValue):
     schema_version: Literal["feedbax.method_checkpoint.v1"] = "feedbax.method_checkpoint.v1"
     transaction_id: TransactionId
@@ -58,10 +71,13 @@ class MethodCheckpointManifest(ReferenceValue):
     model: MethodCheckpointModel
     extra: MethodCheckpointExtra
     validity: ContentTreeRef | None = Field(default=None, exclude_if=lambda value: value is None)
+    metrics_prefix: ContentObjectRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @property
     def state_sha256(self) -> str:
-        state = self.model_dump(mode="json", exclude={"transaction_id", "run_id", "final", "validity"})
+        state = self.model_dump(
+            mode="json", exclude={"transaction_id", "run_id", "final", "validity", "metrics_prefix"},
+        )
         return sha256_bytes(canonical_json_v2_bytes(state))
 
 

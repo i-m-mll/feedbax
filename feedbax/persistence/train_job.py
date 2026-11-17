@@ -18,6 +18,7 @@ from feedbax.contracts.effective_success import Bindings, RequestObject
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.train_metrics import read_metric_prefix
 
 if TYPE_CHECKING:
     from feedbax.persistence.store_sync import StoreEndpoint
@@ -27,6 +28,7 @@ class TrainJobCheckpoint(StrictModel):
     pointer: CheckpointLatestPointer
     content: ContentBinding
     validity: ContentTreeRef | None = Field(default=None, exclude_if=lambda value: value is None)
+    metrics_prefix: ContentObjectRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class TrainJobEntry(StrictModel):
@@ -79,12 +81,15 @@ def _origins(entry: TrainJobEntry) -> tuple[ContentObjectRef, ...]:
     }.values())
 
 
-def _closure(ref: ContentObjectRef, entry: TrainJobEntry) -> StoreClosureRef:
+def _closure(store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, entry: TrainJobEntry) -> StoreClosureRef:
+    recovery = entry.recovery
+    history = read_metric_prefix(store, recovery.metrics_prefix, completed=recovery.pointer.completed_updates)
     return StoreClosureRef(
         roots=(ref, entry.request.object, *entry.request.documents,
                *(ReceiptRoot(receipt=origin) for origin in _origins(entry)),
                *(checkpoint.content.tree for checkpoint in entry.checkpoints),
                *(checkpoint.validity for checkpoint in entry.checkpoints if checkpoint.validity is not None),
+               *history.references,
                *((entry.metrics,) if entry.metrics is not None else ())),
         include_ancestry=True,
     )
@@ -101,15 +106,27 @@ def _verify_checkpoints(store: ImmutableArtifactBlobProvider, entry: TrainJobEnt
     from feedbax.persistence.method_checkpoint import verify_method_checkpoint_content
     from feedbax.persistence.receipt_content import tree_objects
 
+    history = read_metric_prefix(
+        store, entry.recovery.metrics_prefix, completed=entry.recovery.pointer.completed_updates,
+    )
+    prefixes = {node.end_inclusive: ref for ref, node in history.chunks}
     for checkpoint in entry.checkpoints:
         manifest = verify_method_checkpoint_content(store, checkpoint.pointer, checkpoint.content)
         if manifest.identity.request_id != entry.request.id:
             raise ValueError("Train checkpoint differs from the retained Train request")
         if manifest.validity != checkpoint.validity:
             raise ValueError("Train checkpoint validity differs from its exact transaction")
+        if (
+            manifest.metrics_prefix != checkpoint.metrics_prefix
+            or checkpoint.metrics_prefix != prefixes.get(manifest.clock.completed_updates)
+            or (history.chunks and history.chunks[0][1].start_exclusive != manifest.clock.segment_start)
+        ):
+            raise ValueError("Train checkpoint metric history differs from its exact transaction")
         if checkpoint.validity is not None:
             for ref in tree_objects(store, checkpoint.validity):
                 store.verify_object(ref)
+    for _, node in history.chunks:
+        store.verify_object(node.rows)
 
 
 def publish_train_job(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> ContentObjectRef:
@@ -118,7 +135,7 @@ def publish_train_job(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry
     with store._exclusive_lock():
         _verify_entry(store, entry)
         ref = store.store_object(entry._canonical_bytes())
-        closure = _closure(ref, entry).model_dump(mode="json")
+        closure = _closure(store, ref, entry).model_dump(mode="json")
         current = store.read_ref(name)
         if current == closure:
             return ref
@@ -157,7 +174,7 @@ def _read_entry(
     data = store.get_object(ref)
     entry = TrainJobEntry.model_validate_json(data)
     if (
-        entry.attempt != attempt or closure != _closure(ref, entry)
+        entry.attempt != attempt or closure != _closure(store, ref, entry)
         or data != entry._canonical_bytes()
     ):
         raise ValueError("Train job entry differs from its named closure")

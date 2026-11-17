@@ -213,6 +213,7 @@ def write_method_checkpoint(
     model_templates: Sequence[Graph], replica_ids: tuple[str, ...], final: bool = False,
     content_provider: ImmutableArtifactBlobProvider | None = None,
     validity: ContentTreeRef | None = None,
+    metrics_prefix: ContentObjectRef | None = None,
 ) -> MethodCheckpointWrite:
     from feedbax.training.method_runtime import replica_value
 
@@ -239,6 +240,7 @@ def write_method_checkpoint(
         manifest = MethodCheckpointManifest(
             transaction_id=transaction_id, run_id=run_id, final=final,
             identity=identity, clock=clock, model=model, extra=extra, validity=validity,
+            metrics_prefix=metrics_prefix,
         )
         raw = canonical_json_v2_bytes(manifest.model_dump(mode="json"))
         write_bytes_atomic(staged / manifest_path.name, raw)
