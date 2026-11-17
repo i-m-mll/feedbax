@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, NamedTuple
 
 import equinox as eqx
@@ -181,6 +182,13 @@ class BlockResult(NamedTuple):
     rejected: bool
 
 
+@dataclass(frozen=True)
+class LoweredBlock:
+    traced: jax.stages.Traced
+    execution: jax.stages.Lowered
+    platform: str
+
+
 def _metric_array(value):
     array = jnp.asarray(value)
     if not any(jnp.issubdtype(array.dtype, dtype) for dtype in (jnp.floating, jnp.integer, jnp.bool_)):
@@ -204,10 +212,7 @@ class TrainingLoop:
         step_keys = jnp.stack([_replica_key(seed, replica, "update") for replica in replica_ids])
         run_keys = jnp.stack([_replica_key(seed, replica, "task-run") for replica in replica_ids])
 
-        @eqx.filter_jit
-        def block(state: TrainingState, completed: jax.Array, count: int):
-            arrays, static = eqx.partition(state, eqx.is_array)
-
+        def block(static, arrays, completed, update_keys, task_keys, count):
             @jax.vmap
             def single_update(replica_arrays, key_root, run_key, step):
                 key = derive_key(key_root, "step", index=step)
@@ -222,7 +227,7 @@ class TrainingLoop:
 
             @jax.jit
             def propose(current, step):
-                return single_update(current, step_keys, run_keys, jnp.broadcast_to(step, (len(replica_ids),)))
+                return single_update(current, update_keys, task_keys, jnp.broadcast_to(step, (len(replica_ids),)))
 
             _, metrics_shape = jax.eval_shape(propose, arrays, completed)
             # Rejected and unattempted metric rows are sliced away at the host boundary.
@@ -243,19 +248,62 @@ class TrainingLoop:
                 advance, (arrays, jnp.int32(0), jnp.array(True)), jnp.arange(count, dtype=jnp.uint32),
             )
             arrays, accepted, _ = carry
-            return eqx.combine(arrays, static), accepted, metrics
+            return arrays, accepted, metrics
 
         self._block = block
+        self._keys = step_keys, run_keys
+        self._static: TrainingState | None = None
+        self._kernel: jax.stages.Wrapped | None = None
+        self._lowered: dict[tuple, LoweredBlock] = {}
+        self._compiled: dict[tuple, jax.stages.Compiled] = {}
+        self.observe_lowering: Callable[[TrainingState, tuple[jax.Array, ...], int, LoweredBlock], None] | None = None
 
-    def run_block(self, state: TrainingState, *, completed: int, count: int) -> BlockResult:
-        """Run a bounded compiled block and return the contiguous committed prefix."""
+    def _operands(self, state: TrainingState, completed: int, count: int):
         if not self._start_step <= completed < completed + count <= 2**32:
             raise ValueError("The block must contain updates within the training clock")
         _check_state(state)
-        if any(leaf.ndim < 1 or leaf.shape[0] != self._replica_count
-               for leaf in jax.tree.leaves(eqx.filter(state, eqx.is_array))):
+        arrays, static = eqx.partition(state, eqx.is_array)
+        leaves = jax.tree.leaves(arrays)
+        if any(leaf.ndim < 1 or leaf.shape[0] != self._replica_count for leaf in leaves):
             raise ValueError("Training state arrays must share the declared leading replica axis")
-        updated, accepted, metrics = self._block(state, jnp.uint32(completed), count)
+        if self._static is None:
+            self._static = static
+            self._kernel = jax.jit(partial(self._block, static), static_argnums=4)
+        elif not eqx.tree_equal(self._static, static):
+            raise ValueError("Training state changed its fixed structure or metadata between blocks")
+        coordinate = jnp.uint32(completed)
+        signature = count, tuple(
+            (_array_signature(leaf), leaf.sharding, leaf.committed) for leaf in (*leaves, coordinate, *self._keys)
+        )
+        return signature, (arrays, coordinate, *self._keys)
+
+    def _lower(self, signature: tuple, operands, count: int) -> LoweredBlock:
+        from jax.export import default_export_platform
+
+        if signature not in self._lowered:
+            assert self._kernel is not None
+            traced = self._kernel.trace(*operands, count)
+            self._lowered[signature] = LoweredBlock(traced, traced.lower(), default_export_platform())
+        return self._lowered[signature]
+
+    def lower_block(self, state: TrainingState, *, completed: int, count: int) -> LoweredBlock:
+        """Lower the same block and operand types that execution would compile."""
+        signature, operands = self._operands(state, completed, count)
+        return self._lower(signature, operands, count)
+
+    def coordinate_and_keys(self, completed: int) -> tuple[jax.Array, ...]:
+        return jnp.uint32(completed), *self._keys
+
+    def run_block(self, state: TrainingState, *, completed: int, count: int) -> BlockResult:
+        """Run a bounded compiled block and return the contiguous committed prefix."""
+        signature, operands = self._operands(state, completed, count)
+        if signature not in self._compiled:
+            lowered = self._lower(signature, operands, count)
+            if self.observe_lowering is not None:
+                self.observe_lowering(state, operands[1:], count, lowered)
+            self._compiled[signature] = lowered.execution.compile()
+        updated, accepted, metrics = self._compiled[signature](*operands)
         accepted, metrics = jax.device_get((accepted, metrics))
         n = int(accepted)
+        updated = eqx.combine(updated, self._static)
         return BlockResult(updated, completed + n, jax.tree.map(lambda values: values[:n], metrics), n < count)
