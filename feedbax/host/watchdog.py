@@ -102,7 +102,7 @@ def _start_host(config: _Config) -> subprocess.Popen | None:
         with (config.host_root / "host.log").open("ab") as log:
             return subprocess.Popen(
                 [
-                    str(config.host_python), "-m", "feedbax.host", "--root", str(config.host_root),
+                    str(config.host_python), "-B", "-m", "feedbax.host", "--root", str(config.host_root),
                     "serve", "--require-session-until-ms", str(config.ends_at_ms),
                 ],
                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,

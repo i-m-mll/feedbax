@@ -18,7 +18,10 @@ from feedbax.contracts.request_refs import ContentRef, ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
+from feedbax.persistence.checkpoint_publication import checkpoint_model_objects
 from feedbax.persistence.receipt_content import ClosureVisitors, continuation_objects, success_content_objects, tree_objects
+from feedbax.contracts.code_validity import CheckpointEvidenceRoot
+from feedbax.validity.evidence import checkpoint_evidence_objects, evidence_objects
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,8 @@ class ReceiptClosure:
         """Resolve evidence owned by the result, independent of previously read inputs."""
         receipt = self.receipt_at(ref)
         objects = [ref, receipt.request.object, *receipt.request.documents]
+        if receipt.trace is not None:
+            objects.extend(evidence_objects(self.store, receipt.trace))
         if receipt.evaluation_manifest is not None:
             objects.append(receipt.evaluation_manifest)
         for group in receipt.products.values():
@@ -109,6 +114,9 @@ class ReceiptClosure:
         for root in closure.roots:
             if isinstance(root, ReceiptRoot):
                 pending.append((root, None))
+            elif isinstance(root, CheckpointEvidenceRoot):
+                for ref in checkpoint_evidence_objects(self.store, root):
+                    add(ref)
             elif isinstance(root, ContentObjectRef):
                 add(root)
             else:
@@ -118,6 +126,11 @@ class ReceiptClosure:
         while pending:
             root, consumer = pending.pop()
             add(root.receipt)
+            for ref in root.validity_records:
+                from feedbax.persistence.receipt_validity import read_validity_record
+
+                add(ref)
+                read_validity_record(self.store, ref, receipt=root.receipt)
             receipt = self.receipt_at(root.receipt)
             if admitted is not None and root.receipt.sha256 not in admitted:
                 admitted[root.receipt.sha256] = root.receipt, receipt
@@ -155,6 +168,9 @@ class ReceiptClosure:
             visited.add(key)
             for ref in (receipt.request.object, *receipt.request.documents):
                 add(ref)
+            if receipt.trace is not None:
+                for ref in evidence_objects(self.store, receipt.trace):
+                    add(ref)
             decoded = self._request_at(root.receipt, receipt)
             if receipt.evaluation_manifest is not None:
                 add(receipt.evaluation_manifest)
@@ -171,7 +187,11 @@ class ReceiptClosure:
                 for member, bound in zip(members, receipt.inputs[role], strict=True):
                     reference = member.reference
                     selection = bound.selection
-                    if bound.evaluation_subject is not None:
+                    if bound.checkpoint_model is not None:
+                        if closure.include_ancestry:
+                            for ref in checkpoint_model_objects(self.store, member, bound, visitors=visitors):
+                                add(ref)
+                    elif bound.evaluation_subject is not None:
                         if closure.include_ancestry:
                             for ref in evaluation_subject_objects(
                                 self.store, decoded, member, bound, visitors=visitors,

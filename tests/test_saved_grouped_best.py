@@ -34,11 +34,11 @@ host = host_fixture
 def grouped_project():
     raw = authored_best()
     train = raw["steps"]["train"]
-    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["base"]["inline"]["seed"] = 0
     axes = train["sweep"]["axes"]
     del axes["rate"]["values"]["b"]
     axes["seed"] = {"values": {
-        name: {"value": seed, "patches": {"method_payload.payload.seed": {"value": seed}}}
+        name: {"value": seed, "patches": {"seed": {"value": seed}}}
         for name, seed in (("one", 1), ("two", 2))
     }}
     raw["steps"]["baseline"]["inputs"]["subject"]["where"]["best"]["per"] = ["seed"]
@@ -114,7 +114,7 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
     added = deepcopy(raw)
     axes = added["steps"]["train"]["sweep"]["axes"]
     axes["seed"]["values"]["three"] = {
-        "value": 3, "patches": {"method_payload.payload.seed": {"value": 3}},
+        "value": 3, "patches": {"seed": {"value": 3}},
     }
     larger = evaluation_ranks(compile_project(Project.model_validate(added)))
     assert len(larger) == 6
@@ -122,8 +122,8 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
 
     changed = deepcopy(raw)
     changed["steps"]["train"]["sweep"]["exceptions"] = {
-        "rate-for-one": {"where": {"axes": {"seed": ["one"]}}, "patches": {
-            "training_config.n_reach_steps": {"value": 81},
+        "longer-task-for-one": {"where": {"axes": {"seed": ["one"]}}, "patches": {
+            "documents.task.payload.fixed_steps": {"value": 81},
         }},
     }
     revised = compile_project(Project.model_validate(changed))

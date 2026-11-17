@@ -27,7 +27,6 @@ from feedbax.contracts.strict_json import strict_json_loads
 
 
 SELECTION_SPEC_SCHEMA_ID = "feedbax.spec.selection"
-SELECTION_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.selection.v1"
 SELECTION_SPEC_SCHEMA_VERSION = "feedbax.spec.selection.v2"
 
 SelectionMode = Literal["explicit", "query", "frozen"]
@@ -177,54 +176,6 @@ class _ScoredRow:
 
 
 _EXPR_ADAPTER: TypeAdapter[Expr] = TypeAdapter(Expr)
-
-
-def migrate_selection_spec_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Migrate legacy id-list selection payloads to ``SelectionSpec`` v2."""
-
-    data = dict(payload)
-    version = data.get("schema_version")
-    if version == SELECTION_SPEC_SCHEMA_VERSION:
-        return data
-    if version not in (None, SELECTION_SPEC_SCHEMA_VERSION_V1):
-        raise ValueError(
-            f"unsupported SelectionSpec schema_version {version!r}; "
-            f"expected {SELECTION_SPEC_SCHEMA_VERSION!r}"
-        )
-
-    ids = _legacy_selection_ids(data)
-    if ids is None and version == SELECTION_SPEC_SCHEMA_VERSION_V1:
-        ids = []
-    if ids is None:
-        raise ValueError("legacy SelectionSpec payload requires a recognized id list")
-
-    manifest_kind = _legacy_manifest_kind(data)
-    migrated = {
-        "schema_id": SELECTION_SPEC_SCHEMA_ID,
-        "schema_version": SELECTION_SPEC_SCHEMA_VERSION,
-        "mode": "explicit",
-        "manifest_kind": manifest_kind,
-        "ids": ids,
-        "metadata": {
-            key: value
-            for key, value in data.items()
-            if key
-            not in {
-                "schema_id",
-                "schema_version",
-                "mode",
-                "manifest_kind",
-                "ids",
-                "training_run_ids",
-                "eval_run_ids",
-                "evaluation_run_ids",
-                "analysis_run_ids",
-                "report_ids",
-            }
-        },
-    }
-    SelectionSpec.model_validate(migrated)
-    return migrated
 
 
 def freeze_selection_spec(
@@ -591,31 +542,3 @@ def _reject_non_empty(data: Mapping[str, Any], key: str, message: str) -> None:
     value = data.get(key)
     if value:
         raise ValueError(message)
-
-
-def _legacy_selection_ids(payload: Mapping[str, Any]) -> list[str] | None:
-    for key in (
-        "ids",
-        "training_run_ids",
-        "eval_run_ids",
-        "evaluation_run_ids",
-        "analysis_run_ids",
-        "report_ids",
-    ):
-        value = payload.get(key)
-        if isinstance(value, list) and all(isinstance(item, str) for item in value):
-            return list(value)
-    return None
-
-
-def _legacy_manifest_kind(payload: Mapping[str, Any]) -> str:
-    explicit = payload.get("manifest_kind")
-    if isinstance(explicit, str):
-        return explicit
-    if "eval_run_ids" in payload or "evaluation_run_ids" in payload:
-        return "EvaluationRunManifest"
-    if "analysis_run_ids" in payload:
-        return "AnalysisRunManifest"
-    if "report_ids" in payload:
-        return "ReportManifest"
-    return "TrainingRunManifest"

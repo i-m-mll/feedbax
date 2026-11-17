@@ -169,6 +169,8 @@ export async function authorFirstTrain(
   expect(saved.revision).not.toBe(snapshot.revision);
   expect(saved.project.steps?.train?.base).toMatchObject({ inline: {
     trial_documents: { model: { document: 'model' }, python_task: { document: 'task' }, objective: { document: 'objective' } },
+    method: 'feedbax.supervised_gradient',
+    settings: { optimizer: { type: 'adam', params: { learning_rate: 0.001 } } },
     training_config: { n_batches: totalUpdates, batch_size: 4 },
   } });
   const savedModel = saved.project.documents?.model?.payload as unknown as ModelDocument;
@@ -195,9 +197,10 @@ export async function authorFirstTrain(
     }),
     expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort!.id } }),
   ]));
-  expect(saved.project.documents?.task?.payload).toMatchObject({ params: {
-    x: 0.22, n_steps: 12, ...(forceComparison && { y: forceComparison.targetY }),
-  } });
+  expect(saved.project.documents?.task?.payload).toMatchObject({
+    type: 'feedbax.Reaching',
+    params: { x: 0.22, n_steps: 12, ...(forceComparison && { y: forceComparison.targetY }) },
+  });
   const [term] = terms(saved.project);
   expect(terms(saved.project)).toHaveLength(1);
   expect(term).toMatchObject({

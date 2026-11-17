@@ -1,18 +1,5 @@
 {
   "fields": {
-    "feedbax.contracts.base.ParentRef": {
-      "id": {},
-      "kind": {},
-      "metadata": {
-        "absent": {}
-      },
-      "role": {
-        "absent": null
-      },
-      "uri": {
-        "absent": null
-      }
-    },
     "feedbax.contracts.expression_values.CallValue": {
       "args": {
         "absent": [],
@@ -124,175 +111,6 @@
       },
       "shape": {
         "absent": []
-      }
-    },
-    "feedbax.contracts.expressions.AllOf": {
-      "exprs": {
-        "families": [
-          "feedbax.contracts.expressions.AllOf",
-          "feedbax.contracts.expressions.AnyOf",
-          "feedbax.contracts.expressions.Compare",
-          "feedbax.contracts.expressions.NamedPredicateRef",
-          "feedbax.contracts.expressions.Not"
-        ]
-      },
-      "kind": {
-        "absent": "all",
-        "values": [
-          "all"
-        ]
-      }
-    },
-    "feedbax.contracts.expressions.AnyOf": {
-      "exprs": {
-        "families": [
-          "feedbax.contracts.expressions.AllOf",
-          "feedbax.contracts.expressions.AnyOf",
-          "feedbax.contracts.expressions.Compare",
-          "feedbax.contracts.expressions.NamedPredicateRef",
-          "feedbax.contracts.expressions.Not"
-        ]
-      },
-      "kind": {
-        "absent": "any",
-        "values": [
-          "any"
-        ]
-      }
-    },
-    "feedbax.contracts.expressions.Coalesce": {
-      "default": {
-        "absent": null
-      },
-      "queries": {}
-    },
-    "feedbax.contracts.expressions.Coerce": {
-      "scale": {
-        "absent": null
-      },
-      "to": {
-        "absent": null,
-        "values": [
-          "bool",
-          "float",
-          "int",
-          "str"
-        ]
-      }
-    },
-    "feedbax.contracts.expressions.Compare": {
-      "item": {},
-      "kind": {
-        "absent": "compare",
-        "values": [
-          "compare"
-        ]
-      },
-      "op": {
-        "values": [
-          "approx_eq",
-          "contains",
-          "endswith",
-          "eq",
-          "exists",
-          "ge",
-          "gt",
-          "has_type",
-          "in",
-          "le",
-          "lt",
-          "ne",
-          "startswith"
-        ]
-      },
-      "path": {
-        "absent": ""
-      },
-      "tolerance": {
-        "absent": null
-      },
-      "value": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.expressions.Filter": {
-      "where": {
-        "families": [
-          "feedbax.contracts.expressions.AllOf",
-          "feedbax.contracts.expressions.AnyOf",
-          "feedbax.contracts.expressions.Compare",
-          "feedbax.contracts.expressions.NamedPredicateRef",
-          "feedbax.contracts.expressions.Not"
-        ]
-      }
-    },
-    "feedbax.contracts.expressions.MapObjectList": {
-      "item_output_path": {},
-      "items": {},
-      "kind": {
-        "absent": "map_object_list",
-        "values": [
-          "map_object_list"
-        ]
-      },
-      "template": {}
-    },
-    "feedbax.contracts.expressions.NamedPredicateRef": {
-      "kind": {
-        "absent": "named",
-        "values": [
-          "named"
-        ]
-      },
-      "params": {
-        "absent": {}
-      },
-      "predicate_id": {}
-    },
-    "feedbax.contracts.expressions.Not": {
-      "expr": {
-        "families": [
-          "feedbax.contracts.expressions.AllOf",
-          "feedbax.contracts.expressions.AnyOf",
-          "feedbax.contracts.expressions.Compare",
-          "feedbax.contracts.expressions.NamedPredicateRef",
-          "feedbax.contracts.expressions.Not"
-        ]
-      },
-      "kind": {
-        "absent": "not",
-        "values": [
-          "not"
-        ]
-      }
-    },
-    "feedbax.contracts.expressions.Select": {
-      "where": {
-        "families": [
-          "feedbax.contracts.expressions.AllOf",
-          "feedbax.contracts.expressions.AnyOf",
-          "feedbax.contracts.expressions.Compare",
-          "feedbax.contracts.expressions.NamedPredicateRef",
-          "feedbax.contracts.expressions.Not"
-        ]
-      }
-    },
-    "feedbax.contracts.expressions.ValueQuery": {
-      "coerce": {
-        "absent": null
-      },
-      "default": {
-        "absent": null
-      },
-      "filter": {
-        "absent": null
-      },
-      "item": {},
-      "path": {
-        "absent": ""
-      },
-      "select": {
-        "absent": null
       }
     },
     "feedbax.contracts.figure_document.BandEncodings": {
@@ -419,9 +237,6 @@
       "margin": {
         "absent": null
       },
-      "row_label_gutter": {
-        "absent": null
-      },
       "shared_xaxes": {
         "absent": false
       },
@@ -513,6 +328,21 @@
       },
       "variable": {}
     },
+    "feedbax.contracts.figure_layout.AxisLabels": {
+      "x": {
+        "absent": null
+      },
+      "y": {
+        "absent": null
+      },
+      "z": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_layout.DataDerivedAxisRange": {
+      "group": {},
+      "padding_fraction": {}
+    },
     "feedbax.contracts.figure_layout.FigureMarginParams": {
       "autoexpand": {
         "absent": null
@@ -533,285 +363,7 @@
         "absent": null
       }
     },
-    "feedbax.contracts.figures.AxisLabels": {
-      "x": {
-        "absent": null
-      },
-      "y": {
-        "absent": null
-      },
-      "z": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.figures.AxisSemanticClass": {
-      "frame": {
-        "absent": null
-      },
-      "quantity": {},
-      "unit": {}
-    },
-    "feedbax.contracts.figures.ColorbarPanelPlacement": {
-      "center_fraction": {
-        "absent": 0.5
-      },
-      "length_fraction": {},
-      "offset_fraction": {
-        "absent": 0.0
-      },
-      "panel": {},
-      "side": {
-        "absent": "right",
-        "values": [
-          "left",
-          "right"
-        ]
-      }
-    },
-    "feedbax.contracts.figures.DataDerivedAxisRange": {
-      "group": {},
-      "padding_fraction": {}
-    },
-    "feedbax.contracts.figures.EqualDataAspect": {
-      "ratio": {
-        "absent": 1,
-        "values": [
-          1
-        ]
-      }
-    },
-    "feedbax.contracts.figures.FigureArtifactPayload": {
-      "artifact_provider": {},
-      "artifact_role": {},
-      "authority": {
-        "absent": "artifact_provider",
-        "values": [
-          "artifact_provider"
-        ]
-      },
-      "manifest_role": {},
-      "manifest_status": {
-        "absent": "completed",
-        "values": [
-          "completed"
-        ]
-      },
-      "media_type": {
-        "absent": "application/json"
-      },
-      "name": {},
-      "payload_schema_id": {
-        "absent": null
-      },
-      "payload_schema_version": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.figures.FigureColorbar": {
-      "colorscale": {
-        "absent": null
-      },
-      "family": {
-        "absent": null
-      },
-      "placement": {
-        "absent": null
-      },
-      "range": {
-        "absent": null
-      },
-      "title": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.figures.FigureDataProductArtifactPayload": {
-      "artifact_provider": {},
-      "artifact_role": {},
-      "authority": {
-        "absent": "analysis_data_product",
-        "values": [
-          "analysis_data_product"
-        ]
-      },
-      "manifest_role": {},
-      "manifest_status": {
-        "absent": "completed",
-        "values": [
-          "completed"
-        ]
-      },
-      "media_type": {
-        "absent": "application/json"
-      },
-      "name": {},
-      "payload_schema_id": {
-        "absent": null
-      },
-      "payload_schema_version": {
-        "absent": null
-      },
-      "product_role": {},
-      "product_schema_id": {},
-      "product_schema_version": {}
-    },
-    "feedbax.contracts.figures.FigureInputAuthority": {
-      "artifact_payloads": {
-        "absent": [],
-        "families": [
-          "feedbax.contracts.figures.FigureArtifactPayload",
-          "feedbax.spec.figure_data_product_payload"
-        ]
-      },
-      "parent": {}
-    },
-    "feedbax.contracts.figures.FigureInputRoleAuthority": {
-      "artifact_payloads": {
-        "absent": [],
-        "families": [
-          "feedbax.contracts.figures.FigureArtifactPayload",
-          "feedbax.spec.figure_data_product_payload"
-        ]
-      },
-      "input_role": {}
-    },
-    "feedbax.contracts.figures.FigureSlotFamily": {
-      "constructor": {
-        "absent": ""
-      },
-      "data": {
-        "absent": {},
-        "families": [
-          "$json",
-          "feedbax.contracts.expressions.Coalesce",
-          "feedbax.contracts.expressions.MapObjectList",
-          "feedbax.contracts.expressions.ValueQuery"
-        ]
-      },
-      "name": {},
-      "params": {
-        "absent": {}
-      },
-      "required": {
-        "absent": false
-      },
-      "rows": {},
-      "slot": {}
-    },
-    "feedbax.contracts.figures.FigureSlotFamilyRow": {
-      "color": {},
-      "data_paths": {
-        "families": [
-          "feedbax.contracts.expressions.Coalesce",
-          "feedbax.contracts.expressions.MapObjectList",
-          "feedbax.contracts.expressions.ValueQuery"
-        ]
-      },
-      "label": {},
-      "marker": {},
-      "name": {},
-      "panel": {}
-    },
-    "feedbax.contracts.figures.FigureSpec": {
-      "assembler": {
-        "absent": null
-      },
-      "assembler_params": {
-        "absent": {}
-      },
-      "colorbar": {
-        "absent": null
-      },
-      "exclude_pieces": {
-        "absent": []
-      },
-      "facet_bindings": {
-        "absent": {},
-        "families": [
-          "feedbax.contracts.expressions.Coalesce",
-          "feedbax.contracts.expressions.MapObjectList",
-          "feedbax.contracts.expressions.ValueQuery"
-        ]
-      },
-      "figure_routing": {
-        "absent": {}
-      },
-      "input_authorities": {
-        "absent": [],
-        "families": [
-          "feedbax.spec.figure_input_authority",
-          "feedbax.spec.figure_input_role_authority"
-        ]
-      },
-      "inputs": {
-        "absent": []
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "name": {},
-      "panels": {
-        "absent": []
-      },
-      "pieces": {
-        "absent": []
-      },
-      "run_condition": {
-        "absent": null,
-        "families": [
-          "feedbax.contracts.expressions.AllOf",
-          "feedbax.contracts.expressions.AnyOf",
-          "feedbax.contracts.expressions.Compare",
-          "feedbax.contracts.expressions.NamedPredicateRef",
-          "feedbax.contracts.expressions.Not"
-        ]
-      },
-      "semantic_range_policy": {
-        "absent": null
-      },
-      "slot_bindings": {
-        "absent": {}
-      },
-      "slot_families": {
-        "absent": null
-      },
-      "template": {
-        "absent": null
-      },
-      "trace_families": {
-        "absent": null
-      },
-      "traces": {
-        "absent": []
-      }
-    },
-    "feedbax.contracts.figures.FigureTemplate": {
-      "assembler": {},
-      "assembler_params": {
-        "absent": {}
-      },
-      "default_pieces": {
-        "absent": []
-      },
-      "description": {},
-      "facet_by": {
-        "absent": []
-      },
-      "facet_target": {
-        "absent": "figures",
-        "values": [
-          "figures",
-          "panels"
-        ]
-      },
-      "metadata": {
-        "absent": {}
-      },
-      "name": {},
-      "slots": {
-        "absent": []
-      }
-    },
-    "feedbax.contracts.figures.PanelAxis": {
+    "feedbax.contracts.figure_layout.PanelAxis": {
       "derived_range": {
         "absent": null
       },
@@ -834,172 +386,6 @@
       "unit": {
         "absent": null
       }
-    },
-    "feedbax.contracts.figures.PanelSpec": {
-      "axes_labels": {
-        "absent": null
-      },
-      "camera": {
-        "absent": null
-      },
-      "col": {
-        "absent": null
-      },
-      "col_span": {
-        "absent": null
-      },
-      "equal_data_aspect": {
-        "absent": null
-      },
-      "name": {},
-      "panel_type": {
-        "absent": null,
-        "values": [
-          "scene",
-          "xy"
-        ]
-      },
-      "row": {
-        "absent": null
-      },
-      "row_label": {
-        "absent": null,
-        "families": [
-          "feedbax.contracts.expressions.Coalesce",
-          "feedbax.contracts.expressions.MapObjectList",
-          "feedbax.contracts.expressions.ValueQuery"
-        ]
-      },
-      "row_span": {
-        "absent": null
-      },
-      "title": {
-        "absent": null,
-        "families": [
-          "feedbax.contracts.expressions.Coalesce",
-          "feedbax.contracts.expressions.MapObjectList",
-          "feedbax.contracts.expressions.ValueQuery"
-        ]
-      },
-      "x_axis": {
-        "absent": null
-      },
-      "y_axis": {
-        "absent": null
-      },
-      "z_axis": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.figures.SceneCamera": {
-      "azimuth": {},
-      "distance": {
-        "absent": 2.1650635094610964
-      },
-      "elevation": {},
-      "projection": {
-        "absent": null,
-        "values": [
-          "orthographic",
-          "perspective"
-        ]
-      }
-    },
-    "feedbax.contracts.figures.SemanticAxisRangePolicy": {
-      "classes": {
-        "absent": "all",
-        "values": [
-          "all"
-        ]
-      },
-      "padding_fraction": {}
-    },
-    "feedbax.contracts.figures.SlotSpec": {
-      "constructor": {},
-      "multiplicity": {
-        "absent": "one",
-        "values": [
-          "many",
-          "one",
-          "per_facet"
-        ]
-      },
-      "name": {},
-      "params_defaults": {
-        "absent": {}
-      },
-      "required": {
-        "absent": true
-      }
-    },
-    "feedbax.contracts.figures.TraceBinding": {
-      "constructor": {},
-      "data": {
-        "absent": {},
-        "families": [
-          "$json",
-          "feedbax.contracts.expressions.Coalesce",
-          "feedbax.contracts.expressions.MapObjectList",
-          "feedbax.contracts.expressions.ValueQuery"
-        ]
-      },
-      "include_when": {
-        "absent": null,
-        "families": [
-          "feedbax.contracts.expressions.AllOf",
-          "feedbax.contracts.expressions.AnyOf",
-          "feedbax.contracts.expressions.Compare",
-          "feedbax.contracts.expressions.NamedPredicateRef",
-          "feedbax.contracts.expressions.Not"
-        ]
-      },
-      "name": {},
-      "panel": {
-        "absent": null
-      },
-      "params": {
-        "absent": {}
-      },
-      "piece": {
-        "absent": null
-      },
-      "required": {
-        "absent": false
-      }
-    },
-    "feedbax.contracts.figures.TraceFamily": {
-      "colorscale": {
-        "absent": null
-      },
-      "index": {},
-      "interleave_group": {
-        "absent": null
-      },
-      "legend_index": {
-        "absent": null
-      },
-      "name": {},
-      "trace": {},
-      "values": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.figures.TraceFamilyIndex": {
-      "range": {
-        "absent": null
-      },
-      "values": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.figures.TraceFamilyRange": {
-      "start": {
-        "absent": 0
-      },
-      "step": {
-        "absent": 1
-      },
-      "stop": {}
     },
     "feedbax.contracts.model_address.ComponentPortEnd": {
       "component": {},
@@ -1504,13 +890,6 @@
     },
     "feedbax.contracts.request_specs.AnalysisRequestSpec": {
       "analysis_type": {},
-      "evaluation_states_policy": {
-        "absent": "recompute",
-        "values": [
-          "recompute",
-          "require_durable"
-        ]
-      },
       "numerical_settings": {
         "absent": {}
       },
@@ -1522,38 +901,31 @@
       "batch_size": {
         "absent": 128
       },
-      "grad_clip": {
-        "absent": 1.0
-      },
       "n_batches": {
         "absent": 2000
       },
-      "n_reach_steps": {
-        "absent": 80
+      "replicates": {
+        "absent": 1
       },
       "snapshot_interval": {
         "absent": 100
       }
     },
     "feedbax.contracts.request_specs.DocumentTrainingRequestSpec": {
-      "method_payload": {},
-      "method_ref": {},
-      "numerical_settings": {
-        "absent": {}
-      },
-      "on_nan": {
-        "absent": "raise",
+      "checkpoint_initialization": {
+        "absent": null,
         "values": [
-          "halt_restore_checkpoint",
-          "raise"
+          "initialize_from"
         ]
       },
-      "risk_aggregation": {
+      "method": {},
+      "numerical_settings": {
         "absent": {}
       },
       "seed": {
         "absent": null
       },
+      "settings": {},
       "training_config": {},
       "trial_documents": {}
     },
@@ -1590,28 +962,43 @@
       }
     },
     "feedbax.contracts.request_specs.RenderRequestSpec": {
-      "document": {
-        "absent": null
-      },
-      "figure": {},
+      "document": {},
       "numerical_settings": {
         "absent": {}
       }
     },
     "feedbax.contracts.request_specs.ReportRequestSpec": {
-      "document": {
-        "absent": null
-      },
-      "narrative": {
-        "absent": null
-      },
+      "document": {},
       "numerical_settings": {
         "absent": {}
+      }
+    },
+    "feedbax.contracts.request_specs.TrainContinuation": {
+      "mode": {
+        "absent": "continue_from",
+        "values": [
+          "continue_from"
+        ]
       },
-      "params": {
-        "absent": {}
+      "rng": {
+        "values": [
+          "carry",
+          "reset"
+        ]
       },
-      "report_type": {}
+      "schedule": {
+        "values": [
+          "continue",
+          "restart"
+        ]
+      },
+      "source_completed_updates": {},
+      "state": {
+        "values": [
+          "preserve",
+          "reset"
+        ]
+      }
     },
     "feedbax.contracts.task_document.Cell": {
       "first_epoch": {},
@@ -1702,88 +1089,6 @@
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue"
         ]
-      }
-    },
-    "feedbax.contracts.training.MethodPayloadEnvelope": {
-      "metadata": {
-        "absent": {}
-      },
-      "payload": {
-        "absent": {}
-      },
-      "schema_id": {},
-      "schema_version": {}
-    },
-    "feedbax.contracts.training.MethodRefSpec": {
-      "name": {},
-      "package": {},
-      "version": {}
-    },
-    "feedbax.contracts.training.RiskAggregationSpec": {
-      "metadata": {
-        "absent": {}
-      },
-      "realization": {
-        "absent": "none",
-        "values": [
-          "custom",
-          "max",
-          "mean",
-          "min",
-          "none",
-          "sum"
-        ]
-      },
-      "replicate": {
-        "absent": "none",
-        "values": [
-          "custom",
-          "max",
-          "mean",
-          "min",
-          "none",
-          "sum"
-        ]
-      },
-      "time": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.training.TimeAggregationSpec": {
-      "discount": {
-        "absent": null,
-        "values": [
-          "linear",
-          "none",
-          "power"
-        ]
-      },
-      "discount_exp": {
-        "absent": null
-      },
-      "end": {
-        "absent": null
-      },
-      "mode": {
-        "absent": "all",
-        "values": [
-          "all",
-          "custom",
-          "final",
-          "mean",
-          "range",
-          "segment",
-          "sum"
-        ]
-      },
-      "segment_name": {
-        "absent": null
-      },
-      "start": {
-        "absent": null
-      },
-      "time_idxs": {
-        "absent": null
       }
     },
     "feedbax.contracts.training.TrialDocuments": {
@@ -2937,6 +2242,36 @@
         "model": "feedbax.contracts.graph.WireSpec"
       },
       {
+        "field": "grad_clip",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingConfig"
+      },
+      {
+        "field": "n_reach_steps",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingConfig"
+      },
+      {
+        "field": "method_payload",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingRequestSpec"
+      },
+      {
+        "field": "method_ref",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingRequestSpec"
+      },
+      {
+        "field": "on_nan",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingRequestSpec"
+      },
+      {
+        "field": "risk_aggregation",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingRequestSpec"
+      },
+      {
         "field": "graph",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
@@ -3057,6 +2392,41 @@
         "model": "feedbax.contracts.training.LossTermSpec"
       },
       {
+        "field": "metadata",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodPayloadEnvelope"
+      },
+      {
+        "field": "payload",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodPayloadEnvelope"
+      },
+      {
+        "field": "schema_id",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodPayloadEnvelope"
+      },
+      {
+        "field": "schema_version",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodPayloadEnvelope"
+      },
+      {
+        "field": "name",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodRefSpec"
+      },
+      {
+        "field": "package",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodRefSpec"
+      },
+      {
+        "field": "version",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodRefSpec"
+      },
+      {
         "field": "kind",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.training.ObjectiveSlotSpec"
@@ -3087,6 +2457,26 @@
         "model": "feedbax.contracts.training.ObjectiveSlotSpec"
       },
       {
+        "field": "metadata",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.RiskAggregationSpec"
+      },
+      {
+        "field": "realization",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.RiskAggregationSpec"
+      },
+      {
+        "field": "replicate",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.RiskAggregationSpec"
+      },
+      {
+        "field": "time",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.RiskAggregationSpec"
+      },
+      {
         "field": "params",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.training.TaskSpec"
@@ -3100,6 +2490,41 @@
         "field": "type",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.training.TaskSpec"
+      },
+      {
+        "field": "discount",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "discount_exp",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "end",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "mode",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "segment_name",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "start",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "time_idxs",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
       },
       {
         "field": "batch_size",
@@ -3200,8 +2625,911 @@
         "field": "units",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "id",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.base.ParentRef"
+      },
+      {
+        "field": "kind",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.base.ParentRef"
+      },
+      {
+        "field": "metadata",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.base.ParentRef"
+      },
+      {
+        "field": "role",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.base.ParentRef"
+      },
+      {
+        "field": "uri",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.base.ParentRef"
+      },
+      {
+        "field": "exprs",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.AllOf"
+      },
+      {
+        "field": "kind",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.AllOf"
+      },
+      {
+        "field": "exprs",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.AnyOf"
+      },
+      {
+        "field": "kind",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.AnyOf"
+      },
+      {
+        "field": "default",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Coalesce"
+      },
+      {
+        "field": "queries",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Coalesce"
+      },
+      {
+        "field": "scale",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Coerce"
+      },
+      {
+        "field": "to",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Coerce"
+      },
+      {
+        "field": "item",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Compare"
+      },
+      {
+        "field": "kind",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Compare"
+      },
+      {
+        "field": "op",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Compare"
+      },
+      {
+        "field": "path",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Compare"
+      },
+      {
+        "field": "tolerance",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Compare"
+      },
+      {
+        "field": "value",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Compare"
+      },
+      {
+        "field": "where",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Filter"
+      },
+      {
+        "field": "item_output_path",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.MapObjectList"
+      },
+      {
+        "field": "items",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.MapObjectList"
+      },
+      {
+        "field": "kind",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.MapObjectList"
+      },
+      {
+        "field": "template",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.MapObjectList"
+      },
+      {
+        "field": "kind",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.NamedPredicateRef"
+      },
+      {
+        "field": "params",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.NamedPredicateRef"
+      },
+      {
+        "field": "predicate_id",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.NamedPredicateRef"
+      },
+      {
+        "field": "expr",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Not"
+      },
+      {
+        "field": "kind",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Not"
+      },
+      {
+        "field": "where",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.Select"
+      },
+      {
+        "field": "coerce",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.ValueQuery"
+      },
+      {
+        "field": "default",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.ValueQuery"
+      },
+      {
+        "field": "filter",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.ValueQuery"
+      },
+      {
+        "field": "item",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.ValueQuery"
+      },
+      {
+        "field": "path",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.ValueQuery"
+      },
+      {
+        "field": "select",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.expressions.ValueQuery"
+      },
+      {
+        "field": "row_label_gutter",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figure_document.FigureDocumentView"
+      },
+      {
+        "field": "x",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.AxisLabels"
+      },
+      {
+        "field": "y",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.AxisLabels"
+      },
+      {
+        "field": "z",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.AxisLabels"
+      },
+      {
+        "field": "frame",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.AxisSemanticClass"
+      },
+      {
+        "field": "quantity",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.AxisSemanticClass"
+      },
+      {
+        "field": "unit",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.AxisSemanticClass"
+      },
+      {
+        "field": "center_fraction",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.ColorbarPanelPlacement"
+      },
+      {
+        "field": "length_fraction",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.ColorbarPanelPlacement"
+      },
+      {
+        "field": "offset_fraction",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.ColorbarPanelPlacement"
+      },
+      {
+        "field": "panel",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.ColorbarPanelPlacement"
+      },
+      {
+        "field": "side",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.ColorbarPanelPlacement"
+      },
+      {
+        "field": "group",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.DataDerivedAxisRange"
+      },
+      {
+        "field": "padding_fraction",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.DataDerivedAxisRange"
+      },
+      {
+        "field": "ratio",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.EqualDataAspect"
+      },
+      {
+        "field": "artifact_provider",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "artifact_role",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "authority",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "manifest_role",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "manifest_status",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "media_type",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "payload_schema_id",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "payload_schema_version",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureArtifactPayload"
+      },
+      {
+        "field": "colorscale",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureColorbar"
+      },
+      {
+        "field": "family",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureColorbar"
+      },
+      {
+        "field": "placement",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureColorbar"
+      },
+      {
+        "field": "range",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureColorbar"
+      },
+      {
+        "field": "title",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureColorbar"
+      },
+      {
+        "field": "artifact_provider",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "artifact_role",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "authority",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "manifest_role",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "manifest_status",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "media_type",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "payload_schema_id",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "payload_schema_version",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "product_role",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "product_schema_id",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "product_schema_version",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureDataProductArtifactPayload"
+      },
+      {
+        "field": "artifact_payloads",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureInputAuthority"
+      },
+      {
+        "field": "parent",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureInputAuthority"
+      },
+      {
+        "field": "artifact_payloads",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureInputRoleAuthority"
+      },
+      {
+        "field": "input_role",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureInputRoleAuthority"
+      },
+      {
+        "field": "constructor",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamily"
+      },
+      {
+        "field": "data",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamily"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamily"
+      },
+      {
+        "field": "params",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamily"
+      },
+      {
+        "field": "required",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamily"
+      },
+      {
+        "field": "rows",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamily"
+      },
+      {
+        "field": "slot",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamily"
+      },
+      {
+        "field": "color",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamilyRow"
+      },
+      {
+        "field": "data_paths",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamilyRow"
+      },
+      {
+        "field": "label",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamilyRow"
+      },
+      {
+        "field": "marker",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamilyRow"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamilyRow"
+      },
+      {
+        "field": "panel",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSlotFamilyRow"
+      },
+      {
+        "field": "assembler",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "assembler_params",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "colorbar",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "exclude_pieces",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "facet_bindings",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "figure_routing",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "input_authorities",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "inputs",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "panels",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "pieces",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "run_condition",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "semantic_range_policy",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "slot_bindings",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "slot_families",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "template",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "trace_families",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "traces",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureSpec"
+      },
+      {
+        "field": "assembler",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "assembler_params",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "default_pieces",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "description",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "facet_by",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "facet_target",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "metadata",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "slots",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.FigureTemplate"
+      },
+      {
+        "field": "derived_range",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelAxis"
+      },
+      {
+        "field": "frame",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelAxis"
+      },
+      {
+        "field": "quantity",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelAxis"
+      },
+      {
+        "field": "range",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelAxis"
+      },
+      {
+        "field": "type",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelAxis"
+      },
+      {
+        "field": "unit",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelAxis"
+      },
+      {
+        "field": "axes_labels",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "camera",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "col",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "col_span",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "equal_data_aspect",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "panel_type",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "row",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "row_label",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "row_span",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "title",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "x_axis",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "y_axis",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "z_axis",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.PanelSpec"
+      },
+      {
+        "field": "azimuth",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SceneCamera"
+      },
+      {
+        "field": "distance",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SceneCamera"
+      },
+      {
+        "field": "elevation",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SceneCamera"
+      },
+      {
+        "field": "projection",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SceneCamera"
+      },
+      {
+        "field": "classes",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SemanticAxisRangePolicy"
+      },
+      {
+        "field": "padding_fraction",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SemanticAxisRangePolicy"
+      },
+      {
+        "field": "constructor",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SlotSpec"
+      },
+      {
+        "field": "multiplicity",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SlotSpec"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SlotSpec"
+      },
+      {
+        "field": "params_defaults",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SlotSpec"
+      },
+      {
+        "field": "required",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.SlotSpec"
+      },
+      {
+        "field": "constructor",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceBinding"
+      },
+      {
+        "field": "data",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceBinding"
+      },
+      {
+        "field": "include_when",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceBinding"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceBinding"
+      },
+      {
+        "field": "panel",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceBinding"
+      },
+      {
+        "field": "params",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceBinding"
+      },
+      {
+        "field": "piece",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceBinding"
+      },
+      {
+        "field": "required",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceBinding"
+      },
+      {
+        "field": "colorscale",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamily"
+      },
+      {
+        "field": "index",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamily"
+      },
+      {
+        "field": "interleave_group",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamily"
+      },
+      {
+        "field": "legend_index",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamily"
+      },
+      {
+        "field": "name",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamily"
+      },
+      {
+        "field": "trace",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamily"
+      },
+      {
+        "field": "values",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamily"
+      },
+      {
+        "field": "range",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamilyIndex"
+      },
+      {
+        "field": "values",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamilyIndex"
+      },
+      {
+        "field": "start",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamilyRange"
+      },
+      {
+        "field": "step",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamilyRange"
+      },
+      {
+        "field": "stop",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.figures.TraceFamilyRange"
+      },
+      {
+        "field": "evaluation_states_policy",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.request_specs.AnalysisRequestSpec"
+      },
+      {
+        "field": "figure",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.request_specs.RenderRequestSpec"
+      },
+      {
+        "field": "narrative",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.request_specs.ReportRequestSpec"
+      },
+      {
+        "field": "params",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.request_specs.ReportRequestSpec"
+      },
+      {
+        "field": "report_type",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.request_specs.ReportRequestSpec"
       }
     ],
-    "values": []
+    "values": [
+      {
+        "field": "document",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.request_specs.RenderRequestSpec",
+        "value": null
+      },
+      {
+        "field": "document",
+        "migration": "managed-analysis-retirement",
+        "model": "feedbax.contracts.request_specs.ReportRequestSpec",
+        "value": null
+      }
+    ]
   }
 }

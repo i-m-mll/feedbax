@@ -21,7 +21,8 @@ from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.mechanics.muscles import ReluMuscle, RigidTendonHillMuscleThelen
+from feedbax.builtins.mechanics.muscles.relu_muscle import ReluMuscle
+from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 from feedbax.mechanics.geometry import (
     PointMassRadialGeometry,

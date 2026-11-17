@@ -1,7 +1,5 @@
 """Contract checks for authoring text and the core numerical evaluator."""
 
-import asyncio
-from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -10,7 +8,6 @@ import pytest
 from feedbax.contracts.expression_values import (
     LENGTH,
     TIME,
-    CallValue,
     Level,
     LiteralValue,
     NameValue,
@@ -26,15 +23,6 @@ from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.expression_registry import Function, FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.expression_site import FieldKind, field_kind, project_site, read_field
 from feedbax.expression_text import ParsedField, parse, print_field
-from feedbax.plugins.application import EXPRESSION_FUNCTIONS
-from feedbax.plugins.bootstrap import (
-    DOWNSTREAM_PROTOCOL_CURRENT,
-    FamilyRequirement,
-    PluginDeclaration,
-    PluginRegistration,
-)
-from feedbax.plugins.composition import compose_application
-from feedbax.studio.authoring import authoring_surface
 
 
 @pytest.fixture
@@ -302,54 +290,6 @@ def test_held_waits_for_elapsed_time_and_resets(functions):
         )
         observed.append(bool(value.value))
     assert observed == [False, False, True, False, False]
-
-
-def test_plugin_function_uses_application_provenance():
-    definition = FunctionInfo(
-        id="example.twice",
-        signature="twice(x)",
-        display_class=FunctionClass.MATH,
-        min_args=1,
-        max_args=1,
-    )
-
-    def register(context):
-        context.registry(EXPRESSION_FUNCTIONS).register(
-            Function(
-                definition,
-                lambda args, _: args[0],
-                lambda _context, value: 2 * value,
-            )
-        )
-
-    registration = PluginRegistration(
-        PluginDeclaration(
-            plugin_id="example",
-            version="1",
-            downstream_protocol_version=DOWNSTREAM_PROTOCOL_CURRENT,
-            families=(FamilyRequirement(EXPRESSION_FUNCTIONS.family, "1"),),
-        ),
-        register,
-    )
-    entry = SimpleNamespace(
-        name="example",
-        value="example:registration",
-        dist=SimpleNamespace(name="example-dist", version="1"),
-        load=lambda: registration,
-    )
-    state = asyncio.run(compose_application(entry_points=(entry,)))
-    projection = authoring_surface(state, catalog=True).registries[EXPRESSION_FUNCTIONS.family]
-    assert definition in projection.entries
-    assert projection.origins[definition.id].distribution == "example-dist"
-    implementation = compiled("example.twice(3)", site(), state.bundle.expression_functions)
-    key = jax.random.key(0)
-    assert evaluate(implementation, Inputs(implementation.parameters, {}, key, key)) == 6
-    absent = asyncio.run(compose_application(entry_points=()))
-    tree = CallValue(function=definition.id, args=(LiteralValue(value=3),))
-    assert (
-        check(tree, site(), absent.bundle.expression_functions)[0].code
-        == ProblemCode.PLUGIN_MISSING
-    )
 
 
 def scan_expression(implementation, values, entries):

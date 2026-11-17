@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from feedbax.contracts.expression_values import Problem, Site, ValueType
-from feedbax.registry_errors import RegistryCollisionError
+from feedbax.contracts.expression_values import Problem, ProblemCode, Site, ValueType
+from feedbax.contracts.task_document import PythonTaskSelection
+from feedbax.plugins.declarations import (
+    CallableDeclaration, DeclarationRegistry, DistributionSource, ResolvedDeclaration, missing_declaration,
+)
 
 if TYPE_CHECKING:
     from feedbax.compiler.model_document import ResolvedModelInterface
@@ -24,35 +28,97 @@ class PythonTaskTemplate:
     condition_ids: tuple[str, ...] = ()
 
 
+class PythonTask[Settings: BaseModel](ABC):
+    """Defines the trial interface and preparation for a task authored in Python."""
+
+    key: ClassVar[str | None] = None
+    label: ClassVar[str | None] = None
+    settings_model: type[Settings]
+    renamed_from: ClassVar[tuple[str, ...]] = ()
+    parameter_sites: ClassVar[Mapping[str, Site]] = {}
+
+    @staticmethod
+    @abstractmethod
+    def template(settings: Settings) -> PythonTaskTemplate: ...
+
+
 @dataclass(frozen=True)
-class PythonTaskDefinition:
+class PythonTaskDefinition[Settings: BaseModel]:
     key: str
     label: str
-    parameters: type[BaseModel]
-    template: Callable[..., PythonTaskTemplate]
+    parameters: type[Settings]
+    template: Callable[[Settings], PythonTaskTemplate]
     parameter_sites: Mapping[str, Site]
+    source: DistributionSource
+    renamed_from: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PythonTaskInstance[Parameters: BaseModel]:
+    definition: PythonTaskDefinition[Parameters]
+    parameters: Parameters
+
+    def selection(self) -> PythonTaskSelection:
+        return PythonTaskSelection(type=self.definition.key, params=self.parameters.model_dump(mode="json"))
+
+    def template(self) -> PythonTaskTemplate:
+        return self.definition.template(self.parameters)
 
 
 class PythonTaskRegistry:
     def __init__(self) -> None:
-        self._entries: dict[str, PythonTaskDefinition] = {}
-        self._sealed = False
+        self._declarations = DeclarationRegistry[PythonTaskDefinition[Any]]("Python task")
 
-    def register(self, definition: PythonTaskDefinition) -> None:
-        if self._sealed:
-            raise RuntimeError("Python task registry is sealed")
-        if definition.key in self._entries:
-            raise RegistryCollisionError(f"Duplicate Python task {definition.key!r}")
-        self._entries[definition.key] = definition
+    def register_declaration[Settings: BaseModel](
+        self, task: type[PythonTask[Settings]], *, key: str, source: DistributionSource,
+    ) -> None:
+        self._declarations.require_mutable()
+        metadata = vars(task)
+        declaration = CallableDeclaration(
+            key=key, label=metadata.get("label"), settings_model=task.settings_model,
+            renamed_from=metadata.get("renamed_from", ()),
+        )
+        entry = PythonTaskDefinition(
+            key=key,
+            label=declaration.label or task.__name__,
+            parameters=task.settings_model,
+            template=task.template,
+            parameter_sites=dict(task.parameter_sites),
+            source=source,
+            renamed_from=declaration.renamed_from,
+        )
+        self._declarations.add(key, source, task, entry, renamed_from=entry.renamed_from)
 
     def keys(self) -> tuple[str, ...]:
-        return tuple(sorted(self._entries))
+        return self._declarations.keys()
 
-    def resolve(self, key: str) -> PythonTaskDefinition | None:
-        return self._entries.get(key)
+    def declaration_record(self, key: str) -> ResolvedDeclaration[PythonTaskDefinition[Any]]:
+        return self._declarations.resolve(key)
+
+    def resolve(self, key: str) -> PythonTaskDefinition[Any] | None:
+        try:
+            return self.declaration_record(key).value
+        except KeyError:
+            return None
 
     def seal(self) -> None:
-        self._sealed = True
+        self._declarations.seal()
+
+
+def resolve_python_task_instance(
+    selection: PythonTaskSelection, registry: PythonTaskRegistry,
+) -> PythonTaskInstance[BaseModel] | tuple[Problem, ...]:
+    definition = registry.resolve(selection.type)
+    if definition is None:
+        return (Problem(code=ProblemCode.UNKNOWN_NAME, path=("python_task", "type"),
+                        reason=missing_declaration("Python task", selection.type)),)
+    try:
+        parameters = definition.parameters.model_validate(selection.params)
+    except ValidationError as error:
+        return tuple(Problem(code=ProblemCode.TYPE_MISMATCH,
+                             path=("python_task", "params", *item["loc"]), reason=item["msg"])
+                     for item in error.errors(include_url=False))
+    return PythonTaskInstance(definition, parameters)
 
 
 def python_task_parameter_site(path: str, trial_documents, registry: PythonTaskRegistry) -> Site | None:
@@ -64,3 +130,9 @@ def python_task_parameter_site(path: str, trial_documents, registry: PythonTaskR
         return None
     definition = registry.resolve(selection["type"])
     return definition.parameter_sites.get(path.removeprefix(prefix)) if definition else None
+
+
+def application_python_tasks() -> PythonTaskRegistry:
+    from feedbax.plugins.composition import load_application
+
+    return load_application().bundle.python_tasks

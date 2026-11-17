@@ -6,16 +6,14 @@ records that describe specs, executions, lineage, and large output artifacts.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.artifact_store import (
@@ -27,18 +25,14 @@ from feedbax.contracts.base import (
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION as AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
 )
-from feedbax.contracts.value_schema import ValueSchema
 from feedbax.contracts.base import (
     ArrayStoreRef,
     ArtifactMigrationRecord,
     ArtifactRef,
     ArtifactValidationRecord,
-    FileHashRef,
     ParentRef,
     Provenance,
     StrictModel,
-    TreeHashRef,
-    authenticated_manifest_ref_profile,
     canonical_json_bytes,
     default_manifest_root,
     feedbax_version,
@@ -48,279 +42,17 @@ from feedbax.contracts.base import (
 from feedbax.contracts.base import (
     authenticated_manifest_ref_metadata as authenticated_manifest_ref_metadata,
 )
-from feedbax.contracts.graph import AnalysisInputRequirement
-from feedbax.contracts.computation_revision import validate_computation_revision
-from feedbax.contracts.schema_namespace import validate_schema_identity
 from feedbax.contracts.strict_json import strict_json_loads
 
 SCHEMA_VERSION = "feedbax.manifest.v1"
 PROVIDER_VERSION = "feedbax-provider.v1"
-REGENERATION_SPEC_SCHEMA_ID = "feedbax.spec.regeneration"
-REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
-ANALYSIS_DATA_PRODUCT_SCHEMA_ID = "feedbax.manifest.analysis_data_product"
-ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION = "feedbax.manifest.analysis_data_product.v1"
-EVALUATION_STATES_CONTAINER_SCHEMA_ID = "feedbax.manifest.evaluation_states_container"
-EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1 = "feedbax.manifest.evaluation_states_container.v1"
-EVALUATION_STATES_CONTAINER_SCHEMA_VERSION = "feedbax.manifest.evaluation_states_container.v2"
-EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3 = "feedbax.manifest.evaluation_states_container.v3"
-EVALUATION_STATES_STORAGE_BACKEND_V3 = "npz.v3"
-ANALYSIS_RUN_SPEC_SCHEMA_ID = "feedbax.spec.analysis_run"
-ANALYSIS_RUN_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.analysis_run.v1"
-ANALYSIS_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.analysis_run.v2"
-ANALYSIS_RUN_DELTA_SPEC_SCHEMA_ID = "feedbax.spec.analysis_run_delta"
-ANALYSIS_RUN_DELTA_SPEC_SCHEMA_VERSION = "feedbax.spec.analysis_run_delta.v1"
-ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_ID = "feedbax.spec.analysis_bundle_delta"
-ANALYSIS_BUNDLE_DELTA_SPEC_SCHEMA_VERSION = "feedbax.spec.analysis_bundle_delta.v1"
 TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID = "feedbax.spec.training_run_matrix_delta"
 TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION = "feedbax.spec.training_run_matrix_delta.v1"
-ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_ID = (
-    "feedbax.manifest.analysis_bundle_composition_provenance"
-)
-ANALYSIS_BUNDLE_COMPOSITION_PROVENANCE_SCHEMA_VERSION = (
-    "feedbax.manifest.analysis_bundle_composition_provenance.v1"
-)
-ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_ID = "feedbax.manifest.analysis_composition_provenance"
-ANALYSIS_COMPOSITION_PROVENANCE_SCHEMA_VERSION = (
-    "feedbax.manifest.analysis_composition_provenance.v1"
-)
-ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID = "feedbax.manifest.analysis_evaluation_state_source"
-ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION_V1 = (
-    "feedbax.manifest.analysis_evaluation_state_source.v1"
-)
-ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION = (
-    "feedbax.manifest.analysis_evaluation_state_source.v2"
-)
-ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID = (
-    "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic"
-)
-ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION = (
-    "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic.v1"
-)
-ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1 = SCHEMA_VERSION
-ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.analysis_run.v2"
-EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1 = SCHEMA_VERSION
 EVALUATION_RUN_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.evaluation_run.v2"
-FIGURE_MANIFEST_SCHEMA_ID = "feedbax.manifest.figure"
-FIGURE_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.figure.v1"
-TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID = (
-    "feedbax.manifest.training_metadata_projection_custody"
-)
-TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION = (
-    "feedbax.manifest.training_metadata_projection_custody.v1"
-)
-TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY = "manifest_metadata_projection"
 TRAINING_RUN_CERTIFICATION_SCHEMA_ID = "feedbax.manifest.training_run_certification"
 TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION = "feedbax.manifest.training_run_certification.v1"
 TRAINING_RUN_CERTIFICATION_REJECTED_VERSIONS = ("feedbax.manifest.training_run_certification.v0",)
-TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE = {
-    "absent + status=completed": "project completed with declared checkpoint_custody prefix",
-    "absent + status=cancelled": "project cancelled with declared checkpoint_custody prefix",
-    "absent + status=failed": "reject; divergence versus crash is ambiguous",
-    "absent + nonterminal status": "reject; no terminal certification exists",
-}
-STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID = "feedbax.spec.staged_evaluation_prerequisite"
-STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION = "feedbax.spec.staged_evaluation_prerequisite.v1"
 ManifestStatus = Literal["pending", "running", "completed", "failed", "cancelled", "stale"]
-
-
-class StagedEvaluationPrerequisite(StrictModel):
-    """Portable prerequisite injected into one staged evaluation's parameters."""
-
-    schema_id: str = STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID
-    schema_version: str = STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION
-    parent: ParentRef
-    artifact_provider: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_schema_identity(self) -> "StagedEvaluationPrerequisite":
-        if self.schema_id != STAGED_EVALUATION_PREREQUISITE_SCHEMA_ID:
-            raise ValueError(f"unsupported staged prerequisite schema_id: {self.schema_id!r}")
-        if self.schema_version != STAGED_EVALUATION_PREREQUISITE_SCHEMA_VERSION:
-            raise ValueError(
-                f"unsupported staged prerequisite schema_version: {self.schema_version!r}"
-            )
-        return self
-
-
-class EvaluationParamsBase(StrictModel):
-    """Strict public base for recipe params, including Feedbax-reserved fields."""
-
-    staged_prerequisites: dict[str, StagedEvaluationPrerequisite] | None = None
-
-
-class RegenerationCommand(StrictModel):
-    """Command form used to regenerate one or more analysis/report artifacts."""
-
-    argv: list[str] = Field(default_factory=list)
-    shell_command: Optional[str] = None
-    cwd: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _validate_invocation(self) -> "RegenerationCommand":
-        if not self.argv and not self.shell_command:
-            raise ValueError("regeneration command requires argv or shell_command")
-        return self
-
-
-class RegenerationSpec(StrictModel):
-    """Generic replay record for regenerating analysis or report artifacts."""
-
-    schema_id: str = REGENERATION_SPEC_SCHEMA_ID
-    schema_version: str = REGENERATION_SPEC_SCHEMA_VERSION
-    command: RegenerationCommand
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    inputs: list[ParentRef | ArtifactRef] = Field(default_factory=list)
-    outputs: list[ParentRef | ArtifactRef] = Field(default_factory=list)
-    source_files: list[FileHashRef] = Field(default_factory=list)
-    source_trees: list[TreeHashRef] = Field(default_factory=list)
-    provenance: Provenance = Field(default_factory=Provenance)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _validate_schema_identity(self) -> "RegenerationSpec":
-        if self.schema_id != REGENERATION_SPEC_SCHEMA_ID:
-            raise ValueError(
-                "unsupported RegenerationSpec schema_id: "
-                f"{self.schema_id!r}, expected {REGENERATION_SPEC_SCHEMA_ID!r}"
-            )
-        if self.schema_version != REGENERATION_SPEC_SCHEMA_VERSION:
-            raise ValueError(
-                "unsupported RegenerationSpec schema_version: "
-                f"{self.schema_version!r}, expected {REGENERATION_SPEC_SCHEMA_VERSION!r}"
-            )
-        return self
-
-
-class DataProductParentRef(StrictModel):
-    """Parent manifest identity included in an analysis data-product envelope."""
-
-    kind: str
-    id: str
-    role: Optional[str] = None
-    manifest_hash: Optional[str] = None
-    uri: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class AnalysisOutputDescriptorSource(StrictModel):
-    """Exact source of a semantics-preserving output descriptor."""
-
-    product_identity_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    path: str
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        return _validate_output_descriptor_path(value)
-
-
-class AnalysisOutputDescriptor(StrictModel):
-    """Scientific meaning of one exact field in an analysis product payload."""
-
-    path: str
-    value_schema: ValueSchema
-    origin: Literal["declared", "preserved"] = "declared"
-    preserved_from: AnalysisOutputDescriptorSource | None = None
-
-    @field_validator("path")
-    @classmethod
-    def _validate_path(cls, value: str) -> str:
-        return _validate_output_descriptor_path(value)
-
-    @model_validator(mode="after")
-    def _validate_origin(self) -> "AnalysisOutputDescriptor":
-        if (self.origin == "preserved") != (self.preserved_from is not None):
-            raise ValueError(
-                "AnalysisOutputDescriptor origin='preserved' requires preserved_from, "
-                "and origin='declared' forbids it"
-            )
-        return self
-
-
-def _validate_output_descriptor_path(value: str) -> str:
-    if value != value.strip() or not value or any(not part for part in value.split(".")):
-        raise ValueError(f"analysis output descriptor path is not an exact dotted path: {value!r}")
-    return value
-
-
-class AnalysisDataProduct(StrictModel):
-    """Typed semantic product emitted by an analysis or materialization step.
-
-    ``descriptor_basis_hash`` is an optional contract slot for issue 844acc6.
-    Producers set it when descriptor/component selector identity affects the
-    product values; this model only preserves and compares the hash.
-    """
-
-    schema_id: str = ANALYSIS_DATA_PRODUCT_SCHEMA_ID
-    schema_version: str = ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION
-    product_schema_id: str
-    product_schema_version: str
-    role: str
-    logical_name: str
-    label: Optional[str] = None
-    producer_manifest_id: str
-    producer_manifest_hash: Optional[str] = None
-    parent_manifests: list[DataProductParentRef] = Field(default_factory=list)
-    checkpoint_policy: dict[str, Any] = Field(default_factory=dict)
-    rollout_policy: dict[str, Any] = Field(default_factory=dict)
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    descriptor_basis_hash: Optional[str] = None
-    output_descriptors: list[AnalysisOutputDescriptor] | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
-    artifacts: list[ArtifactRef] = Field(default_factory=list)
-    materialization: dict[str, Any] = Field(default_factory=dict)
-    regeneration: list[RegenerationSpec | ParentRef | ArtifactRef] = Field(default_factory=list)
-    product_identity_hash: Optional[str] = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _validate_identity(self) -> "AnalysisDataProduct":
-        if self.schema_id != ANALYSIS_DATA_PRODUCT_SCHEMA_ID:
-            raise ValueError(
-                "unsupported AnalysisDataProduct schema_id: "
-                f"{self.schema_id!r}, expected {ANALYSIS_DATA_PRODUCT_SCHEMA_ID!r}"
-            )
-        if self.schema_version != ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION:
-            raise ValueError(
-                "unsupported AnalysisDataProduct schema_version: "
-                f"{self.schema_version!r}, expected {ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION!r}"
-            )
-        if not self.product_schema_id.strip():
-            raise ValueError("AnalysisDataProduct product_schema_id must not be empty")
-        if self.product_schema_id.startswith("feedbax."):
-            validate_schema_identity(
-                self.product_schema_id,
-                family="AnalysisDataProduct.product_schema_id",
-            )
-        if not self.product_schema_version.strip():
-            raise ValueError("AnalysisDataProduct product_schema_version must not be empty")
-        if not self.role.strip():
-            raise ValueError("AnalysisDataProduct role must not be empty")
-        if not self.logical_name.strip():
-            raise ValueError("AnalysisDataProduct logical_name must not be empty")
-        if not self.producer_manifest_id.strip():
-            raise ValueError("AnalysisDataProduct producer_manifest_id must not be empty")
-        if self.output_descriptors is not None:
-            if not self.output_descriptors:
-                raise ValueError(
-                    "AnalysisDataProduct output_descriptors must be omitted rather than empty"
-                )
-            paths = [descriptor.path for descriptor in self.output_descriptors]
-            if len(paths) != len(set(paths)):
-                raise ValueError("AnalysisDataProduct output descriptor paths must be unique")
-
-        expected_hash = analysis_data_product_identity_hash(self)
-        if self.product_identity_hash is not None and self.product_identity_hash != expected_hash:
-            raise ValueError(
-                "AnalysisDataProduct product_identity_hash does not match semantic "
-                f"envelope: product_identity_hash={self.product_identity_hash!r}, "
-                f"computed={expected_hash!r}"
-            )
-        object.__setattr__(self, "product_identity_hash", expected_hash)
-        return self
 
 
 class SpecPayload(StrictModel):
@@ -335,9 +67,6 @@ class SpecPayload(StrictModel):
     source_sha256: Optional[str] = None
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-RegenerationSpecBuilder = Callable[[tuple[ArtifactRef, ...]], SpecPayload]
 
 
 class OverridePatch(StrictModel):
@@ -484,80 +213,6 @@ class ModelArtifactManifest(BaseManifest):
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
-
-
-class TrainingManifestMetadataProjectionCustody(StrictModel):
-    """Auditable consistency binding for governed projected metadata.
-
-    The hashes detect partial drift among this record, the embedded source,
-    root metadata, and provenance. They do not prove authorship or authenticity;
-    that requires an external signed or content-addressed custody anchor.
-    """
-
-    schema_id: Literal["feedbax.manifest.training_metadata_projection_custody"] = (
-        TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID
-    )
-    schema_version: str = TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION
-    source_payload_kind: str = Field(min_length=1)
-    source_payload_schema_id: str = Field(min_length=1)
-    source_payload_schema_version: str = Field(min_length=1)
-    source_payload_sha256: str
-    projection_schema_id: str = Field(min_length=1)
-    projection_schema_version: str = Field(min_length=1)
-    values: dict[str, Any]
-    values_sha256: str
-    registration_owner: str = Field(min_length=1)
-    registration_package: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _validate_custody(self) -> "TrainingManifestMetadataProjectionCustody":
-        from feedbax.contracts.spec_storage import (
-            training_spec_canonical_bytes,
-            training_spec_sha256,
-            validate_sha256,
-        )
-
-        if self.schema_version != TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION:
-            raise ValueError(
-                "unsupported training metadata projection custody schema_version "
-                f"{self.schema_version!r}; expected "
-                f"{TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION!r}; "
-                "migration_intentionally_absent=yes"
-            )
-        validate_sha256(self.source_payload_sha256, field_name="source_payload_sha256")
-        validate_sha256(self.values_sha256, field_name="values_sha256")
-        # Trusted-internal, not an authority boundary: these bytes are the
-        # canonical serialization of ``self.values``, produced in this process
-        # one expression earlier. The document that carried ``self.values`` was
-        # already admitted by ``load_manifest_bytes``; this round-trip only
-        # compares the value against its own canonical form.
-        canonical_values = json.loads(training_spec_canonical_bytes(self.values))
-        if self.values != canonical_values:
-            raise ValueError("training metadata projection values are not JSON-canonical")
-        expected_digest = training_spec_sha256(self.values)
-        if self.values_sha256 != expected_digest:
-            raise ValueError(
-                "training metadata projection values_sha256 does not match canonical values; "
-                f"expected={expected_digest}, observed={self.values_sha256}"
-            )
-        return self
-
-    def provenance_summary(self) -> dict[str, Any]:
-        """Return the exact compact provenance record bound to this custody envelope."""
-        return {
-            "source_payload_kind": self.source_payload_kind,
-            "source_payload_schema_id": self.source_payload_schema_id,
-            "source_payload_schema_version": self.source_payload_schema_version,
-            "source_payload_sha256": self.source_payload_sha256,
-            "projection_schema_id": self.projection_schema_id,
-            "projection_schema_version": self.projection_schema_version,
-            "projected_keys": sorted(self.values),
-            "values_sha256": self.values_sha256,
-            "registration_owner": self.registration_owner,
-            "registration_package": self.registration_package,
-        }
-
-
 class TrainingRunCertification(StrictModel):
     """Why execution ended and the exact artifact prefix it certified.
 
@@ -623,7 +278,6 @@ class TrainingRunManifest(BaseManifest):
     resolved_semantics_root_hash: Optional[str] = None
     input_data_identities: list[dict[str, Any]] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
-    metadata_projection_custody: TrainingManifestMetadataProjectionCustody | None = None
     terminal_certification: TrainingRunCertification | None = None
     inherited_terminal_checkpoint: InheritedTerminalCheckpoint | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -696,48 +350,6 @@ class TrainingRunManifest(BaseManifest):
                     f"computed={expected!r}"
                 )
             object.__setattr__(self, "execution_hash", expected)
-        projection = self.metadata_projection_custody
-        if projection is not None:
-            if self.training_spec is None:
-                raise ValueError(
-                    "training metadata projection custody requires embedded training_spec"
-                )
-            training_spec_identity = (
-                self.training_spec.kind,
-                self.training_spec.schema_id,
-                self.training_spec.schema_version,
-            )
-            projection_source_identity = (
-                projection.source_payload_kind,
-                projection.source_payload_schema_id,
-                projection.source_payload_schema_version,
-            )
-            if projection_source_identity != training_spec_identity:
-                raise ValueError(
-                    "training metadata projection source identity disagrees with "
-                    "embedded training_spec"
-                )
-            from feedbax.contracts.spec_storage import training_spec_sha256
-
-            observed_source_sha256 = training_spec_sha256(self.training_spec.inline)
-            if projection.source_payload_sha256 != observed_source_sha256:
-                raise ValueError(
-                    "training metadata projection source hash disagrees with embedded training_spec"
-                )
-            for key, value in projection.values.items():
-                if key not in self.metadata or self.metadata[key] != value:
-                    raise ValueError(
-                        "training metadata projection custody disagrees with root metadata; "
-                        f"key={key!r}"
-                    )
-            expected_provenance = projection.provenance_summary()
-            observed_provenance = self.provenance.metadata.get(
-                TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY
-            )
-            if observed_provenance != expected_provenance:
-                raise ValueError(
-                    "training metadata projection custody disagrees with provenance summary"
-                )
         return self
 
 
@@ -750,58 +362,12 @@ def has_training_checkpoint_custody(payload: Mapping[str, Any]) -> bool:
     )
 
 
-def training_run_certification(
-    manifest: TrainingRunManifest,
-) -> TrainingRunCertification:
-    """Return explicit certification or deterministically project safe legacy states.
-
-    Historical completed and cancelled manifests have unambiguous termination
-    reasons and their already-declared checkpoint custody is the only
-    projectable certified prefix. Historical failed manifests are ambiguous
-    between divergence and crash and therefore fail with a reauthoring
-    diagnostic instead of guessing.
-    """
-    if manifest.terminal_certification is not None:
-        return manifest.terminal_certification
-    if manifest.status == "completed":
-        reason: Literal["completed", "cancelled"] = "completed"
-    elif manifest.status == "cancelled":
-        reason = "cancelled"
-    elif manifest.status == "failed":
-        raise ValueError(
-            f"TrainingRunManifest {manifest.id!r} uses legacy status='failed' without "
-            "terminal_certification; divergence versus crash cannot be migrated "
-            "deterministically. Reauthor the manifest with an exact certified prefix."
-        )
-    else:
-        raise ValueError(
-            f"TrainingRunManifest {manifest.id!r} is not terminal and has no certification"
-        )
-    return TrainingRunCertification(
-        schema_id=TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
-        schema_version=TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
-        termination_reason=reason,
-        certified_artifacts=list(manifest.checkpoint_custody),
-    )
-
-
 EVALUATION_RUN_SPEC_SCHEMA_ID = "feedbax.spec.evaluation_run"
 EVALUATION_RUN_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run.v1"
-#: Version an unversioned historical ``EvaluationRunSpec`` document declares.
-#: The family shipped without an in-document schema identity, so a payload that
-#: carries no ``schema_version`` is exactly the original v1 shape and is never
-#: guessed forward to a future current version.
-EVALUATION_RUN_SPEC_UNVERSIONED_BASELINE = EVALUATION_RUN_SPEC_SCHEMA_VERSION
 
 
 class EvaluationRunSpec(StrictModel):
-    """Declarative request for an evaluation run.
-
-    ``schema_id``/``schema_version`` are the document's durable identity. They
-    are deliberately excluded from :func:`evaluation_run_manifest_id`: run
-    identity names the semantic evaluation request, so a schema migration that
-    preserves semantics must not fork the identity of runs already produced.
-    """
+    """Managed rollout specification projected into an evaluation manifest."""
 
     schema_id: Literal["feedbax.spec.evaluation_run"] = EVALUATION_RUN_SPEC_SCHEMA_ID
     schema_version: Literal["feedbax.spec.evaluation_run.v1"] = EVALUATION_RUN_SPEC_SCHEMA_VERSION
@@ -811,128 +377,13 @@ class EvaluationRunSpec(StrictModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
-EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID = "feedbax.spec.evaluation_run_matrix"
-EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V1 = "feedbax.spec.evaluation_run_matrix.v1"
-EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.evaluation_run_matrix.v2"
-EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run_matrix.v3"
-EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID = "feedbax.spec.evaluation_run_matrix_delta"
-EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION = "feedbax.spec.evaluation_run_matrix_delta.v1"
-EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID = (
-    "feedbax.manifest.evaluation_axis_expansion_provenance"
-)
-EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION = (
-    "feedbax.manifest.evaluation_axis_expansion_provenance.v1"
-)
-EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID = (
-    "feedbax.manifest.evaluation_matrix_composition_provenance"
-)
-EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION = (
-    "feedbax.manifest.evaluation_matrix_composition_provenance.v1"
-)
-
-
 class EvaluationRunManifest(BaseManifest):
     kind: Literal["EvaluationRunManifest"] = "EvaluationRunManifest"
-    schema_version: str = EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
+    schema_version: Literal["feedbax.manifest.evaluation_run.v2"] = EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
     evaluation_spec: SpecPayload
     input_training_runs: list[ParentRef] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
-
-
-@dataclass(frozen=True, slots=True)
-class AuthenticatedManifestDigest:
-    """Authenticated byte identity for one manifest in a provenance envelope."""
-
-    kind: str
-    id: str
-    role: str | None
-    sha256: str
-    size_bytes: int
-
-
-@dataclass(frozen=True, slots=True)
-class EvaluationManifestProvenanceEnvelope:
-    """Verified producer and source authority derived from an evaluation manifest."""
-
-    producer_identity: str
-    source_refs: tuple[ParentRef, ...]
-    digest_envelope: tuple[AuthenticatedManifestDigest, ...]
-
-
-def verify_evaluation_manifest_provenance(
-    manifest_ref: ParentRef,
-    raw_bytes: bytes,
-    *,
-    expected_producer_identity: str,
-    expected_source_refs: tuple[ParentRef, ...] | None = None,
-) -> EvaluationManifestProvenanceEnvelope:
-    """Verify one authenticated evaluation manifest's producer and source envelope.
-
-    The manifest is parsed from ``raw_bytes`` only after ``manifest_ref`` authenticates
-    their exact size and digest. Remaining digest records align positionally with
-    ``source_refs``. This contract does not introduce a new durable schema.
-    """
-
-    manifest_profile = authenticated_manifest_ref_profile(manifest_ref)
-    if manifest_profile is None:
-        raise ValueError("evaluation manifest authority is not authenticated")
-    manifest_digest, manifest_size = manifest_profile
-    if len(raw_bytes) != manifest_size:
-        raise ValueError("evaluation manifest authority byte size mismatch")
-    if hashlib.sha256(raw_bytes).hexdigest() != manifest_digest:
-        raise ValueError("evaluation manifest authority SHA-256 mismatch")
-
-    manifest = load_manifest_bytes(raw_bytes)
-    if manifest.status != "completed":
-        raise ValueError("evaluation provenance requires a completed manifest")
-    if (
-        not isinstance(manifest, EvaluationRunManifest)
-        or manifest_ref.kind != manifest.kind
-        or manifest_ref.id != manifest.id
-        or manifest_ref.role != "evaluation_run"
-    ):
-        raise ValueError("evaluation manifest authority disagrees with the manifest")
-    run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
-    entrypoint = manifest.provenance.entrypoint
-    if (
-        run_spec.evaluation_type != expected_producer_identity
-        or entrypoint is None
-        or entrypoint.kind != "feedbax-evaluation-recipe"
-        or entrypoint.name != run_spec.evaluation_type
-    ):
-        raise ValueError("evaluation manifest producer identity is not canonical")
-    if manifest.input_training_runs != run_spec.inputs:
-        raise ValueError("evaluation manifest training sources disagree with its spec")
-
-    staged = run_spec.params.get("staged_prerequisites") or {}
-    if not isinstance(staged, dict):
-        raise ValueError("evaluation staged prerequisites must be a mapping")
-    staged_refs = tuple(
-        StagedEvaluationPrerequisite.model_validate(value).parent for value in staged.values()
-    )
-    source_refs = (*run_spec.inputs, *staged_refs)
-    if tuple(manifest.provenance.parents) != source_refs:
-        raise ValueError("evaluation provenance parents disagree with declared sources")
-    if expected_source_refs is not None and expected_source_refs != source_refs:
-        raise ValueError("evaluation manifest sources disagree with expected sources")
-
-    profiles = (manifest_profile,)
-    for ref in source_refs:
-        profile = authenticated_manifest_ref_profile(ref)
-        if profile is None:
-            raise ValueError(f"evaluation source {ref.id!r} is not authenticated")
-        profiles += (profile,)
-    refs = (manifest_ref, *source_refs)
-    digests = tuple(
-        AuthenticatedManifestDigest(ref.kind, ref.id, ref.role, digest, size)
-        for ref, (digest, size) in zip(refs, profiles)
-    )
-    return EvaluationManifestProvenanceEnvelope(
-        producer_identity=run_spec.evaluation_type,
-        source_refs=source_refs,
-        digest_envelope=digests,
-    )
 
 
 class CheckpointScorerIdentity(StrictModel):
@@ -1080,244 +531,12 @@ class CheckpointSelectionManifest(BaseManifest):
         return self
 
 
-EvaluationStatesConsumptionPolicy = Literal["recompute", "require_durable"]
-
-
-class AnalysisRunSpec(StrictModel):
-    """Declarative request for an analysis run."""
-
-    schema_id: Literal["feedbax.spec.analysis_run"] = ANALYSIS_RUN_SPEC_SCHEMA_ID
-    schema_version: Literal["feedbax.spec.analysis_run.v2"] = ANALYSIS_RUN_SPEC_SCHEMA_VERSION
-    analysis_type: str
-    inputs: list[ParentRef] = Field(default_factory=list)
-    input_requirements: list[AnalysisInputRequirement] = Field(default_factory=list)
-    evaluation_states_policy: EvaluationStatesConsumptionPolicy = "recompute"
-    params: dict[str, Any] = Field(default_factory=dict)
-
-
-class AnalysisEvaluationStateSource(StrictModel):
-    """Queryable provenance for evaluation states consumed by one analysis."""
-
-    schema_id: Literal["feedbax.manifest.analysis_evaluation_state_source"] = (
-        ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_ID
-    )
-    schema_version: Literal["feedbax.manifest.analysis_evaluation_state_source.v2"] = (
-        ANALYSIS_EVALUATION_STATE_SOURCE_SCHEMA_VERSION
-    )
-    source_kind: Literal["evaluation_cache", "durable", "analysis_time_recompute"]
-    requested_evaluation_manifest_id: str
-    evaluation_manifest_authority: Optional[ParentRef] = None
-    supplying_evaluation_manifest_id: Optional[str] = None
-    resulting_evaluation_manifest_id: Optional[str] = None
-    resulting_evaluation_manifest_authority: Optional[ParentRef] = None
-    cache_schema_version: Optional[str] = None
-    cache_key: Optional[str] = None
-    artifact_id: Optional[str] = None
-    artifact_sha256: Optional[str] = None
-    artifact_size_bytes: Optional[int] = Field(default=None, ge=0)
-    artifact_storage_backend: Optional[str] = None
-    container_schema_id: Optional[str] = None
-    container_schema_version: Optional[str] = None
-    container_storage_backend: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _validate_source_evidence(self) -> "AnalysisEvaluationStateSource":
-        if self.source_kind == "durable":
-            required = {
-                "supplying_evaluation_manifest_id": self.supplying_evaluation_manifest_id,
-                "evaluation_manifest_authority": self.evaluation_manifest_authority,
-                "artifact_id": self.artifact_id,
-                "artifact_sha256": self.artifact_sha256,
-                "artifact_size_bytes": self.artifact_size_bytes,
-                "artifact_storage_backend": self.artifact_storage_backend,
-                "container_schema_id": self.container_schema_id,
-                "container_schema_version": self.container_schema_version,
-                "container_storage_backend": self.container_storage_backend,
-            }
-            missing = sorted(
-                name
-                for name, value in required.items()
-                if value is None or (isinstance(value, str) and not value)
-            )
-            if missing:
-                raise ValueError(
-                    f"durable analysis evaluation-state source is missing evidence: {missing}"
-                )
-            assert self.evaluation_manifest_authority is not None
-            if authenticated_manifest_ref_profile(self.evaluation_manifest_authority) is None:
-                raise ValueError(
-                    "durable analysis evaluation-state source requires a complete "
-                    "authenticated evaluation_manifest_authority"
-                )
-        elif self.source_kind == "analysis_time_recompute":
-            if (
-                not self.resulting_evaluation_manifest_id
-                or self.resulting_evaluation_manifest_authority is None
-            ):
-                raise ValueError(
-                    "analysis_time_recompute source requires authenticated resulting "
-                    "evaluation authority"
-                )
-            if (
-                authenticated_manifest_ref_profile(self.resulting_evaluation_manifest_authority)
-                is None
-            ):
-                raise ValueError(
-                    "analysis_time_recompute source requires a complete authenticated "
-                    "resulting_evaluation_manifest_authority"
-                )
-        elif self.source_kind == "evaluation_cache":
-            if not self.cache_schema_version or not self.cache_key:
-                raise ValueError(
-                    "evaluation_cache source requires its stable schema version and key"
-                )
-        return self
-
-
-AnalysisEvaluationStateResolutionCode = Literal[
-    "missing_durable_states",
-    "custody_unavailable",
-    "schema_mismatch",
-    "provenance_mismatch",
-]
-
-
-class AnalysisEvaluationStateResolutionDiagnostic(StrictModel):
-    """Stable actionable diagnostic for failed evaluation-state resolution."""
-
-    schema_id: Literal["feedbax.manifest.analysis_evaluation_state_resolution_diagnostic"] = (
-        ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_ID
-    )
-    schema_version: Literal[
-        "feedbax.manifest.analysis_evaluation_state_resolution_diagnostic.v1"
-    ] = ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION
-    code: AnalysisEvaluationStateResolutionCode
-    evaluation_manifest_id: str
-    message: str
-    artifact_id: Optional[str] = None
-    details: dict[str, Any] = Field(default_factory=dict)
-
-
-class AnalysisComputation(StrictModel):
-    """Authority for an analysis receipt at a resolved execution identity."""
-
-    model_config = ConfigDict(frozen=True)
-
-    engine_revision: str
-    recipe_revision: str | None = None
-    execution_nonce: uuid.UUID | None = None
-
-    @field_validator("engine_revision", "recipe_revision")
-    @classmethod
-    def _validate_revision(cls, revision: str | None) -> str | None:
-        return validate_computation_revision(revision)
-
-    @model_validator(mode="after")
-    def _validate_authority(self) -> AnalysisComputation:
-        if (self.recipe_revision is None) == (self.execution_nonce is None):
-            raise ValueError("analysis computation requires exactly one recipe revision or nonce")
-        return self
-
-
-class AnalysisRunManifest(BaseManifest):
-    kind: Literal["AnalysisRunManifest"] = "AnalysisRunManifest"
-    schema_version: str = ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
-    analysis_spec: SpecPayload
-    computation: AnalysisComputation | None = None
-    inputs: list[ParentRef] = Field(default_factory=list)
-    evaluation_state_sources: list[AnalysisEvaluationStateSource] = Field(default_factory=list)
-    evaluation_state_resolution_diagnostics: list[AnalysisEvaluationStateResolutionDiagnostic] = (
-        Field(default_factory=list)
-    )
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
-    produced_data: list[AnalysisDataProduct] = Field(default_factory=list)
-    summary_metrics: dict[str, Any] = Field(default_factory=dict)
-
-
-REPORT_SPEC_SCHEMA_ID = "feedbax.spec.report"
-REPORT_SPEC_SCHEMA_VERSION = "feedbax.spec.report.v1"
-#: Version an unversioned historical ``ReportSpec`` document declares.
-REPORT_SPEC_UNVERSIONED_BASELINE = REPORT_SPEC_SCHEMA_VERSION
-REPORT_MANIFEST_SCHEMA_ID = "feedbax.manifest.report"
-REPORT_MANIFEST_SCHEMA_VERSION = SCHEMA_VERSION
-
-
-class ReportSpec(StrictModel):
-    """Declarative request for a report product.
-
-    ``schema_id``/``schema_version`` are the document's durable identity and are
-    excluded from :func:`report_manifest_id` for the same reason as
-    :class:`EvaluationRunSpec`.
-    """
-
-    schema_id: Literal["feedbax.spec.report"] = REPORT_SPEC_SCHEMA_ID
-    schema_version: Literal["feedbax.spec.report.v1"] = REPORT_SPEC_SCHEMA_VERSION
-    report_type: str
-    inputs: list[ParentRef] = Field(default_factory=list)
-    params: dict[str, Any] = Field(default_factory=dict)
-    narrative: Optional[str] = None
-
-
-class ReportManifest(BaseManifest):
-    kind: Literal["ReportManifest"] = "ReportManifest"
-    schema_version: str = REPORT_MANIFEST_SCHEMA_VERSION
-    report_spec: SpecPayload
-    inputs: list[ParentRef] = Field(default_factory=list)
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
-
-
-class FigureBindingRecord(StrictModel):
-    """Recorded outcome for one declarative figure binding."""
-
-    name: str
-    status: Literal["included", "omitted", "failed"]
-    reason: Optional[str] = None
-    panel: Optional[str] = None
-    constructor: Optional[str] = None
-    expression_hashes: list[str] = Field(default_factory=list)
-    coordinate_descriptors: dict[str, list[dict[str, Any]]] = Field(
-        default_factory=dict,
-        exclude_if=lambda value: not value,
-    )
-
-
-class FigurePieceResolution(StrictModel):
-    """Resolved identity for one piece consumed by a figure."""
-
-    name: str
-    source_kind: Literal["artifact_ref", "manifest_predicate", "generator_spec"]
-    artifact_refs: list[ArtifactRef] = Field(default_factory=list)
-    manifest_refs: list[ParentRef] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class FigureManifest(BaseManifest):
-    """Durable provenance for a rendered declarative figure."""
-
-    kind: Literal["FigureManifest"] = "FigureManifest"
-    schema_version: str = FIGURE_MANIFEST_SCHEMA_VERSION
-    figure_spec: SpecPayload
-    inputs: list[ParentRef] = Field(default_factory=list)
-    resolved_inputs: list[ParentRef] = Field(default_factory=list)
-    resolved_pieces: list[FigurePieceResolution] = Field(default_factory=list)
-    constructor_versions: dict[str, str] = Field(default_factory=dict)
-    template_name: Optional[str] = None
-    template_version: Optional[str] = None
-    binding_records: list[FigureBindingRecord] = Field(default_factory=list)
-    expression_results_digest: Optional[str] = None
-    failure: Optional[dict[str, Any]] = None
-    regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = Field(default_factory=list)
-
-
 AnyManifest = (
     GraphSpecManifest
     | ModelArtifactManifest
     | TrainingRunManifest
     | EvaluationRunManifest
     | CheckpointSelectionManifest
-    | AnalysisRunManifest
-    | ReportManifest
-    | FigureManifest
 )
 
 
@@ -1339,17 +558,10 @@ MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "TrainingRunManifest": TrainingRunManifest,
     "EvaluationRunManifest": EvaluationRunManifest,
     "CheckpointSelectionManifest": CheckpointSelectionManifest,
-    "AnalysisRunManifest": AnalysisRunManifest,
-    "ReportManifest": ReportManifest,
-    "FigureManifest": FigureManifest,
 }
 
 
 def _manifest_model_for_kind(kind: str) -> type[BaseModel] | None:
-    if kind == "TrainingCheckpointTransactionManifest":
-        from feedbax.contracts.checkpoints import CheckpointTransactionManifest
-
-        return CheckpointTransactionManifest
     return MANIFEST_MODELS.get(kind)
 
 
@@ -1364,98 +576,7 @@ SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
     ),
     "EvaluationRunManifest": ("evaluation_spec",),
     "CheckpointSelectionManifest": ("selection_spec",),
-    "AnalysisRunManifest": ("analysis_spec", "regeneration_specs"),
-    "ReportManifest": ("report_spec", "regeneration_specs"),
-    "FigureManifest": ("figure_spec", "regeneration_specs"),
 }
-
-
-def analysis_data_product_identity_envelope(product: AnalysisDataProduct) -> dict[str, Any]:
-    """Return the semantic envelope hashed into ``product_identity_hash``.
-
-    The envelope includes the typed product schema, role, logical name, producer
-    and parent manifest identities, checkpoint/rollout policies, value-affecting
-    parameters, optional descriptor basis, artifact byte identities, external
-    materialization metadata, and regeneration metadata. It intentionally
-    excludes human labels, arbitrary product metadata, and mutable local URIs.
-    """
-
-    def artifact_identity(artifact: ArtifactRef) -> dict[str, Any]:
-        return {
-            "role": artifact.role,
-            "logical_name": artifact.logical_name,
-            "artifact_id": artifact.artifact_id,
-            "sha256": artifact.sha256,
-            "media_type": artifact.media_type,
-            "size_bytes": artifact.size_bytes,
-            "storage_backend": artifact.storage_backend,
-            "metadata": artifact.metadata,
-        }
-
-    envelope = {
-        "schema_id": product.schema_id,
-        "schema_version": product.schema_version,
-        "product_schema_id": product.product_schema_id,
-        "product_schema_version": product.product_schema_version,
-        "role": product.role,
-        "logical_name": product.logical_name,
-        "producer_manifest_id": product.producer_manifest_id,
-        "producer_manifest_hash": product.producer_manifest_hash,
-        "parent_manifests": [
-            parent.model_dump(mode="json", exclude_none=True) for parent in product.parent_manifests
-        ],
-        "checkpoint_policy": product.checkpoint_policy,
-        "rollout_policy": product.rollout_policy,
-        "parameters": product.parameters,
-        "descriptor_basis_hash": product.descriptor_basis_hash,
-        "artifacts": [artifact_identity(artifact) for artifact in product.artifacts],
-        "materialization": product.materialization,
-        "regeneration": [
-            item.model_dump(mode="json", exclude_none=True) for item in product.regeneration
-        ],
-    }
-    if product.output_descriptors is not None:
-        envelope["output_descriptors"] = [
-            descriptor.model_dump(mode="json", exclude_none=True)
-            for descriptor in product.output_descriptors
-        ]
-    return envelope
-
-
-def preserve_analysis_output_descriptor(
-    product: AnalysisDataProduct,
-    *,
-    input_path: str,
-    output_path: str,
-) -> AnalysisOutputDescriptor:
-    """Preserve one exact input descriptor for a semantics-preserving output field."""
-    input_path = _validate_output_descriptor_path(input_path)
-    output_path = _validate_output_descriptor_path(output_path)
-    matches = [
-        descriptor
-        for descriptor in product.output_descriptors or ()
-        if descriptor.path == input_path
-    ]
-    if len(matches) != 1:
-        raise ValueError(
-            "descriptor preservation requires exactly one named input descriptor: "
-            f"path={input_path!r}, matches={len(matches)}"
-        )
-    assert product.product_identity_hash is not None
-    return AnalysisOutputDescriptor(
-        path=output_path,
-        value_schema=matches[0].value_schema.model_copy(deep=True),
-        origin="preserved",
-        preserved_from=AnalysisOutputDescriptorSource(
-            product_identity_hash=product.product_identity_hash,
-            path=input_path,
-        ),
-    )
-
-
-def analysis_data_product_identity_hash(product: AnalysisDataProduct) -> str:
-    """Hash the deterministic semantic envelope for an analysis data product."""
-    return sha256_bytes(canonical_json_bytes(analysis_data_product_identity_envelope(product)))
 
 
 def _spec_payload_record_metadata(
@@ -1565,7 +686,7 @@ def migrate_spec_payload(
                 path=path,
                 registry=active_registry,
                 component_registry=component_registry,
-                historical_unversioned=not assume_current,
+                resolve_components=not assume_current or spec_payload_obj.kind == "AcausalGraphSpec",
             )
         else:
             result = active_registry.migrate(
@@ -1619,10 +740,6 @@ MANIFEST_KIND_DIRECTORIES: dict[str, str] = {
     "TrainingRunManifest": "training_runs",
     "EvaluationRunManifest": "evaluation_runs",
     "CheckpointSelectionManifest": "checkpoint_selections",
-    "AnalysisRunManifest": "analysis_runs",
-    "ReportManifest": "reports",
-    # Historical layout: figure manifests are stored under their kind name.
-    "FigureManifest": "FigureManifest",
 }
 
 
@@ -1743,51 +860,6 @@ def _normalize_manifest_data_spec_payloads(data: dict[str, Any], *, component_re
     return normalized
 
 
-
-
-def _normalize_report_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
-    """Admit a ``ReportManifest`` document only at a registered schema version."""
-    if data.get("kind") != "ReportManifest":
-        return data
-    from feedbax.contracts.migrations import default_spec_registry
-
-    schema_version = data.get("schema_version", REPORT_MANIFEST_SCHEMA_VERSION)
-    result = default_spec_registry.migrate(
-        "ReportManifest",
-        data,
-        source_version=schema_version if isinstance(schema_version, str) else None,
-    )
-    return result.payload
-
-
-def _normalize_analysis_run_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
-    if data.get("kind") != "AnalysisRunManifest":
-        return data
-    from feedbax.contracts.migrations import default_spec_registry
-
-    schema_version = data.get("schema_version", ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1)
-    result = default_spec_registry.migrate(
-        "AnalysisRunManifest",
-        data,
-        source_version=schema_version if isinstance(schema_version, str) else None,
-    )
-    return result.payload
-
-
-def _normalize_evaluation_run_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
-    if data.get("kind") != "EvaluationRunManifest":
-        return data
-    from feedbax.contracts.migrations import default_spec_registry
-
-    schema_version = data.get("schema_version", EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1)
-    result = default_spec_registry.migrate(
-        "EvaluationRunManifest",
-        data,
-        source_version=schema_version if isinstance(schema_version, str) else None,
-    )
-    return result.payload
-
-
 def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
     """Return a copy with embedded spec payloads registry-stamped and migrated."""
     fields = SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND.get(manifest.kind)
@@ -1871,75 +943,6 @@ def normalize_checkpoint_selection_lineage(
 SPEC_SCHEMA_IDENTITY_FIELDS: tuple[str, ...] = ("schema_id", "schema_version")
 
 
-def spec_identity_preimage(spec: BaseModel) -> dict[str, Any]:
-    """Return the canonical semantic preimage used for content-minted spec ids.
-
-    Schema identity fields are removed: a versioned document's identity names
-    what it asks for, not which schema revision expressed it. This keeps
-    content-minted manifest ids byte-stable when a family gains an explicit
-    in-document schema identity, and it forces a genuinely semantic migration to
-    change semantic fields if it intends to change identity.
-    """
-    payload = spec.model_dump(mode="json", exclude_none=True)
-    for field_name in SPEC_SCHEMA_IDENTITY_FIELDS:
-        payload.pop(field_name, None)
-    return payload
-
-
-def evaluation_run_manifest_id(spec: EvaluationRunSpec) -> str:
-    """Return deterministic run identity for an evaluation spec."""
-    dependency_identities = [
-        ref.metadata.get("material_dependency_identity_sha256") for ref in spec.inputs
-    ]
-    if any(identity is not None for identity in dependency_identities):
-        from feedbax.contracts.material_dependencies import (
-            MaterialDependencySet,
-            material_dependency_identity_sha256,
-        )
-
-        if not all(
-            isinstance(identity, str)
-            and len(identity) == 64
-            and all(character in "0123456789abcdef" for character in identity)
-            for identity in dependency_identities
-        ):
-            raise ValueError(
-                "every evaluation input must carry an exact "
-                "material_dependency_identity_sha256 when dependency-scoped identity is used"
-            )
-        declarations = [ref.metadata.get("material_dependencies") for ref in spec.inputs]
-        if not all(isinstance(declaration, dict) for declaration in declarations):
-            raise ValueError(
-                "dependency-scoped evaluation identity requires every input to retain "
-                "its versioned material_dependencies declaration"
-            )
-        validated_declarations = [
-            MaterialDependencySet.model_validate(declaration) for declaration in declarations
-        ]
-        for identity, declaration in zip(
-            dependency_identities,
-            validated_declarations,
-            strict=True,
-        ):
-            expected = material_dependency_identity_sha256(declaration)
-            if identity != expected:
-                raise ValueError(
-                    "evaluation input material_dependency_identity_sha256 disagrees "
-                    "with its validated declaration"
-                )
-        identity_preimage: Any = {
-            "schema_id": "feedbax.identity.evaluation_run",
-            "schema_version": "feedbax.identity.evaluation_run.v1",
-            "evaluation_type": spec.evaluation_type,
-            "params": spec.params,
-            "material_dependency_identities": dependency_identities,
-        }
-    else:
-        identity_preimage = spec_identity_preimage(spec)
-    digest = sha256_bytes(canonical_json_bytes(identity_preimage))
-    return f"feedbax-evaluation-run:{digest[:32]}"
-
-
 def planned_training_run_manifest_id(
     *,
     graph_spec: dict[str, Any],
@@ -1965,61 +968,10 @@ def planned_training_run_manifest_id(
     return f"feedbax-training-run:{digest[:32]}"
 
 
-
-
-def analysis_run_manifest_id(
-    spec: AnalysisRunSpec, *, computation: AnalysisComputation | None = None
-) -> str:
-    """Return a resolved run ID, or the historical spec-only ID without computation."""
-    preimage = (
-        spec
-        if computation is None
-        else {
-            "schema_version": "feedbax.identity.analysis_run.v2",
-            "spec": spec.model_dump(mode="json", exclude_none=True),
-            "computation": computation.model_dump(mode="json", exclude_none=True),
-        }
-    )
-    digest = sha256_bytes(canonical_json_bytes(preimage))
-    return f"feedbax-analysis-run:{digest[:32]}"
-
-
-def report_manifest_id(spec: ReportSpec) -> str:
-    """Return deterministic report identity for a report spec."""
-    digest = sha256_bytes(canonical_json_bytes(spec_identity_preimage(spec)))
-    return f"feedbax-report:{digest[:32]}"
-
-
-def figure_manifest_id(spec: Any) -> str:
-    """Return deterministic figure identity for a figure spec-like object."""
-    digest = sha256_bytes(canonical_json_bytes(spec))
-    return f"feedbax-figure:{digest[:32]}"
-
-
 def checkpoint_selection_manifest_id(spec: CheckpointSelectionSpec) -> str:
     """Return deterministic identity for a checkpoint-selection spec."""
     digest = sha256_bytes(canonical_json_bytes(spec))
     return f"feedbax-checkpoint-selection:{digest[:32]}"
-
-
-def evaluation_states_cache_path(
-    manifest_id: str,
-    *,
-    root: Path | str | None = None,
-) -> Path:
-    """Return the manifest-root cache path for evaluated state trajectories."""
-    root_path = Path(root) if root is not None else default_manifest_root()
-    return root_path / "cache" / "states" / f"{safe_manifest_key(manifest_id)}.pkl"
-
-
-def analysis_results_cache_dir(
-    manifest_id: str,
-    *,
-    root: Path | str | None = None,
-) -> Path:
-    """Return the manifest-root cache directory for computed analysis results."""
-    root_path = Path(root) if root is not None else default_manifest_root()
-    return root_path / "cache" / "analysis_results" / safe_manifest_key(manifest_id)
 
 
 def write_manifest(
@@ -2037,17 +989,9 @@ def write_manifest(
     serialized = (
         manifest.model_dump_json(exclude_none=True)
         if isinstance(manifest, EvaluationRunManifest)
-        and manifest.schema_version == EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
         else manifest.model_dump_json(indent=2, exclude_none=True)
     )
-    one_execution = (
-        isinstance(manifest, AnalysisRunManifest)
-        and manifest.computation is not None
-        and manifest.computation.execution_nonce is not None
-    )
-    write_bytes_atomic(
-        path, (serialized + "\n").encode("utf-8"), mode=0o666, replace=not one_execution
-    )
+    write_bytes_atomic(path, (serialized + "\n").encode("utf-8"), mode=0o666)
     if index:
         from feedbax.persistence.manifest_index import index_manifest_file
 
@@ -2058,9 +1002,6 @@ def write_manifest(
 def load_manifest_bytes(raw: bytes, *, component_registry: Any | None = None) -> AnyManifest:
     """Parse one known Feedbax manifest from already-authenticated raw bytes."""
     data = strict_json_loads(raw, ref="manifest document")
-    data = _normalize_analysis_run_manifest_data(data)
-    data = _normalize_evaluation_run_manifest_data(data)
-    data = _normalize_report_manifest_data(data)
     data = _normalize_manifest_data_spec_payloads(data, component_registry=component_registry)
     data = _validate_retention_artifact_ref_metadata(data)
     raw_kind = data.get("kind")

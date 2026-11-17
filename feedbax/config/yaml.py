@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from enum import Enum
 from pathlib import Path
 
 from ruamel.yaml import YAML, nodes
@@ -13,10 +12,6 @@ class _YamlLiteral:
 
 def _construct_literal(loader, node):
     return _YamlLiteral(loader.construct_sequence(node))
-
-
-def _represent_enum(representer, data: Enum):
-    return representer.represent_scalar(f"!{data.__class__.__name__}", str(data._name_).lower())
 
 
 def _ldict_multi_constructor(constructor, tag_suffix, node):
@@ -79,21 +74,11 @@ MULTI_CONSTRUCTORS: dict[str, Callable] = {
 }
 
 
-def _iter_representers():
-    yield from REPRESENTERS.items()
-    try:
-        from feedbax.analysis.types import Direction, ResponseVar
-    except (ImportError, AttributeError):
-        return
-    yield Direction, _represent_enum
-    yield ResponseVar, _represent_enum
-
-
 def get_yaml_loader(typ="safe") -> YAML:
     """Returns a ruamel.yaml.YAML instance with representers and constructors for custom types."""
     yaml = YAML(typ=typ)
     yaml.default_flow_style = None
-    for type_, representer in _iter_representers():
+    for type_, representer in REPRESENTERS.items():
         yaml.representer.add_representer(type_, representer)
     for tag, constructor in CONSTRUCTORS.items():
         yaml.constructor.add_constructor(tag, constructor)

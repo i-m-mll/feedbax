@@ -3,16 +3,13 @@ import os
 from importlib import resources
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeVar
+from typing import Any, Literal, Optional, TypeVar
 
 import jax.tree as jt
 
 from feedbax.config.namespace import TreeNamespace, dict_to_namespace
 from feedbax.config.utils import deep_merge
 from feedbax.config.yaml import get_yaml_loader
-
-if TYPE_CHECKING:
-    from feedbax.plugins.registry import ExperimentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -95,118 +92,32 @@ def _load_defaults_hierarchy(
 def load_config(
     name: str,
     config_type: Optional[Literal["training", "analysis"]] = None,
-    *,
-    registry: Optional["ExperimentRegistry"] = None,
 ) -> dict[str, Any]:
-    """
-    Load a YAML config as a dict.
-
-    Addressing:
-      - Global configs (config_type is None):   name = "pkg/resource" or "resource"
-      - Module configs (training/analysis):     name = "pkg/part1.some_module" or "part1.some_module"
-
-    Precedence (globals):
-      1) package override:   {pkg}.config/{resource}.yml  (if registry provided / determined)
-      2) user config dir:    {user_config_dir}/{resource}.yml
-      3) base fallback:      feedbax.config/{resource}.yml
-
-    Module configs (training/analysis):
-      - No user-dir lookup.
-      - Defaults hierarchy is rooted at the owning package’s resource root.
-    """
+    """Load one Feedbax YAML resource, allowing user overrides of global settings."""
     yaml = get_yaml_loader(typ="safe")
-
+    resource_root = "feedbax.config"
     if config_type is None:
-        # -------- GLOBAL CONFIGS --------
-        # name is "pkg/resource" or just "resource"
-        resource_name = name.split("/")[-1]  # trailing token is always the filename stem
-
-        if registry is None:
-            # No registry: user config dir -> base fallback
-            user_config_dir = get_user_config_dir()
-            if user_config_dir is not None:
-                upath = user_config_dir / f"{resource_name}.yml"
-                if upath.exists():
-                    with open(upath, "r", encoding="utf-8") as f:
-                        return yaml.load(f) or {}
-                else:
-                    logger.info(
-                        f"Config file {resource_name}.yml not found in user config directory "
-                        f"`{user_config_dir}`. Falling back to base resources."
-                    )
-
-            data = _maybe_open_yaml("feedbax.config", resource_name)
-            if data is None:
-                raise ValueError(
-                    f"Global config '{resource_name}.yml' not found in base package resources."
-                )
-            return data
-
-        # Registry provided: determine package for globals.
-        # Accept "pkg/resource", or (if only one package is registered) "resource".
-        if "/" in name:
-            pkg = name.split("/", 1)[0]
-            # Validate + compute resource root via registry
-            _pkg_name, resource_root = registry.get_config_resource_root(name)
-        else:
-            single = registry.single_package_name()
-            if not single:
-                pkgs = "', '".join(sorted(registry._packages.keys()))
-                raise ValueError(
-                    f"Global config '{name}' is ambiguous with multiple packages registered. "
-                    f"Use '<package>/{name}'. Installed packages: '{pkgs}'."
-                )
-            pkg = single
-            _pkg_name, resource_root = registry.get_config_resource_root(f"{pkg}/{resource_name}")
-
-        # Precedence: package override -> user config dir -> base
-        data = _maybe_open_yaml(resource_root, resource_name)
-        if data is not None:
-            return data
-
+        if not name or Path(name).name != name:
+            raise ValueError("A global config name must name one resource.")
         user_config_dir = get_user_config_dir()
         if user_config_dir is not None:
-            upath = user_config_dir / f"{resource_name}.yml"
-            if upath.exists():
-                with open(upath, "r", encoding="utf-8") as f:
-                    return yaml.load(f) or {}
+            path = user_config_dir / f"{name}.yml"
+            if path.exists():
+                with path.open(encoding="utf-8") as stream:
+                    return yaml.load(stream) or {}
 
-        data = _maybe_open_yaml("feedbax.config", resource_name)
-        if data is not None:
-            return data
+        data = _maybe_open_yaml(resource_root, name)
+        if data is None:
+            raise ValueError(f"Global config '{name}.yml' not found in base package resources.")
+        return data
 
-        raise ValueError(
-            f"Global config '{resource_name}.yml' not found in {resource_root}, "
-            f"user config dir, or feedbax.config."
-        )
-
-    # -------- MODULE CONFIGS (training/analysis) --------
-    # We prefer to have a registry to resolve the owning package.
-    if registry is not None:
-        package_name, resource_root = registry.get_config_resource_root(name, domain=config_type)
-    else:
-        # Fallback: base package only (not recommended; you generally want a registry here)
-        package_name = "feedbax"
-        resource_root = "feedbax.config"
-
-    # Derive the relative (dotted) module path (parents + leaf) from `name`
-    if "/" in name:
-        relative_key = name.split("/", 1)[1]  # dotted module path after '<pkg>/'
-    elif name.startswith(f"{package_name}."):
-        # Back-compat if someone passed dotted "<pkg>.<...>"
-        relative_key = name[len(package_name) + 1 :]
-    else:
-        relative_key = name
-
-    rel_parts = relative_key.split(".")
+    rel_parts = name.split(".")
     leaf = rel_parts[-1]
     parents = rel_parts[:-1]
 
     # Defaults hierarchy rooted at the owning package
     merged_defaults, paths = _load_defaults_hierarchy(
-        rel_parts,  # IMPORTANT: use relative (package-stripped) parts
-        config_type,  # "training" | "analysis"
-        resource_root,  # e.g., "rlrmp.config"
+        rel_parts, config_type, resource_root
     )
 
     if paths:
@@ -216,7 +127,6 @@ def load_config(
         elif used:
             logger.info(f"Loaded {config_type} defaults hierarchically from: {', '.join(used)}")
 
-    # Final config file under {pkg}.config.modules.{domain}.<parents>/<leaf>.yml
     base = f"{resource_root}.modules.{config_type}"
     subpackage = ".".join([base, *parents]) if parents else base
 
@@ -234,10 +144,9 @@ def load_config_as_ns(
     name: str,
     config_type: Optional[Literal["training", "analysis"]] = None,
     to_type: type[T] = TreeNamespace,
-    registry: Optional["ExperimentRegistry"] = None,
 ) -> T:
     """Load the contents of a project YAML config file resource as a namespace."""
-    return dict_to_namespace(load_config(name, config_type, registry=registry), to_type=to_type)
+    return dict_to_namespace(load_config(name, config_type), to_type=to_type)
 
 
 def _setup_paths(paths_ns: TreeNamespace):

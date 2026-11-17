@@ -113,7 +113,7 @@ def read_train_authoring(
         bundle = request.app.state.bootstrap_state.bundle
         try:
             fields, patches, documents = project_train_fields(
-                snapshot.project, step_id, bundle.training_programs, body.change,
+                snapshot.project, step_id, bundle.training_methods, body.change,
                 read_plan=lambda keys: folders.read_plan(project_id, revision=snapshot.revision, source_runs=keys).plan,
             )
         except ValueError as error:
@@ -138,7 +138,7 @@ def project_train_numeric_fields(
         bundle = request.app.state.bootstrap_state.bundle
         try:
             return project_training_numeric_fields(
-                snapshot.project, step_id, bundle.training_programs, bundle.expression_functions, body,
+                snapshot.project, step_id, bundle.training_methods, bundle.expression_functions, body,
                 lambda keys: folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan,
             )
         except ValueError as error:

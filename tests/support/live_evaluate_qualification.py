@@ -50,24 +50,24 @@ def install():
         if kind == "publication" and data["key"] == "checkpoint:4":
             pause("stop")
 
-    def instrumented(launch, events):
+    def instrumented(launch, events, *, registry):
         if mode == "tamper":
             sidecar = Path(os.environ["FEEDBAX_HOST_LIVE_EVALUATE"])
             sidecar.write_bytes(sidecar.read_bytes() + b" ")
-        score = callback(launch, events)
+        score = callback(launch, events, registry=registry)
         if score is None:
             return None
         if mode == "lifecycle":
-            def gated(checkpoint, model):
+            def gated(checkpoint, models):
                 if launch.resume is not None and checkpoint.completed_updates == 6:
                     pause("cancel")
-                score(checkpoint, model)
+                score(checkpoint, models)
             return gated
         if mode == "timing":
-            def timed(checkpoint, model):
+            def timed(checkpoint, models):
                 update = checkpoint.completed_updates
                 begin = perf_counter_ns()
-                score(checkpoint, model)
+                score(checkpoint, models)
                 end = point_completed[update]
                 events.append("qualification_point_window", {"update": update, "ns": end - begin})
                 events.append("qualification_checkpoint_clock", {"update": update, "ns": end})

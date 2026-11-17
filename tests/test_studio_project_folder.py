@@ -6,37 +6,31 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import replace
 from functools import wraps
 import json
 from pathlib import Path
 from threading import Barrier, Event
 
 from fastapi.testclient import TestClient
-from pydantic import Field, JsonValue
+from pydantic import JsonValue
 import pytest
 
 from feedbax._atomic import write_bytes_atomic
 from feedbax import project_folder
 from feedbax.contracts import project_plan, request_identity
-from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
-from feedbax.contracts.request_identity import REQUEST_KINDS
 from feedbax.contracts.studio_authoring import StudioAuthoringChange
-from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
 from feedbax.host import HostError
-from feedbax.plugins.application import TRAINING_PROGRAMS, new_application_registry_bundle
-from feedbax.plugins.bootstrap import BootstrapState, PluginProvenance
-from feedbax.studio.authoring import authoring_surface, project_train_fields
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.studio.authoring import project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
-from web.e2e.studio.fixtures.canonical_train import ordinary_files, successor_file
 
 
 _URL = "/api/projects/reach"
@@ -47,14 +41,14 @@ _MASS_ADDRESS = ModelAddress.model_validate({
     "document": _MODEL, "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
 })
-_SEED = "method_payload.payload.seed"
+_SEED = "seed"
 
 
 @pytest.fixture
 def study(tmp_path: Path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     fit = raw["steps"]["fit"] = raw["steps"].pop("train")
-    fit["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    fit["base"]["inline"]["seed"] = 0
     fit["sweep"] = {
         "axes": {"seed": {"values": {
             "10": {"patches": {_SEED: {"value": 10}}},
@@ -158,8 +152,16 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     snapshot = document["snapshot"]
     root = tmp_path / document["configuration"]["project"]
     url = f"/api/projects/{snapshot['project_id']}"
-    model, task, objective, train = ordinary_files("2")
-    trial = train["step"]["base"]["inline"]["trial_documents"]
+    example = managed_train_project()
+    step = example.steps["train"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    trial = step["base"]["inline"]["trial_documents"]
+    model, task, objective = [
+        {"kind": "document", "id": name, "document": example.documents[name].model_dump(
+            mode="json", by_alias=True, exclude_unset=True,
+        )}
+        for name in (trial[slot]["document"] for slot in ("model", "task", "objective"))
+    ]
+    train = {"kind": "step", "id": "train", "step": step}
     for entry in (
         model, task, objective,
         {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}},
@@ -192,8 +194,8 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     assert [row.key for row in before.rows] == [selected]
     assert not before.runs and not before.requests
     assert {item.path for item in before.diagnostics} == {
-        "payload.method_payload",
-        "payload.method_ref",
+        "payload.method",
+        "payload.settings",
         "payload.training_config",
     }
     assert {(item.code, item.variant, item.step, item.row) for item in before.diagnostics} == {
@@ -231,46 +233,6 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     assert not (root / "results").exists()
 
 
-def test_authoring_surface_uses_bootstrapped_method_declarations():
-    class PluginPayload(StrictModel):
-        plateau_updates: int = Field(gt=0)
-
-    bundle = new_application_registry_bundle()
-    registry = bundle.training_programs
-    builtin = registry.resolve(STUDIO_GRAPH_METHOD, path="/method_ref")
-    method = replace(
-        builtin,
-        method_ref="example/authoring/v1",
-        payload_model=PluginPayload,
-        payload_schema_id="example.spec.authoring",
-        payload_schema_version="example.spec.authoring.v1",
-        owner="example.authoring",
-        package="example",
-    )
-    registry.register(method)
-    source = PluginProvenance(
-        plugin_id="example.authoring",
-        plugin_version="v1",
-        downstream_protocol_version=1,
-        distribution="example",
-        distribution_version="1",
-        fingerprint="test",
-        entry_point_name="example",
-        entry_point_value="example:register",
-        family_protocols={TRAINING_PROGRAMS.family: TRAINING_PROGRAMS.protocol_version},
-        registration_order=0,
-        registered_keys={TRAINING_PROGRAMS.family: (method.method_ref,)},
-    )
-    surface = authoring_surface(BootstrapState(bundle, (source,)))
-
-    assert surface.project_grammar == Project.model_json_schema()
-    assert surface.step_payloads == {"train": REQUEST_KINDS["train"].spec_type.model_json_schema()}
-    declaration = next(item for item in surface.training_methods if item.key == method.method_ref)
-    assert declaration.plugin == source.plugin_id
-    assert declaration.owner == method.owner
-    assert declaration.payload_schema == PluginPayload.model_json_schema()
-
-
 def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(study):
     root, client = study
     with client:
@@ -299,9 +261,9 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
         assert projection.status_code == 200, projection.text
         assert projection.headers["Cache-Control"] == "no-store"
         fields = {field["id"]: field for field in projection.json()["fields"]}
-        assert fields["/method_ref/name"]["control"]["options"] == [
-            {"label": "Studio graph", "value": STUDIO_GRAPH_METHOD.key},
-        ]
+        assert "feedbax.supervised_gradient" in {
+            option["value"] for option in fields["/method"]["control"]["options"]
+        }
         assert "/graph" not in fields and "/task" not in fields
         invalid = client.post(url, json={
             "revision": revision, "change": {"field": "/task", "value": "model"},
@@ -311,78 +273,50 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
 
 
 def test_initial_training_settings_retain_the_authored_method_rate_and_batch_count():
-    registry = new_application_registry_bundle().training_programs
-    method = registry.resolve(STUDIO_GRAPH_METHOD, path="/method_ref")
-    project = Project.model_validate({
-        "steps": {
-            "train": {"kind": "train", "base": {"inline": {
-                "trial_documents": {"task": {
-                    "id": "task", "fixed_steps": 80, "variables": [], "epochs": [{"id": "move", "name": "Move"}],
-                    "signals": [],
-                }},
-                "method_ref": STUDIO_GRAPH_METHOD.model_dump(),
-                "method_payload": {
-                    "schema_id": method.payload_schema_id,
-                    "schema_version": method.payload_schema_version,
-                    "payload": {
-                        "optimizer": {"type": "adam", "params": {"learning_rate": 0.02}},
-                        "target_total": 25,
-                    },
-                },
-            }}},
-        },
-    })
+    registry = new_application_registry_bundle().training_methods
+    project = managed_train_project(batches=25)
     _, patches, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/training_config/snapshot_interval", value=12),
     )
     patch, = patches
-    assert patch.path == "/base/inline/training_config"
-    assert patch.value == {
-        "n_batches": 25, "batch_size": 1, "n_reach_steps": 80,
-        "snapshot_interval": 12,
-    }
+    assert patch.path == "/base/inline/training_config/snapshot_interval"
+    assert patch.value == 12
 
-
-    raw = project.model_dump()
-    inline = raw["steps"]["train"]["base"]["inline"]
-    inline["training_config"] = patch.value
-    reference = {"document": "parameters"}
-    inline["method_payload"]["payload"]["optimizer"]["params"] = reference
-    raw["documents"] = {
-        "parameters": {"schema_id": "example.optimizer", "payload": {"learning_rate": 0.02}},
-    }
-    referenced = Project.model_validate(raw, by_name=True)
-    with pytest.raises(ValueError, match="has no supported edit"):
-        project_train_fields(
-            referenced, "train", registry,
-            StudioAuthoringChange(field="/training_config/learning_rate", value=0.03),
-        )
-    assert inline["method_payload"]["payload"]["optimizer"]["params"] == reference
+    fields, patches, _ = project_train_fields(project, "train", registry, None)
+    values = {field.id: field.value for field in fields}
+    assert values["/training_config/n_batches"] == 25
+    assert values["/settings/optimizer/params/learning_rate"] == (
+        project.steps["train"].base.inline["settings"]["optimizer"]["params"]["learning_rate"]
+    )
 
     _, patches, _ = project_train_fields(
         project, "train", registry,
-        StudioAuthoringChange(field="/method_payload/payload/seed", value=7.0),
+        StudioAuthoringChange(field="/seed", value=7.0),
     )
     seed, = patches
-    assert seed.path == "/base/inline/method_payload/payload/seed"
+    assert seed.path == "/base/inline/seed"
     assert type(seed.value) is int and seed.value == 7
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     train = raw["steps"]["train"]
-    carry_path = "method_payload.payload.checkpoint_initialization"
-    total_path = "method_payload.payload.target_total"
-    rate_path = "method_payload.payload.optimizer.params.learning_rate"
+    carry_path = "checkpoint_initialization"
+    rate_path = "settings.optimizer.params.learning_rate"
     train["sweep"] = {"axes": {"rate": {"values": {
         "slow": {"patches": {rate_path: {"value": 0.001}}},
         "fast": {"patches": {rate_path: {"value": 0.003}}},
-        "long": {"patches": {"training_config.n_batches": {"value": 3}, total_path: {"value": 3}}},
+        "long": {"patches": {"training_config.n_batches": {"value": 3}}},
     }}}}
-    child = successor_file()["step"]
-    child["deltas"][0]["patches"] = child["deltas"][0]["patches"][:1]
-    child["inputs"]["checkpoint"]["where"] = {"axes": {"rate": ["slow", "fast"]}}
+    child = {
+        "kind": "train",
+        "base": {"step": "train"},
+        "inputs": {"checkpoint": {"step": "train", "checkpoint": "last", "where": {"axes": {"rate": ["slow", "fast"]}}}},
+        "deltas": [{"layer_id": "initialize", "patches": [
+            {"path": carry_path, "op": "add", "value": "initialize_from"},
+        ]}],
+    }
     raw["steps"]["successor"] = child
     project = Project.model_validate(raw)
     root = tmp_path / "reach"
@@ -409,10 +343,12 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
         assert control["value"] == "initialize_from"
         [layer] = reviewed["patches"]
         assert layer["path"] == "/deltas/1"
-        policy, total = layer["value"]["patches"]
+        policy, = layer["value"]["patches"]
         assert policy["path"] == carry_path
-        assert policy["value"]["progress"] == {"source_completed_batches": 2, "additional_batches": 2}
-        assert (total["path"], total["value"]) == (total_path, 4)
+        assert policy["value"] == {
+            "mode": "continue_from", "source_completed_updates": 2,
+            "state": "preserve", "schedule": "continue", "rng": "carry",
+        }
         saved = client.patch(_URL, json={
             "revision": before["revision"], "address": address, "patches": reviewed["patches"],
         })
@@ -435,7 +371,7 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
         })
         assert restored.status_code == 200, restored.text
         assert [patch["value"] for patch in restored.json()["patches"][0]["value"]["patches"]] == [
-            "initialize_from", 2,
+            "initialize_from",
         ]
 
         widened = client.patch(_URL, json={
@@ -545,6 +481,9 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
         "base": {"step": "fit"},
         "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
         "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
+        "deltas": [{"layer_id": "initialize", "patches": [
+            {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+        ]}],
     }
     authored["sweep"] = {"rows": {"base": {}, "compare": {}}}
     project = Project.model_validate(authored)
@@ -664,8 +603,8 @@ def _plan_dependencies(root: Path) -> None:
     authored = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     authored["steps"]["fit"] = authored["steps"].pop("train")
     fit = authored["steps"]["fit"]
-    seed_path = "method_payload.payload.seed"
-    fit["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    seed_path = "seed"
+    fit["base"]["inline"]["seed"] = 0
     fit["sweep"] = {"axes": {"seed": {"values": {
         "10": {"label": "First", "patches": {seed_path: {"value": 10}}},
         "2": {"patches": {seed_path: {"value": 2}}},
@@ -678,9 +617,12 @@ def _plan_dependencies(root: Path) -> None:
         "base": {"step": "fit"},
         "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
         "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
+        "deltas": [{"layer_id": "initialize", "patches": [
+            {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+        ]}],
     }
     independent = deepcopy(fit["base"]["inline"])
-    independent["method_payload"]["payload"]["seed"] = 88
+    independent["seed"] = 88
     authored["steps"]["independent"] = {"kind": "train", "base": {"inline": independent}}
     project = Project.model_validate(authored)
     for relative, data in dump_text_project(
@@ -756,7 +698,7 @@ def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(tmp
     assert renamed_row.coordinates["seed"].label == "Renamed"
     assert renamed_row.label != old_row.label
 
-    snapshot = patch(7, path=f"{prefix}/patches/method_payload.payload.seed/value")
+    snapshot = patch(7, path=f"{prefix}/patches/seed/value")
     edited, counts = check(first)
     assert counts["encode_request"] == 2 and counts["compose_step"] == 2
     before_ids = {run.key: run.request_id for run in cold.runs}
@@ -944,7 +886,7 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
     assert json.loads(step_file.read_bytes()) == train["step"]
 
     task = {"kind": "document", "id": "task", "document": {
-        "schema": "feedbax.spec.python_task", "payload": {"type": "feedbax.task.reaching.v1", "params": {}},
+        "schema": "feedbax.spec.python_task", "payload": {"type": "feedbax.Reaching", "params": {}},
     }}
     rejected = client.post(url, json={"revision": created["revision"], "file": task})
     assert rejected.status_code == 409

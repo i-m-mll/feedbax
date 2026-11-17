@@ -7,8 +7,9 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 
-from feedbax.compiler.trial_execution import TrialPair, pair_trial_source, validate_python_task
+from feedbax.compiler.trial_execution import TrialPair, pair_trial_source
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample
+from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import EvaluateAttachmentRows, EvaluateAttachmentVariant
@@ -77,11 +78,11 @@ def _project(
     task = documents.task_source
     fields = {}
     if isinstance(task, PythonTaskSelection):
-        resolved = validate_python_task(task, bundle.python_tasks)
-        if isinstance(resolved[0], Problem):
+        resolved = resolve_python_task_instance(task, bundle.python_tasks)
+        if isinstance(resolved, tuple):
             return _Projection(None, (), (), (), {}, resolved)
-        definition, params = resolved
-        template = definition.template(params)
+        definition = resolved.definition
+        template = resolved.template()
         signals = tuple(ScopedValue(id=name, name=name, type=kind, level=Level.STEP)
                         for name, kind in template.signals.items())
         epochs = ()
@@ -406,6 +407,7 @@ def _evaluate_documents(plan, key, definition, bundle):
         params = authored_rollout_settings(definition.payload.get("params"))
         variant = resolve_evaluation_variant(
             projection.pair.lowered.graph, documents.task_source, params.variation,
+            components=bundle.components,
         )
         graph = variant.graph
         run = next((row for row in plan.runs if row.key == key), None)
@@ -416,6 +418,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                 if effective_params.variation != params.variation:
                     graph = resolve_evaluation_variant(
                         projection.pair.lowered.graph, documents.task_source, effective_params.variation,
+                        components=bundle.components,
                     ).graph
     except ValueError as error:
         return documents, _Projection(
@@ -541,6 +544,7 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
             project, readers=settled.readers, source_runs=source_runs,
             operations=folders.operations, components=bundle.components,
             functions=bundle.expression_functions, python_tasks=bundle.python_tasks,
+            figure_templates=bundle.figure_templates,
         )
 
     candidate = compile_sources(authored, selected | outside)

@@ -19,7 +19,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.dataset import Variable
 from feedbax.runtime.graph import Graph, _nested_cycle_key, init_state_from_component
-from feedbax.contracts.model_values import MODEL_OWNERS, StateValue
+from feedbax.contracts.model_values import StateValue
 
 
 class StateLayoutError(ValueError):
@@ -28,13 +28,14 @@ class StateLayoutError(ValueError):
         super().__init__(reason)
 
 
-def scene_position_key(graph: GraphSpec) -> str | None:
+def scene_position_key(graph: GraphSpec, runtime: Graph) -> str | None:
     """Resolve the declared Scene effector from the effective model."""
-    leaves = dict(graph_leaf_specs(graph))
-    candidates = {
-        scope: owner for scope, node in leaves.items()
-        if (owner := MODEL_OWNERS.get(node.type)) is not None and owner.scene_position is not None
-    }
+    candidates = {}
+    for scope, _ in graph_leaf_specs(graph):
+        parent = runtime.get_node(scope[:-1])
+        binding = parent.component_bindings[scope[-1]]
+        if (facts := binding.model_facts) is not None and facts.scene_position is not None:
+            candidates[scope] = facts
     if len(candidates) == 1:
         (scope, owner), = candidates.items()
         return semantic_key("model", "state", scope, owner.scene_position)
@@ -56,7 +57,6 @@ class BoundStateValue:
     units: str | None
     frame: str | None
     read: Callable[[State, dict | None], jax.Array]
-    legacy_carry: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,8 @@ class RawStateLayout:
                     labels = ["x", "y"] if axis == "xy" else np.arange(size)
                     coordinates[axis] = Variable(np.asarray(labels), (axis,))
             variables[value.key] = Variable(
-                samples[None, None], dims, units=value.units, frame=value.frame,
+                samples.reshape((1,) * (len(axes) - 1) + samples.shape),
+                dims, units=value.units, frame=value.frame,
             )
         return variables, coordinates
 
@@ -104,11 +105,11 @@ def _bind_owner(
     path = pointer(("inputs", "subject", "graph", *(
         token for parent in scope for token in ("subgraphs", parent)
     ), "nodes", name))
-    owner = MODEL_OWNERS.get(binding.type_id)
+    owner = binding.model_facts
     node = authored.nodes[name]
     if (
-        owner is None or owner.states is None or binding.revision != owner.revision
-        or node.type != binding.type_id or node.revision not in {None, owner.revision}
+        owner is None or owner.states is None or not isinstance(component, binding.owner_class)
+        or node.type != binding.type_id or node.revision not in (None, binding.revision)
     ):
         raise StateLayoutError(path, "owner revision has no declared raw-state layout")
     index = getattr(component, "state_index", None)
@@ -120,7 +121,7 @@ def _bind_owner(
             raise StateLayoutError(path, "runtime configuration slots differ from the owner declaration")
         indices = [slot for slot in indices if slot is not configured]
     declared = owner.states
-    if not indices and (not declared or binding.type_id == "feedbax.GRU" and index is None):
+    if not indices and (not declared or not owner.has_state(node)):
         return ()
     if len(indices) != 1 or indices[0] is not index or not declared:
         raise StateLayoutError(path, "runtime state slots differ from the owner declaration")
@@ -182,10 +183,11 @@ def _delay_dimensions(delay: ModelDelayCarry, scope: tuple[str, ...]) -> tuple[s
 
 
 def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> tuple[BoundStateValue, ...]:
-    """Migrate the unique mounted legacy GRU hidden self-loop to a wire ID."""
+    """Bind explicit model delays and recurrent reads of declared reset state."""
     path = "/inputs/subject/graph/wires"
     expected = {}
     model_delays = {}
+    state_loops = {}
     delay_ids = set()
     for wire in authored.wires:
         if wire.temporality != "recurrent":
@@ -210,19 +212,25 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
             model_delays[target] = declaration
             expected[target] = wire
             continue
+        binding = graph.component_bindings.get(node)
+        facts = binding.model_facts if binding is not None else None
+        state = next((
+            state for state in facts.states or ()
+            if state.reset is not None and state.symbol == initializer.get("state_slot")
+            and state.reset.output_port == wire.source_port
+            and state.reset.override_port == wire.target_port
+        ), None) if facts is not None else None
         if (
-            (wire.source_node, wire.source_port) != (node, "hidden")
-            or wire.target_port != "hidden"
-            or initializer.get("state_slot") != "hidden"
+            wire.source_node != node
             or initializer.get("kind") != "zeros"
             or initializer.get("scope") != "trial"
-            or authored.nodes[node].type != "feedbax.GRU"
-            or target in expected
+            or state is None or target in expected
         ):
             raise StateLayoutError(
                 f"{path}/{wire.authored_id()}", "recurrent wire has no qualified raw carry declaration",
             )
         expected[target] = wire
+        state_loops[target] = state
     actual = {
         (wire.target_node, wire.target_port): (wire.source_node, wire.source_port)
         for wire in graph.wires if wire.temporality == "recurrent"
@@ -240,12 +248,11 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
         for target, delay in model_delays.items()
     ) + tuple(
         BoundStateValue(
-            semantic_key("model", "carry", scope, "hidden", wire=f"{node}:hidden"),
-            f"{'/'.join((*scope, node))}:unit", "1", None, _carry_reader((node, port), scope),
-            legacy_carry=True,
+            semantic_key("model", "carry", scope, state.symbol, wire=f"{node}:{port}"),
+            f"{'/'.join((*scope, node))}:{state.axis}", state.units, state.frame,
+            _carry_reader((node, port), scope),
         )
-        for (node, port), wire in expected.items()
-        if (node, port) not in model_delays and not (wire.recurrent_initializer or {}).get("model_state_sample")
+        for (node, port), state in state_loops.items()
     )
 
 

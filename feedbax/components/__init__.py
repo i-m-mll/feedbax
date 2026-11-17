@@ -1,1 +1,0 @@
-"""Graph-executable component adapters."""

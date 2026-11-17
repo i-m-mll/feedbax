@@ -20,6 +20,34 @@ from feedbax.contracts.selection import ManifestPredicate
 ProjectName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")]
 RowKey = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_=-]*$")]
 NonemptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)*$")]
+
+
+class DocumentReference(StrictModel):
+    document: ProjectName
+    pointer: Pointer | None = None
+
+
+class InitialModelReference[DocumentT](StrictModel):
+    kind: Literal["initial_model"]
+    source: DocumentT
+    seed: int = Field(default=0, ge=0, lt=2**32, strict=True)
+
+
+class TaskDocumentReference[DocumentT](StrictModel):
+    kind: Literal["task"]
+    source: DocumentT
+
+
+class ObjectiveDocumentReference[DocumentT](StrictModel):
+    kind: Literal["objective"]
+    source: DocumentT
+
+
+type DocumentInputReference = Annotated[
+    InitialModelReference[DocumentReference] | TaskDocumentReference[DocumentReference]
+    | ObjectiveDocumentReference[DocumentReference], Field(discriminator="kind"),
+]
 
 
 class Best(StrictModel):
@@ -235,5 +263,5 @@ class OmittedReference(StrictModel):
     not_applicable: NonemptyText
 
 
-type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference
+type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference | DocumentInputReference
 type InputBinding = Reference | list[Reference] | dict[ProjectName, Reference]

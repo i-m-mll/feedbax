@@ -20,10 +20,10 @@ from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
-from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.host import AdmissionItem, HostClient, HostError, Job, Launch
 from feedbax.job_completion import verify_bound_training_completion
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
@@ -222,8 +222,8 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    canonical = DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=160) | {"seed": 0})
-    _write_project(root, canonical)
+    authored = DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=160) | {"seed": 0})
+    _write_project(root, authored)
     same = RunKey("same", "fit", "default")
     original = RunKey("original", "fit", "default")
     different = RunKey("different", "fit", "default")
@@ -249,14 +249,10 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             before = read()
             plan = before.settled.plan
             ids = {run.key: run.request_id for run in plan.runs}
-            request_id = ids[original]
-            assert ids[same] == request_id and ids[different] != request_id
+            request_id = ids[same]
+            assert ids[original] == request_id and ids[different] != request_id
             assert set(plan.sources) == {same}
-            encoded = encode_request(canonical, {})
-            assert (request_id, plan.requests[request_id]) == (encoded.id, encoded.data)
-            decoded = decode_request(plan.requests[request_id], plan.documents.__getitem__)
-            assert decoded.inputs == {}
-            assert encode_request(decoded.spec, decoded.inputs) == encoded
+            request_bytes = plan.requests[request_id]
             assert not before.attempts_by_run and not store.exists()
             assert "post" not in client.app.openapi()["paths"].get("/api/projects/{project_id}/plan", {})
 
@@ -330,7 +326,8 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             )
             assert (worker_binding.project_id, worker_binding.manifest_root) == (opened["project_id"], store)
             assert worker_binding.request_id == request_id
-            assert worker_binding.canonical_request is not None
+            provider = ImmutableArtifactBlobProvider(store)
+            assert provider.get_object(worker_binding.canonical_request.request) == request_bytes
 
         with TestClient(create_app(projects_dir=projects)) as client:
             service = client.app.state.project_plan
@@ -368,7 +365,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
 
             edit = client.patch("/api/projects/reach", json={
                 "revision": revision, "address": {"kind": "step", "id": "fit"},
-                "patches": [{"op": "replace", "path": "/base/inline/seed", "value": canonical.seed + 2}],
+                "patches": [{"op": "replace", "path": "/base/inline/seed", "value": authored.seed + 2}],
             })
             assert edit.status_code == 200, edit.text
             with pytest.raises(ProjectRevisionConflict):

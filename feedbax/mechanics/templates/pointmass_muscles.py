@@ -19,7 +19,7 @@ def PointMass8MuscleRelu(
     """Compile the radial force generator with the supplied actuator parameters."""
     from feedbax.component_registry import ComponentRegistry
     from feedbax.compiler import GraphDocument, compile_graph
-    from feedbax.compiler.muscle_templates import point_mass_8muscle_relu_graph
+    from feedbax.builtins.templates.muscle_templates import point_mass_8muscle_relu_graph
 
     spec = point_mass_8muscle_relu_graph(
         n_pairs,

@@ -422,18 +422,6 @@ CROSS_FIELD_REFINEMENTS.update(
                 "Object.values(value.params ?? {}).some(invalidTypedParamEnvelope)",
             ),
         ),
-        "AnalysisDataProductRequirement": (
-            _typescript_refinement(
-                "analysis-product.schema-id",
-                "unsupported AnalysisDataProductRequirement schema identity",
-                "value.schema_id !== 'feedbax.spec.analysis_data_product_requirement' || value.schema_version !== 'feedbax.spec.analysis_data_product_requirement.v1'",
-            ),
-            _typescript_refinement(
-                "analysis-product.required-names",
-                "AnalysisDataProductRequirement role and product_schema_id must not be empty",
-                "value.role.trim().length === 0 || value.product_schema_id.trim().length === 0",
-            ),
-        ),
         "DynamicPortPolicy": (
             _typescript_refinement(
                 "dynamic-port.named-layout",
@@ -573,14 +561,11 @@ CROSS_FIELD_REFINEMENTS.update(
         ),
         "LrScheduleSpec": (
             _typescript_refinement(
-                "lr-schedule.identity",
-                "unsupported LrScheduleSpec schema identity",
-                "value.schema_id !== 'feedbax.spec.training.lr_schedule' || value.schema_version !== 'feedbax.spec.training.lr_schedule.v2'",
-            ),
-            _typescript_refinement(
                 "lr-schedule.shape",
                 "learning-rate schedule fields must match its kind",
-                "(value.kind !== 'constant' && value.total_steps == null) || (value.kind === 'warmup_cosine' && (value.constant_lr_iterations < 1 || (value.total_steps != null && value.constant_lr_iterations >= value.total_steps))) || (value.kind === 'delayed_cosine' && value.total_steps != null && value.constant_lr_iterations >= value.total_steps)",
+                "(value.kind === 'warmup_cosine' || value.kind === 'delayed_cosine') && "
+                "(value.total_steps == null || (value.constant_lr_iterations ?? 0) >= value.total_steps || "
+                "(value.kind === 'warmup_cosine' && (value.constant_lr_iterations ?? 0) < 1))",
             ),
         ),
         "SelectionSpec": (
@@ -620,7 +605,6 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
         {"validate_subgraph_family", "reject_component_param_array_values"}
     ),
     "AdditiveGraphChannelTargetSpec": frozenset({"validate_target"}),
-    "AnalysisDataProductRequirement": frozenset({"validate_schema_identity"}),
     "GraphSpec": frozenset({"validate_subgraph_schema_family", "_unique_wire_ids"}),
     "StudioValueEnumerableSpec": frozenset({"validate_form_payload"}),
     "StudioValueVariationSpec": frozenset({"validate_scope_payload"}),

@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from feedbax.contracts.figure_document import FigureDocument
-from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.request_identity_guard import IdentityWideInteger
 from feedbax.contracts.request_refs import Name
-from feedbax.contracts.training import (
-    MethodPayloadEnvelope,
-    MethodRefSpec,
-    RiskAggregationSpec,
-    TrialDocuments as TrialDocuments,
-)
+from feedbax.contracts.training import TrialDocuments as TrialDocuments
+from feedbax.plugins.declarations import validate_declaration_key
 
 
 class NumericalSettings(BaseModel):
@@ -40,23 +34,56 @@ class DocumentTrainingConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    n_batches: int = 2000
-    batch_size: int = 128
-    grad_clip: float | None = 1.0
-    n_reach_steps: int = 80
-    snapshot_interval: int = 100
+    n_batches: int = Field(default=2000, gt=0, lt=2**31)
+    batch_size: int = Field(default=128, gt=0)
+    snapshot_interval: int = Field(default=100, gt=0)
+    replicates: int = Field(default=1, gt=0)
+
+
+class TrainContinuation(BaseModel):
+    """Continue the completed-update clock while selecting which runtime state to carry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["continue_from"] = "continue_from"
+    source_completed_updates: int = Field(gt=0, lt=2**31)
+    state: Literal["preserve", "reset"]
+    rng: Literal["carry", "reset"]
+    schedule: Literal["continue", "restart"]
 
 
 class DocumentTrainingRequestSpec(RequestSpec):
-    """Managed Train parameters with optimizer settings owned by the method."""
+    """Managed Train parameters with method settings separate from run controls."""
 
     trial_documents: TrialDocuments
-    method_payload: MethodPayloadEnvelope
-    method_ref: MethodRefSpec
+    method: str
+    settings: dict[str, JsonValue]
     training_config: DocumentTrainingConfig
-    risk_aggregation: RiskAggregationSpec = Field(default_factory=RiskAggregationSpec)
-    seed: Annotated[int | None, IdentityWideInteger()] = Field(default=None, strict=True)
-    on_nan: Literal["raise", "halt_restore_checkpoint"] = "raise"
+    seed: int | None = Field(default=None, strict=True, ge=0, lt=2**32)
+    checkpoint_initialization: Literal["initialize_from"] | TrainContinuation | None = None
+
+    @field_validator("method")
+    @classmethod
+    def _method_key(cls, key: str) -> str:
+        return validate_declaration_key(key)
+
+    @property
+    def continuation(self) -> TrainContinuation | None:
+        policy = self.checkpoint_initialization
+        return policy if isinstance(policy, TrainContinuation) else None
+
+    @property
+    def target_total(self) -> int:
+        start = self.continuation.source_completed_updates if self.continuation else 0
+        return start + self.training_config.n_batches
+
+    @model_validator(mode="after")
+    def _supported_run_controls(self) -> DocumentTrainingRequestSpec:
+        if self.target_total >= 2**31:
+            raise ValueError("The completed-update clock exceeds its supported range.")
+        if self.numerical_settings.model_dump(exclude_none=True):
+            raise ValueError("Train does not support overriding numerical settings.")
+        return self
 
 
 class EvaluationRequestSpec(RequestSpec):
@@ -67,32 +94,11 @@ class EvaluationRequestSpec(RequestSpec):
 class AnalysisRequestSpec(RequestSpec):
     analysis_type: Name
     params: dict[str, JsonValue] = Field(default_factory=dict)
-    evaluation_states_policy: Literal["recompute", "require_durable"] = "recompute"
 
 
 class RenderRequestSpec(RequestSpec):
-    figure: FigureSpec | None
-    document: FigureDocument | None = None
-
-    @model_validator(mode="after")
-    def _require_lowered_inputs(self) -> RenderRequestSpec:
-        if (self.figure is None) == (self.document is None):
-            raise ValueError("Declare one render figure or dataset figure document.")
-        if self.figure is not None and (self.figure.inputs or self.figure.input_authorities):
-            raise ValueError("Lower figure input authorities to kernel inputs before encoding")
-        return self
+    document: FigureDocument
 
 
 class ReportRequestSpec(RequestSpec):
-    report_type: Name | None
-    params: dict[str, JsonValue] = Field(default_factory=dict)
-    narrative: str | None = None
-    document: ReportDocument | None = None
-
-    @model_validator(mode="after")
-    def _require_one_report(self) -> ReportRequestSpec:
-        if (self.report_type is None) == (self.document is None):
-            raise ValueError("Declare one report recipe type or Report document.")
-        if self.document is not None and (self.params or self.narrative is not None):
-            raise ValueError("Report documents cannot carry recipe parameters or narrative.")
-        return self
+    document: ReportDocument

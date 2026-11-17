@@ -69,9 +69,9 @@ def test_core_training_contract_imports_do_not_load_web_package() -> None:
             "feedbax.contracts.migrations",
             "feedbax.contracts.retention_artifact_schema",
             "feedbax.contracts.training",
-            "feedbax.compiler.templates",
-            "feedbax.integrations.provider",
-            "feedbax.objectives.service",
+            "feedbax.builtins.templates.templates",
+            "feedbax.orchestration.repo_snapshot",
+            "feedbax.training.methods",
             "feedbax.compiler.serialization",
             "feedbax.studio.protocol",
             "feedbax.studio.schema",
@@ -154,61 +154,3 @@ def test_plugin_facade_import_defers_registry_and_analysis_subsystems() -> None:
 
     assert payload["feedbax_modules"] == ["feedbax", "feedbax.plugins"]
     assert payload["loaded_sentinels"] == []
-
-
-def test_plugin_facade_lazy_exports_resolve_to_their_owning_modules() -> None:
-    payload = _run_import_probe(
-        """
-        import importlib
-        import json
-
-        facade = importlib.import_module("feedbax.plugins")
-
-        star_namespace: dict[str, object] = {}
-        exec("from feedbax.plugins import *", star_namespace)
-
-        resolved = {}
-        for name in facade.__all__:
-            attribute = getattr(facade, name)
-            owner = facade._PUBLIC_ATTR_MODULES[name]
-            owning_module = importlib.import_module(owner, "feedbax.plugins")
-            resolved[name] = (
-                getattr(owning_module, name) is attribute
-                and star_namespace.get(name, object()) is attribute
-            )
-
-        submodules = {
-            name: getattr(facade, name).__name__
-            for name in facade._PUBLIC_SUBMODULES
-        }
-
-        try:
-            facade.definitely_not_a_plugin_export
-        except AttributeError as error:
-            unknown_attribute_error = str(error)
-        else:
-            unknown_attribute_error = ""
-
-        print(json.dumps({
-            "unmapped": sorted(set(facade.__all__) - set(facade._PUBLIC_ATTR_MODULES)),
-            "unexported": sorted(set(facade._PUBLIC_ATTR_MODULES) - set(facade.__all__)),
-            "unresolved": sorted(name for name, ok in resolved.items() if not ok),
-            "missing_from_dir": sorted(set(facade.__all__) - set(dir(facade))),
-            "submodules": submodules,
-            "unknown_attribute_error": unknown_attribute_error,
-        }))
-        """
-    )
-
-    assert payload["unmapped"] == []
-    assert payload["unexported"] == []
-    assert payload["unresolved"] == []
-    assert payload["missing_from_dir"] == []
-    assert payload["submodules"] == {
-        "application": "feedbax.plugins.application",
-        "bootstrap": "feedbax.plugins.bootstrap",
-        "registry": "feedbax.plugins.registry",
-    }
-    assert payload["unknown_attribute_error"] == (
-        "module 'feedbax.plugins' has no attribute 'definitely_not_a_plugin_export'"
-    )

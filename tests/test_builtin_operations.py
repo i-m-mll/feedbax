@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from feedbax.analysis.builtin_operations import (
+from feedbax.builtins.operations import (
     AlignedVelocityParameters,
     VelocitySummaryParameters,
     aligned_velocity,
@@ -13,7 +13,7 @@ from feedbax.analysis.builtin_operations import (
 from feedbax.dataset import Dataset, Variable
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
-from feedbax.plugins.application import OPERATIONS, new_application_registry_bundle
+from feedbax.plugins.composition import load_application
 from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, state_key
 
 
@@ -60,32 +60,18 @@ def test_registered_operations_publish_typed_products_from_saved_states(tmp_path
     states, parallel, lateral = _states()
     store = ImmutableArtifactBlobProvider(tmp_path)
     states_ref = publish_dataset(store, states)
-    bundle = new_application_registry_bundle()
-    bundle.seal()
-    assert OPERATIONS.registered_keys(bundle.operations) == (
-        "feedbax.aligned_velocity", "feedbax.summarize_velocity",
-    )
-    align, summarize = bundle.operations.definitions()
-    assert align.inputs["states"].selected_variables["velocity"].units == "m/s"
-    assert align.outputs["velocity"] == summarize.inputs["velocity"]
-    assert summarize.outputs["summary"].variables["mean"].dims == ("checkpoint", "condition", "state_time")
-    assert summarize.static_parameters == ("variable",)
-    assert summarize.parameter_json_schema["properties"]["ddof"]["minimum"] == 0
-    assert summarize.parameter_json_schema["required"] == ["ddof"]
-    with pytest.raises(RuntimeError, match="sealed"):
-        bundle.operations.register("demo.velocity", aligned_velocity, owner="demo", label="Velocity")
-    run = bundle.operations.resolve(align.key)
+    operations = load_application().bundle.operations
+    run = operations.resolve("feedbax.aligned_velocity")
     with (
         store.open_owned_object(states_ref.object_ref) as path,
         open_dataset(path, expected_descriptor_sha256=states_ref.descriptor_sha256) as saved,
     ):
-        velocity = run.function(saved, run.parameter_model.model_validate(_PARAMETERS.model_dump()))
+        velocity = run.defining_object(saved, run.value.parameter_model.model_validate(_PARAMETERS.model_dump()))
     np.testing.assert_allclose(velocity.data("parallel_velocity"), parallel, atol=1e-6)
     np.testing.assert_allclose(velocity.data("lateral_velocity"), lateral, atol=1e-6)
-    run = bundle.operations.resolve(summarize.key)
+    run = operations.resolve("feedbax.summarize_velocity")
     for ddof, scale in ((0, 0.5), (1, 2.0)):
-        product = run.function(velocity, run.parameter_model.model_validate({"ddof": ddof, "bounds_scale": scale}))
-        assert set(product.descriptor.variables) == set(summarize.outputs["summary"].variables)
+        product = run.defining_object(velocity, run.value.parameter_model.model_validate({"ddof": ddof, "bounds_scale": scale}))
         result_ref = publish_dataset(store, product)
         with (
             store.open_owned_object(result_ref.object_ref) as path,

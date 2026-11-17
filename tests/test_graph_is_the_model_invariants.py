@@ -35,7 +35,7 @@ from feedbax.component_registry import ComponentRegistry, required_interior_doma
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
-from feedbax.compiler.templates import network_template_graph
+from feedbax.builtins.templates.templates import network_template_graph
 from feedbax.runtime.graph import Graph
 # Outcomes that count as "the build refused to guess". A fix for any of the
 # xfailed invariants may legitimately take the form of a loud rejection, so the
@@ -145,22 +145,14 @@ def test_editing_the_subgraph_changes_the_built_artifact() -> None:
     assert built_gains == [2.0, 11.0]
 
 
-def test_legacy_network_node_builds_from_subgraph_not_outer_params() -> None:
-    """The legacy ``Network`` wrapper's own params describe nothing that is built."""
+def test_nested_controller_uses_its_authored_subgraph() -> None:
     interior = network_template_graph(
         {"input_size": 2, "hidden_size": 4, "out_size": 1, "hidden_type": "GRUCell"}
     )
     spec = GraphSpec(
         nodes={
             "net": ComponentSpec(
-                type="Network",
-                # Every value here contradicts the interior.
-                params={
-                    "input_size": 999,
-                    "hidden_size": 100,
-                    "out_size": 77,
-                    "hidden_type": "LSTMCell",
-                },
+                type="feedbax.Subgraph",
                 input_ports=list(interior.input_ports),
                 output_ports=list(interior.output_ports),
             )
@@ -175,12 +167,10 @@ def test_legacy_network_node_builds_from_subgraph_not_outer_params() -> None:
     built = spec_to_graph(spec, _registry()).nodes["net"]
 
     assert isinstance(built, Graph)
-    assert sorted(built.nodes) == ["cell", "input_mux", "readout"]
     cell = built.nodes["cell"]
-    assert type(cell).__name__ == "GRU"  # not the LSTM the outer params name
-    assert cell.hidden_size == 4  # not 100
-    assert cell.input_size == 2  # not 999
-    assert built.nodes["readout"].output_size == 1  # not 77
+    assert cell.hidden_size == 4
+    assert cell.input_size == 2
+    assert built.nodes["readout"].output_size == 1
 
 
 def test_acausal_composite_uses_interior_solver_not_outer_dt() -> None:
@@ -190,15 +180,15 @@ def test_acausal_composite_uses_interior_solver_not_outer_dt() -> None:
     interior = AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
-            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 1.0}),
+            "spring": ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": 10.0}),
             "act": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "u", "source_kind": "force"},
             ),
             "sense": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "output", "quantity": "position"},
             ),
         },
@@ -269,20 +259,6 @@ def test_missing_subgraph_raises_for_every_composite_type(node_type: str) -> Non
     message = str(exc_info.value)
     assert "plant" in message, message
     assert "subgraph" in message.lower() or "interior" in message.lower(), message
-
-
-def test_missing_subgraph_raises_for_legacy_network_node() -> None:
-    """The historical Network wrapper still requires its authoritative interior."""
-    spec = GraphSpec(
-        nodes={"net": ComponentSpec(type="Network", params={"hidden_size": 100})}
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        spec_to_graph(spec, _registry())
-
-    message = str(exc_info.value)
-    assert "net" in message
-    assert "subgraph" in message.lower()
 
 
 @pytest.mark.parametrize("node_type", ["feedbax.RecurrentController", "feedbax.SimpleFeedbackLoop"])

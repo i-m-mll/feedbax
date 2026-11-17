@@ -46,7 +46,6 @@ class RunPodEnvironment(SessionModel):
     groups: tuple[DependencyName, ...] = ()
     extras: tuple[DependencyName, ...] = ()
     enable_x64: bool = False
-    bootstrap_modules: tuple[str, ...] = ()
 
     @field_validator("workspace", "bootstrap_python", "uv")
     @classmethod
@@ -349,7 +348,7 @@ class RunPodSessionProvider:
     @staticmethod
     def _client(connection: SSHStoreConnection, layout: _Layout, access: SessionAccess | None) -> HostClient:
         attach = connection.command([
-            layout.python, "-I", "-m", "feedbax.host", "--root", str(layout.host), "attach", "--no-start",
+            layout.python, "-I", "-B", "-m", "feedbax.host", "--root", str(layout.host), "attach", "--no-start",
         ])
         return HostClient(attachment=StdioAttachment(lambda _: attach), session=access)
 
@@ -364,5 +363,5 @@ class RunPodSessionProvider:
         return SessionJobs(driver, session_id, venue_jobs=VenueJobs(
             self._connection(resource), python=layout.python, cwd=layout.root / "repo",
             host_root=layout.host, projects_root=layout.root / "projects", stores_root=layout.root / "stores",
-            bootstrap_modules=self.environment.bootstrap_modules, worker_environment=self.environment.worker_environment,
+            worker_environment=self.environment.worker_environment,
         ))

@@ -182,9 +182,9 @@ import os
 import time
 from pathlib import Path
 
-from feedbax.training import executor
+from feedbax.training.method_runtime import TrainingLoop
 
-original = executor.execute_managed_training_run
+original = TrainingLoop.run_block
 
 def execute(*args, **kwargs):
     release = Path(os.environ["SESSION_TEST_RELEASE"])
@@ -195,7 +195,7 @@ def execute(*args, **kwargs):
         time.sleep(.02)
     return original(*args, **kwargs)
 
-executor.execute_managed_training_run = execute
+TrainingLoop.run_block = execute
 """
         )
         process = subprocess.run(
@@ -267,7 +267,9 @@ executor.execute_managed_training_run = execute
         local_jobs = _jobs(host_fixture)
 
         def collect(attempt):
-            result = local_jobs.collect_session_attempt(source, attempt, project=project_id, store=destination_store)
+            result = local_jobs.collect_session_attempt(
+                source, attempt, project=project_id, store=destination_store, project_root=local_plan.project_root,
+            )
             assert result.activity.target == state.placement
             return CollectedAttempt(result.activity.job_id, result.evidence_sha256)
 

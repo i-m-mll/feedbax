@@ -1,6 +1,7 @@
-"""Portable discovery of pure operations and their labelled dataset ports."""
+"""Portable discovery of operations and their typed ports."""
 
 from collections.abc import Mapping
+from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue
 
@@ -18,19 +19,50 @@ class DatasetPort(StrictModel):
     coordinates: dict[str, FieldDescriptor] = Field(default_factory=dict)
 
 
+class DatasetInputPort(DatasetPort):
+    kind: Literal["dataset"] = "dataset"
+
+
+class ModelPort(StrictModel):
+    kind: Literal["model"] = "model"
+
+
+class TaskPort(StrictModel):
+    kind: Literal["task"] = "task"
+    task_key: str | None = None
+
+
+OperationInputPort = Annotated[DatasetInputPort | ModelPort | TaskPort, Field(discriminator="kind")]
+
+
+class JaxOperation(StrictModel):
+    """The numerical worker required to execute an operation."""
+
+    backend: Literal["cpu", "gpu"]
+    floating_point_bits: Literal[32, 64]
+
+    def environment(self) -> dict[str, str]:
+        return {
+            "JAX_PLATFORMS": "cuda" if self.backend == "gpu" else "cpu",
+            "JAX_ENABLE_X64": str(int(self.floating_point_bits == 64)),
+        }
+
+
 class OperationDefinition(StrictModel):
     """Data needed to discover, wire, and author a registered operation."""
 
     key: str
     owner: str
+    owner_version: str
+    renamed_from: tuple[str, ...] = ()
     label: str
     description: str
     param_schema: list[ParamSchema]
     parameter_json_schema: dict[str, JsonValue]
     static_parameters: tuple[str, ...]
-    inputs: dict[str, DatasetPort]
+    inputs: dict[str, OperationInputPort]
     outputs: dict[str, DatasetPort]
-
+    numerical: JaxOperation | None = None
 
 def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> None:
     if not set(actual.schema_ids) <= set(expected.schema_ids):

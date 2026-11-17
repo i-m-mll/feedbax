@@ -45,7 +45,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
     _project(projects / "reach", batches=160)
     _project(projects / "long", batches=3000)
     release = Path(sys.executable).resolve().parent.parent
-    app = create_app(projects_dir=projects, desktop_job_root=tmp_path / "desktop-jobs", desktop_release=release)
+    app = create_app(projects_dir=projects, desktop_release=release)
     transport, control, browser = _desktop_clients(app)
     register_activity(app, "fixture")
     control.headers["X-Feedbax-Release"] = "fixture"
@@ -257,7 +257,7 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
     from feedbax.host.io import append
     from feedbax.jobs import JobService
     from feedbax.plugins.application import new_application_registry_bundle
-    from feedbax.training.checkpoint_custody import open_published_model_slot
+    from feedbax.training.method_checkpoint import read_method_checkpoint
     from feedbax.web.services.project_folder import ProjectFolderService
 
     root = tmp_path / "host"
@@ -271,7 +271,7 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
     projects = tmp_path / "projects"
     _project(projects / "reach", batches=1000)
     folders = ProjectFolderService(projects)
-    app = create_app(projects_dir=projects, desktop_job_root=tmp_path / "jobs", desktop_release=release)
+    app = create_app(projects_dir=projects, desktop_release=release)
     host = HostClient(root)
     owner = host.ping()["pid"]
     plan = folders.read_plan("reach", revision=None)
@@ -288,9 +288,9 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
 
             before = wait_until(checkpointed, timeout=20)
             source = PublishedTrainingCheckpoint.model_validate(before["checkpoint"])
-            model = open_published_model_slot(source.checkpoint_root, source.pointer)
+            model = read_method_checkpoint(source.checkpoint_root, source.pointer, components=new_application_registry_bundle().components).model
             assert model is not None
-            model.provider.verify_object(model.arrays)
+            model.provider.verify_object(model.replicas[0].arrays)
             before_cursor = host.events()["head"]
             result = asyncio.run(app.state.desktop_jobs.stop("interrupt", timeout_seconds=8))
             assert result["status"] == "ready_to_stop", result

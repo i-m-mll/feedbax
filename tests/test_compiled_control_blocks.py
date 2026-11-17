@@ -8,7 +8,7 @@ from feedbax.compiler import CompilerPhase, GraphCompilationError, GraphDocument
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.control import PID, PIDDiscrete
+from feedbax.builtins.control.pid import PID, PIDDiscrete
 from feedbax.runtime.graph import Graph, init_state_from_component
 
 
@@ -164,8 +164,10 @@ def test_programmatic_pid_unbounded_limits_survive_serialization() -> None:
     ],
 )
 def test_default_python_construction_matches_graphspec(component_name, input_port) -> None:
-    from feedbax.control import pid
-    from feedbax.runtime import channel, components, signal_transforms
+    import feedbax.builtins.control.pid as pid
+    import feedbax.builtins.runtime.channel as channel
+    import feedbax.builtins.runtime.components as components
+    import feedbax.builtins.runtime.signal_transforms as signal_transforms
 
     owner = next(
         getattr(module, component_name)

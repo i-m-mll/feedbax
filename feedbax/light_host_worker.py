@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from dataclasses import asdict
 from functools import lru_cache
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
+from feedbax.analysis.operation_runtime import run_operation
 from feedbax.contracts.artifact_custody import ContentRootRecord
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
-from feedbax.contracts.effective_success import Bindings, Product, success_content_ref
+from feedbax.contracts.effective_success import Bindings, Product, Products, success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
+from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.request_specs import (
@@ -25,20 +29,25 @@ from feedbax.dataset import Dataset
 from feedbax.dataset_sweep import join_rollout_conditions
 from feedbax.host.completion import read_completion_bindings
 from feedbax.host.io import append
+from feedbax.host.model_checkpoint_input import bind_managed_inputs
 from feedbax.light_jobs import (
     LightCompletionBindings,
     LightDelivery,
     dataset_member,
-    light_operation,
     light_staging_id,
     light_staging_target,
     report_artifacts,
+    operation_application,
     validate_light_request,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plot.dataset_figure import render as render_figure
+
+if TYPE_CHECKING:
+    from feedbax.analysis.operations import RegisteredOperation
+    from feedbax.plugins.declarations import ResolvedDeclaration
 
 
 _MAX_CACHED_DATASET_BYTES = 4 * 1024 * 1024
@@ -103,14 +112,24 @@ def _compute(
     bindings: Bindings,
     attempt: str,
     role: str,
+    operation: ResolvedDeclaration[RegisteredOperation] | None,
 ) -> Product:
     spec = request.spec
-    if isinstance(spec, AnalysisRequestSpec):
-        operation = light_operation(spec.analysis_type)
-        parameters = operation.parameter_model.model_validate(spec.params)
+    if operation is not None:
+        assert isinstance(spec, AnalysisRequestSpec)
+        registry = operation_application()
+        parameters = operation.value.parameter_model.model_validate(spec.params)
+        if parameters.model_dump(mode="json") != spec.params:
+            raise ValueError(f"Operation {operation.key!r} settings differ from their validated values")
+        dataset_bindings = {
+            name: bindings[name]
+            for name, port in operation.value.definition.inputs.items()
+            if isinstance(port, DatasetPort)
+        }
         with ExitStack() as stack:
-            dataset = operation.function(
-                params=parameters, **_dataset_inputs(store, bindings, stack)
+            dataset = run_operation(
+                operation, parameters, bindings, _dataset_inputs(store, dataset_bindings, stack),
+                registry=registry, artifacts=store,
             )
             with store._exclusive_lock():
                 ref = publish_dataset(store, dataset)
@@ -119,7 +138,7 @@ def _compute(
         return Product(
             name=role, content=content, descriptor={"descriptor_sha256": ref.descriptor_sha256}
         )
-    if isinstance(spec, RenderRequestSpec) and spec.document is not None:
+    if isinstance(spec, RenderRequestSpec):
         with ExitStack() as stack:
             figure = render_figure(spec.document, _dataset_inputs(store, bindings, stack))
             document = figure.to_json()
@@ -148,6 +167,25 @@ def _compute(
     raise ValueError("Expected a managed light request")
 
 
+def check_light_environment(
+    store: ImmutableArtifactBlobProvider,
+    request: DecodedRequest,
+    bindings: Bindings,
+    products: Products,
+    attempt: str,
+) -> bool:
+    """Replay the ordinary operation without publishing a successful receipt."""
+    from feedbax.validity.light_products import light_product_matches
+
+    role, operation = validate_light_request(request)
+    (retained,) = products[role]
+    candidate = _compute(store, request, bindings, attempt, role, operation)
+    try:
+        return light_product_matches(store, retained, candidate)
+    finally:
+        store.release_root(light_staging_id(attempt))
+
+
 def main(_argv: list[str]) -> int:
     attempt = os.environ["FEEDBAX_HOST_JOB_ID"]
     log = Path(os.environ["FEEDBAX_HOST_EVENT_LOG"])
@@ -157,13 +195,13 @@ def main(_argv: list[str]) -> int:
     store = ImmutableArtifactBlobProvider(delivery.manifest_root)
     view = SuccessView(store)
     request = view.read_request(delivery.request)
-    role = validate_light_request(request)
-    _, bindings = view.bind(delivery.request, origins=exact.origins)
-    product = _compute(store, request, bindings, attempt, role)
-    append(
-        log,
-        "result",
-        {"outcome": "succeeded", "products": {role: [product.model_dump(mode="json")]}},
-        sync=True,
-    )
+    role, operation = validate_light_request(request)
+    with bind_managed_inputs(
+        view, delivery.request, origins=exact.origins, checkpoint_bindings=exact.bindings, project=delivery.project_id,
+    ) as (_, bindings):
+        product = _compute(store, request, bindings, attempt, role, operation)
+    result = {"outcome": "succeeded", "products": {role: [product.model_dump(mode="json")]}}
+    if operation is not None:
+        result["provider"] = asdict(operation.source)
+    append(log, "result", result, sync=True)
     return 0

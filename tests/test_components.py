@@ -5,13 +5,13 @@ import equinox as eqx
 import optax
 import pytest
 
-import feedbax.components.equinox as graph_eqx
-import feedbax.runtime.components as runtime_components
+import feedbax.builtins.components.equinox as graph_eqx
+import feedbax.builtins.runtime.components as runtime_components
 import feedbax._vendor.jax_cookbook.tree as jtree
 from feedbax._vendor.jax_cookbook import load, save
 from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
-from feedbax.runtime.channel import Channel, ChannelSpec
-from feedbax.runtime.components import ElementwiseAffineModulator
+from feedbax.builtins.runtime.channel import Channel, ChannelSpec
+from feedbax.builtins.runtime.components import ElementwiseAffineModulator
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.runtime.state_indices import align_state_indices_like
@@ -22,26 +22,18 @@ from feedbax.runtime.where_selectors import (
     attr_str_tree_to_where_func,
     where_func_to_attr_str_tree,
 )
-from feedbax.models.networks import LeakyRNNCell, recurrent_controller
+from feedbax.builtins.models.networks import LeakyRNNCell, recurrent_controller
 from feedbax.models.feedback import SimpleFeedback
 
 
 def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path):
-    from pathlib import Path
-
     from feedbax.compiler import GraphDocument, compile_graph
     from feedbax.compiler.serialization import graph_to_spec
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 
     registry = ComponentRegistry()
-    type_id = "feedbax.equinox.Conv2d"
-    repo_root = Path(__file__).resolve().parents[1]
-    assert {
-        "feedbax/components/equinox.py",
-        "feedbax/component_migrations/equinox.py",
-        "scripts/generate_eqx_components.py",
-    } <= set(registry.component_source_paths(repo_root)[type_id])
+    type_id = "feedbax.Conv2d"
     authored = GraphSpec(
         nodes={
             "conv": ComponentSpec(
@@ -54,7 +46,7 @@ def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path)
                     "use_bias": False,
                 },
             ),
-            "gain": ComponentSpec(type="Gain", params={"gain": 2.0}),
+            "gain": ComponentSpec(type="feedbax.Gain", params={"gain": 2.0}),
         },
         wires=[
             WireSpec(
@@ -606,7 +598,7 @@ def test_channel_delay():
     assert (out3["output"] == jnp.array([1.0, 1.0])).all()
 
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.runtime.channel import ChannelState
+    from feedbax.builtins.runtime.channel import ChannelState
 
     reset = ChannelState(
         output=jnp.full(3, 2.0),
@@ -755,7 +747,7 @@ def test_simplefeedback_model_net_update_replaces_executable_graph_node():
 
 def test_transform_export_reads_edited_reset_payload_and_rejects_stripped_defaults():
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.runtime.signal_transforms import NetworkConstantInput, NetworkValueParams
+    from feedbax.builtins.runtime.signal_transforms import NetworkConstantInput, NetworkValueParams
 
     registry = ComponentRegistry()
     original = NetworkConstantInput(

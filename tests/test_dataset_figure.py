@@ -1,7 +1,6 @@
 """Render the first walkthrough figure directly from a stored dataset."""
 
 from hashlib import sha256
-from pathlib import Path
 
 import numpy as np
 import plotly.io as pio
@@ -9,10 +8,11 @@ from plotly.offline import get_plotlyjs
 import pytest
 from pydantic import ValidationError
 
-from feedbax.analysis.builtin_operations import register_builtin_operations
-from feedbax.analysis.figure_presets import velocity_summary_figure
-from feedbax.analysis.operations import OperationRegistry
+from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
+from feedbax.plugins.composition import load_application
 from feedbax.analysis.report_document import render as render_report
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
+from feedbax.contracts.effective_success import BoundMember, success_content_ref
 from feedbax.contracts.figure_document import (
     FigureDocument,
     FigureLayerOmission,
@@ -20,24 +20,24 @@ from feedbax.contracts.figure_document import (
     validate_figure_bindings,
 )
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.request_refs import ContentRef
+from feedbax.contracts.request_identity import decode_request, encode_request
+from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
+from feedbax.contracts.request_specs import RenderRequestSpec
 from feedbax.dataset import Dataset, Variable
+from feedbax.light_host_worker import _compute
+from feedbax.light_jobs import validate_light_request
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.plot.dataset_figure import render
-
-
-_FIXTURES = Path(__file__).resolve().parents[1] / "web/e2e/studio/fixtures"
 
 
 def test_velocity_report_references_the_saved_band_with_condition_order_and_physical_time(
     tmp_path,
     monkeypatch,
 ):
-    document = velocity_summary_figure()
-    registry = OperationRegistry()
-    register_builtin_operations(registry)
-    port = registry.resolve("feedbax.summarize_velocity").definition.outputs["summary"]
+    document = VelocitySummary(VelocitySummarySettings())
+    registry = load_application().bundle.operations
+    port = registry.resolve("feedbax.summarize_velocity").value.definition.outputs["summary"]
     validate_figure_bindings(document, {"summary": port})
 
     time = np.array([0.0, 0.031, 0.11], dtype=np.float64)
@@ -69,8 +69,6 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
         figure.layout.template.layout.paper_bgcolor
         == pio.templates["plotly_white"].layout.paper_bgcolor
     )
-    assert figure.layout.xaxis.title.text == "Time (s)"
-    assert figure.layout.yaxis.title.text == "Velocity (m/s)"
     assert len(figure.data) == 6
     centers = figure.data[::3]
     assert [trace.name for trace in centers] == ["perturbed", "control"]
@@ -84,27 +82,41 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
         assert high.showlegend is False and low.showlegend is False
 
     figure_bytes = figure.to_json().encode()
-    saved = store.store_object(figure_bytes)
-    content = ContentRef(sha256=saved.sha256, size=saved.size_bytes, media_type="application/json")
-    document = ReportDocument.model_validate_json(
-        (_FIXTURES / "velocity-summary.report.json").read_bytes()
+    encoded = encode_request(
+        RenderRequestSpec(document=document),
+        {"summary": (InputMember(
+            key="summary", reference=ProductRef(request_id="analyze:" + "a" * 64, role="summary"),
+        ),)},
     )
+    request = decode_request(encoded.data, encoded.documents.__getitem__)
+    bindings = {"summary": (BoundMember(
+        key="summary",
+        content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
+        descriptor={"descriptor_sha256": ref.descriptor_sha256},
+    ),)}
+    saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request))
+    content = saved.content
+    report = ReportDocument.model_validate({
+        "title": "Saved figure",
+        "blocks": [
+            {"markdown": "*Before figure*"},
+            {"figure": "velocity_summary"},
+            {"markdown": "*After figure*"},
+        ],
+    })
     result = render_report(
-        document, {"velocity_summary": PlotlyFigureProduct(content=content)},
+        report, {"velocity_summary": PlotlyFigureProduct(content=content)},
         plotly_script_sha256=sha256(get_plotlyjs().encode()).hexdigest(),
     )
     ((path, product),) = result.figures.items()
     assert product == content
-    assert store.get_object(saved) == figure_bytes
+    assert store.get_object(success_content_ref(content)) == figure_bytes
     assert result.html.count(path) == 1
     assert result.html.count('src="plotly.min.js"') == 1
     assert figure_bytes.decode() not in result.html
-    assert result.html.index("<em>reach-aligned velocity</em>") < result.html.index("<figure ")
-    assert result.html.index("</figure>") < result.html.index("The band gives the lower")
-    assert (
-        "Mean velocity and trial bounds by condition.](report.html#report-figure-2)"
-        in result.markdown
-    )
+    assert result.html.index("<em>Before figure</em>") < result.html.index("<figure ")
+    assert result.html.index("</figure>") < result.html.index("<em>After figure</em>")
+    assert "](report.html#report-figure-2)" in result.markdown
 
 
 def test_report_shares_repeated_figure_content_and_checks_omissions_before_rendering():
@@ -155,10 +167,59 @@ def test_report_shares_repeated_figure_content_and_checks_omissions_before_rende
 
 
 def test_unknown_band_channel_is_refused_against_the_operation_declaration():
-    document = velocity_summary_figure().model_dump(mode="json")
+    document = VelocitySummary(VelocitySummarySettings()).model_dump(mode="json")
     document["layers"][0]["encode"]["upper"] = "missing_upper"
-    registry = OperationRegistry()
-    register_builtin_operations(registry)
-    port = registry.resolve("feedbax.summarize_velocity").definition.outputs["summary"]
+    registry = load_application().bundle.operations
+    port = registry.resolve("feedbax.summarize_velocity").value.definition.outputs["summary"]
     with pytest.raises(ValueError, match="trial-summary.*upper.*missing_upper"):
         validate_figure_bindings(FigureDocument.model_validate(document), {"summary": port})
+
+
+def test_sparse_panels_keep_authored_positions_and_share_their_rendered_range():
+    values = Dataset.from_arrays(
+        {
+            "earlier": Variable(np.array([1.0, 3.0]), ("time",)),
+            "later": Variable(np.array([7.0, 11.0]), ("time",)),
+        },
+        coords={"time": Variable(np.array([0.0, 1.0]), ("time",), units="s")},
+        schema_id="figure.panel_values.v1",
+    )
+    range_group = {"derived_range": {"group": "amplitude", "padding_fraction": 0.1}}
+    document = FigureDocument.model_validate({
+        "data": ["values"],
+        "layout": [
+            {"name": "later", "row": 1, "col": 3, "y_axis": range_group},
+            {
+                "name": "earlier",
+                "row": 1,
+                "col": 1,
+                "y_axis": range_group,
+                "x_axis": {"range": [-1, 9]},
+                "axes_labels": {"x": "Elapsed time"},
+            },
+        ],
+        "layers": [
+            {
+                "name": name, "role": "values", "panel": name,
+                "mark": "line", "encode": {"x": "time", "y": name},
+            }
+            for name in ("earlier", "later")
+        ],
+        "view": {
+            "shared_yaxes": False,
+            "width": 600,
+            "margin": {"l": 40, "r": 60},
+            "legend_gutter": 50,
+        },
+    })
+
+    figure = render(document, {"values": values})
+
+    assert [trace.xaxis for trace in figure.data] == ["x3", "x"]
+    left, right = figure.layout.annotations
+    assert left.text == "earlier" and left.x < 0.5
+    assert right.text == "later" and right.x > 0.5
+    assert figure.layout.xaxis.title.text == "Elapsed time"
+    assert figure.layout.xaxis.range == (-1, 9)
+    assert figure.layout.yaxis.range == figure.layout.yaxis3.range == (0, 12)
+    assert figure.layout.legend.x == pytest.approx(1.1)

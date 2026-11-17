@@ -9,9 +9,8 @@ from typing import Any
 
 from jaxtyping import PyTree
 
-from feedbax.components.penzai import (
+from feedbax.builtins.components.penzai import (
     PENZAI_AVAILABLE,
-    TREESCOPE_AVAILABLE,
     build_penzai_subgraph,
     UnknownPenzaiBuilderError,
     list_penzai_builder_info,
@@ -166,8 +165,6 @@ def render_penzai_treescope_html(
 ) -> str:
     """Render a Penzai adapter model as Treescope HTML."""
 
-    if not TREESCOPE_AVAILABLE:
-        raise ImportError("treescope is required for Penzai inspector rendering.")
     component = build_penzai_subgraph(
         builder_name=builder_name,
         params=params,

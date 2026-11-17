@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from feedbax._vendor.jax_cookbook import LDict
 
 import feedbax.config as config
-from feedbax.config.batch import load_batch_config
 from feedbax.config.namespace import TreeNamespace
 from feedbax.config.tree import (
     _align_trees_to_structure,
@@ -113,23 +110,3 @@ def test_config_globals_context_restores_mutated_namespaces() -> None:
         assert config.STRINGS.hps_level_label_sep == "mutated"
 
     assert config.STRINGS.hps_level_label_sep == original_sep
-
-
-def test_batch_package_probe_does_not_swallow_unexpected_errors(monkeypatch) -> None:
-    registry = SimpleNamespace(
-        _packages={
-            "bad": SimpleNamespace(
-                package_module=SimpleNamespace(__name__="bad_pkg"),
-                config_resource_root="config",
-            )
-        },
-        single_package_name=lambda: None,
-    )
-
-    def raise_unexpected(_: str) -> object:
-        raise RuntimeError("unexpected probe failure")
-
-    monkeypatch.setattr("feedbax.config.batch.resources.files", raise_unexpected)
-
-    with pytest.raises(RuntimeError, match="unexpected probe failure"):
-        load_batch_config("training", "missing", registry=registry)

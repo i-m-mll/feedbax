@@ -8,14 +8,14 @@ const model: Document = {
 };
 const task: Document = {
   schema: 'feedbax.spec.python_task',
-  payload: { type: 'feedbax.task.reaching.v1', params: {} },
+  payload: { type: 'feedbax.Reaching', params: {} },
 };
 const objective: Document = {
   schema: 'feedbax.spec.objective_document',
   payload: { id: 'objective', terms: [] },
 };
 const taskDocumentSchema = 'feedbax.spec.task_document';
-const methodSchema = 'feedbax.spec.training_method.studio_graph';
+export const supervisedTrainMethod = 'feedbax.supervised_gradient';
 
 export function canCreateFirstTrain(project: StudioProjectSnapshot['project']) {
   return Object.keys(project.steps ?? {}).length === 0;
@@ -46,8 +46,6 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
   const taskField = documents[taskDocument]?.schema === taskDocumentSchema ? 'task' : 'python_task';
   const objectiveDocument = bindDocument('objective', objective);
   const id = 'train';
-  const nBatches = 1000;
-  const learningRate = 0.001;
   files.push({
     kind: 'step', id,
     step: {
@@ -60,18 +58,12 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
           objective: { document: objectiveDocument },
         },
         training_config: {
-          n_batches: nBatches,
+          n_batches: 1000,
           batch_size: 64,
         },
-        method_ref: { package: 'feedbax', name: 'studio_graph', version: 'v1' },
-        method_payload: {
-          schema_id: methodSchema,
-          schema_version: `${methodSchema}.v1`,
-          payload: {
-            optimizer: { type: 'adam', params: { learning_rate: learningRate } },
-            target_total: nBatches,
-            key_schedule: 'independent_v1',
-          },
+        method: supervisedTrainMethod,
+        settings: {
+          optimizer: { type: 'adam', params: { learning_rate: 0.001 } },
         },
       } },
     },

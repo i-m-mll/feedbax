@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -26,13 +26,17 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     load_manifest_bytes,
 )
+from feedbax.contracts.model_input import (
+    INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, document_input_object,
+)
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_identity import DecodedRequest, decode_request
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, LastMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.rollout import (
     RAW_STATES_SCHEMA as RAW_STATES_SCHEMA,
+    ResolvedInitialRollout,
     ResolvedRolloutBinding,
     ROLLOUT_TYPE as ROLLOUT_TYPE,
     STATES_SCHEMA as STATES_SCHEMA,
@@ -59,6 +63,7 @@ if TYPE_CHECKING:
 
 ROLLOUT_JAX_BACKEND = "cpu"
 ROLLOUT_JAX_ENABLE_X64 = False
+type EvaluationSubject = ProductRef | BestRank | ContentRef
 
 
 class CannotRun(ValueError):
@@ -72,9 +77,28 @@ class CannotRun(ValueError):
 
 class EvaluationRequestBinding(StrictModel):
     request: ContentObjectRef
-    checkpoint: ProductRef | BestRank
+    checkpoint: ProductRef | BestRank | None = Field(default=None, exclude_if=lambda value: value is None)
+    initial_model: ContentRef | None = Field(default=None, exclude_if=lambda value: value is None)
     terminal: TerminalTrainSubject | None = Field(default=None, exclude_if=lambda value: value is None)
-    bootstrap_modules: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
+
+    @model_validator(mode="after")
+    def _one_model_source(self) -> EvaluationRequestBinding:
+        if self.initial_model is None:
+            if self.checkpoint is None:
+                raise ValueError("Evaluate requires a model subject")
+        elif (
+            self.checkpoint is not None or self.terminal is not None
+            or self.initial_model.media_type != INITIAL_MODEL_MEDIA_TYPE or self.initial_model.tree
+        ):
+            raise ValueError("Initial Evaluate requires one immutable Model input")
+        return self
+
+    @property
+    def subject(self) -> EvaluationSubject:
+        if self.initial_model is not None:
+            return self.initial_model
+        assert self.checkpoint is not None
+        return self.checkpoint
 
 
 class BoundEvaluationJobInput(StrictModel):
@@ -88,8 +112,8 @@ def _unexpected_document(digest: str) -> bytes:
     raise CannotRun("/params", f"this candidate does not support a factored document {digest}")
 
 
-def evaluation_checkpoint_coordinates(subject: ProductRef | BestRank) -> tuple[int, ...] | None:
-    if isinstance(subject, BestRank):
+def evaluation_checkpoint_coordinates(subject: EvaluationSubject) -> tuple[int, ...] | None:
+    if not isinstance(subject, ProductRef):
         return None
     if isinstance(subject.select, BatchMember):
         return finite_coordinates((subject.select.batch,))
@@ -102,7 +126,7 @@ def evaluation_checkpoint_coordinates(subject: ProductRef | BestRank) -> tuple[i
 
 def decode_rollout_request(
     request_id: str, raw: bytes,
-) -> tuple[EvaluationRequestSpec, RolloutParameters, ProductRef | BestRank]:
+) -> tuple[EvaluationRequestSpec, RolloutParameters, EvaluationSubject]:
     decoded = decode_request(raw, _unexpected_document)
     spec = decoded.spec
     if decoded.id != request_id or not isinstance(spec, EvaluationRequestSpec):
@@ -112,10 +136,14 @@ def decode_rollout_request(
     if spec.numerical_settings.model_dump(exclude_none=True):
         raise CannotRun("/numerical_settings", "numerical overrides are unavailable")
     members = decoded.inputs.get("subject", ())
-    if decoded.inputs.keys() != {"subject"} or len(members) != 1:
-        raise CannotRun("/inputs/subject", "requires one Train checkpoint")
+    if len(members) != 1:
+        raise CannotRun("/inputs/subject", "requires one Model subject")
     subject = members[0].reference
-    if not isinstance(subject, BestRank) and (
+    if isinstance(subject, ContentRef):
+        initial_evaluation_references(decoded)
+    elif decoded.inputs.keys() != {"subject"}:
+        raise CannotRun("/inputs", "a checkpoint rollout inherits its Task and Objective")
+    elif not isinstance(subject, BestRank) and (
         not isinstance(subject, ProductRef)
         or subject.role != "checkpoint"
         or not subject.request_id.startswith("train:")
@@ -135,10 +163,54 @@ def decode_rollout_request(
         first = error.errors()[0]
         path = pointer(("params", *map(str, first["loc"])))
         raise CannotRun(path, first["msg"]) from error
+    if not isinstance(subject, ContentRef) and params.input_overrides:
+        raise CannotRun("/params/input_overrides", "a checkpoint rollout inherits its task bindings")
     for path, patch in authored_variation(params.variation):
         if "op" not in patch.model_fields_set:
             raise CannotRun(f"{path}/op", "declare the override operation explicitly")
     return spec, params, subject
+
+
+def initial_evaluation_references(decoded: DecodedRequest) -> dict[str, ContentRef]:
+    required = {"subject": INITIAL_MODEL_MEDIA_TYPE, "task": TASK_INPUT_MEDIA_TYPE}
+    if "objective" in decoded.inputs:
+        required["objective"] = OBJECTIVE_INPUT_MEDIA_TYPE
+    if decoded.inputs.keys() != required.keys():
+        raise CannotRun("/inputs", "initial Evaluate requires a Model and Task, with an optional Objective")
+    refs = {}
+    for role, media_type in required.items():
+        members = decoded.inputs[role]
+        content = members[0].reference
+        if len(members) != 1 or not isinstance(content, ContentRef) or content.tree or content.media_type != media_type:
+            raise CannotRun(f"/inputs/{role}", "requires one immutable document of the declared kind")
+        refs[role] = content
+    return refs
+
+
+def initial_evaluation_provenance(refs: dict[str, ContentRef]) -> Provenance:
+    kinds = {"subject": "ModelDocument", "task": "TaskDocument", "objective": "ObjectiveDocument"}
+    return Provenance(parents=[
+        ParentRef(kind=kinds[role], id=ref.sha256, role=role, metadata={"sha256": ref.sha256, "size_bytes": ref.size})
+        for role, ref in refs.items()
+    ])
+
+
+def verify_initial_rollout(
+    manifest: EvaluationRunManifest, refs: dict[str, ContentRef],
+) -> ResolvedInitialRollout:
+    binding = ResolvedRolloutBinding.model_validate(manifest.metadata["effective_binding"])
+    (member,) = binding.members
+    objective = refs.get("objective")
+    params = RolloutParameters.model_validate(EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline).params)
+    if (
+        not isinstance(member, ResolvedInitialRollout) or member.initial_model != refs["subject"].sha256
+        or manifest.input_training_runs or manifest.provenance != initial_evaluation_provenance(refs)
+        or "placement" in manifest.metadata or binding.digest() != manifest.metadata.get("effective_binding_sha256")
+        or binding.objective != (objective.sha256 if objective is not None else None)
+        or (binding.seed, binding.trial_policy, member.trials) != (params.seed, params.trial_policy, params.trials)
+    ):
+        raise ValueError("Initial rollout manifest differs from its exact document subject")
+    return member
 
 
 def best_bound_rank(subject: BestRank, binding: dict, *, verify_metrics: bool = False) -> int:
@@ -259,7 +331,7 @@ def evaluation_subject_provenance(binding: dict) -> tuple[list[ParentRef], Prove
 def decode_evaluation_manifest(
     store: ImmutableArtifactBlobProvider, raw: bytes, ref: ContentObjectRef,
     job_id: str, request_id: str, receipt: JobReceipt,
-) -> tuple[EvaluationRunManifest, ProductRef | BestRank]:
+) -> tuple[EvaluationRunManifest, EvaluationSubject]:
     if receipt.manifest_id != evaluation_manifest_id(job_id):
         raise ValueError("Evaluation receipt names a different attempt.")
     if ref.sha256 != receipt.manifest_sha256:
@@ -288,12 +360,21 @@ def decode_evaluation_manifest(
 def verify_evaluation_receipt(
     root: Path, *, attempt: str, request_id: str, project: str, receipt: JobReceipt, binding: dict,
     manifest_object: ContentObjectRef,
-) -> tuple[EvaluationRunManifest, ProductRef | BestRank]:
+) -> tuple[EvaluationRunManifest, EvaluationSubject]:
     """Authenticate the worker receipt against the exact Host dependency."""
     store = ImmutableArtifactBlobProvider(root)
     manifest, subject = decode_evaluation_manifest(
         store, store.get_object(manifest_object), manifest_object, attempt, request_id, receipt,
     )
+    if isinstance(subject, ContentRef):
+        if binding:
+            raise ValueError("Initial Evaluate cannot have a Train binding")
+        request = ContentObjectRef.model_validate(manifest.metadata["canonical_request"])
+        refs = initial_evaluation_references(decode_request(store.get_object(request), _unexpected_document))
+        for content in refs.values():
+            store.verify_object(document_input_object(content))
+        verify_initial_rollout(manifest, refs)
+        return manifest, subject
     if "terminal" in binding:
         from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
 
@@ -413,28 +494,33 @@ class EvaluationResult:
             name = descriptor.attrs.get("scene_position")
             if not isinstance(name, str) or name not in descriptor.variables:
                 raise CannotRun("/states/scene_position", "the result has no declared Scene position")
-            update_axis = "update" if "update" in descriptor.dimensions else "checkpoint"
-            if checkpoint is None:
-                if descriptor.dimensions[update_axis] != 1:
-                    raise CannotRun("/checkpoint", "choose a retained checkpoint for replay")
-                checkpoint_index = 0
-            else:
+            update_axis = next((axis for axis in ("update", "checkpoint") if axis in descriptor.dimensions), None)
+            selected = ()
+            if "replicate" in descriptor.dimensions:
+                raise CannotRun("/replicate", "choose a retained replicate for replay")
+            if update_axis is not None:
                 checkpoints = dataset.data(update_axis).tolist()
-                if checkpoint not in checkpoints:
+                if checkpoint is None and len(checkpoints) != 1:
+                    raise CannotRun("/checkpoint", "choose a retained checkpoint for replay")
+                if checkpoint is not None and checkpoint not in checkpoints:
                     raise CannotRun("/checkpoint", "the chosen checkpoint is absent from the retained set")
-                checkpoint_index = checkpoints.index(checkpoint)
+                selected = (0 if checkpoint is None else checkpoints.index(checkpoint),)
+            elif checkpoint is not None:
+                raise CannotRun("/checkpoint", "an initial model rollout has no checkpoint")
             trials = dataset.data("trial").tolist()
             if trial not in trials:
                 raise CannotRun("/trial", "the selected trial is absent from the retained result")
             trial_index = trials.index(trial)
             field = descriptor.variables[name]
             if (
-                field.dims != (update_axis, "condition", "trial", "state_time", "xy")
+                field.dims != (
+                    *((update_axis,) if update_axis is not None else ()), "condition", "trial", "state_time", "xy",
+                )
                 or descriptor.dimensions["condition"] != 1 or descriptor.dimensions["xy"] != 2
             ):
                 raise ValueError("The retained Scene position has an incompatible layout.")
             axis = dataset.data("state_time")
-            values = dataset.data(name, (checkpoint_index, 0, trial_index))
+            values = dataset.data(name, (*selected, 0, trial_index))
         return WorkspaceReplayTrial(
             identity=WorkspaceReplayTrialIdentity(index=trial_index, stable_id=trial),
             time=WorkspaceReplaySampleAxis(length=len(axis), units="s", values=axis.tolist()),
@@ -517,7 +603,8 @@ def live_objective_series(
     from feedbax.job_completion import read_training_binding
     from feedbax.persistence.content_retention import read_active_roots
     from feedbax.persistence.dataset import open_stored_dataset
-    from feedbax.training.checkpoint_custody import published_model_tree_sha256
+    from feedbax.persistence.live_evaluate import read_live_evaluation_evidence
+    from feedbax.training.method_checkpoint import read_method_checkpoint_manifest
 
     objective_hash = rollout_objective_sha256(objective)
     condition = params.condition_id()
@@ -552,8 +639,7 @@ def live_objective_series(
         checkpoint = point.checkpoint
         pointer = checkpoint.pointer
         update = checkpoint.completed_updates
-        if len(root.targets) != 1 or root.targets[0].object != result.states.object_ref:
-            raise ValueError("Live objective lacks its exact active dataset.")
+        read_live_evaluation_evidence(store, point, active_root=root)
         if selected.binding_sha256 not in launches:
             launches[selected.binding_sha256] = read_training_binding(
                 store.root, selected.producer_job_id, selected.binding_sha256,
@@ -572,7 +658,9 @@ def live_objective_series(
         member = result.member
         if (
             (member.model, member.task, result.objective) != (model, task, objective_hash)
-            or member.model_tree != published_model_tree_sha256(checkpoint.checkpoint_root, pointer)
+            or member.model_tree != read_method_checkpoint_manifest(
+                checkpoint.checkpoint_root, pointer,
+            ).model.tree.descriptor.sha256
             or member.coordinate != update or member.trials != params.trials
         ):
             raise ValueError("Live objective differs from its resolved scientific inputs.")
@@ -602,13 +690,11 @@ def live_objective_series(
 
 
 def _unchanged_rollout_semantics(source: BoundStudioTrainingJobInput) -> tuple[str, str]:
-    import asyncio
-
     from feedbax.compiler.graph import resolve_graph_schedule
-    from feedbax.plugins.composition import compose_application
+    from feedbax.plugins.composition import load_application
     from feedbax.studio.canonical_train import resolve_training_request_binding
 
-    registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
+    registry = load_application().bundle
     trial = resolve_training_request_binding(source, registries=registry).trial
     graph = trial.graph.graph
     _, key_schedule = resolve_graph_schedule(graph)

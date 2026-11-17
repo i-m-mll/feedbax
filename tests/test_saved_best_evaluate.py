@@ -30,7 +30,7 @@ host = host_fixture
 
 def authored_best():
     raw = definition("last")
-    path = "method_payload.payload.optimizer.params.learning_rate"
+    path = "settings.optimizer.params.learning_rate"
     raw["steps"]["train"]["sweep"] = {"axes": {"rate": {"values": {
         name: {"value": value, "patches": {path: {"value": value}}}
         for name, value in (("a", 0.003), ("b", 0.002), ("c", 0.001))
@@ -49,7 +49,7 @@ def test_best_plan_identity_changes_with_candidates_and_refuses_unsupported_rule
     decoded, _ = load_plan_requests(dump_plan_requests(plan_requests, None))
     assert decoded == plan_requests
     leaf = raw["steps"]["train"]["sweep"]["axes"]["rate"]["values"]
-    edit = "method_payload.payload.optimizer.params.learning_rate"
+    edit = "settings.optimizer.params.learning_rate"
     leaf["d"] = {"patches": {edit: {"value": .004}}}
     after = compile_project(Project.model_validate(raw))
     assert not after.diagnostics
@@ -160,6 +160,7 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
     assert "rank_groups" not in planned_subset.model_dump()
     by_key = {item.key.row: item for item in response.window_map.evaluations}
     best_results = [by_key[run.key.row].result for run in rankings]
+    assert {item.validity.state for item in best_results} == {"current"}
     assert [item.bound_subject.row for item in best_results] == ranked
     assert len({item.bound_subject.selection_sha256 for item in best_results}) == 1
     assert [item.job_id for item in best_results] == attempts[-2:]

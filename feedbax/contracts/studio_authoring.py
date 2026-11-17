@@ -16,21 +16,18 @@ from feedbax.contracts.studio_field import StudioSweepList, StudioSweepRange, St
 from feedbax.contracts.studio_project import ProjectValueEdit
 
 
-class StudioAuthoringMethod(StrictModel):
+class StudioAuthoringDeclaration(StrictModel):
     key: str
-    schema_id: str
-    schema_version: str
-    owner: str
-    package: str | None
-    plugin: str | None
-    payload_schema: dict[str, JsonValue]
+    label: str
+    renamed_from: tuple[str, ...]
+    settings_schema: dict[str, JsonValue]
 
 
 class StudioAuthoringSurface(StrictModel):
     project_grammar: dict[str, JsonValue]
     step_payloads: dict[str, dict[str, JsonValue]]
     document_schemas: dict[str, dict[str, JsonValue]]
-    training_methods: list[StudioAuthoringMethod]
+    training_methods: list[StudioAuthoringDeclaration]
 
 
 class StudioAuthoredDocumentFamily(StrictModel):
@@ -39,12 +36,15 @@ class StudioAuthoredDocumentFamily(StrictModel):
 
 
 class StudioAuthoringOrigin(StrictModel):
-    plugin: str
-    distribution: str | None
+    package: str
+    distribution: str
+    version: str
 
 
 class StudioAuthoringRegistry(StrictModel):
-    entries: list[ComponentDefinition | OperationDefinition | StudioAuthoringMethod | FunctionInfo]
+    entries: list[
+        ComponentDefinition | OperationDefinition | StudioAuthoringDeclaration | FunctionInfo
+    ]
     origins: dict[str, StudioAuthoringOrigin]
 
 

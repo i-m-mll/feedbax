@@ -122,7 +122,7 @@ export function problemTarget(problem: StudioProjectWindowMapProblem): ProblemRe
   if (field === 'training_config') {
     return { view: 'training', label: group ? humanizeLabel(group) : studioName('training') } as const;
   }
-  if (field === 'method_ref' || field === 'method_payload') {
+  if (field === 'method' || field === 'settings') {
     return { view: 'training', label: studioName('trainingMethod') } as const;
   }
   const label = field === 'inputs' && group ? humanizeLabel(group)

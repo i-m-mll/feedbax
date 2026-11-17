@@ -5,9 +5,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.acausal import (
-    AcausalConnection,
-    AcausalSystem,
+from feedbax.acausal import AcausalConnection
+from feedbax.builtins.acausal.system import AcausalSystem
+from feedbax.builtins.acausal.translational import (
     ForceSource,
     Ground,
     LinearDamper,
@@ -16,7 +16,8 @@ from feedbax.acausal import (
     PositionSensor,
     PrescribedMotion,
 )
-from feedbax.component_registry import ComponentPack, ComponentRegistry
+from feedbax.component_registry import ComponentRegistry
+from tests.support.component_owners import register_owners
 from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
@@ -117,7 +118,7 @@ def test_registered_custom_mass_preserves_independent_prescribed_inputs() -> Non
         solver={"solver_type": "euler", "dt": 0.1},
     )
     registry = _registry()
-    registry.ingest(ComponentPack(namespace="test", components=(CustomMass,)))
+    register_owners(registry, "test", CustomMass)
     report = compile_acausal_authoring_report(
         spec, node_path=["plant"], component_registry=registry
     )
@@ -666,8 +667,7 @@ def test_scalar_implicit_rollout_respects_authored_root_budget(
 
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("explicit_order", [False, True])
-def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested, explicit_order):
-    from feedbax.contracts.migrations import migrate_acausal_graph_spec
+def test_persisted_gear_has_reduced_report_and_physical_bound_outputs(nested, explicit_order):
 
     spec = AcausalGraphSpec(
         schema_id="feedbax.spec.acausal_graph",
@@ -750,13 +750,7 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
                 "subgraphs": {"gear": inner},
             }
         )
-    import json
-
-    payload = json.loads(spec.model_dump_json())
-    payload["schema_version"] = "feedbax.spec.acausal_graph.v1"
-    for nested_payload in (payload.get("subgraphs") or {}).values():
-        nested_payload["schema_version"] = "feedbax.spec.acausal_graph.v1"
-    loaded = AcausalGraphSpec.model_validate(migrate_acausal_graph_spec(payload).payload)
+    loaded = AcausalGraphSpec.model_validate_json(spec.model_dump_json())
     report = compile_acausal_authoring_report(
         loaded, node_path=["plant"], component_registry=_registry()
     )

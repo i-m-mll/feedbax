@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
-from feedbax.runtime.components import Pulse
+from feedbax.builtins.runtime.components import Pulse
 from feedbax.runtime.graph import (
     Component,
     Graph,

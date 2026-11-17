@@ -27,10 +27,10 @@ from feedbax.contracts.studio_project import StudioProjectPatchBatch
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.task_document import Cell, Signal
 from feedbax.jobs import JobService
-from feedbax.mechanics.muscles import RigidTendonHillMuscleThelen
+from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import CannotRun
-from feedbax.training.checkpoint_custody import open_published_model_slot
+from feedbax.training.method_checkpoint import read_method_checkpoint
 from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
 from feedbax.web.services.evaluate_attachment import (
     EvaluateAttachmentRefused,
@@ -147,7 +147,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
         (edge,) = completions[run]["edges"]
         assert edge["binding"]["terminal"]["receipt"] == completions[train]["outcome"]["store_success"]
     published = PublishedTrainingCheckpoint.model_validate(checkpoint["checkpoint"])
-    slot = open_published_model_slot(published.checkpoint_root, published.pointer)
+    slot = read_method_checkpoint(published.checkpoint_root, published.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     source_hash = sha256(canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))).hexdigest()
     train_request = decode_request(
@@ -162,7 +162,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     variation_hash = canonical_sha256(params.model_dump(mode="json")["variation"])
     documents = train_request.trial_documents
     assert documents is not None
-    variant = resolve_evaluation_variant(slot.graph, documents.task, params.variation)
+    variant = resolve_evaluation_variant(slot.graph, documents.task, params.variation, components=registry.components)
     task_hash = sha256(canonical_json_v2_bytes(variant.task.model_dump(mode="json"))).hexdigest()
     paired = compile_trial_execution(
         documents.model_name,
@@ -301,7 +301,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
         completions[step] = done
     checkpoint = completions["train"]["outcome"]["completion"]
     published = PublishedTrainingCheckpoint.model_validate(checkpoint["checkpoint"])
-    slot = open_published_model_slot(published.checkpoint_root, published.pointer)
+    slot = read_method_checkpoint(published.checkpoint_root, published.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     assert slot.graph.nodes["muscle"].params["vmax_factor"] == config["vmax_factor"]
     assert slot.graph.nodes["muscle"].params["optimal_muscle_length"] == config["optimal_muscle_length"]
@@ -315,7 +315,9 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
     documents = decode_request(
         snapshot.plan.requests[train_run.request_id], snapshot.plan.documents.__getitem__,
     ).spec.trial_documents
-    variant = resolve_evaluation_variant(slot.graph, documents.task_source, params.variation)
+    variant = resolve_evaluation_variant(
+        slot.graph, documents.task_source, params.variation, components=registry.components,
+    )
     expected_overrides = {semantic_key("model", "value", ("muscle",), "optimal_muscle_length"): 0.24}
     assert variant.source_overrides == expected_overrides
     paired = compile_trial_execution(
@@ -491,7 +493,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
 
     train_outcome = settled(train.job_id)["outcome"]
     published = PublishedTrainingCheckpoint.model_validate(train_outcome["completion"]["checkpoint"])
-    slot = open_published_model_slot(published.checkpoint_root, published.pointer)
+    slot = read_method_checkpoint(published.checkpoint_root, published.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None and "curl" not in slot.graph.nodes
     documents = decode_request(
         snapshot.plan.requests[next(run.request_id for run in snapshot.plan.runs if run.key == keys["train"])],
@@ -500,7 +502,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     with pytest.raises(CannotRun, match="preserves retained learned values"):
         edits = {name: OverridePatch.model_validate(edit) for name, edit in
                  steps["learned"]["base"]["inline"]["params"]["variation"].items()}
-        resolve_evaluation_variant(slot.graph, documents.task_source, edits)
+        resolve_evaluation_variant(slot.graph, documents.task_source, edits, components=registry.components)
     results = {}
     for step, item in zip(("baseline", "curl"), evaluations, strict=True):
         (edge,) = settled(item.job_id)["edges"]
@@ -537,7 +539,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
 def test_native_subject_refuses_before_backend_realization():
     native = GraphSpec.model_validate({"nodes": {"physics": {"type": "feedbax.AcausalSystem"}}})
     with pytest.raises(CannotRun, match="no qualified Evaluate realization") as refused:
-        validate_evaluation_source(native)
+        validate_evaluation_source(native, new_application_registry_bundle().components)
     assert refused.value.path == "/inputs/subject/graph/nodes/physics"
 
 
@@ -547,5 +549,5 @@ def test_authored_variation_refuses_added_native_owner(authored):  # noqa: F811
         path="graph.nodes.physics", op="add", value={"type": "feedbax.AcausalSystem"},
     )}
     with pytest.raises(CannotRun, match="no qualified declaration") as refused:
-        resolve_evaluation_variant(GraphSpec(), task, variation)
+        resolve_evaluation_variant(GraphSpec(), task, variation, components=new_application_registry_bundle().components)
     assert refused.value.path == "/params/variation/native"

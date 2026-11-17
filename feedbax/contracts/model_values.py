@@ -1,13 +1,16 @@
-"""Declared values of the currently qualified model owner revisions."""
+"""Semantic model facts declared by component owners."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from feedbax.contracts.acausal import AcausalGraphSpec
-from feedbax.contracts.graph import GraphSpec
-from feedbax.contracts.model_occurrence import graph_leaf_specs
+if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.acausal import AcausalGraphSpec
+    from feedbax.contracts.graph import ComponentSpec, GraphSpec
+    from feedbax.contracts.portable import ComponentOwner
 
 
 @dataclass(frozen=True)
@@ -43,107 +46,51 @@ class TrialParameter:
 
 
 @dataclass(frozen=True)
-class ModelOwner:
-    revision: int
-    values: tuple[ModelValue, ...]
-    states: tuple[StateValue, ...] | None = None
-    clock: str | None = None
+class ModelFacts:
+    """Checkpoint, observation and per-trial storage of a component."""
+
+    values: tuple[ModelValue, ...] = ()
+    states: tuple[StateValue, ...] | None = ()
     checkpointable: bool = True
+    physical_checkpoint: Callable[[ComponentSpec, AcausalGraphSpec], bool] | None = None
     scene_effector_port: str | None = None
     scene_position: str | None = None
     configuration_slots: tuple[str, ...] = ()
-    fixed_configuration: bool = False
+    fixed_configuration_flag: str | None = None
+    optional_state_flag: str | None = None
     trial_parameters: tuple[TrialParameter, ...] = ()
     trial_parameter_override_port: str | None = None
 
+    def is_fixed_configuration(self, node: ComponentSpec) -> bool:
+        return (
+            self.fixed_configuration_flag is not None
+            and node.params.get(self.fixed_configuration_flag) is True
+        )
 
-def _learned(*values: tuple[str, str]) -> tuple[ModelValue, ...]:
-    return tuple(ModelValue(symbol, field, "learned") for symbol, field in values)
+    def has_state(self, node: ComponentSpec) -> bool:
+        return self.optional_state_flag is None or node.params.get(self.optional_state_flag) is not False
 
-
-def _source(*names: str) -> tuple[ModelValue, ...]:
-    return tuple(ModelValue(name, name, "source") for name in names)
-
-
-def _cartesian(symbol: str, path: tuple[str, ...]) -> tuple[StateValue, ...]:
-    writable = symbol == "effector"
-    return (
-        StateValue(
-            f"{symbol}/position", (*path, "pos"), "m", "xy", "world",
-            reset=StateReset("effector", ("pos",)) if writable else None,
-        ),
-        StateValue(
-            f"{symbol}/velocity", (*path, "vel"), "m/s", "xy", "world",
-            reset=StateReset("effector", ("vel",)) if writable else None,
-        ),
-        StateValue(f"{symbol}/force", (*path, "force"), "N", "xy", "world"),
-    )
+    def supports_checkpoint(self, node: ComponentSpec, physical: AcausalGraphSpec | None) -> bool:
+        if self.is_fixed_configuration(node):
+            return True
+        if not self.checkpointable:
+            return False
+        if self.physical_checkpoint is None:
+            return physical is None
+        return physical is not None and self.physical_checkpoint(node, physical)
 
 
-SPATIAL_OWNER = "feedbax.AcausalSystem"
-MODEL_OWNERS = {
-    "feedbax.GRU": ModelOwner(
-        1,
-        _learned(
-            ("input_kernel", "cell.weight_ih"),
-            ("recurrent_kernel", "cell.weight_hh"),
-            ("gate_bias", "cell.bias"),
-            ("candidate_bias", "cell.bias_n"),
-        ),
-        states=(
-            StateValue(
-                "hidden", ("hidden",), "1", "unit",
-                reset=StateReset("hidden", aliases=(("output",),), override_port="hidden"),
-            ),
-            StateValue("output", ("output",), "1", "unit"),
-        ),
-    ),
-    "feedbax.Linear": ModelOwner(
-        2, _learned(("kernel", "layer.weight"), ("bias", "layer.bias")), states=(),
-    ),
-    "feedbax.Input": ModelOwner(1, (), states=()),
-    "feedbax.SelectState": ModelOwner(1, (), states=()),
-    "feedbax.AssembleFeedback": ModelOwner(1, (), states=()),
-    "feedbax.Ravel": ModelOwner(1, (), states=()),
-    "feedbax.Constant": ModelOwner(1, (), states=(), checkpointable=False),
-    "feedbax.Saturation": ModelOwner(1, (), states=()),
-    "feedbax.PointMass": ModelOwner(
-        1,
-        (
-            ModelValue("mass", "plant.skeleton.mass", "source"),
-            ModelValue("damping", "plant.skeleton.damping", "source"),
-            *_source("dt"),
-        ),
-        states=(
-            *_cartesian("skeleton", ("plant", "skeleton")),
-            *_cartesian("effector", ("effector",)),
-        ),
-        clock="dt",
-        scene_effector_port="effector",
-        scene_position="effector/position",
-    ),
-    "feedbax.RigidTendonHillMuscleThelen": ModelOwner(
-        2,
-        _source(
-            "max_isometric_force", "optimal_muscle_length", "tendon_slack_length",
-            "vmax_factor", "min_activation", "tau_activation", "tau_deactivation", "dt",
-        ),
-        states=(StateValue("activation", (), "1", "muscle"),),
-        clock="dt",
-    ),
-    "feedbax.Scale": ModelOwner(
-        1, _source("scale"), states=(), checkpointable=False, fixed_configuration=True,
-    ),
-    "feedbax.CurlField": ModelOwner(
-        2, (), states=(), checkpointable=False, configuration_slots=("params_index",),
-        trial_parameters=(
-            TrialParameter("active", "boolean"), TrialParameter("scale", "real"),
-            TrialParameter("amplitude", "real"),
-        ),
-        trial_parameter_override_port="params_override",
-    ),
-    SPATIAL_OWNER: ModelOwner(1, ()),
-}
+def model_owner_class(node: ComponentSpec, components: ComponentRegistry) -> type[ComponentOwner] | None:
+    """Look up the owner of a current, already migrated component."""
+    meta = components.get(node.type)
+    if meta is None or node.revision not in (None, meta.revision):
+        return None
+    return meta.owner_class
+
+
+def component_model_facts(node: ComponentSpec, components: ComponentRegistry) -> ModelFacts | None:
+    owner = model_owner_class(node, components)
+    return None if owner is None else owner.model_facts
 
 
 @dataclass(frozen=True)
@@ -152,38 +99,29 @@ class ModelOwnerProblem:
     reason: str
 
 
-def model_owner_problem(graph: GraphSpec, use: Literal["checkpoint", "evaluate"]) -> ModelOwnerProblem | None:
-    """Check the declared support of a resolved graph without realizing its owners."""
-    for path, node in graph_leaf_specs(graph):
-        owner = MODEL_OWNERS.get(node.type)
-        declared = owner is not None and node.revision in {None, owner.revision}
-        if declared and owner.fixed_configuration and node.params.get("fixed") is True:
-            continue
-        interior = (graph.subgraphs or {}).get(path[0]) if len(path) == 1 else None
-        checkpointable = declared and owner.checkpointable
+def model_owner_problem(
+    graph: GraphSpec, use: Literal["checkpoint", "evaluate"], components: ComponentRegistry,
+) -> ModelOwnerProblem | None:
+    """Check a resolved graph's declared support before realizing its owners."""
+    from feedbax.contracts.model_occurrence import graph_leaf_occurrences
+
+    for path, node, physical in graph_leaf_occurrences(graph):
+        facts = component_model_facts(node, components)
         if use == "evaluate":
-            if node.type == SPATIAL_OWNER:
+            if physical is not None or (facts is not None and facts.physical_checkpoint is not None):
                 reason = "native or physical owner has no qualified Evaluate realization"
-            elif checkpointable and owner.states is not None:
+            elif facts is not None and (
+                facts.is_fixed_configuration(node) or (facts.checkpointable and facts.states is not None)
+            ):
                 continue
             else:
                 reason = f"owner {node.type!r} has no declared Evaluate layout for this revision"
-        elif checkpointable and node.type != SPATIAL_OWNER and interior is None:
+        elif facts is not None and facts.supports_checkpoint(node, physical):
             continue
-        elif (
-            checkpointable
-            and node.type == SPATIAL_OWNER
-            and isinstance(interior, AcausalGraphSpec)
-            and interior.mujoco_asset is not None
-            and interior.solver.solver_type == "mujoco"
-            and interior.solver.mjx_backend == "jax"
-            and node.params.get("trainable") is not True
-        ):
-            continue
-        elif isinstance(interior, AcausalGraphSpec):
+        elif physical is not None:
             reason = (
                 f"owner {node.type!r} has no typed model checkpoint owner "
-                f"for solver {interior.solver.solver_type!r} and this configuration"
+                f"for solver {physical.solver.solver_type!r} and this configuration"
             )
         else:
             reason = f"owner {node.type!r} has no typed model checkpoint owner for this revision"

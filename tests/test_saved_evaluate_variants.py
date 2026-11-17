@@ -20,7 +20,7 @@ from feedbax.jobs import JobService, PlanJobReader
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import CannotRun, RAW_STATES_SCHEMA, decode_rollout_request
-from feedbax.tasks.reaching import REACHING_TASK
+from feedbax.builtins.reaching import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
@@ -106,7 +106,7 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
     request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
     variation = RolloutParameters.model_validate(request.spec.params).variation
     assert isinstance(variation, tuple) and all(edit.path.startswith("graph.") for edit in variation)
-    variant = resolve_evaluation_variant(graph, task, variation)
+    variant = resolve_evaluation_variant(graph, task, variation, components=registries.components)
     unchanged = [wire for wire in graph.wires if wire not in (first, second)]
     assert all(wire in variant.graph.wires for wire in unchanged)
     inserted = variant.graph.nodes.keys() - graph.nodes.keys()
@@ -190,7 +190,6 @@ def _selected_task_variants():
     raw = managed_evaluation_definition()
     train = raw["steps"]["train"]
     inline = train["base"]["inline"]
-    inline["training_config"].pop("n_reach_steps")
     inline["trial_documents"].update(task=None, python_task={"document": "task"}, input_overrides={})
     raw["documents"]["task"] = {
         "schema": "feedbax.spec.python_task",
@@ -267,11 +266,12 @@ def test_python_task_field_patch_respects_existing_variation_order_and_overlap()
         RolloutParameters(seed=0, trial_policy="paired", trials=("0",),
                           variation={"select": replace_task, "field": edit_field})
     edits = tuple(OverridePatch.model_validate(patch) for patch in (replace_task, edit_field))
-    assert resolve_evaluation_variant(GraphSpec(), original, edits).task.params == {"x": 0.7, "y": 0.3}
-    assert resolve_evaluation_variant(GraphSpec(), original, edits[::-1]).task == selected
+    components = new_application_registry_bundle().components
+    assert resolve_evaluation_variant(GraphSpec(), original, edits, components=components).task.params == {"x": 0.7, "y": 0.3}
+    assert resolve_evaluation_variant(GraphSpec(), original, edits[::-1], components=components).task == selected
     absent_field = OverridePatch.model_validate(_patch("task.params.z", 0.7))
     with pytest.raises(CannotRun, match="missing key/index") as refusal:
-        resolve_evaluation_variant(GraphSpec(), original, {"absent": absent_field})
+        resolve_evaluation_variant(GraphSpec(), original, {"absent": absent_field}, components=components)
     assert refusal.value.path == "/params/variation/absent"
 
 

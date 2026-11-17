@@ -38,6 +38,7 @@ from feedbax.contracts.jobs import (
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_plan import RunKey
+from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
@@ -69,6 +70,7 @@ def saved_train_runs(
         view = service.read(
             project_id, revision=revision,
             stopped_checkpoint_jobs=(stopped_checkpoint_job,) if stopped_checkpoint_job is not None else (),
+            maintain_validity=True,
         )
         return service.response(view, include_window_map=window_map)
 
@@ -101,6 +103,40 @@ def run_saved_train(
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
+
+
+def _result_validity_action(
+    project_id: ProjectName, body: ValidityAction, request: Request, response: Response, *,
+    judgement: ValidityAcceptance | None = None,
+) -> ReceiptValidity:
+    def perform() -> ReceiptValidity:
+        plan = request.app.state.project_folders.read_plan(project_id, revision=body.revision)
+        return _jobs(request).result_validity_action(
+            plan, body.request_id, body.receipt,
+            judgement=(judgement.differences, judgement.who, judgement.why) if judgement is not None else None,
+        )
+    try:
+        return _project_response(response, perform)
+    except JobNotFound as exc:
+        raise HTTPException(404, detail="No successful receipt for this request in the saved Plan.") from exc
+    except JobConflict as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    except HostError as exc:
+        raise _host_error(exc) from exc
+
+
+@router.post("/projects/{project_id}/result-validity/check", status_code=202)
+def check_saved_result(
+    project_id: ProjectName, body: ValidityAction, request: Request, response: Response,
+) -> ReceiptValidity:
+    return _result_validity_action(project_id, body, request, response)
+
+
+@router.post("/projects/{project_id}/result-validity/accept")
+def accept_saved_result(
+    project_id: ProjectName, body: ValidityAcceptance, request: Request, response: Response,
+) -> ReceiptValidity:
+    return _result_validity_action(project_id, body, request, response, judgement=body)
 
 
 def _remote_runs(request: Request) -> StudioRemoteRuns:

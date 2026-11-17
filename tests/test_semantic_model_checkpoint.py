@@ -8,61 +8,156 @@ from shutil import rmtree
 import subprocess
 import sys
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from feedbax.builtins.training import StandardTrainingSettings, _init_supervised
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.contracts.training import GraphTopologySourceSpec
-from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.contracts.method_checkpoint import (
+    CheckpointLatestPointer,
+    MethodCheckpointClock,
+    MethodCheckpointIdentity,
+    method_checkpoint_extra_path,
+)
+from feedbax.contracts.training import OptimizerSpec
 from feedbax.dataset import Dataset, Variable
-from feedbax.mechanics.muscles import RigidTendonHillMuscleThelen
+from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.runtime.raw_state import bind_raw_state
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.training.checkpoint_custody import (
-    authenticate_published_checkpoint_custody,
-    open_published_model_slot,
-    write_checkpoint_transaction,
+from feedbax.persistence.method_checkpoint import (
+    bind_method_checkpoint_content,
+    materialize_checkpoint_content,
+    verify_method_checkpoint_content,
 )
+from feedbax.training.checkpoint_errors import CheckpointCustodyError
+from feedbax.training.method_checkpoint import (
+    read_method_checkpoint,
+    write_method_checkpoint,
+)
+from feedbax.training.method_runtime import stack_replicas
+from feedbax.training.methods import TrainingState
 from feedbax.training.model_checkpoint import (
     ModelCheckpointError,
     SemanticModelWriter,
-    effective_model_graph,
 )
-from tests.support.managed_train_fixture import managed_train_spec
 
 
-def _publish(root, graph, model, assets=None):
-    spec, _ = managed_train_spec(batches=2)
-    spec = spec.model_copy(update={
-        "graph": GraphTopologySourceSpec(inline=graph.model_dump(mode="json")),
-    })
-    phase = spec.worker_execution.effective_phase.phase_program
-    writer = SemanticModelWriter.for_graph(graph, assets)
+def _publish(root, graph, models, templates, *, extra=(), assets=None, replica_ids=("0",)):
+    writer = SemanticModelWriter.for_graph(graph, assets, ComponentRegistry())
     assert writer is not None
-    return write_checkpoint_transaction(
+    return write_method_checkpoint(
         root,
-        run_spec=spec,
-        phase_program=phase,
-        barrier_name="after_train_batch",
-        coordinate=ProgressCoordinate(
-            run_id="selected-model", phase="train_batch", program_step=1,
-            completed_barrier="after_train_batch",
+        run_id="selected-model",
+        identity=MethodCheckpointIdentity(
+            request_id="train:" + "1" * 64, method_key="external.Adversary",
         ),
-        slots={
-            "model": model, "optimizer": (), "prng": jax.random.PRNGKey(0),
-            "batch_counter": jnp.array(1, dtype=jnp.int32),
-        },
-        completed_training_batches=1,
-        semantic_model=writer,
+        clock=MethodCheckpointClock(completed_updates=2, segment_start=0, schedule_origin=0, seed=81),
+        state=TrainingState(stack_replicas(models), extra),
+        model_writer=writer,
+        model_templates=templates,
+        replica_ids=replica_ids,
     )
+
+
+def _open(root, pointer):
+    return read_method_checkpoint(root, pointer, components=ComponentRegistry())
+
+
+class _AdaptiveState(eqx.Module):
+    configuration: bytes = eqx.field(static=True)
+    price: jax.Array
+    noise: jax.Array
+    history: jax.Array
+
+
+def test_recover_replicated_method_state_and_read_model_without_extra(tmp_path):
+    graph = GraphSpec(nodes={
+        "linear": ComponentSpec(
+            type="feedbax.Linear", params={"input_size": 1, "output_size": 1},
+            input_ports=["input"], output_ports=["output"],
+        ),
+    })
+    template = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
+    extra = _AdaptiveState(
+        b"adam", jnp.stack((jnp.asarray(3.5), jnp.asarray(-2.25))),
+        jax.random.split(jax.random.key(912), 2),
+        jnp.array([[0.25, 0.75], [1.5, 2]], dtype=jnp.bfloat16),
+    )
+    replicas = tuple(
+        eqx.tree_at(lambda model: model.nodes["linear"].layer.weight, template, jnp.asarray([[weight]]))
+        for weight in (0.25, -0.75)
+    )
+    written = _publish(
+        tmp_path / "attempt", graph, replicas, (template, template),
+        extra=extra, replica_ids=("left", "right"),
+    )
+    reader = _open(written.root, written.latest_pointer)
+    fresh = _AdaptiveState(
+        b"adam", jnp.stack((jnp.asarray(0.0), jnp.asarray(0.0))),
+        jax.random.split(jax.random.key(0), 2),
+        jnp.zeros((2, 2), dtype=jnp.bfloat16),
+    )
+    recovered = reader.restore_extra(fresh)
+    np.testing.assert_array_equal(recovered.price, [3.5, -2.25])
+    assert recovered.price.weak_type
+    np.testing.assert_array_equal(jax.random.key_data(recovered.noise), jax.random.key_data(extra.noise))
+    assert recovered.noise.dtype == extra.noise.dtype
+    assert recovered.history.dtype == jnp.bfloat16
+    np.testing.assert_array_equal(recovered.history.astype(jnp.float32), [[0.25, 0.75], [1.5, 2]])
+    with pytest.raises(CheckpointCustodyError):
+        reader.restore_extra(_AdaptiveState(b"sgd", fresh.price, fresh.noise, fresh.history))
+
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    full = bind_method_checkpoint_content(written.root, written.latest_pointer, store)
+    verify_method_checkpoint_content(store, written.latest_pointer, full)
+    with materialize_checkpoint_content(full, store, owner="test") as materialized:
+        moved = _open(materialized, written.latest_pointer)
+        np.testing.assert_array_equal(moved.restore_extra(fresh).price, recovered.price)
+
+    (written.manifest_path.parent / method_checkpoint_extra_path(written.manifest.extra)).unlink()
+    model_only = bind_method_checkpoint_content(
+        written.root, written.latest_pointer, store, include_extra=False,
+    )
+    verify_method_checkpoint_content(store, written.latest_pointer, model_only, include_extra=False)
+    with materialize_checkpoint_content(model_only, store, owner="test", include_extra=False) as materialized:
+        selected = _open(materialized, written.latest_pointer)
+        assert selected.model.replica_ids == ("left", "right")
+        left, right = selected.model.restore_all((template, template))
+        np.testing.assert_array_equal(left.nodes["linear"].layer.weight, [[0.25]])
+        np.testing.assert_array_equal(right.nodes["linear"].layer.weight, [[-0.75]])
+        with pytest.raises(CheckpointCustodyError):
+            selected.restore_extra(fresh)
+
+
+def test_stateful_graph_adam_checkpoint_preserves_the_optimizer_abi(tmp_path):
+    graph = GraphSpec(nodes={
+        "cell": ComponentSpec(
+            type="feedbax.GRU",
+            input_ports=["input", "hidden"], output_ports=["output", "hidden"],
+        ),
+    })
+    model = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
+
+    def optimizer_state(**params):
+        settings = StandardTrainingSettings(
+            optimizer=OptimizerSpec(type="adam", params={"learning_rate": 0.001, **params}),
+        )
+        return stack_replicas((_init_supervised(settings, model, jax.random.key(0)).extra,))
+
+    source = optimizer_state()
+    written = _publish(tmp_path / "adam", graph, (model,), (model,), extra=source)
+    selected = _open(written.root, written.latest_pointer)
+    assert eqx.tree_equal(selected.restore_extra(optimizer_state(learning_rate=0.01)), source)
+    with pytest.raises(CheckpointCustodyError):
+        selected.restore_extra(optimizer_state(b1=0.8))
 
 
 def _thelen_graph(params):
@@ -95,9 +190,18 @@ def test_thelen_model_slot_rebuilds_owner_from_restored_source_values(tmp_path, 
         GraphDocument(graph=_thelen_graph(structural | final_values)), ComponentRegistry(),
     ).graph
     template = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
-    written = _publish(tmp_path / "thelen", graph, source)
-    selected = open_published_model_slot(written.root, written.latest_pointer)
-    assert selected is not None
+    inconsistent = eqx.tree_at(
+        lambda model: model.nodes["muscle"].state_index.init,
+        source,
+        replace_fn=lambda leaf: jnp.full_like(leaf, 0.75),
+    )
+    rejected_root = tmp_path / "unreconstructible"
+    with pytest.raises(ModelCheckpointError):
+        _publish(rejected_root, graph, (inconsistent,), (template,))
+    assert not (rejected_root / "latest.json").exists()
+
+    written = _publish(tmp_path / "thelen", graph, (source,), (template,))
+    selected = _open(written.root, written.latest_pointer).model
     restored = selected.restore(template)
     muscle = restored.nodes["muscle"]
     fresh = RigidTendonHillMuscleThelen(**structural, **final_values)
@@ -157,10 +261,6 @@ def test_thelen_model_slot_rebuilds_owner_from_restored_source_values(tmp_path, 
     np.testing.assert_array_equal(samples[0], [0.25, 0.25])
     np.testing.assert_allclose(samples[1:], expected["activation"], rtol=2e-7)
 
-    evidence = authenticate_published_checkpoint_custody(written.root)
-    assert evidence.manifest.transaction_id == written.manifest.transaction_id
-
-
 
 def _spatial_step(model):
     key = jax.random.PRNGKey(11)
@@ -178,13 +278,11 @@ def test_asset_backed_model_slot_round_trips_from_checkpoint_closure(tmp_path):
     model = compile_graph(
         GraphDocument(graph=graph), ComponentRegistry(), artifact_provider=imported,
     ).graph
-    written = _publish(tmp_path / "checkpoint", graph, model, imported)
+    written = _publish(tmp_path / "checkpoint", graph, (model,), (model,), assets=imported)
     pointer = tmp_path / "selected.json"
     pointer.write_text(written.latest_pointer.model_dump_json())
     expected = _spatial_step(model)
     rmtree(imported.root)
-    selected = open_published_model_slot(written.root, written.latest_pointer)
-    assert selected is not None and selected.graph == effective_model_graph(graph, model)
     output = tmp_path / "restored.json"
     subprocess.run(
         [
@@ -197,25 +295,23 @@ def test_asset_backed_model_slot_round_trips_from_checkpoint_closure(tmp_path):
         np.testing.assert_array_equal(actual, reference)
 
     authored_path, asset = next(model_asset_refs(graph))
+    selected = _open(written.root, written.latest_pointer).model
     physical = selected.provider.object_path(asset)
     exact = physical.read_bytes()
     physical.unlink()
     with pytest.raises(ModelCheckpointError) as missing:
-        open_published_model_slot(written.root, written.latest_pointer)
+        _open(written.root, written.latest_pointer)
     assert str(missing.value).startswith(authored_path)
     physical.write_bytes(exact[:-1] + b"!")
     with pytest.raises(ModelCheckpointError) as changed:
-        open_published_model_slot(written.root, written.latest_pointer)
+        _open(written.root, written.latest_pointer)
     assert str(changed.value).startswith(authored_path)
     assert "sha256" in str(changed.value).lower()
-    with pytest.raises(ValueError, match="semantic model member"):
-        authenticate_published_checkpoint_custody(written.root)
 
 
 if __name__ == "__main__":
     jax.config.update("jax_enable_x64", True)
     root, pointer_path, output = map(Path, sys.argv[1:])
     pointer = CheckpointLatestPointer.model_validate_json(pointer_path.read_bytes())
-    selected = open_published_model_slot(root, pointer)
-    assert selected is not None
+    selected = _open(root, pointer).model
     output.write_text(json.dumps(_spatial_step(selected.restore())))

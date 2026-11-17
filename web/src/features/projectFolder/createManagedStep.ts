@@ -51,7 +51,12 @@ export function analyzeInput(
 export function createAnalyze(editor: ProjectEditController, revision: string, source: StepReference) {
   return createManagedStep(editor, revision, source.step, {
     schema: 'feedbax.analysis_document.v1',
-    payload: { schema_version: 'feedbax.analysis_document.v1', operations: {}, views: {} },
+    payload: {
+      schema_version: 'feedbax.analysis_document.v1',
+      inputs: { states: { kind: 'dataset' } },
+      operations: {},
+      views: {},
+    },
   }, {
     kind: 'analyze', inputs: { states: source },
   });

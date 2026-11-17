@@ -14,14 +14,17 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubject
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.request_refs import BestRank, ContentRef, LastMember, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
-from feedbax.host.best_selection import BestMetricUnavailable, completion_score
+from feedbax.host.best_selection import BestMetricUnavailable, completion_score, ranked_requests
 from feedbax.host.checkpoint_selection import (
     CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
+    verify_dependency_files,
 )
 from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
+from feedbax.host.deferred_reuse import DEFERRED_REUSE_SCHEMA, DeferredAdmissions
 from feedbax.host.plan_history import advance_plan, plan_ref_key
 from feedbax.host.protocol import LIGHT_ENTRYPOINT, LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
 from feedbax.persistence.store_damage import inspect_without_recording
@@ -108,7 +111,7 @@ INSERT OR IGNORE INTO policy VALUES ('compute', 4), ('light', 1);
 
 LIVE = "('queued','assigned','running','stopping')"
 ACTIVE = "('assigned','running','stopping')"
-TERMINAL = "('succeeded','stopped','failed','interrupted','blocked')"
+TERMINAL = "('succeeded','reused','stopped','failed','interrupted','blocked')"
 
 JOB_ID = re.compile(r"[a-zA-Z0-9_-]{1,128}")
 TRAIN_REQUEST_ID = re.compile(r"train:[0-9a-f]{64}")
@@ -154,8 +157,12 @@ def require_text(value, field: str) -> str:
     return value
 
 
-def _scheduled_checkpoint(update: int, interval: int, horizon: int) -> bool:
-    return update <= horizon and (update == horizon or update % interval == 0)
+def _scheduled_checkpoint(update: int, spec: DocumentTrainingRequestSpec) -> bool:
+    origin = spec.continuation.source_completed_updates if spec.continuation else 0
+    return (
+        origin < update <= spec.target_total
+        and (update == spec.target_total or (update - origin) % spec.training_config.snapshot_interval == 0)
+    )
 
 
 def _pending_checkpoint(attempt: sqlite3.Row, boundary: dict | None, absent: Sequence[int]) -> dict:
@@ -169,13 +176,14 @@ def _pending_checkpoint(attempt: sqlite3.Row, boundary: dict | None, absent: Seq
         latest = json.loads(attempt["checkpoint"] or "{}")
         published = max(published, latest.get("completed_updates", 0))
         completed = max(published, progress.get("completed_updates", 0))
-    spec = json.loads(attempt["launch"])["payload"].get("spec", {})
-    horizon = spec.get("method_payload", {}).get("payload", {}).get("target_total")
-    interval = spec.get("checkpoint_progress", {}).get("checkpoint_interval")
+    payload = json.loads(attempt["launch"])["payload"]
+    spec = DocumentTrainingRequestSpec.model_validate(payload["spec"])
+    catalogue = set(payload.get("checkpoint_catalog", ()))
     next_update = min((
         update for update in absent
-        if update > published and update >= completed and _scheduled_checkpoint(update, interval, horizon)
-    ), default=None) if type(horizon) is int and type(interval) is int and interval > 0 else None
+        if update > published and update >= completed
+        and (update in catalogue or _scheduled_checkpoint(update, spec))
+    ), default=None)
     return {
         "producer_job_id": attempt["id"],
         "producer_request_id": attempt["request"],
@@ -192,7 +200,8 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.executescript(SCHEMA + live_evaluate.SCHEMA)
+        self.db.executescript(SCHEMA + live_evaluate.SCHEMA + DEFERRED_REUSE_SCHEMA)
+        self.deferred = DeferredAdmissions(self)
         if "authenticated_completion" not in {
             row["name"] for row in self.db.execute("PRAGMA table_info(edges)")
         }:
@@ -228,8 +237,11 @@ class Store:
         )
         if not updated.rowcount:
             return
-        self.append(row, "terminal", outcome)
-        if outcome["outcome"] == "succeeded":
+        reused = outcome["outcome"] == "reused"
+        if not reused:
+            self.deferred.discard(row["id"])
+        self.append(row, "reused" if reused else "terminal", outcome)
+        if outcome["outcome"] in {"succeeded", "reused"}:
             self.db.execute(
                 "UPDATE edges SET satisfied=1 WHERE parent=? AND publication='' AND NOT authenticated_completion",
                 (row["id"],),
@@ -304,6 +316,7 @@ class Store:
                     }
             if json.loads(row["launch"])["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                 outcome.pop("products", None)
+            outcome.pop("execution_evidence", None)
             if staged := outcome.pop("stopped_checkpoints", None):
                 if outcome["outcome"] != "stopped" or not self._is_managed_launch(row, "feedbax.training_host_worker:main"):
                     raise ValueError("Only a managed Train checkpoint stop may publish a job entry")
@@ -332,6 +345,7 @@ class Store:
         ref = publish_train_success(
             root, row["id"], row["request"], payload, outcome, predecessor, collected=collected,
             target=attempt_target(json.loads(row["data"]).get("target")),
+            execution_evidence=self._execution_evidence(outcome),
         )
         return outcome | {"store_success": ref}
 
@@ -368,7 +382,7 @@ class Store:
         stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
         ref = ContentObjectRef.model_validate(staged)
         checkpoints = TypeAdapter(tuple[TrainJobCheckpoint, ...]).validate_json(view.store.get_object(ref))
-        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_training_batches:
+        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_updates:
             raise ValueError("Train Stop differs from its staged recovery publication")
         accepted = {
             PublishedTrainingCheckpoint.model_validate(data["checkpoint"]).pointer.transaction_id: data["checkpoint"]
@@ -387,9 +401,27 @@ class Store:
             inputs = original.inputs
         else:
             inputs = bind_train_inputs(view, request, self._train_predecessor(row, payload))
-        return publish_train_job(view.store, TrainJobEntry(
-            attempt=row["id"], request=request, inputs=inputs, checkpoints=checkpoints,
-        ))
+        from feedbax.contracts.manifest import TrainingRunManifest, canonical_manifest_path, load_manifest_bytes
+        from feedbax.job_completion import _read_exact, training_metric_file
+
+        receipt = outcome["receipt"]
+        root = Path(payload["manifest_root"])
+        receipt_path = canonical_manifest_path("TrainingRunManifest", receipt["manifest_id"], root=root)
+        manifest = load_manifest_bytes(_read_exact(root, receipt_path, receipt["manifest_sha256"]))
+        if (
+            not isinstance(manifest, TrainingRunManifest) or manifest.job_id != row["id"]
+            or manifest.status != "cancelled" or manifest.completed_batches != stopped.completed_updates
+        ):
+            raise ValueError("Stop receipt differs from its accepted Train boundary")
+        metric_file = training_metric_file(root, row["id"], manifest)
+        with view.store._exclusive_lock():
+            metrics = None if metric_file is None else view.store._store_file(
+                root / metric_file["path"], sha256=metric_file["sha256"], size_bytes=metric_file["size_bytes"],
+            )
+            return publish_train_job(view.store, TrainJobEntry(
+                attempt=row["id"], request=request, inputs=inputs, checkpoints=checkpoints, metrics=metrics,
+            ))
+
 
     def mirror_collected_train(
         self, job: dict, state: str, receipt: dict | None, progress: dict | None, delivery: int,
@@ -405,6 +437,7 @@ class Store:
             state not in {"succeeded", "stopped"} or not TRAIN_REQUEST_ID.fullmatch(job["request"])
             or type(delivery) is not int or delivery < 1 or job["edges"] or job["slot"] != "compute"
             or job["launch"]["warm_entrypoint"] != "feedbax.training_host_worker:main"
+            or job["launch"].get("project_root") is None
             or (payload["project_id"], payload["request_id"], root)
             != (job["project"], job["request"], data.get("manifest_root"))
             or data.get("collected_train") is not True
@@ -432,7 +465,7 @@ class Store:
                 raise HostError("invalid_request", "Collected Train Stop differs from its stored binding.")
             if ref is not None:
                 outcome["store_job_entry"] = ref.model_dump(mode="json")
-            checkpoint = {"completed_updates": entry.recovery.pointer.completed_training_batches}
+            checkpoint = {"completed_updates": entry.recovery.pointer.completed_updates}
         self._mirror_collected_terminal(job, state, outcome, progress, checkpoint, delivery)
 
     def mirror_collected_evaluate(
@@ -468,7 +501,7 @@ class Store:
         ):
             raise HostError("invalid_request", "Collected Evaluate differs from its admitted Store receipt.")
         _, _, subject = decode_rollout_request(job["request"], view.store.get_object(success.request.object))
-        if subject != payload.canonical_request.checkpoint:
+        if subject != payload.canonical_request.subject:
             raise HostError("invalid_request", "Collected Evaluate changed its canonical subject.")
         outcome = {
             "outcome": "succeeded",
@@ -522,7 +555,9 @@ class Store:
 
         payload = json.loads(row["launch"])["payload"]
         terminal = payload["canonical_request"].get("terminal")
-        if terminal is None:
+        if payload["canonical_request"].get("initial_model") is not None:
+            binding = {}
+        elif terminal is None:
             (binding,) = self.completion_bindings(row["id"])
         else:
             binding = {"terminal": terminal}
@@ -530,18 +565,22 @@ class Store:
             attempt=row["id"], request_id=row["request"], project=row["project"],
             payload=payload, receipt=outcome["receipt"], binding=binding,
             target=attempt_target(json.loads(row["data"]).get("target")),
+            execution_evidence=self._execution_evidence(outcome),
         )
         return outcome | {"store_success": ref.model_dump(mode="json")}
 
     def _publish_light_result(self, row: sqlite3.Row, outcome: dict) -> dict:
         from feedbax.light_jobs import publish_light_success
 
-        if outcome.keys() != {"outcome", "products"}:
-            raise ValueError("Light success must supply only its draft products.")
+        if not {"outcome", "products"} <= outcome.keys() <= {"outcome", "products", "provider", "execution_evidence"}:
+            raise ValueError("Managed success must supply draft products and optional provider provenance.")
         payload = json.loads(row["launch"])["payload"]
         ref = publish_light_success(
             payload, row["id"], row["request"], self.light_origins(row), outcome["products"],
+            checkpoint_bindings=tuple(self.completion_bindings(row["id"])),
+            provider=outcome.get("provider"),
             target=attempt_target(json.loads(row["data"]).get("target")),
+            execution_evidence=self._execution_evidence(outcome),
         )
         return {
             "outcome": "succeeded",
@@ -550,7 +589,14 @@ class Store:
         }
 
     @staticmethod
-    def _light_requests(payload: dict, project: str, request_id: str) -> frozenset[str]:
+    def _execution_evidence(outcome: dict) -> ContentObjectRef:
+        if "execution_evidence" not in outcome:
+            raise ValueError("The managed worker did not publish its execution evidence")
+        return ContentObjectRef.model_validate(outcome["execution_evidence"])
+
+    @staticmethod
+    def _light_request(launch: dict, project: str, request_id: str):
+        payload = launch["payload"]
         root = Path(payload["manifest_root"])
         request = RequestObject.model_validate(payload["request"])
         if (
@@ -561,10 +607,20 @@ class Store:
         decoded = Store._success_view(root).read_request(request)
         if decoded.kind not in ("analyze", "render", "report"):
             raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
+        return decoded
+
+    @staticmethod
+    def _light_requests(decoded) -> frozenset[str]:
+        from feedbax.contracts.effective_success import exact_model_checkpoint_input
+
         inputs = [member.reference for members in decoded.inputs.values() for member in members]
         if any(not isinstance(ref, (ProductRef, ContentRef)) for ref in inputs):
             raise ValueError("Light jobs require exact Store inputs or terminal products.")
-        return frozenset(ref.request_id for ref in inputs if isinstance(ref, ProductRef))
+        exact = exact_model_checkpoint_input(decoded)
+        return frozenset(
+            ref.request_id for ref in inputs
+            if isinstance(ref, ProductRef) and (exact is None or ref != exact[2])
+        )
 
     def _light_parents(self, project: str, root: str, expected: frozenset[str], parents: Sequence[str]) -> list[sqlite3.Row]:
         rows = []
@@ -603,16 +659,20 @@ class Store:
         return ref.model_dump(mode="json")
 
     def light_origins(self, row: sqlite3.Row) -> dict:
-        payload = json.loads(row["launch"])["payload"]
+        launch = json.loads(row["launch"])
+        payload = launch["payload"]
         root = payload["manifest_root"]
         try:
-            expected = self._light_requests(payload, row["project"], row["request"])
+            expected = self._light_requests(self._light_request(launch, row["project"], row["request"]))
             parents = tuple(edge["parent"] for edge in self.db.execute(
-                "SELECT parent FROM edges WHERE job=? ORDER BY parent", (row["id"],)
+                "SELECT parent FROM edges WHERE job=? AND NOT authenticated_completion ORDER BY parent", (row["id"],)
             ))
             sources = self._light_parents(row["project"], root, expected, parents)
             view = self._success_view(root)
-            return {source["request"]: self._light_receipt(view, source) for source in sources}
+            return {
+                source["request"]: self._light_receipt(view, self.deferred.exact_source(source))
+                for source in sources
+            }
         except (ValueError, TypeError, KeyError, OSError) as error:
             raise CompletionFileError(str(error)) from error
 
@@ -636,9 +696,13 @@ class Store:
                 raise HostError("invalid_request", "Invalid launch environment variable.")
         if launch["warm_entrypoint"] and ":" not in launch["warm_entrypoint"]:
             raise HostError("invalid_request", "Warm entrypoint must be module:function.")
+        if (source_root := launch.get("project_root")) is not None and (
+            not isinstance(source_root, str) or not Path(source_root).is_absolute() or "\0" in source_root
+        ):
+            raise HostError("invalid_request", "Managed project root must be an absolute path.")
         if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT and (
-            job["slot"] != "light" or job["continues"] is not None
-            or any(edge["publication"] is not None or edge.get("authenticated_completion") for edge in job["edges"])
+            job["continues"] is not None
+            or any(edge["publication"] is not None for edge in job["edges"])
         ):
             raise HostError("invalid_request", "Managed light jobs require singleton launches and terminal edges.")
 
@@ -647,6 +711,8 @@ class Store:
         session_id: str | None = None,
     ) -> dict:
         require_text(token, "submission token")
+        record = dict(record)
+        deferred_projection = record.pop("deferred_projection", None)
         submitted_target = record.get("target")
         try:
             target = attempt_target(submitted_target)
@@ -668,6 +734,7 @@ class Store:
                     raise HostError("invalid_request", "Submission token belongs to a different execution target.")
                 return saved
             results, aliases, inserted = [], {}, []
+            considered = set()
             light_parents_by_job: dict[str, tuple[str, ...]] = {}
             live_drivers: set[str] = set()
             projects = set(record.get("projects", ()))
@@ -696,6 +763,10 @@ class Store:
                     )
                     continue
                 self._validate_job(job)
+                deferred_reuse = item.get("deferred_reuse")
+                force_execution = item.get("force_execution", False)
+                if type(force_execution) is not bool or (force_execution and deferred_reuse is not None):
+                    raise HostError("invalid_request", "Invalid deferred admission policy.")
                 if job["data"].get("target") != submitted_target:
                     raise HostError("invalid_request", "Job execution target differs from its submission.")
                 job["data"].pop("placement", None)
@@ -703,6 +774,17 @@ class Store:
                 payload = job["launch"]["payload"]
                 canonical_request = payload.get("canonical_request")
                 light = job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT
+                refused_parents = [
+                    edge["job_id"] for edge in job["edges"]
+                    if edge["job_id"] in considered and edge["job_id"] not in aliases
+                ]
+                considered.add(job["id"])
+                if light and refused_parents:
+                    results.append({
+                        "run_key": run_key, "job_id": None, "disposition": "rejected",
+                        "reason": f"The exact upstream attempt {refused_parents[0]} was rejected.",
+                    })
+                    continue
                 evaluate = job["request"].startswith("evaluate:") and canonical_request is not None
                 input_path = "/inputs/subject" if evaluate else "/inputs/checkpoint"
                 if canonical_request is not None and not isinstance(canonical_request, dict):
@@ -719,13 +801,46 @@ class Store:
                         raise HostError("invalid_request", "Invalid authenticated completion edge.")
                 try:
                     selected = requested_checkpoint_selection(job["request"], job["launch"])
-                except (ValueError, KeyError, TypeError) as exc:
+                except (OSError, ValueError, KeyError, TypeError) as exc:
                     raise HostError("invalid_request", str(exc)) from exc
                 checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
+                if light:
+                    if selected is not None and selected.producer_request is not None:
+                        checkpoint = {"request_id": selected.producer_request}
+                        input_path = f"/inputs/{selected.role}"
+                    elif any(edge.get("authenticated_completion") for edge in job["edges"]):
+                        raise HostError("invalid_request", "Managed operations require an authored exact checkpoint edge.")
                 checkpoint_parents = None
                 best = isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank"
                 terminal = canonical_request.get("terminal") if evaluate else None
-                if terminal is not None:
+                initial = canonical_request.get("initial_model") if evaluate else None
+                if initial is not None:
+                    from feedbax.contracts.model_input import read_document_input
+                    from feedbax.studio.canonical_evaluate import (
+                        BoundEvaluationJobInput, decode_rollout_request, initial_evaluation_references,
+                    )
+
+                    try:
+                        launch = BoundEvaluationJobInput.model_validate(payload)
+                        if (
+                            job["continues"] is not None or job["edges"]
+                            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+                        ):
+                            raise ValueError("Initial Evaluate requires a standalone rollout launch.")
+                        view = self._success_view(str(launch.manifest_root))
+                        request = RequestObject(id=launch.request_id, object=launch.canonical_request.request, documents=())
+                        _, _, subject = decode_rollout_request(launch.request_id, view.store.get_object(request.object))
+                        if subject != launch.canonical_request.subject:
+                            raise ValueError("Initial Evaluate differs from its canonical request.")
+                        for content in initial_evaluation_references(view.read_request(request)).values():
+                            read_document_input(content, view.store)
+                    except (OSError, TypeError, ValueError, KeyError) as error:
+                        results.append({
+                            "run_key": run_key, "job_id": None, "disposition": "rejected",
+                            "reason": f"{input_path}: {error}",
+                        })
+                        continue
+                elif terminal is not None:
                     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
                     from feedbax.persistence.evaluation_subject import read_terminal_train_subject
 
@@ -863,29 +978,21 @@ class Store:
                             "invalid_resume", "Another attempt of this request is already running."
                         )
                     job_id, disposition = live["id"], "attached"
+                    if force_execution:
+                        self.deferred.execute(self.get(job_id), occupied=live_drivers)
                 else:
                     self._require_admission_current(job, item["checked_through"])
                     placement = None
-                    if evaluate and selected is not None and selected.allows_gaps:
+                    if deferred_reuse is None and evaluate and selected is not None and selected.allows_gaps:
                         placement = self._place_evaluation(job, source, selected, live_drivers)
                         job["data"].update(placement=placement["location"], placement_detail=placement)
                     job_id, disposition = job["id"], "admitted"
-                    self.db.execute(
-                        "INSERT INTO jobs(id, project, request, launch, slot, data) VALUES (?,?,?,?,?,?)",
-                        (
-                            job_id,
-                            job["project"],
-                            job["request"],
-                            dump(job["launch"]),
-                            job["slot"],
-                            dump(job["data"]),
-                        ),
-                    )
-                    inserted.append(job)
+                    row = self.insert_queued(job)
+                    if deferred_reuse is not None:
+                        self.deferred.reserve(row, job, deferred_reuse, deferred_projection)
+                    inserted.append((job, item.get("light_definition")))
                     if light:
                         light_parents_by_job[job_id] = light_parents
-                    row = self.get(job_id)
-                    self.append(row, "queued", {})
                     if placement is not None:
                         self.append(row, live_evaluate.PLACEMENT_EVENT, placement)
                 aliases[job["id"]] = job_id
@@ -897,8 +1004,8 @@ class Store:
                         "reason": None,
                     }
                 )
-            for job in inserted:
-                self._bind_edges(job, aliases)
+            for job, definition in inserted:
+                self._bind_edges(job, aliases, definition)
             self._advance_authored_train_plan(record, results)
             response = {"id": uuid4().hex, "token": token, "record": record, "items": results}
             self.db.execute(
@@ -909,6 +1016,16 @@ class Store:
                 ((response["id"], project) for project in projects),
             )
         return response
+
+    def insert_queued(self, job: dict) -> sqlite3.Row:
+        self.db.execute(
+            "INSERT INTO jobs(id, project, request, launch, slot, data) VALUES (?,?,?,?,?,?)",
+            (job["id"], job["project"], job["request"], dump(job["launch"]), job["slot"], dump(job["data"])),
+        )
+        row = self.get(job["id"])
+        assert row is not None
+        self.append(row, "queued", {})
+        return row
 
     def _recheck_reuse(self, item: dict, record: dict) -> None:
         cursor = item.get("checked_through")
@@ -933,9 +1050,18 @@ class Store:
                 raise HostError("admission_changed", str(error)) from error
         if (terminal := item.get("terminal_reuse")) is not None:
             self._recheck_terminal_reuse(row, root, terminal)
+        if row["request"].startswith(("analyze:", "evaluate:")):
+            from feedbax.host.current_checkpoints import CurrentCheckpoints
+
+            view = self._success_view(root)
+            if (ref := view.attempt_ref(row["id"])) is not None:
+                difference = CurrentCheckpoints(self, view, row["project"]).compare(view.read_receipt(ref), launch)
+                if difference is not None:
+                    raise HostError("admission_changed", difference.detail)
         self._require_admission_current(row, cursor)
 
     def _recheck_terminal_reuse(self, row: sqlite3.Row, root: str, expected: dict) -> None:
+        from feedbax.contracts.effective_success import EvaluationSubjectValue
         from feedbax.persistence.effective_success import terminal_train_subject
 
         try:
@@ -946,8 +1072,8 @@ class Store:
             (bound,) = attempt.receipt.inputs["subject"]
             source = bound.evaluation_subject
             receipt = ContentObjectRef.model_validate(expected["receipt"])
-            if source is None or source.terminal_receipt != receipt:
-                raise ValueError("The reused Evaluate names a different Train receipt.")
+            if source is None or source.terminal_receipt is None:
+                raise ValueError("The reused Evaluate does not bind a terminal Train product.")
             if (anchor := expected["anchor"]) is None:
                 pin = terminal_train_subject(view.store, source.producer.id)
             else:
@@ -961,6 +1087,8 @@ class Store:
                 pin = self._terminal_train_for_anchor(anchor)
             if pin is None or pin.receipt != receipt:
                 raise ValueError("The terminal Train receipt changed during admission.")
+            if not EvaluationSubjectValue.model_validate(bound.descriptor).matches_terminal_model(pin.model.content):
+                raise ValueError("The reused Evaluate binds a different Train model.")
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise HostError("admission_changed", str(error)) from error
 
@@ -1071,7 +1199,7 @@ class Store:
             roots.add(parent_id)
         return None if missing else frozenset(roots)
 
-    def _bind_edges(self, job: dict, aliases: dict[str, str]) -> None:
+    def _bind_edges(self, job: dict, aliases: dict[str, str], light_definition: dict | None = None) -> None:
         job_id, continues = job["id"], job["continues"]
         payload = job["launch"]["payload"]
         collected = payload.get("collected_resume")
@@ -1107,12 +1235,27 @@ class Store:
                     (job_id, continues),
                 )
         if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+            from feedbax.contracts.operation import OperationDefinition
+            from feedbax.light_jobs import validate_light_requirements
+
             payload = job["launch"]["payload"]
             try:
-                expected = self._light_requests(payload, job["project"], job["request"])
+                decoded = self._light_request(job["launch"], job["project"], job["request"])
+                definition = OperationDefinition.model_validate(light_definition) if light_definition is not None else None
+                validate_light_requirements(decoded, definition)
+                numerical = definition.numerical if definition is not None else None
+                if job["slot"] != ("compute" if numerical else "light") or (
+                    numerical and any(
+                        job["launch"]["env"].get(key) != value for key, value in numerical.environment().items()
+                    )
+                ):
+                    raise ValueError("Managed delivery worker does not match the declared numerical requirements")
                 self._light_parents(
-                    job["project"], payload["manifest_root"], expected,
-                    tuple(aliases.get(edge["job_id"], edge["job_id"]) for edge in job["edges"]),
+                    job["project"], payload["manifest_root"], self._light_requests(decoded),
+                    tuple(
+                        aliases.get(edge["job_id"], edge["job_id"])
+                        for edge in job["edges"] if not edge.get("authenticated_completion")
+                    ),
                 )
             except (ValueError, KeyError, TypeError, OSError) as error:
                 raise HostError("invalid_request", str(error)) from error
@@ -1136,7 +1279,7 @@ class Store:
                     is not None
                 )
             else:
-                satisfied = source is not None and source["state"] == "succeeded"
+                satisfied = source is not None and source["state"] in ("succeeded", "reused")
             cycle = self.db.execute(
                 """WITH RECURSIVE ancestors(id) AS (
                        VALUES (?) UNION SELECT edges.parent FROM edges JOIN ancestors ON edges.job=ancestors.id
@@ -1255,9 +1398,50 @@ class Store:
             cursor = max(after, self.event_head)
         return {"events": events, "cursor": cursor, "head": self.event_head, "oldest_cursor": 0}
 
+    @inspect_without_recording()
+    def checkpoint_producer(self, *, project: str, manifest_root: str, request: str) -> str | None:
+        from feedbax.host.current_checkpoints import CurrentCheckpoints
+
+        return CurrentCheckpoints(self, self._success_view(manifest_root), project).native_anchor(request)
+
+    @inspect_without_recording()
+    def _project_checkpoints(
+        self, rows: list[dict], project: str, root: str, requests: list[str], *, include_producers: bool,
+    ) -> tuple[dict, dict]:
+        from feedbax.host.current_checkpoints import CurrentCheckpoints
+
+        view = self._success_view(root)
+        selection = CurrentCheckpoints(self, view, project)
+        wanted = set(requests)
+        producers = {}
+        if include_producers:
+            for request in {job["request"] for job in rows if job["request"].startswith("train:")}:
+                if (anchor := selection.native_anchor(request)) is not None:
+                    producers[request] = anchor
+        differences = {}
+        for job in rows:
+            if (
+                job["request"] not in wanted or job["state"] != "succeeded"
+                or job["data"].get("manifest_root") != root
+                or not job["request"].startswith(("analyze:", "evaluate:"))
+                or (ref := view.attempt_ref(job["id"])) is None
+            ):
+                continue
+            try:
+                receipt = view.read_receipt(ref)
+            except (OSError, ValueError):
+                continue
+            launch = job.get("launch")
+            if launch is None:
+                launch = json.loads(self.get(job["id"])["launch"])
+            if (difference := selection.compare(receipt, launch)) is not None:
+                differences[job["id"]] = difference.model_dump(mode="json")
+        return differences, producers
+
     def jobs_snapshot(
         self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None,
         checkpoint_objective_root: str | None = None, terminal_train: tuple[str, list[str]] | None = None,
+        checkpoint_admission: tuple[str, list[str]] | None = None,
         **filters,
     ) -> dict:
         snapshot = {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
@@ -1286,11 +1470,20 @@ class Store:
                 ):
                     receipts[job["id"]] = pin.receipt.model_dump(mode="json")
             snapshot["terminal_train_receipts"] = receipts
+        if checkpoint_admission is not None:
+            project = filters.get("project")
+            if project is None:
+                raise HostError("invalid_request", "Checkpoint admission requires one project.")
+            differences, producers = self._project_checkpoints(
+                snapshot["jobs"], project, *checkpoint_admission,
+                include_producers=bool(filters.get("include_launch")),
+            )
+            snapshot.update(checkpoint_differences=differences, checkpoint_producers=producers)
         return snapshot
 
     @inspect_without_recording()
     def _terminal_train_for_anchor(self, anchor: str) -> TerminalTrainSubject | None:
-        binding = self._completion_candidate(anchor, terminal_model=True).binding
+        binding = self._completion_candidate(anchor, terminal_model=True, current=True).binding
         return TerminalTrainSubject.model_validate(binding["terminal"]) if binding is not None else None
 
     @inspect_without_recording()
@@ -1316,7 +1509,7 @@ class Store:
                 if tip["state"] in TERMINAL_STATES:
                     return
             tip_id = tip["id"] if tip is not None else None
-            candidate = self._completion_candidate(anchor, selection, tip=tip_id, observe=True)
+            candidate = self._completion_candidate(anchor, selection, tip=tip_id, observe=True, current=not is_live)
             if include_objective and is_live and candidate.rejections:
                 job["checkpoint_objective_error"] = True
             pending = candidate.pending
@@ -1598,15 +1791,39 @@ class Store:
                 return {"kind": "recovery", "product": members[0]}
         return None
 
+    @inspect_without_recording()
+    def _current_completion_tip(self, anchor: str) -> str | None:
+        from feedbax.host.current_checkpoints import CurrentCheckpoints
+
+        producer = self.get(anchor)
+        if producer is None or not producer["request"].startswith("train:"):
+            return None
+        root = json.loads(producer["data"]).get("manifest_root")
+        if root is None:
+            return None
+        return CurrentCheckpoints(self, self._success_view(root), producer["project"]).tip_for_anchor(producer)
+
     def _completion_candidate(
         self, anchor: str, selection: CheckpointSelection | None = None, *,
         train_slots: frozenset[str] | None = None, tip: str | None = None, observe: bool = False,
-        terminal_model: bool = False,
+        terminal_model: bool = False, current: bool = False,
     ) -> _CompletionCandidate:
         """Select an authenticated final product or exact checkpoint publications.
 
         An earlier attempt can still produce another child whenever M1 permits its resume.
         """
+        try:
+            if (source := self.get(anchor)) is not None and source["state"] == "reused":
+                retained = self.deferred.exact_source(source)
+                tip = retained["id"]
+                while retained["continues"] is not None:
+                    retained = self.get(retained["continues"])
+                    assert retained is not None
+                anchor = retained["id"]
+            elif current and tip is None:
+                tip = self._current_completion_tip(anchor)
+        except (KeyError, OSError, ValueError) as error:
+            return _CompletionCandidate(None, {"code": "dependency_corrupt", "message": str(error)}, [])
         attempts = self.db.execute(
             """WITH RECURSIVE lineage(id) AS (
                    VALUES (?) UNION ALL
@@ -1782,7 +1999,7 @@ class Store:
         return _CompletionCandidate(None, {
             "code": "input_unavailable",
             "message": missing or "Producer ended without a resumable completion.",
-            **({"path": "/inputs/subject/checkpoint"} if selection is not None else {}),
+            **({"path": f"/inputs/{selection.role}/checkpoint"} if selection is not None else {}),
         }, rejections)
 
     def _record_completion_rejections(
@@ -1846,17 +2063,13 @@ class Store:
 
         source = json.loads(producer["launch"])
         payload = source["payload"]
-        spec = payload.get("spec", {})
-        interval = spec.get("checkpoint_progress", {}).get("checkpoint_interval")
-        method = spec.get("method_payload", {}).get("payload", {})
-        horizon = method.get("target_total")
+        spec = DocumentTrainingRequestSpec.model_validate(payload["spec"])
         # Live dispatch never changes the Train publication schedule.
         supported = (
             source.get("warm_entrypoint") == "feedbax.training_host_worker:main"
             and producer["continues"] is None
-            and method.get("checkpoint_initialization") is None
-            and type(interval) is int and interval > 0 and type(horizon) is int
-            and all(_scheduled_checkpoint(update, interval, horizon) for update in selection.coordinates)
+            and spec.checkpoint_initialization is None
+            and all(_scheduled_checkpoint(update, spec) for update in selection.coordinates)
         )
         qualification = None
         if raw := job["data"].pop("validation_qualification", None):
@@ -1896,7 +2109,7 @@ class Store:
         for request, anchor in roots.items():
             key = anchor, None, None, None
             if key not in candidates:
-                candidates[key] = self._completion_candidate(anchor)
+                candidates[key] = self._completion_candidate(anchor, current=True)
             candidate = candidates[key]
             binding, error, rejections = candidate.binding, candidate.error, candidate.rejections
             self._record_completion_rejections(job, anchor, rejections)
@@ -1920,8 +2133,8 @@ class Store:
                 "code": code, "message": str(error), "path": "/inputs/subject",
             }})
             return
-        ordered = [candidate.reference.request_id for candidate in rule.candidates]
-        winner = completed[ordered[rule.winner([scored[request] for request in ordered])]]
+        ordered, selected = ranked_requests(rule, scored)
+        winner = completed[selected]
         binding = winner | {"best_rank": {
             "key": rule.key, "rank": rule.rank, "candidates": [
                 {"completion": completed[request]["completion"], "score": scored[request]}
@@ -1931,7 +2144,7 @@ class Store:
         self.db.execute(
             """UPDATE edges SET satisfied=1, binding=CASE WHEN parent=? THEN ? END
                WHERE job=? AND authenticated_completion""",
-            (winner["dependency_job_id"], dump(binding), job["id"]),
+            (roots[selected], dump(binding), job["id"]),
         )
         self.append(job, "dependency_bound", binding)
 
@@ -1956,10 +2169,10 @@ class Store:
                         self._resolve_best_completion(job, BestRank.model_validate(checkpoint), candidates)
                         best_processed.add(job["id"])
                     continue
-                selection = requested_checkpoint_selection(job["request"], launch)
                 try:
+                    selection = requested_checkpoint_selection(job["request"], launch)
                     train_slots = train_source_slots(launch)
-                except CompletionFileError as error:
+                except (CompletionFileError, OSError, KeyError, TypeError, ValueError) as error:
                     self.finished(job, {
                         "outcome": "blocked",
                         "error": {"code": "invalid_request", "message": str(error)},
@@ -1986,6 +2199,7 @@ class Store:
                 if key not in candidates:
                     candidates[key] = self._completion_candidate(
                         anchor, selection, train_slots=train_slots, tip=tip_id, terminal_model=terminal_model,
+                        current=not is_live,
                     )
                 candidate = candidates[key]
                 binding, error, rejections = candidate.binding, candidate.error, candidate.rejections
@@ -2015,6 +2229,27 @@ class Store:
             )
         ]
 
+    def verify_completion_bindings(self, row: sqlite3.Row, launch: dict, bindings: list[dict]) -> None:
+        train_slots = train_source_slots(launch)
+        payload = launch["payload"]
+        request = payload.get("canonical_request") or {}
+        terminal = request.get("terminal")
+        for binding in bindings if terminal is None else ({"terminal": terminal},):
+            if "terminal" in binding:
+                from feedbax.persistence.evaluation_subject import read_terminal_train_subject
+
+                try:
+                    read_terminal_train_subject(
+                        self._success_view(payload["manifest_root"]).store,
+                        TerminalTrainSubject.model_validate(binding["terminal"]), request["checkpoint"]["request_id"],
+                    )
+                except (OSError, TypeError, ValueError, KeyError) as error:
+                    raise CompletionFileError(str(error)) from error
+            elif train_slots is None:
+                verify_dependency_files(binding)
+            elif row["continues"] is None:
+                verify_completion_files(binding["completion"], train_slots=train_slots)
+
     def settle_blocked(self) -> None:
         with self.db:
             rows = self.db.execute(
@@ -2041,6 +2276,7 @@ class Store:
             f"""WITH ready AS (
                    SELECT jobs.*, row_number() OVER (PARTITION BY slot ORDER BY seq) AS position
                    FROM jobs WHERE state='queued'
+                   AND NOT EXISTS (SELECT 1 FROM deferred_reuses WHERE job=jobs.id)
                    AND NOT EXISTS (SELECT 1 FROM edges WHERE job=jobs.id AND NOT satisfied)
                )
                SELECT ready.* FROM ready JOIN policy USING (slot)

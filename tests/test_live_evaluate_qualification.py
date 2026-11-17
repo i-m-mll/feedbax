@@ -10,8 +10,10 @@ import pytest
 
 from feedbax.contracts.jobs import StudioSavedEvaluationRead
 from feedbax.contracts.project import InlineBase, Project
+from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.jobs import JobService
+from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.training.validation_placement import ValidationBudget, ValidationQualification, validation_runtime
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -89,7 +91,6 @@ def series_definition(updates):
     raw = definition({"every": 2})
     source = raw["steps"]["train"]["base"]["inline"]
     source["training_config"]["n_batches"] = updates
-    source["method_payload"]["payload"]["target_total"] = updates
     return Project.model_validate(raw)
 
 
@@ -215,16 +216,12 @@ def test_live_evaluate_fresh_points_and_paired_driver_windows(
         clocks = {entry["update"]: entry["ns"] for entry in events(host, plan.project_id, producer, "qualification_checkpoint_clock")}
         assert set(clocks) == set(range(1, 37))
         window, = events(host, plan.project_id, producer, "qualification_train_window")
-        checkpoint = train["checkpoint"]
-        manifest = Path(checkpoint["checkpoint_root"]) / checkpoint["pointer"]["manifest_relative_path"]
-        final_slots = {
-            slot["slot"]: slot["semantic_state_root_sha256"]
-            for slot in json.loads(manifest.read_bytes())["content_integrity_digest"]["slots"]
-        }
-        assert {"model", "optimizer", "prng", "batch_counter"} <= final_slots.keys()
+        checkpoint = PublishedTrainingCheckpoint.model_validate(train["checkpoint"])
+        manifest = read_method_checkpoint_manifest(checkpoint.checkpoint_root, checkpoint.pointer)
+        assert manifest.clock.completed_updates == 36
         result = {
             "mode": mode, "producer": producer, "request": train["request"],
-            "final_slot_roots": final_slots,
+            "final_state_sha256": manifest.state_sha256,
             "checkpoint_clocks_ns": clocks, "whole_driver_ns": window["ns"],
             "steady_ns": clocks[36] - clocks[4], "steady_updates": 32,
         }
@@ -251,7 +248,7 @@ def test_live_evaluate_fresh_points_and_paired_driver_windows(
     for index, order in enumerate((("control", "live"), ("live", "control"))):
         pair = {mode: arm(f"{scenario}-{index}-{mode}", mode) for mode in order}
         assert pair["live"]["request"] == pair["control"]["request"]
-        assert pair["live"]["final_slot_roots"] == pair["control"]["final_slot_roots"]
+        assert pair["live"]["final_state_sha256"] == pair["control"]["final_state_sha256"]
         measurements.append({
             "order": list(order), **pair,
             "steady_slowdown": pair["live"]["steady_ns"] / pair["control"]["steady_ns"] - 1,

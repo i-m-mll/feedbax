@@ -9,12 +9,19 @@ from functools import lru_cache
 from types import UnionType
 from typing import Annotated, Union, get_args, get_origin
 import inspect
-from typing import Any, ClassVar, get_type_hints
+from typing import TYPE_CHECKING, Any, ClassVar, get_type_hints
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ConfigDict, create_model
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
+from feedbax.contracts.model_values import ModelFacts
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from feedbax.component_registry.history import History
+    from feedbax.studio.component_presentation import PresentationOverride
 
 
 @dataclass(frozen=True)
@@ -372,6 +379,11 @@ class ComponentOwner:
     config_bindings: ClassVar[tuple[ConfigBinding, ...]] = ()
     ports: ClassVar[Ports | None] = None
     component_options: ClassVar[ComponentOptions | None] = None
+    component_key: ClassVar[str | None] = None
+    component_history: ClassVar[History | None] = None
+    component_presentation: ClassVar[PresentationOverride | None] = None
+    component_sources: ClassVar[tuple[Path, ...]] = ()
+    model_facts: ClassVar[ModelFacts | None] = None
 
     @classmethod
     def from_config(cls, config, **context):

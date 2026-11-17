@@ -5,11 +5,11 @@ import jax.numpy as jnp
 import equinox as eqx
 import pytest
 
-from feedbax.runtime.channel import Channel
-from feedbax.runtime.components import DelayLine, Linear
-from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.builtins.runtime.channel import Channel
+from feedbax.builtins.runtime.components import DelayLine, Linear
+from feedbax.builtins.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Graph, GraphTraceRequest, Wire, init_state_from_component
-from feedbax.compiler.templates import (
+from feedbax.builtins.templates.templates import (
     network_template_graph,
     recurrent_graph_input_initializer,
     recurrent_node_output_initializer,
@@ -18,7 +18,7 @@ from feedbax.compiler.templates import (
 )
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
-from feedbax.models.networks import LeakyRNNCell, VanillaRNN, recurrent_controller
+from feedbax.builtins.models.networks import LeakyRNNCell, VanillaRNN, recurrent_controller
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.compiler.serialization import graph_to_spec
@@ -711,7 +711,7 @@ def test_authoring_normalization_does_not_turn_unsupported_runtime_params_into_p
     spec = GraphSpec(
         nodes={
             "network": ComponentSpec(
-                type="SimpleStagedNetwork",
+                type="feedbax.RecurrentController",
                 params={
                     "input_size": 4,
                     "hidden_size": 3,
@@ -738,7 +738,7 @@ def test_authoring_normalization_does_not_turn_unsupported_runtime_params_into_p
     normalized = normalize_graph_for_studio_authoring(spec)
 
     assert normalized.subgraphs is None
-    assert normalized.nodes["network"].type == "SimpleStagedNetwork"
+    assert normalized.nodes["network"].type == "feedbax.RecurrentController"
     assert "modulator_input" not in normalized.nodes["network"].params
 
 
@@ -1080,8 +1080,7 @@ def test_spec_to_graph_rejects_missing_network_subgraph_during_prototype_inferen
     spec = GraphSpec(
         nodes={
             "network": ComponentSpec(
-                type="Network",
-                params={"input_size": 3, "hidden_size": 5, "out_size": 2},
+                type="feedbax.Subgraph",
                 input_ports=["input", "feedback"],
                 output_ports=["output", "hidden"],
             ),

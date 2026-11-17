@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 import fcntl
-from functools import lru_cache
+from functools import lru_cache, partial
 import os
 from pathlib import Path
 import re
@@ -26,6 +26,7 @@ from feedbax._secure_fs import (
 )
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
+from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
@@ -57,6 +58,7 @@ from feedbax.contracts.project_io import (
 )
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.request_identity import request_codec_authority
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.contracts.strict_json import strict_json_loads
@@ -85,6 +87,7 @@ from feedbax.contracts.studio_project import (
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.plot.templates import FigureTemplateRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.model_edit import (
         ModelClipboard, ModelEditProblem, ModelEditRequest,
@@ -236,6 +239,7 @@ class SettledProjectPlan:
     store_path: Path
     plan: ProjectPlan
     readers: BaseReaders
+    project_root: Path
 
     @classmethod
     def from_text(
@@ -245,7 +249,7 @@ class SettledProjectPlan:
     ) -> SettledProjectPlan:
         return cls(
             location.project_id, text.revision, project_semantic_root(text.project),
-            text.configuration, text.store_path if store is None else store, plan, readers,
+            text.configuration, text.store_path if store is None else store, plan, readers, text.root,
         )
 
 
@@ -255,22 +259,92 @@ class SavedProjectPlans(Protocol):
     def admission_plan(self, project_id: str) -> AbstractContextManager[SettledProjectPlan]: ...
 
 
+@dataclass(frozen=True)
+class _SavedCompilation:
+    stamp: tuple[object, ...]
+    plan: SettledProjectPlan
+    observations: dict[str, dict[str, object]]
+
+
+class SavedPlanMemo(ProjectPlanMemo):
+    """Retain a reviewed compilation and the data its external reads observed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock = Lock()
+        self.saved: _SavedCompilation | None = None
+
+
+def _observe_plan_input[T](reader: Callable[[str], T], observations: dict[str, object], name: str) -> T:
+    try:
+        value = reader(name)
+    except (OSError, ValueError) as error:
+        observations[name] = (type(error), str(error))
+        raise
+    observations[name] = sha256_bytes(value) if isinstance(value, bytes) else value
+    return value
+
+
+def _same_plan_inputs(readers: BaseReaders, expected: dict[str, dict[str, object]]) -> bool:
+    for kind, observed in expected.items():
+        reader = getattr(readers, kind)
+        if reader is None:
+            return False
+        current: dict[str, object] = {}
+        for name in observed:
+            try:
+                _observe_plan_input(reader, current, name)
+            except (OSError, ValueError):
+                pass  # The failed read is also an observation.
+        if observed != current:
+            return False
+    return True
+
+
 def compile_saved_project(
     text: TextProject, *, project_id: str, store: Path, readers: BaseReaders,
     operations: OperationRegistry | None = None, components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None, python_tasks: PythonTaskRegistry | None = None,
-    source_runs: Iterable[RunKey] = (), memo: ProjectPlanMemo | None = None,
+    figure_templates: FigureTemplateRegistry | None = None,
+    source_runs: Iterable[RunKey] = (), memo: SavedPlanMemo | None = None,
+    training_methods: TrainingMethodRegistry | None = None,
 ) -> SettledProjectPlan:
-    """Compile a snapshot against the Store of its resolved local or delegated project."""
+    """Compile exact authored bytes and reuse them only with matching input authority."""
     readers = replace(readers, terminal_train=terminal_train_reader(store))
-    plan = compile_project(
-        text.project, source_runs=source_runs, memo=memo,
-        operations=operations, components=components, functions=functions,
-        python_tasks=python_tasks, readers=readers,
+    semantic_root = project_semantic_root(text.project)
+    source_runs = frozenset(source_runs)
+    stamp = (
+        project_id, text.revision, semantic_root, text.root, store, source_runs, request_codec_authority(),
+        operations, components, functions, python_tasks, figure_templates, training_methods,
+        readers.figure_external is not None,
     )
-    return SettledProjectPlan(
-        project_id, text.revision, project_semantic_root(text.project), text.configuration, store, plan, readers,
-    )
+    observations: dict[str, dict[str, object]] = {}
+    observed_readers = {}
+    for kind in ("terminal_train", "figure_external"):
+        if (reader := getattr(readers, kind)) is not None:
+            observations[kind] = {}
+            observed_readers[kind] = partial(_observe_plan_input, reader, observations[kind])
+    memo = memo if memo is not None else SavedPlanMemo()
+    reusable = readers.run is None and readers.row is None and readers.external is None
+    with memo.lock:
+        previous = memo.saved
+        if (
+            reusable and previous is not None and previous.stamp == stamp
+            and _same_plan_inputs(readers, previous.observations)
+        ):
+            return replace(previous.plan, readers=readers)
+        plan = compile_project(
+            text.project, source_runs=source_runs, memo=memo,
+            operations=operations, components=components, functions=functions, python_tasks=python_tasks,
+            figure_templates=figure_templates, training_methods=training_methods,
+            readers=replace(readers, **observed_readers),
+        )
+        settled = SettledProjectPlan(
+            project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
+        )
+        if reusable:
+            memo.saved = _SavedCompilation(stamp, settled, observations)
+        return settled
 
 
 def _may_read_figure_pin(project: Project) -> bool:
@@ -666,15 +740,19 @@ class ProjectFolder:
         components: ComponentRegistry | None = None,
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
+        figure_templates: FigureTemplateRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
+        training_methods: TrainingMethodRegistry | None = None,
     ) -> None:
         self.root = root.resolve()
         self._local_folder = local_folder
         self.operations = operations
+        self.figure_templates = figure_templates
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
-        self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
+        self.training_methods = training_methods
+        self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
         self._known_locations_lock = Lock()
 
@@ -840,7 +918,8 @@ class ProjectFolder:
         return compile_saved_project(
             text, project_id=project_id, store=text.store_path, readers=self._base_readers(location, text),
             source_runs=source_runs, memo=self._plan_memo(project_id),
-            operations=self.operations, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
+            operations=self.operations, components=self.components, functions=self.functions,
+            python_tasks=self.python_tasks, figure_templates=self.figure_templates, training_methods=self.training_methods,
         )
 
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:

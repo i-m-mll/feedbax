@@ -9,8 +9,8 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.mechanics.geometry import PointMassRadialGeometry, TwoLinkArmMuscleGeometry
-from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
-from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
+from feedbax.builtins.mechanics.muscles.relu_muscle import ReluMuscle
+from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 from feedbax.runtime.graph import Graph, init_state_from_component
 from tests.support.graph_compiler_test_support import spec_to_graph

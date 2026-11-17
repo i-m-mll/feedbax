@@ -9,21 +9,24 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.effective_success import INDEX_REF, Product, Selection, success_content_ref
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_checkpoint import (
-    MODEL_TREE_ARRAY_PATH,
     MODEL_TREE_GRAPH_PATH,
+    MODEL_TREE_MANIFEST_PATH,
     MODEL_TREE_MEDIA_TYPE,
+    ModelReplica,
+    ModelReplicaManifest,
     SemanticModelEncoding,
+    model_replica_array_path,
 )
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, NamedMember, ProductRef
-from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.array_container import encode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView, run_ref_name, store_request
 from tests.test_request_identity import _managed_train
+from scripts.proofs.effective_binding_witness import report_request
 
 
 def test_selected_model_tree_publishes_binds_and_imports(tmp_path, monkeypatch, capsys):
@@ -44,14 +47,19 @@ def test_selected_model_tree_publishes_binds_and_imports(tmp_path, monkeypatch, 
     encoded = encode_array_container(
         {"weight": np.array([1.25, -2], dtype=np.float32)}, metadata={}
     )
+    manifest = ModelReplicaManifest(replicas=(ModelReplica(
+        id="0", array_descriptor_sha256=encoded.descriptor_sha256,
+    ),))
+    descriptor = source.store_object(canonical_json_v2_bytes(manifest.model_dump(mode="json")))
     members = {
         MODEL_TREE_GRAPH_PATH: source.store_object(
             canonical_json_v2_bytes(graph.model_dump(mode="json"))
         ),
-        MODEL_TREE_ARRAY_PATH: source.store_object(encoded.data),
+        MODEL_TREE_MANIFEST_PATH: descriptor,
+        model_replica_array_path(0): source.store_object(encoded.data),
     }
     tree, _ = source.publish_rooted_tree(members, root_id="fixture:model", root_kind="logical-ref")
-    encoding = SemanticModelEncoding(array_descriptor_sha256=encoded.descriptor_sha256)
+    encoding = SemanticModelEncoding(descriptor_sha256=descriptor.sha256)
     model = Product(
         name="model",
         content=ContentRef(
@@ -80,8 +88,8 @@ def test_selected_model_tree_publishes_binds_and_imports(tmp_path, monkeypatch, 
         SuccessView(source).publish(
             request, attempt="extra-member", products={"checkpoint": (extra_model,)}
         )
-    with pytest.raises(ValueError, match="array descriptor digest mismatch"):
-        mismatched = model.model_copy(update={"descriptor": {"array_descriptor_sha256": "0" * 64}})
+    with pytest.raises(ValueError, match="model manifest differs"):
+        mismatched = model.model_copy(update={"descriptor": {"descriptor_sha256": "0" * 64}})
         SuccessView(source).publish(
             request, attempt="wrong-descriptor", products={"checkpoint": (mismatched,)}
         )
@@ -96,7 +104,7 @@ def test_selected_model_tree_publishes_binds_and_imports(tmp_path, monkeypatch, 
     consumer = store_request(
         source,
         encode_request(
-            ReportRequestSpec(report_type="proof.model-consumer"),
+            report_request("model-consumer"),
             {"model": (InputMember(key="subject", reference=selection),)},
         ),
     )

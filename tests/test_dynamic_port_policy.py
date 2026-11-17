@@ -1,5 +1,5 @@
 from __future__ import annotations
-from feedbax.component_registry import ComponentPack
+from tests.support.component_owners import register_owners
 from feedbax.contracts.component import DynamicPortPolicy
 
 from typing import Any, ClassVar
@@ -31,7 +31,7 @@ from feedbax.contracts.migrations import default_spec_registry
 
 
 def test_builtin_mux_and_demux_policies_preserve_dynamic_port_layouts() -> None:
-    from feedbax.runtime.components import Demux, Input, Mux
+    from feedbax.builtins.runtime.components import Demux, Input, Mux
 
     direct_mux = Mux(n_inputs=3)
     direct_demux = Demux(sizes=(2, 1, 3))
@@ -139,7 +139,7 @@ def test_registry_exports_external_dynamic_port_policy_in_current_definition() -
     direct = VariableFanIn(fan_in=3)
     assert direct.input_ports == ("source_0", "source_1", "source_2")
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="example", modules=(module,)))
+    register_owners(registry, "example", VariableFanIn)
 
     definition = next(item for item in registry.list_all() if item.name == "example.VariableFanIn")
     payload = definition.model_dump(mode="json")

@@ -115,15 +115,21 @@ import sys
 
 sys.path.append(sys.argv[1])
 import feedbax
-import feedbax.analysis.exact_parents
+from feedbax import pca
 import feedbax.models.cde as cde
 import feedbax.models.feedback as feedback
 from feedbax.orchestration.revision import assert_feedbax_revision_exact, resolve_feedbax_revision
+from feedbax.plugins.composition import load_application
 
 assert_feedbax_revision_exact(sys.argv[2])
+registry = load_application().bundle
+assert registry.components.get("feedbax.VanillaRNN") is not None
+assert registry.python_tasks.resolve("feedbax.Reaching") is not None
+assert "feedbax.aligned_velocity" in registry.operations.keys()
+assert "feedbax.VelocitySummary" in registry.figure_templates.keys()
 print(json.dumps({
     "package_root": str(Path(feedbax.__file__).resolve().parent),
-    "models": [str(Path(module.__file__).resolve()) for module in (cde, feedback)],
+    "models": [str(Path(module.__file__).resolve()) for module in (cde, feedback, pca)],
     "revision": resolve_feedbax_revision(),
 }))
 """
@@ -273,7 +279,7 @@ def test_wheel_inside_science_checkout_preserves_science_ownership_and_pin(
     monkeypatch.syspath_prepend(str(tmp_path))
 
     resolved = revision.resolve_science_repo_import_revisions(
-        (SimpleNamespace(entry_point_value="science_provider:register"),)
+        (SimpleNamespace(source=SimpleNamespace(package="science_provider")),)
     )
 
     assert resolved == {str(tmp_path.resolve()): science_revision}

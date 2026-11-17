@@ -19,7 +19,7 @@ from feedbax.contracts.model_address import ComponentElement, FieldElement, Mode
 from feedbax.runtime._graph_key_schedule import reset_key
 from feedbax.runtime._signal_schedule import ScopedPort, resolve_signal_schedule
 from feedbax.runtime.graph import Graph, GraphNode
-from feedbax.contracts.model_values import MODEL_OWNERS
+from feedbax.contracts.model_values import model_owner_class
 
 if TYPE_CHECKING:
     from feedbax.compiler.resolution import GraphParameterResolution
@@ -94,7 +94,7 @@ def _read_path(value, path):
 
 
 def _storage(component, state, path):
-    slot = getattr(component, path[0], None)
+    slot = getattr(component, path[0], None) if path else None
     if isinstance(slot, StateIndex):
         return _read_path(state.get(slot), path[1:])
     return _read_path(component.state_view(state), path)
@@ -195,14 +195,12 @@ def resolve_model_reset(
             if name in resolved.subgraphs:
                 project((*scope, name), resolved.subgraphs[name])
                 continue
-            owner = MODEL_OWNERS.get(node.type)
-            meta = components.get(node.type)
-            if (
-                owner is None or meta is None or owner.revision != node.revision
-                or meta.owner_class is None or not issubclass(meta.owner_class, GraphNode)
-            ):
+            owner_class = model_owner_class(node, components)
+            if owner_class is None or not issubclass(owner_class, GraphNode):
                 continue
-            owner_class = meta.owner_class
+            owner = owner_class.model_facts
+            if owner is None:
+                continue
 
             def add(
                 path: tuple[str, ...], dtype, shape: tuple[int, ...], unit: str,
@@ -221,12 +219,12 @@ def resolve_model_reset(
                     base=base, shape=shape, dimensions=UNITS[unit].dimensions,
                 ), dtype.name)
                 bindings.append(_ResetBinding(
-                    field, node.type, owner.revision, owner_class, paths, override_port,
+                    field, node.type, node.revision, owner_class, paths, override_port,
                 ))
 
             for state in owner.states or ():
                 reset = state.reset
-                if reset is None or node.params.get("stateful") is False:
+                if reset is None or not owner.has_state(node):
                     continue
                 prototype = resolved.node_outputs[(name, reset.output_port)]
                 sample = _read_path(prototype, reset.output_path)
@@ -236,7 +234,7 @@ def resolve_model_reset(
                 )
 
             config_paths = {
-                key: value for binding in meta.owner_class.config_bindings
+                key: value for binding in owner_class.config_bindings
                 for key, value in binding.projections.items()
             } if owner.trial_parameters else {}
             for parameter in owner.trial_parameters:
