@@ -43,7 +43,9 @@ def _project() -> Project:
     project.documents["velocity-analysis"] = Document.model_validate(
         {
             "schema": "feedbax.analysis_document.v1",
-            "payload": json.loads((_FIXTURES / "velocity-analysis.json").read_bytes()),
+            "payload": json.loads((_FIXTURES / "velocity-analysis.json").read_bytes()) | {
+                "inputs": {"states": {"kind": "dataset"}},
+            },
         }
     )
     project.documents["velocity-figure"] = Document.model_validate(
@@ -138,7 +140,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     ddof = summary["params"].pop("ddof")
     summary["inputs"].clear()
     (draft_row,) = (row for row in compile_project(project, operations=registry).rows if isinstance(row, PlannedAnalyzeRun))
-    assert draft_row.states[0].producer == RunKey("default", "baseline", "default")
+    assert draft_row.inputs["states"][0].producer == RunKey("default", "baseline", "default")
     states_port = registry.resolve("feedbax.aligned_velocity").definition.inputs["states"]
     states = DatasetPort(schema_ids=(states_port.schema_ids[0],))
     with pytest.raises(ValueError, match="Requires dataset schemas"):

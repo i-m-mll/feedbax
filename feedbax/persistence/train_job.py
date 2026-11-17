@@ -31,6 +31,7 @@ class TrainJobEntry(StrictModel):
     request: RequestObject
     inputs: Bindings
     checkpoints: tuple[TrainJobCheckpoint, ...] = Field(min_length=1)
+    metrics: ContentObjectRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def exact_attempt(self) -> TrainJobEntry:
@@ -79,7 +80,8 @@ def _closure(ref: ContentObjectRef, entry: TrainJobEntry) -> StoreClosureRef:
     return StoreClosureRef(
         roots=(ref, entry.request.object, *entry.request.documents,
                *(ReceiptRoot(receipt=origin) for origin in _origins(entry)),
-               *(checkpoint.content.tree for checkpoint in entry.checkpoints)),
+               *(checkpoint.content.tree for checkpoint in entry.checkpoints),
+               *((entry.metrics,) if entry.metrics is not None else ())),
         include_ancestry=True,
     )
 
@@ -87,6 +89,8 @@ def _closure(ref: ContentObjectRef, entry: TrainJobEntry) -> StoreClosureRef:
 def _verify_entry(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> None:
     SuccessView(store).verify_bindings(entry.request, entry.inputs)
     _verify_checkpoints(store, entry)
+    if entry.metrics is not None:
+        store.verify_object(entry.metrics)
 
 
 def _verify_checkpoints(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> None:

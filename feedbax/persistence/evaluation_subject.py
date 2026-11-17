@@ -3,13 +3,14 @@
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTree, ContentTreeFile, ContentTreeRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoints import CheckpointTransactionManifest
+from feedbax.contracts.dataset import DatasetDescriptor
 from feedbax.contracts.effective_success import (
     EVALUATION_SUBJECT_MEDIA_TYPE, BoundMember, EvaluationCheckpointSource,
     EvaluationSubjectValue, Product, RequestObject, Success, TerminalTrainSubject,
     read_effective_request, read_success_object, read_success_request, select_success_product, success_content_ref,
 )
 from feedbax.contracts.base import ParentRef, Provenance
-from feedbax.contracts.manifest import TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
+from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec, TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
@@ -20,7 +21,11 @@ from feedbax.contracts.training import TrainingRunSpec
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
-from feedbax.studio.canonical_evaluate import decode_evaluation_manifest, evaluation_manifest_id, states_product
+from feedbax.studio.canonical_evaluate import (
+    decode_evaluation_manifest, evaluation_manifest_id, initial_evaluation_references, states_product, states_ref,
+    verify_initial_rollout,
+)
+from feedbax.persistence.array_container import open_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects, verify_success_content
 from feedbax.host.best_selection import rank_train_metric
@@ -36,19 +41,12 @@ def read_terminal_train_subject(
     checkpoint = success.continuation
     if (
         decoded.id != request_id or not isinstance(decoded.spec, DocumentTrainingRequestSpec)
-        or decoded.spec.method_ref != STUDIO_GRAPH_METHOD
-        or checkpoint is None or checkpoint.clock.completed_batches <= 0
-        or checkpoint.clock.barrier != "after_train_batch"
+        or checkpoint is None or checkpoint.clock.completed_updates != decoded.spec.target_total
         or pin.model != select_success_product(ProductRef(
             request_id=request_id, role="checkpoint", select=LastMember(),
         ), success)
     ):
         raise ValueError("Pinned subject differs from the exact terminal Train model")
-    raw_method = decoded.spec.method_payload.payload
-    if decoded.spec.seed is not None:
-        raw_method = raw_method | {"seed": decoded.spec.seed}
-    if StudioGraphMethodPayload.model_validate(raw_method).target_total != checkpoint.clock.completed_batches:
-        raise ValueError("Terminal Train coordinate differs from its authored horizon")
     verify_success_content(store, pin.model)
     return success, decoded.spec
 
@@ -82,7 +80,7 @@ def terminal_train_provenance(
         kind="TrainingCheckpointTransactionManifest", id=occurrence.transaction_id, role="checkpoint",
         metadata={
             "manifest_sha256": occurrence.manifest_sha256,
-            "completed_updates": checkpoint.clock.completed_batches,
+            "completed_updates": checkpoint.clock.completed_updates,
             "producer_job_id": occurrence.run_id,
         },
     )])
@@ -294,7 +292,7 @@ def evaluation_subject_objects(
         if (
             occurrence is None or occurrence.provenance != source.terminal_checkpoint
             or source.producer != success.request
-            or (occurrence.clock.completed_batches, product.content.sha256) != (item.coordinate, item.model_tree)
+            or (occurrence.clock.completed_updates, product.content.sha256) != (item.coordinate, item.model_tree)
         ):
             raise ValueError("Evaluate terminal Train evidence differs from the resolved model")
         if visitors is not None:
@@ -338,6 +336,37 @@ def evaluation_subject_objects(
     return (tree_ref.descriptor, descriptor, *objects)
 
 
+def verify_initial_evaluation_states(
+    store: ImmutableArtifactBlobProvider, manifest: EvaluationRunManifest, refs: dict[str, ContentRef],
+) -> None:
+    from math import isfinite
+
+    member = verify_initial_rollout(manifest, refs)
+    spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    params = RolloutParameters.model_validate(spec.params)
+    states = states_ref(manifest)
+    should_score = "objective" in refs
+    with (
+        store.open_owned_object(states.object_ref) as path,
+        open_array_container(path, expected_descriptor_sha256=states.descriptor_sha256) as reader,
+    ):
+        descriptor = DatasetDescriptor.from_json_value(reader.descriptor.metadata)
+        descriptor.validate_tensor_shapes({name: value.shape for name, value in reader.descriptor.tensors.items()})
+        if (
+            descriptor.schema_id != params.states_schema
+            or set(descriptor.dimensions).intersection(("checkpoint", "update", "replicate"))
+            or descriptor.coords["trial"].inline_values != member.trials
+            or member.trials != params.trials
+            or ("objective/total" in descriptor.variables) != should_score
+            or ("objective/total" in manifest.summary_metrics) != should_score
+        ):
+            raise ValueError("Initial Evaluate states differ from the accepted document rollout")
+        if should_score:
+            total = float(reader.read_tensor("objective/total").item())
+            if not isfinite(total) or manifest.summary_metrics["objective/total"] != total:
+                raise ValueError("Initial Evaluate summary differs from the retained objective")
+
+
 def verify_evaluation_success_evidence(
     store: ImmutableArtifactBlobProvider, success: Success, *, visitors: ClosureVisitors | None = None,
     verify_bound_closure: bool = True,
@@ -348,6 +377,15 @@ def verify_evaluation_success_evidence(
         store, store.get_object(ref), ref, success.attempt, success.request.id,
         JobReceipt(manifest_id=evaluation_manifest_id(success.attempt), manifest_sha256=ref.sha256),
     )
+    if isinstance(subject, ContentRef):
+        decoded = read_effective_request(success, store.get_object)
+        if (
+            success.products != {"states": (states_product(manifest),)}
+            or manifest.metadata["canonical_request"] != success.request.object.model_dump(mode="json")
+        ):
+            raise ValueError("Accepted initial rollout differs from its Store success")
+        verify_initial_evaluation_states(store, manifest, initial_evaluation_references(decoded))
+        return (ref,)
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject
     assert source is not None

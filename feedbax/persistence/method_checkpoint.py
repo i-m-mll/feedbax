@@ -68,34 +68,37 @@ def method_checkpoint_pointer(manifest: MethodCheckpointManifest, raw: bytes) ->
 
 
 def read_checkpoint_file(path: Path, expected: ContentObjectRef | None = None) -> bytes:
-    with ExitStack() as stack:
-        chain = open_directory_chain(
-            path.parent, create=False, error_factory=CheckpointCustodyError, context="checkpoint directory",
-        )
-        for _, fd, _ in chain:
-            stack.callback(os.close, fd)
-        parent_fd = chain[-1][1]
-        fd, info = open_existing_file(
-            path.name,
-            dir_fd=parent_fd,
-            rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
-            error_factory=CheckpointCustodyError,
-            context="checkpoint file",
-        )
-        stream = stack.enter_context(os.fdopen(fd, "rb"))
-        if expected is not None and info.st_size != expected.size_bytes:
-            raise CheckpointCustodyError(f"{path}: checkpoint file size changed")
-        raw = stream.read()
-        after = validate_opened_path(
-            path.name, fd, dir_fd=parent_fd, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
-            expected_identity=(info.st_dev, info.st_ino),
-            error_factory=CheckpointCustodyError, context="checkpoint file",
-        )
-        if (info.st_size, info.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-            raise CheckpointCustodyError(f"{path}: checkpoint file changed while reading")
-        if expected is not None and _checkpoint_ref(raw) != expected:
-            raise CheckpointCustodyError(f"{path}: checkpoint file content changed")
-        return raw
+    try:
+        with ExitStack() as stack:
+            chain = open_directory_chain(
+                path.parent, create=False, error_factory=CheckpointCustodyError, context="checkpoint directory",
+            )
+            for _, fd, _ in chain:
+                stack.callback(os.close, fd)
+            parent_fd = chain[-1][1]
+            fd, info = open_existing_file(
+                path.name,
+                dir_fd=parent_fd,
+                rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+                error_factory=CheckpointCustodyError,
+                context="checkpoint file",
+            )
+            stream = stack.enter_context(os.fdopen(fd, "rb"))
+            if expected is not None and info.st_size != expected.size_bytes:
+                raise CheckpointCustodyError(f"{path}: checkpoint file size changed")
+            raw = stream.read()
+            after = validate_opened_path(
+                path.name, fd, dir_fd=parent_fd, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+                expected_identity=(info.st_dev, info.st_ino),
+                error_factory=CheckpointCustodyError, context="checkpoint file",
+            )
+            if (info.st_size, info.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise CheckpointCustodyError(f"{path}: checkpoint file changed while reading")
+            if expected is not None and _checkpoint_ref(raw) != expected:
+                raise CheckpointCustodyError(f"{path}: checkpoint file content changed")
+            return raw
+    except OSError as error:
+        raise CheckpointCustodyError(f"{path}: checkpoint file cannot be read: {error}") from error
 
 
 def _manifest_from_bytes(raw: bytes, pointer: CheckpointLatestPointer) -> MethodCheckpointManifest:
@@ -146,19 +149,20 @@ def method_checkpoint_files(
 
 
 def bind_method_checkpoint_content(
-    root: Path, pointer: CheckpointLatestPointer, provider: ArtifactBlobProvider, *,
+    root: Path, pointer: CheckpointLatestPointer, provider: ImmutableArtifactBlobProvider, *,
     include_extra: bool = True,
 ) -> ContentBinding:
     files = method_checkpoint_files(root, pointer, include_extra=include_extra)
-    members = {
-        relative.as_posix(): provider.store_object(read_checkpoint_file(root / relative, ref), expected=ref)
-        for relative, ref in files.items()
-    }
-    members[LATEST_NAME] = provider.store_object(canonical_json_v2_bytes(pointer.model_dump(mode="json")))
     kind = _content_kind(include_extra)
-    tree, _ = provider.publish_rooted_tree(
-        members, root_id=f"{kind}:{pointer.transaction_id}", root_kind="logical-ref",
-    )
+    with provider._exclusive_lock():
+        members = {
+            relative.as_posix(): provider._store_file(root / relative, sha256=ref.sha256, size_bytes=ref.size_bytes)
+            for relative, ref in files.items()
+        }
+        members[LATEST_NAME] = provider.store_object(canonical_json_v2_bytes(pointer.model_dump(mode="json")))
+        tree, _ = provider.publish_rooted_tree(
+            members, root_id=f"{kind}:{pointer.transaction_id}", root_kind="logical-ref",
+        )
     return ContentBinding(binding_name=pointer.transaction_id, root_kind=kind, tree=tree)
 
 

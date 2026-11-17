@@ -20,7 +20,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.array_container import open_array_container
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.evaluation_subject import (
-    checkpoint_transaction, model_product, read_terminal_train_subject, subject_tree,
+    checkpoint_transaction, model_product, read_terminal_train_subject, subject_tree, verify_initial_evaluation_states,
 )
 from feedbax.persistence.receipt_content import success_content_objects
 from feedbax.studio.canonical_evaluate import (
@@ -75,7 +75,7 @@ def publish_evaluate_success(
         )
         if (
             manifest.metadata["canonical_request"] != launch.canonical_request.request.model_dump(mode="json")
-            or subject != launch.canonical_request.checkpoint
+            or subject != launch.canonical_request.subject
         ):
             raise ValueError("Evaluate receipt differs from its admitted canonical request")
         request = RequestObject(id=request_id, object=launch.canonical_request.request, documents=())
@@ -92,6 +92,15 @@ def publish_evaluate_success(
                 raise ValueError("Published Evaluate attempt differs from its accepted result")
             view.ensure_published_run_ref(existing.ref, existing.receipt)
             return existing.ref
+        if isinstance(subject, ContentRef):
+            from feedbax.studio.canonical_evaluate import initial_evaluation_references
+
+            verify_initial_evaluation_states(store, manifest, initial_evaluation_references(decoded))
+            _, bindings = view.bind(request, origins={})
+            return view.publish_bound(
+                request, attempt=attempt, products={"states": (product,)}, bindings=bindings,
+                evaluation_manifest=manifest_object, target=target,
+            ).ref
 
         closure = None
         terminal_receipt = None
@@ -111,7 +120,7 @@ def publish_evaluate_success(
             producer = train.request
             terminal_receipt = pin.receipt
             terminal_checkpoint = train.continuation.provenance
-            coordinates = (train.continuation.clock.completed_batches,)
+            coordinates = (train.continuation.clock.completed_updates,)
             trees.append(success_content_ref(pin.model.content))
         elif (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
             selected = binding["checkpoint_selection"]

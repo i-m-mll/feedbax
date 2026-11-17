@@ -138,7 +138,10 @@ class SemanticModelWriter:
             arrays, declarations = _describe(graph, model)
             _verify_exact_model(model, _restore_model(graph, template, arrays, declarations))
             try:
-                encoded = encode_array_container(arrays, metadata=declarations)
+                encoded = encode_array_container(
+                    {address: np.asarray(array) for address, array in arrays.items()},
+                    metadata=declarations,
+                )
             except ArrayContainerError as exc:
                 raise ModelCheckpointError(path, str(exc)) from exc
             members[path] = store.store_object(encoded.data)
@@ -265,7 +268,7 @@ class SemanticModelSlot:
 
 
 def _restore_model(
-    graph: GraphSpec, template: Graph, tensors: Mapping[str, np.ndarray],
+    graph: GraphSpec, template: Graph, tensors: Mapping[str, jax.Array | np.ndarray],
     actual: object, target: ModelRestoreTarget | None = None,
 ) -> Graph:
     expected, declarations = _describe(graph, template)
@@ -345,10 +348,11 @@ def _verify_exact_model(original: Graph, restored: Graph) -> None:
     if structure != restored_structure:
         raise ModelCheckpointError("/model", "model state structure differs from semantic reconstruction")
     for (path, left), right in zip(before, after, strict=True):
+        if left is right:
+            continue
         if eqx.is_array(left) and eqx.is_array(right):
             equal = (
-                type(left) is type(right)
-                and getattr(left, "weak_type", False) == getattr(right, "weak_type", False)
+                getattr(left, "weak_type", False) == getattr(right, "weak_type", False)
                 and left.dtype == right.dtype
                 and left.shape == right.shape
                 and _array_bytes(left) == _array_bytes(right)
@@ -449,7 +453,7 @@ def _describe(
                 representation = "jax-array"
             else:
                 raise ModelCheckpointError(address, "unsupported authoritative value representation")
-            arrays[address] = np.asarray(leaf)
+            arrays[address] = np.asarray(leaf) if representation == "python-float" else leaf
             declarations[address] = {
                 "owner_type": binding.type_id,
                 "owner_revision": binding.revision,

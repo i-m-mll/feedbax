@@ -9,6 +9,7 @@ from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.contracts.effective_success import TerminalTrainSubject
+from feedbax.contracts.model_input import document_input_object
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
 from feedbax.contracts.project_io import TextProject
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
@@ -39,7 +40,7 @@ from feedbax.persistence.reachability import (
     object_target,
     superseded_days,
 )
-from feedbax.studio.canonical_evaluate import BoundEvaluationJobInput
+from feedbax.studio.canonical_evaluate import BoundEvaluationJobInput, initial_evaluation_references
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.persistence.method_checkpoint import method_checkpoint_files
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
@@ -210,6 +211,10 @@ def _job_roots(
             raise ValueError("Evaluate launch differs from the scoped job")
         refs.append(binding.canonical_request.request)
         terminal = binding.canonical_request.terminal
+        if binding.canonical_request.initial_model is not None:
+            store = ImmutableArtifactBlobProvider(root)
+            decoded = decode_request(store.get_object(binding.canonical_request.request), store.get_object)
+            refs.extend(document_input_object(content) for content in initial_evaluation_references(decoded).values())
     else:
         gaps.append(f"{name}: no typed canonical launch binding")
 
