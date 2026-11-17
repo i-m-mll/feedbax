@@ -1,76 +1,99 @@
 """A package-owned model component participates in managed Train and Evaluate."""
 
+import os
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from feedbax.compiler.model_attachment import lower_evaluate_attachments
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
-from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_attachment import MODEL_DIFFERENCE_BATCHES
+from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.contracts.studio_project import StudioProjectCreateFile
+from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+from feedbax.jobs import JobService
+from feedbax.persistence.array_container import decode_array_container
 from feedbax.plugins.composition import load_application
+from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.runtime.raw_state import bind_raw_state
-from feedbax.studio.canonical_train import lower_canonical_train
-from feedbax.training.checkpoint_custody import (
-    authenticate_published_checkpoint_custody,
-    open_published_model_slot,
-    resolve_checkpoint_custody_ref,
-    write_checkpoint_transaction,
-)
 from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
-from feedbax.training.managed_studio import prepare_managed_training
-from feedbax.training.model_checkpoint import ModelRestoreTarget, SemanticModelWriter
+from feedbax.training.method_checkpoint import read_method_checkpoint
+from feedbax.training.model_checkpoint import ModelRestoreTarget
 from feedbax.training.rollout_scoring import RolloutScorer
+from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.installed_package import install_discovery_fixture
 from tests.support.managed_train_fixture import managed_train_payload
+from tests.test_local_job_host import host, job_row, restart, wait_until  # noqa: F401
 
 
-def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(tmp_path, monkeypatch):
+def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(host, tmp_path, monkeypatch):
     installed_site = install_discovery_fixture(tmp_path / "installed")
     monkeypatch.syspath_prepend(str(installed_site))
+    paths = (str(installed_site), os.environ.get("PYTHONPATH", ""))
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, paths)))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    restart(host)
     registry = load_application().bundle
 
     raw = managed_train_payload()
     component = raw["trial_documents"]["model"]["interior"]["components"]["readout"]
     owner_type = "entry_point_provider.ObservedReadout"
     component.update(type=owner_type, revision=1)
-    request = DocumentTrainingRequestSpec.model_validate(raw)
-    training = lower_canonical_train(request, registry.training_programs, registries=registry)
-    prepared = prepare_managed_training(training, registry)
-    initial = prepared.initial_slots["model"]
-    update = prepared.kernel_context["studio_graph_update"]
-    state = update.reported_update(prepared.initial_slots)
-    expected_weights = state["model"].nodes["readout"].layer.weight
-    assert not np.array_equal(expected_weights, initial.nodes["readout"].layer.weight)
-
-    graph = GraphSpec.model_validate(training.graph.inline)
-    writer = SemanticModelWriter.for_graph(graph, None, registry.components)
-    assert writer is not None
-    published = write_checkpoint_transaction(
-        tmp_path / "checkpoint",
-        run_spec=training,
-        phase_program=training.worker_execution.effective_phase.phase_program,
-        barrier_name="after_train_batch",
-        coordinate=ProgressCoordinate(
-            run_id="external-owner", phase="train_batch", program_step=1,
-            completed_barrier="after_train_batch",
-        ),
-        slots=state,
-        semantic_model=writer,
+    folders = ProjectFolderService(
+        tmp_path / "projects", components=registry.components,
+        functions=registry.expression_functions, python_tasks=registry.python_tasks,
+        training_methods=registry.training_methods,
     )
-    slot = open_published_model_slot(published.root, published.latest_pointer)
-    assert slot is not None
+    snapshot = folders.new().snapshot
+    project = snapshot.project_id
+    snapshot = folders.create_file(project, StudioProjectCreateFile.model_validate({
+        "revision": snapshot.revision,
+        "file": {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": raw}}},
+    })).snapshot
+    reviewed = folders.read_plan(project, revision=snapshot.revision)
+    assert not reviewed.plan.diagnostics, reviewed.plan.diagnostics
+    (train,) = reviewed.plan.runs
+    request = decode_request(
+        reviewed.plan.requests[train.request_id], reviewed.plan.documents.__getitem__,
+    ).spec
+    assert isinstance(request, DocumentTrainingRequestSpec)
+    (admission,) = JobService(host, registry).admit_plan(
+        folders, reviewed, run_keys=(train.key,), token="external-owner",
+    ).items
+    assert admission.disposition == "admitted", admission
+    row = wait_until(
+        lambda: job_row(host, admission.job_id, "succeeded") or job_row(host, admission.job_id, "failed"),
+        timeout=24,
+    )
+    assert row["state"] == "succeeded", row["outcome"]
+    published = PublishedTrainingCheckpoint.model_validate(row["outcome"]["completion"]["checkpoint"])
+    assert published.completed_updates == request.target_total
+    slot = read_method_checkpoint(
+        published.checkpoint_root, published.pointer, components=registry.components,
+    ).model
     validate_evaluation_source(slot.graph, registry.components)
-    custody = resolve_checkpoint_custody_ref(
-        authenticate_published_checkpoint_custody(published.root).parent_ref,
-        allowed_root=published.root, components=registry.components,
-    )
-    np.testing.assert_array_equal(custody.slots["model"].nodes["readout"].layer.weight, expected_weights)
 
     documents = request.trial_documents
+    initial = compile_trial_execution(
+        documents.model_name, documents.model, documents.task_source,
+        registry.components, registry.expression_functions,
+        objective=documents.objective, initialization_key=model_initialization_key(request.seed),
+    )
+    assert isinstance(initial, PreparedTrialExecution), initial
+    initial_model = initial.executable.graph
+    (replica,) = slot.replicas
+    tensor = semantic_key("model", "value", ("readout",), "transform")
+    expected_weights = decode_array_container(
+        slot.provider.get_object(replica.arrays),
+        expected_descriptor_sha256=replica.descriptor.array_descriptor_sha256,
+    ).tensors[tensor]
+    assert not np.array_equal(expected_weights, initial_model.nodes["readout"].layer.weight)
+    restored_source = slot.restore(initial_model)
+    np.testing.assert_array_equal(restored_source.nodes["readout"].layer.weight, expected_weights)
+
     address = {"document": documents.model_name, "composites": []}
     differences = MODEL_DIFFERENCE_BATCHES.validate_python({"observation": [
         {
@@ -102,7 +125,7 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(tm
     )
     assert isinstance(pairing, PreparedTrialExecution), pairing
     resolved_graph = pairing.executable.resolved.graph
-    restored = slot.restore(slot.template(registry.components), target=ModelRestoreTarget(
+    restored = slot.restore(initial_model, target=ModelRestoreTarget(
         resolved_graph, pairing.executable.graph, variant.source_overrides,
     ))
     np.testing.assert_array_equal(restored.nodes["readout"].layer.weight, expected_weights)
