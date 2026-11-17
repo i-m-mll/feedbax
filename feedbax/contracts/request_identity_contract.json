@@ -1096,7 +1096,6 @@
         "absent": {}
       },
       "model": {},
-      "model_name": {},
       "objective": {},
       "python_task": {
         "absent": null
@@ -3515,6 +3514,11 @@
         "field": "report_type",
         "migration": "managed-analysis-retirement",
         "model": "feedbax.contracts.request_specs.ReportRequestSpec"
+      },
+      {
+        "field": "model_name",
+        "migration": "relative-model-addresses",
+        "model": "feedbax.contracts.training.TrialDocuments"
       }
     ],
     "values": [

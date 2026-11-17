@@ -338,7 +338,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       if (choose && result.changed.length) {
         const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
           : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
-        state.setState({ selection: { document: model.id, addresses: selection } });
+        setSelection(selection);
       }
       return true;
     } catch (error) {
@@ -383,6 +383,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   function select(address: ModelAddress, extend = false) {
     setLibraryItem(undefined);
     if (model) selectModel(state, model.id, address, extend);
+  }
+  function setSelection(addresses: readonly ModelAddress[]) {
+    if (model) state.setState({ selection: { document: model.id, addresses } });
   }
   function clear() {
     state.setState(pick ? { pick: null } : { selection: null });
@@ -783,9 +786,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && definitions.length > 0 }),
     ...(port?.direction === 'output' ? [bindStudioCommand('connectPorts', () => keyboardConnect(port),
       { enabled: editTopology && !locked })] : []),
-    bindStudioCommand('modelSelectAll', () => state.setState({
-      selection: objects.map(([id]) => at(graph, { kind: 'component', id })),
-    }), { enabled: !!objects.length }),
+    bindStudioCommand('modelSelectAll', () => setSelection(
+      objects.map(([id]) => at(graph, { kind: 'component', id })),
+    ), { enabled: !!objects.length }),
     bindStudioCommand('modelRemove', () => {
       if (selection?.element.kind === 'attachment') removeAttachment(selection);
       else void apply(studioName('modelRemove'), { op: 'delete', selection: [...selectedHere] });
@@ -927,10 +930,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           onSearch={openSearch} onNode={(node, extend) => {
             if (!pick && node.data.address.element.kind === 'component') select(node.data.address, extend);
           }} onEdge={(edge) => { if (!pick && edge.data) select(edge.data.address); }}
-          onClear={clear} onBox={(cards) => state.setState({ selection: {
-            document: model.id,
-            addresses: cards.filter((node) => node.data.address.element.kind === 'component').map((node) => node.data.address),
-          } })} onMove={move} onContext={contextual} onConnectStart={connectStart} onConnect={connect}
+          onClear={clear} onBox={(cards) => setSelection(
+            cards.filter((node) => node.data.address.element.kind === 'component').map((node) => node.data.address),
+          )} onMove={move} onContext={contextual} onConnectStart={connectStart} onConnect={connect}
           onConnectEnd={(point, valid, empty) => {
             setVerdict(undefined);
             if (!valid && empty && dragSource.current?.direction === 'output' && !dragSource.current.taskSignal) openSearch(point, dragSource.current);

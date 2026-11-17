@@ -13,6 +13,66 @@
       "id": "evaluate:dca5dfe74d597f8118425f44dd7c78bb2ea6d56a0a52b0e1626fae38b4322ff4"
     },
     {
+      "kind": "evaluate",
+      "source": "Initial rollout with Model, Task and Objective",
+      "spec": {
+        "numerical_settings": {
+          "floating_point_bits": null,
+          "matmul_precision": null,
+          "deterministic": null
+        },
+        "evaluation_type": "feedbax.rollout",
+        "params": {
+          "input_overrides": {
+            "reach_target": "target_pos"
+          },
+          "seed": 731,
+          "trial_policy": "paired",
+          "trials": [
+            "{\"catch\":false,\"start\":[-0.10000002384185791,-0.050000011920928955],\"target\":[0.3999999761581421,-0.050000011920928955]}",
+            "{\"catch\":false,\"start\":[-0.10000002384185791,-0.050000011920928955],\"target\":[0.2117448770875089,0.34091572931308595]}"
+          ],
+          "variation": []
+        }
+      },
+      "inputs": {
+        "objective": [
+          {
+            "key": "default",
+            "reference": {
+              "sha256": "eabadf04c338d70cc328d7d9b51627c35518aae51cd73e8d5f398750a159dab6",
+              "size": 504,
+              "media_type": "application/vnd.feedbax.objective-input+json",
+              "tree": false
+            }
+          }
+        ],
+        "subject": [
+          {
+            "key": "default",
+            "reference": {
+              "sha256": "d30783bcd98823cb3bbe621a88fb08d72d84d75d786d7d08c21a0ee0ca25de66",
+              "size": 3260,
+              "media_type": "application/vnd.feedbax.initial-model+json",
+              "tree": false
+            }
+          }
+        ],
+        "task": [
+          {
+            "key": "default",
+            "reference": {
+              "sha256": "14defbf89962dd8972f607ae3a9922f871f46928d8d00e8c26a7dac63f07fb5b",
+              "size": 8759,
+              "media_type": "application/vnd.feedbax.task-input+json",
+              "tree": false
+            }
+          }
+        ]
+      },
+      "id": "evaluate:eded1e8ae4cfb924774c35faf3a24e30f54b138b9c16fc468219459fad0ec534"
+    },
+    {
       "kind": "analyze",
       "source": "Velocity summary operation",
       "spec": {

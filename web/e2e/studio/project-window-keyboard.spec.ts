@@ -16,24 +16,13 @@ const command = (page: Page, id: string) => page.locator(`button[data-command-id
 
 function alternateModelFiles(files: Awaited<ReturnType<typeof fixture>>, id: string) {
   const [model, task, objective, train] = structuredClone(files);
-  function rehome(value: unknown): unknown {
-    if (Array.isArray(value)) return value.map(rehome);
-    if (typeof value === 'string') {
-      return value.replaceAll(`"document":"${model.id}"`, `"document":"${id}-model"`);
-    }
-    if (value === null || typeof value !== 'object') return value;
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key,
-      key === 'document' && entry === model.id ? `${id}-model` : rehome(entry),
-    ]));
-  }
   const trial = train.step.base.inline.trial_documents;
   trial.model = { document: `${id}-model` };
   trial.task = { document: `${id}-task` };
   trial.objective = { document: `${id}-objective` };
   train.id = id;
   return [{ ...model, id: `${id}-model` },
-    { ...task, id: `${id}-task`, document: rehome(task.document) },
-    { ...objective, id: `${id}-objective`, document: rehome(objective.document) }, train];
+    { ...task, id: `${id}-task` }, { ...objective, id: `${id}-objective` }, train];
 }
 
 test('an empty saved project starts its first Train by pointer', async ({ page, request }) => {
