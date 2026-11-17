@@ -30,7 +30,7 @@ export const ListRow = forwardRef<HTMLDivElement, ListRowProps>(function ListRow
       data-disabled={disabled || undefined}
       className={clsx(
         'relative flex h-row min-w-0 cursor-default select-none items-center gap-1.5 rounded-row pr-row-inline text-shell-foreground',
-        'hover:[&:not([data-disabled])]:bg-shell-row data-[selected]:bg-shell-row data-[selected]:font-medium',
+        'hover:[&:not([data-disabled])]:bg-shell-row-hover data-[selected]:bg-shell-row-selected data-[selected]:font-medium',
         'data-[disabled]:text-shell-muted',
         'after:pointer-events-none after:absolute after:bottom-[2px] after:left-[calc(var(--row-indent)+1.15em+0.375rem)]',
         'after:h-[2px] after:w-[1.25em] after:rounded-full after:bg-shell-foreground after:opacity-0',

@@ -7,6 +7,7 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import RegistryBinding, SourceDifference, SourcePath
+from feedbax.contracts.computation_validity import ComputationChange, PrefixDrift
 from feedbax.contracts.request_refs import ContentRef, Name, ReferenceValue, RequestId, Sha256
 
 
@@ -52,9 +53,20 @@ class CheckConditions(ReferenceValue):
     environment: tuple[EnvironmentDifference, ...]
 
 
+type EnvironmentChange = Literal[
+    "arguments", "rejected_update", "output_shape_or_dtype", "numerical_drift", "nonfinite_outputs",
+]
+"""What a repeated computation found different under the present environment."""
+
+
 class CheckOutcome(ReferenceValue):
+    """A check's finding. Code that differs names its changes; a repeated prefix names its change and drift."""
+
     outcome: Literal["equal", "different", "unavailable"]
     detail: Name | None = None
+    changes: tuple[ComputationChange, ...] = ()
+    change: EnvironmentChange | None = None
+    drift: PrefixDrift | None = None
 
 
 class ValidityCheckEvidence(ReferenceValue):
@@ -113,12 +125,15 @@ class CodeReason(ReferenceValue):
     kind: Literal["code"] = "code"
     basis: Literal["source", "computation", "unverifiable"]
     differences: tuple[CodeDifference, ...]
+    changes: tuple[ComputationChange, ...] = ()
     detail: Name | None = None
 
 
 class EnvironmentReason(ReferenceValue):
     kind: Literal["environment"] = "environment"
     differences: tuple[EnvironmentDifference, ...]
+    change: EnvironmentChange | None = None
+    drift: PrefixDrift | None = None
     detail: Name | None = None
 
 
@@ -130,6 +145,8 @@ type ValidityReason = Annotated[
 class EnvironmentNotice(ReferenceValue):
     differences: tuple[EnvironmentDifference, ...]
     check: Literal["pending", "confirmed", "different", "not_checked"]
+    change: EnvironmentChange | None = None
+    drift: PrefixDrift | None = None
     detail: Name | None = None
 
 

@@ -1,7 +1,7 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
 import type { StatusMarkStatus } from '@/components/ui/StatusMark';
 import type {
-  EnvironmentDifference, EnvironmentNotice, FieldKind, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
+  ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, FieldKind, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
   StudioPlanReviewSource, StudioSavedEvaluationResult, ValidityReason,
 } from '@/generated/studioContracts';
 import vocabulary from './vocabulary.json';
@@ -102,29 +102,81 @@ function environmentChange({ distribution, before, after }: EnvironmentDifferenc
   return `${distribution} ${before} → ${after ?? studioValidity('removed')}`;
 }
 
-/**
- * One reason a result is unchecked or out of date, as the parts of an inspector row. The wire omits
- * defaulted `kind` fields, so reasons are told apart by their required fields.
- */
-export function studioValidityReason(reason: ValidityReason): string[] {
-  if ('basis' in reason) {
-    return [studioValidity('code'), studioValidity(reason.basis), ...reason.differences.map((difference) =>
-      'path' in difference
-        ? [difference.path.path, studioValidity(difference.status), ...(difference.functions ?? [])].join(' ')
-        : `${binding(difference.before)} → ${difference.after ? binding(difference.after) : studioValidity('removed')}`),
-    reason.detail ?? ''].filter(Boolean);
+const drift = new Intl.NumberFormat(undefined, { style: 'percent', maximumSignificantDigits: 2 });
+
+function computationChange(change: ComputationChange) {
+  switch (change.kind) {
+    case 'driver': {
+      const { previous, present } = change as DriverChanged;
+      return studioFormat('validityDriver', { driver: present.name, previous: previous.revision, present: present.revision });
+    }
+    case 'steps': {
+      const { previous, present } = change as StepCountChanged;
+      return studioFormat('validitySteps', { previous, present });
+    }
+    case 'program':
+    case 'arguments':
+      return studioFormat(change.kind === 'program' ? 'validityProgram' : 'validityArguments', {
+        slots: (change as ProgramsChanged).slots.join(', '),
+      });
+    default:
+      throw new Error(`Computation change without a kind: ${JSON.stringify(change)}`);
   }
-  if ('role' in reason) {
-    return [studioValidity('input'), `${reason.role} ${reason.member}`,
-      studioValidity(reason.after ? 'changed' : 'removed'), reason.detail ?? ''].filter(Boolean);
-  }
-  if ('path' in reason) return [studioValidity('file'), reason.path.path, studioValidity(reason.status ?? 'changed')];
-  return [studioValidity('environment'), ...reason.differences.map(environmentChange), reason.detail ?? ''].filter(Boolean);
 }
 
-export function studioEnvironmentNotice(notice: EnvironmentNotice): string[] {
-  return [studioValidity('environment'), studioValidity(notice.check), ...notice.differences.map(environmentChange),
-    notice.detail ?? ''].filter(Boolean);
+function prefixFinding({ change, drift: measured }: Pick<EnvironmentNotice, 'change' | 'drift'>) {
+  return [
+    change && vocabulary.status.environmentChange[change],
+    measured?.max_relative_loss != null && studioFormat('validityLossDrift', { value: drift.format(measured.max_relative_loss) }),
+    measured?.relative_parameter_l2 != null &&
+      studioFormat('validityParameterDrift', { value: drift.format(measured.relative_parameter_l2) }),
+  ].filter((line): line is string => !!line);
+}
+
+/** A reason as the inspector draws it: its title, then one row per change. */
+export interface StudioValidityRows {
+  readonly title: string;
+  readonly changes: readonly string[];
+}
+
+/**
+ * One reason a result is unchecked or out of date. The wire omits defaulted `kind` fields, so reasons
+ * are told apart by their required fields.
+ */
+export function studioValidityReason(reason: ValidityReason): StudioValidityRows {
+  if ('basis' in reason) {
+    return {
+      title: studioValidity(reason.basis),
+      changes: [
+        ...reason.differences.map((difference) => 'path' in difference
+          ? [difference.path.path, studioValidity(difference.status), ...(difference.functions ?? [])].join(' ')
+          : `${binding(difference.before)} → ${difference.after ? binding(difference.after) : studioValidity('removed')}`),
+        ...(reason.changes ?? []).map(computationChange),
+        ...(reason.detail ? [reason.detail] : []),
+      ],
+    };
+  }
+  if ('role' in reason) {
+    return {
+      title: studioValidity('input'),
+      changes: [`${reason.role} ${reason.member} ${studioValidity(reason.after ? 'changed' : 'removed')}`,
+        ...(reason.detail ? [reason.detail] : [])],
+    };
+  }
+  if ('path' in reason) {
+    return { title: studioValidity('file'), changes: [`${reason.path.path} ${studioValidity(reason.status ?? 'changed')}`] };
+  }
+  return {
+    title: studioValidity('environment'),
+    changes: [...reason.differences.map(environmentChange), ...prefixFinding(reason), ...(reason.detail ? [reason.detail] : [])],
+  };
+}
+
+export function studioEnvironmentNotice(notice: EnvironmentNotice): StudioValidityRows {
+  return {
+    title: `${studioValidity('environment')} · ${studioValidity(notice.check)}`,
+    changes: [...notice.differences.map(environmentChange), ...prefixFinding(notice), ...(notice.detail ? [notice.detail] : [])],
+  };
 }
 
 export function studioMachineStatus(status: keyof typeof vocabulary.status.machine) {

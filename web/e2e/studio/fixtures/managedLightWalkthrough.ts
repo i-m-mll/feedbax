@@ -137,7 +137,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const sourceRow = (index: number) => table(page).getByRole('row').filter({ hasText: prefix[index].label }).getByRole('button');
+  const sourceRow = (index: number) => table(page).getByRole('button', { name: prefix[index].label, exact: true });
 
   async function selectTwo() {
     await openRuns(page, 'train');
@@ -267,7 +267,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       },
       progress: { completed_updates: childUpdates, total_updates: childUpdates },
     })]);
-    await activate(page, table(page).getByRole('row').filter({ hasText: producer.label }).getByRole('button'));
+    await activate(page, table(page).getByRole('button', { name: producer.label, exact: true }));
     if (index === 0) {
       await palette(page, 'splitDetails', 'Split Details');
       await openView(page, 'results');

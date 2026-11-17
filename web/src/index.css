@@ -11,7 +11,9 @@
 :root {
   --studio-shell-accent: #5d4b87;
   --studio-shell-selection: color-mix(in srgb, var(--text-primary) 10%, transparent);
-  --studio-row-fill: var(--neutral-alpha-05);
+  --row-hover-fill: var(--neutral-alpha-05);
+  --row-selected-fill: var(--neutral-alpha-08);
+  --row-related-mark: var(--text-secondary);
   --studio-scroll-fade: 1.5rem;
   --card-surface: var(--surface-main);
   --card-border: var(--app-divider);

@@ -834,6 +834,16 @@ def _choices(
 _PLAIN_VALUE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
 
 
+def coordinate_text(coordinate: SweepCoordinate) -> str:
+    """A coordinate as drawn: a single value is its value; only a value without one has a name."""
+    value = coordinate.value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float | str):
+        return str(value)
+    return coordinate.label or coordinate.value_id
+
+
 def _row_key(key: str) -> str:
     if _PLAIN_VALUE_ID.fullmatch(key):
         return key
@@ -855,7 +865,7 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
     labels = []
     for name, axis in axes.items():
         choice = selection[name]
-        labels.append(f"{name}={choice.coordinate.label or choice.key}")
+        labels.append(f"{name}={coordinate_text(choice.coordinate)}")
         member = choice.member
         if isinstance(axis, InputAxis):
             assert member is not None

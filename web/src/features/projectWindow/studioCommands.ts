@@ -1,4 +1,5 @@
 import { appTip } from '@window-shell/browser/tooltip';
+import { ArrowLeft, ArrowRight, Command, PanelLeft, PanelRight, type LucideIcon } from 'lucide-react';
 import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import type { AppearanceCommandId } from '@/appearance/appearance';
 import { projectWindowViews, type ProjectWindowView } from './projectWindowState';
@@ -48,6 +49,15 @@ const shortcuts = {
   leave: primary('ArrowUp'),
 } satisfies Partial<Record<StudioNameId, Shortcut>>;
 
+const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
+  back: ArrowLeft,
+  forward: ArrowRight,
+  showSteps: PanelLeft,
+  commandPalette: Command,
+  showDrawer: PanelLeft,
+  showInspector: PanelRight,
+};
+
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
   'check' | 'accept' | 'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
@@ -66,7 +76,11 @@ const selectionCommands = new Set<StudioCommandId>([
 export interface StudioCommand {
   readonly id: StudioCommandId;
   readonly name: StudioNameId;
+  /** The visible name. */
+  readonly title: string;
+  /** The accessible name, with the command's subject. */
   readonly label: string;
+  readonly glyph?: LucideIcon;
   readonly enabled: boolean;
   readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
@@ -76,15 +90,15 @@ export interface StudioCommand {
 export function bindStudioCommand<Id extends StudioCommandId>(
   id: Id,
   perform: () => void,
-  { enabled = true, name = id, subject, keyboard = true }:
-    { enabled?: boolean; name?: StudioNameId; subject?: string; keyboard?: boolean } = {},
+  { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id] }:
+    { enabled?: boolean; name?: StudioNameId; subject?: string; keyboard?: boolean; glyph?: LucideIcon } = {},
 ): StudioCommand & { readonly id: Id } {
   const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
   const shortcut = (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
     (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
   return {
     id, name, enabled, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
-    label: studioAccessibleName(name, subject),
+    title: studioName(name), label: studioAccessibleName(name, subject), glyph,
     invoke: () => { if (enabled) perform(); },
   };
 }
