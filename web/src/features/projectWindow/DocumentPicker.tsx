@@ -5,8 +5,7 @@ import { InlineEdit } from '@/components/ui/InlineEdit';
 import {
   Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger,
 } from '@/components/ui/Menu';
-
-const documentName = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+import { isMemberName } from '@/features/projectFolder/projectMemberName';
 
 /** What the slot header can do with the document its view shows. An absent command is not offered. */
 export interface DocumentPickerModel {
@@ -38,7 +37,7 @@ export function DocumentPicker({ model, editing, setEditing }: {
       aria-label={studioAccessibleName('rename', document)}
       onEditingChange={(next) => { if (!next) setEditing(undefined); }}
       onCommit={(name) => {
-        if (!documentName.test(name) || documents.includes(name)) return false;
+        if (!isMemberName(name) || documents.includes(name)) return false;
         rename(name);
       }} />;
   }

@@ -9,7 +9,7 @@ import {
   type ModelFieldRequest,
   type ModelProjectionRequest,
   type ModelUndoRequest,
-  type StudioDocumentCommand,
+  type StudioMemberCommand,
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
   type StudioProjectPatch,
@@ -40,7 +40,7 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
   }
 }
 
-function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectReplay' | 'StudioProjectCreateFile' | 'StudioDocumentCommand' | ModelRequest>(
+function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectReplay' | 'StudioProjectCreateFile' | 'StudioMemberCommand' | ModelRequest>(
   contract: K, body: ContractTypeMap[K], path: string,
 ) {
   try {
@@ -77,18 +77,18 @@ export function createProjectFile(id: string, body: StudioProjectCreateFile, sig
   });
 }
 
-export async function commandProjectDocument(id: string, body: StudioDocumentCommand, signal?: AbortSignal) {
-  const path = `${projectPath(id)}/documents/command`;
+export async function commandProjectMember(id: string, body: StudioMemberCommand, signal?: AbortSignal) {
+  const path = `${projectPath(id)}/members/command`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: mutationBody('StudioDocumentCommand', body, path), signal, cache: 'no-store',
+      method: 'POST', body: mutationBody('StudioMemberCommand', body, path), signal, cache: 'no-store',
     });
-    const result = parseContract('StudioDocumentCommandResult', response);
+    const result = parseContract('StudioMemberCommandResult', response);
     if (result.snapshot.project_id !== id) throw new Error('Response project ID does not match the folder');
     // Keep authored JSON as received, as readFolder does.
     return response as typeof result;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The document command response did not match its contract');
+    throw asApiRequestError(error, path, 'The member command response did not match its contract');
   }
 }
 
