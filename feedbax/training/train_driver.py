@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 TRAIN_PREFIX_UPDATES = 5
-TRAIN_DRIVER_REVISION = 1
+TRAIN_DRIVER_REVISION = 0x55508287D5F8F
 
 
 def carries_method_state(continuation: TrainContinuation | None, *, resume: bool) -> bool:

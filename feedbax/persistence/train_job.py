@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentBinding, ContentObjectRef, StoreTransferProgress
+from feedbax.contracts.artifact_custody import (
+    CONTENT_OBJECT_REF_PREFIX, ContentBinding, ContentObjectRef, ContentTreeRef, StoreTransferProgress,
+)
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
 class TrainJobCheckpoint(StrictModel):
     pointer: CheckpointLatestPointer
     content: ContentBinding
+    validity: ContentTreeRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class TrainJobEntry(StrictModel):
@@ -81,6 +84,7 @@ def _closure(ref: ContentObjectRef, entry: TrainJobEntry) -> StoreClosureRef:
         roots=(ref, entry.request.object, *entry.request.documents,
                *(ReceiptRoot(receipt=origin) for origin in _origins(entry)),
                *(checkpoint.content.tree for checkpoint in entry.checkpoints),
+               *(checkpoint.validity for checkpoint in entry.checkpoints if checkpoint.validity is not None),
                *((entry.metrics,) if entry.metrics is not None else ())),
         include_ancestry=True,
     )
@@ -95,11 +99,17 @@ def _verify_entry(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) ->
 
 def _verify_checkpoints(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> None:
     from feedbax.persistence.method_checkpoint import verify_method_checkpoint_content
+    from feedbax.persistence.receipt_content import tree_objects
 
     for checkpoint in entry.checkpoints:
         manifest = verify_method_checkpoint_content(store, checkpoint.pointer, checkpoint.content)
         if manifest.identity.request_id != entry.request.id:
             raise ValueError("Train checkpoint differs from the retained Train request")
+        if manifest.validity != checkpoint.validity:
+            raise ValueError("Train checkpoint validity differs from its exact transaction")
+        if checkpoint.validity is not None:
+            for ref in tree_objects(store, checkpoint.validity):
+                store.verify_object(ref)
 
 
 def publish_train_job(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> ContentObjectRef:
