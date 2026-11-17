@@ -1,7 +1,7 @@
 import {
   ArrowLeft, ArrowRight, BarChart3, Columns2, Command, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Settings2, Target, Workflow, X,
-  type LucideIcon,
+  Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Scan, Settings2, Target, Workflow, X,
+  ZoomIn, ZoomOut, type LucideIcon,
 } from 'lucide-react';
 import {
   useEffect, useId, useLayoutEffect, useRef, useState,
@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
+import { Button, IconButton } from '@/components/ui/Button';
 import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { useElementSize } from '@/hooks/useElementSize';
@@ -70,6 +71,8 @@ const views = {
   document: FileText,
 } satisfies Record<ProjectWindowView, LucideIcon>;
 
+const viewportIcons: Partial<Record<StudioCommand['id'], LucideIcon>> = { fitView: Scan, zoomIn: ZoomIn, zoomOut: ZoomOut };
+
 const modes = [
   { mode: 'map', id: 'showMap', icon: PanelTop },
   { mode: 'both', id: 'showBoth', icon: Rows2 },
@@ -80,20 +83,19 @@ const slots = ['primary', 'secondary'] as const;
 const regionOrder = ['top', 'map', 'steps', 'rail', 'drawer', ...slots, 'inspector', 'bottom'] as const;
 type WindowRegion = typeof regionOrder[number];
 
-function WindowButton({ command, icon: Icon, pressed, controls, tab }: {
+function WindowButton({ command, icon: Icon, pressed, controls, tab, placement = tab ? 'right' : 'bottom' }: {
   command: StudioCommand;
   icon: LucideIcon;
   pressed?: boolean;
   controls?: string;
   tab?: { id: string; tabbable: boolean };
+  placement?: 'bottom' | 'right';
 }) {
   return (
-    <button type="button" {...commandAttributes(command, tab ? 'right' : 'bottom')}
+    <IconButton label={command.label} icon={<Icon aria-hidden="true" />} {...commandAttributes(command, placement)}
       role={tab ? 'tab' : undefined} id={tab?.id} tabIndex={tab ? (tab.tabbable ? 0 : -1) : undefined}
-      aria-selected={tab ? pressed : undefined} aria-pressed={!tab ? pressed : undefined}
-      aria-controls={controls} disabled={!command.enabled} onClick={command.invoke} className="studio-window-control">
-      <Icon aria-hidden="true" className="size-4" />
-    </button>
+      aria-selected={tab ? pressed : undefined} pressed={!tab ? pressed : undefined}
+      aria-controls={controls} disabled={!command.enabled} onClick={command.invoke} className="studio-window-control" />
   );
 }
 
@@ -143,17 +145,18 @@ export function ProjectWindow({
     secondary: secondaryView ? renderView(secondaryView, 'secondary') : null,
   };
   const focusedRegion = regions[focusedSlot];
-  const sideRegionsAvailable = shownViews[focusedSlot] !== 'results';
+  const sides = (region: ProjectWindowViewRegion | null) => ({ drawer: !!region?.drawer, inspector: !!region?.inspector });
+  const focusedSides = sides(focusedRegion);
+  const mode = availableViews.length ? state.mode : 'map';
   const fit = fitProjectWindow(width, height, {
     ...state,
+    mode,
     secondaryView,
-    detailsDrawerOpen: sideRegionsAvailable && state.detailsDrawerOpen,
-    inspectorOpen: sideRegionsAvailable && state.inspectorOpen,
-  }, preview, {
-    drawer: Boolean(focusedRegion?.drawer), inspector: Boolean(focusedRegion?.inspector),
-  });
-  const detailsVisible = state.mode !== 'map';
-  const fullMapVisible = state.mode === 'map' || (state.mode === 'both' && fit.mapHeight.open);
+    detailsDrawerOpen: focusedSides.drawer && state.detailsDrawerOpen,
+    inspectorOpen: focusedSides.inspector && state.inspectorOpen,
+  }, preview);
+  const detailsVisible = mode !== 'map';
+  const fullMapVisible = mode === 'map' || (mode === 'both' && fit.mapHeight.open);
   const mapDrawerVisible = fullMapVisible && fit.mapDrawer.open;
   const detailsDrawerVisible = detailsVisible && fit.detailsDrawer.open;
   const inspectorVisible = detailsVisible && fit.inspector.open;
@@ -242,11 +245,11 @@ export function ProjectWindow({
     onStateChange((previous) => ({ ...previous, [key]: size }));
   }
 
-  const layoutModes = modes.map(({ mode, id, icon }) => ({
-    mode, icon, command: bindStudioCommand(id, () => {
-      onStateChange((previous) => ({ ...previous, mode }));
-      moveFocus(mode === 'details' ? focusedSlot : 'map');
-    }),
+  const layoutModes = modes.map(({ mode: target, id, icon }) => ({
+    mode: target, icon, command: bindStudioCommand(id, () => {
+      onStateChange((previous) => ({ ...previous, mode: target }));
+      moveFocus(target === 'details' ? focusedSlot : 'map');
+    }, { enabled: target === 'map' || availableViews.length > 0 }),
   }));
   const back = bindStudioCommand('back', () => onBack?.(), { enabled: !!onBack });
   const forward = bindStudioCommand('forward', () => onForward?.(), { enabled: !!onForward });
@@ -262,20 +265,22 @@ export function ProjectWindow({
       ...previous, mode: previous.mode === 'map' ? 'both' : previous.mode, [key]: !visible,
     }));
     moveFocus(visible ? focusedSlot : region);
-  }, { name: visible ? (id === 'showDrawer' ? 'hideDrawer' : 'hideInspector') : id, enabled: sideRegionsAvailable });
+  }, { name: visible ? (id === 'showDrawer' ? 'hideDrawer' : 'hideInspector') : id, enabled: focusedSides[region === 'drawer' ? 'drawer' : 'inspector'] });
   const drawer = side('showDrawer', 'detailsDrawerOpen', 'drawer', detailsDrawerVisible);
   const inspector = side('showInspector', 'inspectorOpen', 'inspector', inspectorVisible);
   const splitCommand = bindStudioCommand('splitDetails', splitDetails,
     { name: split ? 'closeSlot' : 'splitDetails', enabled: !!availableViews.length });
   const switchCommand = bindStudioCommand('switchSlot', switchSlot, { enabled: split });
-  const tabCommands = availableViews.map((view) => bindStudioCommand(view, () => activateView(view)));
-  const tabView = railFocus && availableViews.includes(railFocus) ? railFocus : shownViews[focusedSlot] ?? availableViews[0];
+  const tabCommands = projectWindowViews.map((view) => bindStudioCommand(view, () => activateView(view),
+    { enabled: availableViews.includes(view) }));
+  const tabView = railFocus ?? shownViews[focusedSlot] ?? availableViews[0];
   const tabId = (view: ProjectWindowView) => `${id}-tab-${view}`;
   const palette = bindStudioCommand('commandPalette', () => {
     const scope = document.activeElement?.closest('[data-studio-activity-panel]') ? 'activity' : 'project';
     setPaletteScope((open) => open ? null : scope);
   });
   const viewportIds = new Set(mapCommands?.map(({ id }) => id));
+  const separator = mode === 'map' ? '100%' : `${mode === 'both' ? fit.mapHeight.size : compactMapHeight}px`;
   const viewportCommands = fullMapVisible && (mapHasFocus || !commands.some(({ id }) => viewportIds.has(id)))
     ? mapCommands ?? [] : [];
   const paletteCommands = [
@@ -316,9 +321,9 @@ export function ProjectWindow({
     '--shell-rail-width': `${projectRailWidth}px`,
     '--studio-map-drawer-edge': `${projectRailWidth + (mapDrawerVisible ? fit.mapDrawer.size : 0)}px`,
   } as CSSProperties;
-  const panelRows = state.mode === 'map'
+  const panelRows = mode === 'map'
     ? 'minmax(0, 1fr) 0px 0px'
-    : state.mode === 'details'
+    : mode === 'details'
       ? `${compactMapHeight}px 0px minmax(0, 1fr)`
       : `${fit.mapHeight.size}px 1px minmax(0, 1fr)`;
   const resizeProps = (key: PreferredWindowSize) => ({
@@ -345,8 +350,8 @@ export function ProjectWindow({
       <header ref={bar} className="shell-frame__bar studio-window-bar" data-studio-focus-region="top" tabIndex={-1} data-shell-drag-region>
         <div className="shell-frame__cell shell-titlebar__leading studio-window-bar__controls">
           <span className="shell-titlebar__logo"><img src="/icon.svg" alt="" /></span>
-          {layoutModes.map(({ mode, icon, command }) => (
-            <WindowButton key={mode} command={command} icon={icon} pressed={state.mode === mode} />
+          {layoutModes.map(({ mode: target, icon, command }) => (
+            <WindowButton key={target} command={command} icon={icon} pressed={mode === target} />
           ))}
           <WindowButton command={back} icon={ArrowLeft} />
           <WindowButton command={forward} icon={ArrowRight} />
@@ -387,17 +392,25 @@ export function ProjectWindow({
           </div>}
         </section>
         <div className="studio-window-panel__divider">
-          {state.mode === 'both' && fit.mapHeight.open && (
+          {mode === 'both' && fit.mapHeight.open && (
             <ResizeSeparator label={studioName('panelHeight')} controls={ids.map} axis="y" direction={1}
               layout={fit.mapHeight} className="studio-window-resize studio-window-resize--row" {...resizeProps('mapHeight')} />
           )}
         </div>
-        <nav className="shell-scroll-rail studio-window-rail" data-axis="y" aria-label={studioName('details')}
-          data-studio-focus-region="rail" tabIndex={-1}>
-          <div role="tablist" aria-label={studioName('details')} aria-orientation="vertical" className="studio-window-tabs"
+        <nav className="shell-rail studio-window-rail" data-separated="" aria-label={studioName('details')}
+          data-studio-focus-region="rail" tabIndex={-1} style={{ '--shell-rail-separator': separator } as CSSProperties}>
+          {fullMapVisible && mapCommands && (
+            <div role="toolbar" aria-label={studioName('pipelineMap')} aria-orientation="vertical" className="studio-window-rail__map">
+              {mapCommands.map((command) => (
+                <WindowButton key={command.id} command={command} icon={viewportIcons[command.id] ?? Scan} placement="right" />
+              ))}
+            </div>
+          )}
+          {detailsVisible && <div role="tablist" aria-label={studioName('details')} aria-orientation="vertical"
+            className="shell-scroll-rail studio-window-tabs" data-axis="y"
             onFocusCapture={(event) => {
               const id = event.target.dataset.commandId;
-              const view = availableViews.find((item) => item === id);
+              const view = projectWindowViews.find((item) => item === id);
               if (view) setRailFocus(view);
             }}
             onBlurCapture={(event) => {
@@ -413,15 +426,15 @@ export function ProjectWindow({
               event.preventDefault();
               tabs[destination]?.focus();
             }}>
-            {projectWindowViews.map((view) => {
-              const command = tabCommands.find(({ id }) => id === view);
-              const selected = detailsVisible && shownViews[focusedSlot] === view;
-              return command ? (
+            {tabCommands.map((command) => {
+              const view = command.id;
+              const selected = shownViews[focusedSlot] === view;
+              return (
                 <WindowButton key={view} command={command} icon={views[view]} controls={selected ? ids[focusedSlot] : undefined}
                   pressed={selected} tab={{ id: tabId(view), tabbable: tabView === view }} />
-              ) : <span key={view} className="studio-window-control" aria-hidden="true" />;
+              );
             })}
-          </div>
+          </div>}
         </nav>
         <section id={ids.details} className="studio-window-details" hidden={!detailsVisible} aria-label={studioName('details')}>
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
@@ -444,19 +457,21 @@ export function ProjectWindow({
             return (
               <div key={slot} className="studio-window-slot" data-slot={slot} style={{ width: slotWidth(slot) }}>
                 {isFolded && (
-                  <button type="button" className="studio-window-slot__strip" aria-label={studioName(view)}
+                  <Button variant="ghost" className="studio-window-slot__strip" aria-label={studioName(view)}
                     onClick={() => { focusSlot(slot); moveFocus(slot); }} {...appTip(studioName(view), 'right')}>
                     {studioName(view)}
-                  </button>
+                  </Button>
                 )}
                 <section id={ids[slot]} role="tabpanel" aria-labelledby={tabId(view)} data-studio-focus-region={slot} className="studio-window-slot__view" tabIndex={0}
                   data-focused={focusedSlot === slot ? '' : undefined} hidden={isFolded}
                   onFocusCapture={() => { if (pointerTransition.current?.slot !== slot) focusSlot(slot); }}
                   onPointerDownCapture={() => {
-                    const crossesResults = slot !== focusedSlot && (view === 'results' || !sideRegionsAvailable);
+                    const own = sides(region);
+                    const relayout = slot !== focusedSlot &&
+                      (own.drawer !== focusedSides.drawer || own.inspector !== focusedSides.inspector);
                     // Keep the clicked control under the pointer until its click is dispatched.
-                    pointerTransition.current = crossesResults ? { slot } : undefined;
-                    if (!crossesResults) focusSlot(slot);
+                    pointerTransition.current = relayout ? { slot } : undefined;
+                    if (!relayout) focusSlot(slot);
                   }}
                   onClickCapture={() => {
                     pointerTransition.current = undefined;

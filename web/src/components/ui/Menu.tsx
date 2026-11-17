@@ -1,7 +1,7 @@
 import { ContextMenu as BaseContextMenu } from '@base-ui/react/context-menu';
 import { Menu as BaseMenu } from '@base-ui/react/menu';
 import clsx from 'clsx';
-import type { ComponentPropsWithoutRef, ReactNode } from 'react';
+import type { ComponentProps, ComponentPropsWithoutRef, ReactNode } from 'react';
 import { popupItem, popupSurface } from './styles';
 
 export const Menu = BaseMenu.Root;
@@ -15,14 +15,17 @@ export interface MenuContentProps {
   children: ReactNode;
   side?: Side;
   align?: 'start' | 'center' | 'end';
+  /** Positions the menu against this instead of its trigger. */
+  anchor?: ComponentProps<typeof BaseMenu.Positioner>['anchor'];
+  finalFocus?: ComponentProps<typeof BaseMenu.Popup>['finalFocus'];
   className?: string;
 }
 
-export function MenuContent({ children, side = 'bottom', align = 'start', className }: MenuContentProps) {
+export function MenuContent({ children, side = 'bottom', align = 'start', anchor, finalFocus, className }: MenuContentProps) {
   return (
     <BaseMenu.Portal>
-      <BaseMenu.Positioner className="z-50 outline-none" side={side} align={align} sideOffset={4}>
-        <BaseMenu.Popup className={clsx(popupSurface, 'min-w-[10rem]', className)}>{children}</BaseMenu.Popup>
+      <BaseMenu.Positioner className="z-50 outline-none" side={side} align={align} sideOffset={4} anchor={anchor}>
+        <BaseMenu.Popup className={clsx(popupSurface, 'min-w-[10rem]', className)} finalFocus={finalFocus}>{children}</BaseMenu.Popup>
       </BaseMenu.Positioner>
     </BaseMenu.Portal>
   );

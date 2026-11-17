@@ -3,13 +3,10 @@ import {
   type ReactFlowProps, type Rect,
 } from '@xyflow/react';
 import {
-  useCallback, useEffect, useId, useImperativeHandle, useRef, useState,
+  useCallback, useEffect, useId, useImperativeHandle, useRef,
   type KeyboardEvent, type MouseEvent, type ReactNode, type Ref,
 } from 'react';
-import { createPortal } from 'react-dom';
-import { studioName } from '@/components/activity/studioVocabulary';
-import { Dialog } from '@/components/ui/Dialog';
-import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
+import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 
 export interface CanvasViewport {
   fitView(): void;
@@ -85,7 +82,6 @@ export function StudioCanvas({
   const moved = useRef(false);
   const root = useRef<HTMLDivElement>(null);
   const revealFrame = useRef<number>();
-  const [menu, setMenu] = useState<{ x: number; y: number }>();
   const fit = useCallback(() => {
     const liveBounds = contentBounds === undefined && !fitReady
       ? getNodesBounds([...store.getState().nodeLookup.values()]) : bounds;
@@ -130,12 +126,6 @@ export function StudioCanvas({
   }
   function navigate(event: KeyboardEvent<HTMLDivElement>) {
     if (event.defaultPrevented || !(event.target instanceof HTMLElement)) return;
-    if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
-      const bounds = event.target.getBoundingClientRect();
-      event.preventDefault();
-      setMenu({ x: bounds.left, y: bounds.bottom });
-      return;
-    }
     const direction = directions[event.key as keyof typeof directions];
     if (!direction || !event.target.matches('[data-canvas-focus]') || event.metaKey || event.ctrlKey || event.altKey) return;
     const next = adjacentControl(event.currentTarget, event.target, direction);
@@ -171,43 +161,12 @@ export function StudioCanvas({
         if (document.activeElement === control) reveal(control);
       });
     } : undefined}
-    onKeyDown={navigateContent ? navigate : undefined}
-    onContextMenu={navigateContent ? (event) => {
-      event.preventDefault();
-      setMenu({ x: event.clientX, y: event.clientY });
-    } : undefined}>
+    onKeyDown={navigateContent ? navigate : undefined}>
     <ReactFlow nodesDraggable={false} nodesConnectable={false} deleteKeyCode={null}
       id={flowId} {...flow} minZoom={minZoom} maxZoom={maxZoom} zoomOnDoubleClick={zoomOnDoubleClick}
       proOptions={{ hideAttribution: true }}
       onMove={(event, camera) => { if (event) moved.current = true; onMove?.(event, camera); }}>
       {children}
     </ReactFlow>
-    {menu && createPortal(
-      <Dialog ariaLabel={studioName('pipelineMap')} onClose={() => setMenu(undefined)} manageFocus
-        className="fixed inset-0">
-        <div role="menu" aria-label={studioName('pipelineMap')}
-          className="fixed grid w-36 rounded-shell-control border border-shell-divider bg-shell-chrome p-1 text-sm text-shell-foreground shadow-lg"
-          style={{ left: Math.max(0, Math.min(menu.x, window.innerWidth - 152)),
-            top: Math.max(0, Math.min(menu.y, window.innerHeight - 104)) }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              event.preventDefault();
-              event.stopPropagation();
-              setMenu(undefined);
-              return;
-            }
-            if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-            const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=menuitem]')];
-            const index = items.indexOf(document.activeElement as HTMLButtonElement);
-            event.preventDefault();
-            items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
-          }}>
-          {canvasViewportCommands(() => viewport, !!bounds).map((command) =>
-            <button key={command.id} type="button" role="menuitem" {...commandAttributes(command)}
-              disabled={!command.enabled} className="rounded px-2 py-1 text-left hover:bg-shell-hover"
-              onClick={() => { command.invoke(); setMenu(undefined); }}>{command.label}</button>)}
-        </div>
-      </Dialog>, document.body,
-    )}
   </div>;
 }

@@ -191,6 +191,8 @@
     "size14": "Size 14",
     "densityCompact": "Compact Density",
     "densityRegular": "Regular Density",
+    "emptyMapBlank": "Blank Empty Map",
+    "emptyMapCard": "Empty Map With Card",
     "mapOnly": "Map Only",
     "both": "Both",
     "detailsOnly": "Details Only",

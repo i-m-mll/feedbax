@@ -23,6 +23,8 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
+import { Button, IconButton } from '@/components/ui/Button';
+import { ListRow } from '@/components/ui/ListRow';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
 import {
@@ -106,6 +108,10 @@ export interface StudioPipelineMapProps {
 
 const emptyPresentation: PipelineCardPresentation = {};
 const smallButton = 'rounded border border-shell-control bg-shell-surface p-1 text-shell-muted hover:bg-shell-hover focus-visible:outline-2 focus-visible:outline-shell-accent';
+
+function stepRunSelection(selection: PipelineSelection | null, stepId: string) {
+  return selection?.kind !== 'steps' && selection?.stepId === stepId ? selection : null;
+}
 
 function stepSelection(selection: PipelineSelection | null, stepId: string) {
   if (!selection) return null;
@@ -411,10 +417,9 @@ const StepCard = memo(function StepCard({
         </p>
       )}
       {newStep && (
-        <button type="button" className={`${smallButton} absolute -right-3 top-1/2 -translate-y-1/2`}
-          {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke}>
-          <Plus aria-hidden="true" className="h-3 w-3" />
-        </button>
+        <IconButton variant="default" label={newStep.label} icon={<Plus aria-hidden="true" />}
+          className="absolute -right-3 top-1/2 -translate-y-1/2 bg-shell-surface"
+          {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke} />
       )}
       </>}
     </article>
@@ -569,11 +574,14 @@ function MapDrawer({
         })}</ul></li>))}
         {newStep && (
           <li>
-            <button type="button" className={`${smallButton} inline-flex items-center gap-1`}
-              {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke}>
-              <Plus aria-hidden="true" className="h-3 w-3" />
-              {newStep.label}
-            </button>
+            <ListRow role="button" tabIndex={0} glyph={<Plus aria-hidden="true" />} name={studioName('newStep')}
+              {...commandAttributes(newStep)} disabled={!newStep.enabled}
+              onClick={newStep.invoke}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                newStep.invoke();
+              }} />
           </li>
         )}
       </ul>
@@ -588,7 +596,8 @@ export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newSte
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope}
     chooseStep={chooseMapStep((change) => onSelectionChange(change(state)), onChooseStep)}
-    newStep={plan.steps.length ? newStepCommand?.() : undefined} problemSteps={problemSteps} onProblems={onProblems} framed />;
+    newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })}
+    problemSteps={problemSteps} onProblems={onProblems} framed />;
 }
 
 function MapLine({
@@ -668,6 +677,13 @@ export function StudioPipelineMap({
     : state.selection ? [state.selection.stepId] : [];
   const primaryStep = activeStepId ?? selectedSteps[0];
   const firstStep = newStepCommand?.();
+  function insertAt(target: EventTarget) {
+    const card = target instanceof Element ? target.closest<HTMLElement>('[data-map-step]') : null;
+    const stepId = card?.dataset.mapStep;
+    const command = stepId ? newStepCommand?.({ stepId, selection: stepRunSelection(state.selection, stepId) },
+      plan.steps.find(({ id }) => id === stepId)?.label) : firstStep;
+    command?.invoke();
+  }
   const drawDrawer = drawerOpen && mode === 'map';
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const focus = state.focus;
@@ -690,20 +706,29 @@ export function StudioPipelineMap({
   return (
     <section
       aria-label={studioName('pipelineMap')}
-      className="flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-subtle"
+      className="relative flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-subtle"
       onKeyDown={(event) => {
         if (event.key === 'Escape' && state.focus) {
           event.stopPropagation();
           clearFocus();
         }
+        if (mode === 'map' && (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey))) {
+          event.preventDefault();
+          insertAt(event.target);
+        }
       }}
+      onContextMenu={mode === 'map' ? (event) => {
+        event.preventDefault();
+        insertAt(event.target);
+      } : undefined}
     >
       {!plan.steps.length ? (
-        firstStep && (
-          <button type="button" className={`${smallButton} m-4 grid h-11 w-[150px] shrink-0 place-items-center self-start border border-dashed border-shell-muted`}
+        firstStep && mode === 'map' && (
+          <Button data-empty-map-card className="absolute rounded-lg text-shell-muted"
+            style={{ left: mapPadding, top: mapPadding, width: mapCardWidth, height: '4rem' }}
             {...commandAttributes(firstStep)} disabled={!firstStep.enabled} onClick={firstStep.invoke}>
-            <Plus aria-hidden="true" className="h-4 w-4" />
-          </button>
+            <Plus aria-hidden="true" />
+          </Button>
         )
       ) : mode === 'line' ? (
         <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} />
@@ -741,9 +766,7 @@ export function StudioPipelineMap({
                     upstream={upstream?.get(step.id)}
                     downstream={downstream?.get(step.id)}
                     onPresentationChange={onPresentationChange}
-                    newStep={newStepCommand?.({ stepId: step.id,
-                      selection: state.selection?.kind !== 'steps' && state.selection?.stepId === step.id ? state.selection : null,
-                    }, step.label)}
+                    newStep={newStepCommand?.({ stepId: step.id, selection: stepRunSelection(state.selection, step.id) }, step.label)}
                     newSweep={newSweepCommand?.(step.id, step.label)}
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                   />
