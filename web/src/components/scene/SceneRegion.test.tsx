@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 import userEvent from '@testing-library/user-event';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WindowSectionsProvider } from '@/features/projectWindow/DrawerSection';
-import { defaultProjectWindowState } from '@/features/projectWindow/projectWindowState';
+import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import type { ResolvedScene } from '@/features/scenario/projections';
@@ -23,10 +22,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 
-function Window({ children }: { children: ReactNode }) {
-  const [state, setState] = useState(defaultProjectWindowState);
-  return <WindowSectionsProvider state={state} onStateChange={setState}>{children}</WindowSectionsProvider>;
-}
+const sections: DrawerSections = { isOpen: (_, initially = true) => initially, setOpen: () => {} };
 
 const scene: ResolvedScene = {
   scenario_id: null,
@@ -56,11 +52,11 @@ describe('Scene regions', () => {
   it('selects a supplied trial independently of the entity selection', async () => {
     const chooseTrial = vi.fn();
     const chooseEntity = vi.fn();
-    render(<Window><SceneDrawer scene={scene} selectedId="arm" onSelect={chooseEntity} trials={{
+    render(<><SceneDrawer sections={sections} scene={scene} selectedId="arm" onSelect={chooseEntity} trials={{
       choices: [{ id: 'trial-a', label: 'Straight reach' }, { id: 'trial-b', label: 'Curl reach' }],
       selectedId: 'trial-a',
       onSelect: chooseTrial,
-    }} /></Window>);
+    }} /></>);
     const user = userEvent.setup();
     await user.click(screen.getByRole('combobox', { name: 'Trials' }));
     await user.click(await screen.findByRole('option', { name: 'Curl reach' }));
@@ -76,14 +72,14 @@ describe('Scene regions', () => {
       const [camera, onCameraChange] = useState(fittedCamera);
       const view: SceneView = { kind: 'geometry', scene };
       return (
-        <Window>
+        <>
           <SceneLayers overlays={sceneLayers(view).overlays}
             hiddenOverlays={hiddenOverlays} onToggleOverlay={(overlay) => setHidden(new Set([overlay]))} />
           <SceneCanvas view={view} time={0} selectedId={selectedId} onSelect={onSelect}
             camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} />
-          <SceneDrawer scene={scene} selectedId={selectedId} onSelect={onSelect} />
+          <SceneDrawer sections={sections} scene={scene} selectedId={selectedId} onSelect={onSelect} />
           <SceneElementInspector scene={scene} selectedId={selectedId} />
-        </Window>
+        </>
       );
     }
     render(<View />);

@@ -7,7 +7,7 @@ import { StatusMark } from '@/components/ui/StatusMark';
 import { Tree, type TreeNode } from '@/components/ui/Tree';
 import { ValueField } from '@/components/values/ValueField';
 import { rawField } from '@/components/values/adapters/raw';
-import { DrawerSection, DrawerSections } from '@/features/projectWindow/DrawerSection';
+import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { Menu, MenuCheckboxItem, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
@@ -286,7 +286,8 @@ function isDrawerAnchor(scene: ResolvedScene, anchor: ResolvedScene['anchors'][n
   return isJoint(anchor) || scene.entities.some((entity) => entity.id === anchor.entity_id && entity.kind === 'task_object');
 }
 
-export function SceneDrawer({ scene, selectedId, onSelect, trials, checkpoints }: SceneSelection & {
+export function SceneDrawer({ sections, scene, selectedId, onSelect, trials, checkpoints }: SceneSelection & {
+  sections: DrawerSections;
   scene: ResolvedScene;
   trials?: {
     choices: readonly { id: string; label: string }[];
@@ -330,9 +331,9 @@ export function SceneDrawer({ scene, selectedId, onSelect, trials, checkpoints }
   }
   const replay = checkpoints || (trials && trials.choices.length > 0);
   return (
-    <DrawerSections>
+    <Drawer>
       {replay && (
-        <DrawerSection section="scene.trials" name={studioName('trials')} bodyClassName="grid gap-1 p-1">
+        <DrawerSection sections={sections} id="scene.trials" name={studioName('trials')} bodyClassName="grid gap-1 p-1">
           {checkpoints && <FieldRow label={studioName('checkpoint')} labelId={checkpointLabel}>
             <Select aria-labelledby={checkpointLabel} value={String(checkpoints.selected)}
               items={checkpoints.choices.map((coordinate) => ({ value: String(coordinate), label: String(coordinate) }))}
@@ -348,13 +349,13 @@ export function SceneDrawer({ scene, selectedId, onSelect, trials, checkpoints }
         const nodes = groups.get(group);
         if (!nodes) return null;
         return (
-          <DrawerSection key={group} section={`scene.${group}`} name={studioName(group)} count={nodes.length}>
+          <DrawerSection key={group} sections={sections} id={`scene.${group}`} name={studioName(group)} count={nodes.length}>
             <Tree aria-label={studioName(group)} nodes={nodes} selected={selectedId && nodes.some(({ id }) => id === selectedId) ? [selectedId] : []}
               onSelectedChange={(ids) => onSelect(ids.at(-1) ?? null)} />
           </DrawerSection>
         );
       })}
-    </DrawerSections>
+    </Drawer>
   );
 }
 

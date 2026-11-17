@@ -9,7 +9,7 @@ import { Inspector } from '@/components/ui/Inspector';
 import { MenuItem } from '@/components/ui/Menu';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import type { FieldModel } from '@/components/values/fieldModel';
-import { DrawerSection, DrawerSections } from '@/features/projectWindow/DrawerSection';
+import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { Select } from '@/components/ui/Select';
 import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
@@ -126,16 +126,16 @@ function taskGroups(view: StudioTrialAuthoring) {
   ] as const satisfies readonly { id: Parameters<typeof studioName>[0]; nodes: readonly TreeNode[] }[];
 }
 
-export function TrialTaskOutline({ view, selected, select }: {
-  view: StudioTrialAuthoring; selected?: string; select(id: string | null): void;
+export function TrialTaskOutline({ sections, view, selected, select }: {
+  sections: DrawerSections; view: StudioTrialAuthoring; selected?: string; select(id: string | null): void;
 }) {
-  return <DrawerSections>
-    {taskGroups(view).map(({ id, nodes }) => nodes.length > 0 && <DrawerSection key={id} section={`task.${id}`}
+  return <Drawer>
+    {taskGroups(view).map(({ id, nodes }) => nodes.length > 0 && <DrawerSection key={id} sections={sections} id={`task.${id}`}
       name={studioName(id)} count={nodes.length}>
       <Tree aria-label={studioName(id)} nodes={nodes} selected={selected && nodes.some((node) => node.id === selected) ? [selected] : []}
         onSelectedChange={(ids) => select(ids.at(-1) ?? null)} />
     </DrawerSection>)}
-  </DrawerSections>;
+  </Drawer>;
 }
 
 export function TrialTaskInspector({ view, commit, selected }: { view: StudioTrialAuthoring; commit?: Commit; selected?: string }) {
@@ -279,8 +279,8 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
   </div>;
 }
 
-export function TrialObjectiveOutline({ view, commit, selected, select }: {
-  view: StudioTrialAuthoring; commit?: Commit; selected?: string; select(term: string | null): void;
+export function TrialObjectiveOutline({ sections, view, commit, selected, select }: {
+  sections: DrawerSections; view: StudioTrialAuthoring; commit?: Commit; selected?: string; select(term: string | null): void;
 }) {
   const [error, setError] = useState<string>();
   const tree = useRef<TreeHandle>(null);
@@ -290,8 +290,8 @@ export function TrialObjectiveOutline({ view, commit, selected, select }: {
   const nodes: TreeNode[] = terms.map((term, index) => ({
     id: term.id, name: term.name ?? studioAccessibleName('term', index + 1), muted: term.enabled === false,
   }));
-  return <DrawerSections>
-    <DrawerSection section="objective.outline" name={studioName('outline')} count={terms.length}>
+  return <Drawer>
+    <DrawerSection sections={sections} id="objective.outline" name={studioName('outline')} count={terms.length}>
       <Tree ref={tree} aria-label={studioName('objectiveTerms')} nodes={nodes} selected={selected ? [selected] : []}
         onSelectedChange={(ids) => select(ids.at(-1) ?? null)}
         onRename={commit && ((id, name) => {
@@ -315,7 +315,7 @@ export function TrialObjectiveOutline({ view, commit, selected, select }: {
         })} />
       {error && <p role="alert" className="px-2">{error}</p>}
     </DrawerSection>
-  </DrawerSections>;
+  </Drawer>;
 }
 
 export function TrialObjectiveInspector({ view, commit, selected }: {

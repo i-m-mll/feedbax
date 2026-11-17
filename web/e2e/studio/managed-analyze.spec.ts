@@ -91,7 +91,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   const search = drawer.getByRole('textbox', { name: 'Search Library', exact: true });
   async function place(label: string | RegExp) {
     await search.fill(typeof label === 'string' ? label : label.source.replace(/[\^$]/g, ''));
-    await drawer.getByRole('treeitem', { name: label, exact: typeof label === 'string' }).dblclick();
+    await drawer.getByRole('option', { name: label, exact: typeof label === 'string' }).dblclick();
   }
   await edit(() => place('Aligned velocity'));
   await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();

@@ -1,5 +1,5 @@
 import { Search } from 'lucide-react';
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react';
 import { ListRow } from '@/components/ui/ListRow';
 import { TextField } from '@/components/ui/TextField';
 import { DrawerSection, type DrawerSections } from './DrawerForms';
@@ -27,6 +27,8 @@ export interface LibraryListProps {
   onPlace?: (id: string) => void;
   /** The drag's data type; an item is dragged with its id. */
   dragType?: string;
+  /** The search field, for a command that asks for the library. */
+  searchRef?: Ref<HTMLInputElement>;
 }
 
 function matches(item: LibraryItem, query: string) {
@@ -34,7 +36,9 @@ function matches(item: LibraryItem, query: string) {
 }
 
 /** A drawer's catalog: a search field and groups of rows, folded until opened or searched. */
-export function LibraryList({ items, sections, section, searchLabel, selected, onInspect, onPlace, dragType }: LibraryListProps) {
+export function LibraryList({
+  items, sections, section, searchLabel, selected, onInspect, onPlace, dragType, searchRef,
+}: LibraryListProps) {
   const [query, setQuery] = useState('');
   const [focused, setFocused] = useState<string>();
   const rows = useRef(new Map<string, HTMLDivElement>());
@@ -70,7 +74,17 @@ export function LibraryList({ items, sections, section, searchLabel, selected, o
 
   return <>
     <div className="p-1">
-      <TextField aria-label={searchLabel} leading={<Search />} value={query} onValueChange={setQuery} />
+      <TextField ref={searchRef} aria-label={searchLabel} leading={<Search />} value={query} onValueChange={setQuery}
+        onKeyDown={(event) => {
+          const first = search ? shown[0] : undefined;
+          if (event.key === 'Enter' && first && onPlace) {
+            event.preventDefault();
+            onPlace(first.id);
+          } else if (event.key === 'ArrowDown' && shown[0]) {
+            event.preventDefault();
+            focus(shown[0].id);
+          }
+        }} />
     </div>
     {[...groups].map(([group, list]) => <DrawerSection key={group} sections={sections} id={groupKey(group)}
         name={group} count={list.length} initially={false} forceOpen={!!search} nested>

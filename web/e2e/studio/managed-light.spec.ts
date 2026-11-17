@@ -208,7 +208,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     const search = drawer.getByRole('textbox', { name: 'Search Library', exact: true });
     await expect(search).toBeFocused();
     await typeValue(page, search, label);
-    await expect(drawer.getByRole('treeitem', { name: label, exact: true })).toBeVisible();
+    await expect(drawer.getByRole('option', { name: label, exact: true })).toBeVisible();
     return edit(() => page.keyboard.press('Enter'));
   }
   const selectElement = (name: string) => activate(page, analysis.getByRole('group', { name: 'Select ' + name, exact: true }));
@@ -599,7 +599,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   });
   expect(paired.project.sweep).toEqual(initial.project.sweep);
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Aligned velocity');
-  await drawer.getByRole('treeitem', { name: 'Aligned velocity', exact: true }).dblclick();
+  await drawer.getByRole('option', { name: 'Aligned velocity', exact: true }).dblclick();
   await expect.poll(async () => (await snapshot()).project.documents?.analyze?.payload)
     .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
 

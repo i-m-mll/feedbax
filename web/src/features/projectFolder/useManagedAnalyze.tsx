@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { BarChart3, Database, Search, Sigma } from 'lucide-react';
+import { BarChart3, Database, Sigma } from 'lucide-react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { apiErrorMessage } from '@/api/request';
 import { studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -14,10 +14,10 @@ import { StatusMark } from '@/components/ui/StatusMark';
 import { Tree, type TreeNode } from '@/components/ui/Tree';
 import { ValueField } from '@/components/values/ValueField';
 import { rawField } from '@/components/values/adapters/raw';
-import { DrawerSection, DrawerSections, useDrawerSection } from '@/features/projectWindow/DrawerSection';
+import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
-import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { SettingsForm } from '@/components/values/SettingsForm';
 import { setIn } from '@/components/values/adapters/jsonSchema';
@@ -39,9 +39,10 @@ import { SavedFigureResult } from './SavedLightProducts';
 type Source = OperationElement['inputs'][string];
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection,
+  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection, sections,
 }: {
   editor: ProjectEditController;
+  sections: DrawerSections;
   selection: ElementSelectionStore;
   key?: StudioSavedTrainKey;
   projection?: StudioSavedTrainRuns;
@@ -265,9 +266,10 @@ export function useManagedAnalyze({
   const inspector = libraryItem ? <Inspector name={libraryItem.label} type={libraryItem.owner}>
     {libraryItem.description && <p className="text-shell-muted">{libraryItem.description}</p>}
   </Inspector> : elementInspector;
-  const drawer = <AnalysisDrawer scope={scope} request={libraryRequest} canEdit={canEdit}
-    entries={[...(catalog?.operations ?? []).map(({ key, label, owner }) => ({ key, label, group: owner })),
-      ...catalog ? [{ key: figureEntry, label: humanizeLabel(figureStem), group: studioName('figures') }] : []]}
+  const drawer = <AnalysisDrawer sections={sections} request={libraryRequest} canEdit={canEdit}
+    entries={[...(catalog?.operations ?? []).map(({ key, label, owner, description }) => ({
+      id: key, name: label, group: owner, terms: description,
+    })), ...catalog ? [{ id: figureEntry, name: humanizeLabel(figureStem), group: studioName('figures') }] : []]}
     libraryChoice={libraryChoice} onLibraryChoice={(choice) => {
       setLibrary(choice ? { scope, key: choice } : undefined);
       if (choice) element.onSelect(null);
@@ -338,21 +340,15 @@ const figureEntry = '\u0000figure';
 const figureStem = 'velocity_summary';
 const libraryDrag = 'application/x-feedbax-operation';
 
-interface LibraryEntry {
-  key: string;
-  label: string;
-  group: string;
-}
-
 /** The Analysis drawer: the Library of operations and figures, folded by group, and the document's Outline. */
 function AnalysisDrawer({
-  scope, request, canEdit, entries, libraryChoice, onLibraryChoice, place, outline, selectedId, onSelect,
+  sections, request, canEdit, entries, libraryChoice, onLibraryChoice, place, outline, selectedId, onSelect,
 }: {
-  scope: string;
+  sections: DrawerSections;
   /** Changes when the Add command asks for the Library: it opens and its search takes the keyboard. */
   request: number;
   canEdit: boolean;
-  entries: readonly LibraryEntry[];
+  entries: readonly LibraryItem[];
   libraryChoice?: string;
   onLibraryChoice(key: string | undefined): void;
   place(key: string): void;
@@ -360,48 +356,23 @@ function AnalysisDrawer({
   selectedId: string | null;
   onSelect(id: string | null): void;
 }) {
-  const [query, setQuery] = useState('');
-  const [, setLibraryOpen] = useDrawerSection('analysis.library');
   const search = useRef<HTMLInputElement>(null);
   const handled = useRef(request);
   useEffect(() => {
     if (handled.current === request) return;
     handled.current = request;
-    setLibraryOpen(true);
+    sections.setOpen('analysis.library', true);
     requestAnimationFrame(() => search.current?.focus());
-  }, [request, setLibraryOpen]);
-  const needle = query.trim().toLowerCase();
-  const groups = new Map<string, TreeNode[]>();
-  for (const entry of entries) {
-    if (needle && !entry.label.toLowerCase().includes(needle)) continue;
-    const rows = groups.get(entry.group) ?? [];
-    if (!groups.has(entry.group)) groups.set(entry.group, rows);
-    rows.push({ id: entry.key, name: entry.label, disabled: !canEdit });
-  }
-  return <DrawerSections>
-    <DrawerSection section="analysis.library" name={studioName('library')} bodyClassName="grid content-start gap-1 p-1">
-      <TextField ref={search} aria-label={studioName('searchLibrary')} leading={<Search />} value={query} onValueChange={setQuery}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape' && query) {
-            event.stopPropagation();
-            setQuery('');
-          }
-          const first = needle ? [...groups.values()][0]?.[0] : undefined;
-          if (event.key === 'Enter' && first && !first.disabled) {
-            event.preventDefault();
-            place(first.id);
-          }
-        }} />
-      {[...groups].map(([group, rows]) => <DrawerSection key={scope + group} section={`analysis.library.${group}`}
-        name={group} count={rows.length} defaultOpen={false} revealed={!!needle}>
-        <Tree aria-label={group} nodes={rows} selected={libraryChoice && rows.some(({ id }) => id === libraryChoice) ? [libraryChoice] : []}
-          onSelectedChange={(ids) => onLibraryChoice(ids.at(-1))} onActivate={place}
-          dragData={(node) => ({ [libraryDrag]: node.id })} />
-      </DrawerSection>)}
+  }, [request, sections]);
+  return <Drawer>
+    <DrawerSection sections={sections} id="analysis.library" name={studioName('library')}>
+      <LibraryList items={entries} sections={sections} section="analysis.library" searchLabel={studioName('searchLibrary')}
+        selected={libraryChoice} onInspect={onLibraryChoice} onPlace={canEdit ? place : undefined}
+        dragType={canEdit ? libraryDrag : undefined} searchRef={search} />
     </DrawerSection>
-    <DrawerSection section="analysis.outline" name={studioName('outline')}>
+    <DrawerSection sections={sections} id="analysis.outline" name={studioName('outline')}>
       <Tree aria-label={studioName('outline')} nodes={outline} selected={selectedId ? [selectedId] : []}
         onSelectedChange={(ids) => onSelect(ids.at(-1) ?? null)} />
     </DrawerSection>
-  </DrawerSections>;
+  </Drawer>;
 }

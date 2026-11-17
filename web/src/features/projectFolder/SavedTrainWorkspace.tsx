@@ -17,7 +17,7 @@ import type { ActivityResultState } from '@/components/activity/StudioActivity';
 import { useResultValidity } from './useResultValidity';
 import { StudioMachineApproval, StudioRunMachine } from '@/components/pipeline/StudioRunMachine';
 import { SweepExceptions } from '@/components/pipeline/SweepExceptions';
-import { DrawerSection, DrawerSections, WindowSectionsProvider } from '@/features/projectWindow/DrawerSection';
+import { Drawer, DrawerSection, useDrawerSections } from '@/features/projectWindow/DrawerForms';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
@@ -29,7 +29,6 @@ import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import { StudioProblems } from '@/features/projectWindow/StudioProblems';
-import { useDrawerSections } from '@/features/projectWindow/DrawerForms';
 import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
@@ -522,6 +521,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
+    sections: drawerSections,
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: data, variant, stepId: step?.kind === 'report' ? step.id : undefined,
@@ -1045,7 +1045,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   return (
     <RunRemovalContext.Provider value={runRemoval.confirm}>
-      <WindowSectionsProvider state={windowState} onStateChange={setWindowState}>
       <ProjectWindow
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
         saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
@@ -1161,7 +1160,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               return {
                 picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
                 body: withProblem(<TrialTaskForm view={value} commit={commit} />),
-                drawer: <TrialTaskOutline view={value} selected={selected} select={choose(document)} />,
+                drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
               };
             }
@@ -1171,7 +1170,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined),
               body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} />),
-              drawer: <TrialObjectiveOutline view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
+              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
               inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
             };
           }
@@ -1203,8 +1202,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   onChange={(value) => setMachines((current) => ({ ...current, [step.id]: value }))} />}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
               drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0 || evaluationCheckpointRule ||
-                evaluationEditor) ? <DrawerSections>
-                {(authoring || evaluationCheckpointRule || evaluationEditor) && <DrawerSection section="runs.definition"
+                evaluationEditor) ? <Drawer>
+                {(authoring || evaluationCheckpointRule || evaluationEditor) && <DrawerSection sections={drawerSections} id="runs.definition"
                   name={studioName(step.kind === 'train' ? 'training' : step.kind)} bodyClassName="grid content-start gap-3 p-1">
                 {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
                     focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
@@ -1224,11 +1223,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation}
                   onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
                 </DrawerSection>}
-                {exceptions.length > 0 && <DrawerSection section="runs.exceptions" name={studioName('exceptions')} count={exceptions.length}>
+                {exceptions.length > 0 && <DrawerSection sections={drawerSections} id="runs.exceptions" name={studioName('exceptions')} count={exceptions.length}>
                   <SweepExceptions exceptions={exceptions}
                     onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />
                 </DrawerSection>}
-                {step.inputs.length > 0 && <DrawerSection section="runs.inputs" name={studioName('inputs')} bodyClassName="px-1">
+                {step.inputs.length > 0 && <DrawerSection sections={drawerSections} id="runs.inputs" name={studioName('inputs')} bodyClassName="px-1">
                   <dl>{step.inputs.map(({ id, label, sourceStepId, subset }) => <div key={id} className="border-t border-shell-divider py-1">
                     <dt>{label}</dt>
                     <dd className="text-shell-muted">{plan.steps.find((item) => item.id === sourceStepId)?.label}</dd>
@@ -1246,7 +1245,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     </dd>}
                   </div>)}</dl>
                 </DrawerSection>}
-              </DrawerSections> : undefined,
+              </Drawer> : undefined,
               inspector: selectedRuns(step, state.selection).length > 0
                 ? <StudioRunDetails step={step} state={state}
                   detail={selectedEvaluation?.checkpoint_series
@@ -1286,7 +1285,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           return { body: withProblem(noView) };
         }}
       />
-      </WindowSectionsProvider>
       {runRemoval.dialog}
     </RunRemovalContext.Provider>
   );
