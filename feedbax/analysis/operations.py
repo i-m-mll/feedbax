@@ -91,6 +91,7 @@ class OperationRegistry:
 
     def __init__(self) -> None:
         self._entries: dict[str, RegisteredOperation] = {}
+        self._renames: dict[str, str] = {}
         self._sealed = False
 
     def register_declaration(
@@ -99,9 +100,12 @@ class OperationRegistry:
     ) -> None:
         if self._sealed:
             raise RuntimeError("Operation registry is sealed")
-        validate_declaration_key(key)
-        if key in self._entries:
-            raise ValueError(f"Operation {key!r} is already registered")
+        if key in declaration.renamed_from:
+            raise ValueError(f"Operation {key!r} repeats its own key in rename history")
+        for name in (key, *declaration.renamed_from):
+            validate_declaration_key(name)
+            if name in self._entries or name in self._renames:
+                raise ValueError(f"Operation {name!r} is already registered")
         annotations = get_type_hints(function, include_extras=True)
         parameters = signature(function).parameters
         model = declaration.settings_model
@@ -154,12 +158,13 @@ class OperationRegistry:
         self._entries[key] = RegisteredOperation(
             function, model, definition.model_copy(deep=True), source, task_parameters,
         )
+        self._renames.update(dict.fromkeys(declaration.renamed_from, key))
 
     def keys(self) -> tuple[str, ...]:
         return tuple(sorted(self._entries))
 
     def resolve(self, key: str) -> RegisteredOperation:
-        entry = self._entries[key]
+        entry = self._entries[self._renames.get(key, key)]
         return RegisteredOperation(
             entry.function, entry.parameter_model, entry.definition.model_copy(deep=True), entry.source,
             entry.task_parameters,

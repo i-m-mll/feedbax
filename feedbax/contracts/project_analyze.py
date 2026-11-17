@@ -41,6 +41,7 @@ from feedbax.contracts.request_specs import (
     RequestSpec,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
+from feedbax.plugins.declarations import missing_declaration
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
@@ -215,7 +216,7 @@ class _Lowerer:
             operation = self.operations.resolve(element.operation)
         except KeyError:
             self.problem(
-                path + ".operation", f"Unknown registered operation {element.operation!r}.", name
+                path + ".operation", missing_declaration("operation", element.operation), name
             )
             return
         try:
