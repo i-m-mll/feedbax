@@ -1288,7 +1288,7 @@ class SlotSpec(StrictModel):
 
 
 class FigureTemplate(StrictModel):
-    """Registered, data-free figure shape."""
+    """Inline, data-free figure shape with slots and layout defaults."""
 
     schema_id: str = FIGURE_TEMPLATE_SCHEMA_ID
     schema_version: str = FIGURE_TEMPLATE_SCHEMA_VERSION
@@ -1577,7 +1577,7 @@ class FigureSpec(StrictModel):
     schema_id: str = FIGURE_SPEC_SCHEMA_ID
     schema_version: str = FIGURE_SPEC_SCHEMA_VERSION
     name: str
-    template: str | FigureTemplate | None = None
+    template: FigureTemplate | None = None
     assembler: str | None = None
     assembler_params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[ParentRef] = Field(default_factory=list)
@@ -2040,15 +2040,13 @@ def apply_project_figure_policy(
     *,
     policy_source: ContentPinnedJsonBase | None = None,
     repo_root: Path | str | None = None,
-    figure_templates: Sequence[FigureTemplate] = (),
     recorded: ProjectFigurePolicyProvenance | None = None,
 ) -> tuple[FigureSpec, ProjectFigurePolicyProvenance | None]:
     """Resolve one explicit pinned project policy before figure identity.
 
     A recorded selection is used for replay and never re-reads the project file.
     A fresh selection verifies the content pin beneath the explicitly supplied
-    project root. Exactly one consumed named template is frozen inline; unrelated
-    registry definitions never enter the result or provenance.
+    project root. The figure's inline template contributes its layout defaults.
     """
     if policy_source is not None and recorded is not None:
         raise ValueError("project figure policy accepts either a fresh source or recorded custody")
@@ -2064,27 +2062,7 @@ def apply_project_figure_policy(
         source = recorded.source
     policy = ProjectFigurePolicy.model_validate(selected)
 
-    consumed_template: FigureTemplate | None
-    if isinstance(figure_spec.template, FigureTemplate):
-        consumed_template = figure_spec.template
-    elif isinstance(figure_spec.template, str):
-        matches = [
-            template for template in figure_templates if template.name == figure_spec.template
-        ]
-        if recorded is not None and recorded.consumed_template is not None:
-            if recorded.consumed_template.name != figure_spec.template:
-                raise ValueError(
-                    "recorded project figure template does not match the authored template name"
-                )
-            matches = [recorded.consumed_template]
-        if len(matches) != 1:
-            raise ValueError(
-                f"governed project figure requires one frozen FigureTemplate "
-                f"definition for {figure_spec.template!r}; found {len(matches)}"
-            )
-        consumed_template = matches[0].model_copy(deep=True)
-    else:
-        consumed_template = None
+    consumed_template = figure_spec.template
 
     assembler_params = _overlay_mapping({}, policy.defaults.assembler_params)
     if consumed_template is not None:

@@ -20,6 +20,8 @@ examples/markdown/
 models/
 !feedbax/models/
 !feedbax/models/**
+!feedbax/builtins/models/
+!feedbax/builtins/models/**
 !feedbax/web/models/
 *.eqx
 

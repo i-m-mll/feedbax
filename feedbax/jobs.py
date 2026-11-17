@@ -683,7 +683,7 @@ class JobService(PlanJobReader):
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
     ) -> AdmissionItem:
         from feedbax.light_jobs import LightDelivery, validate_light_request
-        from feedbax.contracts.request_specs import AnalysisRequestSpec
+        from feedbax.contracts.model_input import decode_document_input
         from feedbax.persistence.effective_success import store_document_inputs, store_request
 
         if isinstance(row, (PlannedRun, PlannedAnalyzeRun)) and row.requires:
@@ -692,7 +692,10 @@ class JobService(PlanJobReader):
             raise ValueError(f"{problem.path}: {problem.detail}")
         raw = plan.requests[node.request_id]
         decoded = decode_request(raw, plan.documents.__getitem__)
-        _, operation = validate_light_request(decoded, registry=self.registries)
+        _, operation = validate_light_request(
+            decoded, registry=self.registries,
+            read_document=lambda content: decode_document_input(content, plan.documents[content.sha256]),
+        )
         encoded = encode_request(decoded.spec, decoded.inputs)
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")
@@ -729,14 +732,12 @@ class JobService(PlanJobReader):
         store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
         payload = LightDelivery(
             project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded),
-            provider=operation.source if operation is not None else None,
         )
         profile = self._light_worker
         slot = "light"
-        if isinstance(decoded.spec, AnalysisRequestSpec) and (computation := decoded.spec.computation) is not None:
-            if numerical := computation.numerical:
-                profile = replace(profile, env=numerical.environment(), preload=("jax",))
-                slot = "compute"
+        if operation is not None and (numerical := operation.value.definition.numerical) is not None:
+            profile = replace(profile, env=numerical.environment(), preload=("jax",))
+            slot = "compute"
         launch = replace(profile, payload=payload.model_dump(mode="json"))
         return AdmissionItem(run_key=name, job=Job(
             id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot=slot,

@@ -2295,9 +2295,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             FIGURE_TEMPLATE_SCHEMA_ID,
             FIGURE_TEMPLATE_SCHEMA_VERSION,
             owner_module="feedbax.contracts.figures",
-            emitted_by=("feedbax.plot.constructors.register_figure_template",),
+            emitted_by=("feedbax.contracts.figures.FigureSpec",),
             consumed_by=("feedbax.analysis.figures.execute_figure_spec",),
-            description="Registered data-free figure shape.",
+            description="Inline data-free figure shape.",
             required_tests=("tests/test_declarative_figures.py",),
         ),
         _family(

@@ -1322,26 +1322,6 @@
         ]
       }
     },
-    "feedbax.contracts.operation.JaxOperation": {
-      "backend": {
-        "values": [
-          "cpu",
-          "gpu"
-        ]
-      },
-      "floating_point_bits": {
-        "values": [
-          32,
-          64
-        ]
-      }
-    },
-    "feedbax.contracts.operation.OperationComputation": {
-      "numerical": {
-        "absent": null
-      },
-      "revision": {}
-    },
     "feedbax.contracts.report_document.ReportDocument": {
       "blocks": {
         "families": [
@@ -1524,9 +1504,6 @@
     },
     "feedbax.contracts.request_specs.AnalysisRequestSpec": {
       "analysis_type": {},
-      "computation": {
-        "absent": null
-      },
       "evaluation_states_policy": {
         "absent": "recompute",
         "values": [

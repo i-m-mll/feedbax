@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from inspect import Parameter, signature
 from typing import Annotated, Literal, get_args, get_origin, get_type_hints
 
@@ -15,7 +15,8 @@ from feedbax.contracts.operation import (
 from feedbax.dataset import Dataset
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.plugins.declarations import (
-    CallableDeclaration, DistributionSource, mark_callable, settings_schema, validate_declaration_key,
+    CallableDeclaration, DeclarationRegistry, DistributionSource, ResolvedDeclaration, mark_callable,
+    settings_schema, validate_declaration_key,
 )
 from feedbax.tasks.registry import PythonTaskInstance
 
@@ -37,13 +38,12 @@ def operation(
     settings: type[BaseModel],
     key: str | None = None,
     label: str | None = None,
-    revision: int = 1,
     renamed_from: tuple[str, ...] = (),
     numerical: JaxOperation | None = None,
 ):
     """Declare a dataset-producing function for discovery by the package scanner."""
     declaration = OperationDeclaration(
-        key=key, label=label, settings_model=settings, revision=revision,
+        key=key, label=label, settings_model=settings,
         renamed_from=renamed_from, numerical=numerical,
     )
     return lambda function: mark_callable(function, declaration)
@@ -51,10 +51,8 @@ def operation(
 
 @dataclass(frozen=True)
 class RegisteredOperation:
-    function: Callable[..., Dataset]
     parameter_model: type[BaseModel]
     definition: OperationDefinition
-    source: DistributionSource
     task_parameters: type[BaseModel] | None
 
 
@@ -90,18 +88,13 @@ class OperationRegistry:
     """Namespaced pure functions and their one authoring projection."""
 
     def __init__(self) -> None:
-        self._entries: dict[str, RegisteredOperation] = {}
-        self._sealed = False
+        self._entries = DeclarationRegistry[RegisteredOperation]("operation")
 
     def register_declaration(
         self, function: Callable[..., Dataset], declaration: OperationDeclaration, *,
         key: str, source: DistributionSource,
     ) -> None:
-        if self._sealed:
-            raise RuntimeError("Operation registry is sealed")
-        validate_declaration_key(key)
-        if key in self._entries:
-            raise ValueError(f"Operation {key!r} is already registered")
+        self._entries.require_mutable()
         annotations = get_type_hints(function, include_extras=True)
         parameters = signature(function).parameters
         model = declaration.settings_model
@@ -140,7 +133,6 @@ class OperationRegistry:
             key=key,
             owner=source.distribution,
             owner_version=source.version,
-            revision=declaration.revision,
             renamed_from=declaration.renamed_from,
             label=declaration.label or function.__name__,
             description=function.__doc__ or "",
@@ -151,22 +143,20 @@ class OperationRegistry:
             outputs={output.name: output.port},
             numerical=declaration.numerical,
         )
-        self._entries[key] = RegisteredOperation(
-            function, model, definition.model_copy(deep=True), source, task_parameters,
+        self._entries.add(
+            key, source, function, RegisteredOperation(model, definition, task_parameters),
+            renamed_from=declaration.renamed_from,
         )
 
     def keys(self) -> tuple[str, ...]:
-        return tuple(sorted(self._entries))
+        return self._entries.keys()
 
-    def resolve(self, key: str) -> RegisteredOperation:
-        entry = self._entries[key]
-        return RegisteredOperation(
-            entry.function, entry.parameter_model, entry.definition.model_copy(deep=True), entry.source,
-            entry.task_parameters,
-        )
+    def resolve(self, key: str) -> ResolvedDeclaration[RegisteredOperation]:
+        entry = self._entries.resolve(key)
+        return replace(entry, value=replace(entry.value, definition=entry.value.definition.model_copy(deep=True)))
 
     def definitions(self) -> tuple[OperationDefinition, ...]:
-        return tuple(self.resolve(key).definition for key in self.keys())
+        return tuple(self.resolve(key).value.definition for key in self.keys())
 
     def seal(self) -> None:
-        self._sealed = True
+        self._entries.seal()

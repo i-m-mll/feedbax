@@ -17,3 +17,8 @@ def install_test_package(project: Path, root: Path) -> Path:
         check=True, timeout=30, capture_output=True, text=True,
     )
     return target
+
+
+def install_discovery_fixture(root: Path) -> Path:
+    fixture = Path(__file__).parents[1] / "fixtures" / "downstream" / "discovery_provider"
+    return install_test_package(fixture, root)

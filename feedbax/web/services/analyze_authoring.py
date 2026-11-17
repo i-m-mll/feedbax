@@ -1,7 +1,7 @@
 """Project registered operation controls and review saved-folder Analyze connections."""
 
-from feedbax.analysis.figure_presets import velocity_summary_figure
 from feedbax.analysis.operations import OperationRegistry
+from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource, StepInput
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import validate_figure_bindings
@@ -26,6 +26,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectFilePatch,
 )
 from feedbax.jobs import JobConflict, JobNotFound
+from feedbax.plot.templates import FigureTemplateRegistry
 from feedbax.web.services.project_folder import ProjectFolderInvalid
 from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
 
@@ -42,7 +43,7 @@ def _port(
         return states
     try:
         operation = analysis.operations[source.element].operation
-        return registry.resolve(operation).definition.outputs[source.product]
+        return registry.resolve(operation).value.definition.outputs[source.product]
     except KeyError as error:
         raise ValueError(f"Unknown dataset output {source.element}.{source.product}.") from error
 
@@ -56,13 +57,14 @@ def review_wire(
     states: DatasetPort,
     *,
     readers: BaseReaders = BaseReaders(),
+    figure_templates: FigureTemplateRegistry | None = None,
 ) -> StudioProjectFilePatch:
     analysis = AnalysisDocument.model_validate(project.documents[document].payload)
     family = "operations" if wire.element in analysis.operations else "views"
     source = _port(wire.source, analysis, registry, states)
     if family == "operations":
         operation = analysis.operations[wire.element]
-        expected = registry.resolve(operation.operation).definition.inputs.get(wire.role)
+        expected = registry.resolve(operation.operation).value.definition.inputs.get(wire.role)
         if expected is None:
             raise ValueError(f"Unknown operation input {wire.role!r}.")
         if not isinstance(expected, DatasetPort):
@@ -76,7 +78,9 @@ def review_wire(
     bindings = proposal.documents[document].payload[family][wire.element]["inputs"]
     operation = "replace" if wire.role in bindings else "add"
     bindings[wire.role] = binding
-    plan = compile_project(proposal, operations=registry, readers=readers)
+    plan = compile_project(
+        proposal, operations=registry, figure_templates=figure_templates, readers=readers,
+    )
     problems = [
         problem for problem in plan.diagnostics
         if (problem.variant, problem.step, problem.row) == (key.variant, key.step, key.row)
@@ -213,7 +217,8 @@ def analyze_authoring(
         definitions = list(registry.definitions())
         reviewed = (
             [review_wire(
-                project, key, step.base.document, body.wire, registry, states, readers=view.settled.readers,
+                project, key, step.base.document, body.wire, registry, states,
+                readers=view.settled.readers, figure_templates=service.jobs.registries.figure_templates,
             )]
             if body.wire
             else []
@@ -228,6 +233,6 @@ def analyze_authoring(
         variables={
             definition.key: _variable_choices(definition, states) for definition in definitions
         },
-        figure=velocity_summary_figure(),
+        figure=VelocitySummary(VelocitySummarySettings()),
         files=reviewed,
     )

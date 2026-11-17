@@ -11,8 +11,9 @@ from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.expression_values import Problem, ProblemCode, Site, ValueType
 from feedbax.contracts.task_document import PythonTaskSelection
-from feedbax.plugins.declarations import CallableDeclaration, DistributionSource, missing_declaration
-from feedbax.registry_errors import RegistryCollisionError
+from feedbax.plugins.declarations import (
+    CallableDeclaration, DeclarationRegistry, DistributionSource, ResolvedDeclaration, missing_declaration,
+)
 
 if TYPE_CHECKING:
     from feedbax.compiler.model_document import ResolvedModelInterface
@@ -33,7 +34,6 @@ class PythonTask[Settings: BaseModel](ABC):
     key: ClassVar[str | None] = None
     label: ClassVar[str | None] = None
     settings_model: type[Settings]
-    revision: ClassVar[int] = 1
     renamed_from: ClassVar[tuple[str, ...]] = ()
     parameter_sites: ClassVar[Mapping[str, Site]] = {}
 
@@ -50,7 +50,6 @@ class PythonTaskDefinition[Settings: BaseModel]:
     template: Callable[[Settings], PythonTaskTemplate]
     parameter_sites: Mapping[str, Site]
     source: DistributionSource
-    revision: int
     renamed_from: tuple[str, ...]
 
 
@@ -68,43 +67,42 @@ class PythonTaskInstance[Parameters: BaseModel]:
 
 class PythonTaskRegistry:
     def __init__(self) -> None:
-        self._entries: dict[str, PythonTaskDefinition[Any]] = {}
-        self._renames: dict[str, str] = {}
-        self._sealed = False
+        self._declarations = DeclarationRegistry[PythonTaskDefinition[Any]]("Python task")
 
     def register_declaration[Settings: BaseModel](
         self, task: type[PythonTask[Settings]], *, key: str, source: DistributionSource,
     ) -> None:
-        if self._sealed:
-            raise RuntimeError("Python task registry is sealed")
+        self._declarations.require_mutable()
         metadata = vars(task)
         declaration = CallableDeclaration(
             key=key, label=metadata.get("label"), settings_model=task.settings_model,
-            revision=metadata.get("revision", 1), renamed_from=metadata.get("renamed_from", ()),
+            renamed_from=metadata.get("renamed_from", ()),
         )
-        for name in (key, *declaration.renamed_from):
-            if name in self._entries or name in self._renames:
-                raise RegistryCollisionError(f"Duplicate Python task {name!r}")
-        self._entries[key] = PythonTaskDefinition(
+        entry = PythonTaskDefinition(
             key=key,
             label=declaration.label or task.__name__,
             parameters=task.settings_model,
             template=task.template,
             parameter_sites=dict(task.parameter_sites),
             source=source,
-            revision=declaration.revision,
             renamed_from=declaration.renamed_from,
         )
-        self._renames.update(dict.fromkeys(declaration.renamed_from, key))
+        self._declarations.add(key, source, task, entry, renamed_from=entry.renamed_from)
 
     def keys(self) -> tuple[str, ...]:
-        return tuple(sorted(self._entries))
+        return self._declarations.keys()
+
+    def declaration_record(self, key: str) -> ResolvedDeclaration[PythonTaskDefinition[Any]]:
+        return self._declarations.resolve(key)
 
     def resolve(self, key: str) -> PythonTaskDefinition[Any] | None:
-        return self._entries.get(self._renames.get(key, key))
+        try:
+            return self.declaration_record(key).value
+        except KeyError:
+            return None
 
     def seal(self) -> None:
-        self._sealed = True
+        self._declarations.seal()
 
 
 def resolve_python_task_instance(

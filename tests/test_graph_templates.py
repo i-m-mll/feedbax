@@ -711,7 +711,7 @@ def test_authoring_normalization_does_not_turn_unsupported_runtime_params_into_p
     spec = GraphSpec(
         nodes={
             "network": ComponentSpec(
-                type="SimpleStagedNetwork",
+                type="feedbax.RecurrentController",
                 params={
                     "input_size": 4,
                     "hidden_size": 3,
@@ -738,7 +738,7 @@ def test_authoring_normalization_does_not_turn_unsupported_runtime_params_into_p
     normalized = normalize_graph_for_studio_authoring(spec)
 
     assert normalized.subgraphs is None
-    assert normalized.nodes["network"].type == "SimpleStagedNetwork"
+    assert normalized.nodes["network"].type == "feedbax.RecurrentController"
     assert "modulator_input" not in normalized.nodes["network"].params
 
 
@@ -1080,8 +1080,7 @@ def test_spec_to_graph_rejects_missing_network_subgraph_during_prototype_inferen
     spec = GraphSpec(
         nodes={
             "network": ComponentSpec(
-                type="Network",
-                params={"input_size": 3, "hidden_size": 5, "out_size": 2},
+                type="feedbax.Subgraph",
                 input_ports=["input", "feedback"],
                 output_ports=["output", "hidden"],
             ),

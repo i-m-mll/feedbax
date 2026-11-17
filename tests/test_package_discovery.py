@@ -26,15 +26,14 @@ from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.web.api.projects import router
 from feedbax.plugins.composition import load_application
-from tests.support.installed_package import install_test_package
+from tests.support.installed_package import install_discovery_fixture
 
-_FIXTURE = Path(__file__).parent / "fixtures" / "downstream" / "discovery_provider"
 _ANALYSIS = "entry_point_provider.shift_series"
 
 
 @pytest.fixture(scope="module")
 def installed_site(tmp_path_factory):
-    return install_test_package(_FIXTURE, tmp_path_factory.mktemp("installed-declarations"))
+    return install_discovery_fixture(tmp_path_factory.mktemp("installed-declarations"))
 
 
 def _child_environment(installed_site: Path) -> dict[str, str]:
@@ -70,9 +69,19 @@ def test_installed_package_appears_in_cli_and_studio_catalogs(installed_site, mo
             "distribution": "feedbax-discovery-fixture",
             "version": "2.7.1",
         }
+        if family != "components":
+            assert "revision" not in entry
         if family == "operations":
             assert entry["static_parameters"] == ["unit"]
             assert "default" not in entry["parameter_json_schema"]["properties"]["increments"]
+
+    resolved = state.bundle.operations.resolve("entry_point_provider.offset_series")
+    from entry_point_provider.declarations.examples import shift_series
+
+    assert resolved.key == _ANALYSIS
+    assert resolved.source.distribution == "feedbax-discovery-fixture"
+    assert resolved.source.version == "2.7.1"
+    assert resolved.defining_object is shift_series
 
 
 def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch, tmp_path):

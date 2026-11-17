@@ -6,22 +6,14 @@ from feedbax.analysis.evaluation import (
     EvaluationRecipeRegistry,
     EvaluationRecipeResult,
 )
-from feedbax.contracts.figures import FigurePiece, FigureTemplate
+from feedbax.contracts.figures import FigurePiece
 from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.manifest import EvaluationRunSpec
-from feedbax.plot.constructors import (
-    FigureRegistry,
-)
+from feedbax.plot.constructors import FigureRegistry
 
 
-def test_downstream_figure_recipes_are_isolated_and_queryable() -> None:
+def test_downstream_figure_pieces_are_isolated_and_queryable() -> None:
     registry = FigureRegistry()
-    template = FigureTemplate(
-        name="downstream.condition_comparison",
-        description="Compare resolved condition rows.",
-        assembler="feedbax.grid_figure",
-        facet_by=["condition"],
-    )
     piece = FigurePiece(
         name="downstream.metric_trace",
         description="Render one computed row metric.",
@@ -34,16 +26,12 @@ def test_downstream_figure_recipes_are_isolated_and_queryable() -> None:
         label="Metric",
         constructor="feedbax.profile_band",
     )
-    registry.register_template(template)
     registry.register_piece(piece)
 
-    assert template in registry.templates()
     assert piece in registry.pieces()
-    assert registry.template(template.name) == template
     assert registry.piece(piece.name) == piece
 
     isolated = FigureRegistry()
-    assert isolated.template(template.name) is None
     assert isolated.piece(piece.name) is None
 
 

@@ -406,11 +406,12 @@ def _run(
             documents = source_spec.trial_documents
             source_graph = trial.graph
             variant = None
-            if documents != spec.trial_documents or source_spec.seed != spec.seed:
+            if documents != spec.trial_documents:
                 from feedbax.studio.canonical_train import _resolve_trial
 
                 source_graph = _resolve_trial(source_spec, registries).graph
-                variant = trial.graph
+                if source_graph.graph != trial.graph.graph:
+                    variant = trial.graph
             model_source = CheckpointModelSource(
                 tree=restored.model.tree,
                 encoding=restored.model.encoding,
