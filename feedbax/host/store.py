@@ -339,7 +339,7 @@ class Store:
         ref = publish_train_success(
             root, row["id"], row["request"], payload, outcome, predecessor, collected=collected,
             target=attempt_target(json.loads(row["data"]).get("target")),
-            execution_evidence=self._execution_evidence(row, outcome),
+            execution_evidence=self._execution_evidence(outcome),
         )
         return outcome | {"store_success": ref}
 
@@ -558,7 +558,7 @@ class Store:
             attempt=row["id"], request_id=row["request"], project=row["project"],
             payload=payload, receipt=outcome["receipt"], binding=binding,
             target=attempt_target(json.loads(row["data"]).get("target")),
-            execution_evidence=self._execution_evidence(row, outcome),
+            execution_evidence=self._execution_evidence(outcome),
         )
         return outcome | {"store_success": ref.model_dump(mode="json")}
 
@@ -573,7 +573,7 @@ class Store:
             checkpoint_bindings=tuple(self.completion_bindings(row["id"])),
             provider=outcome.get("provider"),
             target=attempt_target(json.loads(row["data"]).get("target")),
-            execution_evidence=self._execution_evidence(row, outcome),
+            execution_evidence=self._execution_evidence(outcome),
         )
         return {
             "outcome": "succeeded",
@@ -582,12 +582,10 @@ class Store:
         }
 
     @staticmethod
-    def _execution_evidence(row: sqlite3.Row, outcome: dict) -> ContentObjectRef | None:
-        if "execution_evidence" in outcome:
-            return ContentObjectRef.model_validate(outcome["execution_evidence"])
-        if json.loads(row["launch"]).get("project_root") is not None:
+    def _execution_evidence(outcome: dict) -> ContentObjectRef:
+        if "execution_evidence" not in outcome:
             raise ValueError("The managed worker did not publish its execution evidence")
-        return None
+        return ContentObjectRef.model_validate(outcome["execution_evidence"])
 
     @staticmethod
     def _light_requests(launch: dict, project: str, request_id: str, slot: str) -> frozenset[str]:

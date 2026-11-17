@@ -30,16 +30,19 @@ class SourceFile:
     modified_ns: int
 
 
-def _stamp(metadata: stat_result) -> tuple[int, int]:
-    return metadata.st_size, metadata.st_mtime_ns
+type FileStamp = tuple[int, int, int, int, int]
+
+
+def _stamp(metadata: stat_result) -> FileStamp:
+    return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns
 
 
 class SourceCatalog:
     """A filesystem view whose cached bytes are shared by capture and comparison."""
 
     def __init__(self, roots: Mapping[str, Path]):
-        self._files: dict[Path, tuple[tuple[int, int], SourceFile]] = {}
-        self._digests: dict[Path, tuple[tuple[int, int], str]] = {}
+        self._files: dict[Path, tuple[FileStamp, SourceFile]] = {}
+        self._digests: dict[Path, tuple[FileStamp, str]] = {}
         self.set_roots(roots)
 
     def set_roots(self, roots: Mapping[str, Path]) -> None:
@@ -47,6 +50,8 @@ class SourceCatalog:
             ((name, root.resolve()) for name, root in roots.items()),
             key=lambda item: -len(item[1].parts),
         ))
+        self._files.clear()
+        self._digests.clear()
 
     def locate(self, path: Path) -> SourcePath | None:
         named = Path(os_path.abspath(path))
@@ -62,10 +67,14 @@ class SourceCatalog:
         return None
 
     def resolve(self, source: SourcePath) -> Path | None:
-        if (root := self.roots.get(source.scope)) is None:
+        if (named := self._named(source)) is None:
             return None
-        path = (root / source.path).resolve()
+        path = named.resolve()
         return path if any(path.is_relative_to(item) for item in self.roots.values()) else None
+
+    def _named(self, source: SourcePath) -> Path | None:
+        root = self.roots.get(source.scope)
+        return root / source.path if root is not None else None
 
     def file_digest(self, source: SourcePath) -> str | None:
         path = self.resolve(source)
@@ -88,23 +97,26 @@ class SourceCatalog:
         return digest
 
     def read(self, source: SourcePath) -> SourceFile | None:
-        path = self.resolve(source)
-        if path is None:
+        named = self._named(source)
+        if named is None:
             return None
         try:
-            metadata = path.stat()
+            metadata = named.stat()
         except FileNotFoundError:
             return None
         if not stat.S_ISREG(metadata.st_mode):
             return None
         stamp = _stamp(metadata)
-        if (cached := self._files.get(path)) is not None and cached[0] == stamp:
+        if (cached := self._files.get(named)) is not None and cached[0] == stamp:
             return cached[1]
+        path = self.resolve(source)
+        if path is None:
+            return None
         data = path.read_bytes()
-        if _stamp(path.stat()) != stamp:
+        if _stamp(named.stat()) != stamp or self.resolve(source) != path:
             raise OSError(f"Source changed while it was read: {source.scope}/{source.path}")
         file = SourceFile(data, sha256(data).hexdigest(), metadata.st_mtime_ns)
-        self._files[path] = stamp, file
+        self._files[named] = stamp, file
         return file
 
     def compare_source(
@@ -135,10 +147,20 @@ def plugin_packages() -> dict[str, str]:
 
 def loaded_source_roots() -> dict[str, Path]:
     roots = {"feedbax": Path(__file__).resolve().parents[1]}
-    for package, distribution in plugin_packages().items():
+    for package, distribution in sorted(plugin_packages().items()):
         module = sys.modules.get(package)
-        if isinstance(module, ModuleType) and isinstance(filename := vars(module).get("__file__"), str):
-            roots[f"plugin:{distribution}"] = Path(filename).parent
+        if not isinstance(module, ModuleType):
+            continue
+        if isinstance(filename := vars(module).get("__file__"), str):
+            package_roots = (Path(filename).parent,)
+        else:
+            package_roots = tuple(Path(path) for path in vars(module).get("__path__", ()))
+        depth = package.count(".")
+        for index, package_root in enumerate(package_roots):
+            if depth:
+                package_root = package_root.parents[depth - 1]
+            suffix = f":{index}" if len(package_roots) > 1 else ""
+            roots[f"plugin:{distribution}{suffix}"] = package_root.resolve()
     return roots
 
 
