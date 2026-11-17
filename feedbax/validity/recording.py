@@ -86,7 +86,7 @@ class WorkerRecorder:
         self.loaded: dict[SourcePath, SourceFile] = {}
         self.attempt: _Attempt | None = None
         self._audit = local()
-        self._host_depth = 0
+        self._numerical_depth = 0
 
     @cached_property
     def _distribution_owners(self) -> dict[str, list[str]]:
@@ -107,21 +107,22 @@ class WorkerRecorder:
             _audit_installed = True
         try:
             with self.host:
+                self.host.enable()
                 yield
         finally:
             _recorder = None
 
     @contextmanager
-    def host_product(self) -> Iterator[None]:
-        if self._host_depth == 0:
-            self.host.enable()
-        self._host_depth += 1
+    def numerical_work(self) -> Iterator[None]:
+        if self._numerical_depth == 0:
+            self.host.disable()
+        self._numerical_depth += 1
         try:
             yield
         finally:
-            self._host_depth -= 1
-            if self._host_depth == 0:
-                self.host.disable()
+            self._numerical_depth -= 1
+            if self._numerical_depth == 0:
+                self.host.enable()
 
     def _source_paths(self) -> dict[SourcePath, tuple[set[str], set[str]]]:
         self.catalog = source_catalog(self.project)
@@ -252,11 +253,13 @@ class WorkerRecorder:
 
     def _snapshot(self, attempt: _Attempt, store: ImmutableArtifactBlobProvider) -> ReceiptEvidence:
         self._verify_environment(attempt)
-        sources = []
+        computation = attempt.computation() if attempt.computation is not None else None
+        archived = {}
         def order(source: SourcePath) -> tuple[str, str]:
             return source.scope, source.path
 
-        for path, (entered, host) in sorted(self._source_paths().items(), key=lambda item: order(item[0])):
+        initial_roster = self._source_paths()
+        for path in sorted(initial_roster, key=order):
             source = self._current_source(path)
             if source is None:
                 attempt.indeterminate.add(path)
@@ -268,15 +271,18 @@ class WorkerRecorder:
                 sha256=source.sha256, size_bytes=len(source.data),
             )
             self._archive_source(store, ref, source.data)
-            sources.append(SourceSnapshot(
-                path=path, content=ref, entered=tuple(sorted(entered)), host_product=tuple(sorted(host)),
-            ))
+            archived[path] = ref
         self._verify_file_reads(attempt)
-        computation = attempt.computation() if attempt.computation is not None else None
+        roster = self._source_paths()
+        sources = tuple(
+            SourceSnapshot(path=path, content=ref, entered=tuple(sorted(entered)), host_product=tuple(sorted(host)))
+            for path, ref in archived.items()
+            for entered, host in (roster.get(path, initial_roster[path]),)
+        )
         return ReceiptEvidence(
             attempt=attempt.id,
             trace=CodeTrace(
-                sources=tuple(sources),
+                sources=sources,
                 registry=tuple(sorted({
                     registry_binding(family, key, value, self.catalog)
                     for (family, key, _), value in attempt.resolutions.items()
@@ -379,12 +385,12 @@ class WorkerRecorder:
 
 
 @contextmanager
-def host_product() -> Iterator[None]:
-    """Observe the Python code that contributes to an output outside a lowered program."""
+def numerical_work() -> Iterator[None]:
+    """Suspend protected Host observation while executing covered numerical work."""
     if _recorder is None:
         yield
     else:
-        with _recorder.host_product():
+        with _recorder.numerical_work():
             yield
 
 

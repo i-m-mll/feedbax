@@ -9,20 +9,22 @@ from types import ModuleType
 
 import pytest
 
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import SourcePath
 from feedbax.contracts.effective_success import Product
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.request_specs import ReportRequestSpec
+from feedbax.host.io import EVIDENCE_FILE, append
 from feedbax.host.source_roster import SourceRoster
+from feedbax.host.worker import _record_execution
 from feedbax.orchestration.revision import FeedbaxProvenance
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.plugins.declarations import DeclarationRegistry, DistributionSource
 from feedbax.validity.environment import EnvironmentMismatch, read_environment
-from feedbax.validity.evidence import stage_evidence
-from feedbax.validity.recording import WorkerRecorder, host_product, snapshot_execution
+from feedbax.validity.recording import WorkerRecorder, numerical_work
 from feedbax.validity.source import SourceCatalog, source_catalog
 
 
@@ -84,7 +86,10 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
     project = tmp_path / "project"
     project.mkdir()
     source = project / "operation.py"
-    source.write_text("def prepare():\n    return 7\n\ndef read_input(path):\n    return path.read_text()\n")
+    source.write_text(
+        "def prepare():\n    return 7\n\ndef read_input(path):\n    return path.read_text()\n"
+        "\ndef compute():\n    return 42\n\ndef run(argv):\n    return argv[0]()\n"
+    )
     before = project / "before.txt"
     before.write_text("first contents")
     after = project / "after.txt"
@@ -102,6 +107,20 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
     monkeypatch.setitem(sys.modules, spec.name, module)
     registry = DeclarationRegistry("operation")
     named_file = SourcePath(scope="project", path=selected.name)
+    log = tmp_path / "worker" / "events.jsonl"
+    log.parent.mkdir()
+    log.touch()
+
+    def execute():
+        read = registry.resolve("example.read").defining_object
+        assert read(selected) == "first contents"
+        selected.unlink()
+        selected.symlink_to(after.name)
+        assert read(selected) == "second contents"
+        with numerical_work():
+            assert module.compute() == 42
+        append(log, "result", {"outcome": "succeeded"})
+        return 0
 
     boot_ns = time.time_ns()
     with SourceRoster(3, "test managed worker source") as roster:
@@ -115,19 +134,15 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
                 "example.operation", DistributionSource("example", "example", "1"), module.read_input,
                 None, renamed_from=("example.read",),
             )
-            with recorder.delivery("preparation", store.root, tmp_path / "scratch"), host_product():
+            with recorder.delivery("preparation", store.root, tmp_path / "scratch"):
                 assert module.prepare() == 7
 
-            with recorder.delivery("final", store.root, tmp_path / "scratch"):
-                read = registry.resolve("example.read").defining_object
-                assert read(selected) == "first contents"
-                selected.unlink()
-                selected.symlink_to(after.name)
-                assert read(selected) == "second contents"
-                with store._exclusive_lock():
-                    evidence = snapshot_execution(store)
-                    assert evidence is not None
-                    stage = stage_evidence(store, evidence)
+            assert _record_execution(
+                {"job_id": "final", "store_root": str(store.root), "project_root": str(project),
+                 "entrypoint": f"{spec.name}:run"},
+                recorder, log, module.run, [execute],
+            ) == 0
+            stage = ContentObjectRef.model_validate_json(log.with_name(EVIDENCE_FILE).read_bytes())
 
             source.write_text("def prepare():\n    return 8\n")
             assert recorder.changed()
@@ -142,7 +157,12 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
     assert trace is not None
     captured = next(item for item in trace.sources if item.path == SourcePath(scope="project", path=source.name))
     assert "prepare" in captured.entered and "prepare" in captured.host_product
-    assert "read_input" in captured.entered and "read_input" not in captured.host_product
+    assert {"run", "read_input"} <= set(captured.host_product)
+    assert "compute" in captured.entered and "compute" not in captured.host_product
+    runner = next(item for item in trace.sources if item.path == SourcePath(scope="feedbax", path="host/worker.py"))
+    assert "_record_execution" in runner.host_product
+    custody = next(item for item in trace.sources if item.path == SourcePath(scope="feedbax", path="validity/evidence.py"))
+    assert "stage_evidence" in custody.host_product
     (registered,) = trace.registry
     assert (registered.requested_key, registered.key, registered.source_path) == (
         "example.read", "example.operation", captured.path,
