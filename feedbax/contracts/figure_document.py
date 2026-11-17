@@ -144,14 +144,6 @@ class FigureTemplateRef(StrictModel):
     settings: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class ResolvedFigureTemplate(StrictModel):
-    """The declaration inputs that contributed to a figure's render identity."""
-
-    key: FigureTemplateKey
-    settings: dict[str, JsonValue]
-    revision: Annotated[StrictInt, Field(gt=0)]
-
-
 FigureSource = FigureDocument | FigureTemplateRef
 
 
