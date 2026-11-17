@@ -30,16 +30,19 @@ class SourceFile:
     modified_ns: int
 
 
-def _stamp(metadata: stat_result) -> tuple[int, int]:
-    return metadata.st_size, metadata.st_mtime_ns
+type FileStamp = tuple[int, int, int, int, int]
+
+
+def _stamp(metadata: stat_result) -> FileStamp:
+    return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns
 
 
 class SourceCatalog:
     """A filesystem view whose cached bytes are shared by capture and comparison."""
 
     def __init__(self, roots: Mapping[str, Path]):
-        self._files: dict[Path, tuple[tuple[int, int], SourceFile]] = {}
-        self._digests: dict[Path, tuple[tuple[int, int], str]] = {}
+        self._files: dict[Path, tuple[FileStamp, SourceFile]] = {}
+        self._digests: dict[Path, tuple[FileStamp, str]] = {}
         self.set_roots(roots)
 
     def set_roots(self, roots: Mapping[str, Path]) -> None:
@@ -47,6 +50,8 @@ class SourceCatalog:
             ((name, root.resolve()) for name, root in roots.items()),
             key=lambda item: -len(item[1].parts),
         ))
+        self._files.clear()
+        self._digests.clear()
 
     def locate(self, path: Path) -> SourcePath | None:
         named = Path(os_path.abspath(path))
@@ -62,10 +67,14 @@ class SourceCatalog:
         return None
 
     def resolve(self, source: SourcePath) -> Path | None:
-        if (root := self.roots.get(source.scope)) is None:
+        if (named := self._named(source)) is None:
             return None
-        path = (root / source.path).resolve()
+        path = named.resolve()
         return path if any(path.is_relative_to(item) for item in self.roots.values()) else None
+
+    def _named(self, source: SourcePath) -> Path | None:
+        root = self.roots.get(source.scope)
+        return root / source.path if root is not None else None
 
     def file_digest(self, source: SourcePath) -> str | None:
         path = self.resolve(source)
@@ -101,7 +110,7 @@ class SourceCatalog:
         if (cached := self._files.get(path)) is not None and cached[0] == stamp:
             return cached[1]
         data = path.read_bytes()
-        if _stamp(path.stat()) != stamp:
+        if _stamp(path.stat()) != stamp or self.resolve(source) != path:
             raise OSError(f"Source changed while it was read: {source.scope}/{source.path}")
         file = SourceFile(data, sha256(data).hexdigest(), metadata.st_mtime_ns)
         self._files[path] = stamp, file
@@ -138,7 +147,7 @@ def loaded_source_roots() -> dict[str, Path]:
     for package, distribution in plugin_packages().items():
         module = sys.modules.get(package)
         if isinstance(module, ModuleType) and isinstance(filename := vars(module).get("__file__"), str):
-            roots[f"plugin:{distribution}"] = Path(filename).parent
+            roots[f"plugin:{distribution}"] = Path(filename).resolve().parent
     return roots
 
 
