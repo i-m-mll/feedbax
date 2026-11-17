@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import type { Page } from '@playwright/test';
 import type {
   StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
@@ -217,9 +218,9 @@ test('a Train step keeps a new or duplicated Model with its Problems, and one Un
   expect((await saved()).project.documents).toEqual(objectiveBefore);
 });
 
-test('New in the Document header gives an empty report that cannot run', async ({ page, request }, info) => {
+test('New in the Document header gives an empty report that cannot run', async ({ page, request, studio }) => {
   const project = JSON.parse(await runProjectFixture(
-    'web.e2e.studio.fixtures.managed_report', 'seed', String(info.config.metadata.home), 'empty-report'));
+    'web.e2e.studio.fixtures.managed_report', 'seed', studio.home, 'empty-report'));
   const path = '/api/projects/' + project;
   const document = page.getByRole('tabpanel', { name: 'Document', exact: true });
   const header = document.locator('.studio-window-slot__header');

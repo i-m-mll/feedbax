@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import type { Page } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ModelDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
@@ -70,9 +71,9 @@ test('the Model inspector frames the document, one component and two', async ({ 
   }).toBe(true);
 });
 
-test('selecting a body in the Scene selects its card in the Model', async ({ page }, info) => {
+test('selecting a body in the Scene selects its card in the Model', async ({ page, studio }) => {
   const id = 'inspector-scene';
-  const folder = join(String(info.config.metadata.home), 'state', 'web', 'projects', id);
+  const folder = join(studio.home, 'state', 'web', 'projects', id);
   await runProjectFixture('tests.fixtures.scene_geometry', 'seed', folder);
   await mkdir(join(folder, 'steps'), { recursive: true });
   await writeFile(join(folder, 'steps', 'train.json'), JSON.stringify({
