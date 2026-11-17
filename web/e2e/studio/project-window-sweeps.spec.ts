@@ -93,7 +93,8 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await enter(seedText, `${(await seedText.inputValue()).replace(/,$/, '')}, 9`);
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep seed' })).toHaveText('seed 2');
-  await expect(card).toContainText(/learning-rate 3\s*×\s*seed 2/);
+  // Unarranged, the longer of the first two sweeps runs across, so seed comes first.
+  await expect(card).toContainText('seed 2 · learning-rate 3');
   await expect(table.getByRole('rowheader').locator('[aria-hidden="true"]')).toHaveText(['1', '2', '3', '4', '5', '6']);
   await expect(table.getByRole('columnheader')).toHaveText(['learning-rate', 'seed', 'Status', 'Progress']);
   await expect(page.locator('body')).not.toContainText(/value-\w|=value\b/);

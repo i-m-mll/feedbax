@@ -22,6 +22,13 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
   const header = primary.locator('.studio-window-slot__header');
   const rename = header.getByRole('textbox');
   const picker = (label: string) => header.getByRole('button', { name: new RegExp(`^${label} Document `) });
+  /** Opens a Document menu by keyboard. The menu takes focus on its first item after it mounts; keys sent before that reach the trigger. */
+  async function openMenu(label: string) {
+    await picker(label).press('Enter');
+    const menu = page.getByRole('menu', { name: `${label} Document`, exact: true });
+    await expect(menu.getByRole('menuitemradio').first()).toBeFocused();
+    return menu;
+  }
   async function saved() {
     const response = await request.get(projectPath);
     expect(response.ok()).toBe(true);
@@ -87,10 +94,11 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   await expect(picker('Objective')).toHaveText('simple-reaches-objective');
-  await picker('Objective').press('Enter');
+  const objectiveMenu = await openMenu('Objective');
   await page.keyboard.press('End');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
+  await expect(objectiveMenu.getByRole('menuitem', { name: 'New', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(rename).toBeFocused();
   await expect(rename).toHaveValue('objective');
@@ -103,18 +111,18 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
   await expect.poll(async () => (await uses('train'))?.objective.document).toBe('simple-reaches-objective');
 
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  await picker('Model').focus();
-  await page.keyboard.press('Enter');
-  const menu = page.getByRole('menu', { name: 'Model Document', exact: true });
+  const menu = await openMenu('Model');
   await expect(menu.getByRole('menuitemradio')).toHaveText(['point-mass']);
   await page.keyboard.press('End');
+  await expect(menu.getByRole('menuitem', { name: 'Rename', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(rename).toBeFocused();
   await expect(rename).toHaveValue('point-mass');
   await page.keyboard.press('Escape');
   await expect(picker('Model')).toHaveText('point-mass');
-  await picker('Model').press('Enter');
+  await openMenu('Model');
   await page.keyboard.press('End');
+  await expect(menu.getByRole('menuitem', { name: 'Rename', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await page.keyboard.type('arm');
   await page.keyboard.press('Enter');
