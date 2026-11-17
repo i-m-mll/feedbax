@@ -75,19 +75,6 @@ class ComponentDetailResponse(StudioApiModel):
     data: ComponentDefinition
 
 
-class ComponentRefreshPayload(StudioApiModel):
-    """Payload for component library refresh results."""
-
-    added: list[str]
-    removed: list[str]
-
-
-class ComponentRefreshResponse(StudioApiModel):
-    """Standard API envelope for component library refresh results."""
-
-    data: ComponentRefreshPayload
-
-
 class DomainListResponse(StudioApiModel):
     """Standard API envelope for domain registry listings."""
 

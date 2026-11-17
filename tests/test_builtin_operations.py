@@ -13,7 +13,8 @@ from feedbax.builtins.operations import (
 from feedbax.dataset import Dataset, Variable
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
-from feedbax.plugins.application import OPERATIONS, new_application_registry_bundle
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, state_key
 
 
@@ -62,7 +63,7 @@ def test_registered_operations_publish_typed_products_from_saved_states(tmp_path
     states_ref = publish_dataset(store, states)
     bundle = new_application_registry_bundle()
     bundle.seal()
-    assert OPERATIONS.registered_keys(bundle.operations) == (
+    assert bundle.operations.keys() == (
         "feedbax.aligned_velocity", "feedbax.summarize_velocity",
     )
     align, summarize = bundle.operations.definitions()
@@ -73,7 +74,10 @@ def test_registered_operations_publish_typed_products_from_saved_states(tmp_path
     assert summarize.parameter_json_schema["properties"]["ddof"]["minimum"] == 0
     assert summarize.parameter_json_schema["required"] == ["ddof"]
     with pytest.raises(RuntimeError, match="sealed"):
-        bundle.operations.register("demo.velocity", aligned_velocity, owner="demo", label="Velocity")
+        bundle.operations.register_declaration(
+            aligned_velocity, callable_declaration(aligned_velocity), key="demo.velocity",
+            source=DistributionSource("demo", "demo", "1"),
+        )
     run = bundle.operations.resolve(align.key)
     with (
         store.open_owned_object(states_ref.object_ref) as path,

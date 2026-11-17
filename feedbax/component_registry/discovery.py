@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from feedbax.contracts.portable import ComponentOwner, GraphTemplate
-from feedbax.plugins.declarations import DistributionSource
+from feedbax.plugins.declarations import DistributionSource, declaration_key
+
+from .history import History
+
+
+def component_declaration_key(owner: type[ComponentOwner], source: DistributionSource) -> str:
+    return declaration_key(owner.__name__, vars(owner).get("component_key"), source)
 
 
 def source_path(obj: Any) -> Path | None:
@@ -30,16 +36,14 @@ def compile_owner(
     *,
     key: str,
     source: DistributionSource,
+    history: History,
     registry,
 ):
-    from feedbax.contracts.portable import ComponentOwner, GraphTemplate
     from feedbax.contracts.portable import (
         ComponentOptions,
         configuration_model,
         configuration_paths,
     )
-    from .history import History
-
     if (
         not issubclass(cls, ComponentOwner)
         or cls in (ComponentOwner, GraphTemplate)
@@ -48,7 +52,6 @@ def compile_owner(
         raise TypeError(f"{cls!r} must be a concrete portable ComponentOwner")
     namespace, _, local_name = key.rpartition(".")
     options = (cls.component_options or ComponentOptions()).as_kwargs()
-    history = cls.component_history or History()
     configuration_paths(cls)
     model = configuration_model(cls)
     ports = cls.port_contract(registry=registry)
