@@ -9,6 +9,8 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from packaging.utils import canonicalize_name
+
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import CodeTrace, ReceiptEvidence
 from feedbax.contracts.computation_validity import NORMALIZATION_VERSION, ComputationTrace
@@ -21,7 +23,7 @@ from feedbax.validity.admission_projection import AdmissionProjection
 from feedbax.validity.environment import InstalledInventory, read_environment
 from feedbax.validity.evidence import execution_evidence_identity, read_execution_evidence
 from feedbax.validity.registry import snapshot_registry
-from feedbax.validity.source import SourceCatalog, source_catalog
+from feedbax.validity.source import SourceCatalog, admission_source_catalog
 
 if TYPE_CHECKING:
     from feedbax.host.protocol import ReusePolicy
@@ -70,7 +72,16 @@ class ProjectValidity:
     def projection(self) -> AdmissionProjection:
         if isinstance(self.registries, AdmissionProjection):
             return self.registries
-        return AdmissionProjection.capture(self._catalog.roots, tuple(self._registry.values()))
+        return AdmissionProjection.capture(self._catalog.roots, tuple(self._registry.values()), self._owners)
+
+    @cached_property
+    def _owners(self) -> dict[str, str]:
+        assert not isinstance(self.registries, AdmissionProjection)
+        return {
+            source.package: distribution
+            for source in self.registries.package_sources
+            if (distribution := canonicalize_name(source.distribution)) != "feedbax"
+        }
 
     @cached_property
     def _registry(self):
@@ -87,7 +98,7 @@ class ProjectValidity:
     def _catalog(self):
         if isinstance(self.registries, AdmissionProjection):
             return SourceCatalog(self.registries.roots)
-        return source_catalog(self.root)
+        return admission_source_catalog(self.root, self._owners)
 
     @cached_property
     def _environment(self):

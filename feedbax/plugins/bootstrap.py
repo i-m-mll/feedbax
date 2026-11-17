@@ -56,7 +56,10 @@ class PluginProvenance:
 @dataclass(frozen=True)
 class BootstrapState:
     bundle: ApplicationRegistryBundle
-    provenance: tuple[PluginProvenance, ...]
+
+    @property
+    def provenance(self) -> tuple[PluginProvenance, ...]:
+        return tuple(PluginProvenance(source) for source in self.bundle.package_sources)
 
     def registry(self, key: RegistryKey[T]) -> T:
         value = getattr(self.bundle, key.attribute)
