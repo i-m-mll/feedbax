@@ -38,6 +38,7 @@ class SourceSnapshot(ReferenceValue):
     path: SourcePath
     content: ContentObjectRef
     entered: tuple[Name, ...]
+    host_product: tuple[Name, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 class SourceDifference(ReferenceValue):
@@ -72,6 +73,7 @@ class CodeTrace(ReferenceValue):
     files: tuple[FileSnapshot, ...]
     environment: dict[Name, Name]
     indeterminate: tuple[SourcePath, ...]
+    prefixes: tuple[ContentObjectRef, ...] = Field(default=(), exclude_if=lambda value: not value)
 
 
 class AttemptProvenance(ReferenceValue):

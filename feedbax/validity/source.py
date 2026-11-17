@@ -10,10 +10,15 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
 from hashlib import sha256
+from importlib import metadata
 from os import stat_result
 from pathlib import Path
 import stat
 import symtable
+import sys
+from types import ModuleType
+
+from packaging.utils import canonicalize_name
 
 from feedbax.contracts.code_validity import SourceDifference, SourcePath
 
@@ -33,11 +38,14 @@ class SourceCatalog:
     """A filesystem view whose cached bytes are shared by capture and comparison."""
 
     def __init__(self, roots: Mapping[str, Path]):
+        self._files: dict[Path, tuple[tuple[int, int], SourceFile]] = {}
+        self.set_roots(roots)
+
+    def set_roots(self, roots: Mapping[str, Path]) -> None:
         self.roots = dict(sorted(
             ((name, root.resolve()) for name, root in roots.items()),
             key=lambda item: -len(item[1].parts),
         ))
-        self._files: dict[Path, tuple[tuple[int, int], SourceFile]] = {}
 
     def locate(self, path: Path) -> SourcePath | None:
         path = path.resolve()
@@ -85,6 +93,38 @@ class SourceCatalog:
         if current.sha256 == before:
             return None
         return compare_source(path, read_archived(), before, current, entered)
+
+
+@lru_cache(maxsize=1)
+def plugin_packages() -> dict[str, str]:
+    """Read declared plugin package owners without importing their packages."""
+    return {
+        entry.value: canonicalize_name(entry.dist.name)
+        for entry in metadata.entry_points(group="feedbax.plugins")
+        if entry.dist is not None and entry.dist.name and entry.value != "feedbax"
+    }
+
+
+def loaded_source_roots() -> dict[str, Path]:
+    roots = {"feedbax": Path(__file__).resolve().parents[1]}
+    for package, distribution in plugin_packages().items():
+        module = sys.modules.get(package)
+        if isinstance(module, ModuleType) and isinstance(filename := vars(module).get("__file__"), str):
+            roots[f"plugin:{distribution}"] = Path(filename).parent
+    return roots
+
+
+@lru_cache(maxsize=16)
+def _catalog(project_root: Path) -> SourceCatalog:
+    return SourceCatalog({"project": project_root, **loaded_source_roots()})
+
+
+def source_catalog(project_root: Path) -> SourceCatalog:
+    result = _catalog(project_root)
+    roots = {"project": project_root, **loaded_source_roots()}
+    if result.roots != roots:
+        result.set_roots(roots)
+    return result
 
 
 @lru_cache(maxsize=512)
