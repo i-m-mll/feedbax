@@ -411,7 +411,6 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   });
   await value('0.001').click();
   await value('0.002').click({ modifiers: ['Shift'] });
-  await expect(train).toContainText('2 of 3');
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');

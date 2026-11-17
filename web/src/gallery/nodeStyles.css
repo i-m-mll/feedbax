@@ -6,137 +6,22 @@
   border-radius: var(--radius-md);
 }
 
-/* React Flow default: its own stylesheet, recoloured through its variables in src/index.css. */
-.node-styles--stock .react-flow__node-default {
-  width: 200px;
+.node-styles__canvas .react-flow__node-card {
+  padding: 0;
+  border: 0;
+  background: none;
 }
 
-/* React Flow UI: BaseNode, NodeHeader and NodeStatusIndicator. */
-.node-flow-ui__status {
-  position: relative;
-  width: 200px;
-  border-radius: calc(var(--radius-md) + 2px);
-  padding: 2px;
-}
-
-.node-flow-ui__status[data-status='success'] { background: var(--studio-status-success); }
-.node-flow-ui__status[data-status='error'] { background: var(--studio-status-failure); }
-
-.node-flow-ui__status[data-status='loading'] {
-  overflow: hidden;
-}
-
-.node-flow-ui__status[data-status='loading']::before {
-  content: '';
-  position: absolute;
-  inset: -50%;
-  background: conic-gradient(from 0deg, transparent 0 55%, var(--studio-status-running) 100%);
-  animation: node-flow-ui-spin 2s linear infinite;
-}
-
-@keyframes node-flow-ui-spin {
-  to { transform: rotate(360deg); }
-}
-
-.node-flow-ui {
-  position: relative;
-  border: 1px solid var(--app-divider);
-  border-radius: var(--radius-md);
-  background: var(--surface-main);
-  color: var(--text-primary);
-  transition: box-shadow 120ms, border-color 120ms;
-}
-
-.node-flow-ui:hover {
-  box-shadow: 0 0 0 1px var(--neutral-alpha-15);
-}
-
-.node-flow-ui[data-selected] {
-  border-color: var(--text-muted);
-  box-shadow: var(--studio-shadow-lift);
-}
-
-.node-flow-ui__header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
-  border-bottom: 1px solid var(--app-divider);
-}
-
-.node-flow-ui__handle.react-flow__handle {
-  width: 10px;
-  height: 10px;
-  border: 1px solid var(--text-muted);
-  background: var(--surface-main);
-}
-
-/* Turbo Flow: a gradient border that glows and turns when selected. */
-.node-styles--turbo {
-  --turbo-start: var(--studio-status-failure);
-  --turbo-middle: var(--studio-shell-accent);
-  --turbo-end: var(--studio-status-running);
-  --turbo-gradient: linear-gradient(90deg, var(--turbo-start), var(--turbo-middle), var(--turbo-end));
-}
-
-.node-turbo {
-  position: relative;
-  width: 200px;
-  border-radius: 10px;
-  padding: 2px;
-  background: var(--turbo-gradient);
-}
-
-.node-turbo__glow {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  overflow: hidden;
-  filter: blur(14px);
-  opacity: 0;
-  transition: opacity 200ms;
-}
-
-.node-turbo__glow::before {
-  content: '';
-  position: absolute;
-  inset: -150% -20%;
-  background: conic-gradient(from 0deg, var(--turbo-start), var(--turbo-middle), var(--turbo-end), var(--turbo-start));
-  animation: node-flow-ui-spin 4s linear infinite;
-}
-
-.node-turbo:hover .node-turbo__glow { opacity: 0.4; }
-.node-turbo[data-selected] .node-turbo__glow { opacity: 0.8; }
-
-.node-turbo__body {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  border-radius: 8px;
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-header);
-  color: var(--text-primary);
-}
-
-.node-turbo__icon {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background: var(--neutral-alpha-08);
-}
-
-.node-turbo__handle.react-flow__handle,
 .node-card__handle.react-flow__handle {
   opacity: 0;
 }
 
-.node-turbo__edge {
-  stroke-width: 2;
+.node-styles__canvas .studio-map-edge .react-flow__edge-path {
+  stroke: var(--text-muted);
 }
 
-.node-turbo__stop-start { stop-color: var(--turbo-start); }
-.node-turbo__stop-end { stop-color: var(--turbo-end); }
+[data-card='turbo'] .node-styles__canvas .studio-map-edge .react-flow__edge-path,
+.node-styles__canvas[data-card='turbo'] .studio-map-edge .react-flow__edge-path {
+  stroke: url(#studio-map-turbo-edge);
+  stroke-width: 2;
+}

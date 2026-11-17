@@ -14,6 +14,10 @@ const rows = {
   face: { control: 'select', values: { system: 'system', 'work-sans': 'faceWorkSans', 'space-grotesk': 'faceSpaceGrotesk' } },
   size: { control: 'segments', values: { 12: 'pixels12', 13: 'pixels13', 14: 'pixels14' } },
   density: { control: 'segments', values: { compact: 'compact', regular: 'regular' } },
+  card: {
+    control: 'select',
+    values: { flow: 'cardFlowName', 'flow-ui': 'cardFlowUiName', turbo: 'cardTurboName', quiet: 'cardQuietName', ring: 'cardRingName' },
+  },
 } as const satisfies {
   [Choice in SettingChoice]: {
     control: 'segments' | 'select';

@@ -4,6 +4,7 @@ import type {
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
+import { palette } from './fixtures/studioKeyboard';
 
 test.use({ channel: 'chrome', trace: 'retain-on-failure', viewport: { width: 1440, height: 900 } });
 
@@ -59,8 +60,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   const runs = panel('Runs');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await expect(model).toBeFocused();
-  const card = page.getByRole('article', { name: 'Train train', exact: true });
-  await card.getByRole('button', { name: "1 Can't run", exact: true }).press('Enter');
+  await palette(page, 'problems', 'Problems');
   const problems = page.getByRole('dialog', { name: 'Problems', exact: true });
   await problems.getByRole('button', { name: 'Components · Model has no components.', exact: true }).press('Enter');
   await expect(problems).toBeHidden();

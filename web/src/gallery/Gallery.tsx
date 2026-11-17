@@ -4,7 +4,7 @@ import {
   ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { setAppearance } from '@/appearance/appearance';
+import { setAppearance, type AppearanceValue } from '@/appearance/appearance';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
@@ -36,7 +36,7 @@ type Theme = 'light' | 'dark';
 type Density = 'compact' | 'regular';
 type Labels = 'beside' | 'above';
 type ValueMark = 'hover' | 'quiet';
-type CardStyle = 'quiet' | 'ring';
+type CardStyle = AppearanceValue<'card'>;
 
 const kinds = [
   { value: 'train', label: 'Train', glyph: <Box /> },
@@ -224,11 +224,7 @@ export function Gallery() {
   const density = useRootAttribute<Density>('data-density');
   const labels = useRootAttribute<Labels>('data-inspector-labels');
   const valueMark = useRootAttribute<ValueMark>('data-value-mark');
-  const [cardStyle, setCardStyle] = useState<CardStyle>('quiet');
-  useLayoutEffect(() => {
-    if (cardStyle === 'quiet') delete document.documentElement.dataset.card;
-    else document.documentElement.dataset.card = cardStyle;
-  }, [cardStyle]);
+  const cardStyle = useRootAttribute<CardStyle>('data-card');
   const [text, setText] = useState('policy');
   const [number, setNumber] = useState<number | null>(0.001);
   const [position, setPosition] = useState(0.6);
@@ -258,8 +254,9 @@ export function Gallery() {
         <SegmentedControl<ValueMark> aria-label="Value mark" value={valueMark}
           onValueChange={(value) => setAppearance(window, 'value-mark', value)}
           items={[{ value: 'hover', label: 'Hover' }, { value: 'quiet', label: 'Quiet' }]} />
-        <SegmentedControl<CardStyle> aria-label="Card" value={cardStyle} onValueChange={setCardStyle}
-          items={[{ value: 'quiet', label: 'Quiet' }, { value: 'ring', label: 'Ring' }]} />
+        <Select<CardStyle> aria-label="Cards" value={cardStyle} onValueChange={(value) => setAppearance(window, 'card', value)}
+          items={[{ value: 'flow', label: 'React Flow' }, { value: 'flow-ui', label: 'React Flow UI' }, { value: 'turbo', label: 'Turbo' },
+            { value: 'quiet', label: 'Quiet' }, { value: 'ring', label: 'Ring' }]} />
       </header>
       <div className="grid max-w-5xl gap-6 p-6">
         <Group name="Button">

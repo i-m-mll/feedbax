@@ -431,7 +431,6 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await expect(valueButton('0.001')).toHaveAttribute('aria-pressed', 'true');
   await expect(valueButton('0.003')).toHaveAttribute('aria-pressed', 'true');
   await expect(valueButton('0.002')).toHaveAttribute('aria-pressed', 'false');
-  await expect(source).toContainText('2 of 3');
   await sweep.click();
   await page.keyboard.press('Tab');
   const mark = source.locator('.studio-map-run-mark').first();

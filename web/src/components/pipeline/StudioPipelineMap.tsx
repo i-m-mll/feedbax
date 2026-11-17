@@ -12,7 +12,10 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
-import { StatusMark } from '@/components/ui/StatusMark';
+import { appTip } from '@window-shell/browser/tooltip';
+import { Card, CardHead, type CardStatus } from '@/components/ui/Card';
+import { ScrollFade } from '@/components/ui/ScrollFade';
+import { StatusMark, worstStatus } from '@/components/ui/StatusMark';
 import {
   studioAccessibleName,
   studioCountOf,
@@ -31,7 +34,6 @@ import {
   selectionButton,
   indexPlanLineage,
   selectedRuns,
-  selectionTerms,
   selectStep,
   type PipelineSelection,
   type PipelineSelectionState,
@@ -125,7 +127,7 @@ function StatusCounts({ id, counts, onProblems }: {
   counts: PlanStepView['statusCounts'];
   onProblems?: (opener: HTMLButtonElement) => void;
 }) {
-  const className = 'inline-flex items-center gap-1 whitespace-nowrap';
+  const className = 'inline-flex items-center gap-1 whitespace-nowrap tabular-nums';
   const statuses = Object.entries(counts) as [StudioResultState, number][];
   if (onProblems && counts.cannot_run === undefined) statuses.push(['cannot_run', 0]);
   return (
@@ -133,12 +135,13 @@ function StatusCounts({ id, counts, onProblems }: {
       {statuses.map(([status, count]) => {
         const problem = status === 'cannot_run' && onProblems;
         if (count <= 0 && !problem) return null;
-        const mark = <><StatusMark status={status} />
-          {count > 0 ? `${count} ` : ''}{studioRunStatus(status)}</>;
+        const word = studioRunStatus(status);
+        const name = count > 0 ? `${count} ${word}` : word;
+        const mark = <><StatusMark status={status} />{count > 0 && count}</>;
         return problem
-          ? <Button variant="bare" size="content" key={status} className={`${className} underline`} aria-haspopup="dialog"
-            onClick={(event) => problem(event.currentTarget)}>{mark}</Button>
-          : <span key={status} className={className}>{mark}</span>;
+          ? <Button variant="bare" size="content" key={status} className={className} aria-haspopup="dialog"
+            aria-label={name} {...appTip(word)} onClick={(event) => problem(event.currentTarget)}>{mark}</Button>
+          : <span key={status} role="img" aria-label={name} className={className} {...appTip(word)}>{mark}</span>;
       })}
     </span>
   );
@@ -151,12 +154,19 @@ function stepLabel(step: PlanStepView, count?: string | number) {
 function StepName({ step }: { step: PlanStepView }) {
   const { Icon, name } = studioStep(step.kind);
   return (
-    <span className="flex min-w-0 items-center gap-1.5">
-      <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-      <span className="truncate font-medium">{step.label}</span>{' '}
-      <span data-map-kind-label className="shrink-0 text-xs text-shell-muted">{name}</span>
+    <span className="studio-card__title flex min-w-0 items-center gap-1.5">
+      <span className="studio-card__glyph" {...appTip(name)}><Icon aria-hidden="true" className="size-4" /></span>
+      <span className="truncate font-medium">{step.label}</span>
     </span>
   );
+}
+
+function cardStatus(counts: PlanStepView['statusCounts']): CardStatus | undefined {
+  const has = (...states: StudioResultState[]) => states.some((state) => (counts[state] ?? 0) > 0);
+  if (has('running', 'starting', 'collecting', 'stopping', 'checking')) return 'busy';
+  if (has('failed', 'corrupt', 'cannot_run', 'blocked', 'interrupted')) return 'failure';
+  const states = Object.keys(counts);
+  return states.length && states.every((state) => state === 'succeeded') ? 'success' : undefined;
 }
 
 export function bindSweepFold(
@@ -320,13 +330,11 @@ const StepCard = memo(function StepCard({
   const selected = useMemo(() => new Set(
     (compact ? [] : level === 'lit' ? step.runs : selectedRuns(step, selection)).map(({ id }) => id),
   ), [step, selection, level, compact]);
-  const terms = selection?.kind === 'steps' ? [] : selectionTerms(step, selection);
-  const { tint } = studioStep(step.kind);
   const related = (upstream?.size ?? 0) + (downstream?.size ?? 0) -
     (upstream && downstream ? [...upstream].filter((id) => downstream.has(id)).length : 0);
   const problem = onProblems && ((opener: HTMLButtonElement) => onProblems(step.id, opener));
   return (
-    <article
+    <Card
       data-map-card
       data-canvas-item
       data-map-step={step.id}
@@ -335,64 +343,68 @@ const StepCard = memo(function StepCard({
       data-map-related={related || undefined}
       data-map-dimmed={dimmed || undefined}
       data-document-scope={level}
+      selected={selection?.kind === 'steps'}
+      status={cardStatus(step.statusCounts)}
+      role="article"
       aria-label={studioAccessibleName(step.kind, step.label)}
-      className={`studio-map-card nopan pointer-events-auto relative space-y-2 rounded-lg border-2 bg-shell-surface px-3 py-2 text-sm shadow-sm focus-within:z-20 data-[map-dimmed=true]:border-dashed ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
-      style={{ borderColor: selection?.kind === 'steps' ? 'var(--text-primary)' : tint, width: compact ? compactMapCardWidth : mapCardWidth }}
+      className={`studio-map-card nopan pointer-events-auto text-sm focus-within:z-20 data-[map-dimmed=true]:border-dashed ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
+      style={{ width: compact ? compactMapCardWidth : mapCardWidth }}
     >
       <span id={`${id}-summary`} className="sr-only">
         {sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`).join(' · ')}
       </span>
-      <header className="relative">
-        <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-3 top-1/2" />
-        <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-3 top-1/2" />
+      <CardHead className="relative">
+        <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-px top-1/2" />
+        <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-px top-1/2" />
         <Button
           variant="bare"
           size="content"
+          align="start"
           data-canvas-focus
-          className="studio-map-card__head w-full rounded px-1 py-1 text-left hover:bg-shell-hover"
-          aria-label={studioAccessibleName('select', stepLabel(step, compact ? step.runs.length : undefined))}
-          aria-describedby={[`${id}-summary`, `${id}-status`, related ? `${id}-related` : ''].filter(Boolean).join(' ')}
+          className="studio-map-card__head flex w-full px-3 py-2"
+          aria-label={studioAccessibleName('select', stepLabel(step))}
+          aria-describedby={[`${id}-summary`, compact ? `${id}-status` : '', related ? `${id}-related` : ''].filter(Boolean).join(' ')}
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
           aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
           {...selectionButton((extend) => chooseStep(step.id, extend))}
         >
-          {compact ? <span className="flex items-center gap-1"><StepName step={step} />{' '}
-            <span className="ml-auto tabular-nums text-xs">{step.runs.length}</span></span> : <StepName step={step} />}
+          <StepName step={step} />
         </Button>
-      </header>
+      </CardHead>
       {related > 0 && <span id={`${id}-related`} className="sr-only">{studioCountOf(related, step.runs.length)}</span>}
-      {compact ? <>
+      {compact ? <div className="space-y-2 px-3 pb-2">
         <StatusCounts id={`${id}-status`} counts={step.statusCounts} onProblems={problem} />
-        {related > 0 && <span aria-hidden="true" className="block border-t-2 border-dotted border-shell-foreground"
+        {related > 0 && <span aria-hidden="true" className="block border-t-[1.5px] border-dotted border-shell-foreground"
           style={{ width: `${100 * related / step.runs.length}%` }} />}
-      </> : <>
-      <StepShape
-        step={step}
-        sweeps={sweeps}
-        folded={folded}
-        selection={selection}
-        presentation={presentation}
-        applySelection={applySelection}
-        onPresentationChange={onPresentationChange}
-        newSweep={newSweep}
-      />
-      <StatusCounts id={`${id}-status`} counts={step.statusCounts} onProblems={problem} />
-      <PipelineRunMarks
-        step={step}
-        sweeps={sweeps}
-        folded={folded}
-        selection={selection}
-        selected={selected}
-        upstream={upstream}
-        downstream={downstream}
-        applySelection={applySelection}
-        runMenu={runMenu}
-      />
+      </div> : <>
+      <div className="space-y-2 px-3 pb-2 empty:hidden">
+        {(sweeps.length > 0 || newSweep) && <StepShape
+          step={step}
+          sweeps={sweeps}
+          folded={folded}
+          selection={selection}
+          presentation={presentation}
+          applySelection={applySelection}
+          onPresentationChange={onPresentationChange}
+          newSweep={newSweep}
+        />}
+        <PipelineRunMarks
+          step={step}
+          sweeps={sweeps}
+          folded={folded}
+          selection={selection}
+          selected={selected}
+          upstream={upstream}
+          downstream={downstream}
+          applySelection={applySelection}
+          runMenu={runMenu}
+        />
+      </div>
       {step.inputs.some((input) => input.subset) && (
-        <ul className="-mx-3 divide-y divide-shell-divider border-t border-shell-divider">
+        <ul className="divide-y divide-shell-divider border-t border-shell-divider">
           {step.inputs.map(({ id, label, subset }) => subset && (
             <li key={id} className="relative px-3 py-1 text-xs text-shell-muted">
-              <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in', id)} className="pointer-events-none absolute left-0 top-1/2" />
+              <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in', id)} className="pointer-events-none absolute -left-px top-1/2" />
               <strong className="block font-medium">{label}</strong>
               <div className="flex min-w-0 flex-wrap items-baseline gap-x-1">
                 {subset.terms.length > 0 && <span className="min-w-0 break-words">{subset.terms.join(' · ')}</span>}
@@ -402,19 +414,13 @@ const StepCard = memo(function StepCard({
           ))}
         </ul>
       )}
-      {selection && (
-        <p className="flex items-baseline justify-between gap-x-1 text-xs text-shell-muted">
-          {terms.length > 0 && <span className="min-w-0 truncate">{terms.join(' · ')}</span>}
-          <span className="shrink-0 whitespace-nowrap tabular-nums">{studioCountOf(selected.size, step.runs.length)}</span>
-        </p>
-      )}
       {newStep && (
-        <IconButton variant="default" label={newStep.label} icon={<Plus aria-hidden="true" />}
-          className="absolute -right-3 top-1/2 -translate-y-1/2 bg-shell-surface"
+        <IconButton variant="default" size="mark" label={newStep.label} icon={<Plus aria-hidden="true" />}
+          className="studio-card__attached"
           {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke} />
       )}
       </>}
-    </article>
+    </Card>
   );
 });
 
@@ -490,9 +496,15 @@ function MapDiagram({
             style={{ gridTemplateColumns: `repeat(${layout.columns.length}, max-content)`,
               columnGap: mapColumnGap, padding: mapPadding }}>
             <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full">
+              <defs>
+                <linearGradient id="studio-map-turbo-edge" gradientUnits="userSpaceOnUse" x1={0} x2={geometry?.width ?? 1} y1={0} y2={0}>
+                  <stop offset="0%" style={{ stopColor: 'var(--turbo-start)' }} />
+                  <stop offset="100%" style={{ stopColor: 'var(--turbo-end)' }} />
+                </linearGradient>
+              </defs>
               {geometry?.paths.map(({ id, d }) => <path key={id} d={d} stroke="currentColor" fill="none"
                 data-map-edge={id} data-map-emphasis={strongEdges.has(id) ? 'strong' : 'light'}
-                className={strongEdges.has(id) ? 'text-shell-muted' : 'text-shell-divider'}
+                className={`studio-map-edge ${strongEdges.has(id) ? 'text-shell-muted' : 'text-shell-divider'}`}
                 strokeWidth={strongEdges.has(id) ? 2 : 1.5} />)}
             </svg>
             {children(compact)}
@@ -503,27 +515,58 @@ function MapDiagram({
   );
 }
 
-function MapDrawer({
-  steps,
-  selection,
-  related,
-  focusedStepId,
-  chooseStep,
-  documentScope,
-  newStep,
-  problemSteps,
-  onProblems,
-  framed = false,
-}: {
-  steps: readonly PlanStepView[];
+interface DrawerProps {
   selection: PipelineSelection | null;
   related: RunSetsByStep | null;
   focusedStepId?: string;
   chooseStep: ChooseStep;
+  applySelection: ApplyMapSelection;
   documentScope?: MapDocumentScope;
+}
+
+function StepRow({ step, selection, related, focusedStepId, chooseStep, applySelection, documentScope }: DrawerProps & {
+  step: PlanStepView;
+}) {
+  const scope = stepSelection(selection, step.id);
+  const count = related?.get(step.id)?.size ?? 0;
+  const summary = related && focusedStepId !== step.id ? studioCountOf(count, step.runs.length) : undefined;
+  const level = documentLevel(documentScope, step.id);
+  const worst = worstStatus(step.statusCounts);
+  const choose = selectionButton((extend) => chooseStep(step.id, extend));
+  const { Icon } = studioStep(step.kind);
+  const word = worst && studioRunStatus(worst.status);
+  const shown = worst && step.runs.length > 1 ? worst.count : undefined;
+  return (
+    <ListRow
+      selected={!!scope}
+      data-map-dimmed={Boolean(related && !count && focusedStepId !== step.id) || undefined}
+      data-document-scope={level}
+      className={`data-[document-scope=faint]:text-shell-muted data-[map-dimmed=true]:text-shell-muted ${!scope ? documentLitStyle : ''}`}
+      glyph={<Icon aria-hidden="true" />}
+      onClick={choose.onClick}
+      name={<Button variant="bare" size="content" align="start" className="block w-full truncate"
+        aria-current={scope ? 'step' : undefined}
+        aria-label={studioAccessibleName('select', stepLabel(step, summary))}
+        aria-pressed={documentScope ? level === 'lit' : undefined}
+        onKeyDown={choose.onKeyDown}>{step.label}</Button>}
+      trailing={worst && word && (
+        <Button variant="bare" size="content" className="inline-flex items-center gap-1 rounded-sm tabular-nums"
+          aria-label={studioAccessibleName('select', [shown, word].filter(Boolean).join(' '))} {...appTip(word)}
+          onClick={(event) => {
+            event.stopPropagation();
+            const runIds = step.runs.filter(({ state }) => state === worst.status).map(({ id }) => id);
+            applySelection(() => ({ selection: { kind: 'rows', stepId: step.id, runIds }, focus: null }));
+          }}>
+          <StatusMark status={worst.status} />{shown}
+        </Button>
+      )}
+    />
+  );
+}
+
+function MapDrawer({ steps, newStep, framed = false, ...props }: DrawerProps & {
+  steps: readonly PlanStepView[];
   newStep?: StudioCommand;
-  problemSteps?: StudioPipelineMapProps['problemSteps'];
-  onProblems?: StudioPipelineMapProps['onProblems'];
   framed?: boolean;
 }) {
   const groups = new Map<string | null, PlanStepView[]>();
@@ -534,63 +577,42 @@ function MapDrawer({
     else groups.set(group, [step]);
   }
   return (
-    <nav aria-label={studioName('steps')} className={`p-2 ${framed ? '' : 'w-52 shrink-0 overflow-auto border-r border-shell-divider bg-shell-chrome'}`}>
-      <ul className="space-y-1">
-        {Array.from(groups).map(([group, entries]) => (
-          <li key={group ?? ''}>
-            {group && <h3 className="px-1.5 text-xs font-medium text-shell-muted">{group}</h3>}
-            <ul>{entries.map((step) => {
-          const scope = stepSelection(selection, step.id);
-          const count = related?.get(step.id)?.size ?? 0;
-          const summary = related && focusedStepId !== step.id ? studioCountOf(count, step.runs.length) : undefined;
-          const level = documentLevel(documentScope, step.id);
-          return (
-            <li key={step.id}>
-              <Button
-                variant="bare"
-                size="content"
-                className={`w-full space-y-1 rounded border border-transparent p-1.5 text-left text-sm hover:bg-shell-hover aria-[current=step]:bg-shell-divider data-[map-dimmed=true]:border-dashed data-[map-dimmed=true]:border-shell-divider data-[document-scope=faint]:border-shell-divider ${documentLevelStyle} ${!scope ? documentLitStyle : ''}`}
-                aria-current={scope ? 'step' : undefined}
-                aria-label={studioAccessibleName('select', stepLabel(step, summary))}
-                aria-pressed={documentScope ? level === 'lit' : undefined}
-                data-map-dimmed={Boolean(related && !count && focusedStepId !== step.id) || undefined}
-                data-document-scope={level}
-                {...selectionButton((extend) => chooseStep(step.id, extend))}
-              >
-                <StepName step={step} />{' '}
-                {summary && <span className="block text-xs tabular-nums">{summary}</span>}
-              </Button>
-              <div className="px-1.5"><StatusCounts counts={step.statusCounts}
-                onProblems={problemSteps?.has(step.id) && onProblems ? (opener) => onProblems(step.id, opener) : undefined} /></div>
+    <nav aria-label={studioName('steps')} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-chrome'}`}>
+      {newStep && (
+        <div className="shrink-0 px-2 pt-2">
+          <ListRow role="button" tabIndex={0} glyph={<Plus aria-hidden="true" />} name={studioName('newStep')}
+            {...commandAttributes(newStep)} disabled={!newStep.enabled}
+            onClick={newStep.invoke}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              newStep.invoke();
+            }} />
+        </div>
+      )}
+      <ScrollFade axis="y" className="min-h-0 flex-1 p-2">
+        <ul className="space-y-1">
+          {Array.from(groups).map(([group, entries]) => (
+            <li key={group ?? ''}>
+              {group && <h3 className="px-row-inline text-xs font-medium text-shell-muted">{group}</h3>}
+              <ul>{entries.map((step) => <li key={step.id}><StepRow step={step} {...props} /></li>)}</ul>
             </li>
-          );
-        })}</ul></li>))}
-        {newStep && (
-          <li>
-            <ListRow role="button" tabIndex={0} glyph={<Plus aria-hidden="true" />} name={studioName('newStep')}
-              {...commandAttributes(newStep)} disabled={!newStep.enabled}
-              onClick={newStep.invoke}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
-                newStep.invoke();
-              }} />
-          </li>
-        )}
-      </ul>
+          ))}
+        </ul>
+      </ScrollFade>
     </nav>
   );
 }
 
-export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, problemSteps, onProblems, documentScope, onChooseStep }: Pick<
-  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'problemSteps' | 'onProblems' | 'documentScope' | 'onChooseStep'
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep'
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
+  const applySelection: ApplyMapSelection = (change) => onSelectionChange(change(state));
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
-    focusedStepId={state.focus?.stepId} documentScope={documentScope}
-    chooseStep={chooseMapStep((change) => onSelectionChange(change(state)), onChooseStep)}
-    newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })}
-    problemSteps={problemSteps} onProblems={onProblems} framed />;
+    focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
+    chooseStep={chooseMapStep(applySelection, onChooseStep)}
+    newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })} framed />;
 }
 
 function MapLine({
@@ -621,8 +643,8 @@ function MapLine({
               key={step.id}
               variant="bare"
               size="content"
-              className={`studio-map-line-step rounded border-2 bg-shell-surface p-1 text-sm text-shell-muted hover:bg-shell-hover ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
-              style={{ borderColor: stepSelection(selection, step.id)?.kind === 'steps' ? 'var(--text-primary)' : studioStep(step.kind).tint }}
+              className={`studio-card studio-map-line-step px-2 py-1 text-sm ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
+              data-selected={stepSelection(selection, step.id)?.kind === 'steps' || undefined}
               aria-label={studioAccessibleName('select', stepLabel(step))}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
               aria-pressed={documentScope ? documentScope.lit.has(step.id) : undefined}
@@ -728,10 +750,9 @@ export function StudioPipelineMap({
               related={related}
               focusedStepId={state.focus?.stepId}
               chooseStep={chooseStep}
+              applySelection={applySelection}
               documentScope={documentScope}
               newStep={firstStep}
-              problemSteps={problemSteps}
-              onProblems={onProblems}
             />
           )}
           <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus}

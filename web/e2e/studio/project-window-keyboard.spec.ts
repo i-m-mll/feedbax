@@ -76,7 +76,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(model.locator('[data-boundary="true"]')).toHaveCount(2);
   await expect(model.getByRole('button', { name: 'model', exact: true })).toBeVisible();
   const card = page.getByRole('article', { name: 'Train train', exact: true });
-  await expect(card.getByRole('button', { name: "1 Can't run", exact: true })).toBeVisible();
+  await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
 
   const undo = post(page, replayPath);
   await page.keyboard.press('Meta+Z');
@@ -132,7 +132,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await tab('Model').click();
   await expect(model.locator('.react-flow')).toBeVisible();
   await expect(model.getByRole('button', { name: 'model', exact: true })).toBeVisible();
-  await expect(card.getByRole('button', { name: "1 Can't run", exact: true })).toBeVisible();
+  await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
   await tab('Task').click();
   await expect(reach).toHaveValue('0.6');
   const persisted = await readSaved(request, projectPath);
