@@ -41,7 +41,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const authored = list ? list.values.map(({ value }) => value).join(', ') + (list.values.length === 1 ? ',' : '')
     : field.text;
   const effective = multipleRows ? undefined : field.effective ?? undefined;
-  const base = { names: [], functions: [], kinds: [], differs: false, type: { kind: 'number' } } as const;
+  const base = { names: [], functions: [], kinds: [], type: { kind: 'number' } } as const;
   const part = (id: string, name: Parameters<typeof studioName>[0], text: string,
     write: (text: string) => Promise<string | undefined>, integer = false): FieldModel => ({
     ...base, id, label: studioName(name), text, kind: 'value', type: { kind: integer ? 'integer' : 'number' },
@@ -94,7 +94,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     },
     parts,
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && !rowSelection,
-    differs: effective != null,
+    differs: effective ?? undefined,
     origin: origin(options),
     names: field.site.site.names ?? [],
     functions: field.site.functions,

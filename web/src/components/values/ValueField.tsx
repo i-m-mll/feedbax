@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { FunctionSquare } from 'lucide-react';
-import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { FieldKind } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
@@ -25,17 +25,32 @@ const kindGlyphs: Record<FieldKind, ReactNode> = {
   value: '·', sweep: '◇', draw: '~', formula: <FunctionSquare aria-hidden="true" />, shape: '∿', link: '↗',
 };
 
+/**
+ * Sends edits to the model's source. An edit made while the source is briefly unavailable (a save in flight, a
+ * projection being replaced) waits for it rather than being dropped.
+ */
 function useSubmit(model: FieldModel) {
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState<string>();
-  async function submit(edit: FieldEdit) {
-    if (!model.commit || busy) return false;
+  const waiting = useRef<{ edit: FieldEdit; resolve(done: boolean): void }>();
+  async function send(commit: NonNullable<FieldModel['commit']>, edit: FieldEdit) {
     setBusy(true);
-    const failure = await model.commit(edit);
+    const failure = await commit(edit);
     setBusy(false);
     setReason(failure);
     return !failure;
   }
+  function submit(edit: FieldEdit) {
+    if (busy) return Promise.resolve(false);
+    if (!model.commit) return new Promise<boolean>((resolve) => { waiting.current = { edit, resolve }; });
+    return send(model.commit, edit);
+  }
+  useEffect(() => {
+    const next = waiting.current;
+    if (!model.commit || !next) return;
+    waiting.current = undefined;
+    void send(model.commit, next.edit).then(next.resolve);
+  });
   return { busy, reason, setReason, submit };
 }
 
@@ -182,7 +197,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
         onClick={() => { setMenu(false); chooseKind(offer.kind, focusText); }}>{studioName(offer.kind)}</MenuItem>)}
     </MenuContent>
   </Menu> : undefined;
-  const differs = model.differs ? <output {...appTip(studioName('selectedValue'))}
+  const differs = model.differs !== undefined ? <output {...appTip(studioName('selectedValue'))} aria-description={model.differs}
     aria-label={studioFieldLabel('selectedValue', label)}>◆</output> : undefined;
   return <>
     <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={differs} className="min-w-0"

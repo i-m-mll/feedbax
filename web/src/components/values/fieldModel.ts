@@ -57,8 +57,8 @@ export interface FieldModel {
   readonly parts?: readonly FieldModel[];
   /** The sweep may be turned into its listed values. */
   readonly canList?: boolean;
-  /** The value set on the selection differs from the document's. */
-  readonly differs: boolean;
+  /** The value set on the selected runs, where it differs from the document's. */
+  readonly differs?: string;
   readonly origin?: string;
   readonly reason?: string;
   readonly names: readonly ScopedValue[];

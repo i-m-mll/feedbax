@@ -282,7 +282,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return { ...model, id: fieldName(field.address) };
   }));
   const projectedFields = sharedFields(projectedLists);
-  const fieldScope = JSON.stringify([saved.project_id, fieldRun?.variant, fieldRun?.step, fieldRows, fieldOwners.map(addressKey)]);
+  const fieldScope = JSON.stringify([saved.project_id, fieldRows, fieldOwners.map(addressKey)]);
   const ownNames = projectedLists.map((list) => new Set(list.map(({ id }) => id.split('.').at(-1)!)));
   const projectedNames = new Set([...ownNames[0] ?? []].filter((name) => ownNames.every((names) => names.has(name))));
   const addressedProblems = new Map<string, string>();
