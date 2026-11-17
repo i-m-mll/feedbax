@@ -6,6 +6,8 @@ mod project_document;
 mod studio_menu;
 
 use feedbax_studio::{activity_control::OPEN_ACTIVITY, service, window_session};
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSWindow;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -24,6 +26,7 @@ use tauri::{
     App, AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use window_session::{Folder, OpenWindows, RecentProject, RecentProjects, SavedWindow, Size};
+use window_shell_geometry::{appkit, Launch};
 
 static BUSY: AtomicBool = AtomicBool::new(false);
 const TITLE: &str = "Feedbax Studio";
@@ -235,6 +238,7 @@ fn status_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     WebviewWindowBuilder::new(app, "status", WebviewUrl::App("index.html".into()))
         .title(TITLE)
         .inner_size(640., 440.)
+        .focused(false)
         .devtools(false)
         .on_page_load(|window, page| {
             if page.event() == tauri::webview::PageLoadEvent::Finished {
@@ -275,10 +279,13 @@ fn render_status(window: &WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Brings a window forward, taking focus only when the launch mode allows it.
 fn focus(window: &WebviewWindow) -> tauri::Result<()> {
-    window.show()?;
-    window.unminimize()?;
-    window.set_focus()
+    window.with_webview(|platform| {
+        let main =
+            MainThreadMarker::new().expect("Tauri runs webview callbacks on the main thread");
+        appkit::present(main, unsafe { &*platform.ns_window().cast::<NSWindow>() });
+    })
 }
 
 fn refresh_project_session(
@@ -387,7 +394,7 @@ fn show_studio(
             .title(title)
             .inner_size(size.width, size.height)
             .min_inner_size(Size::MIN.width, Size::MIN.height)
-            .focused(focused)
+            .focused(false)
             .devtools(false)
             .data_store_identifier(storage_id)
             .initialization_script(script)
@@ -429,6 +436,9 @@ fn show_studio(
         ) {
             window.destroy()?;
             return Err(error);
+        }
+        if focused {
+            focus(&window)?;
         }
         Some(size)
     };
@@ -1207,7 +1217,13 @@ fn main() {
                 }
             }
         })
-        .build(tauri::generate_context!());
+        .build(tauri::generate_context!())
+        .map(|mut app| {
+            if Launch::current() == Launch::Background {
+                app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
+            }
+            app
+        });
     match application {
         Ok(app) => app.run(move |app, event| match event {
             RunEvent::Ready => {

@@ -181,6 +181,7 @@ fn show(app: &AppHandle, ticket: Url, storage: [u8; 16]) -> tauri::Result<()> {
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(ticket))
         .title("Activity")
         .inner_size(600., 660.)
+        .focused(false)
         .data_store_identifier(storage)
         .devtools(false)
         .on_navigation(move |url| {
