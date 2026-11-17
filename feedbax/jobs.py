@@ -683,6 +683,7 @@ class JobService(PlanJobReader):
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
     ) -> AdmissionItem:
         from feedbax.light_jobs import LightDelivery, validate_light_request
+        from feedbax.contracts.model_input import decode_document_input
         from feedbax.persistence.effective_success import store_document_inputs, store_request
 
         if isinstance(row, (PlannedRun, PlannedAnalyzeRun)) and row.requires:
@@ -691,7 +692,10 @@ class JobService(PlanJobReader):
             raise ValueError(f"{problem.path}: {problem.detail}")
         raw = plan.requests[node.request_id]
         decoded = decode_request(raw, plan.documents.__getitem__)
-        _, operation = validate_light_request(decoded, registry=self.registries)
+        _, operation = validate_light_request(
+            decoded, registry=self.registries,
+            read_document=lambda content: decode_document_input(content, plan.documents[content.sha256]),
+        )
         encoded = encode_request(decoded.spec, decoded.inputs)
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import to_json
 
+from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
@@ -2284,6 +2285,11 @@ class _Compiler:
                     reference.checkpoint not in (None, "last") and not isinstance(reference.checkpoint, BatchCheckpoint)
                 ):
                     problem(path, "Select an initial Model document or a Train row's terminal or exact-update checkpoint.")
+                    return ()
+                if isinstance(reference.checkpoint, BatchCheckpoint) and not (
+                    0 < reference.checkpoint.at <= MAX_CHECKPOINT_COORDINATE
+                ):
+                    problem(f"{path}.checkpoint", "Select a positive completed Train update.")
                     return ()
                 role = _Role(name_of_role, True, "train", "checkpoint")
             else:

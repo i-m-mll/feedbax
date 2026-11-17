@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import cache
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from pydantic import TypeAdapter, field_validator
 
 from feedbax.analysis.operations import RegisteredOperation
-from feedbax.analysis.operation_runtime import uses_replicate_axis, verify_dataset
+from feedbax.analysis.operation_runtime import require_task_source, uses_replicate_axis, verify_dataset
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, render as render_report
 from feedbax.contracts.artifact_custody import (
     ContentObjectRef,
@@ -30,7 +30,7 @@ from feedbax.contracts.effective_success import (
 )
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigureProduct
-from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE
+from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, DocumentInput, read_document_input
 from feedbax.contracts.operation import DatasetPort, ModelPort, TaskPort
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId
@@ -128,12 +128,14 @@ def _typed_operation_input(port, members) -> bool:
 
 def validate_light_request(
     request: DecodedRequest, *, registry: ApplicationRegistryBundle | None = None,
+    read_document: Callable[[ContentRef], DocumentInput] | None = None,
 ) -> tuple[str, ResolvedDeclaration[RegisteredOperation] | None]:
     """Check managed dataset delivery support and return its declared output role."""
     spec = request.spec
     operation = None
     if isinstance(spec, AnalysisRequestSpec):
-        operation = resolve_analysis_operation(spec, registry or operation_application())
+        registry = registry or operation_application()
+        operation = resolve_analysis_operation(spec, registry)
         definition = operation.value.definition
         roles = definition.inputs.keys()
         (output,) = definition.outputs
@@ -153,8 +155,16 @@ def validate_light_request(
     for role, members in request.inputs.items():
         if not members:
             raise ValueError(f"Managed light input {role!r} requires a member")
-        if operation is not None and not _typed_operation_input(port := operation.value.definition.inputs[role], members):
-            raise ValueError(f"Operation input {role!r} differs from its declared {port.kind} port")
+        if operation is not None:
+            port = operation.value.definition.inputs[role]
+            if not _typed_operation_input(port, members):
+                raise ValueError(f"Operation input {role!r} differs from its declared {port.kind} port")
+            if isinstance(port, TaskPort) and read_document is not None:
+                assert registry is not None
+                reference = members[0].reference
+                assert isinstance(reference, ContentRef)
+                installed = registry.python_tasks.resolve(port.task_key) if port.task_key is not None else None
+                require_task_source(role, read_document(reference), installed.key if installed else port.task_key)
         if len(members) > 1 and (
             isinstance(spec, ReportRequestSpec) or not all(
                 isinstance(member.reference, ProductRef)
@@ -305,7 +315,7 @@ def publish_light_success(
     with store._exclusive_lock():
         view = SuccessView(store)
         request = view.read_request(delivery.request)
-        role, operation = validate_light_request(request)
+        role, operation = validate_light_request(request, read_document=lambda content: read_document_input(content, store))
         if (operation is None) != (provider is None):
             raise ValueError("Managed operation success requires its executed provider provenance")
         provider_trace = _PROVIDER.validate_python(provider) if provider is not None else None
