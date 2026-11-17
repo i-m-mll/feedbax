@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { shellHost } from '@window-shell/browser/titlebar';
 
 export const projectWindowViews = [
   'runs', 'model', 'task', 'objective', 'training', 'scene', 'results', 'analysis', 'figures', 'document',
@@ -114,7 +115,7 @@ function arrangementPayload(state: ProjectWindowState) {
 }
 
 export function useProjectWindowState(windowKey: string): [ProjectWindowState, Dispatch<SetStateAction<ProjectWindowState>>] {
-  const native = !!window.__FEEDBAX_STUDIO_MENU__;
+  const native = shellHost() === 'native';
   const endpoint = `/api/desktop/preferences/windows/${encodeURIComponent(windowKey)}`;
   const [entry, setEntry] = useState(() => ({ key: windowKey, state: defaultProjectWindowState, edited: false }));
   const lastSaved = useRef<string>();
