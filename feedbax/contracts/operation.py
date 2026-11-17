@@ -49,8 +49,6 @@ class JaxOperation(StrictModel):
 
 
 class OperationComputation(StrictModel):
-    distribution: str
-    version: str
     revision: int = Field(ge=1)
     numerical: JaxOperation | None = None
 
@@ -73,10 +71,7 @@ class OperationDefinition(StrictModel):
     numerical: JaxOperation | None = None
 
     def computation(self) -> OperationComputation:
-        return OperationComputation(
-            distribution=self.owner, version=self.owner_version,
-            revision=self.revision, numerical=self.numerical,
-        )
+        return OperationComputation(revision=self.revision, numerical=self.numerical)
 
 
 def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> None:

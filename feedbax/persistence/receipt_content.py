@@ -79,10 +79,10 @@ def success_content_objects(
         if isinstance(descriptor, dict) and "schema_version" in descriptor:
             projection = ContinuationEncoding.model_validate(descriptor)
             encoding = projection.model
-            extra = tuple(slot.content for slot in projection.array_slots.values())
-            if visitors is not None:
-                for slot in projection.array_slots.values():
-                    visitors.array(slot.content, slot.array_descriptor_sha256)
+            if (state := projection.state) is not None:
+                extra = (state.extra.object,)
+                if visitors is not None:
+                    visitors.array(state.extra.object, state.extra.descriptor_sha256)
         else:
             encoding = SemanticModelEncoding.model_validate(descriptor)
     return (*tree_objects(store, ref, model_encoding=encoding, visitors=visitors), *extra)
@@ -91,11 +91,10 @@ def success_content_objects(
 def continuation_objects(
     occurrence: ContinuationOccurrence, *, visitors: ClosureVisitors | None = None,
 ) -> tuple[ContentObjectRef, ...]:
-    slots = (occurrence.batch_counter, occurrence.optimizer, occurrence.prng)
+    extra = occurrence.state.extra
     if visitors is not None:
-        for slot in slots:
-            visitors.array(slot.content, slot.array_descriptor_sha256)
-    return tuple(slot.content for slot in slots)
+        visitors.array(extra.object, extra.descriptor_sha256)
+    return (extra.object,)
 
 
 def verify_success_content(

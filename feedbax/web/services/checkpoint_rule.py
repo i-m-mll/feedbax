@@ -76,6 +76,7 @@ def prepare_checkpoint_rule_edit(
             preview_authored_files(project, [file]), readers=settled.readers,
             operations=folders.operations, components=folders.components,
             functions=folders.functions, python_tasks=folders.python_tasks,
+            figure_templates=folders.figure_templates,
         )
     except ValueError as error:
         raise ProjectFolderInvalid(str(error)) from error

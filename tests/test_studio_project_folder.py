@@ -6,33 +6,29 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import replace
 from functools import wraps
 import json
 from pathlib import Path
 from threading import Barrier, Event
 
 from fastapi.testclient import TestClient
-from pydantic import Field, JsonValue
+from pydantic import JsonValue
 import pytest
 
 from feedbax._atomic import write_bytes_atomic
 from feedbax import project_folder
 from feedbax.contracts import project_plan, request_identity
-from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
-from feedbax.contracts.request_identity import REQUEST_KINDS
 from feedbax.contracts.studio_authoring import StudioAuthoringChange
 from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD
 from feedbax.host import HostError
-from feedbax.plugins.application import TRAINING_PROGRAMS, new_application_registry_bundle
-from feedbax.plugins.bootstrap import BootstrapState, PluginProvenance
-from feedbax.studio.authoring import authoring_surface, project_train_fields
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.studio.authoring import project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
@@ -229,46 +225,6 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     assert (conflict.value.resource, conflict.value.current) == ("project", current["revision"])
     assert _folder_state(root) == files
     assert not (root / "results").exists()
-
-
-def test_authoring_surface_uses_bootstrapped_method_declarations():
-    class PluginPayload(StrictModel):
-        plateau_updates: int = Field(gt=0)
-
-    bundle = new_application_registry_bundle()
-    registry = bundle.training_programs
-    builtin = registry.resolve(STUDIO_GRAPH_METHOD, path="/method_ref")
-    method = replace(
-        builtin,
-        method_ref="example/authoring/v1",
-        payload_model=PluginPayload,
-        payload_schema_id="example.spec.authoring",
-        payload_schema_version="example.spec.authoring.v1",
-        owner="example.authoring",
-        package="example",
-    )
-    registry.register(method)
-    source = PluginProvenance(
-        plugin_id="example.authoring",
-        plugin_version="v1",
-        downstream_protocol_version=1,
-        distribution="example",
-        distribution_version="1",
-        fingerprint="test",
-        entry_point_name="example",
-        entry_point_value="example:register",
-        family_protocols={TRAINING_PROGRAMS.family: TRAINING_PROGRAMS.protocol_version},
-        registration_order=0,
-        registered_keys={TRAINING_PROGRAMS.family: (method.method_ref,)},
-    )
-    surface = authoring_surface(BootstrapState(bundle, (source,)))
-
-    assert surface.project_grammar == Project.model_json_schema()
-    assert surface.step_payloads == {"train": REQUEST_KINDS["train"].spec_type.model_json_schema()}
-    declaration = next(item for item in surface.training_methods if item.key == method.method_ref)
-    assert declaration.plugin == source.plugin_id
-    assert declaration.owner == method.owner
-    assert declaration.payload_schema == PluginPayload.model_json_schema()
 
 
 def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(study):
@@ -944,7 +900,7 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
     assert json.loads(step_file.read_bytes()) == train["step"]
 
     task = {"kind": "document", "id": "task", "document": {
-        "schema": "feedbax.spec.python_task", "payload": {"type": "feedbax.task.reaching.v1", "params": {}},
+        "schema": "feedbax.spec.python_task", "payload": {"type": "feedbax.Reaching", "params": {}},
     }}
     rejected = client.post(url, json={"revision": created["revision"], "file": task})
     assert rejected.status_code == 409

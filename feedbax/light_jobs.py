@@ -46,7 +46,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.content_retention import read_active_roots
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.declarations import missing_declaration
+from feedbax.plugins.declarations import DistributionSource, missing_declaration
 
 if TYPE_CHECKING:
     from feedbax.plugins.application import ApplicationRegistryBundle
@@ -56,6 +56,7 @@ class LightDelivery(StrictModel):
     project_id: str
     manifest_root: Path
     request: RequestObject
+    provider: DistributionSource | None = None
 
     @field_validator("manifest_root")
     @classmethod
@@ -90,7 +91,7 @@ def resolve_analysis_operation(
         raise ValueError(missing_declaration("operation", spec.analysis_type)) from error
     definition = operation.definition
     if spec.computation != definition.computation():
-        raise ValueError(f"Operation {definition.key!r} differs from the authored computation revision or provider")
+        raise ValueError(f"Operation {definition.key!r} differs from the authored computation revision")
     numerical = definition.numerical
     if spec.numerical_settings != NumericalSettings(floating_point_bits=numerical.floating_point_bits if numerical else None):
         raise ValueError(f"Operation {definition.key!r} differs from the authored numerical settings")
@@ -128,9 +129,10 @@ def _typed_operation_input(port, members) -> bool:
 
 def validate_light_request(
     request: DecodedRequest, *, registry: ApplicationRegistryBundle | None = None,
-) -> str:
+) -> tuple[str, RegisteredOperation | None]:
     """Check managed dataset delivery support and return its declared output role."""
     spec = request.spec
+    operation = None
     if isinstance(spec, AnalysisRequestSpec):
         operation = resolve_analysis_operation(spec, registry or operation_application())
         roles = operation.definition.inputs.keys()
@@ -151,7 +153,7 @@ def validate_light_request(
     for role, members in request.inputs.items():
         if not members:
             raise ValueError(f"Managed light input {role!r} requires a member")
-        if isinstance(spec, AnalysisRequestSpec) and not _typed_operation_input(operation.definition.inputs[role], members):
+        if operation is not None and not _typed_operation_input(operation.definition.inputs[role], members):
             raise ValueError(f"Operation input {role!r} differs from its declared {operation.definition.inputs[role].kind} port")
         if len(members) > 1 and (
             isinstance(spec, ReportRequestSpec) or not all(
@@ -172,7 +174,13 @@ def validate_light_request(
                 PlotlyFigureProduct(content=reference)
                 continue
             raise ValueError(f"Input {member.key!r} requires a typed producer product")
-    return output
+    return output, operation
+
+
+def verify_delivery_provider(delivery: LightDelivery, operation: RegisteredOperation | None) -> None:
+    expected = operation.source if operation is not None else None
+    if delivery.provider != expected:
+        raise ValueError("Managed delivery provider differs from the admitted installed declaration")
 
 
 def dataset_member(member: BoundMember | Product) -> DatasetProductRef:
@@ -241,13 +249,12 @@ def _verify_staged_product(
     request: DecodedRequest,
     bindings: Bindings,
     product: Product,
+    operation: RegisteredOperation | None,
 ) -> None:
     spec = request.spec
     ref = success_content_ref(product.content)
-    if isinstance(spec, AnalysisRequestSpec):
-        _verify_dataset_output(
-            store, product, resolve_analysis_operation(spec, operation_application()).definition.outputs[product.name]
-        )
+    if operation is not None:
+        _verify_dataset_output(store, product, operation.definition.outputs[product.name])
         return
     if product.descriptor is not None:
         raise ValueError(
@@ -303,7 +310,8 @@ def publish_light_success(
     with store._exclusive_lock():
         view = SuccessView(store)
         request = view.read_request(delivery.request)
-        role = validate_light_request(request)
+        role, operation = validate_light_request(request)
+        verify_delivery_provider(delivery, operation)
         if set(result) != {role} or len(result[role]) != 1 or result[role][0].name != role:
             raise ValueError(f"Managed {request.kind} success requires one {role!r} product")
         (product,) = result[role]
@@ -314,9 +322,10 @@ def publish_light_success(
                 (root,) = read_active_roots(store, (root_id,))
                 if root.targets != (light_staging_target(success_content_ref(product.content)),):
                     raise ValueError("Managed product differs from the exact staged attempt output")
-                _verify_staged_product(store, request, bindings, product)
+                _verify_staged_product(store, request, bindings, product, operation)
             success = view.publish_bound(
-                delivery.request, attempt=job_id, products=result, bindings=bindings, target=target,
+                delivery.request, attempt=job_id, products=result, bindings=bindings,
+                provider=delivery.provider, target=target,
             )
         store.release_root(root_id)
     return success.ref.model_dump(mode="json")

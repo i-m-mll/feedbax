@@ -93,7 +93,7 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
         )
         retained_model = open_published_model_slot(checkpoint.root, checkpoint.latest_pointer)
         assert retained_model is not None
-        model = retained_model.restore()
+        model = retained_model.restore(retained_model.template(registries.components))
         assert eqx.tree_equal(model, slots["model"])
 
         paired = compile_trial_execution(

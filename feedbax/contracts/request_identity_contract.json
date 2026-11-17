@@ -507,6 +507,11 @@
         "absent": null
       }
     },
+    "feedbax.contracts.figure_document.ResolvedFigureTemplate": {
+      "key": {},
+      "revision": {},
+      "settings": {}
+    },
     "feedbax.contracts.figure_document.VariableBinding": {
       "select": {
         "absent": {}
@@ -1337,12 +1342,10 @@
       }
     },
     "feedbax.contracts.operation.OperationComputation": {
-      "distribution": {},
       "numerical": {
         "absent": null
       },
-      "revision": {},
-      "version": {}
+      "revision": {}
     },
     "feedbax.contracts.report_document.ReportDocument": {
       "blocks": {
@@ -1547,38 +1550,34 @@
       "batch_size": {
         "absent": 128
       },
-      "grad_clip": {
-        "absent": 1.0
-      },
       "n_batches": {
         "absent": 2000
       },
-      "n_reach_steps": {
-        "absent": 80
+      "replicates": {
+        "absent": 1
       },
       "snapshot_interval": {
         "absent": 100
       }
     },
     "feedbax.contracts.request_specs.DocumentTrainingRequestSpec": {
-      "method_payload": {},
-      "method_ref": {},
-      "numerical_settings": {
-        "absent": {}
-      },
-      "on_nan": {
-        "absent": "raise",
+      "checkpoint_initialization": {
+        "absent": null,
         "values": [
-          "halt_restore_checkpoint",
-          "raise"
+          "initialize_from"
         ]
       },
-      "risk_aggregation": {
+      "method": {},
+      "method_revision": {
+        "absent": 1
+      },
+      "numerical_settings": {
         "absent": {}
       },
       "seed": {
         "absent": null
       },
+      "settings": {},
       "training_config": {},
       "trial_documents": {}
     },
@@ -1621,6 +1620,9 @@
       "figure": {},
       "numerical_settings": {
         "absent": {}
+      },
+      "template": {
+        "absent": null
       }
     },
     "feedbax.contracts.request_specs.ReportRequestSpec": {
@@ -1637,6 +1639,33 @@
         "absent": {}
       },
       "report_type": {}
+    },
+    "feedbax.contracts.request_specs.TrainContinuation": {
+      "mode": {
+        "absent": "continue_from",
+        "values": [
+          "continue_from"
+        ]
+      },
+      "rng": {
+        "values": [
+          "carry",
+          "reset"
+        ]
+      },
+      "schedule": {
+        "values": [
+          "continue",
+          "restart"
+        ]
+      },
+      "source_completed_updates": {},
+      "state": {
+        "values": [
+          "preserve",
+          "reset"
+        ]
+      }
     },
     "feedbax.contracts.task_document.Cell": {
       "first_epoch": {},
@@ -1727,88 +1756,6 @@
           "feedbax.contracts.expression_values.LiteralValue",
           "feedbax.contracts.expression_values.NameValue"
         ]
-      }
-    },
-    "feedbax.contracts.training.MethodPayloadEnvelope": {
-      "metadata": {
-        "absent": {}
-      },
-      "payload": {
-        "absent": {}
-      },
-      "schema_id": {},
-      "schema_version": {}
-    },
-    "feedbax.contracts.training.MethodRefSpec": {
-      "name": {},
-      "package": {},
-      "version": {}
-    },
-    "feedbax.contracts.training.RiskAggregationSpec": {
-      "metadata": {
-        "absent": {}
-      },
-      "realization": {
-        "absent": "none",
-        "values": [
-          "custom",
-          "max",
-          "mean",
-          "min",
-          "none",
-          "sum"
-        ]
-      },
-      "replicate": {
-        "absent": "none",
-        "values": [
-          "custom",
-          "max",
-          "mean",
-          "min",
-          "none",
-          "sum"
-        ]
-      },
-      "time": {
-        "absent": null
-      }
-    },
-    "feedbax.contracts.training.TimeAggregationSpec": {
-      "discount": {
-        "absent": null,
-        "values": [
-          "linear",
-          "none",
-          "power"
-        ]
-      },
-      "discount_exp": {
-        "absent": null
-      },
-      "end": {
-        "absent": null
-      },
-      "mode": {
-        "absent": "all",
-        "values": [
-          "all",
-          "custom",
-          "final",
-          "mean",
-          "range",
-          "segment",
-          "sum"
-        ]
-      },
-      "segment_name": {
-        "absent": null
-      },
-      "start": {
-        "absent": null
-      },
-      "time_idxs": {
-        "absent": null
       }
     },
     "feedbax.contracts.training.TrialDocuments": {
@@ -2962,6 +2909,36 @@
         "model": "feedbax.contracts.graph.WireSpec"
       },
       {
+        "field": "grad_clip",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingConfig"
+      },
+      {
+        "field": "n_reach_steps",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingConfig"
+      },
+      {
+        "field": "method_payload",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingRequestSpec"
+      },
+      {
+        "field": "method_ref",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingRequestSpec"
+      },
+      {
+        "field": "on_nan",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingRequestSpec"
+      },
+      {
+        "field": "risk_aggregation",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.request_specs.DocumentTrainingRequestSpec"
+      },
+      {
         "field": "graph",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
@@ -3082,6 +3059,41 @@
         "model": "feedbax.contracts.training.LossTermSpec"
       },
       {
+        "field": "metadata",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodPayloadEnvelope"
+      },
+      {
+        "field": "payload",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodPayloadEnvelope"
+      },
+      {
+        "field": "schema_id",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodPayloadEnvelope"
+      },
+      {
+        "field": "schema_version",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodPayloadEnvelope"
+      },
+      {
+        "field": "name",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodRefSpec"
+      },
+      {
+        "field": "package",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodRefSpec"
+      },
+      {
+        "field": "version",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.MethodRefSpec"
+      },
+      {
         "field": "kind",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.training.ObjectiveSlotSpec"
@@ -3112,6 +3124,26 @@
         "model": "feedbax.contracts.training.ObjectiveSlotSpec"
       },
       {
+        "field": "metadata",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.RiskAggregationSpec"
+      },
+      {
+        "field": "realization",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.RiskAggregationSpec"
+      },
+      {
+        "field": "replicate",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.RiskAggregationSpec"
+      },
+      {
+        "field": "time",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.RiskAggregationSpec"
+      },
+      {
         "field": "params",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.training.TaskSpec"
@@ -3125,6 +3157,41 @@
         "field": "type",
         "migration": "m2-train-v1-retirement",
         "model": "feedbax.contracts.training.TaskSpec"
+      },
+      {
+        "field": "discount",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "discount_exp",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "end",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "mode",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "segment_name",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "start",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
+      },
+      {
+        "field": "time_idxs",
+        "migration": "declared-train-methods-retirement",
+        "model": "feedbax.contracts.training.TimeAggregationSpec"
       },
       {
         "field": "batch_size",

@@ -35,12 +35,12 @@ ACTUATION_PAYLOADS = {
     "prescribed_motion": PRESCRIBED_MOTION_PAYLOAD,
     "muscle_excitation_vector": MUSCLE_EXCITATION_PAYLOAD,
 }
-SIGNAL_INPUT_PAYLOADS = {"RigidTendonHillMuscle": ACTIVATION_PAYLOAD, "feedbax.RigidTendonHillMuscle": ACTIVATION_PAYLOAD}
+SIGNAL_INPUT_PAYLOADS = {"feedbax.RigidTendonHillMuscle": ACTIVATION_PAYLOAD}
 
 
 def is_acausal_type(type_id: str, builtin: str) -> bool:
     """Match a fixed built-in compiler role in authored or canonical input."""
-    return type_id in (builtin, f"feedbax.{builtin}")
+    return type_id == f"feedbax.{builtin}"
 
 
 def actuation_source_payload(node: ComponentSpec) -> SourcePayload:

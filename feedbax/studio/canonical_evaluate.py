@@ -80,7 +80,6 @@ class EvaluationRequestBinding(StrictModel):
     checkpoint: ProductRef | BestRank | None = Field(default=None, exclude_if=lambda value: value is None)
     initial_model: ContentRef | None = Field(default=None, exclude_if=lambda value: value is None)
     terminal: TerminalTrainSubject | None = Field(default=None, exclude_if=lambda value: value is None)
-    bootstrap_modules: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
 
     @model_validator(mode="after")
     def _one_model_source(self) -> EvaluationRequestBinding:
@@ -164,6 +163,8 @@ def decode_rollout_request(
         first = error.errors()[0]
         path = pointer(("params", *map(str, first["loc"])))
         raise CannotRun(path, first["msg"]) from error
+    if not isinstance(subject, ContentRef) and params.input_overrides:
+        raise CannotRun("/params/input_overrides", "a checkpoint rollout inherits its task bindings")
     for path, patch in authored_variation(params.variation):
         if "op" not in patch.model_fields_set:
             raise CannotRun(f"{path}/op", "declare the override operation explicitly")
@@ -602,7 +603,7 @@ def live_objective_series(
     from feedbax.job_completion import read_training_binding
     from feedbax.persistence.content_retention import read_active_roots
     from feedbax.persistence.dataset import open_stored_dataset
-    from feedbax.training.checkpoint_custody import published_model_tree_sha256
+    from feedbax.training.method_checkpoint import read_method_checkpoint_manifest
 
     objective_hash = rollout_objective_sha256(objective)
     condition = params.condition_id()
@@ -657,7 +658,9 @@ def live_objective_series(
         member = result.member
         if (
             (member.model, member.task, result.objective) != (model, task, objective_hash)
-            or member.model_tree != published_model_tree_sha256(checkpoint.checkpoint_root, pointer)
+            or member.model_tree != read_method_checkpoint_manifest(
+                checkpoint.checkpoint_root, pointer,
+            ).model.tree.descriptor.sha256
             or member.coordinate != update or member.trials != params.trials
         ):
             raise ValueError("Live objective differs from its resolved scientific inputs.")
@@ -687,13 +690,11 @@ def live_objective_series(
 
 
 def _unchanged_rollout_semantics(source: BoundStudioTrainingJobInput) -> tuple[str, str]:
-    import asyncio
-
     from feedbax.compiler.graph import resolve_graph_schedule
-    from feedbax.plugins.composition import compose_application
+    from feedbax.plugins.composition import load_application
     from feedbax.studio.canonical_train import resolve_training_request_binding
 
-    registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
+    registry = load_application().bundle
     trial = resolve_training_request_binding(source, registries=registry).trial
     graph = trial.graph.graph
     _, key_schedule = resolve_graph_schedule(graph)

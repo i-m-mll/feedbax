@@ -30,7 +30,6 @@ from feedbax.contracts.scientific_compiler_schema import (
     RESOLVED_GRAPH_SCHEMA_ID,
     RESOLVED_GRAPH_SCHEMA_VERSION,
 )
-from feedbax.compiler.feedback_migration import lower_legacy_feedback
 from feedbax.compiler.resolution import (
     GraphParameterResolution,
     ParameterResolutionError,
@@ -592,20 +591,11 @@ def resolve_graph(
         operation=parse_graph,
     )
     resolved_inputs = dict(input_prototypes or {})
-    feedback_graph = _compile_phase(
-        phase=CompilerPhase.STRUCTURAL_PARSING,
-        code="compiler.structural_parsing.invalid_legacy_feedback",
-        anchor=graph_anchor,
-        document_sha256=document_sha256,
-        expected="legacy feedback nodes declare recoverable mechanics selector paths",
-        action="replace the legacy wrapper with SelectState and Channel nodes",
-        operation=lambda: lower_legacy_feedback(authored_graph),
-    )
     historical_paths = {
         record.metadata.get("graph_path") for record in migration.migration_records
     }
     typed_graph = _map_component_nodes(
-        feedback_graph,
+        authored_graph,
         lambda graph_path, node: resolve_component_node(
             node,
             component_registry,

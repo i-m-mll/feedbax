@@ -312,12 +312,17 @@ def _instantiate_graph(
         node_type = node_spec.type
         node_params, lowering_metadata = _split_lowering_metadata(node_spec, metadata_registry)
         if node_spec.revision is not None:
+            from feedbax.compiler.trainability import component_training_mode
+
             declaration = metadata_registry.get(node_type)
             component_bindings[node_name] = ComponentBinding(
                 type_id=node_type,
                 revision=node_spec.revision,
                 trainable_override=lowering_metadata.get("trainable"),
                 owner_class=declaration.owner_class if declaration is not None else None,
+                training_mode=component_training_mode(
+                    node_spec, declaration, (spec.subgraphs or {}).get(node_name),
+                ),
             )
         required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is None and metadata_registry is not execution_registry:
@@ -547,7 +552,7 @@ def _split_lowering_metadata(
     """Separate graph-level controls from the component's own parameters."""
     params = dict(node_spec.params)
     lowering_metadata = {}
-    if node_spec.type in ("Sum", "feedbax.Sum") and "channel_adapter" in params:
+    if node_spec.type == "feedbax.Sum" and "channel_adapter" in params:
         lowering_metadata["channel_adapter"] = params.pop("channel_adapter")
     if isinstance(params.get("trainable"), bool):
         declaration = component_registry.get(node_spec.type)

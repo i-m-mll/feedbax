@@ -319,6 +319,9 @@ class ComponentBinding:
     trainable_override: bool | None = dataclasses.field(default=None, repr=False)
     authored_arrays: tuple[AuthoredArrayEncoding, ...] = dataclasses.field(default=(), repr=False)
     owner_class: type[ComponentOwner] | None = dataclasses.field(default=None, compare=False, repr=False)
+    training_mode: Literal["frozen", "parameters", "interior"] = dataclasses.field(
+        default="frozen", repr=False,
+    )
 
     @property
     def model_facts(self) -> ModelFacts | None:
@@ -583,11 +586,11 @@ class Graph(GraphNode):
                 continue
             self._node_output_initializer_upstream_nodes(wire)
 
-    def get_node(self, path: str) -> Component:
+    def get_node(self, path: str | tuple[str, ...]) -> Component:
         """Return a named graph node by dotted graph-node path.
 
         Args:
-            path: Node name or dotted path through nested graph nodes.
+            path: A tuple of node IDs, or a dotted path through nested graph nodes.
 
         Returns:
             The selected graph component.
@@ -596,9 +599,8 @@ class Graph(GraphNode):
             ValueError: If any path segment does not name a graph node.
         """
         current: Component = self
-        for part in path.split("."):
-            if not part:
-                continue
+        parts = filter(None, path.split(".")) if isinstance(path, str) else path
+        for part in parts:
             if not isinstance(current, Graph):
                 raise ValueError(f"Node path {path!r} enters non-graph node at {part!r}")
             if part not in current.nodes:

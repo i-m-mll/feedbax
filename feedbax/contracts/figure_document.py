@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
-from pydantic import Field, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
+from pydantic import AfterValidator, Field, JsonValue, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, Name
@@ -14,6 +14,7 @@ from feedbax.contracts.figures import AxisLabels, PanelAxis
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project_inputs import NonemptyText
 from feedbax.contracts.request_refs import ContentRef
+from feedbax.plugins.declarations import validate_declaration_key
 
 
 FIGURE_DOCUMENT_SCHEMA = "feedbax.figure_document.v1"
@@ -131,6 +132,27 @@ class FigureDocument(StrictModel):
             if len(set(layer.group)) != len(layer.group):
                 raise ValueError(f"Layer {layer.name!r} repeats a group coordinate.")
         return self
+
+
+FigureTemplateKey = Annotated[StrictStr, AfterValidator(validate_declaration_key)]
+
+
+class FigureTemplateRef(StrictModel):
+    """A figure generated from an installed declaration."""
+
+    template: FigureTemplateKey
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class ResolvedFigureTemplate(StrictModel):
+    """The declaration inputs that contributed to a figure's render identity."""
+
+    key: FigureTemplateKey
+    settings: dict[str, JsonValue]
+    revision: Annotated[StrictInt, Field(gt=0)]
+
+
+FigureSource = FigureDocument | FigureTemplateRef
 
 
 PLOTLY_FIGURE_ROLE = "figure"

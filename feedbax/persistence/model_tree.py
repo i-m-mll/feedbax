@@ -1,6 +1,7 @@
 """Validate the member layout of a semantic model tree against its graph."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentObjectRef, ContentTreeRef
@@ -15,6 +16,10 @@ from feedbax.contracts.model_checkpoint import (
     model_replica_array_path,
 )
 from feedbax.contracts.strict_json import strict_model_validate_json
+from feedbax.persistence.artifact_custody import content_object_relative_path
+
+
+MODEL_CHECKPOINT_STORE = Path("semantic-model")
 
 
 class ModelTreeLayoutError(ValueError):
@@ -26,6 +31,10 @@ class ModelTreeLayoutError(ValueError):
 
 def model_tree_asset_path(ref: ContentObjectRef) -> str:
     return f"assets/{ref.sha256}"
+
+
+def checkpoint_model_object_path(ref: ContentObjectRef) -> Path:
+    return MODEL_CHECKPOINT_STORE / content_object_relative_path(ref.sha256)
 
 
 @dataclass(frozen=True)

@@ -1412,14 +1412,12 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
 
 ### 9.3 Custom Component Definition
 
-A protocol 2 plugin can opt a concrete component into Studio through its existing `feedbax.plugins` entry point.
+An installed package exposes a concrete component to Studio by defining it under the package named by its `feedbax.plugins` entry point.
 
 ```python
 from feedbax import Component
-from feedbax.component_registry import ComponentPack
 from feedbax.contracts.portable import Ports
 from feedbax.contracts.component import PortType
-from feedbax.plugins import COMPONENTS, RegistrationContext
 
 
 class Scale(Component):
@@ -1431,10 +1429,6 @@ class Scale(Component):
 
     def __call__(self, inputs, state, *, key):
         return {"output": self.factor * inputs["input"]}, state
-
-
-def register(context: RegistrationContext) -> None:
-    context.registry(COMPONENTS).ingest(ComponentPack(namespace="example", components=(Scale,)))
 ```
 
 ### 9.4 Component Properties Panel

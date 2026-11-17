@@ -11,9 +11,6 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 
-from feedbax.contracts.checkpoint_projection import (
-    STANDARD_TRAIN_STATE_MEDIA_TYPE as STANDARD_TRAIN_STATE_MEDIA_TYPE,
-)
 from feedbax.contracts.checkpoint_initialization import checkpoint_leaf_path
 from feedbax.contracts.checkpoints import (
     CheckpointSemanticAbi,
@@ -29,9 +26,11 @@ from feedbax.persistence.array_container import (
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
 
 if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.runtime.graph import Graph
 
 
+STANDARD_TRAIN_STATE_MEDIA_TYPE = "application/vnd.feedbax.standard-train-state+safetensors"
 STANDARD_TRAIN_STATE_CODEC_ID = "feedbax.training.standard_train_state"
 STANDARD_TRAIN_STATE_CODEC_VERSION = f"{STANDARD_TRAIN_STATE_CODEC_ID}.v1"
 STANDARD_TRAIN_SLOTS = {"optimizer": "optimizer", "prng": "prng", "batch_counter": "auxiliary"}
@@ -131,8 +130,8 @@ def standard_train_scalar_template(slot: str) -> jax.Array:
 
 def standard_train_optimizer_template(
     manifest: CheckpointTransactionManifest, transaction_dir: Path, model: Graph | None,
+    components: ComponentRegistry,
 ) -> Any:
-    from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
     from feedbax.contracts.training import TrainingRunSpec
@@ -150,9 +149,9 @@ def standard_train_optimizer_template(
     if model_record is None or model_record.media_type != MODEL_TREE_MEDIA_TYPE:
         raise StandardTrainStateError("optimizer", "missing the matching semantic model layout")
     if model is None:
-        model = SemanticModelSlot.open(transaction_dir, model_record).template()
+        model = SemanticModelSlot.open(transaction_dir, model_record).template(components)
     graph = GraphSpec.model_validate(spec.graph.inline)
-    _, filter_spec = compile_trainability(graph, model, ComponentRegistry())
+    _, filter_spec = compile_trainability(graph, model, components)
     payload = StudioGraphMethodPayload.model_validate(spec.method_payload.payload)
     optimizer = standard_train_optimizer(payload, gradient_clip=spec.training_config.grad_clip)
     return optimizer.init(eqx.filter(model, filter_spec))

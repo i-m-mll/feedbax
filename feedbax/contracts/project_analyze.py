@@ -23,7 +23,9 @@ from feedbax.contracts.figure_document import (
     PLOTLY_FIGURE_ROLE,
     FigureBindingError,
     FigureDocument,
+    FigureTemplateRef,
     PlotlyFigurePort,
+    ResolvedFigureTemplate,
     is_figure_document_pin,
     validate_figure_bindings,
 )
@@ -41,9 +43,11 @@ from feedbax.contracts.request_specs import (
     RequestSpec,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
+from feedbax.plugins.declarations import missing_declaration
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.plot.templates import FigureTemplateRegistry
 
 
 class _ElementIssue(ValueError):
@@ -62,6 +66,7 @@ class _Lowerer:
         step_inputs: Mapping[str, tuple[PlannedInput, ...]],
         evaluations: Mapping[str, RequestSpec],
         operations: OperationRegistry,
+        figure_templates: FigureTemplateRegistry | None,
     ):
         self.key = key
         self.document_ids = document_ids
@@ -71,6 +76,7 @@ class _Lowerer:
         self.evaluations = evaluations
         self.operations = operations
         self.declarations: Mapping[str, AnalyzeInput] = {}
+        self.figure_templates = figure_templates
         self.elements: dict[str, PlannedElement] = {}
         self.figures: dict[str, FigureDocument] = {}
         self.encoded: list[EncodedRequest] = []
@@ -215,7 +221,7 @@ class _Lowerer:
             operation = self.operations.resolve(element.operation)
         except KeyError:
             self.problem(
-                path + ".operation", f"Unknown registered operation {element.operation!r}.", name
+                path + ".operation", missing_declaration("operation", element.operation), name
             )
             return
         try:
@@ -281,15 +287,43 @@ class _Lowerer:
                     code=ResolutionCode.INVALID_DOCUMENT, document_path="schema",
                 )
                 return
+        template = None
+        validation_path = figure_path
         try:
-            figure = FigureDocument.model_validate(element.figure)
+            if isinstance(element.figure, dict) and "template" in element.figure:
+                reference = FigureTemplateRef.model_validate(element.figure)
+                registry = self.figure_templates
+                try:
+                    registration = registry.resolve(reference.template) if registry is not None else None
+                except KeyError:
+                    registration = None
+                if registration is None:
+                    package = reference.template.partition(".")[0]
+                    self.problem(
+                        figure_path + ".template",
+                        f"No installed figure template provides {reference.template!r} "
+                        f"from package {package!r}.",
+                        name,
+                    )
+                    return
+                validation_path = figure_path + ".settings"
+                settings = registration.settings_model.model_validate(reference.settings)
+                template = ResolvedFigureTemplate(
+                    key=registration.key,
+                    settings=settings.model_dump(mode="json"),
+                    revision=registration.revision,
+                )
+                validation_path = figure_path
+                figure = registration.function(settings)
+            else:
+                figure = FigureDocument.model_validate(element.figure)
         except ValidationError as error:
             for item in error.errors(include_url=False, include_input=False):
                 location = item["loc"]
                 if location[:1] == ("layers",) and location[2:3] in {("line",), ("band",)}:
                     location = (*location[:2], *location[3:])
                 self.problem(
-                    ".".join(map(str, (figure_path, *location))), item["msg"], name,
+                    ".".join(map(str, (validation_path, *location))), item["msg"], name,
                     code=ResolutionCode.INVALID_DOCUMENT if document else ResolutionCode.INVALID_PAYLOAD,
                 )
             return
@@ -305,7 +339,7 @@ class _Lowerer:
             validate_figure_bindings(figure, schemas)
             self._record(
                 name,
-                RenderRequestSpec(figure=None, document=figure),
+                RenderRequestSpec(figure=None, document=figure, template=template),
                 inputs,
                 {PLOTLY_FIGURE_ROLE: PlotlyFigurePort()},
             )
@@ -325,10 +359,14 @@ def lower_analyze(
     step_inputs: Mapping[str, tuple[PlannedInput, ...]],
     evaluations: Mapping[str, RequestSpec],
     operations: OperationRegistry,
+    *,
+    figure_templates: FigureTemplateRegistry | None = None,
 ) -> tuple[
     dict[str, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
 ]:
-    lower = _Lowerer(key, document_ids, document_pointers, documents, step_inputs, evaluations, operations)
+    lower = _Lowerer(
+        key, document_ids, document_pointers, documents, step_inputs, evaluations, operations, figure_templates,
+    )
     lower.problems.extend(document_problems)
     try:
         # Each figure validates below so a bad figure leaves its siblings plannable.

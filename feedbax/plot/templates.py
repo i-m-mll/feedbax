@@ -16,6 +16,7 @@ from feedbax.plugins.declarations import (
     mark_callable,
     validate_declaration_key,
 )
+from feedbax.registry_errors import RegistryCollisionError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -73,7 +74,7 @@ class FigureTemplateRegistry:
             raise RuntimeError("Figure template registry is sealed")
         validate_declaration_key(key)
         if key in self._entries:
-            raise ValueError(f"Figure template {key!r} is already registered")
+            raise RegistryCollisionError(f"Figure template {key!r} is already registered")
 
         parameters = tuple(signature(function).parameters.values())
         annotations = get_type_hints(function)

@@ -1,12 +1,10 @@
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 
-from feedbax.plugins.composition import compose_application
 from feedbax.plugins.declarations import missing_declaration
 from feedbax.contracts.studio_api import (
     ComponentDetailResponse,
     ComponentListResponse,
-    ComponentRefreshResponse,
 )
 
 router = APIRouter()
@@ -25,15 +23,3 @@ async def get_component(name: str, request: Request) -> ComponentDetailResponse:
     if component is None:
         raise HTTPException(status_code=404, detail=missing_declaration("component", name))
     return ComponentDetailResponse(data=registry._to_definition(component))
-
-
-@router.post("/refresh", response_model=ComponentRefreshResponse)
-async def refresh_components(request: Request) -> ComponentRefreshResponse:
-    registry = request.app.state.bootstrap_state.bundle.components
-    before = {component.name for component in registry.list_all()}
-    request.app.state.bootstrap_state = await compose_application()
-    registry = request.app.state.bootstrap_state.bundle.components
-    after = {component.name for component in registry.list_all()}
-    return ComponentRefreshResponse(
-        data={"added": sorted(after - before), "removed": sorted(before - after)}
-    )

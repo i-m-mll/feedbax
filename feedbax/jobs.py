@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from collections import Counter
@@ -66,7 +65,7 @@ from feedbax.contracts.project_plan import (
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.checkpoint_selection import is_checkpoint_producer
@@ -79,7 +78,6 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.studio.canonical_evaluate import ROLLOUT_JAX_BACKEND, ROLLOUT_JAX_ENABLE_X64
-from feedbax.training_host_worker import BOOTSTRAP_ENV
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
     CanonicalTrainRequestBinding,
@@ -359,14 +357,12 @@ class JobService(PlanJobReader):
         host: HostClient,
         registries: ApplicationRegistryBundle,
         *,
-        bootstrap_modules: tuple[str, ...] = (),
         live_validation_qualifications: Sequence[ValidationQualification] = (),
         targets: TargetRegistry | None = None,
         submit_session: SessionSubmission | None = None,
     ) -> None:
         super().__init__(host, components=registries.components)
         self.registries = registries
-        self.bootstrap_modules = bootstrap_modules
         self.targets = targets if targets is not None else TargetRegistry()
         self._submit_session = submit_session
         self._live_validation_qualifications = {
@@ -380,11 +376,10 @@ class JobService(PlanJobReader):
                 if key in os.environ
             },
             cwd=str(Path.cwd()),
-            preload=("jax", "feedbax.training.managed_studio"),
+            preload=("jax",),
         )
         self._training_worker = replace(
             base_worker,
-            env=base_worker.env | {BOOTSTRAP_ENV: json.dumps(bootstrap_modules, separators=(",", ":"))},
             warm_entrypoint="feedbax.training_host_worker:main",
             preload=(*base_worker.preload, "feedbax.training.host_prewarm"),
         )
@@ -557,7 +552,6 @@ class JobService(PlanJobReader):
                         run.request_id,
                         current.plan.requests[run.request_id],
                         current.plan.documents,
-                        self.registries.training_programs,
                         store, registries=self.registries,
                     )
                 except (ValueError, KeyError) as error:
@@ -698,7 +692,7 @@ class JobService(PlanJobReader):
             raise ValueError(f"{problem.path}: {problem.detail}")
         raw = plan.requests[node.request_id]
         decoded = decode_request(raw, plan.documents.__getitem__)
-        validate_light_request(decoded, registry=self.registries)
+        _, operation = validate_light_request(decoded, registry=self.registries)
         encoded = encode_request(decoded.spec, decoded.inputs)
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")
@@ -733,7 +727,10 @@ class JobService(PlanJobReader):
         if isinstance(node, PlannedElement):
             data["label"] = f"{data['label']} · {node.key.name}"
         store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
-        payload = LightDelivery(project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded))
+        payload = LightDelivery(
+            project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded),
+            provider=operation.source if operation is not None else None,
+        )
         profile = self._light_worker
         slot = "light"
         if isinstance(decoded.spec, AnalysisRequestSpec) and (computation := decoded.spec.computation) is not None:
@@ -771,7 +768,6 @@ class JobService(PlanJobReader):
                 checkpoint=subject if not isinstance(subject, ContentRef) else None,
                 initial_model=subject if isinstance(subject, ContentRef) else None,
                 terminal=terminal,
-                bootstrap_modules=self.bootstrap_modules,
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
@@ -841,11 +837,11 @@ class JobService(PlanJobReader):
         self,
         project: str,
         request_id: str,
-        spec: TrainingRunSpec,
+        spec: DocumentTrainingRequestSpec,
         data: dict[str, Any],
         root: Path,
         *,
-        canonical_request: CanonicalTrainRequestBinding | None = None,
+        canonical_request: CanonicalTrainRequestBinding,
         checkpoint_catalog: tuple[int, ...] = (),
     ) -> AdmissionItem:
         payload = BoundStudioTrainingJobInput(
@@ -853,7 +849,6 @@ class JobService(PlanJobReader):
             project_id=project,
             request_id=request_id,
             manifest_root=root,
-            bootstrap_modules=self.bootstrap_modules,
             canonical_request=canonical_request,
             checkpoint_catalog=checkpoint_catalog,
         ).model_dump(mode="json", exclude_none=True)
@@ -1273,7 +1268,7 @@ class JobService(PlanJobReader):
         spec, binding = bind_canonical_train(
             request_id, destination.get_object(request.object),
             {ref.sha256: destination.get_object(ref) for ref in request.documents},
-            self.registries.training_programs, destination, registries=self.registries,
+            destination, registries=self.registries,
         )
         item = self._training_item(
             project, request_id, spec,
@@ -1753,7 +1748,7 @@ def _collected_train_checkpoint_source(view: SuccessView, result: Success) -> St
             return None
         return StudioTrainCheckpointSource(
             job_id=source.attempt, request_id=source.request.id,
-            completed_updates=source.continuation.clock.completed_batches,
+            completed_updates=source.continuation.clock.completed_updates,
         )
     except (OSError, TypeError, ValueError, KeyError):
         return None
