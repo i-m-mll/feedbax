@@ -21,15 +21,16 @@ from feedbax.contracts.training import (
     TrainingProgramRegistry,
 )
 from feedbax.plot.constructors import FigureRegistry, register_default_figure_constructors
-from feedbax.tasks.reaching import builtin_python_tasks
+from feedbax.plot.templates import FigureTemplateRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.preparation import (
     ExecutionPreparationProviderRegistry,
     ExecutionPreparationRegistration,
 )
 from feedbax.training.studio_executor import studio_graph_training_program
+from feedbax.training.methods import TrainingMethodRegistry
 
-from .bootstrap import RegistrationContext, RegistryKey
+from .bootstrap import RegistryKey
 from .registry import ExperimentRegistry
 
 
@@ -61,6 +62,7 @@ class ApplicationRegistryBundle:
 
     components: ComponentRegistry
     training_programs: TrainingProgramCatalog
+    training_methods: TrainingMethodRegistry
     execution_preparations: ExecutionPreparationProviderRegistry
     experiment_packages: ExperimentRegistry
     analysis_recipes: AnalysisRecipeRegistry
@@ -72,10 +74,12 @@ class ApplicationRegistryBundle:
     evaluation_product_union_finalizers: EvaluationCompactProductUnionFinalizerRegistry
     report_recipes: ReportRecipeRegistry
     figures: FigureRegistry
+    figure_templates: FigureTemplateRegistry
 
     def seal(self) -> None:
         self.components.seal()
         self.training_programs.seal()
+        self.training_methods.seal()
         self.execution_preparations.seal()
         self.experiment_packages.seal()
         self.analysis_recipes.seal()
@@ -87,89 +91,22 @@ class ApplicationRegistryBundle:
         self.evaluation_product_union_finalizers.seal()
         self.report_recipes.seal()
         self.figures.seal()
+        self.figure_templates.seal()
 
 
-COMPONENTS = RegistryKey(
-    "components", "components", ComponentRegistry, registered_keys=lambda value: value.names()
-)
-TRAINING_PROGRAMS = RegistryKey(
-    "training_programs",
-    "training_programs",
-    TrainingProgramCatalog,
-    registered_keys=lambda value: value.available_keys(),
-)
-EXPERIMENT_PACKAGES = RegistryKey(
-    "experiment_packages",
-    "experiment_packages",
-    ExperimentRegistry,
-    registered_keys=lambda value: value.get_package_names(),
-)
-ANALYSIS_RECIPES = RegistryKey(
-    "analysis_recipes",
-    "analysis_recipes",
-    AnalysisRecipeRegistry,
-    registered_keys=lambda value: value.keys(),
-)
-OPERATIONS = RegistryKey(
-    "operations", "operations", OperationRegistry, registered_keys=lambda value: value.keys()
-)
-EXPRESSION_FUNCTIONS = RegistryKey(
-    "expression_functions", "expression_functions", FunctionRegistry,
-    registered_keys=lambda value: value.keys(),
-)
-PYTHON_TASKS = RegistryKey(
-    "python_tasks", "python_tasks", PythonTaskRegistry, registered_keys=lambda value: value.keys()
-)
-EVALUATION_RECIPES = RegistryKey(
-    "evaluation_recipes",
-    "evaluation_recipes",
-    EvaluationRecipeRegistry,
-    registered_keys=lambda value: value.keys(),
-)
-EVALUATION_BATCH_CONSUMERS = RegistryKey(
-    "evaluation_batch_consumers",
-    "evaluation_batch_consumers",
-    EvaluationBatchConsumerRegistry,
-    registered_keys=lambda value: value.keys(),
-)
-EVALUATION_PRODUCT_UNION_FINALIZERS = RegistryKey(
-    "evaluation_product_union_finalizers",
-    "evaluation_product_union_finalizers",
-    EvaluationCompactProductUnionFinalizerRegistry,
-    registered_keys=lambda value: value.keys(),
-)
-REPORT_RECIPES = RegistryKey(
-    "report_recipes",
-    "report_recipes",
-    ReportRecipeRegistry,
-    registered_keys=lambda value: value.keys(),
-)
-FIGURES = RegistryKey(
-    "figures", "figures", FigureRegistry, registered_keys=lambda value: value.keys()
-)
-APPLICATION_REGISTRY_KEYS = (
-    COMPONENTS,
-    TRAINING_PROGRAMS,
-    EXPERIMENT_PACKAGES,
-    ANALYSIS_RECIPES,
-    OPERATIONS,
-    EXPRESSION_FUNCTIONS,
-    PYTHON_TASKS,
-    EVALUATION_RECIPES,
-    EVALUATION_BATCH_CONSUMERS,
-    EVALUATION_PRODUCT_UNION_FINALIZERS,
-    REPORT_RECIPES,
-    FIGURES,
-)
+COMPONENTS = RegistryKey("components", "components", ComponentRegistry)
+TRAINING_METHODS = RegistryKey("training_methods", "training_methods", TrainingMethodRegistry)
+TRAINING_PROGRAMS = RegistryKey("training_programs", "training_programs", TrainingProgramCatalog)
+OPERATIONS = RegistryKey("operations", "operations", OperationRegistry)
+EXPRESSION_FUNCTIONS = RegistryKey("expression_functions", "expression_functions", FunctionRegistry)
+PYTHON_TASKS = RegistryKey("python_tasks", "python_tasks", PythonTaskRegistry)
+FIGURE_TEMPLATES = RegistryKey("figure_templates", "figure_templates", FigureTemplateRegistry)
 
 
-def new_application_registry_bundle() -> ApplicationRegistryBundle:
-    """Construct fresh built-in registries before plugin registration."""
-    from feedbax.builtins.operations import register_builtin_operations
+def empty_application_registry_bundle(components: ComponentRegistry) -> ApplicationRegistryBundle:
+    """Create core services around a registry of discovered components."""
     from feedbax.expression_builtins import register_builtins
 
-    operations = OperationRegistry()
-    register_builtin_operations(operations)
     expression_functions = FunctionRegistry()
     register_builtins(expression_functions)
     figures = FigureRegistry()
@@ -183,25 +120,26 @@ def new_application_registry_bundle() -> ApplicationRegistryBundle:
     training_programs = TrainingProgramCatalog(preparations)
     training_programs.register_program(studio_graph_training_program())
     return ApplicationRegistryBundle(
-        components=ComponentRegistry(),
+        components=components,
         training_programs=training_programs,
+        training_methods=TrainingMethodRegistry(),
         execution_preparations=preparations,
         experiment_packages=ExperimentRegistry(),
         analysis_recipes=AnalysisRecipeRegistry(),
-        operations=operations,
+        operations=OperationRegistry(),
         expression_functions=expression_functions,
-        python_tasks=builtin_python_tasks(),
+        python_tasks=PythonTaskRegistry(),
         evaluation_recipes=evaluations,
         evaluation_batch_consumers=evaluation_consumers,
         evaluation_product_union_finalizers=EvaluationCompactProductUnionFinalizerRegistry(),
         report_recipes=reports,
         figures=figures,
+        figure_templates=FigureTemplateRegistry(),
     )
 
 
-def new_registration_context() -> RegistrationContext:
-    """Return an isolated context whose bundle is private until bootstrap succeeds."""
-    return RegistrationContext(
-        new_application_registry_bundle,
-        APPLICATION_REGISTRY_KEYS,
-    )
+def new_application_registry_bundle() -> ApplicationRegistryBundle:
+    """Return a fresh, mutable copy of the discovered application registries."""
+    from .composition import build_application
+
+    return build_application().bundle

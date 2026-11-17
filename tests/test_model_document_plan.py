@@ -13,7 +13,7 @@ from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.compiler.model_attachment import resolve_effective_model
-from feedbax.compiler.mechanics_templates import two_link_arm_6muscle_template_graph
+from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
@@ -33,7 +33,7 @@ from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.studio.model_edit import apply_model_edit
 from feedbax.studio.model_ports import ModelRegistryPorts
 from feedbax.runtime.graph import GraphTraceRequest
-from feedbax.runtime.components import Input
+from feedbax.builtins.runtime.components import Input
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
 from feedbax.training.checkpoint_custody import open_published_model_slot
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -539,7 +539,7 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids():
     params = RolloutParameters.model_validate(
         decode_request(plan.requests[evaluate.request_id], plan.documents.__getitem__).spec.params,
     )
-    variant = resolve_evaluation_variant(graph, documents.task_source, params.variation)
+    variant = resolve_evaluation_variant(graph, documents.task_source, params.variation, components=registry)
     child = variant.graph.subgraphs["wrapper"].subgraphs["controller"]
     (outgoing,) = (wire for wire in child.wires if wire.id == "decode")
     (incoming,) = (wire for wire in child.wires if wire.target_node == outgoing.source_node)

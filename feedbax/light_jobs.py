@@ -46,6 +46,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.content_retention import read_active_roots
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
+from feedbax.plugins.declarations import missing_declaration
 
 if TYPE_CHECKING:
     from feedbax.plugins.application import ApplicationRegistryBundle
@@ -86,7 +87,7 @@ def resolve_analysis_operation(
     try:
         operation = registry.operations.resolve(spec.analysis_type)
     except KeyError as error:
-        raise ValueError(f"Unknown managed Analysis operation {spec.analysis_type!r}") from error
+        raise ValueError(missing_declaration("operation", spec.analysis_type)) from error
     definition = operation.definition
     if spec.computation != definition.computation():
         raise ValueError(f"Operation {definition.key!r} differs from the authored computation revision or provider")

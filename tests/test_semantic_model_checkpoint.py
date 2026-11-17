@@ -21,7 +21,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.training import GraphTopologySourceSpec
 from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.dataset import Dataset, Variable
-from feedbax.mechanics.muscles import RigidTendonHillMuscleThelen
+from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.runtime.raw_state import bind_raw_state
@@ -45,7 +45,7 @@ def _publish(root, graph, model, assets=None):
         "graph": GraphTopologySourceSpec(inline=graph.model_dump(mode="json")),
     })
     phase = spec.worker_execution.effective_phase.phase_program
-    writer = SemanticModelWriter.for_graph(graph, assets)
+    writer = SemanticModelWriter.for_graph(graph, assets, ComponentRegistry())
     assert writer is not None
     return write_checkpoint_transaction(
         root,

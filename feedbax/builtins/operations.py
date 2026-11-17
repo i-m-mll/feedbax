@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from importlib.metadata import version
 from typing import Annotated, Literal
 
 import jax
@@ -11,14 +10,13 @@ import numpy as np
 from pydantic import Field
 
 from feedbax.analysis.aligned import project_onto_direction
-from feedbax.analysis.operations import DatasetOutput, OperationDeclaration, OperationRegistry, operation
+from feedbax.analysis.operations import DatasetOutput, operation
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields
 from feedbax.dataset import Dataset, Variable
 from feedbax.dataset_sweep import CONDITION_MEMBER, CONDITION_PROVENANCE
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA
-from feedbax.plugins.declarations import DistributionSource, callable_declaration
 
 
 _MEMBER_AXES = ("checkpoint", "condition", "trial")
@@ -206,11 +204,3 @@ def summarize_velocity(
         raise ValueError("Trial summary requires finite velocity values.")
     result = _summarize_trials(values, jnp.asarray(params.ddof), jnp.asarray(params.bounds_scale))
     return _product(_SUMMARY, velocity, result)
-
-
-def register_builtin_operations(registry: OperationRegistry) -> None:
-    source = DistributionSource("feedbax", "feedbax", version("feedbax"))
-    for function in (aligned_velocity, summarize_velocity):
-        declaration = callable_declaration(function)
-        assert isinstance(declaration, OperationDeclaration)
-        registry.register_declaration(function, declaration, key=f"feedbax.{function.__name__}", source=source)

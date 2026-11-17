@@ -19,8 +19,8 @@ from feedbax.component_registry import (
     ComponentRegistry,
 )
 from feedbax.component_registry.cde_templates import cde_template_pack
-from feedbax.runtime.channel import Channel
-from feedbax.runtime.components import Gain
+from feedbax.builtins.runtime.channel import Channel
+from feedbax.builtins.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.builders import build_component
 from feedbax.compiler.serialization import graph_to_spec

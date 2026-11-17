@@ -29,7 +29,7 @@ from feedbax.contracts.jobs import JobStatus
 from feedbax.expression_builtins import register_builtins
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.tasks.document import TaskParameters
-from feedbax.tasks.reaching import builtin_python_tasks
+from feedbax.tasks.registry import application_python_tasks
 from feedbax.training.evaluate_worker import score_paired_validation
 from feedbax.training.managed_studio import prepare_trial_update
 from feedbax.web.services import project_plan as window_service
@@ -373,7 +373,7 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     raw = document_project(authored)
     _two_optimizer_rates(raw)
     folders = ProjectFolderService(tmp_path)
-    evaluation_tasks = builtin_python_tasks()
+    evaluation_tasks = application_python_tasks()
 
     def projected(view):
         return view.window_map(evaluation_tasks=evaluation_tasks).model_dump(mode="json")
@@ -429,7 +429,7 @@ def test_saved_window_keeps_verification_for_wide_float_requests(authored, tmp_p
     view = window_service.ProjectPlanRead.without_history(settled)
     (run,) = settled.plan.runs
     assert settled.plan.train_evaluation_source(run.request_id) is None
-    evaluation_tasks = builtin_python_tasks()
+    evaluation_tasks = application_python_tasks()
     if reject:
         with pytest.raises(ValueError, match="unsafe_integer"):
             view.window_map(evaluation_tasks=evaluation_tasks)

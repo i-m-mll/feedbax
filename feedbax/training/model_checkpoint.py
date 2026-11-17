@@ -30,7 +30,7 @@ from feedbax.contracts.model_checkpoint import (
     SemanticModelEncoding,
 )
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.model_occurrence import graph_leaf_specs
+from feedbax.contracts.model_occurrence import graph_leaf_occurrences, graph_leaf_specs
 from feedbax.persistence.array_container import (
     ArrayContainerError,
     decode_array_container,
@@ -47,10 +47,11 @@ from feedbax.persistence.model_tree import (
     model_tree_assets,
 )
 from feedbax.runtime.graph import Graph
-from feedbax.contracts.model_values import MODEL_OWNERS, model_owner_problem
+from feedbax.contracts.model_values import model_owner_problem
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
 
 if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider
     from feedbax.contracts.checkpoints import CheckpointSlotBlobRef
 
@@ -111,9 +112,9 @@ class SemanticModelWriter:
 
     @classmethod
     def for_graph(
-        cls, graph: GraphSpec, assets: ArtifactBlobProvider | None,
+        cls, graph: GraphSpec, assets: ArtifactBlobProvider | None, components: ComponentRegistry,
     ) -> SemanticModelWriter | None:
-        if not graph.nodes or model_owner_problem(graph, "checkpoint") is not None:
+        if not graph.nodes or model_owner_problem(graph, "checkpoint", components) is not None:
             return None
         return cls(graph, assets)
 
@@ -187,8 +188,6 @@ class SemanticModelSlot:
         try:
             members = {file.relative_path: file.object for file in provider.get_tree(tree).files}
             graph = GraphSpec.model_validate_json(_read(provider, members[_GRAPH], "/graph"))
-            if SemanticModelWriter.for_graph(graph, provider) is None:
-                raise ModelCheckpointError("/graph", "graph has an undeclared semantic model owner")
             for path, asset in model_tree_assets(graph, members):
                 _read(provider, asset, path)
             return cls(provider, graph, members[_ARRAY], encoding, tree)
@@ -199,21 +198,22 @@ class SemanticModelSlot:
         except (ValueError, KeyError, OSError) as exc:
             raise ModelCheckpointError("/v1/model", str(exc)) from exc
 
-    def template(self) -> Graph:
+    def template(self, components: ComponentRegistry | None = None) -> Graph:
         from feedbax.compiler import GraphDocument, compile_graph
         from feedbax.component_registry import ComponentRegistry
 
         return compile_graph(
-            GraphDocument(graph=self.graph), ComponentRegistry(),
+            GraphDocument(graph=self.graph), components if components is not None else ComponentRegistry(),
             artifact_provider=self.provider,
         ).graph
 
     def restore(
         self, template: Graph | None = None, *, target: ModelRestoreTarget | None = None,
+        components: ComponentRegistry | None = None,
     ) -> Graph:
         """Verify the source slot, then bind compatible retained values to the target."""
         if template is None:
-            template = self.template()
+            template = self.template(components)
         try:
             decoded = decode_array_container(
                 _read(self.provider, self.arrays, "/v1/model"),
@@ -227,18 +227,20 @@ class SemanticModelSlot:
             raise ModelCheckpointError("/v1/model", "missing value declarations")
         _verify_values(expected, declarations, decoded.tensors, actual)
 
-        retained = frozenset(path for path, _ in graph_leaf_specs(self.graph))
+        source_leaves = dict(graph_leaf_specs(self.graph))
+        retained = frozenset(source_leaves)
         overrides: Mapping[str, float] = {}
         if target is not None:
             from feedbax.contracts.model_attachment import is_generated_attachment_node
 
             destination_leaves = dict(graph_leaf_specs(target.graph))
-            source_leaves = dict(graph_leaf_specs(self.graph))
             removed = {
                 path for path in retained - destination_leaves.keys()
                 if is_generated_attachment_node(path[-1], source_leaves[path].type)
-                and (owner := MODEL_OWNERS.get(source_leaves[path].type)) is not None
-                and not any(value.kind == "learned" for value in owner.values)
+                and not any(
+                    value.kind == "learned"
+                    for value in template.get_node(".".join(path[:-1])).component_bindings[path[-1]].model_facts.values
+                )
             }
             retained -= removed
             destination, destination_declarations = _describe(
@@ -261,8 +263,9 @@ class SemanticModelSlot:
                 binding = current.component_bindings[name]
                 source = {}
                 learned = []
-                owner = MODEL_OWNERS[binding.type_id]
-                for value in owner.values if not owner.fixed_configuration else ():
+                owner = binding.model_facts
+                node = destination_leaves[path] if target is not None else source_leaves[path]
+                for value in owner.values if not owner.is_fixed_configuration(node) else ():
                     address = semantic_key("model", "value", path, value.symbol)
                     if address not in decoded.tensors:
                         continue
@@ -329,7 +332,7 @@ def _describe(
 
     verify_occurrences(graph, model, ())
     arrays, declarations = {}, {}
-    specs = dict(graph_leaf_specs(graph))
+    specs = {path: (node, physical) for path, node, physical in graph_leaf_occurrences(graph)}
     if retained is None:
         retained = specs.keys()
     if missing := retained - specs.keys():
@@ -350,17 +353,16 @@ def _describe(
         binding = scope.component_bindings.get(name)
         if component is None or binding is None:
             raise ModelCheckpointError(owner_path, "effective graph and realized owner occurrences differ")
-        owner = MODEL_OWNERS.get(binding.type_id)
+        node, physical = specs[path]
+        owner = binding.model_facts
         if (
-            owner is not None and owner.fixed_configuration and binding.revision == owner.revision
-            and specs[path].type == binding.type_id and specs[path].params.get("fixed") is True
-        ):
-            continue
-        if (
-            owner is None or not owner.checkpointable or specs[path].type != binding.type_id
-            or binding.revision != owner.revision
+            owner is None or node.type != binding.type_id or node.revision not in (None, binding.revision)
+            or not owner.supports_checkpoint(node, physical)
+            or (physical is None and not isinstance(component, binding.owner_class))
         ):
             raise ModelCheckpointError(owner_path, "unsupported runtime owner identity or revision")
+        if owner.is_fixed_configuration(node):
+            continue
         for value in owner.values:
             address = semantic_key("model", "value", path, value.symbol)
             leaf = attrgetter(value.field)(component)

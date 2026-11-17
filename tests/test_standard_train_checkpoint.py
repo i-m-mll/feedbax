@@ -44,7 +44,7 @@ def test_typed_standard_optimizer_state_reproduces_the_next_update(tmp_path, opt
     kernel = preparation.kernel_context["studio_graph_update"]
     state = kernel.reported_update(preparation.initial_slots)
     graph = GraphSpec.model_validate(spec.graph.inline)
-    model_writer = SemanticModelWriter.for_graph(graph, None)
+    model_writer = SemanticModelWriter.for_graph(graph, None, registries.components)
     assert model_writer is not None
     phase = spec.worker_execution.effective_phase.phase_program
     publication = write_checkpoint_transaction(

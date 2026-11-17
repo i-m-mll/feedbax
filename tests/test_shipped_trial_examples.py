@@ -75,7 +75,9 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
         assert int(slots["batch_counter"]) == 2
         assert not eqx.tree_equal(initial_model, slots["model"])
 
-        writer = SemanticModelWriter.for_graph(GraphSpec.model_validate(spec.graph.inline), None)
+        writer = SemanticModelWriter.for_graph(
+            GraphSpec.model_validate(spec.graph.inline), None, registries.components,
+        )
         assert writer is not None
         checkpoint = write_checkpoint_transaction(
             tmp_path / name,

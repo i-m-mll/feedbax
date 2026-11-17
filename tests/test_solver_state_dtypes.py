@@ -13,7 +13,7 @@ from feedbax.mechanics.dae import DAEComponent
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE
-from feedbax.runtime.filters import LowPassFilter
+from feedbax.builtins.runtime.filters import LowPassFilter
 from feedbax.runtime.state import CartesianState
 pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 

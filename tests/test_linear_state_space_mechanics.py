@@ -4,8 +4,8 @@ import jax
 import jax.numpy as jnp
 
 from feedbax.runtime.graph import Graph, init_state_from_component
-from feedbax.mechanics import LinearStateSpace
-from feedbax.runtime.state_feedback import StateFeedbackSelector
+from feedbax.builtins.mechanics.linear_state_space import LinearStateSpace
+from feedbax.builtins.runtime.state_feedback import StateFeedbackSelector
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph

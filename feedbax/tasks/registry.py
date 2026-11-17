@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.expression_values import Problem, ProblemCode, Site, ValueType
 from feedbax.contracts.task_document import PythonTaskSelection
+from feedbax.plugins.declarations import CallableDeclaration, DistributionSource, missing_declaration
 from feedbax.registry_errors import RegistryCollisionError
 
 if TYPE_CHECKING:
@@ -25,6 +27,21 @@ class PythonTaskTemplate:
     condition_ids: tuple[str, ...] = ()
 
 
+class PythonTask[Settings: BaseModel](ABC):
+    """Defines the trial interface and preparation for a task authored in Python."""
+
+    key: ClassVar[str | None] = None
+    label: ClassVar[str | None] = None
+    settings_model: type[Settings]
+    revision: ClassVar[int] = 1
+    renamed_from: ClassVar[tuple[str, ...]] = ()
+    parameter_sites: ClassVar[Mapping[str, Site]] = {}
+
+    @staticmethod
+    @abstractmethod
+    def template(settings: Settings) -> PythonTaskTemplate: ...
+
+
 @dataclass(frozen=True)
 class PythonTaskDefinition[Settings: BaseModel]:
     key: str
@@ -32,6 +49,9 @@ class PythonTaskDefinition[Settings: BaseModel]:
     parameters: type[Settings]
     template: Callable[[Settings], PythonTaskTemplate]
     parameter_sites: Mapping[str, Site]
+    source: DistributionSource
+    revision: int
+    renamed_from: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -49,20 +69,38 @@ class PythonTaskInstance[Parameters: BaseModel]:
 class PythonTaskRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, PythonTaskDefinition[Any]] = {}
+        self._renames: dict[str, str] = {}
         self._sealed = False
 
-    def register(self, definition: PythonTaskDefinition[Any]) -> None:
+    def register_declaration[Settings: BaseModel](
+        self, task: type[PythonTask[Settings]], *, key: str, source: DistributionSource,
+    ) -> None:
         if self._sealed:
             raise RuntimeError("Python task registry is sealed")
-        if definition.key in self._entries:
-            raise RegistryCollisionError(f"Duplicate Python task {definition.key!r}")
-        self._entries[definition.key] = definition
+        declaration = CallableDeclaration(
+            key=key, label=task.label, settings_model=task.settings_model,
+            revision=task.revision, renamed_from=task.renamed_from,
+        )
+        for name in (key, *declaration.renamed_from):
+            if name in self._entries or name in self._renames:
+                raise RegistryCollisionError(f"Duplicate Python task {name!r}")
+        self._entries[key] = PythonTaskDefinition(
+            key=key,
+            label=declaration.label or task.__name__,
+            parameters=task.settings_model,
+            template=task.template,
+            parameter_sites=dict(task.parameter_sites),
+            source=source,
+            revision=declaration.revision,
+            renamed_from=declaration.renamed_from,
+        )
+        self._renames.update(dict.fromkeys(declaration.renamed_from, key))
 
     def keys(self) -> tuple[str, ...]:
         return tuple(sorted(self._entries))
 
     def resolve(self, key: str) -> PythonTaskDefinition[Any] | None:
-        return self._entries.get(key)
+        return self._entries.get(self._renames.get(key, key))
 
     def seal(self) -> None:
         self._sealed = True
@@ -74,7 +112,7 @@ def resolve_python_task_instance(
     definition = registry.resolve(selection.type)
     if definition is None:
         return (Problem(code=ProblemCode.UNKNOWN_NAME, path=("python_task", "type"),
-                        reason=f"Python task {selection.type!r} is not registered."),)
+                        reason=missing_declaration("Python task", selection.type)),)
     try:
         parameters = definition.parameters.model_validate(selection.params)
     except ValidationError as error:
@@ -93,3 +131,9 @@ def python_task_parameter_site(path: str, trial_documents, registry: PythonTaskR
         return None
     definition = registry.resolve(selection["type"])
     return definition.parameter_sites.get(path.removeprefix(prefix)) if definition else None
+
+
+def application_python_tasks() -> PythonTaskRegistry:
+    from feedbax.plugins.composition import load_application
+
+    return load_application().bundle.python_tasks

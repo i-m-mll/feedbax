@@ -42,7 +42,7 @@ from feedbax.training.checkpoint_custody import (
 from feedbax.training.managed_studio import prepare_managed_training
 from feedbax.training.model_checkpoint import ModelCheckpointError, SemanticModelWriter
 from feedbax.training.standard_train_checkpoint import standard_train_optimizer_template
-from feedbax.runtime.components import identity_activation
+from feedbax.builtins.runtime.components import identity_activation
 from tests.support.managed_train_fixture import managed_train_payload, managed_train_spec
 
 
@@ -61,7 +61,9 @@ def _write_resolver_checkpoint(root):
         ),
         slots=state,
         completed_training_batches=1,
-        semantic_model=SemanticModelWriter.for_graph(GraphSpec.model_validate(spec.graph.inline), None),
+        semantic_model=SemanticModelWriter.for_graph(
+            GraphSpec.model_validate(spec.graph.inline), None, registries.components,
+        ),
     )
 
 

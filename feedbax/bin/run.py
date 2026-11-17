@@ -1,14 +1,13 @@
 """Admit saved project runs."""
 
 import argparse
-import asyncio
 import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from uuid import uuid4
 
-from feedbax.plugins.composition import compose_application
+from feedbax.plugins.composition import load_application
 
 from .project_commands import CommandOutput, run_project_command
 
@@ -38,10 +37,11 @@ def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
     try:
         root, declaration = locate_text_project(args.project_dir)
         location = ProjectFolderLocation.selected(root)
-        registries = asyncio.run(compose_application()).bundle
+        registries = load_application().bundle
         folders = ProjectFolder(
             root.parent, operations=registries.operations, components=registries.components,
             functions=registries.expression_functions, python_tasks=registries.python_tasks,
+            figure_templates=registries.figure_templates,
             local_folder=location,
         )
         reviewed = folders.read_plan(location.project_id, revision=None, declaration=declaration)

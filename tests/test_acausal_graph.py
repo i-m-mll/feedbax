@@ -14,9 +14,9 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
-from feedbax.acausal import (
-    AcausalConnection,
-    AcausalSystem,
+from feedbax.acausal import AcausalConnection
+from feedbax.builtins.acausal.system import AcausalSystem
+from feedbax.builtins.acausal.translational import (
     ForceSource,
     Ground,
     LinearDamper,
@@ -24,7 +24,7 @@ from feedbax.acausal import (
     Mass,
     PositionSensor,
 )
-from feedbax.acausal.translational import PrescribedMotion
+from feedbax.builtins.acausal.translational import PrescribedMotion
 
 from equinox.nn import State
 from jaxtyping import PRNGKeyArray, PyTree

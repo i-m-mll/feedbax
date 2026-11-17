@@ -168,7 +168,7 @@ def _project_canonical_train(
     if isinstance(paired, tuple):
         problem = paired[0]
         raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
-    if problem := model_owner_problem(paired.graph.graph, "checkpoint"):
+    if problem := model_owner_problem(paired.graph.graph, "checkpoint", registries.components):
         address = paired.lowered.source_address(pointer(problem.path))
         path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
         raise ValueError(f"{pointer(path)}: {problem.reason}")

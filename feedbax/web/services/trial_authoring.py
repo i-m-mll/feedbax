@@ -407,6 +407,7 @@ def _evaluate_documents(plan, key, definition, bundle):
         params = authored_rollout_settings(definition.payload.get("params"))
         variant = resolve_evaluation_variant(
             projection.pair.lowered.graph, documents.task_source, params.variation,
+            components=bundle.components,
         )
         graph = variant.graph
         run = next((row for row in plan.runs if row.key == key), None)
@@ -417,6 +418,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                 if effective_params.variation != params.variation:
                     graph = resolve_evaluation_variant(
                         projection.pair.lowered.graph, documents.task_source, effective_params.variation,
+                        components=bundle.components,
                     ).graph
     except ValueError as error:
         return documents, _Projection(

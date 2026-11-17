@@ -32,8 +32,9 @@ from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, Ob
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.trial_execution import TrialExecution
 from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task
-from feedbax.tasks.reaching import builtin_python_tasks
-from feedbax.tasks.registry import PythonTaskRegistry, PythonTaskTemplate, resolve_python_task_instance
+from feedbax.tasks.registry import (
+    PythonTaskRegistry, PythonTaskTemplate, application_python_tasks, resolve_python_task_instance,
+)
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,7 @@ def resolve_python_task(
 def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: PythonTaskRegistry | None) -> tuple[str, ...]:
     if isinstance(task, TaskDocument):
         return task.condition_ids
-    template = resolve_python_task(task, registry or builtin_python_tasks())
+    template = resolve_python_task(task, registry or application_python_tasks())
     if isinstance(template, tuple):
         raise ValueError(template[0].reason)
     return template.condition_ids
@@ -129,7 +130,7 @@ def pair_trial_source(
 ) -> TrialPair | tuple[Problem, ...]:
     overrides = input_overrides or {}
     if isinstance(task, PythonTaskSelection):
-        resolved = resolve_python_task_instance(task, python_tasks or builtin_python_tasks())
+        resolved = resolve_python_task_instance(task, python_tasks or application_python_tasks())
         if isinstance(resolved, tuple):
             return resolved
         template = resolved.template()
