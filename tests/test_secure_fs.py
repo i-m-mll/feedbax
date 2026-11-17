@@ -6,22 +6,10 @@ from pathlib import Path
 import pytest
 
 import feedbax._secure_fs as secure_fs
-import feedbax.analysis.evaluation_inputs as evaluation_inputs
-import feedbax.analysis.execution_context as execution_context
-import feedbax.analysis.manifest_inputs as manifest_inputs
-import feedbax.persistence.artifact_custody as artifact_custody
 
 
 class _CallerSecurityError(ValueError):
     pass
-
-
-def test_secure_path_callers_share_one_authority() -> None:
-    assert artifact_custody._open_directory_chain.func is secure_fs.open_directory_chain
-    assert artifact_custody._recheck_directory_chain.func is secure_fs.recheck_directory_chain
-    assert execution_context.open_directory_chain is secure_fs.open_directory_chain
-    assert manifest_inputs.open_directory_chain is secure_fs.open_directory_chain
-    assert evaluation_inputs.open_directory_chain is secure_fs.open_directory_chain
 
 
 def test_directory_chain_refuses_a_symlink_component(tmp_path: Path) -> None:

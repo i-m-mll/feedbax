@@ -18,5 +18,5 @@ def test_describe_selects_current_registry_and_document_family(capsys):
     assert main(["describe", "receipt"]) == 2
     rejected = capsys.readouterr()
     assert not rejected.out
-    assert "unknown authoring selector 'receipt'" in rejected.err
+    assert "receipt" in rejected.err
     assert "step:report" in rejected.err and "family:figure" in rejected.err

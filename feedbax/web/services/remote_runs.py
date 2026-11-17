@@ -31,7 +31,7 @@ from feedbax.orchestration.session import (
 from feedbax.orchestration.session_jobs import ApprovedRowStatus, ApprovedRunClosed, ApprovedRunVisibility, ApprovedSessionRuns, SessionJobs
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.orchestration.venue_history import VenueHistory
-from feedbax.project_folder import ProjectFolder, SettledProjectPlan
+from feedbax.project_folder import ProjectFolder, ProjectFolderInvalid, SettledProjectPlan
 
 
 log = logging.getLogger("uvicorn.error")
@@ -275,7 +275,7 @@ class StudioRemoteRuns:
             collector.shutdown(cancel_futures=True)
 
     def _queue_collection(
-        self, session: SessionJobs, local: JobService, project: str, store: Path,
+        self, session: SessionJobs, local: JobService, folders: ProjectFolder, project: str, store: Path,
         pending: dict[str, str], session_id: UUID,
     ) -> None:
         key = (session_id, project)
@@ -289,8 +289,11 @@ class StudioRemoteRuns:
 
         def collect() -> None:
             try:
-                session.collect_delegated(local, project=project, store=store, progress=report, pending=pending)
-            except (HostError, OSError, JobConflict, SessionError):
+                root = folders.read_authored_snapshot(project, revision=None).root
+                session.collect_delegated(
+                    local, project=project, store=store, project_root=root, progress=report, pending=pending,
+                )
+            except (HostError, OSError, JobConflict, ProjectFolderInvalid, SessionError):
                 log.exception("Result collection is unresolved for %s on %s", project, session_id)
             finally:
                 with self._lock:
@@ -419,7 +422,7 @@ class StudioRemoteRuns:
                     collect = {job.job_id: state["pending"][job.job_id] for job in activity
                                if job.project_id == project and job.job_id in state["pending"]}
                     if collect:
-                        self._queue_collection(session, local_jobs, project, store, collect, session_id)
+                        self._queue_collection(session, local_jobs, folders, project, store, collect, session_id)
             self._retry_provider(target, venue)
         with self._lock:
             staged = tuple(visible_openings)

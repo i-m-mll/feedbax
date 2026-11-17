@@ -27,8 +27,6 @@ from feedbax.models.feedback import SimpleFeedback
 
 
 def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path):
-    from pathlib import Path
-
     from feedbax.compiler import GraphDocument, compile_graph
     from feedbax.compiler.serialization import graph_to_spec
     from feedbax.component_registry import ComponentRegistry
@@ -36,11 +34,6 @@ def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path)
 
     registry = ComponentRegistry()
     type_id = "feedbax.Conv2d"
-    repo_root = Path(__file__).resolve().parents[1]
-    assert {
-        "feedbax/builtins/components/equinox.py",
-        "scripts/generate_eqx_components.py",
-    } <= set(registry.component_source_paths(repo_root)[type_id])
     authored = GraphSpec(
         nodes={
             "conv": ComponentSpec(

@@ -122,8 +122,8 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
 
     changed = deepcopy(raw)
     changed["steps"]["train"]["sweep"]["exceptions"] = {
-        "rate-for-one": {"where": {"axes": {"seed": ["one"]}}, "patches": {
-            "training_config.n_reach_steps": {"value": 81},
+        "longer-task-for-one": {"where": {"axes": {"seed": ["one"]}}, "patches": {
+            "documents.task.payload.fixed_steps": {"value": 81},
         }},
     }
     revised = compile_project(Project.model_validate(changed))

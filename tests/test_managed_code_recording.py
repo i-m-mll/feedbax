@@ -12,6 +12,7 @@ import pytest
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import SourcePath
 from feedbax.contracts.effective_success import Product
+from feedbax.contracts.report_document import ReportDocument, ReportText
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.request_specs import ReportRequestSpec
@@ -147,7 +148,8 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
             source.write_text("def prepare():\n    return 8\n")
             assert recorder.changed()
 
-    request = store_request(store, encode_request(ReportRequestSpec(report_type="example.report"), {}))
+    report = ReportDocument(title="Example report", blocks=(ReportText(markdown="Observed values"),))
+    request = store_request(store, encode_request(ReportRequestSpec(document=report), {}))
     blob = store.store_object(b"report")
     product = Product(name="report", content=ContentRef(sha256=blob.sha256, size=blob.size_bytes))
     success = SuccessView(store).publish_bound(

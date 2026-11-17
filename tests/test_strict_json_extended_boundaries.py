@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from feedbax.analysis.evaluation import coerce_evaluation_run_spec
 from feedbax.contracts.strict_json import (
     DuplicateJsonKeyError,
     strict_model_validate_json,
@@ -47,10 +45,3 @@ def test_strict_pydantic_boundary_preserves_non_finite_numbers(constant: str) ->
 def test_strict_pydantic_boundary_adds_only_duplicate_refusal() -> None:
     with pytest.raises(DuplicateJsonKeyError):
         strict_model_validate_json(_TextPayload, '{"value":"first","value":"second"}')
-
-
-def test_public_evaluation_loader_refuses_duplicate_authored_members(tmp_path: Path) -> None:
-    path = tmp_path / "evaluation.json"
-    path.write_text('{"evaluation_type":"first","evaluation_type":"second"}', encoding="utf-8")
-    with pytest.raises(DuplicateJsonKeyError):
-        coerce_evaluation_run_spec(path)

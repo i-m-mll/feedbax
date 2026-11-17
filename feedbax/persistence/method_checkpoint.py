@@ -19,6 +19,7 @@ from feedbax.contracts.artifact_custody import (
     ArtifactBlobProvider,
     ContentBinding,
     ContentObjectRef,
+    ContentTreeRef,
 )
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -28,6 +29,7 @@ from feedbax.contracts.method_checkpoint import (
     method_checkpoint_extra_path,
 )
 from feedbax.contracts.strict_json import strict_model_validate_json
+from feedbax.contracts.store_closure import StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.content_materialization import (
     acquire_content_projection_lease,
@@ -120,6 +122,23 @@ def _local_manifest(
 
 def read_method_checkpoint_manifest(root: Path, pointer: CheckpointLatestPointer) -> MethodCheckpointManifest:
     return _local_manifest(root, pointer)[1]
+
+
+def retain_checkpoint_evidence(
+    store: ImmutableArtifactBlobProvider, root: Path, pointer: CheckpointLatestPointer, *,
+    evidence: tuple[ContentObjectRef | ContentTreeRef, ...],
+) -> None:
+    """Give the authenticated checkpoint custody of its staged evidence."""
+    from feedbax.validity.evidence import release_checkpoint_evidence
+
+    relative, _, ref = _local_manifest(root, pointer)
+    with store._exclusive_lock():
+        manifest = store._store_file(root / relative, sha256=ref.sha256, size_bytes=ref.size_bytes)
+        ref_name = f"checkpoints/{pointer.run_id}/{pointer.transaction_id}"
+        value = StoreClosureRef(roots=(manifest, *evidence)).model_dump(mode="json")
+        if not store.compare_and_swap_ref(ref_name, expected=None, replacement=value) and store.read_ref(ref_name) != value:
+            raise CheckpointCustodyError("Checkpoint already has different durable evidence")
+        release_checkpoint_evidence(store, pointer.run_id)
 
 
 def _member_files(

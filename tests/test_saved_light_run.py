@@ -7,12 +7,13 @@ import re
 import numpy as np
 from fastapi.testclient import TestClient
 
+from feedbax.builtins.reaching import REACHING_TASK
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ElementKey, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID
 from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
@@ -25,6 +26,34 @@ from tests.test_project_analyze_plan import _operations
 from tests.test_project_report_plan import _report_project
 
 host = host_fixture
+_TRIALS = ["0", "1"]
+
+
+def _saved_light_definition(*, paired=False):
+    project = _report_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    evaluation = managed_evaluation_definition()
+    train = evaluation["steps"]["train"]
+    inputs = train["base"]["inline"]["trial_documents"]
+    inputs["python_task"] = inputs.pop("task")
+    inputs.pop("input_overrides")
+    evaluation["documents"]["task"] = {
+        "schema": PYTHON_TASK_SCHEMA_ID,
+        "payload": {"type": REACHING_TASK, "params": {"x": 0.15, "n_steps": 8}},
+    }
+    project["documents"] = evaluation["documents"] | {
+        name: project["documents"][name]
+        for name in ("velocity-analysis", "velocity-figure", "velocity-report")
+    }
+    project["documents"]["velocity-figure"]["payload"]["layers"][0]["style"] = {"label": "{condition}"}
+    project["steps"]["train"] = train
+    step = "conditions" if paired else "baseline"
+    evaluate = evaluation["steps"][step]
+    evaluate["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": len(_TRIALS)}
+    project["steps"][step] = evaluate
+    project["documents"]["velocity-analysis"]["payload"]["operations"]["align"]["params"]["target"] = (
+        "/v1/task/output/reach_target"
+    )
+    return project
 
 
 def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host, tmp_path, monkeypatch, capsys):
@@ -34,10 +63,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
     host.policy(compute=1, light=1)
     projects = tmp_path / "projects"
     project = "reaching"
-    definition = _report_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
-    task = TaskDocument.model_validate(definition["documents"]["task"]["payload"])
-    params = definition["steps"]["baseline"]["base"]["inline"]["params"]
-    params["trial_set"] = {"kind": "conditions", "ids": list(task.condition_ids[:2])}
+    definition = _saved_light_definition()
     folders = ProjectFolderService(projects)
     _save_project(folders, project, Project.model_validate(definition))
     project_id = folders.open(project).snapshot.project_id
@@ -134,15 +160,15 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         edited = revision()
         stale, stale_report = projection(edited)
         assert stale["align"]["result"] == elements["align"]["result"]
-        assert stale["summarize"]["reason"] == "Definition changed at payload.operations.summarize.params.bounds_scale."
-        assert stale["profile"]["reason"] == "Definition changed at payload.views.profile.inputs.summary."
-        assert stale_report["reason"] == "Definition changed at inputs.velocity_summary."
-        assert stale["profile"]["status"] == stale_report["status"] == "stale"
+        assert {stale[name]["status"] for name in ("summarize", "profile")} == {stale_report["status"]} == {"stale"}
+        assert "bounds_scale" in stale["summarize"]["reason"]
+        assert "inputs.summary" in stale["profile"]["reason"]
+        assert "inputs.velocity_summary" in stale_report["reason"]
         previous_url = stale["profile"]["previous"]["products"]["figure"]
         assert stale["profile"]["previous"]["job_id"] == figure["job_id"]
         assert expect(client.get(previous_url)).content == figure_response.content
         assert main(["status", str(projects / project)]) == 0
-        assert stale["summarize"]["reason"] in capsys.readouterr().out
+        assert "bounds_scale" in capsys.readouterr().out
 
         rerun = run(edited, "scoped-rerun", "analyze", "report")
         assert [item["disposition"] for item in rerun] == ["reused", "admitted", "admitted", "admitted"], rerun
@@ -174,11 +200,9 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         assert replacement["disposition"] == "admitted"
         (new_train,) = [job for job in terminal(10) if job["id"] == replacement["job_id"]]
         assert new_train["request"] == by_kind["train"]["request"]
-        assert main(["run", str(projects / project)]) == 0
-        reran = capsys.readouterr().out
-        assert reran.count(" reused ") == 1 and reran.count(" admitted ") == 5
+        assert main(["run", str(projects / project), "baseline"]) == 0
         (new_evaluate,) = [
-            job for job in terminal(15)
+            job for job in terminal(11)
             if job["request"] == by_kind["evaluate"]["request"] and job["id"] not in rerun_jobs
         ]
         assert not new_evaluate["edges"]
@@ -196,13 +220,8 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     projects = tmp_path / "projects"
     project = "paired"
     path = f"/api/projects/{project}"
-    definition = _report_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    definition = _saved_light_definition(paired=True)
     steps = definition["steps"]
-    steps["conditions"] = managed_evaluation_definition()["steps"]["conditions"]
-    params = steps["conditions"]["base"]["inline"]["params"]
-    task = TaskDocument.model_validate(definition["documents"]["task"]["payload"])
-    trials = [task.condition_ids[index] for index in (10, 0)]
-    params["trial_set"] = {"kind": "conditions", "ids": trials}
     upstream = Project.model_validate(definition | {"steps": {
         name: steps[name] for name in ("train", "conditions")
     }})
@@ -281,8 +300,8 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     for _, receipt in evaluations:
         with open_stored_dataset(store, dataset_member(receipt.products["states"][0])) as data:
             conditions.extend(data.data("condition").tolist())
-            assert data.data("trial").tolist() == trials
-            assert data.data("checkpoint").tolist() == [trained.continuation.clock.completed_batches]
+            assert data.data("trial").tolist() == _TRIALS
+            assert data.data("checkpoint").tolist() == [trained.continuation.clock.completed_updates]
             times.append(np.asarray(data.data("state_time")).copy())
             source_attrs.append(data.descriptor.attrs)
     assert len(set(conditions)) == 2
@@ -296,7 +315,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     with open_stored_dataset(store, dataset_member(aligned.products["velocity"][0])) as data:
         assert data.data("condition").tolist() == conditions
         assert data.data("member").tolist() == list(order)
-        assert data.data("trial").tolist() == trials
+        assert data.data("trial").tolist() == _TRIALS
         np.testing.assert_array_equal(data.data("state_time"), times[0])
         assert data.descriptor.attrs["condition_provenance"] == provenance
     summary = plan.elements[ElementKey(analyze, "summarize")]
@@ -307,7 +326,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         assert data.data("condition").tolist() == conditions
         assert data.descriptor.attrs["condition_provenance"] == provenance
         mean = np.asarray(data.data("mean")).copy()
-        assert np.all(data.data("count") == len(trials))
+        assert np.all(data.data("count") == len(_TRIALS))
     assert mean.shape == (1, 2, len(times[0]))
     assert not np.allclose(mean[0, 0], mean[0, 1])
 

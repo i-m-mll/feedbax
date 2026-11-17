@@ -10,19 +10,13 @@ from feedbax.builtins.runtime.components import Gain
 from feedbax.studio.component_presentation import PresentationOverride
 
 from dataclasses import replace
-from pathlib import Path
-from types import ModuleType, SimpleNamespace
 from typing import get_args, get_origin
 
-import plotly.graph_objects as go
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError, model_validator
 
-from feedbax.analysis.analysis import AbstractAnalysis
-from feedbax.analysis.context import AnalysisRunContext
-from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.array_values import (
     ConstantArrayValueSpec,
@@ -30,19 +24,15 @@ from feedbax.contracts.array_values import (
     SparseCooEntrySpec,
 )
 from feedbax.contracts.studio_api import (
-    AnalysisPackagesResponse,
     ComponentListResponse,
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
     SuccessPayload,
 )
-from feedbax.contracts.manifest import AnalysisRunSpec, load_manifest
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
-from feedbax.web.api import figures as figures_api
 from feedbax.plugins.bootstrap import BootstrapState
-from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
 from scripts.generate_studio_contracts import (
     AUTHORED_CONTRACT_MODELS,
@@ -54,11 +44,9 @@ from scripts.generate_studio_contracts import (
     emit_schema,
     model_dependencies,
 )
-from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 GENERATED_STUDIO_PREFIXES = (
-    "/api/analyses",
     "/api/components",
     "/api/domains",
     "/api/graphs",
@@ -77,191 +65,6 @@ def _response_model_members(response_model: object) -> list[type[BaseModel]]:
     if isinstance(response_model, type) and issubclass(response_model, BaseModel):
         return [response_model]
     return []
-
-
-def test_studio_api_openapi_uses_plural_analysis_jobs_route() -> None:
-    app = create_app()
-    paths = app.openapi()["paths"]
-
-    assert "/api/analyses/jobs" in paths
-    assert "/api/analyses/jobs/status/{request_id}" in paths
-    assert "/api/analysis/generate" not in paths
-
-
-def test_analysis_packages_advertise_effective_output_ports(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("FEEDBAX_WEB_DATA", raising=False)
-
-    class InheritedAnalysis(ToyAnalysis):
-        pass
-
-    class ComputeOnlyAnalysis(ToyAnalysis):
-        make_figs = AbstractAnalysis.make_figs
-
-    class FigureOnlyAnalysis(ComputeOnlyAnalysis):
-        compute = AbstractAnalysis.compute
-        _params_to_save = AbstractAnalysis._params_to_save
-
-        def make_figs(self, data, *, result, **kwargs):
-            return {"main": go.Figure(go.Scatter(y=[data.states["value"]]))}
-
-    class GenericAnalysis(FigureOnlyAnalysis):
-        make_figs = AbstractAnalysis.make_figs
-
-    analyses = {
-        "direct": ToyAnalysis(variant="toy"),
-        "inherited": InheritedAnalysis(variant="toy"),
-        "figure_only": FigureOnlyAnalysis(variant="toy"),
-        "compute_only": ComputeOnlyAnalysis(variant="toy"),
-        "generic": GenericAnalysis(variant="toy"),
-    }
-    context = AnalysisRunContext(
-        spec=AnalysisRunSpec(analysis_type="toy_analysis", params={"outputs": list(analyses)}),
-        root=tmp_path,
-    )
-    run_analyses_with_context(
-        analyses, build_toy_analysis_data(), context, fig_dump_formats=["json"]
-    )
-    manifest = load_manifest(context.manifest_path)
-    published_figures = {
-        artifact.metadata["analysis_label"]
-        for artifact in manifest.artifacts
-        if artifact.role == "figure" and Path(artifact.uri).is_file()
-    }
-    assert published_figures == {"direct", "inherited", "figure_only"}
-
-    registry = ExperimentRegistry()
-    registry.register_package("test", ModuleType("test"), ["toy"], "analysis", "training", "config")
-    module = SimpleNamespace(ANALYSES=analyses)
-    monkeypatch.setattr(registry, "get_analysis_module", lambda _part: module)
-
-    app = create_app()
-    with TestClient(app) as client:
-        current = app.state.bootstrap_state
-        app.state.bootstrap_state = BootstrapState(
-            replace(current.bundle, experiment_packages=registry), current.provenance
-        )
-        response = client.get("/api/analyses/packages")
-
-    assert response.status_code == 200
-    (package,) = AnalysisPackagesResponse.model_validate(response.json()).data.packages
-    assert {item.name: item.outputPorts for item in package.analyses} == {
-        "ToyAnalysis": ["data", "figure"],
-        "InheritedAnalysis": ["data", "figure"],
-        "FigureOnlyAnalysis": ["figure"],
-        "ComputeOnlyAnalysis": ["data"],
-        "GenericAnalysis": ["data"],
-    }
-
-
-def test_figure_registry_api_lists_bootstrapped_constructors() -> None:
-    with TestClient(create_app()) as client:
-        response = client.get("/api/figures/constructors")
-
-    assert response.status_code == 200
-    assert any(item["key"] == "feedbax.grid_figure" for item in response.json())
-
-
-def test_figure_registry_empty_root_returns_empty_page(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(figures_api, "default_manifest_root", lambda: tmp_path)
-
-    with TestClient(create_app()) as client:
-        response = client.get("/api/figures/")
-
-    assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "limit": 50, "offset": 0}
-
-
-def test_figure_registry_unreadable_manifest_fails_without_exposing_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    private_path = tmp_path / "manifests" / "figures" / "private-custody.json"
-    private_path.parent.mkdir(parents=True)
-    private_path.write_text("not-json", encoding="utf-8")
-    monkeypatch.setattr(figures_api, "default_manifest_root", lambda: tmp_path)
-
-    with TestClient(create_app()) as client:
-        response = client.get("/api/figures/")
-
-    assert response.status_code == 500
-    assert response.json() == {"detail": "Figure registry contains an unreadable manifest"}
-    assert str(private_path) not in response.text
-
-
-def test_figure_file_endpoint_returns_content_with_literal_media_types(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    formats = {
-        "json": "application/json",
-        "html": "text/html; charset=utf-8",
-        "png": "image/png",
-        "svg": "image/svg+xml",
-        "webp": "image/webp",
-        "pdf": "application/pdf",
-    }
-    artifacts = {}
-    for extension in formats:
-        artifact_path = tmp_path / f"figure.{extension}"
-        artifact_path.write_bytes(b"rendered")
-        artifacts[extension] = SimpleNamespace(uri=str(artifact_path))
-    monkeypatch.setattr(figures_api, "_figure_manifests", lambda: [SimpleNamespace(id="figure-1")])
-    monkeypatch.setattr(figures_api, "_render_artifact", lambda _manifest, fmt: artifacts[fmt])
-
-    with TestClient(create_app()) as client:
-        for extension, content_type in formats.items():
-            response = client.get(f"/api/figures/figure-1/file?format={extension}")
-            assert response.status_code == 200, extension
-            assert response.headers["content-type"] == content_type, extension
-            assert response.content == b"rendered", extension
-
-
-def test_figure_file_endpoint_rejects_unsupported_format() -> None:
-    with TestClient(create_app()) as client:
-        response = client.get("/api/figures/figure-1/file?format=tiff")
-
-    assert response.status_code == 400
-    assert response.json() == {
-        "detail": (
-            "Unsupported format 'tiff'. Allowed formats: "
-            "['html', 'json', 'pdf', 'png', 'svg', 'webp']"
-        )
-    }
-
-
-def test_analysis_bundle_dry_run_endpoint_returns_stage_status() -> None:
-    client = TestClient(create_app())
-
-    response = client.post(
-        "/api/analyses/bundles/dry-run",
-        json={
-            "bundle": {
-                "schema_id": "feedbax.spec.analysis_bundle",
-                "schema_version": "feedbax.spec.analysis_bundle.v2",
-                "name": "dry-run-test",
-                "predicate": {"manifest_kind": "EvaluationRunManifest"},
-                "stages": [
-                    {
-                        "name": "disabled",
-                        "kind": "analysis",
-                        "skip_reason": "disabled for this bundle",
-                    }
-                ],
-            },
-            "preview_limit": 10,
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()["data"]["dry_run"]
-    assert payload["bundle_name"] == "dry-run-test"
-    assert payload["stages"][0]["status"] == "would_skip"
-    assert payload["stages"][0]["reason"] == "disabled for this bundle"
 
 
 def test_component_api_serves_representation_contract() -> None:

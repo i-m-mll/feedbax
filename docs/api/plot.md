@@ -1,20 +1,5 @@
-# Plotting
+# Dataset rendering
 
-::: feedbax.plot.loss_history
+`render` accepts a validated Figure document and a Dataset for each named role. The renderer resolves the authored channel bindings and selectors, groups samples in Dataset coordinate order, and assembles the Plotly figure. The authored theme applies to that figure without modifying the process default.
 
-::: feedbax.plot.loss_history_compare
-
-::: feedbax.plot.loss_mean_history
-
-::: feedbax.plot.effector_trajectories
-
-::: feedbax.plot.reach_endpoint_dists
-
-
-::: feedbax.plot.activity_heatmap
-
-::: feedbax.plot.joint_pos_trajectory
-
-<!-- ::: feedbax.plot.task_and_speed_profiles -->
-
-<!-- ::: feedbax.plot.animate_arm2 -->
+::: feedbax.plot.dataset_figure.render

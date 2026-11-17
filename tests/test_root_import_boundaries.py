@@ -7,7 +7,7 @@ import pytest
 
 @pytest.mark.parametrize(
     "module_name",
-    ["feedbax.analysis", "feedbax.analysis.aligned", "feedbax.analysis.execution"],
+    ["feedbax.analysis", "feedbax.analysis.aligned", "feedbax.analysis.operation_runtime"],
 )
 def test_analysis_import_does_not_require_persistence_or_viz_extras(module_name: str):
     script = textwrap.dedent(

@@ -1159,7 +1159,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     checkpoint = PublishedTrainingCheckpoint.model_validate(trained["outcome"]["completion"]["checkpoint"])
     slot = read_method_checkpoint(checkpoint.checkpoint_root, checkpoint.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
-    restored = slot.restore(slot.template(ComponentRegistry()))
+    restored = slot.restore()
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")
@@ -1177,9 +1177,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
         return receipts
 
     original_receipts = authenticated_receipts()
-    request_id = next(row.request_id for row in plan.plan.runs if row.kind == "train")
-    train_request = decode_request(plan.plan.requests[request_id], plan.plan.documents.__getitem__).spec
-    n_samples = _prepare_request(train_request, new_application_registry_bundle()).execution.task.n_steps + 1
+    n_samples = raw["documents"]["task"]["payload"]["fixed_steps"] + 1
     with result.open_states() as dataset:
         assert dataset.data("/v1/model/state/wrapper/controller/cell/hidden").shape[-2] == n_samples
         carry = dataset.data("/v1/model/carry/wrapper/controller/carry/carry")

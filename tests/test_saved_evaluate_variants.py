@@ -190,7 +190,6 @@ def _selected_task_variants():
     raw = managed_evaluation_definition()
     train = raw["steps"]["train"]
     inline = train["base"]["inline"]
-    inline["training_config"].pop("n_reach_steps")
     inline["trial_documents"].update(task=None, python_task={"document": "task"}, input_overrides={})
     raw["documents"]["task"] = {
         "schema": "feedbax.spec.python_task",

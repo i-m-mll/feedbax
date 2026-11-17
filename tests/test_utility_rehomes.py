@@ -1,19 +1,8 @@
 from __future__ import annotations
 
-
-import matplotlib.figure as mplfig
-
 from feedbax.config.defaults import get_iterations_to_save_model_parameters
 from feedbax.config.hyperparams import flat_key_to_where_fn, flatten_hps
 from feedbax.config.namespace import TreeNamespace
-from feedbax.plot.utils import get_label_str, savefig
-def test_plot_utils_label_and_matplotlib_save(tmp_path):
-    assert get_label_str("train__pert__std") == "Train pert. std."
-
-    fig = mplfig.Figure()
-    savefig(fig, "figure", tmp_path, ["svg"])
-
-    assert (tmp_path / "figure.svg").exists()
 
 
 def test_hyperparameter_selectors_and_default_save_iterations():

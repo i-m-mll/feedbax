@@ -528,19 +528,24 @@ class SessionJobs:
             ).fetchall()
         if any(bound is not None and Path(bound) != store for (bound,) in rows):
             raise SessionError("The local Store differs from the saved delegation.")
-        return self._collect_to_store(local_jobs, project, store, observed_only=observed_only)
+        return self._collect_to_store(
+            local_jobs, project, store, project_root=reviewed.project_root, observed_only=observed_only,
+        )
 
     def collect_delegated(
-        self, local_jobs: JobService, *, project: str, store: Path,
+        self, local_jobs: JobService, *, project: str, store: Path, project_root: Path,
         progress: Callable[[str, StoreTransferProgress], None] | None = None,
         pending: Mapping[str, str] | None = None,
     ) -> tuple[CollectedAttempt, ...]:
         if self.destination_stores().get(project) != store:
             raise SessionError("The local Store differs from the saved delegation.")
-        return self._collect_to_store(local_jobs, project, store, progress=progress, pending=pending)
+        return self._collect_to_store(
+            local_jobs, project, store, project_root=project_root, progress=progress, pending=pending,
+        )
 
     def _collect_to_store(
-        self, local_jobs: JobService, project: str, store: Path, *, observed_only: bool = False,
+        self, local_jobs: JobService, project: str, store: Path, *,
+        project_root: Path, observed_only: bool = False,
         progress: Callable[[str, StoreTransferProgress], None] | None = None,
         pending: Mapping[str, str] | None = None,
     ) -> tuple[CollectedAttempt, ...]:
@@ -554,7 +559,8 @@ class SessionJobs:
                 progress(str(attempt["id"]), update)
 
             result = local_jobs.collect_session_attempt(
-                source, attempt, project=project, store=store, progress=transferred if progress is not None else None,
+                source, attempt, project=project, store=store, project_root=project_root,
+                progress=transferred if progress is not None else None,
             )
             return CollectedAttempt(result.activity.job_id, result.evidence_sha256)
 

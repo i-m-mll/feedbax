@@ -193,7 +193,9 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
         assert read_train_job(destination, stopped_id) == exact
         assert not host.jobs(job_id=stopped_id)
 
-        mirrored = local_jobs.collect_train_attempt(source, stopped, project=project, store=destination.root)
+        mirrored = local_jobs.collect_train_attempt(
+            source, stopped, project=project, store=destination.root, project_root=local_plan.project_root,
+        )
         assert mirrored.status == JobStatus.STOPPED and mirrored.can_resume and mirrored.outcome.receipt is None
         assert read_train_job(destination, stopped_id) == exact
         observed_cursor = host.jobs_snapshot()["cursor"]
@@ -211,6 +213,7 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
         assert resumed.job_id != stopped_id and resumed.continues == stopped_id
         assert resumed.request_id == exact.request.id
         result = observed_success(terminal(host, resumed.job_id, "succeeded"), destination).receipt
+        assert result.trace is not None and result.provenance is not None
         assert result.request == exact.request and result.inputs == exact.inputs
         recovered = exact.recovery.pointer
         assert result.recovery == CheckpointOccurrenceRef(
