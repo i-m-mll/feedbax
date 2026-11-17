@@ -395,7 +395,7 @@ def _run(
         model_assets = (
             source_model.provider if source_model is not None else model_artifact_provider(graph)
         )
-        semantic_model = SemanticModelWriter.for_graph(graph, model_assets)
+        semantic_model = SemanticModelWriter.for_graph(graph, model_assets, registries.components)
         if semantic_model is None:
             raise ModelCheckpointError("/graph", "Managed Train requires a typed model checkpoint owner")
         events.phase("building")

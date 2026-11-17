@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel, ConfigDict, create_model
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
+from feedbax.contracts.model_values import ModelFacts
 
 
 @dataclass(frozen=True)
@@ -372,6 +373,7 @@ class ComponentOwner:
     config_bindings: ClassVar[tuple[ConfigBinding, ...]] = ()
     ports: ClassVar[Ports | None] = None
     component_options: ClassVar[ComponentOptions | None] = None
+    model_facts: ClassVar[ModelFacts | None] = None
 
     @classmethod
     def from_config(cls, config, **context):

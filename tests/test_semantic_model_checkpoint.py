@@ -45,7 +45,7 @@ def _publish(root, graph, model, assets=None):
         "graph": GraphTopologySourceSpec(inline=graph.model_dump(mode="json")),
     })
     phase = spec.worker_execution.effective_phase.phase_program
-    writer = SemanticModelWriter.for_graph(graph, assets)
+    writer = SemanticModelWriter.for_graph(graph, assets, ComponentRegistry())
     assert writer is not None
     return write_checkpoint_transaction(
         root,

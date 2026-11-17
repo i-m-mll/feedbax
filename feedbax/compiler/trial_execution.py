@@ -120,6 +120,21 @@ def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: Py
     return template.condition_ids
 
 
+def declared_model_input_prototypes(model: ModelDocument) -> dict[str, jax.ShapeDtypeStruct]:
+    prototypes = {}
+    for port in model.ports.inputs:
+        shape = port.type.shape
+        if shape is None or any(type(size) is not int or size <= 0 for size in shape):
+            continue
+        base = port.type.base
+        dtype = (
+            jnp.bool_ if base in ("bool", "boolean") else
+            jnp.int32 if base in ("int", "int32", "integer") else jnp.float32
+        )
+        prototypes[port.name] = jax.ShapeDtypeStruct(shape, dtype)
+    return prototypes
+
+
 def pair_trial_source(
     model_name: str,
     model: ModelDocument,
@@ -148,17 +163,7 @@ def pair_trial_source(
         port.name for port in model.ports.inputs
         if overrides.get(port.name, port.name) in signal_types
     )
-    declared_prototypes = {}
-    for port in model.ports.inputs:
-        shape = port.type.shape
-        if shape is None or any(type(size) is not int or size <= 0 for size in shape):
-            continue
-        base = port.type.base
-        dtype = (
-            jnp.bool_ if base in ("bool", "boolean") else
-            jnp.int32 if base in ("int", "int32", "integer") else jnp.float32
-        )
-        declared_prototypes[port.name] = jax.ShapeDtypeStruct(shape, dtype)
+    declared_prototypes = declared_model_input_prototypes(model)
     try:
         lowered = lower_model_document(model_name, model, components, supplied_inputs=supplied)
         prototypes = {
