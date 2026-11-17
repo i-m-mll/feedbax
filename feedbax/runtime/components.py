@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from pydantic import Field as ConfigField
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType
+from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
 from feedbax.contracts.portable import (
     ComponentOptions,
     ConfigBinding,
@@ -445,6 +446,8 @@ class _InputConfig(BaseModel):
 class Input(Component):
     """Pass a graph input through a source-like node."""
 
+    model_facts = ModelFacts()
+
     config: ClassVar[type[BaseModel]] = _InputConfig
 
     ports: ClassVar[Ports] = Ports(
@@ -588,6 +591,11 @@ class _ScaleConfig(BaseModel):
 
 class Scale(Component):
     """Multiply input by a scalar or broadcastable scale."""
+
+    model_facts = ModelFacts(
+        values=(ModelValue("scale", "scale", "source"),),
+        checkpointable=False, fixed_configuration_flag="fixed",
+    )
 
     config: ClassVar[type[BaseModel]] = _ScaleConfig
 
@@ -791,6 +799,8 @@ class ElementwiseAffineModulator(Component):
 class Saturation(Component):
     """Clamp input to a min/max range."""
 
+    model_facts = ModelFacts()
+
     ports: ClassVar[Ports] = Ports(
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
     )
@@ -813,6 +823,8 @@ class Saturation(Component):
 
 class Constant(Component):
     """Constant value output."""
+
+    model_facts = ModelFacts(checkpointable=False)
 
     ports: ClassVar[Ports] = Ports(inputs={}, outputs={"output": PortType(dtype="any")})
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
@@ -839,6 +851,8 @@ class Constant(Component):
 
 class Ravel(Component):
     """Flatten a PyTree input to a vector."""
+
+    model_facts = ModelFacts()
 
     ports: ClassVar[Ports] = Ports(
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="vector")}
@@ -1239,6 +1253,11 @@ class LinearLayer(GraphNode):
 class Linear(LinearLayer, Component):
     """Portable linear layer with a named activation."""
 
+    model_facts = ModelFacts(values=(
+        ModelValue("kernel", "layer.weight", "learned"),
+        ModelValue("bias", "layer.bias", "learned"),
+    ))
+
     ports: ClassVar = LinearLayer.ports
 
     config: ClassVar[type[BaseModel]] = _LinearConfig
@@ -1360,6 +1379,23 @@ class _GRUConfig(BaseModel):
 
 class GRU(Component):
     """Standalone GRU cell."""
+
+    model_facts = ModelFacts(
+        values=(
+            ModelValue("input_kernel", "cell.weight_ih", "learned"),
+            ModelValue("recurrent_kernel", "cell.weight_hh", "learned"),
+            ModelValue("gate_bias", "cell.bias", "learned"),
+            ModelValue("candidate_bias", "cell.bias_n", "learned"),
+        ),
+        states=(
+            StateValue(
+                "hidden", ("hidden",), "1", "unit",
+                reset=StateReset("hidden", aliases=(("output",),), override_port="hidden"),
+            ),
+            StateValue("output", ("output",), "1", "unit"),
+        ),
+        optional_state_flag="stateful",
+    )
 
     config: ClassVar[type[BaseModel]] = _GRUConfig
 

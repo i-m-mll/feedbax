@@ -142,9 +142,11 @@ def resolve_rollout(
 
     if jax.default_backend() != ROLLOUT_JAX_BACKEND or jax.config.jax_enable_x64 != ROLLOUT_JAX_ENABLE_X64:
         raise CannotRun("/numerical_settings", "requires CPU execution with JAX x64 disabled")
-    validate_evaluation_source(source_graph)
     registry = asyncio.run(compose_application(modules=bootstrap_modules)).bundle
-    variant = resolve_evaluation_variant(source_graph, documents.task_source, params.variation)
+    validate_evaluation_source(source_graph, registry.components)
+    variant = resolve_evaluation_variant(
+        source_graph, documents.task_source, params.variation, components=registry.components,
+    )
     key = studio_training_key(seed, "model")
     source_pair = compile_trial_execution(
         documents.model_name, documents.model, documents.task_source,
@@ -269,7 +271,7 @@ def rollout_dataset(
     time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
     variation = params.condition_id()
     attrs = {"state_sampling": "reset_and_post_transition", "state_lifetime": "trial"}
-    if (position := scene_position_key(effective_graph)) is not None and position in variables:
+    if (position := scene_position_key(effective_graph, graph)) is not None and position in variables:
         attrs["scene_position"] = position
     if params.retention == "raw_states":
         attrs["source_graph_sha256"] = sha256(
