@@ -225,6 +225,13 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const carried = await carry;
   expect(carried.ok(), await carried.text()).toBe(true);
   expect(carried.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
+  const carriedChild = (await carried.json() as StudioProjectSnapshot).project.steps?.[child];
+  expect(carriedChild?.deltas?.at(-1)?.patches).toEqual([{
+    op: 'replace', path: 'checkpoint_initialization', value: {
+      mode: 'continue_from', source_completed_updates: sourceUpdates,
+      state: 'preserve', schedule: 'continue', rng: 'carry',
+    },
+  }]);
   await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
   const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
   await expect(batchCount).toBeEditable();
@@ -236,8 +243,6 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps[child];
   expect(editedChild.deltas?.at(-1)?.patches).toEqual([
     { op: 'replace', path: 'training_config.n_batches', value: additionalUpdates },
-    { op: 'replace', path: 'method_payload.payload.target_total', value: childUpdates },
-    { op: 'replace', path: 'method_payload.payload.checkpoint_initialization.progress.additional_batches', value: additionalUpdates },
   ]);
   const beforeChildren = await attempts();
   const planned = stepRows(await plan(context), child);
