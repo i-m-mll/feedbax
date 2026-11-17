@@ -1,8 +1,5 @@
-"""The Host-only preload for a managed Train worker profile."""
+"""Prepare installed Train declarations in the warm Host worker."""
 
-import os
+from feedbax.training_host_worker import prewarm
 
-from feedbax.training_host_worker import BOOTSTRAP_ENV, prewarm
-
-if BOOTSTRAP_ENV in os.environ:
-    prewarm(os.environ[BOOTSTRAP_ENV])
+prewarm()

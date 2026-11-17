@@ -78,7 +78,7 @@ from feedbax.analysis.inputs import (
     Transformed,
     _DataField,
 )
-from feedbax.analysis._logical_identity import _fingerprint_semantic_values
+from feedbax.persistence.semantic_fingerprint import fingerprint_semantic_values
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
@@ -1407,7 +1407,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             for kind, ops in self._final_ops_by_type.items()
         }
         cls = type(self)
-        fingerprint = _fingerprint_semantic_values(
+        fingerprint = fingerprint_semantic_values(
             self._hashable_inputs(),
             self._field_params,
             prep_params,

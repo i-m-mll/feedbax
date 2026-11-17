@@ -319,6 +319,9 @@ class ComponentBinding:
     trainable_override: bool | None = dataclasses.field(default=None, repr=False)
     authored_arrays: tuple[AuthoredArrayEncoding, ...] = dataclasses.field(default=(), repr=False)
     owner_class: type[ComponentOwner] | None = dataclasses.field(default=None, compare=False, repr=False)
+    training_mode: Literal["frozen", "parameters", "interior"] = dataclasses.field(
+        default="frozen", repr=False,
+    )
 
     @property
     def model_facts(self) -> ModelFacts | None:

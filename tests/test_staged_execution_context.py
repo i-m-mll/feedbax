@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import shutil
 
 import pytest
 
@@ -22,7 +21,6 @@ from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
-    StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedExecutionContextError,
     StagedManifestRootBinding,
@@ -58,11 +56,9 @@ from feedbax.contracts.spec_storage import training_run_execution_hash
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-    StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
-from tests.test_checkpoint_custody import _resolver_parent_ref, _write_resolver_checkpoint
 from tests.test_staged_exact_parents import _exact_document, _write_exact_parent
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 from tests.support.evaluation_registry import (
@@ -83,11 +79,6 @@ def _descriptor() -> StagedExecutionDescriptor:
             "primary": ImmutableArtifactBlobProviderSpec(),
             "evidence.backup": ImmutableArtifactBlobProviderSpec(),
         },
-        checkpoint_custody={
-            "training-checkpoints": StagedCheckpointCustodySpec(
-                backend="feedbax-checkpoint-transaction-tree"
-            )
-        },
     )
 
 
@@ -95,7 +86,6 @@ def _bindings(tmp_path: Path):
     roots = {
         "primary": tmp_path / "provider-primary",
         "evidence.backup": tmp_path / "provider-backup",
-        "training-checkpoints": tmp_path / "checkpoints",
     }
     for root in roots.values():
         root.mkdir(parents=True)
@@ -104,11 +94,6 @@ def _bindings(tmp_path: Path):
         (
             StagedArtifactProviderRootBinding("primary", roots["primary"]),
             StagedArtifactProviderRootBinding("evidence.backup", roots["evidence.backup"]),
-        ),
-        (
-            StagedCheckpointCustodyRootBinding(
-                "training-checkpoints", roots["training-checkpoints"]
-            ),
         ),
     )
 
@@ -177,7 +162,6 @@ def test_artifact_provider_root_identity_keys_must_match_opened_providers(
         StagedExecutionContext(
             descriptor=None,
             opened_artifact_providers={"primary": provider},
-            checkpoint_custody_roots={},
             parent_execution_locations=(),
             _artifact_provider_root_identities=root_identities,
         )
@@ -194,19 +178,18 @@ def _write_training(root: Path, run_id: str = "feedbax-training-run:context") ->
     )
 
 
-def test_resolver_binds_two_providers_and_checkpoint_without_portable_roots(
+def test_resolver_binds_two_providers_without_portable_roots(
     tmp_path: Path,
 ) -> None:
-    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    roots, artifact_bindings = _bindings(tmp_path)
     context = resolve_staged_execution_context(
         _descriptor(),
         artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
     )
 
     assert context.artifact_provider("primary").root == roots["primary"]
     assert context.artifact_provider("evidence.backup").root == roots["evidence.backup"]
-    assert context.checkpoint_custody_root("training-checkpoints") == roots["training-checkpoints"]
+
     portable = context.descriptor.model_dump_json() if context.descriptor else ""
     assert str(tmp_path) not in portable
 
@@ -240,12 +223,12 @@ def test_repo_root_binding_is_runtime_only_and_rejects_conflicting_authority(
 
 def test_descriptor_is_discoverable_with_explicit_reject_migration_policy() -> None:
     family = default_spec_registry.resolve("StagedExecutionDescriptor")
-    nested = default_spec_registry.resolve("StagedCheckpointCustodySpec")
+
 
     assert family.identity == STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID
     assert family.current_version == STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION
     assert family.policy is not None and family.policy.stance == "reject"
-    assert nested.policy is not None and nested.policy.covers == family.kind
+
     with pytest.raises(UnsupportedSpecVersion, match="current_version"):
         default_spec_registry.migrate(
             family.kind,
@@ -254,39 +237,34 @@ def test_descriptor_is_discoverable_with_explicit_reject_migration_policy() -> N
 
 
 @pytest.mark.parametrize(
-    ("descriptor_update", "artifact_names", "checkpoint_names", "message"),
+    ("descriptor_update", "artifact_names", "message"),
     [
-        ({"schema_version": "feedbax.spec.staged_execution.v0"}, (), (), "schema_version"),
-        ({"schema_version": "feedbax.spec.staged_execution.v2"}, (), (), "schema_version"),
-        ({"schema_id": "example.spec.staged_execution"}, (), (), "schema_id"),
-        ({"checkpoint_custody": {"training-checkpoints": {"backend": "wrong"}}}, (), (), "invalid"),
-        ({}, ("primary",), ("training-checkpoints",), "missing"),
-        ({}, ("primary", "evidence.backup", "extra"), ("training-checkpoints",), "extra"),
-        ({}, ("primary", "primary"), ("training-checkpoints",), "duplicate"),
+        ({"schema_version": "feedbax.spec.staged_execution.v0"}, (), "schema_version"),
+        ({"schema_version": "feedbax.spec.staged_execution.v2"}, (), "schema_version"),
+        ({"schema_id": "example.spec.staged_execution"}, (), "schema_id"),
+
+        ({}, ("primary",), "missing"),
+        ({}, ("primary", "evidence.backup", "extra"), "extra"),
+        ({}, ("primary", "primary"), "duplicate"),
     ],
 )
 def test_descriptor_and_binding_name_sets_fail_closed(
     tmp_path: Path,
     descriptor_update: dict[str, object],
     artifact_names: tuple[str, ...],
-    checkpoint_names: tuple[str, ...],
     message: str,
 ) -> None:
-    roots, _artifact_bindings, _checkpoint_bindings = _bindings(tmp_path)
+    roots, _artifact_bindings = _bindings(tmp_path)
     payload = _descriptor().model_dump(mode="json")
     payload.update(descriptor_update)
     artifacts = tuple(
         StagedArtifactProviderRootBinding(name, roots.get(name, tmp_path / name))
         for name in artifact_names
     )
-    checkpoints = tuple(
-        StagedCheckpointCustodyRootBinding(name, roots[name]) for name in checkpoint_names
-    )
     with pytest.raises((StagedExecutionContextError, ValueError), match=message):
         resolve_staged_execution_context(
             payload,
             artifact_provider_bindings=artifacts,
-            checkpoint_custody_bindings=checkpoints,
         )
 
 
@@ -305,24 +283,14 @@ def test_constructed_or_mutated_descriptor_instances_are_revalidated_before_prov
         schema_id="example.spec.staged_execution",
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={},
-        checkpoint_custody={},
     )
     bad_name = StagedExecutionDescriptor.model_construct(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={"Bad Name": ImmutableArtifactBlobProviderSpec()},
-        checkpoint_custody={},
-    )
-    bad_backend = StagedExecutionDescriptor.model_construct(
-        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-        artifact_providers={},
-        checkpoint_custody={
-            "training-checkpoints": StagedCheckpointCustodySpec.model_construct(backend="wrong")
-        },
     )
 
-    for descriptor in (mutated, bad_id, bad_name, bad_backend):
+    for descriptor in (mutated, bad_id, bad_name):
         with pytest.raises(StagedExecutionContextError):
             resolve_staged_execution_context(descriptor)
 
@@ -332,7 +300,7 @@ def test_constructed_or_mutated_descriptor_instances_are_revalidated_before_prov
 
 @pytest.mark.parametrize("case", ["relative", "missing", "file", "symlink", "escape"])
 def test_runtime_roots_reject_unsafe_locations(tmp_path: Path, case: str) -> None:
-    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    roots, artifact_bindings = _bindings(tmp_path)
     bad_root: Path | str
     if case == "relative":
         bad_root = "relative/provider"
@@ -355,19 +323,17 @@ def test_runtime_roots_reject_unsafe_locations(tmp_path: Path, case: str) -> Non
         resolve_staged_execution_context(
             _descriptor(),
             artifact_provider_bindings=bindings,
-            checkpoint_custody_bindings=checkpoint_bindings,
         )
 
 
 def test_manifest_provider_lookup_rejects_unknown_id_before_recipe_effects(
     tmp_path: Path,
 ) -> None:
-    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    roots, artifact_bindings = _bindings(tmp_path)
     _provider, _manifest, parent = _store_provider_manifest(roots["primary"])
     context = resolve_staged_execution_context(
         _descriptor(),
         artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
     )
     unknown = parent.model_copy(update={"id": "feedbax-training-run:unknown"})
 
@@ -378,7 +344,7 @@ def test_manifest_provider_lookup_rejects_unknown_id_before_recipe_effects(
 def test_manifest_provider_lookup_rejects_duplicate_exact_authority(
     tmp_path: Path,
 ) -> None:
-    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    roots, artifact_bindings = _bindings(tmp_path)
     _provider, manifest, parent = _store_provider_manifest(roots["primary"])
     second = open_immutable_artifact_blob_provider(
         ImmutableArtifactBlobProviderSpec(),
@@ -392,7 +358,6 @@ def test_manifest_provider_lookup_rejects_duplicate_exact_authority(
     context = resolve_staged_execution_context(
         _descriptor(),
         artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
     )
 
     with pytest.raises(StagedExecutionContextError, match="duplicated across"):
@@ -404,7 +369,7 @@ def test_manifest_provider_lookup_rejects_authenticated_byte_mismatch(
     tmp_path: Path,
     mismatch: str,
 ) -> None:
-    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    roots, artifact_bindings = _bindings(tmp_path)
     provider, _manifest, parent = _store_provider_manifest(roots["primary"])
     if mismatch == "size":
         parent = parent.model_copy(
@@ -427,7 +392,6 @@ def test_manifest_provider_lookup_rejects_authenticated_byte_mismatch(
     context = resolve_staged_execution_context(
         _descriptor(),
         artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
     )
 
     with pytest.raises(ValueError, match=mismatch):
@@ -465,7 +429,6 @@ def _retained_manifest_context(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={},
-        checkpoint_custody={},
     )
     return resolve_staged_execution_context(
         descriptor,
@@ -559,185 +522,6 @@ def test_manifest_root_lookup_rejects_authenticated_byte_mismatch(
             _retained_manifest_context([root]),
             [parent],
         )
-
-
-def test_checkpoint_binding_mismatch_and_malicious_uri_fail_before_resolution(
-    tmp_path: Path,
-) -> None:
-    _roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
-    context = resolve_staged_execution_context(
-        _descriptor(),
-        artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
-    )
-    ref = ParentRef(
-        kind="TrainingCheckpointTransactionManifest",
-        id="transaction",
-        role="training_checkpoint_custody",
-        uri="../outside.json",
-        metadata={
-            "checkpoint_custody_binding": "training-checkpoints",
-            "manifest_sha256": "a" * 64,
-        },
-    )
-
-    with pytest.raises(StagedExecutionContextError, match="disagrees"):
-        context.resolve_checkpoint_custody_ref(ref, binding_name="other")
-    with pytest.raises(StagedExecutionContextError, match="escapes"):
-        context.resolve_checkpoint_custody_ref(ref)
-
-
-@pytest.mark.parametrize(
-    "uri",
-    [
-        "transactions//manifest.json",
-        "transactions/./manifest.json",
-        "transactions/%2e/manifest.json",
-        "transactions/%2e%2e/manifest.json",
-        "transactions/%2fmanifest.json",
-        "transactions/%00/manifest.json",
-        "transactions/%5cmanifest.json",
-    ],
-)
-def test_checkpoint_binding_rejects_malformed_relative_uri_before_resolution(
-    tmp_path: Path,
-    uri: str,
-) -> None:
-    _roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
-    context = resolve_staged_execution_context(
-        _descriptor(),
-        artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
-    )
-    ref = ParentRef(
-        kind="TrainingCheckpointTransactionManifest",
-        id="transaction",
-        role="training_checkpoint_custody",
-        uri=uri,
-        metadata={
-            "checkpoint_custody_binding": "training-checkpoints",
-            "manifest_sha256": "a" * 64,
-        },
-    )
-
-    with pytest.raises(StagedExecutionContextError, match="ParentRef uri|escapes"):
-        context.resolve_checkpoint_custody_ref(ref)
-
-
-def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_reference(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    checkpoint_root = tmp_path / "checkpoint-authority"
-    result = _write_resolver_checkpoint(checkpoint_root)
-    parent = _resolver_parent_ref(result)
-    parent = parent.model_copy(
-        update={
-            "metadata": {
-                **parent.metadata,
-                "checkpoint_custody_binding": "training-checkpoints",
-            }
-        }
-    )
-    descriptor = StagedExecutionDescriptor(
-        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-        artifact_providers={},
-        checkpoint_custody={
-            "training-checkpoints": StagedCheckpointCustodySpec(
-                backend="feedbax-checkpoint-transaction-tree"
-            )
-        },
-    )
-    context = resolve_staged_execution_context(
-        descriptor,
-        checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding("training-checkpoints", checkpoint_root)
-        ],
-    )
-    original_resolve = execution_context_module.resolve_bound_checkpoint_custody_ref
-    resolutions = 0
-
-    def counted_resolve(*args, **kwargs):
-        nonlocal resolutions
-        resolutions += 1
-        return original_resolve(*args, **kwargs)
-
-    monkeypatch.setattr(
-        execution_context_module,
-        "resolve_bound_checkpoint_custody_ref",
-        counted_resolve,
-    )
-
-    explicit = context.resolve_checkpoint_custody_ref(
-        parent,
-        binding_name="training-checkpoints",
-        slot_names=["batch_counter"],
-    )
-    repeated = context.resolve_checkpoint_custody_ref(
-        parent,
-        binding_name="training-checkpoints",
-        slot_names=["batch_counter"],
-    )
-    from_metadata = context.resolve_checkpoint_custody_ref(parent, slot_names=["prng"])
-    assert repeated is explicit
-    assert resolutions == 2
-    assert explicit.parent_ref == parent
-    assert explicit.manifest.transaction_id == result.manifest.transaction_id
-    assert set(explicit.slots) == {"batch_counter"}
-    assert from_metadata.parent_ref == parent
-    assert set(from_metadata.slots) == {"prng"}
-
-    with pytest.raises(StagedExecutionContextError, match="disagrees"):
-        context.resolve_checkpoint_custody_ref(parent, binding_name="other")
-    with pytest.raises(StagedExecutionContextError, match="escapes"):
-        context.resolve_checkpoint_custody_ref(parent.model_copy(update={"uri": "../outside.json"}))
-
-    replacement = tmp_path / "replacement-authority"
-    shutil.copytree(checkpoint_root, replacement)
-    retained = tmp_path / "retained-authority"
-    checkpoint_root.rename(retained)
-    checkpoint_root.symlink_to(replacement, target_is_directory=True)
-    with pytest.raises(StagedExecutionContextError, match="unavailable|replaced"):
-        context.resolve_checkpoint_custody_ref(parent, slot_names=["batch_counter"])
-
-
-def test_cached_checkpoint_snapshot_rejects_slot_replacement(tmp_path: Path) -> None:
-    checkpoint_root = tmp_path / "checkpoint-mutability"
-    result = _write_resolver_checkpoint(checkpoint_root)
-    parent = _resolver_parent_ref(result)
-    descriptor = StagedExecutionDescriptor(
-        schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-        schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-        artifact_providers={},
-        checkpoint_custody={
-            "training-checkpoints": StagedCheckpointCustodySpec(
-                backend="feedbax-checkpoint-transaction-tree"
-            )
-        },
-    )
-    context = resolve_staged_execution_context(
-        descriptor,
-        checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding("training-checkpoints", checkpoint_root)
-        ],
-    )
-
-    first = context.resolve_checkpoint_custody_ref(
-        parent,
-        binding_name="training-checkpoints",
-        slot_names=["batch_counter"],
-    )
-    with pytest.raises(TypeError, match="immutable"):
-        first.slots["batch_counter"] = -1
-
-    second = context.resolve_checkpoint_custody_ref(
-        parent,
-        binding_name="training-checkpoints",
-        slot_names=["batch_counter"],
-    )
-    assert second is first
-    assert int(second.slots["batch_counter"]) == 1
 
 
 class _StatProxy:
@@ -1003,13 +787,12 @@ def test_staged_python_and_dry_run_receive_validated_context_without_extra_effec
     tmp_path: Path,
     application_registry_bundle,
 ) -> None:
-    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    roots, artifact_bindings = _bindings(tmp_path)
     _write_training(tmp_path)
     artifact = (
         resolve_staged_execution_context(
             _descriptor(),
             artifact_provider_bindings=artifact_bindings,
-            checkpoint_custody_bindings=checkpoint_bindings,
         )
         .artifact_provider("primary")
         .store_bytes(
@@ -1025,10 +808,6 @@ def test_staged_python_and_dry_run_receive_validated_context_without_extra_effec
         assert execution_context.artifact_provider("primary").get_bytes(artifact) == (
             b"recipe-evidence"
         )
-        assert (
-            execution_context.checkpoint_custody_root("training-checkpoints")
-            == roots["training-checkpoints"]
-        )
         return EvaluationRecipeResult(summary_metrics={"inputs": len(run_spec.inputs)})
 
     application_registry_bundle.evaluation_recipes.register(_EVALUATION_TYPE, recipe)
@@ -1040,7 +819,6 @@ def test_staged_python_and_dry_run_receive_validated_context_without_extra_effec
         root=dry_root,
         execution_descriptor=_descriptor(),
         artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
     )
     assert dry_result.stages[0].status == "would_run"
     assert calls == []
@@ -1051,7 +829,6 @@ def test_staged_python_and_dry_run_receive_validated_context_without_extra_effec
         root=tmp_path,
         execution_descriptor=_descriptor(),
         artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
         registries=application_registry_bundle,
     )
     assert execution.stages[0].manifest_refs
@@ -1107,7 +884,7 @@ def test_cli_threads_named_bindings_into_staged_recipe(
     capsys,
     application_registry_bundle,
 ) -> None:
-    roots, _artifact_bindings, _checkpoint_bindings = _bindings(tmp_path)
+    roots, _artifact_bindings = _bindings(tmp_path)
     manifest_root = tmp_path / "cli-manifests"
     manifest_root.mkdir()
     _write_training(manifest_root, "feedbax-training-run:cli")
@@ -1142,8 +919,6 @@ def test_cli_threads_named_bindings_into_staged_recipe(
             f"primary={roots['primary']}",
             "--artifact-provider",
             f"evidence.backup={roots['evidence.backup']}",
-            "--checkpoint-custody",
-            f"training-checkpoints={roots['training-checkpoints']}",
         ]
     )
 
@@ -1158,7 +933,7 @@ def test_cli_dry_run_preflights_context_and_exact_parents_without_effects(
     monkeypatch,
     capsys,
 ) -> None:
-    roots, _artifact_bindings, _checkpoint_bindings = _bindings(tmp_path)
+    roots, _artifact_bindings = _bindings(tmp_path)
     manifest_root = tmp_path / "cli-dry-manifests"
     manifest_root.mkdir()
     entry = _write_exact_parent(
@@ -1194,8 +969,6 @@ def test_cli_dry_run_preflights_context_and_exact_parents_without_effects(
             f"primary={roots['primary']}",
             "--artifact-provider",
             f"evidence.backup={roots['evidence.backup']}",
-            "--checkpoint-custody",
-            f"training-checkpoints={roots['training-checkpoints']}",
         ]
     )
 
@@ -1212,7 +985,7 @@ def test_cli_dry_run_preflights_context_and_exact_parents_without_effects(
 
 
 def test_cli_dry_run_invalid_context_has_zero_effects(tmp_path: Path, monkeypatch) -> None:
-    roots, _artifact_bindings, _checkpoint_bindings = _bindings(tmp_path)
+    roots, _artifact_bindings = _bindings(tmp_path)
     manifest_root = tmp_path / "cli-invalid-manifests"
     manifest_root.mkdir()
     _write_training(manifest_root, "feedbax-training-run:cli-invalid")
@@ -1243,8 +1016,6 @@ def test_cli_dry_run_invalid_context_has_zero_effects(tmp_path: Path, monkeypatc
                 f"primary={roots['primary']}",
                 "--artifact-provider",
                 f"evidence.backup={roots['evidence.backup']}",
-                "--checkpoint-custody",
-                f"training-checkpoints={roots['training-checkpoints']}",
             ]
         )
 
@@ -1358,11 +1129,10 @@ def test_a_resolved_parent_binds_only_provider_names_the_descriptor_declares(
     vocabularies, and a name the descriptor never declared has no runtime
     authority to point at.
     """
-    _roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    _roots, artifact_bindings = _bindings(tmp_path)
     context = resolve_staged_execution_context(
         _descriptor(),
         artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
     )
     retained = tmp_path / "retained"
     parent, path = _retained_manifest_of_kind(
@@ -1398,12 +1168,11 @@ def test_a_provider_located_parent_binds_only_the_provider_that_holds_it(
     tmp_path: Path,
 ) -> None:
     """A parent staged through one provider does not acquire aliases to the others."""
-    roots, artifact_bindings, checkpoint_bindings = _bindings(tmp_path)
+    roots, artifact_bindings = _bindings(tmp_path)
     provider, _manifest, parent = _store_provider_manifest(roots["primary"])
     context = resolve_staged_execution_context(
         _descriptor(),
         artifact_provider_bindings=artifact_bindings,
-        checkpoint_custody_bindings=checkpoint_bindings,
     )
     relative = provider.canonical_relative_path(
         f"artifact://sha256/{parent.metadata['manifest_sha256']}",

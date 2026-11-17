@@ -7,8 +7,9 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 
-from feedbax.compiler.trial_execution import TrialPair, pair_trial_source, validate_python_task
+from feedbax.compiler.trial_execution import TrialPair, pair_trial_source
 from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample
+from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import EvaluateAttachmentRows, EvaluateAttachmentVariant
@@ -77,11 +78,11 @@ def _project(
     task = documents.task_source
     fields = {}
     if isinstance(task, PythonTaskSelection):
-        resolved = validate_python_task(task, bundle.python_tasks)
-        if isinstance(resolved[0], Problem):
+        resolved = resolve_python_task_instance(task, bundle.python_tasks)
+        if isinstance(resolved, tuple):
             return _Projection(None, (), (), (), {}, resolved)
-        definition, params = resolved
-        template = definition.template(params)
+        definition = resolved.definition
+        template = resolved.template()
         signals = tuple(ScopedValue(id=name, name=name, type=kind, level=Level.STEP)
                         for name, kind in template.signals.items())
         epochs = ()

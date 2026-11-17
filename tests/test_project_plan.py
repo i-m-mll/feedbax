@@ -1,3 +1,4 @@
+from feedbax.builtins.training import StandardTrainingSettings
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_inputs import SelectedRow, SubsetTerms, subset_to_rows
 from feedbax.contracts.project_io import (
@@ -26,19 +27,20 @@ from tests.support.managed_train_fixture import (
 )
 
 
-LEARNING_RATE = "method_payload.payload.optimizer.params.learning_rate"
+LEARNING_RATE = "settings.optimizer.params.learning_rate"
 
 
 def _project_data():
     data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     fit = data["steps"].pop("train")
-    fit["base"]["inline"].update(seed=0, on_nan="raise")
+    fit["base"]["inline"]["seed"] = 0
     data["steps"] = {"fit": fit, "evaluate": managed_evaluation_step("fit")}
     return data
 
 
 def _expected_train():
     payload = managed_train_payload() | {"seed": 0}
+    payload["settings"] = StandardTrainingSettings.model_validate(payload["settings"]).model_dump(mode="json")
     return encode_request(DocumentTrainingRequestSpec.model_validate(payload), {})
 
 
@@ -179,6 +181,9 @@ def _chained_train_data():
             "kind": "train",
             "base": {"step": "fit"},
             "inputs": {"checkpoint": {"step": "fit", "checkpoint": "last"}},
+            "deltas": [{"layer_id": "initialize", "patches": [
+                {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+            ]}],
         }
     steps["flat"]["sweep"] = {
         "axes": {
@@ -190,10 +195,9 @@ def _chained_train_data():
             }
         }
     }
-    steps["rewarm"]["deltas"] = [
+    steps["rewarm"]["deltas"] += [
         {"layer_id": "rewarm", "patches": [
             {"path": "training_config.n_batches", "value": 50},
-            {"path": "method_payload.payload.target_total", "value": 50},
         ]}
     ]
     return data
@@ -207,7 +211,6 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
             "alternate": {
                 "patches": {
                     "steps.fit.base.inline.training_config.n_batches": {"value": 40},
-                    "steps.fit.base.inline.method_payload.payload.target_total": {"value": 40},
                 }
             },
         }
@@ -245,7 +248,6 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
             "where": {"axes": {"seed": ["b"], "rate": ["fast"]}},
             "patches": {
                 "training_config.n_batches": {"value": 80},
-                "method_payload.payload.target_total": {"value": 80},
             },
         }
     }
@@ -289,8 +291,10 @@ def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
 
 def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
     data = _chained_train_data()
-    data["steps"]["rewarm"]["base"]["step"] = "flat"
-    data["steps"]["rewarm"]["inputs"]["checkpoint"]["step"] = "flat"
+    rewarm_step = data["steps"]["rewarm"]
+    rewarm_step["base"]["step"] = "flat"
+    rewarm_step["inputs"]["checkpoint"]["step"] = "flat"
+    rewarm_step["deltas"] = [layer for layer in rewarm_step["deltas"] if layer["layer_id"] != "initialize"]
     checkpoint = data["steps"]["flat"]["inputs"]["checkpoint"]
     checkpoint["where"] = {"axes": {"seed": ["b"]}}
     memo = ProjectPlanMemo()
@@ -450,7 +454,7 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
         "axes": {
             "seed": {
                 "values": {
-                    name: {"patches": {"method_payload.payload.optimizer.params.learning_rate": {"value": value}}}
+                    name: {"patches": {"settings.optimizer.params.learning_rate": {"value": value}}}
                     for name, value in (("a", .001), ("b", .002), ("c", .003))
                 }
             }
@@ -546,7 +550,7 @@ def test_exception_changes_only_selected_run_requests_and_exclusion_removes_run_
     fit["sweep"]["exceptions"] = {
         "replace_policy": {
             "where": {"rows": [changed.key.row]},
-            "patches": {"on_nan": {"value": "halt_restore_checkpoint"}},
+            "patches": {"training_config.batch_size": {"value": 7}},
         },
         "omit": {"where": {"rows": [excluded.key.row]}, "exclude": True},
     }
@@ -565,7 +569,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
     fit["deltas"] = [
         {
             "layer_id": "settings",
-            "patches": [{"path": "on_nan", "value": "halt_restore_checkpoint"}],
+            "patches": [{"path": "training_config.batch_size", "value": 7}],
         }
     ]
     fit["sweep"] = {
@@ -580,7 +584,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
         "exceptions": {
             "retry": {
                 "where": {"rows": ["seed=a"]},
-                "patches": {"on_nan": {"value": "halt_restore_checkpoint"}},
+                "patches": {"training_config.batch_size": {"value": 7}},
             }
         },
     }
@@ -600,7 +604,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
     ) == ("document", "point-mass", "/step_seconds")
     seed = sources["/payload/seed"]
     assert (seed.kind, seed.step, seed.axis, seed.value) == ("sweep_value", "fit", "seed", "a")
-    policy = sources["/payload/on_nan"]
+    policy = sources["/payload/training_config/batch_size"]
     assert (policy.kind, policy.step, policy.name) == ("exception", "fit", "retry")
     bound = plan.sources[consumer]["/inputs/subject"]
     assert (bound.kind, bound.variant, bound.step, bound.row) == (

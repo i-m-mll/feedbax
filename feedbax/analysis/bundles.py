@@ -21,7 +21,6 @@ from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
-    StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedParentArtifactProviderBinding,
     StagedParentExecutionLocation,
@@ -1361,16 +1360,6 @@ def _authenticate_material_dependency(
     """Authenticate one certified value through existing runtime authority."""
     if isinstance(value, ParentRef):
         try:
-            if value.kind == "TrainingCheckpointTransactionManifest":
-                resolved = execution_context.resolve_checkpoint_custody_ref(value)
-                expected_digest = dependency_value_sha256(value)
-                if resolved.manifest_sha256 != expected_digest:
-                    return (
-                        True,
-                        False,
-                        "checkpoint custody resolved a different manifest digest",
-                    )
-                return True, True, None
             resolved_manifest = execution_context.resolve_manifest_input(value)
             expected_digest = dependency_value_sha256(value)
             if resolved_manifest.sha256 != expected_digest:
@@ -2534,7 +2523,6 @@ def execute_analysis_bundle(
     verified_roots: Sequence[VerifiedBundleRoot] | None = None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     execution_context: StagedExecutionContext | None = None,
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
@@ -2560,7 +2548,6 @@ def execute_analysis_bundle(
         execution_context,
         execution_descriptor=execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
-        checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
     authored_bundle = bundle
     bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
@@ -2617,7 +2604,6 @@ def execute_analysis_bundle(
             metadata={"bundle": bundle_metadata},
             execution_descriptor=execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
             execution_context=(
                 execution_context
                 if execution_context is not None
@@ -2781,14 +2767,12 @@ def dry_run_staged_analysis_bundle(
     preview_limit: int | None = 50,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
 ) -> AnalysisBundleDryRunResult:
     """Evaluate staged bundle bindings, conditions, and role dependencies only."""
     bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     _execution_context = resolve_staged_execution_context(
         execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
-        checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
     if not bundle.stages:
         raise ValueError(f"Analysis bundle {bundle.name!r} has no staged plan")
@@ -2973,7 +2957,6 @@ def execute_staged_analysis_bundle(
     exact_parents: StagedExactParents | None = None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     execution_context: StagedExecutionContext | None = None,
     issues: list[str] | None = None,
     fig_dump_path: Path | str | None = None,
@@ -2991,14 +2974,12 @@ def execute_staged_analysis_bundle(
         execution_context,
         execution_descriptor=execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
-        checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
     bundle, flattening = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     if execution_context is None:
         execution_context = resolve_staged_execution_context(
             execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
     execution_context = with_staged_repo_root(execution_context, repo_root)
 

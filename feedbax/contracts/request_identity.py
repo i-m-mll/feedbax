@@ -49,7 +49,7 @@ from feedbax.contracts.task_document import PythonTaskSelection
 
 _IDENTITY = "feedbax.identity.request.v1"
 _STORAGE_SCHEMA = "feedbax.request.v1"
-_DOCUMENT_TRAIN_STORAGE_SCHEMA = "feedbax.request.train.documents.v2"
+_DOCUMENT_TRAIN_STORAGE_SCHEMA = "feedbax.request.train.documents.v3"
 _EFFECTIVE_IDENTITY = "feedbax.identity.effective-binding.v1"
 _INPUTS = TypeAdapter(RequestInputs)
 
@@ -62,7 +62,7 @@ class RequestDescriptor:
 
 
 DOCUMENT_TRAIN_REQUEST = RequestDescriptor(
-    DocumentTrainingRequestSpec, ("method_payload",), _DOCUMENT_TRAIN_STORAGE_SCHEMA
+    DocumentTrainingRequestSpec, ("settings",), _DOCUMENT_TRAIN_STORAGE_SCHEMA
 )
 
 REQUEST_KINDS: Mapping[RequestKind, RequestDescriptor] = {
@@ -406,7 +406,7 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
         document = read_document(digest)
         if sha256_bytes(document) != digest:
             raise ValueError(f"Invalid request document bytes for {name}")
-        spec_payload[name] = _read_object(document, nullable=kind == "train" and name != "method_payload")
+        spec_payload[name] = _read_object(document)
     if descriptor is DOCUMENT_TRAIN_REQUEST:
         try:
             restore_model_display_names(spec_payload["trial_documents"]["model"])

@@ -466,7 +466,6 @@ def test_parent_digest_and_execution_location_differences_miss_the_memo(
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={},
-        checkpoint_custody_roots={},
         parent_execution_locations=tuple(locations),
     )
     original_load = execution_context_module.load_authenticated_evaluation_states_artifact
@@ -514,7 +513,6 @@ def test_execution_location_difference_misses_with_identical_authenticated_bytes
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=first_parent,
@@ -682,7 +680,6 @@ def test_load_evaluation_states_uses_bound_provider_after_source_deletion(
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"external": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -752,7 +749,6 @@ def test_public_producer_round_trips_through_authored_provider_binding(
             schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
             schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
             artifact_providers={"external": ImmutableArtifactBlobProviderSpec()},
-            checkpoint_custody={},
         ),
         artifact_provider_bindings=[StagedArtifactProviderRootBinding("external", provider_root)],
     )
@@ -1072,7 +1068,6 @@ def test_load_evaluation_states_rejects_wrong_existing_provider_binding(
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"expected": expected, "wrong": wrong},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -1106,7 +1101,6 @@ def test_load_evaluation_states_rejects_provider_manifest_id_mismatch(tmp_path: 
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"external": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -1147,7 +1141,6 @@ def test_load_evaluation_states_rejects_provider_artifact_reference_drift(
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"external": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -1189,7 +1182,6 @@ def test_load_evaluation_states_rejects_missing_provider_and_replaced_root(
     missing = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={},
-        checkpoint_custody_roots={},
         parent_execution_locations=(location,),
     )
     with pytest.raises(StagedExecutionContextError, match="binding is unavailable"):
@@ -1198,7 +1190,6 @@ def test_load_evaluation_states_rejects_missing_provider_and_replaced_root(
     bound = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"external": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(location,),
     )
     original_root = tmp_path / "provider-original"

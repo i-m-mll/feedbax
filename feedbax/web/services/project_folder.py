@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     )
     from feedbax.expression_registry import FunctionRegistry
     from feedbax.tasks.registry import PythonTaskRegistry
+from feedbax.training.methods import TrainingMethodRegistry
 
 
 class _ModelInverse(StrictModel):
@@ -63,11 +64,12 @@ class ProjectFolderService(ProjectFolder):
         components: ComponentRegistry | None = None,
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
+        training_methods: TrainingMethodRegistry | None = None,
         figure_templates: FigureTemplateRegistry | None = None,
     ) -> None:
         super().__init__(
             root, operations=operations, components=components, functions=functions,
-            python_tasks=python_tasks, figure_templates=figure_templates,
+            python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
         )
         self._model_undo_key = token_bytes(32)
 

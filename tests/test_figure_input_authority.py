@@ -133,7 +133,6 @@ def _authority_case(tmp_path: Path, *, explicit_parent: bool = False):
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"certificates": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -342,7 +341,6 @@ def test_recorded_json_artifact_round_trips_through_public_figure_payload_path(
     execution_context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"analysis": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -525,7 +523,6 @@ def _described_figure_case(
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"retained": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -860,7 +857,6 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers=providers,
-        checkpoint_custody_roots={},
         parent_execution_locations=tuple(locations),
     )
     context = with_staged_parent_artifact_provider_bindings(
@@ -974,7 +970,6 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
             schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
             schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
             artifact_providers={"evidence": ImmutableArtifactBlobProviderSpec()},
-            checkpoint_custody={},
         ),
         artifact_provider_bindings=[StagedArtifactProviderRootBinding("evidence", evidence.root)],
     )
@@ -1009,7 +1004,6 @@ def test_multi_root_runtime_binding_mismatch_fails_closed(
         context = StagedExecutionContext(
             descriptor=None,
             opened_artifact_providers={"certificates": provider},
-            checkpoint_custody_roots={},
             parent_execution_locations=context.parent_execution_locations,
             parent_artifact_provider_bindings=(
                 StagedParentArtifactProviderBinding(
@@ -1033,7 +1027,6 @@ def test_parent_scoped_provider_resolution_rejects_empty_bindings(
     unbound = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"certificates": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=context.parent_execution_locations,
     )
 
@@ -1061,7 +1054,6 @@ def test_parent_scoped_provider_binding_rejects_duplicate_and_wrong_root(
         StagedExecutionContext(
             descriptor=None,
             opened_artifact_providers={"certificates": provider},
-            checkpoint_custody_roots={},
             parent_execution_locations=context.parent_execution_locations,
             parent_artifact_provider_bindings=(duplicate, duplicate),
         )
@@ -1072,7 +1064,6 @@ def test_parent_scoped_provider_binding_rejects_duplicate_and_wrong_root(
     wrong_root_context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"certificates": wrong_provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=context.parent_execution_locations,
     )
     with pytest.raises(
@@ -1101,7 +1092,6 @@ def test_parent_scoped_provider_resolution_rejects_wrong_manifest_digest(
     corrupted = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"certificates": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -1227,7 +1217,6 @@ def test_data_product_selector_failures_precede_figure_effects(
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"retained": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -1280,7 +1269,6 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={"certificates": ImmutableArtifactBlobProviderSpec()},
-        checkpoint_custody={},
     )
     bindings = [StagedArtifactProviderRootBinding("certificates", provider.root)]
     root = tmp_path / "outputs"
@@ -1416,7 +1404,6 @@ def test_contained_manifest_hardlink_precedes_direct_figure_effects(
     contained_context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"certificates": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(
             StagedParentExecutionLocation(
                 parent=parent,
@@ -1492,7 +1479,6 @@ def test_semantic_selector_failures_precede_figure_effects(
         context = StagedExecutionContext(
             descriptor=None,
             opened_artifact_providers={"certificates": provider},
-            checkpoint_custody_roots={},
             parent_execution_locations=(
                 StagedParentExecutionLocation(
                     parent=parent,

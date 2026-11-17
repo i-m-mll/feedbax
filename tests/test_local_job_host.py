@@ -746,7 +746,7 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from feedbax.job_completion import verify_bound_training_completion
     from feedbax.jobs import JobService
     from feedbax.plugins.application import new_application_registry_bundle
-    from feedbax.training.checkpoint_custody import LATEST_POINTER_NAME
+    from feedbax.persistence.method_checkpoint import LATEST_NAME
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
     from feedbax.contracts.project import Project
@@ -760,18 +760,12 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
 import os
 import time
 from pathlib import Path
-from feedbax.training import executor
-execute = executor.execute_managed_training_run
+from feedbax.training.method_runtime import TrainingLoop
+run_block = TrainingLoop.run_block
 
-def pause_first_update(*args, **kwargs):
-    if kwargs["resume"]:
-        return execute(*args, **kwargs)
-    callback = kwargs["committed_update_callback"]
-
-    def wait_for_stop(coordinate, completed, slots):
-        callback(coordinate, completed, slots)
-        if completed != 1:
-            return
+def pause_first_update(self, state, *, completed, count):
+    result = run_block(self, state, completed=completed, count=min(count, 1) if completed == 0 else count)
+    if completed == 0:
         Path({str(stop_ready)!r}).touch()
         stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
         deadline = time.monotonic() + 15
@@ -779,11 +773,9 @@ def pause_first_update(*args, **kwargs):
             if time.monotonic() >= deadline:
                 raise TimeoutError("Host did not deliver checkpoint stop.")
             time.sleep(0.01)
+    return result
 
-    kwargs["committed_update_callback"] = wait_for_stop
-    return execute(*args, **kwargs)
-
-executor.execute_managed_training_run = pause_first_update
+TrainingLoop.run_block = pause_first_update
 """)
 
     service = JobService(host, new_application_registry_bundle())
@@ -922,7 +914,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert completion["checkpoint"]["completed_updates"] == 2
     restart(host)
     assert _bound_edge(host) == pinned
-    latest = Path(completion["checkpoint"]["checkpoint_root"]) / LATEST_POINTER_NAME
+    latest = Path(completion["checkpoint"]["checkpoint_root"]) / LATEST_NAME
     latest.write_text("This mutable pointer is outside the pinned completion closure.")
     (tmp_path / "open-gate").touch()
     terminal = wait_until(lambda: job_row(host, consumer.id)["outcome"], timeout=20)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Generic, Literal
+from typing import Annotated, Generic, Literal
 
 from pydantic import Field, JsonValue, model_validator
 from typing_extensions import TypeVar
@@ -13,7 +13,7 @@ from feedbax.contracts.project import DocumentReference
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 
 
-class StepDataset(StrictModel):
+class StepInput(StrictModel):
     input: ProjectName
 
 
@@ -22,7 +22,23 @@ class OperationDataset(StrictModel):
     product: ProjectName
 
 
-DatasetSource = StepDataset | OperationDataset
+DatasetSource = StepInput | OperationDataset
+
+
+class AnalyzeDatasetInput(StrictModel):
+    kind: Literal["dataset"]
+    cardinality: Literal["one", "many"] = "many"
+
+
+class AnalyzeModelInput(StrictModel):
+    kind: Literal["model"]
+
+
+class AnalyzeTaskInput(StrictModel):
+    kind: Literal["task"]
+
+
+AnalyzeInput = Annotated[AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput, Field(discriminator="kind")]
 
 
 class OperationElement(StrictModel):
@@ -43,6 +59,7 @@ class FigureElement(StrictModel, Generic[_Figure]):
 
 class AnalysisDocument(StrictModel, Generic[_Figure]):
     schema_version: Literal["feedbax.analysis_document.v1"] = "feedbax.analysis_document.v1"
+    inputs: dict[ProjectName, AnalyzeInput] = Field(default_factory=dict)
     operations: dict[ProjectName, OperationElement] = Field(default_factory=dict)
     views: dict[ProjectName, FigureElement[_Figure]] = Field(default_factory=dict)
 

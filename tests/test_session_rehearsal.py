@@ -182,9 +182,9 @@ import os
 import time
 from pathlib import Path
 
-from feedbax.training import executor
+from feedbax.training.method_runtime import TrainingLoop
 
-original = executor.execute_managed_training_run
+original = TrainingLoop.run_block
 
 def execute(*args, **kwargs):
     release = Path(os.environ["SESSION_TEST_RELEASE"])
@@ -195,7 +195,7 @@ def execute(*args, **kwargs):
         time.sleep(.02)
     return original(*args, **kwargs)
 
-executor.execute_managed_training_run = execute
+TrainingLoop.run_block = execute
 """
         )
         process = subprocess.run(

@@ -35,7 +35,7 @@ from feedbax.contracts.project import (
     document_edit_value,
     json_pointer_parts,
 )
-from feedbax.contracts.project_inputs import InputBinding
+from feedbax.contracts.project_inputs import InitialModelReference, InputBinding, ObjectiveDocumentReference, TaskDocumentReference
 from feedbax.contracts.project_sources import (
     SourceList,
     SourceObject,
@@ -122,6 +122,7 @@ class ResolvedStep:
     document_uses: frozenset[str] = frozenset()
     document_pointers: dict[str, str] = field(default_factory=dict)
     document_problems: tuple[ProjectDiagnostic, ...] = ()
+    input_documents: dict[str, Document] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1017,6 +1018,21 @@ class _Resolver:
             payload = documents.inline(
                 state.payload, "payload", document_ids=document_ids, document_pointers=document_pointers,
             )
+        input_documents = {}
+        for role, value in state.inputs.items():
+            if not isinstance(value, (InitialModelReference, TaskDocumentReference, ObjectiveDocumentReference)):
+                continue
+            reference = value.source
+            path = f"inputs.{role}"
+            selected = documents.select(reference, path)
+            document = self.project.documents[reference.document]
+            try:
+                input_documents[role] = Document.model_validate({"schema": document.schema_id, "payload": selected})
+            except ValidationError as error:
+                raise _Problem(ResolutionCode.INVALID_DOCUMENT, path, str(error), step=name, document=reference.document) from error
+            document_ids[path] = reference.document
+            if reference.pointer is not None:
+                document_pointers[path] = reference.pointer
         if unused := state.row_document_patches.keys() - documents.used:
             document = min(unused)
             raise _Problem(
@@ -1060,6 +1076,7 @@ class _Resolver:
             state.document_uses.union(documents.used),
             document_pointers,
             tuple(documents.figure_problems.values()),
+            input_documents,
         )
 
 
