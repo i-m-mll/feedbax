@@ -295,6 +295,7 @@ def test_asset_backed_model_slot_round_trips_from_checkpoint_closure(tmp_path):
         np.testing.assert_array_equal(actual, reference)
 
     authored_path, asset = next(model_asset_refs(graph))
+    selected = _open(written.root, written.latest_pointer).model
     physical = selected.provider.object_path(asset)
     exact = physical.read_bytes()
     physical.unlink()
