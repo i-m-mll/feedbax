@@ -62,7 +62,7 @@ def select_replicate(dataset: Dataset, position: int) -> Dataset:
     )
 
 
-def stack_replicates(ids: tuple[str, ...], datasets: Sequence[Dataset]) -> Dataset:
+def stack_replicates(ids: tuple[str, ...], datasets: Sequence[Dataset], *, after: str | None = None) -> Dataset:
     if not datasets or len(ids) != len(datasets) or len(set(ids)) != len(ids):
         raise ValueError("Replica IDs must name every dataset once")
     descriptors = [dataset.descriptor for dataset in datasets]
@@ -89,7 +89,9 @@ def stack_replicates(ids: tuple[str, ...], datasets: Sequence[Dataset]) -> Datas
             raise ValueError(f"Replicate results have inconsistent metadata or dtype for {name!r}")
         if coordinate and all(np.array_equal(arrays[0], array) for array in arrays[1:]):
             return Variable(arrays[0], field.dims, **metadata)
-        return Variable(np.stack(arrays), (REPLICATE_DIM, *field.dims), **metadata)
+        axis = field.dims.index(after) + 1 if after in field.dims else 0
+        dims = (*field.dims[:axis], REPLICATE_DIM, *field.dims[axis:])
+        return Variable(np.stack(arrays, axis=axis), dims, **metadata)
 
     return Dataset.from_arrays(
         {name: collect(name, field) for name, field in first.variables.items()},
