@@ -85,8 +85,6 @@ class SourceCatalog:
             return cached[1]
         with path.open("rb") as stream:
             digest = file_digest(stream, "sha256").hexdigest()
-        if file_stamp(path.stat()) != stamp or self.resolve(source) != path:
-            raise OSError(f"File changed while it was read: {source.scope}/{source.path}")
         self._digests[path] = stamp, digest
         return digest
 
@@ -107,8 +105,6 @@ class SourceCatalog:
         if path is None:
             return None
         data = path.read_bytes()
-        if file_stamp(named.stat()) != stamp or self.resolve(source) != path:
-            raise OSError(f"Source changed while it was read: {source.scope}/{source.path}")
         file = SourceFile(data, sha256(data).hexdigest(), metadata.st_mtime_ns)
         self._files[named] = stamp, file
         return file

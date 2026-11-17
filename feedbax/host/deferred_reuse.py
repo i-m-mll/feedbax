@@ -199,15 +199,14 @@ class DeferredAdmissions:
         root = Path(launch["project_root"])
         try:
             traces = receipt_traces(view.store, published.receipt)
-            if not projection.current(traces):
-                self._execute_or_block(row, pending, quick=pending["policy"] != "automatic" or quick())
-                return
-            observer = ProjectValidity(root, projection, quick_duration=threshold)
-            validity = observer.inspect(view, published, origins=origins).decision
-            disposition = reuse_disposition(validity, pending["policy"], quick=quick)
+            if projection.current(traces):
+                observer = ProjectValidity(root, projection, quick_duration=threshold)
+                validity = observer.inspect(view, published, origins=origins).decision
+                disposition = reuse_disposition(validity, pending["policy"], quick=quick)
+            else:
+                disposition = "unavailable"
         except _UNAVAILABLE:
-            self._execute_or_block(row, pending, quick=pending["policy"] != "automatic" or quick())
-            return
+            disposition = "unavailable"
         match disposition:
             case "reuse":
                 updated = self.db.execute(
@@ -226,6 +225,8 @@ class DeferredAdmissions:
                 self._block(row, "admission_changed", _RETRY_MESSAGE)
             case "explicit_run":
                 self._block(row, "explicit_run_required", "This request requires explicit Run.")
+            case "unavailable":
+                self._execute_or_block(row, pending, quick=pending["policy"] != "automatic" or quick())
 
     def _input_authority(
         self, row: sqlite3.Row, launch: dict, view: SuccessView,

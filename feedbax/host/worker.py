@@ -89,6 +89,11 @@ def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
                 return 0
             if (recorder.changed() if recorder is not None else _sources_changed(snapshots)):
                 return 0
+            if recorder is not None:
+                if (project := message.get("project_root")) is not None:
+                    environment = message.get("environment_root")
+                    recorder.bind_project(Path(project), environment_root=Path(environment) if environment else None)
+                recorder.start_delivery()
             if not reusable:
                 control.close()
             status = _execute(message, report, entrypoint, import_error, reusable=reusable, recorder=recorder)
@@ -198,8 +203,6 @@ def _record_execution(message, recorder, log: Path, entrypoint, argv) -> int:
 
     root = Path(message["store_root"])
     try:
-        environment = message.get("environment_root")
-        recorder.bind_project(Path(message["project_root"]), environment_root=Path(environment) if environment else None)
         with recorder.delivery(message["job_id"], root, log.parent):
             status = int(entrypoint(argv) or 0)
             if (

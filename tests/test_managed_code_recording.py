@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import importlib
 import importlib.util
 import os
 from pathlib import Path
@@ -119,7 +120,18 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
     log.parent.mkdir()
     log.touch()
 
+    monkeypatch.syspath_prepend(str(project))
+    deferred = project / "_managed_deferred_source.py"
+    created = project / "_managed_created_source.py"
+
     def execute():
+        monkeypatch.setitem(sys.modules, deferred.stem, None)
+        monkeypatch.delitem(sys.modules, deferred.stem)
+        assert importlib.import_module(deferred.stem).value == 2
+        created.write_text("value = 3\n")
+        monkeypatch.setitem(sys.modules, created.stem, None)
+        monkeypatch.delitem(sys.modules, created.stem)
+        assert importlib.import_module(created.stem).value == 3
         read = registry.resolve("example.read").defining_object
         assert read(selected) == "first contents"
         selected.unlink()
@@ -142,9 +154,12 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
                 "example.operation", DistributionSource("example", "example", "1"), module.read_input,
                 None, renamed_from=("example.read",),
             )
+            recorder.start_delivery()
             with recorder.delivery("preparation", store.root, tmp_path / "scratch"):
                 assert module.prepare() == 7
 
+            deferred.write_text("value = 2\n")
+            recorder.start_delivery()
             assert _record_execution(
                 {"job_id": "final", "store_root": str(store.root), "project_root": str(project),
                  "entrypoint": f"{spec.name}:run"},
@@ -168,6 +183,11 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
     assert "prepare" in captured.entered and "prepare" in captured.host_product
     assert {"run", "read_input"} <= set(captured.host_product)
     assert "compute" in captured.entered and "compute" not in captured.host_product
+    deferred_path = SourcePath(scope="project", path=deferred.name)
+    created_path = SourcePath(scope="project", path=created.name)
+    assert {deferred_path, created_path} <= {item.path for item in trace.sources}
+    assert deferred_path not in trace.indeterminate
+    assert created_path in trace.indeterminate
     runner = next(item for item in trace.sources if item.path == SourcePath(scope="feedbax", path="host/worker.py"))
     assert "_record_execution" in runner.host_product
     custody = next(item for item in trace.sources if item.path == SourcePath(scope="feedbax", path="validity/evidence.py"))
