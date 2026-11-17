@@ -1076,6 +1076,7 @@ export interface StudioFieldView {
   label: string;
   text: string;
   effective?: string | null;
+  mixed?: boolean;
   unit?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
@@ -1089,6 +1090,7 @@ export interface ModelFieldView {
   label: string;
   text: string;
   effective?: string | null;
+  mixed?: boolean;
   unit?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
@@ -1104,6 +1106,7 @@ export interface TrainFieldView {
   label: string;
   text: string;
   effective?: string | null;
+  mixed?: boolean;
   unit?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
@@ -3397,7 +3400,7 @@ export type StudioAuthoringCatalog = {
 
 export type StudioAuthoringChange = {
   "field": string;
-  "value": string | number;
+  "value": JsonValue;
 };
 
 export type StudioAuthoringChoice = {
@@ -3418,8 +3421,6 @@ export type StudioAuthoringField = {
   "value": string | number | null;
   "source": StudioAuthoringSource | null;
   "control": StudioAuthoringChoice | StudioAuthoringNumber | null;
-  "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
-  "can_sweep"?: boolean;
 };
 
 export type StudioAuthoringNumber = {
@@ -3456,11 +3457,6 @@ export type StudioAuthoringSurface = {
   "step_payloads": Record<string, Record<string, JsonValue>>;
   "document_schemas": Record<string, Record<string, JsonValue>>;
   "training_methods": Array<StudioAuthoringDeclaration>;
-};
-
-export type StudioAuthoringSweepChange = {
-  "field": string;
-  "edit": StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue;
 };
 
 export type StudioBestRankGroup = {
@@ -3535,13 +3531,6 @@ export type StudioEvaluationPointProgress = {
   "publication_cursor": number;
   "transaction_root_sha256": string;
   "status": "scored" | "failed";
-};
-
-export type StudioNameSweepValue = {
-  "kind": "nameSweepValue";
-  "sweep_id": string;
-  "value_id": string;
-  "label": string | null;
 };
 
 export type StudioPlanRequest = {
@@ -3751,13 +3740,6 @@ export type StudioSavedLightResult = {
   "provenance"?: AttemptProvenance | null;
 };
 
-export type StudioSetSweepValue = {
-  "kind": "setSweepValue";
-  "sweep_id": string;
-  "value_id": string;
-  "value": number;
-};
-
 export type StudioSubsetToRowsEdit = {
   "revision": string;
   "files": Array<StudioProjectFilePatch>;
@@ -3768,11 +3750,6 @@ export type StudioSubsetToRowsRequest = {
   "variant": string;
   "step": string;
   "attempts": Array<string>;
-};
-
-export type StudioSweepEdit = {
-  "kind": "addValue" | "toList";
-  "sweep_id": string;
 };
 
 export type StudioTaskChoice = {
@@ -3786,28 +3763,19 @@ export type StudioTaskType = {
   "parameter_schema": Record<string, JsonValue>;
 };
 
-export type StudioToField = {
-  "kind": "toField";
-  "sweep_id": string;
-  "value_id": string;
-};
-
-export type StudioToSweep = {
-  "kind": "toSweep";
-};
-
 export type StudioTrainAuthoring = {
   "project_id": string;
   "step_id": string;
   "revision": Sha256;
   "fields": Array<StudioAuthoringField>;
+  "settings": Record<string, JsonValue> | null;
   "patches": Array<ProjectValueEdit>;
   "documents": Array<string>;
 };
 
 export type StudioTrainAuthoringRequest = {
   "revision": Sha256;
-  "change"?: StudioAuthoringChange | StudioAuthoringSweepChange | null;
+  "change"?: StudioAuthoringChange | null;
 };
 
 export type StudioTrainStep = {
@@ -5962,6 +5930,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "label": z.string(),
       "text": z.string(),
       "effective": z.string().nullable().optional(),
+      "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
@@ -5979,6 +5948,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "label": z.string(),
       "text": z.string(),
       "effective": z.string().nullable().optional(),
+      "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
@@ -5998,6 +5968,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
       "label": z.string(),
       "text": z.string(),
       "effective": z.string().nullable().optional(),
+      "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
@@ -9692,7 +9663,7 @@ export const StudioAuthoringCatalogSchema: z.ZodType<StudioAuthoringCatalog> = z
 export const StudioAuthoringChangeSchema: z.ZodType<StudioAuthoringChange> = z.lazy(() =>
   z.object({
     "field": z.string(),
-    "value": z.union([z.string(), z.number().int().safe(), z.number().finite()]),
+    "value": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringChange>;
 
@@ -9719,8 +9690,6 @@ export const StudioAuthoringFieldSchema: z.ZodType<StudioAuthoringField> = z.laz
     "value": z.union([z.string(), z.number().int().safe(), z.number().finite(), z.null()]),
     "source": z.union([StudioAuthoringSourceSchema, z.null()]),
     "control": z.union([z.union([StudioAuthoringChoiceSchema, StudioAuthoringNumberSchema]), z.null()]),
-    "sweep": z.union([z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema]), z.null()]).optional(),
-    "can_sweep": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringField>;
 
@@ -9771,13 +9740,6 @@ export const StudioAuthoringSurfaceSchema: z.ZodType<StudioAuthoringSurface> = z
     "training_methods": z.array(StudioAuthoringDeclarationSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringSurface>;
-
-export const StudioAuthoringSweepChangeSchema: z.ZodType<StudioAuthoringSweepChange> = z.lazy(() =>
-  z.object({
-    "field": z.string(),
-    "edit": z.union([StudioToSweepSchema, StudioSweepEditSchema, StudioToFieldSchema, StudioSetSweepValueSchema, StudioNameSweepValueSchema]),
-  }).strict()
-) as unknown as z.ZodType<StudioAuthoringSweepChange>;
 
 export const StudioBestRankGroupSchema: z.ZodType<StudioBestRankGroup> = z.lazy(() =>
   z.object({
@@ -9872,15 +9834,6 @@ export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPoin
     "status": z.union([z.literal("scored"), z.literal("failed")]),
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluationPointProgress>;
-
-export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("nameSweepValue"),
-    "sweep_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "label": z.union([z.string().min(1), z.null()]),
-  }).strict()
-) as unknown as z.ZodType<StudioNameSweepValue>;
 
 export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
   z.object({
@@ -10141,15 +10094,6 @@ export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z
   }).strict()
 ) as unknown as z.ZodType<StudioSavedLightResult>;
 
-export const StudioSetSweepValueSchema: z.ZodType<StudioSetSweepValue> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("setSweepValue"),
-    "sweep_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "value": z.union([z.number().int().safe(), z.number().finite()]),
-  }).strict()
-) as unknown as z.ZodType<StudioSetSweepValue>;
-
 export const StudioSubsetToRowsEditSchema: z.ZodType<StudioSubsetToRowsEdit> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
@@ -10166,13 +10110,6 @@ export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsReques
   }).strict()
 ) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
 
-export const StudioSweepEditSchema: z.ZodType<StudioSweepEdit> = z.lazy(() =>
-  z.object({
-    "kind": z.union([z.literal("addValue"), z.literal("toList")]),
-    "sweep_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-  }).strict()
-) as unknown as z.ZodType<StudioSweepEdit>;
-
 export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -10188,26 +10125,13 @@ export const StudioTaskTypeSchema: z.ZodType<StudioTaskType> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioTaskType>;
 
-export const StudioToFieldSchema: z.ZodType<StudioToField> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("toField"),
-    "sweep_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-  }).strict()
-) as unknown as z.ZodType<StudioToField>;
-
-export const StudioToSweepSchema: z.ZodType<StudioToSweep> = z.lazy(() =>
-  z.object({
-    "kind": z.literal("toSweep"),
-  }).strict()
-) as unknown as z.ZodType<StudioToSweep>;
-
 export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.lazy(() =>
   z.object({
     "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "step_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "revision": Sha256Schema,
     "fields": z.array(StudioAuthoringFieldSchema),
+    "settings": z.union([z.record(z.string(), jsonValueSchema), z.null()]),
     "patches": z.array(ProjectValueEditSchema),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
   }).strict()
@@ -10216,7 +10140,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
 export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRequest> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
-    "change": z.union([StudioAuthoringChangeSchema, StudioAuthoringSweepChangeSchema, z.null()]).optional(),
+    "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoringRequest>;
 

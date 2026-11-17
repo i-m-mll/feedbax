@@ -12,7 +12,6 @@ from feedbax.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
-from feedbax.contracts.studio_field import StudioSweepList, StudioSweepRange, StudioSweepSampler
 from feedbax.contracts.studio_project import ProjectValueEdit
 
 
@@ -91,13 +90,11 @@ class StudioAuthoringField(StrictModel):
     )
 
 
-    sweep: Annotated[StudioSweepList | StudioSweepRange | StudioSweepSampler, Field(discriminator="kind")] | None = None
-    can_sweep: bool = False
-
-
 class StudioAuthoringChange(StrictModel):
+    """Sets a declared field, or any value under ``/settings`` that the method's settings model accepts."""
+
     field: str
-    value: str | StrictInt | StrictFloat
+    value: JsonValue
 
 
 class StudioToSweep(StrictModel):
@@ -139,7 +136,7 @@ class StudioAuthoringSweepChange(StrictModel):
 
 class StudioTrainAuthoringRequest(StrictModel):
     revision: Sha256
-    change: StudioAuthoringChange | StudioAuthoringSweepChange | None = None
+    change: StudioAuthoringChange | None = None
 
 
 class StudioTrainAuthoring(StrictModel):
@@ -147,5 +144,6 @@ class StudioTrainAuthoring(StrictModel):
     step_id: ProjectName
     revision: Sha256
     fields: list[StudioAuthoringField]
+    settings: dict[str, JsonValue] | None
     patches: list[ProjectValueEdit]
     documents: list[ProjectName]

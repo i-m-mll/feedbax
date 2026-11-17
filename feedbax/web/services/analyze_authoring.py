@@ -145,12 +145,12 @@ def _states_port(
     view = service.read(project_id, revision=revision)
     plan = view.settled.plan
     if plan.variants[:1] != (key.variant,):
-        raise ValueError("Select the primary variant to edit the shared Analyze step.")
+        raise ValueError(f"The Analyze step is shared by all variants and is edited in {plan.variants[0]!r}, not {key.variant!r}")
     subset = plan.subsets.get((key.variant, key.step, "states"))
     if subset is None or not subset.members or any(
         (member.variant, member.step) != (key.variant, reference.step) for member in subset.members
     ):
-        raise ValueError("Select saved Evaluate runs in this variant as the Analyze input.")
+        raise ValueError(f"The Analyze input of variant {key.variant!r} holds no saved Evaluate runs of {reference.step!r}")
     states = None
     for member in subset.members:
         row = view.evaluations.get(member)
@@ -199,13 +199,13 @@ def analyze_authoring(
         or step.deltas
         or step.document_overrides
     ):
-        raise ProjectFolderInvalid("Select an unswept Analyze step with a named analysis document.")
+        raise ProjectFolderInvalid(f"Analyze step {key.step!r} is swept or has no named analysis document")
     document = project.documents.get(step.base.document)
     if document is None or document.schema_id != "feedbax.analysis_document.v1":
         raise ProjectFolderInvalid("The selected step has no saved analysis document.")
     reference = step.inputs.get("states")
     if not isinstance(reference, StepReference) or reference.variants:
-        raise ProjectFolderInvalid("Select saved Evaluate runs in this variant as the Analyze input.")
+        raise ProjectFolderInvalid(f"The states input of Analyze step {key.step!r} is not one Evaluate step of this variant")
     try:
         states, view = _states_port(service, project_id, body.revision, key, reference)
         if any(

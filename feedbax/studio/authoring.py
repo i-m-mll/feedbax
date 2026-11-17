@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -42,7 +44,6 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringRegistry,
     StudioAuthoringSource,
     StudioAuthoringSurface,
-    StudioAuthoringSweepChange,
 )
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
@@ -55,7 +56,7 @@ from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
-from feedbax.training.methods import TrainingMethodRegistry
+from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
 
 
 _TRAIN = REQUEST_KINDS["train"].spec_type
@@ -71,6 +72,7 @@ type _Path = tuple[str, ...]
 type _Scalar = str | int | float
 type _ReadPlan = Callable[[tuple[RunKey, ...]], ProjectPlan]
 _CHECKPOINT_POLICY = ("checkpoint_initialization",)
+_MISSING = object()
 _CHECKPOINT_CHOICES = {"initialize_from": "Initialize model only", "continue_from": "Carry training state"}
 
 
@@ -237,14 +239,11 @@ def _source(source: ValueSource | None) -> StudioAuthoringSource | None:
 
 
 class _TrainFields:
-    def __init__(self, project: Project, step_id: str, registry: TrainingMethodRegistry, *, field_editor: bool = False) -> None:
+    def __init__(self, project: Project, step_id: str, registry: TrainingMethodRegistry) -> None:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
             raise ValueError(f"Unknown Train step {step_id!r}")
-        direct = isinstance(step.base, InlineBase) and not (
-            step.deltas or step.inputs
-            or (not field_editor and step.sweep is not None and (step.sweep.rows or step.sweep.exceptions))
-        )
+        direct = isinstance(step.base, InlineBase) and not (step.deltas or step.inputs)
         checkpoint = step.inputs.get("checkpoint")
         linked = (
             isinstance(step.base, StepBase) and step.base.row is None
@@ -252,13 +251,11 @@ class _TrainFields:
             and checkpoint.checkpoint == "last"
         )
         if not (direct or linked):
-            raise ValueError("These Train controls require an independent Train or a direct checkpoint continuation")
+            raise ValueError(f"Train step {step_id!r} takes its definition from another step")
         self.project = project
         self.step_id = step_id
         self.step = step
         self.linked = linked
-        self.field_editor = field_editor
-        self.direct_unswept = direct and step.sweep is None and not step.document_overrides
         self.registry = registry
         template = compose_step(project, step_id, track_sources=True)
         resolved = (
@@ -273,6 +270,7 @@ class _TrainFields:
             self.payload = step.base.inline
         self.sources = (resolved.sources or {}) if isinstance(resolved, ResolvedStep) else {}
         self.fields: dict[str, _Field] = {}
+        self.method: RegisteredTrainingMethod | None = None
 
     def set(self, path: _Path, value: JsonValue) -> SetProjectValue:
         parent = _get(self.payload, path[:-1])
@@ -415,6 +413,7 @@ class _TrainFields:
         key = self.payload.get("method")
         registrations = {name: self.registry.resolve(name) for name in self.registry.keys()}
         registration = registrations.get(key) if isinstance(key, str) else None
+        self.method = registration
 
         def method_change(selected: _Scalar) -> list[SetProjectValue]:
             model = registrations[selected].settings_model
@@ -489,84 +488,97 @@ def project_train_fields(
     project: Project,
     step_id: str,
     registry: TrainingMethodRegistry,
-    change: StudioAuthoringChange | StudioAuthoringSweepChange | None,
+    change: StudioAuthoringChange | None,
     *,
     read_plan: _ReadPlan | None = None,
-) -> tuple[
-    list[StudioAuthoringField], list[SetProjectValue], list[str],
-]:
-    """Project the supported fields and plan one atomic, step-local edit."""
+) -> tuple[list[StudioAuthoringField], dict[str, JsonValue] | None, list[SetProjectValue], list[str]]:
+    """Project the Train step's declared fields and authored settings, and plan one atomic, step-local edit."""
     definition = _TrainFields(project, step_id, registry)
     definition.training(read_plan)
-
-    sweeps = {}
-    for field_id, field in definition.fields.items():
-        target = SweepTarget.from_field(field.view.value, field.view.control, field.write)
-        if target is not None and not definition.linked:
-            sweep = FieldSweeps(definition.step, target, field.view.label, integer=field.view.control.step == 1)
-            sweeps[field_id] = sweep
-            field.view.sweep = sweep.view()
-            field.view.can_sweep = sweep.can_sweep
-        if not definition.linked and definition.step.sweep is not None and (
-            target is None
-            or not sweeps[field_id].can_sweep
-        ):
-            # Keep the typed editor for the sweep's own values.
-            if field.view.sweep is None:
+    if definition.step.sweep is not None:
+        for field in definition.fields.values():
+            # A swept step keeps its axes' fields; a field that is not a number would rewrite what they sweep.
+            if not isinstance(field.view.control, StudioAuthoringNumber):
                 field.view.control = None
 
+    settings = definition.payload.get("settings")
     patches = []
     documents: set[str] = set()
-    if isinstance(change, StudioAuthoringSweepChange):
-        sweep = sweeps.get(change.field)
-        if sweep is None:
-            raise ValueError(f"Field {change.field!r} has no supported sweep edit")
-        field = definition.fields[change.field]
-        patches = sweep.edit(change, lambda value: _number(field.view, value))
-        documents.update(field.documents)
-    elif change is not None:
+    if change is not None:
         field = definition.fields.get(change.field)
-        control = field.view.control if field is not None else None
-        if field is None or control is None or field.view.sweep is not None:
-            raise ValueError(f"Field {change.field!r} has no supported edit")
-        value = change.value
-        if isinstance(control, StudioAuthoringChoice):
-            if value not in {option.value for option in control.options}:
-                raise ValueError(f"{field.view.label} requires a declared choice")
+        if field is None:
+            patches = _settings_edit(definition, change)
         else:
-            value = _number(field.view, value)
-        if value != field.view.value:
-            patches = field.write(value)
-            documents.update(field.documents)
-            documents.update(
-                ref.document
-                for patch in patches
-                if (ref := _read(DocumentReference, patch.value)) is not None
-            )
-    if isinstance(change, (StudioAuthoringChange, StudioAuthoringSweepChange)):
+            control = field.view.control
+            if control is None:
+                raise ValueError(f"{field.view.label} of step {step_id!r} is read-only")
+            value = change.value
+            if isinstance(control, StudioAuthoringChoice):
+                if value not in {option.value for option in control.options}:
+                    raise ValueError(f"{field.view.label} has no choice {value!r}")
+            else:
+                value = _number(field.view, value)
+            if value != field.view.value:
+                patches = field.write(value)
+                documents.update(field.documents)
+                documents.update(
+                    ref.document
+                    for patch in patches
+                    if (ref := _read(DocumentReference, patch.value)) is not None
+                )
         patches = definition.authored_edits(change.field, patches)
-    return [field.view for field in definition.fields.values()], patches, sorted(documents)
+    return (
+        [field.view for field in definition.fields.values()],
+        settings if isinstance(settings, dict) else None,
+        patches,
+        sorted(documents),
+    )
+
+
+def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> list[SetProjectValue]:
+    """Write one value under ``/settings`` when the method's settings model accepts the result."""
+    path = json_pointer_parts(change.field)
+    settings = definition.payload.get("settings")
+    if not path or path[0] != "settings" or len(path) < 2 or definition.method is None or not isinstance(settings, dict):
+        raise ValueError(f"Train step {definition.step_id!r} has no field {change.field!r}")
+    edited = copy.deepcopy(settings)
+    parent: Any = edited
+    for name in path[1:-1]:
+        parent = parent.get(name) if isinstance(parent, dict) else None
+    if not isinstance(parent, dict):
+        raise ValueError(f"Train step {definition.step_id!r} has no field {change.field!r}")
+    if parent.get(path[-1], _MISSING) == change.value:
+        return []
+    parent[path[-1]] = change.value
+    try:
+        definition.method.settings_model.model_validate(edited)
+    except ValidationError as error:
+        location = ".".join(str(part) for part in error.errors()[0]["loc"]) or path[-1]
+        raise ValueError(f"{location}: {error.errors()[0]['msg']}") from error
+    return [definition.set(tuple(path), change.value)]
 
 
 def project_training_numeric_fields(
     project: Project, step_id: str, registry: TrainingMethodRegistry, functions: FunctionRegistry,
     body: TrainFieldRequest, read_plan: _ReadPlan,
 ) -> TrainFieldResponse:
-    definition = _TrainFields(project, step_id, registry, field_editor=True)
+    definition = _TrainFields(project, step_id, registry)
     definition.training(read_plan)
-    selected = effective = None
+    selected = None
+    definitions = []
     if body.run is not None:
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         if key.step != step_id:
-            raise ValueError("Choose a run of this Train step.")
-        plan = read_plan((key,))
+            raise ValueError(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}")
+        shown = tuple(RunKey(key.variant, step_id, row) for row in body.rows) or (key,)
+        plan = read_plan(tuple(dict.fromkeys((key, *shown))))
         selected = next((row for row in plan.rows if row.key == key), None)
-        effective = plan.selected_definitions.get(key)
         available = {row.key.row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, step_id)}
         if not set(body.rows) <= available or len(set(body.rows)) != len(body.rows):
-            raise ValueError("The selected rows no longer belong to this Train step.")
+            raise ValueError(f"Train step {step_id!r} has no rows {sorted(set(body.rows) - available)!r}")
+        definitions = [plan.selected_definitions.get(item) for item in shown]
     elif body.rows:
-        raise ValueError("Choose a run of this Train step.")
+        raise ValueError("Rows were given without the run they belong to")
     fields = []
     targets = {}
     for field_id, field in definition.fields.items():
@@ -582,15 +594,16 @@ def project_training_numeric_fields(
                  finest=Level.RUN, structural=True),
             target is not None, lambda value, view=view: _number(view, value),
         )
+        values = {json.dumps(_get(item.payload, path)) for item in definitions if item is not None}
         fields.append(project_numeric_field(
             TrainFieldView, numeric, axis, functions, selected,
-            _get(effective.payload, path) if effective else None, id=field_id,
+            json.loads(next(iter(values))) if len(values) == 1 else None, mixed=len(values) > 1, id=field_id,
         ))
         targets[field_id] = field, numeric, axis
     if body.edit is None:
         return TrainFieldResponse(fields=fields)
     if body.field not in targets:
-        raise ValueError("Choose a supported numeric Train field.")
+        raise ValueError(f"Train step {step_id!r} has no number field {body.field!r}")
     field, numeric, axis = targets[body.field]
     prepared = prepare_numeric_field(
         numeric, axis, body.edit, functions, rows=tuple(body.rows), keep_value=field.write,
@@ -624,7 +637,7 @@ def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
         or (control.min is not None and value < control.min)
         or (control.max is not None and value > control.max)
     ):
-        raise ValueError(f"{field.label} requires a number in the supported range")
+        raise ValueError(f"{value!r} is outside the range of {field.label}")
     if field.id in {"/settings/grad_clip", pointer(_OPTIMIZER_RATE)} and value <= 0:
-        raise ValueError(f"{field.label} requires a positive number")
+        raise ValueError(f"{field.label} is {value!r}, not positive")
     return int(value) if control.step == 1 else value

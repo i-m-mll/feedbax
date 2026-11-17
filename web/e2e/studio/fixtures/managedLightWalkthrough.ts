@@ -220,7 +220,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const child = 'train-continuation';
   const continued = await addSuccessor('Train', child);
   expect(continued.project.steps?.[child]?.kind).toBe('train');
-  const carryover = drawer(page).getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
+  const carryover = drawer(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
   const carry = mutation(context, 'PATCH');
   await chooseOption(page, carryover, 'Carry training state');
   const carried = await carry;

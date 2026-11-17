@@ -10,6 +10,7 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Chip } from '@/components/ui/Chip';
+import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { Combobox } from '@/components/ui/Combobox';
 import { Dialog } from '@/components/ui/Dialog';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -235,6 +236,7 @@ export function Gallery() {
   const [checked, setChecked] = useState(true);
   const [kind, setKind] = useState<string | null>('train');
   const [optimizer, setOptimizer] = useState<string | null>('adam');
+  const [method, setMethod] = useState('feedbax.supervised_gradient');
   const [windowState, setWindowState] = useState('both');
   const [library, setLibrary] = useState('library');
   const [expanded, setExpanded] = useState(true);
@@ -321,6 +323,14 @@ export function Gallery() {
           <State name="placeholder"><Combobox aria-label="Optimizer" items={optimizers} value={null} placeholder="Optimizer" onValueChange={() => undefined} className="w-48" /></State>
           <State name="invalid"><Combobox aria-label="Optimizer" items={optimizers} value={null} invalid onValueChange={() => undefined} className="w-48" /></State>
           <State name="disabled"><Combobox aria-label="Optimizer" items={optimizers} value="sgd" disabled onValueChange={() => undefined} className="w-48" /></State>
+        </Group>
+
+        <Group name="CatalogPicker">
+          <State name="value"><CatalogPicker aria-label="Training method" className="w-64" value={method} onChoose={setMethod}
+            entries={[
+              { key: 'feedbax.supervised_gradient', label: 'Supervised gradient', package: 'feedbax' },
+              { key: 'lab.evolution', label: 'Evolution strategy', package: 'lab-methods' },
+            ]} /></State>
         </Group>
 
         <Group name="Menu">

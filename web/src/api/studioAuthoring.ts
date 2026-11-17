@@ -1,6 +1,9 @@
+import { useQuery } from '@tanstack/react-query';
 import { asApiRequestError, requestJson } from '@/api/request';
+import type { CatalogEntry } from '@/components/ui/CatalogPicker';
 import {
   parseContract,
+  type StudioAuthoringCatalog,
   type StudioCheckpointRuleRequest,
   type StudioSubsetToRowsRequest,
   type StudioTrialAuthoring,
@@ -89,4 +92,30 @@ export async function readStudioTrialAuthoring(
   } catch (error) {
     throw asApiRequestError(error, path, 'The trial authoring response did not match its contract');
   }
+}
+
+export async function readAuthoringCatalog(signal: AbortSignal): Promise<StudioAuthoringCatalog> {
+  const path = '/api/projects/authoring/catalog';
+  try {
+    return parseContract('StudioAuthoringCatalog', await requestJson(path, { signal }));
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The authoring catalog did not match its contract');
+  }
+}
+
+/** A registry's declarations as catalog rows: label, and the package that declares each. */
+export function catalogEntries(catalog: StudioAuthoringCatalog | undefined, family: string): CatalogEntry[] {
+  const registry = catalog?.registries[family];
+  return (registry?.entries ?? []).flatMap((entry) => 'key' in entry && 'label' in entry && typeof entry.label === 'string'
+    ? [{ key: entry.key, label: entry.label, package: registry!.origins[entry.key]?.package }] : []);
+}
+
+/** The registries of declarations, read once per session. */
+export function useAuthoringCatalog() {
+  return useQuery({
+    queryKey: ['authoring-catalog'],
+    queryFn: ({ signal }) => readAuthoringCatalog(signal),
+    staleTime: Infinity,
+    retry: false,
+  });
 }

@@ -457,9 +457,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
   await expect(mapStep(page, childId)).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
-  await expect(drawer.getByRole('combobox', { name: 'Edit Training method' })).toBeFocused();
+  await expect(drawer.getByRole('combobox', { name: 'Training method' })).toBeFocused();
 
-  const carryover = drawer.getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
+  const carryover = drawer.getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
   const carryoverPath = 'method_payload.payload.checkpoint_initialization';
   const methodTarget = 'method_payload.payload.target_total';
   const checkpointInput = snapshot.project.steps?.[childId]?.inputs?.checkpoint;

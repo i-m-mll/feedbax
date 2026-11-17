@@ -32,8 +32,8 @@ export async function authorFirstTrain(
   const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const taskX = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
-  const nSteps = task.getByRole('spinbutton', { name: /N Steps/i });
+  const taskX = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
+  const nSteps = task.getByRole('textbox', { name: /N Steps/i });
   const weight = objective.getByRole('textbox', { name: 'Weight', exact: true });
   const nBatches = training.getByRole('textbox', { name: 'N Batches', exact: true });
   const batchSize = training.getByRole('textbox', { name: 'Batch Size', exact: true });
@@ -57,7 +57,7 @@ export async function authorFirstTrain(
   await page.keyboard.press('Meta+3');
   await setNumber(taskX, 0.22, (project) => taskValues(project)?.x);
   if (forceComparison) {
-    await setNumber(task.getByRole('spinbutton', { name: 'Target y (m)', exact: true }),
+    await setNumber(task.getByRole('textbox', { name: 'Target y (m)', exact: true }),
       forceComparison.targetY, (project) => taskValues(project)?.y);
   }
   await setNumber(nSteps, 12, (project) => taskValues(project)?.n_steps);
