@@ -16,7 +16,7 @@ from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, O
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
-from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureDocument
+from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSource
 from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import (
@@ -159,7 +159,7 @@ def authoring_surface(
         "analysis": _family(AnalysisDocument, AnalysisDocument.model_fields["schema_version"].default),
         "figure": StudioAuthoredDocumentFamily(
             schema_id=FIGURE_DOCUMENT_SCHEMA,
-            payload_schema=TypeAdapter(FigureDocument | ExternalBase).json_schema(),
+            payload_schema=TypeAdapter(FigureSource | ExternalBase).json_schema(),
         ),
         "report": _family(ReportDocument, ReportDocument.model_fields["schema_version"].default),
         "comparison-policy": _family(ComparisonPolicySpec, COMPARISON_POLICY_SCHEMA_ID),

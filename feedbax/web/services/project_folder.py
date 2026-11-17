@@ -35,6 +35,7 @@ from feedbax.project_model_selection import selected_task_signal
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.plot.templates import FigureTemplateRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.model_edit import (
         ModelConnectionReview, ModelConnectionReviewRequest, ModelEditRequest, ModelEditResponse, ModelUndoRequest,
@@ -62,9 +63,11 @@ class ProjectFolderService(ProjectFolder):
         components: ComponentRegistry | None = None,
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
+        figure_templates: FigureTemplateRegistry | None = None,
     ) -> None:
         super().__init__(
-            root, operations=operations, components=components, functions=functions, python_tasks=python_tasks,
+            root, operations=operations, components=components, functions=functions,
+            python_tasks=python_tasks, figure_templates=figure_templates,
         )
         self._model_undo_key = token_bytes(32)
 

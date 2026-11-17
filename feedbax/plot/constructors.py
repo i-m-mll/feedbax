@@ -275,12 +275,11 @@ def _validate_namespaced_type_key(type_key: str, *, field: str) -> str:
 
 
 class FigureRegistry:
-    """Isolated constructors, templates, and pieces for figure dispatch."""
+    """Isolated constructors and pieces for figure dispatch."""
 
     def __init__(self) -> None:
         self._sealed = False
         self._constructors: dict[str, FigureConstructorRegistration] = {}
-        self._templates: dict[str, Any] = {}
         self._pieces: dict[str, Any] = {}
 
     def register_constructor(
@@ -314,14 +313,6 @@ class FigureRegistry:
             key, tier, constructor, params_model, description, version, normalized_roles
         )
 
-    def register_template(self, template: Any) -> None:
-        if self._sealed:
-            raise RuntimeError("figure registry is sealed")
-        name = _validate_namespaced_type_key(template.name, field="figure template")
-        if name in self._templates:
-            raise ValueError(f"Figure template {name!r} is already registered")
-        self._templates[name] = deepcopy(template)
-
     def register_piece(self, piece: Any) -> None:
         if self._sealed:
             raise RuntimeError("figure registry is sealed")
@@ -331,7 +322,7 @@ class FigureRegistry:
         self._pieces[name] = deepcopy(piece)
 
     def keys(self) -> tuple[str, ...]:
-        return tuple(sorted((*self._constructors, *self._templates, *self._pieces)))
+        return tuple(sorted((*self._constructors, *self._pieces)))
 
     def constructor(self, key: str) -> FigureConstructorRegistration:
         try:
@@ -345,16 +336,9 @@ class FigureRegistry:
         values = tuple(self._constructors[key] for key in sorted(self._constructors))
         return values if tier is None else tuple(item for item in values if item.tier == tier)
 
-    def template(self, name: str) -> Any | None:
-        template = self._templates.get(name)
-        return deepcopy(template) if template is not None else None
-
     def piece(self, name: str) -> Any | None:
         piece = self._pieces.get(name)
         return deepcopy(piece) if piece is not None else None
-
-    def templates(self) -> tuple[Any, ...]:
-        return tuple(deepcopy(self._templates[key]) for key in sorted(self._templates))
 
     def pieces(self) -> tuple[Any, ...]:
         return tuple(deepcopy(self._pieces[key]) for key in sorted(self._pieces))
@@ -416,27 +400,6 @@ def registered_figure_constructors(
 ) -> tuple[FigureConstructorRegistration, ...]:
     """Return registered constructors sorted by key."""
     return registry.constructors(tier=tier)
-
-
-def register_figure_template(
-    template: Any, *, registry: FigureRegistry, replace: bool = False
-) -> None:
-    """Register a FigureTemplate-like object by name."""
-    if replace:
-        raise ValueError("replace is unsupported for isolated bootstrap registries")
-    registry.register_template(template)
-
-
-def get_figure_template(name: str, *, registry: FigureRegistry) -> Any:
-    template = registry.template(name)
-    if template is None:
-        raise ValueError(f"Figure template {name!r} is not registered")
-    return template
-
-
-def registered_figure_templates(*, registry: FigureRegistry) -> tuple[Any, ...]:
-    """Return registered figure recipes sorted by their namespaced key."""
-    return registry.templates()
 
 
 def register_figure_piece(piece: Any, *, registry: FigureRegistry, replace: bool = False) -> None:

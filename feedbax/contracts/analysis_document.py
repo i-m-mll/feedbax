@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue, model_validator
 from typing_extensions import TypeVar
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.figure_document import FigureDocument
+from feedbax.contracts.figure_document import FigureSource
 from feedbax.contracts.project import DocumentReference
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 
@@ -31,7 +31,7 @@ class OperationElement(StrictModel):
     params: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-_Figure = TypeVar("_Figure", default=FigureDocument | DocumentReference)
+_Figure = TypeVar("_Figure", default=FigureSource | DocumentReference)
 
 
 class FigureElement(StrictModel, Generic[_Figure]):

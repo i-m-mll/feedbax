@@ -507,6 +507,11 @@
         "absent": null
       }
     },
+    "feedbax.contracts.figure_document.ResolvedFigureTemplate": {
+      "key": {},
+      "revision": {},
+      "settings": {}
+    },
     "feedbax.contracts.figure_document.VariableBinding": {
       "select": {
         "absent": {}
@@ -1596,6 +1601,9 @@
       "figure": {},
       "numerical_settings": {
         "absent": {}
+      },
+      "template": {
+        "absent": null
       }
     },
     "feedbax.contracts.request_specs.ReportRequestSpec": {

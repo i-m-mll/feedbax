@@ -1,12 +1,14 @@
 """Plan the real saved Evaluate and typed velocity figure without result access."""
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 from pathlib import Path
 
-from feedbax.analysis.figure_presets import velocity_summary_figure
+from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.contracts.analysis_document import FigureElement
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.figure_document import ResolvedFigureTemplate
 from feedbax.contracts.project import Document, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
@@ -29,7 +31,9 @@ from feedbax.contracts.project_resolution import BaseReaders, ResolutionCode
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
+from feedbax.plot.templates import FigureTemplateDeclaration, FigureTemplateRegistry
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from tests.test_canonical_evaluate_admission import managed_evaluation_definition
 
 
@@ -49,7 +53,7 @@ def _project() -> Project:
     project.documents["velocity-figure"] = Document.model_validate(
         {
             "schema": "feedbax.figure_document.v1",
-            "payload": velocity_summary_figure().model_dump(mode="json", exclude_unset=True),
+            "payload": VelocitySummary(VelocitySummarySettings()).model_dump(mode="json", exclude_unset=True),
         }
     )
     project.steps["analyze"] = Step.model_validate(
@@ -115,7 +119,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     )
     assert row.elements["profile"].inputs["summary"][0].element == ElementKey(_KEY, "summarize")
     assert align.spec.evaluation_states_policy == "require_durable"
-    assert figure.spec.figure is None and figure.spec.document == velocity_summary_figure()
+    assert figure.spec.figure is None and figure.spec.document == VelocitySummary(VelocitySummarySettings())
     source = plan.sources[_KEY]["/payload/operations/summarize/params/bounds_scale"]
     assert (source.kind, source.name, source.path) == (
         "document",
@@ -212,7 +216,7 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
     views["inline"] = deepcopy(views["profile"])
     views["inline"]["figure"] = deepcopy(project.documents["velocity-figure"].payload)
     assert isinstance(FigureElement.model_validate(views["second"]).figure, DocumentReference)
-    assert FigureElement.model_validate(views["inline"]).figure == velocity_summary_figure()
+    assert FigureElement.model_validate(views["inline"]).figure == VelocitySummary(VelocitySummarySettings())
     project.sweep = Sweep.model_validate({"rows": {"base": {}, "dark": {}}})
     operations = _operations()
     memo = ProjectPlanMemo()
@@ -265,6 +269,64 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
     for view in ("profile", "second"):
         source = revised.sources[dark][f"/payload/views/{view}/figure/theme"]
         assert (source.kind, source.name, source.path) == ("variant", "dark", "/documents/velocity-figure/payload/theme")
+
+
+def test_installed_figure_template_pins_defaults_and_revision_in_render_identity():
+    project = _project()
+    authored = project.documents["velocity-figure"]
+    key = "feedbax.VelocitySummary"
+    authored.payload = {"template": key}
+    operations = _operations()
+    memo = ProjectPlanMemo()
+    declaration = callable_declaration(VelocitySummary)
+    assert isinstance(declaration, FigureTemplateDeclaration)
+
+    def templates(revision):
+        registry = FigureTemplateRegistry()
+        registry.register_declaration(
+            VelocitySummary, replace(declaration, revision=revision),
+            key=key, source=DistributionSource("feedbax.builtins", "feedbax", "1.0"),
+        )
+        registry.seal()
+        return registry
+
+    def plan(registry):
+        return compile_project(
+            project, operations=operations, figure_templates=registry, memo=memo,
+        )
+
+    first_registry = templates(1)
+    initial_plan = plan(first_registry)
+    initial = _decode(initial_plan, "profile")
+    assert initial.spec.template == ResolvedFigureTemplate(
+        key=key, settings={"checkpoint_index": 0}, revision=1,
+    )
+    assert initial.spec.document == VelocitySummary(VelocitySummarySettings())
+
+    authored.payload["settings"] = {"checkpoint_index": 0}
+    assert _decode(plan(first_registry), "profile").id == initial.id
+
+    revised = _decode(plan(templates(2)), "profile")
+    assert revised.id != initial.id
+    assert revised.spec.document == initial.spec.document
+
+    authored.payload["settings"]["checkpoint_index"] = 1
+    changed_plan = plan(first_registry)
+    changed = _decode(changed_plan, "profile")
+    assert changed.id != initial.id
+    assert changed.spec.document.layers[0].select["checkpoint"].index == 1
+    assert diff_analyze_elements(initial_plan, changed_plan)[ElementKey(_KEY, "profile")].path == (
+        "payload.views.profile.figure.settings.checkpoint_index"
+    )
+
+    authored.payload["template"] = "missing.Figure"
+    unresolved = plan(first_registry)
+    (problem,) = unresolved.diagnostics
+    assert (problem.path, problem.document_path) == (
+        "payload.views.profile.figure.template", "payload.template",
+    )
+    assert "'missing.Figure' from package 'missing'" in problem.detail
+    assert set(unresolved.elements) == {ElementKey(_KEY, "align"), ElementKey(_KEY, "summarize")}
 
 
 def test_named_figure_pin_does_not_supply_an_external_train_base():
