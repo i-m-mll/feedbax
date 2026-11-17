@@ -62,6 +62,12 @@ def reconstruct_model(
     slot: SemanticModelSlot | None = None,
 ) -> ReconstructedModel | tuple[Problem, ...]:
     """Build an initial model or restore learned values onto a compiled template."""
+    if variant_seed is not None and not isinstance(variant, GraphResolution):
+        return (Problem(
+            code=ProblemCode.STRUCTURE, path=("model",),
+            reason="A variant seed requires an unrealized variant template.",
+        ),)
+
     def materialize(value, seed, replica):
         if isinstance(value, ExecutableGraph):
             return value

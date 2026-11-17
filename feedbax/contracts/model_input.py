@@ -19,6 +19,7 @@ from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT
 
 if TYPE_CHECKING:
     from feedbax.contracts.project import Document
+    from feedbax.tasks.registry import PythonTaskRegistry
 
 
 INITIAL_MODEL_MEDIA_TYPE = "application/vnd.feedbax.initial-model+json"
@@ -69,7 +70,9 @@ _TASK_INPUT = TypeAdapter(TaskInputSource)
 DOCUMENT_INPUT_MEDIA_TYPES = frozenset((INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE))
 
 
-def authored_document_input(reference: DocumentInputReference, document: Document) -> DocumentInput:
+def authored_document_input(
+    reference: DocumentInputReference, document: Document, *, python_tasks: PythonTaskRegistry | None = None,
+) -> DocumentInput:
     if isinstance(reference, InitialModelReference):
         if document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
             raise ValueError("Initial model input requires a Model document")
@@ -84,7 +87,15 @@ def authored_document_input(reference: DocumentInputReference, document: Documen
     if document.schema_id == TASK_DOCUMENT_SCHEMA_ID:
         return TaskDocument.model_validate(document.payload)
     if document.schema_id == PYTHON_TASK_SCHEMA_ID:
-        return PythonTaskSelection.model_validate(document.payload)
+        from feedbax.tasks.registry import resolve_python_task_instance
+
+        selection = PythonTaskSelection.model_validate(document.payload)
+        if python_tasks is None:
+            raise ValueError(f"Python task {selection.type!r} requires a task registry")
+        task = resolve_python_task_instance(selection, python_tasks)
+        if isinstance(task, tuple):
+            raise ValueError(task[0].reason)
+        return task.selection()
     raise ValueError("Task input requires a Task document or Python task selection")
 
 

@@ -339,6 +339,8 @@ def evaluation_subject_objects(
 def verify_initial_evaluation_states(
     store: ImmutableArtifactBlobProvider, manifest: EvaluationRunManifest, refs: dict[str, ContentRef],
 ) -> None:
+    from math import isfinite
+
     member = verify_initial_rollout(manifest, refs)
     spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
     params = RolloutParameters.model_validate(spec.params)
@@ -359,6 +361,10 @@ def verify_initial_evaluation_states(
             or ("objective/total" in manifest.summary_metrics) != should_score
         ):
             raise ValueError("Initial Evaluate states differ from the accepted document rollout")
+        if should_score:
+            total = float(reader.read_tensor("objective/total").item())
+            if not isfinite(total) or manifest.summary_metrics["objective/total"] != total:
+                raise ValueError("Initial Evaluate summary differs from the retained objective")
 
 
 def verify_evaluation_success_evidence(

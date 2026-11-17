@@ -64,7 +64,7 @@ from feedbax.contracts.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.effective_success import TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
@@ -685,7 +685,8 @@ class JobService(PlanJobReader):
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
     ) -> AdmissionItem:
         from feedbax.light_jobs import LightDelivery, validate_light_request
-        from feedbax.persistence.effective_success import store_request
+        from feedbax.contracts.request_specs import AnalysisRequestSpec
+        from feedbax.persistence.effective_success import store_document_inputs, store_request
 
         if isinstance(row, (PlannedRun, PlannedAnalyzeRun)) and row.requires:
             raise ValueError("/requires: unresolved capabilities.")
@@ -693,7 +694,7 @@ class JobService(PlanJobReader):
             raise ValueError(f"{problem.path}: {problem.detail}")
         raw = plan.requests[node.request_id]
         decoded = decode_request(raw, plan.documents.__getitem__)
-        validate_light_request(decoded)
+        validate_light_request(decoded, registry=self.registries)
         encoded = encode_request(decoded.spec, decoded.inputs)
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")
@@ -705,7 +706,10 @@ class JobService(PlanJobReader):
                     continue
                 source = binding.element or binding.producer
                 candidate = items.get(plan_attempt_key(source)) if source is not None else None
-                if candidate is None:
+                exact_checkpoint = reference.role == "checkpoint" and isinstance(reference.select, BatchMember)
+                if candidate is None and exact_checkpoint:
+                    anchor = self._checkpoint_producer(project, store.root, reference.request_id)
+                elif candidate is None:
                     anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
                     anchor = next((job["id"] for job in reversed(anchors) if (
                         job["data"].get("manifest_root") == str(store.root)
@@ -718,17 +722,24 @@ class JobService(PlanJobReader):
                     )
                 if anchor is None:
                     raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
-                parents.setdefault(reference.request_id, anchor)
+                parents.setdefault(reference.request_id, Edge(anchor, authenticated_completion=exact_checkpoint))
 
         name = plan_attempt_key(node.key)
         data = _plan_run_data(name, row)
         if isinstance(node, PlannedElement):
             data["label"] = f"{data['label']} · {node.key.name}"
+        store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
         payload = LightDelivery(project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded))
-        launch = replace(self._light_worker, payload=payload.model_dump(mode="json"))
+        profile = self._light_worker
+        slot = "light"
+        if isinstance(decoded.spec, AnalysisRequestSpec) and (computation := decoded.spec.computation) is not None:
+            if numerical := computation.numerical:
+                profile = replace(profile, env=numerical.environment(), preload=("jax",))
+                slot = "compute"
+        launch = replace(profile, payload=payload.model_dump(mode="json"))
         return AdmissionItem(run_key=name, job=Job(
-            id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot="light",
-            edges=tuple(Edge(anchor) for anchor in parents.values()),
+            id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot=slot,
+            edges=tuple(parents.values()),
             data=data | {"manifest_root": str(store.root), "runtime": launch.argv[0]},
         ))
 
@@ -1667,6 +1678,15 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
         if planned is not None and isinstance(ref := planned.member.reference, ProductRef):
             if isinstance(ref.select, BatchSetMember):
                 catalogs.setdefault(ref.request_id, set()).update(ref.select.batches)
+    for element in plan.elements.values():
+        for bindings in element.inputs.values():
+            for binding in bindings:
+                reference = binding.member.reference
+                if (
+                    isinstance(reference, ProductRef) and reference.role == "checkpoint"
+                    and isinstance(reference.select, BatchMember)
+                ):
+                    catalogs.setdefault(reference.request_id, set()).add(reference.select.batch)
     return catalogs
 
 
