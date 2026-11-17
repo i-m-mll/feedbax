@@ -115,16 +115,17 @@ it('updates menu availability and rechecks the focused control on delivery', asy
   bridge.select('undo', scope);
   expect(undo).not.toHaveBeenCalled();
   bridge.select('run', scope);
-  expect(run).not.toHaveBeenCalled();
+  expect(run).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(bridge.latest()?.textEditing).toBe(true));
-  expect(item(bridge.latest(), 'run')?.enabled).toBe(false);
+  expect(item(bridge.latest(), 'run')?.enabled).toBe(true);
+  expect(item(bridge.latest(), 'undo')?.enabled).toBe(false);
 
   act(() => { screen.getByRole('button', { name: 'Activity item' }).focus(); });
   await waitFor(() => expect(bridge.latest()?.textEditing).toBe(false));
   expect(item(bridge.latest(), 'run')?.enabled).toBe(false);
   expect(item(bridge.latest(), 'showMap')).toMatchObject({ accelerator: 'Ctrl+Cmd+1', enabled: true });
   bridge.select('run', bridge.latest()!.scope);
-  expect(run).not.toHaveBeenCalled();
+  expect(run).toHaveBeenCalledTimes(1);
 });
 
 it('keeps the web shortcut in a browser without the native host', () => {

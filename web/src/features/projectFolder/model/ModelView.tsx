@@ -250,7 +250,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const projectedNames = new Set(projectedFields.flatMap(({ address }) =>
     address.element.kind === 'field' && typeof address.element.path.at(-1) === 'string' ? [String(address.element.path.at(-1))] : []));
   const fieldControls = projectedFields.map((field) => {
-    const id = JSON.stringify([saved.project_id, fieldRun?.variant, fieldRun?.step, fieldRows, addressKey(field.address)]);
+    const id = JSON.stringify([saved.project_id, fieldRows, addressKey(field.address)]);
     return <ValueField key={id} model={fromFieldView(field, {
       id,
       planSources: field.sources,
