@@ -11,6 +11,12 @@ export function savedRunId({ variant, step, row }: SavedTrainRow['key']) {
   return JSON.stringify([variant, step, row]);
 }
 
+/** The run's ID once its step is named `to`. */
+export function renamedSavedRunId(id: string, to: string) {
+  const [variant, , row] = JSON.parse(id) as [string, string, string];
+  return savedRunId({ variant, step: to, row });
+}
+
 export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, variant: string): SelectedRow[] {
   return saved.window_map?.rows.flatMap(({ key, member_key }) => key.step === step && key.variant === variant && member_key != null
     ? [{ key: member_key, variant: key.variant, row: key.row }] : []) ?? [];

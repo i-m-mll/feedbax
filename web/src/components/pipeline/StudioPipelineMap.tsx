@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type DragEvent,
+  type KeyboardEvent,
   type ReactNode,
   type Ref,
 } from 'react';
@@ -27,10 +28,12 @@ import {
 import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button, IconButton } from '@/components/ui/Button';
+import { InlineEdit } from '@/components/ui/InlineEdit';
 import { ListRow } from '@/components/ui/ListRow';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
 import {
+  extendsSelection,
   selectionButton,
   indexPlanLineage,
   selectedRuns,
@@ -108,6 +111,36 @@ export interface StudioPipelineMapProps {
   viewportRef?: Ref<CanvasViewport>;
   fitReady?: boolean;
   runMenu?: RunMenu;
+  rename?: MapStepRename;
+}
+
+export type MapRenameSurface = 'card' | 'drawer' | 'line';
+
+/** A step renamed in place: `editing` names the step whose name is being edited, and the surface it is edited on. */
+export interface MapStepRename {
+  readonly editing: { readonly stepId: string; readonly surface: MapRenameSurface } | null;
+  setEditing(editing: MapStepRename['editing']): void;
+  /** Returns false to refuse the name and stay in editing. */
+  commit(stepId: string, name: string): boolean;
+}
+
+function renamingStep(rename: MapStepRename | undefined, stepId: string, surface: MapRenameSurface) {
+  return rename?.editing?.stepId === stepId && rename.editing.surface === surface ? rename : undefined;
+}
+
+/** Return on a selected step's name starts renaming it; otherwise the key selects as usual. */
+function renameOnReturn(
+  rename: MapStepRename | undefined, stepId: string, surface: MapRenameSurface, selected: boolean,
+  onKeyDown: ReturnType<typeof selectionButton>['onKeyDown'],
+) {
+  return (event: KeyboardEvent) => {
+    if (rename && selected && event.key === 'Enter' && !extendsSelection(event)) {
+      event.preventDefault();
+      rename.setEditing({ stepId, surface });
+      return;
+    }
+    onKeyDown(event);
+  };
 }
 
 const emptyPresentation: PipelineCardPresentation = {};
@@ -151,14 +184,21 @@ function stepLabel(step: PlanStepView, count?: string | number) {
   return [step.label, studioStep(step.kind).name, count].filter((part) => part !== undefined).join(' ');
 }
 
-function StepName({ step }: { step: PlanStepView }) {
+function StepName({ step, rename }: { step: PlanStepView; rename?: MapStepRename }) {
   const { Icon, name } = studioStep(step.kind);
   return (
     <span className="studio-card__title flex min-w-0 items-center gap-1.5">
       <span className="studio-card__glyph" {...appTip(name)}><Icon aria-hidden="true" className="size-4" /></span>
-      <span className="truncate font-medium">{step.label}</span>
+      {rename ? <StepNameEdit step={step} rename={rename} /> : <span className="truncate font-medium">{step.label}</span>}
     </span>
   );
+}
+
+function StepNameEdit({ step, rename }: { step: PlanStepView; rename: MapStepRename }) {
+  return <InlineEdit value={step.id} editing className="font-medium"
+    aria-label={studioAccessibleName('rename', step.label)}
+    onEditingChange={(next) => { if (!next) rename.setEditing(null); }}
+    onCommit={(name) => rename.commit(step.id, name)} />;
 }
 
 function cardStatus(counts: PlanStepView['statusCounts']): CardStatus | undefined {
@@ -306,6 +346,7 @@ const StepCard = memo(function StepCard({
   upstream,
   downstream,
   runMenu,
+  rename,
 }: {
   step: PlanStepView;
   selection: PipelineSelection | null;
@@ -322,6 +363,7 @@ const StepCard = memo(function StepCard({
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   runMenu?: RunMenu;
+  rename?: MapStepRename;
 }) {
   const id = useId();
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
@@ -333,6 +375,7 @@ const StepCard = memo(function StepCard({
   const related = (upstream?.size ?? 0) + (downstream?.size ?? 0) -
     (upstream && downstream ? [...upstream].filter((id) => downstream.has(id)).length : 0);
   const problem = onProblems && ((opener: HTMLButtonElement) => onProblems(step.id, opener));
+  const headSelection = selectionButton((extend) => chooseStep(step.id, extend));
   return (
     <Card
       data-map-card
@@ -356,7 +399,9 @@ const StepCard = memo(function StepCard({
       <CardHead className="relative">
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-px top-1/2" />
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-px top-1/2" />
-        <Button
+        {renamingStep(rename, step.id, 'card') ? (
+          <div className="studio-map-card__head flex w-full px-3 py-2"><StepName step={step} rename={rename} /></div>
+        ) : <Button
           variant="bare"
           size="content"
           align="start"
@@ -366,10 +411,11 @@ const StepCard = memo(function StepCard({
           aria-describedby={[`${id}-summary`, compact ? `${id}-status` : '', related ? `${id}-related` : ''].filter(Boolean).join(' ')}
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
           aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
-          {...selectionButton((extend) => chooseStep(step.id, extend))}
+          {...headSelection}
+          onKeyDown={renameOnReturn(rename, step.id, 'card', selection?.kind === 'steps', headSelection.onKeyDown)}
         >
           <StepName step={step} />
-        </Button>
+        </Button>}
       </CardHead>
       {related > 0 && <span id={`${id}-related`} className="sr-only">{studioCountOf(related, step.runs.length)}</span>}
       {compact ? <div className="space-y-2 px-3 pb-2">
@@ -522,9 +568,10 @@ interface DrawerProps {
   chooseStep: ChooseStep;
   applySelection: ApplyMapSelection;
   documentScope?: MapDocumentScope;
+  rename?: MapStepRename;
 }
 
-function StepRow({ step, selection, related, focusedStepId, chooseStep, applySelection, documentScope }: DrawerProps & {
+function StepRow({ step, selection, related, focusedStepId, chooseStep, applySelection, documentScope, rename }: DrawerProps & {
   step: PlanStepView;
 }) {
   const scope = stepSelection(selection, step.id);
@@ -544,11 +591,12 @@ function StepRow({ step, selection, related, focusedStepId, chooseStep, applySel
       className={`data-[document-scope=faint]:text-shell-muted data-[map-dimmed=true]:text-shell-muted ${!scope ? documentLitStyle : ''}`}
       glyph={<Icon aria-hidden="true" />}
       onClick={choose.onClick}
-      name={<Button variant="bare" size="content" align="start" className="block w-full truncate"
-        aria-current={scope ? 'step' : undefined}
-        aria-label={studioAccessibleName('select', stepLabel(step, summary))}
-        aria-pressed={documentScope ? level === 'lit' : undefined}
-        onKeyDown={choose.onKeyDown}>{step.label}</Button>}
+      name={renamingStep(rename, step.id, 'drawer') ? <StepNameEdit step={step} rename={rename!} />
+        : <Button variant="bare" size="content" align="start" className="block w-full truncate"
+          aria-current={scope ? 'step' : undefined}
+          aria-label={studioAccessibleName('select', stepLabel(step, summary))}
+          aria-pressed={documentScope ? level === 'lit' : undefined}
+          onKeyDown={renameOnReturn(rename, step.id, 'drawer', scope?.kind === 'steps', choose.onKeyDown)}>{step.label}</Button>}
       trailing={worst && word && (
         <Button variant="bare" size="content" className="inline-flex items-center gap-1 rounded-sm tabular-nums"
           aria-label={studioAccessibleName('select', [shown, word].filter(Boolean).join(' '))} {...appTip(word)}
@@ -604,14 +652,14 @@ function MapDrawer({ steps, newStep, framed = false, ...props }: DrawerProps & {
   );
 }
 
-export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep }: Pick<
-  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep'
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep, rename }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep' | 'rename'
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const applySelection: ApplyMapSelection = (change) => onSelectionChange(change(state));
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
-    chooseStep={chooseMapStep(applySelection, onChooseStep)}
+    chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename}
     newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })} framed />;
 }
 
@@ -621,24 +669,32 @@ function MapLine({
   selection,
   chooseStep,
   documentScope,
+  rename,
 }: {
   plan: PlanView;
   layout: MapLayout;
   selection: PipelineSelection | null;
   chooseStep: ChooseStep;
   documentScope?: MapDocumentScope;
+  rename?: MapStepRename;
 }) {
   const selected = plan.steps.filter(({ id }) => stepSelection(selection, id));
   const center = selected.length === 1 ? selected[0] : null;
   const before = center ? plan.steps.filter(({ id }) => layout.upstream.get(center.id)?.has(id)) : [];
   const after = center ? plan.steps.filter(({ id }) => layout.downstream.get(center.id)?.has(id)) : [];
   const groups = documentScope ? [plan.steps] : [before, selected.length ? selected : plan.steps, after].filter((steps) => steps.length);
+  const lineSelection = (stepId: string) => {
+    const choose = selectionButton((extend) => chooseStep(stepId, extend));
+    return { ...choose, onKeyDown: renameOnReturn(rename, stepId, 'line', stepSelection(selection, stepId)?.kind === 'steps', choose.onKeyDown) };
+  };
   return (
     <div className="flex items-center gap-2 overflow-auto p-2">
       {groups.map((steps, index) => (
         <div key={index} className="flex shrink-0 items-center gap-2">
           {index > 0 && <ChevronRight aria-hidden="true" className="h-4 w-4 text-shell-muted" />}
-          {steps.map((step) => (
+          {steps.map((step) => renamingStep(rename, step.id, 'line') ? (
+            <span key={step.id} className="studio-card studio-map-line-step px-2 py-1 text-sm"><StepName step={step} rename={rename} /></span>
+          ) : (
             <Button
               key={step.id}
               variant="bare"
@@ -650,7 +706,7 @@ function MapLine({
               aria-pressed={documentScope ? documentScope.lit.has(step.id) : undefined}
               data-map-selection={stepSelection(selection, step.id)?.kind}
               data-document-scope={documentLevel(documentScope, step.id)}
-              {...selectionButton((extend) => chooseStep(step.id, extend))}
+              {...lineSelection(step.id)}
             >
               <StepName step={step} />
             </Button>
@@ -679,6 +735,7 @@ export function StudioPipelineMap({
   viewportRef,
   fitReady,
   runMenu,
+  rename,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
@@ -740,7 +797,7 @@ export function StudioPipelineMap({
       } : undefined}
     >
       {!plan.steps.length ? null : mode === 'line' ? (
-        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} />
+        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} rename={rename} />
       ) : (
         <>
           {drawDrawer && (
@@ -753,6 +810,7 @@ export function StudioPipelineMap({
               applySelection={applySelection}
               documentScope={documentScope}
               newStep={firstStep}
+              rename={rename}
             />
           )}
           <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus}
@@ -778,6 +836,7 @@ export function StudioPipelineMap({
                     newSweep={newSweepCommand?.(step.id, step.label)}
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                     runMenu={runMenu}
+                    rename={rename}
                   />
                 ))}
               </div>

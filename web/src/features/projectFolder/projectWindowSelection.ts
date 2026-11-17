@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { PlanView } from '@/features/pipeline/planView';
+import { renamedSavedRunId } from './projectWindowPlan';
 import {
   emptyPipelineSelection, selectStep, selectSweepGroup, type PipelineSelectionState,
 } from '@/features/pipeline/selection';
@@ -15,6 +16,19 @@ function subject(pipeline: PipelineSelectionState, current: string | null) {
   if (!selection) return null;
   if (selection.kind !== 'steps') return selection.stepId;
   return current && selection.stepIds.includes(current) ? current : selection.stepIds.at(-1) ?? null;
+}
+
+function renamedSelection({ selection, focus }: PipelineSelectionState, from: string, to: string): PipelineSelectionState {
+  const step = (id: string) => id === from ? to : id;
+  const run = (stepId: string, id: string) => stepId === from ? renamedSavedRunId(id, to) : id;
+  return {
+    selection: !selection ? null
+      : selection.kind === 'steps' ? { ...selection, stepIds: selection.stepIds.map(step) }
+        : selection.kind === 'rows'
+          ? { ...selection, stepId: step(selection.stepId), runIds: selection.runIds.map((id) => run(selection.stepId, id)) }
+          : { ...selection, stepId: step(selection.stepId) },
+    focus: focus && { stepId: step(focus.stepId), runId: run(focus.stepId, focus.runId) },
+  };
 }
 
 export function settledWindowSelection(plan: PlanView, state: PipelineSelectionState): PipelineSelectionState {
@@ -70,6 +84,15 @@ export function useProjectWindowSelection(initialStepId: string | null) {
     select: (pipeline: PipelineSelectionState, variantId?: string | null) => change((entry) => ({
       variantId: variantId === undefined ? entry.variantId : variantId,
       pipeline, stepId: subject(pipeline, entry.stepId),
+    })),
+    /** Follow a step to its new name through the whole history. */
+    renameStep: (from: string, to: string) => setHistory(({ entries, index }) => ({
+      index,
+      entries: entries.map((entry) => ({
+        ...entry,
+        stepId: entry.stepId === from ? to : entry.stepId,
+        pipeline: renamedSelection(entry.pipeline, from, to),
+      })),
     })),
     setVariant: (variantId: string) => change((entry) => ({
       ...entry,
