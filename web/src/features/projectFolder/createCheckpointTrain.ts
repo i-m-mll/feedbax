@@ -57,7 +57,7 @@ export async function createCheckpointTrain(
       deltas: inheritsInitialization ? [] : [{
         layer_id: 'initialize',
         patches: [{
-          path: 'method_payload.payload.checkpoint_initialization', op: 'add', value: 'initialize_from',
+          path: 'checkpoint_initialization', op: 'add', value: 'initialize_from',
         }],
       }],
     },
