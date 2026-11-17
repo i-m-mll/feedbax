@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
@@ -34,6 +34,7 @@ from feedbax.contracts.request_identity import (
     EncodedRequest,
     effective_binding_id,
 )
+from feedbax.contracts.model_input import DOCUMENT_INPUT_MEDIA_TYPES, document_input_object, read_document_input
 from feedbax.contracts.request_refs import (
     BestRank,
     ContentRef,
@@ -41,6 +42,7 @@ from feedbax.contracts.request_refs import (
     InputMember,
     ProductRef,
     RequestId,
+    RequestInputs,
 )
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -104,6 +106,25 @@ def store_request(store: ImmutableArtifactBlobProvider, request: EncodedRequest)
             for _, data in sorted(request.documents.items())
         ),
     )
+
+
+def store_document_inputs(
+    store: ImmutableArtifactBlobProvider, inputs: RequestInputs, read_document: Callable[[str], bytes],
+) -> tuple[ContentObjectRef, ...]:
+    """Pin the authored bytes identified by direct document inputs before admission."""
+    refs = {}
+    for members in inputs.values():
+        for member in members:
+            content = member.reference
+            if not isinstance(content, ContentRef) or content.media_type not in DOCUMENT_INPUT_MEDIA_TYPES:
+                continue
+            exact = document_input_object(content)
+            raw = read_document(exact.sha256)
+            if store.store_rooted_object(raw, namespace="project-document-input") != exact:
+                raise ValueError("Planned document input differs from its immutable reference")
+            read_document_input(content, store)
+            refs[exact.sha256] = exact
+    return tuple(refs.values())
 
 
 class SuccessView:
