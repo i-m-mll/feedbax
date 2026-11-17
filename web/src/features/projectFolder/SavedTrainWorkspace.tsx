@@ -212,6 +212,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [rename, setRename] = useState<{ name: string; revision: string }>();
   const [busy, setBusy] = useState(false);
   const [renamingStep, setRenamingStep] = useState<MapStepRename['editing']>(null);
+  const [stepFocus, setStepFocus] = useState<MapStepRename['focus']>(null);
   const [panel, setPanel] = useState<WindowPanel | null>(null);
   useEffect(() => {
     const openActivity = () => {
@@ -722,7 +723,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
   async function moveHistory(action: 'undo' | 'redo') {
     try {
+      const before = Object.keys(editor.getSnapshot().saved.project.steps ?? {});
       const changed = await editor[action]();
+      // One step name leaving as another arrives is a step rename moving through history.
+      const after = Object.keys(editor.getSnapshot().saved.project.steps ?? {});
+      const left = before.filter((id) => !after.includes(id));
+      const arrived = after.filter((id) => !before.includes(id));
+      if (left.length === 1 && arrived.length === 1) {
+        selection.renameStep(left[0], arrived[0]);
+        setStepFocus({ stepId: arrived[0], surface: windowState.mode === 'details' ? 'line' : 'card', force: true });
+      }
       if (changed?.addresses.length) {
         const address = changed.addresses[0];
         elements.setState({
@@ -961,18 +971,26 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   } : undefined;
 
   const stepNames = Object.keys(saved.project.steps ?? {});
+  const mapSurface = windowState.mode === 'details' ? 'line' : 'card';
   const renameStep: MapStepRename | undefined = documentEditable ? {
     editing: renamingStep,
-    setEditing: setRenamingStep,
+    setEditing: (next) => {
+      if (!next && renamingStep) setStepFocus(renamingStep);
+      setRenamingStep(next);
+    },
     commit: (from, name) => {
       if (!isMemberName(name) || stepNames.includes(name)) return false;
+      const surface = renamingStep?.surface ?? mapSurface;
       void perform(async () => {
         await editor.memberCommand(studioAccessibleName('renameStep', from),
           { kind: 'rename', family: 'steps', member: from, name }, editor.getSnapshot().saved);
         selection.renameStep(from, name);
+        setStepFocus({ stepId: name, surface });
       });
       return true;
     },
+    focus: stepFocus,
+    focused: () => setStepFocus(null),
   } : undefined;
   const mapProps = {
     plan, state, problemSteps, rename: renameStep,
@@ -1031,9 +1049,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, {
       enabled: !busy && !outside,
     }),
-    step && bindStudioCommand('renameStep', () => setRenamingStep({
-      stepId: step.id, surface: windowState.mode === 'details' ? 'line' : 'card',
-    }), { subject: step.label, enabled: !!renameStep && !busy }),
+    step && bindStudioCommand('renameStep', () => setRenamingStep({ stepId: step.id, surface: mapSurface }), { subject: step.label, enabled: !!renameStep && !busy }),
     ...runCommands,
     ...(step ? validity.commands(selectedRuns(step, state.selection)) : []),
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep ? stoppedNewStep : nextStep,
