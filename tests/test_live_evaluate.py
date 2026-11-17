@@ -246,6 +246,17 @@ _Events.append = append
     assert first.receipt.products == second.receipt.products
     assert first.receipt.evaluation_manifest != second.receipt.evaluation_manifest
     assert second.receipt.supersedes == first.ref
+    assert first.receipt.trace is not None and second.receipt.trace is not None
+    assert [ref.model_dump(mode="json") for ref in first.receipt.trace.prefixes] == [
+        point["result"]["evidence"] for point in points(evaluation)
+    ]
+    assert second.receipt.trace.prefixes == ()
+    from feedbax.contracts.computation_validity import ComputationEqual
+    from feedbax.validity.computation import compare_computation
+
+    captured, replayed = first.receipt.trace.computation, second.receipt.trace.computation
+    assert captured is not None and replayed is not None
+    assert isinstance(compare_computation(captured, replayed), ComputationEqual)
 
 
 def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypatch):

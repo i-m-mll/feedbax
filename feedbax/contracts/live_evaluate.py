@@ -15,7 +15,7 @@ from feedbax.contracts.rollout import ResolvedRolloutMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 
 LIVE_EVALUATE_POINT = "evaluation_point"
-EVALUATE_DRIVER = DriverIdentity(name="evaluate.rollout", revision=1)
+EVALUATE_DRIVER = DriverIdentity(name="evaluate.rollout", revision=3479529567574847)
 EVALUATE_PREFIX_STEPS = 5
 
 

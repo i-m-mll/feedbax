@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
     from feedbax.persistence.array_container import EncodedArrayContainer
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-    from feedbax.runtime.graph import Graph
     from feedbax.runtime.trial_execution import TrialEvaluation
     from feedbax.training.rollout_scoring import LoweredRollout
 
