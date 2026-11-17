@@ -74,7 +74,7 @@ it('preserves JSON payloads and reports the nested path for invalid values', () 
 });
 
 it('validates an attachment owner, source-end anchor, and retained ID', () => {
-  const owner = { document: 'model', composites: ['controller'], element: { kind: 'wire', id: 'feedback' } };
+  const owner = { composites: ['controller'], element: { kind: 'wire', id: 'feedback' } };
   const attachment = { kind: 'intervention', id: 'gain', operation: 'Scale', fields: { factor: 0.5 } };
   const addition = { op: 'add', owner, attachment };
   expect(AddModelAttachmentSchema.safeParse(addition).success).toBe(false);

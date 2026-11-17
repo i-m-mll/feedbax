@@ -27,7 +27,6 @@ function alternateModelFiles(files: Awaited<ReturnType<typeof fixture>>, id: str
     ]));
   }
   const trial = train.step.base.inline.trial_documents;
-  trial.model_name = `${id}-model`;
   trial.model = { document: `${id}-model` };
   trial.task = { document: `${id}-task` };
   trial.objective = { document: `${id}-objective` };
@@ -60,7 +59,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(Object.keys(saved.project.steps ?? {})).toEqual(['train']);
   expect(saved.project.steps?.train).toMatchObject({
     kind: 'train', base: { inline: { trial_documents: {
-      model_name: 'model', model: { document: 'model' }, python_task: { document: 'task' },
+      model: { document: 'model' }, python_task: { document: 'task' },
       objective: { document: 'objective' },
     } } },
   });
@@ -328,8 +327,8 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   }
 
   async function readMass(revision: string, run: StudioSavedTrainRuns['rows'][number]['key']) {
-    const response = await request.post(`${projectPath}/model/fields`, { data: { revision, run,
-      owner: { document: model.id, composites: [], element: { kind: 'component', id: 'plant' } },
+    const response = await request.post(`${projectPath}/model/fields`, { data: { revision, run, document: model.id,
+      owner: { composites: [], element: { kind: 'component', id: 'plant' } },
     } });
     expect(response.ok(), await response.text()).toBe(true);
     const field = (await response.json() as ModelFieldResponse).fields?.find(({ label }) => label === 'Mass');

@@ -210,7 +210,7 @@ export async function authorFirstTrain(
   });
   const measureArgument = 'args' in term.measure ? term.measure.args?.[0] : undefined;
   expect(JSON.parse(measureArgument && 'reference' in measureArgument ? measureArgument.reference : 'null')).toEqual({
-    document: 'model', composites: [], element: { kind: 'port', end: { owner: 'outputs', port: commandPort!.id } },
+    composites: [], element: { kind: 'port', end: { owner: 'outputs', port: commandPort!.id } },
   });
   const before = await plan(saved.revision);
   expect(before.window_map?.problems).toEqual([]);

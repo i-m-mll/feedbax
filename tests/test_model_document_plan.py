@@ -19,12 +19,14 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
 from feedbax.contracts.graph import StudioTaskBindingSpec
+from feedbax.contracts.jobs import JobStatus
 from feedbax.component_registry import ComponentRegistry
 from tests.support.component_owners import register_owners
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.train_settings import normalize_train_method
@@ -56,7 +58,7 @@ host = host_fixture
 def _prepare_request(request, registry) -> PreparedTrialExecution:
     documents = request.trial_documents
     paired = compile_trial_execution(
-        documents.model_name, documents.model, documents.task_source,
+        documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
         objective=documents.objective, input_overrides=documents.input_overrides,
         initialization_key=model_initialization_key(request.seed or 0),
@@ -113,17 +115,17 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
         "op": "group",
         "name": "Group",
         "selection": [
-            {"document": "model", "composites": [], "element": {"kind": "component", "id": name}}
+            {"composites": [], "element": {"kind": "component", "id": name}}
             for name in ("a", "c")
         ],
     }})
     grouped = apply_model_edit(
-        "model", ModelEditState(document=model), command, ports=ports.port, accepts=ports.accepts,
+        ModelEditState(document=model), command, ports=ports.port, accepts=ports.accepts,
     )
     assert isinstance(grouped, ModelEditResult), grouped
     group = grouped.changed[-1].element.id
-    flat = lower_model_document("model", model, registry).graph
-    lowered = lower_model_document("model", grouped.state.document, registry).graph
+    flat = lower_model_document(model, registry).graph
+    lowered = lower_model_document(grouped.state.document, registry).graph
     assert [scope for scope in resolve_signal_schedule(lowered).order if scope[-1] in {"a", "b", "c"}] == [
         (group, "a"), ("b",), (group, "c"),
     ]
@@ -152,12 +154,12 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
         "op": "ungroup", "address": grouped.changed[-1].model_dump(mode="json"),
     }})
     ungrouped = apply_model_edit(
-        "model", grouped.state, command, ports=ports.port, accepts=ports.accepts,
+        grouped.state, command, ports=ports.port, accepts=ports.accepts,
     )
     assert isinstance(ungrouped, ModelEditResult), ungrouped
     assert ungrouped.state.document == model
 
-    cycle = lower_model_document("model", grouped.state.document, registry).graph
+    cycle = lower_model_document(grouped.state.document, registry).graph
     first_cut = next(wire for wire in cycle.subgraphs[group].wires if wire.temporality == "recurrent")
     first_cut.temporality = "instant"
     upstream = next(wire for wire in cycle.wires if wire.source_node == flat.input_bindings["signal"][0])
@@ -231,11 +233,11 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "fields", Project.model_validate(raw))
     url = "/api/projects/fields"
-    owner = {"document": "reach-model", "composites": [], "element": {"kind": "graph"}}
+    owner = {"composites": [], "element": {"kind": "graph"}}
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         initial = client.get(url).json()
-        body = {"revision": initial["revision"], "owner": owner,
+        body = {"revision": initial["revision"], "document": "reach-model", "owner": owner,
                 "run": {"variant": "default", "step": "train", "row": "default"}}
         state = client.post(url + "/model/fields", json=body).json()["fields"][0]
         assert (state["text"], state["effective"]) == (f"{model['step_seconds']} s", "0.02 s")
@@ -268,7 +270,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
             assert definition.sources["/payload/alias"] == source
         assert snapshot.project.documents["reach-model"].payload == model
 
-        component_owner = {"document": "reach-model", "composites": [],
+        component_owner = {"composites": [],
                            "element": {"kind": "component", "id": "plant"}}
         selected = body | {
             "owner": component_owner, "revision": snapshot.revision,
@@ -324,12 +326,12 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
     }
     _save_project(ProjectFolderService(tmp_path), "duration", Project.model_validate(raw))
     url = "/api/projects/duration"
-    owner = {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": "rnn"}}
+    owner = {"composites": [], "element": {"kind": "component", "id": "rnn"}}
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         def prepare(label, text, row="default", *, files=False):
             snapshot = client.get(url).json()
-            body = {"revision": snapshot["revision"], "owner": owner, "lit_steps": ["train"],
+            body = {"revision": snapshot["revision"], "document": "reach-model", "owner": owner, "lit_steps": ["train"],
                     "run": {"variant": "default", "step": "train", "row": row}}
             response = client.post(url + "/model/fields", json=body)
             assert response.status_code == 200, response.text
@@ -434,12 +436,12 @@ def _group_reaching_pipeline(raw, registry):
     command = ModelEditCommand.model_validate({"operation": {
         "op": "group", "name": "Group",
         "selection": [
-            {"document": "reach-model", "composites": [], "element": {"kind": "component", "id": name}}
+            {"composites": [], "element": {"kind": "component", "id": name}}
             for name in ("relay", "plant")
         ],
     }})
     result = apply_model_edit(
-        "reach-model", state, command, ports=ports.port, accepts=ports.accepts,
+        state, command, ports=ports.port, accepts=ports.accepts,
     )
     assert isinstance(result, ModelEditResult), result
     raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
@@ -476,9 +478,37 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     (problem,) = [item for item in refused.diagnostics if item.step == "train"]
     assert problem.document == "reach-model" and "needs signal 'unknown'" in problem.detail
     assert problem.model_address == ModelAddress.model_validate({
-        "document": "reach-model", "composites": [],
+        "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}},
     })
+
+
+def _use_initial_evaluation(raw):
+    trial = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
+    evaluation = raw["steps"]["baseline"]
+    evaluation["inputs"] = {
+        "subject": {"kind": "initial_model", "source": trial["model"]},
+        "task": {"kind": "task", "source": trial["task"]},
+        "objective": {"kind": "objective", "source": trial["objective"]},
+    }
+    evaluation["base"]["inline"]["params"]["input_overrides"] = dict(trial["input_overrides"])
+
+
+def test_unresolved_relative_link_is_reported_at_the_task():
+    from tests.test_document_train_pair import authored_documents, document_project
+
+    raw = document_project(authored_documents(), evaluation=True)
+    _use_initial_evaluation(raw)
+    link = raw["documents"]["task"]["payload"]["links"][0]
+    address = ModelAddress.from_text(link["model_field"])
+    missing = address.model_copy(update={"composites": ("absent",)}).to_text()
+    link["model_field"] = missing
+    plan = compile_project(Project.model_validate(raw))
+
+    assert not plan.runs
+    assert {(problem.step, problem.document, problem.document_path) for problem in plan.diagnostics} == {
+        (step, "task", pointer(("links", missing))) for step in ("train", "baseline")
+    }
 
 
 def test_stored_model_plan_uses_the_supplied_component_registry():
@@ -508,7 +538,7 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     assert train.admission_problem is not None
     assert "has no typed model checkpoint owner" in train.admission_problem.detail
     address = ModelAddress.model_validate({
-        "document": "reach-model", "composites": [],
+        "composites": [],
         "element": {"kind": "component", "id": "custom"},
     })
     assert problem.model_address == train.admission_problem.model_address == address
@@ -518,7 +548,7 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
 def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
     raw = _model_project()
     model = ModelDocument.model_validate(raw["documents"]["reach-model"]["payload"])
-    lowered = lower_model_document("reach-model", model, ComponentRegistry())
+    lowered = lower_model_document(model, ComponentRegistry())
     (root_relay, _) = lowered.graph.input_bindings["reach_target"]
     port = lowered.source_address(f"/graph/nodes/{root_relay}/input")
     assert port.element.end.port == "task-input"
@@ -547,7 +577,7 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids():
     request = decode_request(plan.requests[train.request_id], plan.documents.__getitem__).spec
     documents = request.trial_documents
     registry = ComponentRegistry()
-    graph = lower_model_document(documents.model_name, documents.model, registry).graph
+    graph = lower_model_document(documents.model, registry).graph
     evaluate = next(run for run in plan.runs if run.kind == "evaluate")
     params = RolloutParameters.model_validate(
         decode_request(plan.requests[evaluate.request_id], plan.documents.__getitem__).spec.params,
@@ -605,7 +635,7 @@ def test_addressed_evaluate_attachment_is_a_step_edit(tmp_path, kind, scope):
         }
         record = {
             "op": "add", "after": None,
-            "owner": {"document": "reach-model", "composites": ["wrapper", "controller"], "element": element},
+            "owner": {"composites": ["wrapper", "controller"], "element": element},
             "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}},
         }
         body = selection | {"difference": record}
@@ -661,7 +691,7 @@ def test_addressed_evaluate_attachment_is_a_step_edit(tmp_path, kind, scope):
 
 def _attachment_owner(wire):
     return {
-        "document": "reach-model", "composites": ["wrapper", "controller"],
+        "composites": ["wrapper", "controller"],
         "element": {"kind": "wire", "id": wire},
     }
 
@@ -696,7 +726,7 @@ def test_evaluate_attachment_order_and_identity_follow_effective_graph():
     source = ModelDocument.model_validate(raw["documents"]["reach-model"]["payload"])
     components = ComponentRegistry()
     resolved = resolve_effective_model(
-        "reach-model", source, components, tuple(MODEL_ATTACHMENT_BATCHES.validate_python({"step": records})["step"]),
+        source, components, tuple(MODEL_ATTACHMENT_BATCHES.validate_python({"step": records})["step"]),
     )
     def chain(model):
         wrapper = model.interior.components["wrapper"]
@@ -787,12 +817,12 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
     command = ModelEditCommand.model_validate({"operation": {
         "op": "group", "name": "Cell",
         "selection": [{
-            "document": "reach-model", "composites": ["wrapper", "controller"],
+            "composites": ["wrapper", "controller"],
             "element": {"kind": "component", "id": "cell"},
         }],
     }})
     result = apply_model_edit(
-        "reach-model", state, command, ports=ports.port, accepts=ports.accepts,
+        state, command, ports=ports.port, accepts=ports.accepts,
     )
     assert isinstance(result, ModelEditResult), result
     raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
@@ -852,7 +882,7 @@ def test_stored_equations_use_the_scalar_solver_and_free_boundary():
         },
     }
     registry = ComponentRegistry()
-    lowered = lower_model_document("model", ModelDocument.model_validate(model), registry)
+    lowered = lower_model_document(ModelDocument.model_validate(model), registry)
     assert lowered.graph.subgraphs["equations"].solver.dt == model["step_seconds"]
     graph = compile_graph(
         GraphDocument(graph=lowered.graph), registry,
@@ -875,7 +905,7 @@ def test_stored_equations_use_the_scalar_solver_and_free_boundary():
     interior = model["interior"]["components"]["equations"]["interior"]
     interior["connections"].pop("act-flange")
     with pytest.raises(ModelCompilationProblem) as exc:
-        lower_model_document("model", ModelDocument.model_validate(model), registry)
+        lower_model_document(ModelDocument.model_validate(model), registry)
     assert exc.value.address.composites == ("equations",)
 
 
@@ -887,7 +917,7 @@ def test_linked_delay_repeats_the_completed_reset_state():
     delay = controller["interior"]["wires"]["carry"]["attachments"][0]
     delay["delay"]["value"] = 3
     reference = ModelAddress.model_validate({
-        "document": "reach-model", "composites": scope,
+        "composites": scope,
         "element": {"kind": "port", "end": {**_end("cell", "hidden"), "direction": "output"}},
     })
     delay["initial"] = {"kind": "name", "reference": reference.to_text()}
@@ -933,8 +963,8 @@ def test_root_period_resolves_leaky_cell_tau_and_model_interface(tau, alpha):
     }
     registry = ComponentRegistry()
     model = ModelDocument.model_validate(payload)
-    lowered = lower_model_document("model", model, registry, StudioTaskBindingSpec())
-    interface = lowered.interface("model", model, registry)
+    lowered = lower_model_document(model, registry, StudioTaskBindingSpec())
+    interface = lowered.interface(model, registry)
     assert interface.period_seconds == 0.01
     assert not interface.inputs[0].required
     output, = interface.outputs
@@ -1001,7 +1031,6 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     train = next(problem for problem in response.window_map.problems if problem.step == "train")
     assert train.document == "reach-model"
     assert train.model_address == ModelAddress.model_validate({
-        "document": "reach-model",
         "composites": ["arm"] if domain == "spatial_multibody" else [],
         "element": {"kind": "graph"} if domain == "spatial_multibody" else {"kind": "component", "id": "arm"},
     })
@@ -1054,7 +1083,7 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
         }},
     }
     registry = ComponentRegistry()
-    lowered = lower_model_document("model", ModelDocument.model_validate(payload), registry)
+    lowered = lower_model_document(ModelDocument.model_validate(payload), registry)
     graph = compile_graph(GraphDocument(graph=lowered.graph), registry).graph
     key = jax.random.key(7)
     state = graph.init_state(key=key)
@@ -1070,14 +1099,14 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
     assert graph.nodes["arm"].backend.sub_dt == pytest.approx(0.005)
 
     reference = ModelAddress.model_validate({
-        "document": "model", "composites": [],
+        "composites": [],
         "element": {"kind": "port", "end": {**_end("arm", "pos"), "direction": "output"}},
     })
     payload["interior"]["wires"]["sample"]["attachments"] = [{
         "kind": "delay", "id": "lag", "delay": {"value": 2, "unit": "st"},
         "initial": {"kind": "name", "reference": reference.to_text()},
     }]
-    linked = lower_model_document("model", ModelDocument.model_validate(payload), registry)
+    linked = lower_model_document(ModelDocument.model_validate(payload), registry)
     delayed = compile_graph(GraphDocument(graph=linked.graph), registry).graph
     carries = delayed.initial_cycle_port_values(delayed.init_state(key=key))
     np.testing.assert_array_equal(carries["hold", "input"], np.stack([initial, initial]))
@@ -1091,7 +1120,7 @@ def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
     payload["interior"]["wires"].pop("sampled")
     payload["interior"]["wires"]["sample"]["target"] = _end("linear", "input")
     with pytest.raises(ModelCompilationProblem, match="within-step") as error:
-        lower_model_document("model", ModelDocument.model_validate(payload), registry)
+        lower_model_document(ModelDocument.model_validate(payload), registry)
     assert error.value.address.element.id == "drive"
 
 
@@ -1112,6 +1141,8 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
             _scale_attachment("train-scale", 0.95),
             _scale_attachment("train-extra", 0.9),
         ]
+    else:
+        _use_initial_evaluation(raw)
     project = "nested"
     _save_project(folders, project, Project.model_validate(raw))
     plan = folders.read_plan(project, revision=None)
@@ -1198,20 +1229,51 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     assert joined.attempts_by_run[train][0].successful_receipt == train_receipt
     assert joined.attempts_by_run[evaluate][0].successful_receipt == result.receipt
 
+    model_name = "reach-model"
+    if not grouped:
+        trial = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
+        inputs = raw["steps"]["baseline"]["inputs"]
+        for document, role, input_role in (
+            ("reach-model", "model", "subject"),
+            ("task", "task", "task"),
+            ("objective", "objective", "objective"),
+        ):
+            name = f"{document}-renamed"
+            doc_path = folders.root / project / "documents" / f"{document}.json"
+            doc_path.rename(doc_path.with_stem(name))
+            raw["documents"][name] = raw["documents"].pop(document)
+            trial[role] = {"document": name}
+            inputs[input_role]["source"] = {"document": name}
+            _save_project(folders, project, Project.model_validate(raw))
+            settled = service.read(project, revision=None)
+            assert {row.key: row.status for row in settled.status_rows()} == {
+                train: JobStatus.SUCCEEDED, evaluate: JobStatus.SUCCEEDED,
+            }
+            assert settled.settled.plan.requests == plan.plan.requests
+            for key, job, receipt in (
+                (train, train_job, train_receipt), (evaluate, evaluation_job, result.receipt),
+            ):
+                attempt, = settled.attempts_by_run[key]
+                assert (attempt.job_id, attempt.successful_receipt) == (job.job_id, receipt)
+        model_name = "reach-model-renamed"
+
     reopened = ProjectFolderService(folders.root)
     reopened_view = ProjectPlanService(reopened, jobs).read(project, revision=None)
-    reopened_model = reopened.read(project).project.documents["reach-model"].payload
-    assert reopened_model == raw["documents"]["reach-model"]["payload"]
+    reopened_model = reopened.read(project).project.documents[model_name].payload
+    assert reopened_model == raw["documents"][model_name]["payload"]
     assert reopened_view.settled.plan.requests == plan.plan.requests
     assert reopened_view.attempts_by_run[train][0].job_id == train_job.job_id
     assert reopened_view.attempts_by_run[train][0].successful_receipt == train_receipt
     assert reopened_view.attempts_by_run[evaluate][0].successful_receipt == result.receipt
     assert authenticated_receipts() == original_receipts
 
-    model = raw["documents"]["reach-model"]["payload"]
+    model = raw["documents"][model_name]["payload"]
     model["ports"]["inputs"][0]["name"] = "renamed_reach_target"
     overrides = raw["steps"]["train"]["base"]["inline"]["trial_documents"]["input_overrides"]
     overrides["renamed_reach_target"] = overrides.pop("reach_target")
+    if not grouped:
+        overrides = raw["steps"]["baseline"]["base"]["inline"]["params"]["input_overrides"]
+        overrides["renamed_reach_target"] = overrides.pop("reach_target")
     _save_project(folders, project, Project.model_validate(raw))
     changed = reopened.read_plan(project, revision=None)
     assert not changed.plan.diagnostics

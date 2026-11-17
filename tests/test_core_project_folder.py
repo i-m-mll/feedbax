@@ -27,7 +27,7 @@ from tests.test_document_train_pair import authored_documents, document_project
 
 
 def _address(kind="graph", *, scope=(), **fields):
-    return {"document": "reach-model", "composites": scope, "element": {"kind": kind, **fields}}
+    return {"composites": scope, "element": {"kind": kind, **fields}}
 
 
 def _end(component, port):

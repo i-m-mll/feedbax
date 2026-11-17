@@ -154,7 +154,7 @@ def test_cli_review_locates_derived_trials_and_addressed_model_field(tmp_path, c
     params["trial_set"] = {"kind": "conditions", "ids": [first, second]}
     project["steps"]["evaluate"] = evaluate
     field = ModelAddress.model_validate({
-        "document": "point-mass", "composites": [],
+        "composites": [],
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
     })
     edit = {"op": "set_field", "address": field.model_dump(mode="json"), "value": 2.0}
