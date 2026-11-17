@@ -468,7 +468,7 @@ class Store:
         ):
             raise HostError("invalid_request", "Collected Evaluate differs from its admitted Store receipt.")
         _, _, subject = decode_rollout_request(job["request"], view.store.get_object(success.request.object))
-        if subject != payload.canonical_request.checkpoint:
+        if subject != payload.canonical_request.subject:
             raise HostError("invalid_request", "Collected Evaluate changed its canonical subject.")
         outcome = {
             "outcome": "succeeded",
@@ -522,7 +522,9 @@ class Store:
 
         payload = json.loads(row["launch"])["payload"]
         terminal = payload["canonical_request"].get("terminal")
-        if terminal is None:
+        if payload["canonical_request"].get("initial_model") is not None:
+            binding = {}
+        elif terminal is None:
             (binding,) = self.completion_bindings(row["id"])
         else:
             binding = {"terminal": terminal}
@@ -725,7 +727,34 @@ class Store:
                 checkpoint_parents = None
                 best = isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank"
                 terminal = canonical_request.get("terminal") if evaluate else None
-                if terminal is not None:
+                initial = canonical_request.get("initial_model") if evaluate else None
+                if initial is not None:
+                    from feedbax.contracts.model_input import read_document_input
+                    from feedbax.studio.canonical_evaluate import (
+                        BoundEvaluationJobInput, decode_rollout_request, initial_evaluation_references,
+                    )
+
+                    try:
+                        launch = BoundEvaluationJobInput.model_validate(payload)
+                        if (
+                            not allow_completion or job["continues"] is not None or job["edges"]
+                            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+                        ):
+                            raise ValueError("Initial Evaluate requires a standalone rollout launch.")
+                        view = self._success_view(str(launch.manifest_root))
+                        request = RequestObject(id=launch.request_id, object=launch.canonical_request.request, documents=())
+                        _, _, subject = decode_rollout_request(launch.request_id, view.store.get_object(request.object))
+                        if subject != launch.canonical_request.subject:
+                            raise ValueError("Initial Evaluate differs from its canonical request.")
+                        for content in initial_evaluation_references(view.read_request(request)).values():
+                            read_document_input(content, view.store)
+                    except (OSError, TypeError, ValueError, KeyError) as error:
+                        results.append({
+                            "run_key": run_key, "job_id": None, "disposition": "rejected",
+                            "reason": f"{input_path}: {error}",
+                        })
+                        continue
+                elif terminal is not None:
                     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
                     from feedbax.persistence.evaluation_subject import read_terminal_train_subject
 

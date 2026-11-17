@@ -58,7 +58,7 @@ class CheckpointModelSource(ReferenceValue):
     kind: Literal["checkpoint"] = "checkpoint"
     tree: ContentTreeRef
     encoding: SemanticModelEncoding
-    initial: InitialModelSource | None = None
+    initial: InitialModelSource
 
 
 type ModelSource = Annotated[InitialModelSource | CheckpointModelSource, Field(discriminator="kind")]
@@ -106,7 +106,11 @@ def document_input_object(content: ContentRef) -> ContentObjectRef:
 
 
 def read_document_input(content: ContentRef, artifacts: ArtifactBlobProvider) -> DocumentInput:
-    raw = artifacts.get_object(document_input_object(content))
+    return decode_document_input(content, artifacts.get_object(document_input_object(content)))
+
+
+def decode_document_input(content: ContentRef, raw: bytes) -> DocumentInput:
+    document_input_object(content)
     if content.media_type == INITIAL_MODEL_MEDIA_TYPE:
         value = InitialModelSource.decode(raw)
     elif content.media_type == TASK_INPUT_MEDIA_TYPE:

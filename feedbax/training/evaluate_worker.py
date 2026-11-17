@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import ExitStack
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, replace
+from functools import lru_cache, partial
 import os
 from collections.abc import Sequence
 from hashlib import sha256
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord, ContentTreeRef
 from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.effective_success import TerminalTrainSubject, success_content_ref
+from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubject, read_success_request, success_content_ref
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.live_evaluate import BoundLiveEvaluationPoint, ScoredEvaluationPoint
 from feedbax.contracts.manifest import (
@@ -25,17 +25,21 @@ from feedbax.contracts.manifest import (
     normalize_manifest_spec_payloads,
 )
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
+from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, read_document_input
+from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer as json_pointer
-from feedbax.contracts.request_refs import LastMember, ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef, UpdateSeriesMember
 from feedbax.contracts.rollout import (
-    ResolvedRolloutBinding, ResolvedRolloutMember, rollout_objective_sha256, rollout_semantics,
+    ResolvedInitialRollout, ResolvedRolloutBinding, ResolvedRolloutMember, rollout_objective_sha256, rollout_semantics,
 )
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
+from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
+from feedbax.runtime.model_input import prepare_model_task, reconstruct_model
 from feedbax.studio.canonical_evaluate import (
     ROLLOUT_TYPE,
     ROLLOUT_JAX_BACKEND,
@@ -49,6 +53,8 @@ from feedbax.studio.canonical_evaluate import (
     exact_evaluation_subject,
     evaluation_manifest_id,
     evaluation_subject_provenance,
+    initial_evaluation_provenance,
+    initial_evaluation_references,
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training_host_worker import _Events, _Result, _error
@@ -57,13 +63,14 @@ from feedbax.job_completion import read_host_completion_binding
 
 if TYPE_CHECKING:
     from feedbax.compiler.trial_execution import PreparedTrialExecution
-    from feedbax.contracts.artifact_custody import ArtifactBlobProvider
     from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
     from feedbax.contracts.training import TrialDocuments
     from feedbax.dataset import Dataset
     from feedbax.runtime.graph import Graph
     from feedbax.runtime.raw_state import RawStateLayout
     from feedbax.runtime.trial_execution import TrialEvaluation
+    from feedbax.plugins.application import ApplicationRegistryBundle
     from feedbax.training.evaluation_variant import EvaluationVariant
     from feedbax.training.model_checkpoint import SemanticModelSlot
     from feedbax.training.rollout_scoring import RolloutScorer
@@ -84,10 +91,11 @@ class PreparedRollout:
     graph: Graph
     layout: RawStateLayout
     scorer: RolloutScorer
-    slot: SemanticModelSlot
-    member: ResolvedRolloutMember
-    objective: str
+    slot: SemanticModelSlot | None
+    member: ResolvedRolloutMember | ResolvedInitialRollout
+    objective: str | None
     varied: bool
+    replicas: tuple[tuple[str, Graph], ...] = ()
 
 
 def _bound_native_subject(
@@ -98,6 +106,7 @@ def _bound_native_subject(
         verify_bound_training_completion,
     )
 
+    assert request.canonical_request.checkpoint is not None
     subject = exact_evaluation_subject(request.canonical_request.checkpoint, binding, verify_metrics=True)
     if (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
         return load_bound_checkpoint_selection(
@@ -127,48 +136,48 @@ def score_paired_validation(
     return task_execution.validation(graph, objective, parameters, key=key)
 
 
+@lru_cache(maxsize=1)
+def _registry(bootstrap_modules: tuple[str, ...]) -> ApplicationRegistryBundle:
+    from feedbax.plugins.composition import compose_application
+
+    return asyncio.run(compose_application(modules=bootstrap_modules)).bundle
+
+
 def resolve_rollout(
-    documents: TrialDocuments, source_graph: GraphSpec, params: RolloutParameters,
-    *, seed: int, bootstrap_modules: tuple[str, ...], model_assets: ArtifactBlobProvider,
+    initial: InitialModelSource, task: TaskDocument | PythonTaskSelection,
+    objective: ObjectiveDocument | None, source_graph: GraphSpec | None, params: RolloutParameters,
+    *, registry: ApplicationRegistryBundle, model_assets: ImmutableArtifactBlobProvider,
+    input_overrides: dict[str, str],
 ) -> ResolvedRollout:
     import jax
 
-    from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
     from feedbax.objectives.document import ObjectiveUse
-    from feedbax.plugins.composition import compose_application
     from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
     from feedbax.training.rollout_scoring import RolloutScorer
-    from feedbax.training.studio_executor import studio_training_key
 
     if jax.default_backend() != ROLLOUT_JAX_BACKEND or jax.config.jax_enable_x64 != ROLLOUT_JAX_ENABLE_X64:
         raise CannotRun("/numerical_settings", "requires CPU execution with JAX x64 disabled")
-    registry = asyncio.run(compose_application(modules=bootstrap_modules)).bundle
-    validate_evaluation_source(source_graph, registry.components)
-    variant = resolve_evaluation_variant(
-        source_graph, documents.task_source, params.variation, components=registry.components,
+    base = prepare_model_task(
+        initial, task, objective=objective, registry=registry, artifacts=model_assets,
+        input_overrides=input_overrides,
     )
-    key = studio_training_key(seed, "model")
-    source_pair = compile_trial_execution(
-        documents.model_name, documents.model, documents.task_source,
-        registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
-        input_overrides=documents.input_overrides, artifact_provider=model_assets,
-        initialization_key=key,
-    )
-    if not isinstance(source_pair, PreparedTrialExecution):
-        problem = source_pair[0]
+    if isinstance(base, tuple):
+        problem = base[0]
         raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
+    source_pair = base.paired
+    if source_graph is None:
+        source_graph = source_pair.executable.resolved.graph
+    validate_evaluation_source(source_graph, registry.components)
+    variant = resolve_evaluation_variant(source_graph, task, params.variation, components=registry.components)
     paired = source_pair
-    if variant.graph != source_graph or variant.task != documents.task_source:
-        paired = compile_trial_execution(
-            documents.model_name, documents.model, variant.task,
-            registry.components, registry.expression_functions, python_tasks=registry.python_tasks, objective=documents.objective,
-            objective_use=ObjectiveUse.INHERITED,
-            input_overrides=documents.input_overrides, artifact_provider=model_assets,
-            initialization_key=key, graph_override=variant.graph,
+    if variant.graph != source_graph or variant.task != task:
+        varied = prepare_model_task(
+            initial, variant.task, objective=objective, objective_use=ObjectiveUse.INHERITED,
+            input_overrides=input_overrides, registry=registry, artifacts=model_assets, graph_override=variant.graph,
         )
-    if not isinstance(paired, PreparedTrialExecution):
-        raise variant.task_refusal(paired[0])
-    assert paired.objective is not None
+        if isinstance(varied, tuple):
+            raise variant.task_refusal(varied[0])
+        paired = varied.paired
     try:
         scorer = RolloutScorer(paired.execution, paired.objective, params.seed, params.trials)
     except ValueError as error:
@@ -179,58 +188,113 @@ def resolve_rollout(
 def prepare_rollout(
     source: BoundStudioTrainingJobInput, checkpoint: PublishedTrainingCheckpoint, params: RolloutParameters,
 ) -> PreparedRollout:
-    from feedbax.training.checkpoint_custody import open_published_model_slot
+    from feedbax.training.checkpoint_custody import _published_model_slot
+    from feedbax.training.model_checkpoint import SemanticModelSlot
+    from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 
     documents = source.spec.trial_documents
-    if documents is None or source.spec.method_ref != STUDIO_GRAPH_METHOD:
-        raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
-    slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
-    if slot is None:
-        raise CannotRun("/inputs/subject/checkpoint/model", "requires a typed model slot")
-    method = StudioGraphMethodPayload.model_validate(source.spec.method_payload.payload)
+    request = source.canonical_request
+    if request is None:
+        raise CannotRun("/inputs/subject", "Managed Evaluate needs an authored Train checkpoint.")
+    transaction, model_slot = _published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
+    if model_slot is None:
+        raise CannotRun("/inputs/subject/checkpoint/model", "requires a semantic model")
+    registry = _registry(source.bootstrap_modules)
+    slot = SemanticModelSlot.open(transaction, model_slot, components=registry.components)
+    store = ImmutableArtifactBlobProvider(source.manifest_root)
+    authored = read_success_request(
+        RequestObject(id=source.request_id, object=request.request, documents=request.documents), store.get_object,
+    ).spec
+    if not isinstance(authored, DocumentTrainingRequestSpec):
+        raise CannotRun("/inputs/subject", "Managed Evaluate needs an authored Train checkpoint.")
     return _prepare_model_rollout(
         documents, params, slot, checkpoint.completed_updates,
-        seed=method.seed, bootstrap_modules=source.bootstrap_modules,
+        seed=authored.seed or 0, registry=registry,
     )
 
 
 def _prepare_model_rollout(
     documents: TrialDocuments, params: RolloutParameters, slot: SemanticModelSlot, coordinate: int,
-    *, seed: int, bootstrap_modules: tuple[str, ...],
+    *, seed: int, registry: ApplicationRegistryBundle,
 ) -> PreparedRollout:
-    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
-    from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget
-
+    initial = InitialModelSource(model_name=documents.model_name, document=documents.model, seed=seed)
     resolved = resolve_rollout(
-        documents, slot.graph, params, seed=seed, bootstrap_modules=bootstrap_modules, model_assets=slot.provider,
+        initial, documents.task_source, documents.objective, slot.graph, params, registry=registry,
+        model_assets=slot.provider, input_overrides=documents.input_overrides,
     )
     paired, variant, source_pair = resolved.paired, resolved.variant, resolved.source_pair
-    try:
-        target = None if paired is source_pair else ModelRestoreTarget(
-            paired.executable.resolved.graph, paired.executable.graph, variant.source_overrides,
-        )
-        graph = slot.restore(source_pair.executable.graph, target=target)
-        effective_graph = paired.executable.resolved.graph
-        layout = bind_raw_state(graph, effective_graph)
-    except (ModelCheckpointError, StateLayoutError) as error:
-        raise CannotRun("/inputs/subject/checkpoint/model" + error.path, str(error)) from error
+    source = CheckpointModelSource(tree=slot.tree, encoding=slot.encoding, initial=initial)
+    restored = reconstruct_model(
+        source, registry=registry, artifacts=slot.provider, template=source_pair.resolution,
+        variant=None if paired is source_pair else paired.resolution, source_overrides=variant.source_overrides,
+        slot=slot,
+    )
+    if isinstance(restored, tuple):
+        problem = restored[0]
+        raise CannotRun(json_pointer(("inputs", "subject", "checkpoint", *problem.path)), problem.reason)
     model, task = rollout_semantics(
-        effective_graph, paired.executable.resolved.key_schedule, paired.task_source,
+        restored.resolved.graph, restored.resolved.key_schedule, paired.task_source,
         paired.execution.input_bindings, variant.source_overrides,
     )
     member = ResolvedRolloutMember(
-        coordinate=coordinate, model_tree=slot.tree.descriptor.sha256,
-        model=model, task=task, trials=params.trials,
+        coordinate=coordinate, model_tree=slot.tree.descriptor.sha256, model=model, task=task, trials=params.trials,
+        replica_ids=restored.replica_ids if len(restored.replica_ids) > 1 else (),
     )
-    objective = rollout_objective_sha256(documents.objective)
+    return _prepared_rollout(
+        resolved, restored.graphs[0], member, documents.objective, slot=slot,
+        replicas=tuple(zip(restored.replica_ids, restored.graphs, strict=True)) if len(restored.graphs) > 1 else (),
+    )
+
+
+def _prepare_initial_rollout(
+    refs: dict[str, ContentRef], params: RolloutParameters,
+    *, registry: ApplicationRegistryBundle, store: ImmutableArtifactBlobProvider,
+) -> PreparedRollout:
+    from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+
+    source = read_document_input(refs["subject"], store)
+    task = read_document_input(refs["task"], store)
+    objective = read_document_input(refs["objective"], store) if "objective" in refs else None
+    assert isinstance(source, InitialModelSource) and isinstance(task, (TaskDocument, PythonTaskSelection))
+    assert objective is None or isinstance(objective, ObjectiveDocument)
+    resolved = resolve_rollout(
+        source, task, objective, None, params, registry=registry, model_assets=store,
+        input_overrides=params.input_overrides,
+    )
+    paired, variant = resolved.paired, resolved.variant
+    executable = paired.executable
+    model, effective_task = rollout_semantics(
+        executable.resolved.graph, executable.resolved.key_schedule, paired.task_source,
+        paired.execution.input_bindings, variant.source_overrides,
+    )
+    member = ResolvedInitialRollout(
+        initial_model=refs["subject"].sha256, model=model, task=effective_task, trials=params.trials,
+    )
+    return _prepared_rollout(resolved, executable.graph, member, objective)
+
+
+def _prepared_rollout(
+    resolved: ResolvedRollout, graph: Graph, member: ResolvedRolloutMember | ResolvedInitialRollout,
+    objective: ObjectiveDocument | None, *, slot: SemanticModelSlot | None = None,
+    replicas: tuple[tuple[str, Graph], ...] = (),
+) -> PreparedRollout:
+    from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
+
+    paired, variant = resolved.paired, resolved.variant
+    try:
+        layout = bind_raw_state(graph, paired.executable.resolved.graph)
+    except StateLayoutError as error:
+        raise CannotRun(error.path, str(error)) from error
     return PreparedRollout(
-        paired, variant, graph, layout, resolved.scorer, slot, member, objective, paired is not source_pair,
+        paired, variant, graph, layout, resolved.scorer, slot, member,
+        None if objective is None else rollout_objective_sha256(objective),
+        paired is not resolved.source_pair, replicas,
     )
 
 
 def rollout_dataset(
     prepared: PreparedRollout, evaluated: TrialEvaluation, params: RolloutParameters,
-    *, update_axis: str = "checkpoint",
+    *, update_axis: str | None = "checkpoint",
 ) -> Dataset:
     import jax
     import numpy as np
@@ -247,26 +311,32 @@ def rollout_dataset(
     assert history is not None
     n_trials = evaluated.trials.epochs.starts.shape[0]
     trials = [jax.tree.map(lambda value: value[i], history) for i in range(n_trials)]
+    leading = ("condition",) if update_axis is None else (update_axis, "condition")
+
+    def expand(value):
+        array = np.asarray(value)
+        return array.reshape((1,) * len(leading) + array.shape)
+
     variables, state_coordinates = layout.dataset_fields(
-        trials, axes=(update_axis, "condition", "trial"),
+        trials, axes=(*leading, "trial"),
     )
-    terms = evaluated.objective.terms
-    for name, term in terms.items():
-        if not np.isfinite(term.value):
-            raise FloatingPointError(f"Nonfinite objective value at {name}")
-        path = json_pointer((name,))
-        variables["objective/terms" + path] = Variable(np.asarray(term.value)[None, None], (update_axis, "condition"))
-        variables["objective/coverage" + path] = Variable(np.asarray(term.covered)[None, None], (update_axis, "condition"))
-    variables["objective/total"] = Variable(np.asarray(evaluated.objective.loss)[None, None], (update_axis, "condition"))
+    if evaluated.objective is not None:
+        for name, term in evaluated.objective.terms.items():
+            if not np.isfinite(term.value):
+                raise FloatingPointError(f"Nonfinite objective value at {name}")
+            path = json_pointer((name,))
+            variables["objective/terms" + path] = Variable(expand(term.value), leading)
+            variables["objective/coverage" + path] = Variable(expand(term.covered), leading)
+        variables["objective/total"] = Variable(expand(evaluated.objective.loss), leading)
     for signal in paired.execution.task.interface.signals:
         samples = evaluated.trials.inputs[signal.name]
-        base_axes = (update_axis, "condition", "trial", "transition")
+        base_axes = (*leading, "trial", "transition")
         if is_world_target(variant.task, signal):
             state_coordinates.setdefault("xy", Variable(np.asarray(["x", "y"]), ("xy",)))
-            variable = Variable(np.asarray(samples)[None, None], (*base_axes, "xy"), units="m", frame="world")
+            variable = Variable(expand(samples), (*base_axes, "xy"), units="m", frame="world")
         else:
             axes = (*base_axes, *(f"{signal.name}_component_{i}" for i in range(samples.ndim - 2)))
-            variable = Variable(np.asarray(samples)[None, None], axes)
+            variable = Variable(expand(samples), axes)
         variables[semantic_key("task", "output", (), signal.name)] = variable
     time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
     variation = params.condition_id()
@@ -275,13 +345,13 @@ def rollout_dataset(
         attrs["scene_position"] = position
     if params.retention == "raw_states":
         attrs["source_graph_sha256"] = sha256(
-            canonical_json_v2_bytes(slot.graph.model_dump(mode="json"))
+            canonical_json_v2_bytes((slot.graph if slot is not None else effective_graph).model_dump(mode="json"))
         ).hexdigest()
         if prepared.varied:
             attrs.update({
                 "effective_graph_sha256": canonical_sha256({
                     "resolved_graph": paired.executable.resolved.resolved_sha256,
-                    "checkpoint_values": slot.arrays.sha256,
+                    "model_values": slot.tree.descriptor.sha256 if slot is not None else prepared.member.initial_model,
                     "source_overrides": variant.source_overrides,
                 }),
                 "effective_task_sha256": sha256(
@@ -289,10 +359,14 @@ def rollout_dataset(
                 ).hexdigest(),
                 "variation_sha256": variation,
             })
+    coordinates = {}
+    if update_axis is not None:
+        assert isinstance(prepared.member, ResolvedRolloutMember)
+        coordinates[update_axis] = Variable(np.asarray([prepared.member.coordinate]), (update_axis,))
     return Dataset.from_arrays(
         variables,
         coords={
-            update_axis: Variable(np.asarray([prepared.member.coordinate]), (update_axis,)),
+            **coordinates,
             "condition": Variable(np.asarray([variation]), ("condition",)),
             "trial": Variable(np.asarray(params.trials), ("trial",)),
             **state_coordinates,
@@ -308,19 +382,32 @@ def rollout_dataset(
 def _rollouts(prepared, params, stop, *, update_axis="checkpoint"):
     if stop.exists():
         return None
+    datasets = []
+    summaries = []
+    replicas = prepared.replicas or (("0", prepared.graph),)
+    for _, graph in replicas:
+        evaluated = _execute_rollout(prepared, graph, update_axis)
+        if stop.exists():
+            return None
+        datasets.append(rollout_dataset(replace(prepared, graph=graph), evaluated, params, update_axis=update_axis))
+        if evaluated.objective is not None:
+            summaries.append(float(evaluated.objective.loss))
+    if len(datasets) > 1:
+        from feedbax.dataset_replicates import stack_replicates
+
+        dataset = stack_replicates(tuple(replica for replica, _ in replicas), datasets, after=update_axis)
+    else:
+        (dataset,) = datasets
+    return dataset, sum(summaries) / len(summaries) if summaries else None, prepared.member, prepared.objective
+
+
+def _execute_rollout(prepared, graph, update_axis):
     if update_axis == "update":
         import jax
 
-        compiled = prepared.scorer.lower(prepared.graph, capture_state=prepared.layout.capture).compile()
-        evaluated = jax.block_until_ready(compiled(prepared.graph))
-    else:
-        evaluated = prepared.scorer.evaluate(prepared.graph, capture_state=prepared.layout.capture)
-    if stop.exists():
-        return None
-    return (
-        rollout_dataset(prepared, evaluated, params, update_axis=update_axis), float(evaluated.objective.loss),
-        prepared.member, prepared.objective,
-    )
+        compiled = prepared.scorer.lower(graph, capture_state=prepared.layout.capture).compile()
+        return jax.block_until_ready(compiled(graph))
+    return prepared.scorer.evaluate(graph, capture_state=prepared.layout.capture)
 
 
 def _checkpoint_dataset(datasets, *, axis="checkpoint"):
@@ -414,7 +501,8 @@ def _series_dataset(members, binding, params, stop, *, update_axis, job_id, stor
                 return None
             dataset, summary, member, objective = result
         datasets.append(dataset)
-        summaries.append(summary)
+        if summary is not None:
+            summaries.append(summary)
         resolved_members.append(member)
         objectives.add(objective)
     if stop.exists():
@@ -445,15 +533,22 @@ def main(argv: Sequence[str]) -> int:
         spec, params, subject = decode_rollout_request(
             request.request_id, store.get_object(request.canonical_request.request)
         )
-        if subject != request.canonical_request.checkpoint:
+        if subject != request.canonical_request.subject:
             raise ValueError("Launch subject differs from the canonical Evaluate request.")
         events.phase("restoring")
         launch = request.canonical_request
-        binding = {"terminal": launch.terminal.model_dump(mode="json")} if launch.terminal else read_host_completion_binding()
-        if "terminal" in binding:
+        registry = _registry(launch.bootstrap_modules)
+        if isinstance(subject, ContentRef):
+            binding = {}
+            decoded = decode_request(store.get_object(launch.request), store.get_object)
+            refs = initial_evaluation_references(decoded)
+            members = ((None, partial(_prepare_initial_rollout, refs, params, registry=registry, store=store)),)
+            train, provenance = [], initial_evaluation_provenance(refs)
+        elif launch.terminal is not None or "terminal" in (binding := read_host_completion_binding()):
             if not isinstance(subject, ProductRef) or not isinstance(subject.select, LastMember):
                 raise ValueError("Store terminal subject requires an authored last checkpoint")
-            pin = TerminalTrainSubject.model_validate(binding["terminal"])
+            pin = launch.terminal or TerminalTrainSubject.model_validate(binding["terminal"])
+            binding = {"terminal": pin.model_dump(mode="json")}
             source, authored = read_terminal_train_subject(store, pin, subject.request_id)
             occurrence = source.continuation
             assert occurrence is not None
@@ -462,15 +557,13 @@ def main(argv: Sequence[str]) -> int:
             assert isinstance(tree, ContentTreeRef)
             from feedbax.training.model_checkpoint import SemanticModelSlot
 
-            slot = SemanticModelSlot.open_store(store, tree, SemanticModelEncoding.model_validate(model.descriptor))
-            method_payload = authored.method_payload.payload
-            if authored.seed is not None:
-                method_payload = method_payload | {"seed": authored.seed}
-            method = StudioGraphMethodPayload.model_validate(method_payload)
+            slot = SemanticModelSlot.open_store(
+                store, tree, SemanticModelEncoding.model_validate(model.descriptor), components=registry.components,
+            )
             coordinate = occurrence.clock.completed_batches
             members = ((coordinate, partial(
                 _prepare_model_rollout, authored.trial_documents, params, slot, coordinate,
-                seed=method.seed, bootstrap_modules=launch.bootstrap_modules,
+                seed=authored.seed or 0, registry=registry,
             )),)
             train, provenance = terminal_train_provenance(pin, source)
         else:
@@ -484,7 +577,8 @@ def main(argv: Sequence[str]) -> int:
         is_series = isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember)
         with ExitStack() as opened:
             result = _series_dataset(
-                members, binding, params, stop, update_axis="update" if is_series else "checkpoint",
+                members, binding, params, stop,
+                update_axis=None if isinstance(subject, ContentRef) else "update" if is_series else "checkpoint",
                 job_id=job_id, store=store, opened=opened,
             )
             if result is None or stop.exists():

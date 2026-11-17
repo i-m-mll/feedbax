@@ -34,7 +34,7 @@ from feedbax.contracts.request_identity import (
     EncodedRequest,
     effective_binding_id,
 )
-from feedbax.contracts.model_input import DOCUMENT_INPUT_MEDIA_TYPES, document_input_object, read_document_input
+from feedbax.contracts.model_input import DOCUMENT_INPUT_MEDIA_TYPES, decode_document_input, document_input_object
 from feedbax.contracts.request_refs import (
     BestRank,
     ContentRef,
@@ -120,9 +120,9 @@ def store_document_inputs(
                 continue
             exact = document_input_object(content)
             raw = read_document(exact.sha256)
+            decode_document_input(content, raw)
             if store.store_rooted_object(raw, namespace="project-document-input") != exact:
                 raise ValueError("Planned document input differs from its immutable reference")
-            read_document_input(content, store)
             refs[exact.sha256] = exact
     return tuple(refs.values())
 

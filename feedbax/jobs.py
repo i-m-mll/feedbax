@@ -65,7 +65,7 @@ from feedbax.contracts.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.effective_success import TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
@@ -195,7 +195,7 @@ class PlanJobReader:
 
     def evaluation_parameters(
         self, plan: ProjectPlan, run: PlannedRun,
-    ) -> tuple[RolloutParameters, ProductRef | BestRank]:
+    ) -> tuple[RolloutParameters, ProductRef | BestRank | ContentRef]:
         """Resolve the saved request capability shared by Plan and admission."""
         from feedbax.studio.canonical_evaluate import CannotRun, decode_rollout_request
 
@@ -520,12 +520,12 @@ class JobService(PlanJobReader):
                             raise ValueError("/inputs/subject: the reviewed terminal Train receipt changed")
                         item = self._evaluation_item(
                             project, run.request_id, current.plan.requests[run.request_id], data, store,
-                            checkpoint, params, terminal=terminal,
+                            checkpoint, params, terminal=terminal, documents=current.plan.documents,
                         )
                     except (ValueError, KeyError, OSError) as error:
                         items[name] = _rejected(name, f"cannot_run {error}")
                         continue
-                    if terminal is None:
+                    if terminal is None and not isinstance(checkpoint, ContentRef):
                         checkpoints[name] = (
                             tuple(
                                 (key, candidate.reference.request_id)
@@ -738,29 +738,34 @@ class JobService(PlanJobReader):
 
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
-        store: ImmutableArtifactBlobProvider, checkpoint: ProductRef | BestRank, params: RolloutParameters,
-        *, terminal: TerminalTrainSubject | None,
+        store: ImmutableArtifactBlobProvider, subject: ProductRef | BestRank | ContentRef, params: RolloutParameters,
+        *, terminal: TerminalTrainSubject | None, documents: Mapping[str, bytes],
     ) -> AdmissionItem:
         from feedbax.studio.canonical_evaluate import (
             BoundEvaluationJobInput,
             EvaluationRequestBinding,
         )
+        from feedbax.persistence.effective_success import store_document_inputs
 
         root = store.root
+        if isinstance(subject, ContentRef):
+            decoded = decode_request(raw, documents.__getitem__)
+            store_document_inputs(store, decoded.inputs, documents.__getitem__)
         payload = BoundEvaluationJobInput(
             project_id=project,
             request_id=request_id,
             manifest_root=root,
             canonical_request=EvaluationRequestBinding(
                 request=store.store_rooted_object(raw, namespace="studio-evaluate-request"),
-                checkpoint=checkpoint,
+                checkpoint=subject if not isinstance(subject, ContentRef) else None,
+                initial_model=subject if isinstance(subject, ContentRef) else None,
                 terminal=terminal,
                 bootstrap_modules=self.bootstrap_modules,
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
-        if isinstance(checkpoint, ProductRef) and isinstance(checkpoint.select, UpdateSeriesMember) and not params.variation:
-            qualification = self._live_validation_qualifications.get((checkpoint.request_id, request_id))
+        if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember) and not params.variation:
+            qualification = self._live_validation_qualifications.get((subject.request_id, request_id))
             if qualification is not None:
                 data = data | {"validation_qualification": qualification.model_dump(mode="json")}
         return AdmissionItem(
@@ -1196,7 +1201,11 @@ class JobService(PlanJobReader):
         _, _, subject = decode_rollout_request(request_id, destination.get_object(success.request.object))
         payload = BoundEvaluationJobInput(
             project_id=project, request_id=request_id, manifest_root=Path(destination.root),
-            canonical_request=EvaluationRequestBinding(request=success.request.object, checkpoint=subject),
+            canonical_request=EvaluationRequestBinding(
+                request=success.request.object,
+                checkpoint=subject if not isinstance(subject, ContentRef) else None,
+                initial_model=subject if isinstance(subject, ContentRef) else None,
+            ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
         data = attempt["data"]
@@ -1757,7 +1766,7 @@ def _verified_evaluation_result(
         if terminal_receipt is not None and (subject is None or subject.terminal_receipt != terminal_receipt):
             return None
         terminal = subject is not None and subject.terminal_checkpoint is not None
-        if job["data"].get("collected_evaluate") is True or terminal:
+        if job["data"].get("collected_evaluate") is True or terminal or subject is None:
             return _verify_stored_evaluation(view.store, success, receipt, manifest_object)
 
         binding, = _pinned_dependencies(job)
@@ -1795,6 +1804,8 @@ def _verify_stored_evaluation(
     manifest, subject = decode_evaluation_manifest(
         store, store.get_object(manifest_object), manifest_object, success.attempt, success.request.id, receipt,
     )
+    if isinstance(subject, ContentRef):
+        return _VerifiedEvaluation(receipt, states_ref(manifest).content.size, None, "ordinary", manifest_object)
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject
     assert source is not None
