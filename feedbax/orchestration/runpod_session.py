@@ -348,7 +348,7 @@ class RunPodSessionProvider:
     @staticmethod
     def _client(connection: SSHStoreConnection, layout: _Layout, access: SessionAccess | None) -> HostClient:
         attach = connection.command([
-            layout.python, "-I", "-m", "feedbax.host", "--root", str(layout.host), "attach", "--no-start",
+            layout.python, "-I", "-B", "-m", "feedbax.host", "--root", str(layout.host), "attach", "--no-start",
         ])
         return HostClient(attachment=StdioAttachment(lambda _: attach), session=access)
 

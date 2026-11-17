@@ -103,6 +103,6 @@ class RemoteStore:
 
     def call(self, operation: str, request: BaseModel) -> bytes:
         return self.connection.run(
-            [self.python, "-m", "feedbax.persistence.store_sync", operation, str(self.root)],
+            [self.python, "-B", "-m", "feedbax.persistence.store_sync", operation, str(self.root)],
             request.model_dump_json().encode(),
         )

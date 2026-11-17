@@ -155,7 +155,7 @@ def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str
     subprocess.run(command, cwd=repo, env=env, stdout=sys.stderr, check=True, timeout=settings["timeout"])
     python = root / "venv" / "bin" / "python"
     probe = subprocess.check_output(
-        [str(python), "-I", "-c", _PROBE, str(repo), settings["backend"]],
+        [str(python), "-I", "-B", "-c", _PROBE, str(repo), settings["backend"]],
         cwd=repo, env=env, timeout=30,
     )
     _publish(cached_probe, probe)
@@ -168,7 +168,7 @@ def _complete(root: Path, settings: dict) -> None:
     if not realized.exists():
         python = root / "venv" / "bin" / "python"
         subprocess.run(
-            [str(python), "-I", "-m", "feedbax.host", "--root", str(root / "host"), "init-session"],
+            [str(python), "-I", "-B", "-m", "feedbax.host", "--root", str(root / "host"), "init-session"],
             input=json.dumps(settings["fence"]).encode(), stdout=sys.stderr, check=True, timeout=10,
         )
     _publish(realized, settings["realization"].encode())
