@@ -285,6 +285,8 @@ export interface StudioSavedEvaluationResult {
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
   size_bytes: number;
+  validity?: ReceiptValidity | null;
+  provenance?: AttemptProvenance | null;
   checkpoint_sources?: StudioTrainCheckpointSource[] | null;
   checkpoint_gaps?: StudioEvaluationCheckpointGap[] | null;
   placement?: "live" | "ordinary" | null;
@@ -334,6 +336,8 @@ export interface StudioSavedTrainResult {
   job_id: string;
   receipt: JobReceipt;
   progress: JobProgress | null;
+  validity?: ReceiptValidity | null;
+  provenance?: AttemptProvenance | null;
 }
 
 export interface StudioSavedTrainRow {
@@ -1391,42 +1395,6 @@ export interface AnalysisInputConsumerSpec {
   metadata?: Record<string, unknown>;
 }
 
-export interface AnalysisDataProductRequirement {
-  schema_id?: string;
-  schema_version?: string;
-  role: string;
-  product_schema_id: string;
-  exact_product_schema_version?: string | null;
-  min_product_schema_version?: string | null;
-  max_product_schema_version?: string | null;
-  logical_name?: string | null;
-  descriptor_selector_requirements?: Record<string, unknown>;
-  descriptor_basis_hash?: string | null;
-  product_identity_hash?: string | null;
-  artifact_sha256?: string | null;
-  producer_manifest_id?: string | null;
-  producer_manifest_hash?: string | null;
-  parent_manifest_ids?: string[];
-  parent_manifest_hashes?: string[];
-  checkpoint_policy?: Record<string, unknown> | null;
-  rollout_policy?: Record<string, unknown> | null;
-  parameters?: Record<string, unknown>;
-  fallback_policy?: "forbid" | "allow_declared";
-  metadata?: Record<string, unknown>;
-}
-
-export interface AnalysisInputRequirement {
-  id?: string;
-  label?: string | null;
-  selector?: string | null;
-  target?: RetainedObservableTargetSpec | null;
-  retention?: RetentionPolicySpec;
-  value_schema?: Record<string, unknown> | null;
-  data_product?: AnalysisDataProductRequirement | null;
-  consumer?: AnalysisInputConsumerSpec;
-  metadata?: Record<string, unknown>;
-}
-
 export interface GraphMetadata {
   name: string;
   description?: string | null;
@@ -1508,7 +1476,6 @@ export interface AnalysisPageSpec {
   name: string;
   graph_spec?: Record<string, unknown>;
   eval_params?: Record<string, unknown>;
-  input_requirements?: AnalysisInputRequirement[];
   eval_run_id?: string | null;
   expanded_field_paths?: string[];
 }
@@ -2163,16 +2130,22 @@ export interface ComponentDefinition {
   representation?: RepresentationSpec | null;
 }
 
-export interface BatchScheduleOriginSpec {
-  kind: "segment_start" | "run_start" | "absolute";
-  batch?: number | null;
+export interface DocumentTrainingConfig {
+  n_batches?: number;
+  batch_size?: number;
+  snapshot_interval?: number;
+  replicates?: number;
+}
+
+export interface TrainContinuation {
+  mode?: "continue_from";
+  source_completed_updates: number;
+  state: "preserve" | "reset";
+  rng: "carry" | "reset";
+  schedule: "continue" | "restart";
 }
 
 export interface LrScheduleSpec {
-  schema_id?: "feedbax.spec.training.lr_schedule";
-  schema_version?: string;
-  origin: BatchScheduleOriginSpec;
-  allow_inert?: boolean;
   kind?: "constant" | "warmup_cosine" | "delayed_cosine";
   learning_rate_0: number;
   total_steps?: number | null;
@@ -2185,18 +2158,6 @@ export interface OptimizerSpec {
   type: string;
   params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
   lr_schedule?: LrScheduleSpec | null;
-}
-
-export interface TrainingConfig {
-  n_batches?: number;
-  batch_size?: number;
-  learning_rate?: number;
-  grad_clip?: number | null;
-  hidden_dim?: number;
-  network_type?: string;
-  n_reach_steps?: number;
-  effort_weight?: number;
-  snapshot_interval?: number;
 }
 
 export interface TaskTimelineCue {
@@ -2313,19 +2274,6 @@ export interface ComponentDetailResponse {
   data: ComponentDefinition;
 }
 
-export interface ComponentRefreshPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  added: string[];
-  removed: string[];
-}
-
-export interface ComponentRefreshResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: ComponentRefreshPayload;
-}
-
 export interface DomainListResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
@@ -2376,145 +2324,6 @@ export interface PenzaiInspectorResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
   data: PenzaiInspectorPayload;
-}
-
-export interface AnalysisClassInfo {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  name: string;
-  description: string;
-  category: string;
-  inputPorts: string[];
-  outputPorts: string[];
-  defaultParams: Record<string, unknown>;
-  icon: string;
-}
-
-export interface AnalysisPackageInfo {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  name: string;
-  description: string;
-  analyses: AnalysisClassInfo[];
-}
-
-export interface AnalysisPackagesPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  packages: AnalysisPackageInfo[];
-}
-
-export interface AnalysisPackagesResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: AnalysisPackagesPayload;
-}
-
-export interface BundleMissingRoleRecord {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  stage: string;
-  role: string;
-  required?: boolean;
-  bind_as?: string | null;
-  reason: string;
-}
-
-export interface BundleStageDryRunOutputRecord {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  role: string;
-  required?: boolean;
-  status: "would_run" | "would_skip" | "missing" | "not_applicable";
-  reason?: string | null;
-}
-
-export interface BundleStageDryRunRecord {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  name: string;
-  kind: "evaluation" | "analysis" | "materialization" | "figure" | "report";
-  status: "would_run" | "would_skip" | "missing" | "not_applicable";
-  depends_on?: string[];
-  inputs?: ParentRef[];
-  outputs?: BundleStageDryRunOutputRecord[];
-  missing_roles?: BundleMissingRoleRecord[];
-  reason?: string | null;
-}
-
-export interface AnalysisBundleDryRunResult {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  bundle_name: string;
-  match_preview: SelectionPreview;
-  matched_run_ids?: string[];
-  stages?: BundleStageDryRunRecord[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface AnalysisBundleDryRunRequest {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  bundle: Record<string, unknown>;
-  selection_spec?: SelectionSpec | null;
-  root?: string | null;
-  preview_limit?: number;
-}
-
-export interface AnalysisBundleDryRunPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  dry_run: AnalysisBundleDryRunResult;
-}
-
-export interface AnalysisBundleDryRunResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: AnalysisBundleDryRunPayload;
-}
-
-export interface GenerateAnalysisRequest {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  node_id: string;
-  job_kind?: "analysis" | "figure";
-  force_rerun?: boolean;
-  eval_run_id?: string | null;
-  evaluation_states_policy?: "recompute" | "require_durable";
-  figure_spec?: Record<string, unknown> | null;
-}
-
-export interface GenerateAnalysisPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  request_id: string;
-  status: string;
-  manifest_id?: string | null;
-}
-
-export interface GenerateAnalysisResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GenerateAnalysisPayload;
-}
-
-export interface AnalysisJobStatusPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  request_id: string;
-  status: string;
-  figure_hashes?: string[] | null;
-  manifest_id?: string | null;
-  manifest_path?: string | null;
-  artifact_ids?: string[] | null;
-  artifact_paths?: string[] | null;
-  error?: string | null;
-}
-
-export interface AnalysisJobStatusResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: AnalysisJobStatusPayload;
 }
 
 export interface TrainingTrajectoryPayload {
@@ -2686,8 +2495,31 @@ export type AddModelComponent = {
 
 export type AnalysisDocument = {
   "schema_version"?: "feedbax.analysis_document.v1";
+  "inputs"?: Record<string, AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput>;
   "operations"?: Record<string, OperationElement>;
   "views"?: Record<string, FigureElement>;
+};
+
+export type AnalyzeDatasetInput = {
+  "kind": "dataset";
+  "cardinality"?: "one" | "many";
+};
+
+export type AnalyzeModelInput = {
+  "kind": "model";
+};
+
+export type AnalyzeTaskInput = {
+  "kind": "task";
+};
+
+export type AttemptProvenance = {
+  "feedbax_commit": string;
+  "feedbax_dirty": boolean;
+  "lock_sha256": string | null;
+  "platform": string;
+  "started_at": string;
+  "ended_at": string;
 };
 
 export type AuthoredFileAddress = {
@@ -2775,6 +2607,8 @@ export type Cell = {
   "value": Expression;
 };
 
+export type CheckDomain = "code" | "environment";
+
 export type CheckpointBatches = {
   "batches": Array<number>;
 };
@@ -2793,7 +2627,23 @@ export type CheckpointRuleAxis = {
 
 export type CheckpointRulePath = "{\"field\":\"checkpoint\",\"input\":\"subject\"}";
 
+export type CodeDifference = SourceDifference | RegistryDifference;
+
+export type CodeReason = {
+  "kind"?: "code";
+  "basis": "source" | "computation" | "unverifiable";
+  "differences": Array<CodeDifference>;
+  "detail"?: string | null;
+};
+
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
+
+export type ContentRef = {
+  "sha256": string;
+  "size": number;
+  "media_type"?: string | null;
+  "tree"?: boolean;
+};
 
 export type CreateNamedDocument = {
   "kind": "document";
@@ -2812,6 +2662,14 @@ export type DataDerivedAxisRange = {
   "schema_version"?: string;
   "group": string;
   "padding_fraction": number;
+};
+
+export type DatasetInputPort = {
+  "schema_ids": Array<string>;
+  "variables"?: Record<string, FieldDescriptor>;
+  "selected_variables"?: Record<string, FieldDescriptor>;
+  "coordinates"?: Record<string, FieldDescriptor>;
+  "kind"?: "dataset";
 };
 
 export type DatasetPort = {
@@ -2838,6 +2696,8 @@ export type Document = {
 };
 
 export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
+
+export type DocumentInputReference = InitialModelReference_DocumentReference_ | TaskDocumentReference_DocumentReference_ | ObjectiveDocumentReference_DocumentReference_;
 
 export type DocumentOverridePath = string;
 
@@ -2867,6 +2727,24 @@ export type EnsureDocumentCollection = {
   "op": "ensure";
   "path": DocumentOverridePath;
   "collection": "object" | "array";
+};
+
+export type EnvironmentDifference = {
+  "distribution": string;
+  "before": string;
+  "after": string | null;
+};
+
+export type EnvironmentNotice = {
+  "differences": Array<EnvironmentDifference>;
+  "check": "pending" | "confirmed" | "different" | "not_checked";
+  "detail"?: string | null;
+};
+
+export type EnvironmentReason = {
+  "kind"?: "environment";
+  "differences": Array<EnvironmentDifference>;
+  "detail"?: string | null;
 };
 
 export type Epoch = {
@@ -2926,13 +2804,12 @@ export type FigureDocumentView = {
   "legend_yanchor"?: "auto" | "top" | "middle" | "bottom" | null;
   "margin"?: FigureMarginParams | null;
   "hovermode"?: "x" | "y" | "closest" | "x unified" | "y unified" | false | null;
-  "row_label_gutter"?: number | null;
   "legend_gutter"?: number | null;
 };
 
 export type FigureElement = {
-  "figure": FigureDocument | DocumentReference;
-  "inputs": Record<string, StepDataset | OperationDataset>;
+  "figure": FigureDocument | FigureTemplateRef | DocumentReference;
+  "inputs": Record<string, StepInput | OperationDataset>;
 };
 
 export type FigureMarginParams = {
@@ -2952,6 +2829,19 @@ export type FigurePanel = {
   "axes_labels"?: AxisLabels | null;
   "x_axis"?: PanelAxis | null;
   "y_axis"?: PanelAxis | null;
+};
+
+export type FigureTemplateRef = {
+  "template": string;
+  "settings"?: Record<string, JsonValue>;
+};
+
+export type FileDifference = {
+  "kind"?: "file";
+  "path": SourcePath;
+  "before": string | null;
+  "after": string | null;
+  "status"?: "changed" | "indeterminate";
 };
 
 export type FunctionClass = "math" | "shape" | "draw" | "penalty" | "sweep_rule";
@@ -2979,6 +2869,12 @@ export type IndexSelection = {
   "index": number;
 };
 
+export type InitialModelReference_DocumentReference_ = {
+  "kind": "initial_model";
+  "source": DocumentReference;
+  "seed"?: number;
+};
+
 export type InlineBase = {
   "inline": Payload;
 };
@@ -2988,6 +2884,20 @@ export type InputAxis = {
 };
 
 export type InputBinding = Reference | Array<Reference> | Record<string, Reference>;
+
+export type InputDifference = {
+  "kind"?: "input";
+  "role": string;
+  "member": string;
+  "before": ContentRef;
+  "after": ContentRef | null;
+  "detail"?: string | null;
+};
+
+export type JaxOperation = {
+  "backend": "cpu" | "gpu";
+  "floating_point_bits": 32 | 64;
+};
 
 export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
 
@@ -3050,6 +2960,10 @@ export type MatrixCompositionDelta = {
   "schema_version"?: string | null;
 };
 
+export type ModelPort = {
+  "kind"?: "model";
+};
+
 export type ModelWireDifference = {
   "op": "add_wire" | "rewire";
   "address": ModelAddress;
@@ -3081,6 +2995,11 @@ export type ObjectiveDocument = {
   "terms"?: Array<ObjectiveTerm>;
 };
 
+export type ObjectiveDocumentReference_DocumentReference_ = {
+  "kind": "objective";
+  "source": DocumentReference;
+};
+
 export type ObjectiveTerm = {
   "id": string;
   "measure": Expression;
@@ -3104,18 +3023,21 @@ export type OperationDataset = {
 export type OperationDefinition = {
   "key": string;
   "owner": string;
+  "owner_version": string;
+  "renamed_from"?: Array<string>;
   "label": string;
   "description": string;
   "param_schema": Array<ParamSchema>;
   "parameter_json_schema": Record<string, JsonValue>;
   "static_parameters": Array<string>;
-  "inputs": Record<string, DatasetPort>;
+  "inputs": Record<string, DatasetInputPort | ModelPort | TaskPort>;
   "outputs": Record<string, DatasetPort>;
+  "numerical"?: JaxOperation | null;
 };
 
 export type OperationElement = {
   "operation": string;
-  "inputs": Record<string, StepDataset | OperationDataset>;
+  "inputs": Record<string, StepInput | OperationDataset>;
   "params"?: Record<string, JsonValue>;
 };
 
@@ -3200,9 +3122,34 @@ export type RangeValues = {
   "scale"?: "linear" | "log";
 };
 
+export type ReceiptValidity = {
+  "receipt": ContentObjectRef;
+  "state": "current" | "unchecked" | "stale";
+  "reasons"?: Array<ValidityReason>;
+  "checks"?: Array<CheckDomain>;
+  "environment"?: EnvironmentNotice | null;
+};
+
 export type Reduction = "mean" | "sum" | "last" | "max";
 
-export type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference;
+export type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference | DocumentInputReference;
+
+export type RegistryBinding = {
+  "family": string;
+  "requested_key": string;
+  "key": string;
+  "distribution": string;
+  "version": string;
+  "module": string;
+  "qualified_name": string;
+  "source_path"?: SourcePath | null;
+};
+
+export type RegistryDifference = {
+  "kind"?: "registry";
+  "before": RegistryBinding;
+  "after": RegistryBinding | null;
+};
 
 export type RemoveProjectValue = {
   "op": "remove";
@@ -3315,6 +3262,21 @@ export type SiteProjection = {
   "functions": Array<FunctionInfo>;
 };
 
+export type SourceDifference = {
+  "kind"?: "source";
+  "path": SourcePath;
+  "before": string | null;
+  "after": string | null;
+  "status": "changed" | "removed" | "unreadable" | "invalid" | "indeterminate";
+  "statements"?: Array<string>;
+  "functions"?: Array<string>;
+};
+
+export type SourcePath = {
+  "scope": string;
+  "path": string;
+};
+
 export type StateReset = "trial" | "epoch";
 
 export type Step = {
@@ -3335,7 +3297,7 @@ export type StepBase = {
   "row"?: string | null;
 };
 
-export type StepDataset = {
+export type StepInput = {
   "input": string;
 };
 
@@ -3403,7 +3365,7 @@ export type StudioAnalyzeStep = {
 export type StudioAnalyzeWire = {
   "element": string;
   "role": string;
-  "source": StepDataset | OperationDataset;
+  "source": StepInput | OperationDataset;
 };
 
 export type StudioAuthoredDeclaration = {
@@ -3441,6 +3403,13 @@ export type StudioAuthoringChoice = {
   "options": Array<StudioAuthoringOption>;
 };
 
+export type StudioAuthoringDeclaration = {
+  "key": string;
+  "label": string;
+  "renamed_from": Array<string>;
+  "settings_schema": Record<string, JsonValue>;
+};
+
 export type StudioAuthoringField = {
   "id": string;
   "label": string;
@@ -3449,16 +3418,6 @@ export type StudioAuthoringField = {
   "control": StudioAuthoringChoice | StudioAuthoringNumber | null;
   "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   "can_sweep"?: boolean;
-};
-
-export type StudioAuthoringMethod = {
-  "key": string;
-  "schema_id": string;
-  "schema_version": string;
-  "owner": string;
-  "package": string | null;
-  "plugin": string | null;
-  "payload_schema": Record<string, JsonValue>;
 };
 
 export type StudioAuthoringNumber = {
@@ -3474,12 +3433,13 @@ export type StudioAuthoringOption = {
 };
 
 export type StudioAuthoringOrigin = {
-  "plugin": string;
-  "distribution": string | null;
+  "package": string;
+  "distribution": string;
+  "version": string;
 };
 
 export type StudioAuthoringRegistry = {
-  "entries": Array<ComponentDefinition | OperationDefinition | StudioAuthoringMethod | FunctionInfo>;
+  "entries": Array<ComponentDefinition | OperationDefinition | StudioAuthoringDeclaration | FunctionInfo>;
   "origins": Record<string, StudioAuthoringOrigin>;
 };
 
@@ -3493,7 +3453,7 @@ export type StudioAuthoringSurface = {
   "project_grammar": Record<string, JsonValue>;
   "step_payloads": Record<string, Record<string, JsonValue>>;
   "document_schemas": Record<string, Record<string, JsonValue>>;
-  "training_methods": Array<StudioAuthoringMethod>;
+  "training_methods": Array<StudioAuthoringDeclaration>;
 };
 
 export type StudioAuthoringSweepChange = {
@@ -3785,6 +3745,8 @@ export type StudioSavedLightResult = {
   "request_id": string;
   "receipt": JobReceipt;
   "products": Record<string, string>;
+  "validity"?: ReceiptValidity | null;
+  "provenance"?: AttemptProvenance | null;
 };
 
 export type StudioSetSweepValue = {
@@ -4005,6 +3967,16 @@ export type TaskDocument = {
   "validation_trials"?: Array<ValidationTrial>;
 };
 
+export type TaskDocumentReference_DocumentReference_ = {
+  "kind": "task";
+  "source": DocumentReference;
+};
+
+export type TaskPort = {
+  "kind"?: "task";
+  "task_key"?: string | null;
+};
+
 export type TextSpan = {
   "start": number;
   "end": number;
@@ -4043,6 +4015,8 @@ export type ValidationTrial = {
 };
 
 export type ValidationValue = Scalar | Array<ValidationValue>;
+
+export type ValidityReason = CodeReason | EnvironmentReason | FileDifference | InputDifference;
 
 export type ValueBase = "real" | "integer" | "boolean";
 
@@ -4628,6 +4602,8 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
       "receipt": JobReceiptSchema,
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "size_bytes": z.number().int().safe().gte(0),
+      "validity": ReceiptValiditySchema.nullable().optional(),
+      "provenance": AttemptProvenanceSchema.nullable().optional(),
       "checkpoint_sources": z.array(StudioTrainCheckpointSourceSchema).nullable().optional(),
       "checkpoint_gaps": z.array(StudioEvaluationCheckpointGapSchema).nullable().optional(),
       "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
@@ -4697,6 +4673,8 @@ export const StudioSavedTrainResultSchema: z.ZodType<StudioSavedTrainResult> = z
       "job_id": z.string(),
       "receipt": JobReceiptSchema,
       "progress": JobProgressSchema.nullable(),
+      "validity": ReceiptValiditySchema.nullable().optional(),
+      "provenance": AttemptProvenanceSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedTrainResult>;
@@ -6535,64 +6513,6 @@ export const AnalysisInputConsumerSpecSchema: z.ZodType<AnalysisInputConsumerSpe
     .strict()
 ) as unknown as z.ZodType<AnalysisInputConsumerSpec>;
 
-export const AnalysisDataProductRequirementSchema: z.ZodType<AnalysisDataProductRequirement> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.string().optional(),
-      "schema_version": z.string().optional(),
-      "role": z.string(),
-      "product_schema_id": z.string(),
-      "exact_product_schema_version": z.string().nullable().optional(),
-      "min_product_schema_version": z.string().nullable().optional(),
-      "max_product_schema_version": z.string().nullable().optional(),
-      "logical_name": z.string().nullable().optional(),
-      "descriptor_selector_requirements": z.record(z.string(), z.unknown()).optional(),
-      "descriptor_basis_hash": z.string().nullable().optional(),
-      "product_identity_hash": z.string().nullable().optional(),
-      "artifact_sha256": z.string().nullable().optional(),
-      "producer_manifest_id": z.string().nullable().optional(),
-      "producer_manifest_hash": z.string().nullable().optional(),
-      "parent_manifest_ids": z.array(z.string()).optional(),
-      "parent_manifest_hashes": z.array(z.string()).optional(),
-      "checkpoint_policy": z.record(z.string(), z.unknown()).nullable().optional(),
-      "rollout_policy": z.record(z.string(), z.unknown()).nullable().optional(),
-      "parameters": z.record(z.string(), z.unknown()).optional(),
-      "fallback_policy": z.union([z.literal("forbid"), z.literal("allow_declared")]).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.schema_id !== 'feedbax.spec.analysis_data_product_requirement' || value.schema_version !== 'feedbax.spec.analysis_data_product_requirement.v1') {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "unsupported AnalysisDataProductRequirement schema identity",
-        });
-      }
-      if (value.role.trim().length === 0 || value.product_schema_id.trim().length === 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "AnalysisDataProductRequirement role and product_schema_id must not be empty",
-        });
-      }
-    })
-) as unknown as z.ZodType<AnalysisDataProductRequirement>;
-
-export const AnalysisInputRequirementSchema: z.ZodType<AnalysisInputRequirement> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string().optional(),
-      "label": z.string().nullable().optional(),
-      "selector": z.string().nullable().optional(),
-      "target": RetainedObservableTargetSpecSchema.nullable().optional(),
-      "retention": RetentionPolicySpecSchema.optional(),
-      "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
-      "data_product": AnalysisDataProductRequirementSchema.nullable().optional(),
-      "consumer": AnalysisInputConsumerSpecSchema.optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisInputRequirement>;
-
 export const GraphMetadataSchema: z.ZodType<GraphMetadata> = z.lazy(() =>
   z
     .object({
@@ -6726,7 +6646,6 @@ export const AnalysisPageSpecSchema: z.ZodType<AnalysisPageSpec> = z.lazy(() =>
       "name": z.string(),
       "graph_spec": z.record(z.string(), z.unknown()).optional(),
       "eval_params": z.record(z.string(), z.unknown()).optional(),
-      "input_requirements": z.array(AnalysisInputRequirementSchema).optional(),
       "eval_run_id": z.string().nullable().optional(),
       "expanded_field_paths": z.array(z.string()).optional(),
     })
@@ -7967,30 +7886,32 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<ComponentDefinition>;
 
-export const BatchScheduleOriginSpecSchema: z.ZodType<BatchScheduleOriginSpec> = z.lazy(() =>
+export const DocumentTrainingConfigSchema: z.ZodType<DocumentTrainingConfig> = z.lazy(() =>
   z
     .object({
-      "kind": z.union([z.literal("segment_start"), z.literal("run_start"), z.literal("absolute")]),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
+      "n_batches": z.number().int().safe().gt(0).lt(2147483648).optional(),
+      "batch_size": z.number().int().safe().gt(0).optional(),
+      "snapshot_interval": z.number().int().safe().gt(0).optional(),
+      "replicates": z.number().int().safe().gt(0).optional(),
     })
     .strict()
-    .superRefine((value, ctx) => {
-      if ((value.kind === 'absolute' && value.batch == null) || (value.kind !== 'absolute' && value.batch != null)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "batch is required only for an absolute schedule origin",
-        });
-      }
+) as unknown as z.ZodType<DocumentTrainingConfig>;
+
+export const TrainContinuationSchema: z.ZodType<TrainContinuation> = z.lazy(() =>
+  z
+    .object({
+      "mode": z.literal("continue_from").optional(),
+      "source_completed_updates": z.number().int().safe().gt(0).lt(2147483648),
+      "state": z.union([z.literal("preserve"), z.literal("reset")]),
+      "rng": z.union([z.literal("carry"), z.literal("reset")]),
+      "schedule": z.union([z.literal("continue"), z.literal("restart")]),
     })
-) as unknown as z.ZodType<BatchScheduleOriginSpec>;
+    .strict()
+) as unknown as z.ZodType<TrainContinuation>;
 
 export const LrScheduleSpecSchema: z.ZodType<LrScheduleSpec> = z.lazy(() =>
   z
     .object({
-      "schema_id": z.literal("feedbax.spec.training.lr_schedule").optional(),
-      "schema_version": z.string().optional(),
-      "origin": BatchScheduleOriginSpecSchema,
-      "allow_inert": z.boolean().optional(),
       "kind": z.union([z.literal("constant"), z.literal("warmup_cosine"), z.literal("delayed_cosine")]).optional(),
       "learning_rate_0": z.number().finite().gt(0.0),
       "total_steps": z.number().int().safe().gt(0).nullable().optional(),
@@ -8000,13 +7921,7 @@ export const LrScheduleSpecSchema: z.ZodType<LrScheduleSpec> = z.lazy(() =>
     })
     .strict()
     .superRefine((value, ctx) => {
-      if (value.schema_id !== 'feedbax.spec.training.lr_schedule' || value.schema_version !== 'feedbax.spec.training.lr_schedule.v2') {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "unsupported LrScheduleSpec schema identity",
-        });
-      }
-      if ((value.kind !== 'constant' && value.total_steps == null) || (value.kind === 'warmup_cosine' && (value.constant_lr_iterations < 1 || (value.total_steps != null && value.constant_lr_iterations >= value.total_steps))) || (value.kind === 'delayed_cosine' && value.total_steps != null && value.constant_lr_iterations >= value.total_steps)) {
+      if ((value.kind === 'warmup_cosine' || value.kind === 'delayed_cosine') && (value.total_steps == null || (value.constant_lr_iterations ?? 0) >= value.total_steps || (value.kind === 'warmup_cosine' && (value.constant_lr_iterations ?? 0) < 1))) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "learning-rate schedule fields must match its kind",
@@ -8024,22 +7939,6 @@ export const OptimizerSpecSchema: z.ZodType<OptimizerSpec> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<OptimizerSpec>;
-
-export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
-  z
-    .object({
-      "n_batches": z.number().int().safe().optional(),
-      "batch_size": z.number().int().safe().optional(),
-      "learning_rate": z.number().finite().optional(),
-      "grad_clip": z.number().finite().nullable().optional(),
-      "hidden_dim": z.number().int().safe().optional(),
-      "network_type": z.string().optional(),
-      "n_reach_steps": z.number().int().safe().optional(),
-      "effort_weight": z.number().finite().optional(),
-      "snapshot_interval": z.number().int().safe().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingConfig>;
 
 export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
   z
@@ -8233,27 +8132,6 @@ export const ComponentDetailResponseSchema: z.ZodType<ComponentDetailResponse> =
     .strict()
 ) as unknown as z.ZodType<ComponentDetailResponse>;
 
-export const ComponentRefreshPayloadSchema: z.ZodType<ComponentRefreshPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "added": z.array(z.string()),
-      "removed": z.array(z.string()),
-    })
-    .strict()
-) as unknown as z.ZodType<ComponentRefreshPayload>;
-
-export const ComponentRefreshResponseSchema: z.ZodType<ComponentRefreshResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": ComponentRefreshPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<ComponentRefreshResponse>;
-
 export const DomainListResponseSchema: z.ZodType<DomainListResponse> = z.lazy(() =>
   z
     .object({
@@ -8333,209 +8211,6 @@ export const PenzaiInspectorResponseSchema: z.ZodType<PenzaiInspectorResponse> =
     })
     .strict()
 ) as unknown as z.ZodType<PenzaiInspectorResponse>;
-
-export const AnalysisClassInfoSchema: z.ZodType<AnalysisClassInfo> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "name": z.string(),
-      "description": z.string(),
-      "category": z.string(),
-      "inputPorts": z.array(z.string()),
-      "outputPorts": z.array(z.string()),
-      "defaultParams": z.record(z.string(), z.unknown()),
-      "icon": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisClassInfo>;
-
-export const AnalysisPackageInfoSchema: z.ZodType<AnalysisPackageInfo> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "name": z.string(),
-      "description": z.string(),
-      "analyses": z.array(AnalysisClassInfoSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisPackageInfo>;
-
-export const AnalysisPackagesPayloadSchema: z.ZodType<AnalysisPackagesPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "packages": z.array(AnalysisPackageInfoSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisPackagesPayload>;
-
-export const AnalysisPackagesResponseSchema: z.ZodType<AnalysisPackagesResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": AnalysisPackagesPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisPackagesResponse>;
-
-export const BundleMissingRoleRecordSchema: z.ZodType<BundleMissingRoleRecord> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "stage": z.string(),
-      "role": z.string(),
-      "required": z.boolean().optional(),
-      "bind_as": z.string().nullable().optional(),
-      "reason": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<BundleMissingRoleRecord>;
-
-export const BundleStageDryRunOutputRecordSchema: z.ZodType<BundleStageDryRunOutputRecord> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "role": z.string(),
-      "required": z.boolean().optional(),
-      "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
-      "reason": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<BundleStageDryRunOutputRecord>;
-
-export const BundleStageDryRunRecordSchema: z.ZodType<BundleStageDryRunRecord> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "name": z.string(),
-      "kind": z.union([z.literal("evaluation"), z.literal("analysis"), z.literal("materialization"), z.literal("figure"), z.literal("report")]),
-      "status": z.union([z.literal("would_run"), z.literal("would_skip"), z.literal("missing"), z.literal("not_applicable")]),
-      "depends_on": z.array(z.string()).optional(),
-      "inputs": z.array(ParentRefSchema).optional(),
-      "outputs": z.array(BundleStageDryRunOutputRecordSchema).optional(),
-      "missing_roles": z.array(BundleMissingRoleRecordSchema).optional(),
-      "reason": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<BundleStageDryRunRecord>;
-
-export const AnalysisBundleDryRunResultSchema: z.ZodType<AnalysisBundleDryRunResult> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "bundle_name": z.string(),
-      "match_preview": SelectionPreviewSchema,
-      "matched_run_ids": z.array(z.string()).optional(),
-      "stages": z.array(BundleStageDryRunRecordSchema).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisBundleDryRunResult>;
-
-export const AnalysisBundleDryRunRequestSchema: z.ZodType<AnalysisBundleDryRunRequest> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "bundle": z.record(z.string(), z.unknown()),
-      "selection_spec": SelectionSpecSchema.nullable().optional(),
-      "root": z.string().nullable().optional(),
-      "preview_limit": z.number().int().safe().gte(0).lte(500).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisBundleDryRunRequest>;
-
-export const AnalysisBundleDryRunPayloadSchema: z.ZodType<AnalysisBundleDryRunPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "dry_run": AnalysisBundleDryRunResultSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisBundleDryRunPayload>;
-
-export const AnalysisBundleDryRunResponseSchema: z.ZodType<AnalysisBundleDryRunResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": AnalysisBundleDryRunPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisBundleDryRunResponse>;
-
-export const GenerateAnalysisRequestSchema: z.ZodType<GenerateAnalysisRequest> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "node_id": z.string(),
-      "job_kind": z.union([z.literal("analysis"), z.literal("figure")]).optional(),
-      "force_rerun": z.boolean().optional(),
-      "eval_run_id": z.string().nullable().optional(),
-      "evaluation_states_policy": z.union([z.literal("recompute"), z.literal("require_durable")]).optional(),
-      "figure_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<GenerateAnalysisRequest>;
-
-export const GenerateAnalysisPayloadSchema: z.ZodType<GenerateAnalysisPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "request_id": z.string(),
-      "status": z.string(),
-      "manifest_id": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<GenerateAnalysisPayload>;
-
-export const GenerateAnalysisResponseSchema: z.ZodType<GenerateAnalysisResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GenerateAnalysisPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GenerateAnalysisResponse>;
-
-export const AnalysisJobStatusPayloadSchema: z.ZodType<AnalysisJobStatusPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "request_id": z.string(),
-      "status": z.string(),
-      "figure_hashes": z.array(z.string()).nullable().optional(),
-      "manifest_id": z.string().nullable().optional(),
-      "manifest_path": z.string().nullable().optional(),
-      "artifact_ids": z.array(z.string()).nullable().optional(),
-      "artifact_paths": z.array(z.string()).nullable().optional(),
-      "error": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisJobStatusPayload>;
-
-export const AnalysisJobStatusResponseSchema: z.ZodType<AnalysisJobStatusResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": AnalysisJobStatusPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisJobStatusResponse>;
 
 export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayload> = z.lazy(() =>
   z
@@ -8793,10 +8468,41 @@ export const AddModelComponentSchema: z.ZodType<AddModelComponent> = z.lazy(() =
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AnalyzeDatasetInputSchema, AnalyzeModelInputSchema, AnalyzeTaskInputSchema])).optional(),
     "operations": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), OperationElementSchema).optional(),
     "views": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), FigureElementSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<AnalysisDocument>;
+
+export const AnalyzeDatasetInputSchema: z.ZodType<AnalyzeDatasetInput> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("dataset"),
+    "cardinality": z.union([z.literal("one"), z.literal("many")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<AnalyzeDatasetInput>;
+
+export const AnalyzeModelInputSchema: z.ZodType<AnalyzeModelInput> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("model"),
+  }).strict()
+) as unknown as z.ZodType<AnalyzeModelInput>;
+
+export const AnalyzeTaskInputSchema: z.ZodType<AnalyzeTaskInput> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("task"),
+  }).strict()
+) as unknown as z.ZodType<AnalyzeTaskInput>;
+
+export const AttemptProvenanceSchema: z.ZodType<AttemptProvenance> = z.lazy(() =>
+  z.object({
+    "feedbax_commit": z.string().min(1),
+    "feedbax_dirty": z.boolean(),
+    "lock_sha256": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]),
+    "platform": z.string().min(1),
+    "started_at": z.string().datetime({ offset: true }),
+    "ended_at": z.string().datetime({ offset: true }),
+  }).strict()
+) as unknown as z.ZodType<AttemptProvenance>;
 
 export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
   z.object({
@@ -8913,6 +8619,10 @@ export const CellSchema: z.ZodType<Cell> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<Cell>;
 
+export const CheckDomainSchema: z.ZodType<CheckDomain> = z.lazy(() =>
+  z.union([z.literal("code"), z.literal("environment")])
+) as unknown as z.ZodType<CheckDomain>;
+
 export const CheckpointBatchesSchema: z.ZodType<CheckpointBatches> = z.lazy(() =>
   z.object({
     "batches": z.array(z.number().int().safe().gt(0).max(9007199254740991)).min(1).max(64),
@@ -8941,9 +8651,31 @@ export const CheckpointRulePathSchema: z.ZodType<CheckpointRulePath> = z.lazy(()
   z.literal("{\"field\":\"checkpoint\",\"input\":\"subject\"}")
 ) as unknown as z.ZodType<CheckpointRulePath>;
 
+export const CodeDifferenceSchema: z.ZodType<CodeDifference> = z.lazy(() =>
+  z.union([SourceDifferenceSchema, RegistryDifferenceSchema])
+) as unknown as z.ZodType<CodeDifference>;
+
+export const CodeReasonSchema: z.ZodType<CodeReason> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("code").optional(),
+    "basis": z.union([z.literal("source"), z.literal("computation"), z.literal("unverifiable")]),
+    "differences": z.array(CodeDifferenceSchema),
+    "detail": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<CodeReason>;
+
 export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
   z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
 ) as unknown as z.ZodType<Combination>;
+
+export const ContentRefSchema: z.ZodType<ContentRef> = z.lazy(() =>
+  z.object({
+    "sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "size": z.number().int().safe().min(0),
+    "media_type": z.union([z.string().min(1), z.null()]).optional(),
+    "tree": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<ContentRef>;
 
 export const CreateNamedDocumentSchema: z.ZodType<CreateNamedDocument> = z.lazy(() =>
   z.object({
@@ -8969,6 +8701,16 @@ export const DataDerivedAxisRangeSchema: z.ZodType<DataDerivedAxisRange> = z.laz
     "padding_fraction": z.number().finite().min(0.0),
   }).strict()
 ) as unknown as z.ZodType<DataDerivedAxisRange>;
+
+export const DatasetInputPortSchema: z.ZodType<DatasetInputPort> = z.lazy(() =>
+  z.object({
+    "schema_ids": z.array(z.string()).min(1),
+    "variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "kind": z.literal("dataset").optional(),
+  }).strict()
+) as unknown as z.ZodType<DatasetInputPort>;
 
 export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
   z.object({
@@ -9002,6 +8744,10 @@ export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
 export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
   z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
 ) as unknown as z.ZodType<DocumentEdit>;
+
+export const DocumentInputReferenceSchema: z.ZodType<DocumentInputReference> = z.lazy(() =>
+  z.union([InitialModelReference_DocumentReference_Schema, TaskDocumentReference_DocumentReference_Schema, ObjectiveDocumentReference_DocumentReference_Schema])
+) as unknown as z.ZodType<DocumentInputReference>;
 
 export const DocumentOverridePathSchema: z.ZodType<DocumentOverridePath> = z.lazy(() =>
   z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
@@ -9044,6 +8790,30 @@ export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection>
     "collection": z.union([z.literal("object"), z.literal("array")]),
   }).strict()
 ) as unknown as z.ZodType<EnsureDocumentCollection>;
+
+export const EnvironmentDifferenceSchema: z.ZodType<EnvironmentDifference> = z.lazy(() =>
+  z.object({
+    "distribution": z.string().min(1),
+    "before": z.string().min(1),
+    "after": z.union([z.string().min(1), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<EnvironmentDifference>;
+
+export const EnvironmentNoticeSchema: z.ZodType<EnvironmentNotice> = z.lazy(() =>
+  z.object({
+    "differences": z.array(EnvironmentDifferenceSchema),
+    "check": z.union([z.literal("pending"), z.literal("confirmed"), z.literal("different"), z.literal("not_checked")]),
+    "detail": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<EnvironmentNotice>;
+
+export const EnvironmentReasonSchema: z.ZodType<EnvironmentReason> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("environment").optional(),
+    "differences": z.array(EnvironmentDifferenceSchema),
+    "detail": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<EnvironmentReason>;
 
 export const EpochSchema: z.ZodType<Epoch> = z.lazy(() =>
   z.object({
@@ -9119,15 +8889,14 @@ export const FigureDocumentViewSchema: z.ZodType<FigureDocumentView> = z.lazy(()
     "legend_yanchor": z.union([z.union([z.literal("auto"), z.literal("top"), z.literal("middle"), z.literal("bottom")]), z.null()]).optional(),
     "margin": z.union([FigureMarginParamsSchema, z.null()]).optional(),
     "hovermode": z.union([z.union([z.literal("x"), z.literal("y"), z.literal("closest"), z.literal("x unified"), z.literal("y unified"), z.literal(false)]), z.null()]).optional(),
-    "row_label_gutter": z.union([z.number().finite().min(0.0).max(256.0), z.null()]).optional(),
     "legend_gutter": z.union([z.number().finite().min(0.0).max(512.0), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<FigureDocumentView>;
 
 export const FigureElementSchema: z.ZodType<FigureElement> = z.lazy(() =>
   z.object({
-    "figure": z.union([FigureDocumentSchema, DocumentReferenceSchema]),
-    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepDatasetSchema, OperationDatasetSchema])),
+    "figure": z.union([FigureDocumentSchema, FigureTemplateRefSchema, DocumentReferenceSchema]),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepInputSchema, OperationDatasetSchema])),
   }).strict()
 ) as unknown as z.ZodType<FigureElement>;
 
@@ -9153,6 +8922,23 @@ export const FigurePanelSchema: z.ZodType<FigurePanel> = z.lazy(() =>
     "y_axis": z.union([PanelAxisSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<FigurePanel>;
+
+export const FigureTemplateRefSchema: z.ZodType<FigureTemplateRef> = z.lazy(() =>
+  z.object({
+    "template": z.string(),
+    "settings": z.record(z.string(), jsonValueSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigureTemplateRef>;
+
+export const FileDifferenceSchema: z.ZodType<FileDifference> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("file").optional(),
+    "path": SourcePathSchema,
+    "before": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]),
+    "after": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]),
+    "status": z.union([z.literal("changed"), z.literal("indeterminate")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FileDifference>;
 
 export const FunctionClassSchema: z.ZodType<FunctionClass> = z.lazy(() =>
   z.union([z.literal("math"), z.literal("shape"), z.literal("draw"), z.literal("penalty"), z.literal("sweep_rule")])
@@ -9187,6 +8973,14 @@ export const IndexSelectionSchema: z.ZodType<IndexSelection> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<IndexSelection>;
 
+export const InitialModelReference_DocumentReference_Schema: z.ZodType<InitialModelReference_DocumentReference_> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("initial_model"),
+    "source": DocumentReferenceSchema,
+    "seed": z.number().int().safe().min(0).lt(4294967296).optional(),
+  }).strict()
+) as unknown as z.ZodType<InitialModelReference_DocumentReference_>;
+
 export const InlineBaseSchema: z.ZodType<InlineBase> = z.lazy(() =>
   z.object({
     "inline": PayloadSchema,
@@ -9202,6 +8996,24 @@ export const InputAxisSchema: z.ZodType<InputAxis> = z.lazy(() =>
 export const InputBindingSchema: z.ZodType<InputBinding> = z.lazy(() =>
   z.union([ReferenceSchema, z.array(ReferenceSchema), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), ReferenceSchema)])
 ) as unknown as z.ZodType<InputBinding>;
+
+export const InputDifferenceSchema: z.ZodType<InputDifference> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("input").optional(),
+    "role": z.string().min(1),
+    "member": z.string().min(1),
+    "before": ContentRefSchema,
+    "after": z.union([ContentRefSchema, z.null()]),
+    "detail": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<InputDifference>;
+
+export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
+  z.object({
+    "backend": z.union([z.literal("cpu"), z.literal("gpu")]),
+    "floating_point_bits": z.union([z.literal(32), z.literal(64)]),
+  }).strict()
+) as unknown as z.ZodType<JaxOperation>;
 
 export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
   z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
@@ -9286,6 +9098,12 @@ export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z
   }).strict()
 ) as unknown as z.ZodType<MatrixCompositionDelta>;
 
+export const ModelPortSchema: z.ZodType<ModelPort> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("model").optional(),
+  }).strict()
+) as unknown as z.ZodType<ModelPort>;
+
 export const ModelWireDifferenceSchema: z.ZodType<ModelWireDifference> = z.lazy(() =>
   z.object({
     "op": z.union([z.literal("add_wire"), z.literal("rewire")]),
@@ -9333,6 +9151,13 @@ export const ObjectiveDocumentSchema: z.ZodType<ObjectiveDocument> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<ObjectiveDocument>;
 
+export const ObjectiveDocumentReference_DocumentReference_Schema: z.ZodType<ObjectiveDocumentReference_DocumentReference_> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("objective"),
+    "source": DocumentReferenceSchema,
+  }).strict()
+) as unknown as z.ZodType<ObjectiveDocumentReference_DocumentReference_>;
+
 export const ObjectiveTermSchema: z.ZodType<ObjectiveTerm> = z.lazy(() =>
   z.object({
     "id": z.string(),
@@ -9363,20 +9188,23 @@ export const OperationDefinitionSchema: z.ZodType<OperationDefinition> = z.lazy(
   z.object({
     "key": z.string(),
     "owner": z.string(),
+    "owner_version": z.string(),
+    "renamed_from": z.array(z.string()).optional(),
     "label": z.string(),
     "description": z.string(),
     "param_schema": z.array(ParamSchemaSchema),
     "parameter_json_schema": z.record(z.string(), jsonValueSchema),
     "static_parameters": z.array(z.string()),
-    "inputs": z.record(z.string(), DatasetPortSchema),
+    "inputs": z.record(z.string(), z.union([DatasetInputPortSchema, ModelPortSchema, TaskPortSchema])),
     "outputs": z.record(z.string(), DatasetPortSchema),
+    "numerical": z.union([JaxOperationSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<OperationDefinition>;
 
 export const OperationElementSchema: z.ZodType<OperationElement> = z.lazy(() =>
   z.object({
     "operation": z.string().min(1),
-    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepDatasetSchema, OperationDatasetSchema])),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepInputSchema, OperationDatasetSchema])),
     "params": z.record(z.string(), jsonValueSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<OperationElement>;
@@ -9496,13 +9324,44 @@ export const RangeValuesSchema: z.ZodType<RangeValues> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<RangeValues>;
 
+export const ReceiptValiditySchema: z.ZodType<ReceiptValidity> = z.lazy(() =>
+  z.object({
+    "receipt": ContentObjectRefSchema,
+    "state": z.union([z.literal("current"), z.literal("unchecked"), z.literal("stale")]),
+    "reasons": z.array(ValidityReasonSchema).optional(),
+    "checks": z.array(CheckDomainSchema).optional(),
+    "environment": z.union([EnvironmentNoticeSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ReceiptValidity>;
+
 export const ReductionSchema: z.ZodType<Reduction> = z.lazy(() =>
   z.union([z.literal("mean"), z.literal("sum"), z.literal("last"), z.literal("max")])
 ) as unknown as z.ZodType<Reduction>;
 
 export const ReferenceSchema: z.ZodType<Reference> = z.lazy(() =>
-  z.union([StepReferenceSchema, RunReferenceSchema, StoreSubsetSchema, NamedSubsetSchema, OmittedReferenceSchema])
+  z.union([StepReferenceSchema, RunReferenceSchema, StoreSubsetSchema, NamedSubsetSchema, OmittedReferenceSchema, DocumentInputReferenceSchema])
 ) as unknown as z.ZodType<Reference>;
+
+export const RegistryBindingSchema: z.ZodType<RegistryBinding> = z.lazy(() =>
+  z.object({
+    "family": z.string().min(1),
+    "requested_key": z.string().min(1),
+    "key": z.string().min(1),
+    "distribution": z.string().min(1),
+    "version": z.string().min(1),
+    "module": z.string().min(1),
+    "qualified_name": z.string().min(1),
+    "source_path": z.union([SourcePathSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<RegistryBinding>;
+
+export const RegistryDifferenceSchema: z.ZodType<RegistryDifference> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("registry").optional(),
+    "before": RegistryBindingSchema,
+    "after": z.union([RegistryBindingSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<RegistryDifference>;
 
 export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(() =>
   z.object({
@@ -9657,6 +9516,25 @@ export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SiteProjection>;
 
+export const SourceDifferenceSchema: z.ZodType<SourceDifference> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("source").optional(),
+    "path": SourcePathSchema,
+    "before": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]),
+    "after": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]),
+    "status": z.union([z.literal("changed"), z.literal("removed"), z.literal("unreadable"), z.literal("invalid"), z.literal("indeterminate")]),
+    "statements": z.array(z.string()).optional(),
+    "functions": z.array(z.string()).optional(),
+  }).strict()
+) as unknown as z.ZodType<SourceDifference>;
+
+export const SourcePathSchema: z.ZodType<SourcePath> = z.lazy(() =>
+  z.object({
+    "scope": z.string().min(1),
+    "path": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<SourcePath>;
+
 export const StateResetSchema: z.ZodType<StateReset> = z.lazy(() =>
   z.union([z.literal("trial"), z.literal("epoch")])
 ) as unknown as z.ZodType<StateReset>;
@@ -9683,11 +9561,11 @@ export const StepBaseSchema: z.ZodType<StepBase> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StepBase>;
 
-export const StepDatasetSchema: z.ZodType<StepDataset> = z.lazy(() =>
+export const StepInputSchema: z.ZodType<StepInput> = z.lazy(() =>
   z.object({
     "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
-) as unknown as z.ZodType<StepDataset>;
+) as unknown as z.ZodType<StepInput>;
 
 export const StepKindSchema: z.ZodType<StepKind> = z.lazy(() =>
   z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("report")])
@@ -9770,7 +9648,7 @@ export const StudioAnalyzeWireSchema: z.ZodType<StudioAnalyzeWire> = z.lazy(() =
   z.object({
     "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "role": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "source": z.union([StepDatasetSchema, OperationDatasetSchema]),
+    "source": z.union([StepInputSchema, OperationDatasetSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeWire>;
 
@@ -9821,6 +9699,15 @@ export const StudioAuthoringChoiceSchema: z.ZodType<StudioAuthoringChoice> = z.l
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringChoice>;
 
+export const StudioAuthoringDeclarationSchema: z.ZodType<StudioAuthoringDeclaration> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "label": z.string(),
+    "renamed_from": z.array(z.string()),
+    "settings_schema": z.record(z.string(), jsonValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringDeclaration>;
+
 export const StudioAuthoringFieldSchema: z.ZodType<StudioAuthoringField> = z.lazy(() =>
   z.object({
     "id": z.string(),
@@ -9832,18 +9719,6 @@ export const StudioAuthoringFieldSchema: z.ZodType<StudioAuthoringField> = z.laz
     "can_sweep": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringField>;
-
-export const StudioAuthoringMethodSchema: z.ZodType<StudioAuthoringMethod> = z.lazy(() =>
-  z.object({
-    "key": z.string(),
-    "schema_id": z.string(),
-    "schema_version": z.string(),
-    "owner": z.string(),
-    "package": z.union([z.string(), z.null()]),
-    "plugin": z.union([z.string(), z.null()]),
-    "payload_schema": z.record(z.string(), jsonValueSchema),
-  }).strict()
-) as unknown as z.ZodType<StudioAuthoringMethod>;
 
 export const StudioAuthoringNumberSchema: z.ZodType<StudioAuthoringNumber> = z.lazy(() =>
   z.object({
@@ -9863,14 +9738,15 @@ export const StudioAuthoringOptionSchema: z.ZodType<StudioAuthoringOption> = z.l
 
 export const StudioAuthoringOriginSchema: z.ZodType<StudioAuthoringOrigin> = z.lazy(() =>
   z.object({
-    "plugin": z.string(),
-    "distribution": z.union([z.string(), z.null()]),
+    "package": z.string(),
+    "distribution": z.string(),
+    "version": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringOrigin>;
 
 export const StudioAuthoringRegistrySchema: z.ZodType<StudioAuthoringRegistry> = z.lazy(() =>
   z.object({
-    "entries": z.array(z.union([ComponentDefinitionSchema, OperationDefinitionSchema, StudioAuthoringMethodSchema, FunctionInfoSchema])),
+    "entries": z.array(z.union([ComponentDefinitionSchema, OperationDefinitionSchema, StudioAuthoringDeclarationSchema, FunctionInfoSchema])),
     "origins": z.record(z.string(), StudioAuthoringOriginSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringRegistry>;
@@ -9888,7 +9764,7 @@ export const StudioAuthoringSurfaceSchema: z.ZodType<StudioAuthoringSurface> = z
     "project_grammar": z.record(z.string(), jsonValueSchema),
     "step_payloads": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
     "document_schemas": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
-    "training_methods": z.array(StudioAuthoringMethodSchema),
+    "training_methods": z.array(StudioAuthoringDeclarationSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringSurface>;
 
@@ -10256,6 +10132,8 @@ export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z
     "request_id": z.string(),
     "receipt": JobReceiptSchema,
     "products": z.record(z.string(), z.string()),
+    "validity": z.union([ReceiptValiditySchema, z.null()]).optional(),
+    "provenance": z.union([AttemptProvenanceSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSavedLightResult>;
 
@@ -10539,6 +10417,20 @@ export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<TaskDocument>;
 
+export const TaskDocumentReference_DocumentReference_Schema: z.ZodType<TaskDocumentReference_DocumentReference_> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("task"),
+    "source": DocumentReferenceSchema,
+  }).strict()
+) as unknown as z.ZodType<TaskDocumentReference_DocumentReference_>;
+
+export const TaskPortSchema: z.ZodType<TaskPort> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("task").optional(),
+    "task_key": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<TaskPort>;
+
 export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
   z.object({
     "start": z.number().int().safe(),
@@ -10593,6 +10485,10 @@ export const ValidationTrialSchema: z.ZodType<ValidationTrial> = z.lazy(() =>
 export const ValidationValueSchema: z.ZodType<ValidationValue> = z.lazy(() =>
   z.union([ScalarSchema, z.array(ValidationValueSchema)])
 ) as unknown as z.ZodType<ValidationValue>;
+
+export const ValidityReasonSchema: z.ZodType<ValidityReason> = z.lazy(() =>
+  z.union([CodeReasonSchema, EnvironmentReasonSchema, FileDifferenceSchema, InputDifferenceSchema])
+) as unknown as z.ZodType<ValidityReason>;
 
 export const ValueBaseSchema: z.ZodType<ValueBase> = z.lazy(() =>
   z.union([z.literal("real"), z.literal("integer"), z.literal("boolean")])
@@ -10749,7 +10645,6 @@ export const contractSchemas = {
   ProjectValueEdit: ProjectValueEditSchema,
   ComponentListResponse: ComponentListResponseSchema,
   ComponentDetailResponse: ComponentDetailResponseSchema,
-  ComponentRefreshResponse: ComponentRefreshResponseSchema,
   DomainListResponse: DomainListResponseSchema,
   DomainCompileReport: DomainCompileReportSchema,
   StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
@@ -10760,10 +10655,6 @@ export const contractSchemas = {
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
   SuccessResponse: SuccessResponseSchema,
-  AnalysisPackagesResponse: AnalysisPackagesResponseSchema,
-  AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponseSchema,
-  GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
-  AnalysisJobStatusResponse: AnalysisJobStatusResponseSchema,
   SelectionSpec: SelectionSpecSchema,
   SelectionPreview: SelectionPreviewSchema,
   DatasetInfo: DatasetInfoSchema,
@@ -10902,7 +10793,6 @@ export interface ContractTypeMap {
   ProjectValueEdit: ProjectValueEdit;
   ComponentListResponse: ComponentListResponse;
   ComponentDetailResponse: ComponentDetailResponse;
-  ComponentRefreshResponse: ComponentRefreshResponse;
   DomainListResponse: DomainListResponse;
   DomainCompileReport: DomainCompileReport;
   StudioPlanarSceneRequest: StudioPlanarSceneRequest;
@@ -10913,10 +10803,6 @@ export interface ContractTypeMap {
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;
   SuccessResponse: SuccessResponse;
-  AnalysisPackagesResponse: AnalysisPackagesResponse;
-  AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponse;
-  GenerateAnalysisResponse: GenerateAnalysisResponse;
-  AnalysisJobStatusResponse: AnalysisJobStatusResponse;
   SelectionSpec: SelectionSpec;
   SelectionPreview: SelectionPreview;
   DatasetInfo: DatasetInfo;
