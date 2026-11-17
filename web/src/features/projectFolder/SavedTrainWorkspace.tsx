@@ -29,6 +29,8 @@ import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import { StudioProblems } from '@/features/projectWindow/StudioProblems';
+import { useDrawerSections } from '@/features/projectWindow/DrawerForms';
+import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
@@ -37,7 +39,7 @@ import {
   ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
-  type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms,
+  type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type ModelAddress,
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
@@ -82,7 +84,7 @@ function exceptionFieldLabel(path: string) {
 }
 type WindowPanel = { kind: 'activity' } | {
   kind: 'problems';
-  scope: { step: string; variant: string | null } | null;
+  scope: { step: string; variant: string | null; element?: ModelAddress } | null;
   opener: HTMLElement | null;
 };
 export interface ProjectWindowCommandScope {
@@ -199,6 +201,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const queries = useQueryClient();
   const actions = useStudioJobActions();
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
+  const drawerSections = useDrawerSections(windowState, setWindowState);
   const elements = useElementSelectionStore();
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
@@ -493,6 +496,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
     namedRun, documentScopes, elements, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
+    drawerSections,
+    openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
+      const owner = modelProblems?.find((problem) => problem.model_address && holds(element, problem.model_address));
+      if (owner?.step) setPanel({ kind: 'problems', scope: { step: owner.step, variant, element }, opener });
+    },
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
     fieldAxes: state.selection?.kind === 'values' ? Object.fromEntries(
       state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
@@ -601,7 +609,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     problem.step && (problem.variant === null || problem.variant === variant) ? [problem.step] : []));
   const shownProblems = problemScope ? problems.filter((problem) =>
     problem.step === problemScope.step &&
-    (problem.variant === null || problem.variant === problemScope.variant)) : problems;
+    (problem.variant === null || problem.variant === problemScope.variant) &&
+    (!problemScope.element || !!problem.model_address && holds(problemScope.element, problem.model_address))) : problems;
   function openProjectProblems(opener: HTMLElement | null = null) {
     setPanel({ kind: 'problems', scope: null, opener });
   }

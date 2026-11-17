@@ -18,11 +18,15 @@ export interface TreeNode {
   muted?: boolean;
   /** Read after the row's name by assistive technology: a fact the row draws by its tone, such as a count of related runs. */
   description?: string;
+  /** False for a row whose name is not the user's, when the tree renames others. */
+  renamable?: boolean;
 }
 
 export interface TreeHandle {
   /** Opens the row's ancestors and scrolls it into view. */
   reveal: (id: string) => void;
+  /** Opens the row and its ancestors. */
+  open: (id: string) => void;
   focus: () => void;
   /** Puts the row's name into editing, revealing it first. */
   rename: (id: string) => void;
@@ -65,6 +69,8 @@ function index(nodes: readonly TreeNode[]) {
   walk(nodes, null, 0);
   return entries;
 }
+
+const renamable = (node: TreeNode) => !node.disabled && node.renamable !== false;
 
 const branch = (node: TreeNode) => (node.children?.length ?? 0) > 0;
 
@@ -130,13 +136,19 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
 
   useImperativeHandle(ref, () => ({
     reveal,
+    open: (id) => {
+      if (!entries.has(id)) return;
+      const ids = [id, ...ancestors(id)];
+      setExpanded((now) => ids.every((item) => now.has(item)) ? now : new Set([...now, ...ids]));
+    },
     focus: () => { if (current) rows.current.get(current)?.focus(); },
     rename: (id) => {
-      if (!onRename || !entries.has(id)) return;
+      const entry = entries.get(id);
+      if (!onRename || !entry || !renamable(entry.node)) return;
       reveal(id);
       setEditing(id);
     },
-  }), [current, entries, onRename, reveal]);
+  }), [ancestors, current, entries, onRename, reveal]);
 
   useLayoutEffect(() => {
     const key = selected.join('\u0000');
@@ -251,7 +263,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
       case 'Enter':
         handled();
         if (node.disabled) return;
-        if (onRename) setEditing(node.id);
+        if (onRename && renamable(node)) setEditing(node.id);
         else onActivate?.(node.id);
         return;
       case ' ':
@@ -326,7 +338,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
             disabled={node.disabled}
             className={node.muted ? 'text-shell-muted' : undefined}
             aria-description={node.description}
-            name={onRename ? (
+            name={onRename && renamable(node) ? (
               <InlineEdit
                 value={node.name}
                 editing={editing === node.id}
