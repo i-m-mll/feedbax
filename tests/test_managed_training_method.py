@@ -102,8 +102,8 @@ def _launch(jobs, folders, plan, step, token):
 
 def _terminal(client, job_id, expected):
     def read():
-        row = job_row(client, job_id)
-        return row if row and row["outcome"] is not None else None
+        (row,) = client.jobs(job_id=job_id, include_launch=True)
+        return row if row["outcome"] is not None else None
 
     row = wait_until(read, timeout=28)
     assert row["state"] == expected, row["outcome"]
