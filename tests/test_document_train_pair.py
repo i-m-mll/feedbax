@@ -237,12 +237,9 @@ def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, a
 
 
 def test_document_learning_rate_sweep_projects_only_after_expansion(authored, prepared_trials):
-    from feedbax.plugins.application import new_application_registry_bundle
-    from feedbax.studio.canonical_train import lower_canonical_train
-
     raw = document_project(authored)
     raw["steps"]["train"]["sweep"] = {"axes": {"rate": {
-        "path": "method_payload.payload.optimizer.params.learning_rate",
+        "path": "settings.optimizer.params.learning_rate",
         "range": {"start": 1e-4, "stop": 1e-2, "count": 3, "scale": "log"},
     }}}
     memo = ProjectPlanMemo()
@@ -255,7 +252,6 @@ def test_document_learning_rate_sweep_projects_only_after_expansion(authored, pr
     assert restored.requests == reviewed.requests
     assert restored.documents == reviewed.documents
 
-    registry = new_application_registry_bundle()
     rates = []
     for run in plan.runs:
         data = plan.requests[run.request_id]
@@ -263,12 +259,10 @@ def test_document_learning_rate_sweep_projects_only_after_expansion(authored, pr
         assert "learning_rate" not in payload["training_config"]
         decoded = decode_request(data, plan.documents.__getitem__)
         assert isinstance(decoded.spec, DocumentTrainingRequestSpec)
-        optimizer = decoded.spec.method_payload.payload["optimizer"]
+        optimizer = decoded.spec.settings["optimizer"]
         rate = optimizer["params"]["learning_rate"]
         assert isinstance(rate, float)
         assert encode_request(decoded.spec, decoded.inputs).data == data
-        spec = lower_canonical_train(decoded.spec, registry.training_programs, registries=registry)
-        assert spec.training_config.learning_rate == rate
         rates.append(rate)
     np.testing.assert_allclose(rates, [0.0001, 0.001, 0.01])
 
@@ -282,7 +276,7 @@ def test_document_learning_rate_sweep_projects_only_after_expansion(authored, pr
 
 
 def _two_optimizer_rates(raw):
-    path = "method_payload.payload.optimizer.params.learning_rate"
+    path = "settings.optimizer.params.learning_rate"
     raw["steps"]["train"]["sweep"] = {"axes": {"rate": {"values": {
         name: {"patches": {path: {"value": value}}}
         for name, value in (("low", 0.001), ("high", 0.01))
@@ -386,7 +380,7 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
 @pytest.mark.parametrize("wide, reject", [(1e20, True), (1e21, False)])
 def test_saved_window_keeps_verification_for_wide_float_requests(authored, tmp_path, wide, reject):
     raw = document_project(authored)
-    raw["steps"]["train"]["base"]["inline"]["method_payload"]["metadata"] = {"value": wide}
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["params"]["learning_rate"] = wide
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "wide", Project.model_validate(raw))
     settled = folders.read_plan("wide", revision=None)
@@ -493,17 +487,9 @@ def document_project(authored, *, evaluation=False):
                     "objective": {"document": "objective"},
                     "input_overrides": {"reach_target": "target_pos"},
                 },
-                "training_config": {"n_batches": 2, "n_reach_steps": 80, "batch_size": 4},
-                "method_ref": {"package": "feedbax", "name": "studio_graph", "version": "v1"},
-                "method_payload": {
-                    "schema_id": "feedbax.spec.training_method.studio_graph",
-                    "schema_version": "feedbax.spec.training_method.studio_graph.v1",
-                    "payload": {
-                        "optimizer": {"type": "adam", "params": {"learning_rate": 0.001}},
-                        "target_total": 2,
-                        "key_schedule": "independent_v1",
-                    },
-                },
+                "training_config": {"n_batches": 2, "batch_size": 4},
+                "method": "feedbax.supervised_gradient",
+                "settings": {"optimizer": {"type": "adam", "params": {"learning_rate": 0.001}}},
             }}},
         },
     }
@@ -516,17 +502,17 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     host = host_fixture
     from feedbax.contracts.project_plan import RunKey
     from feedbax.jobs import JobService
-    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.plugins.composition import load_application
     from feedbax.web.services.project_folder import ProjectFolderService
     from tests.test_canonical_evaluate_admission import _save_project
     from tests.test_local_job_host import job_row, wait_until
 
-    registry = new_application_registry_bundle()
+    registry = load_application().bundle
     jobs = JobService(host, registry)
     folders = ProjectFolderService(tmp_path / "projects")
     project = "document-pair"
     raw = document_project(authored, evaluation=True)
-    payload = raw["steps"]["train"]["base"]["inline"]["method_payload"]["payload"]
+    payload = raw["steps"]["train"]["base"]["inline"]["settings"]
     rate = 0.003
     payload["optimizer"]["params"]["learning_rate"] = rate
     _save_project(folders, project, Project.model_validate(raw))
@@ -537,8 +523,7 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     assert train_job.disposition == "admitted", train_job
     (accepted,) = host.jobs(job_id=train_job.job_id, include_launch=True)
     prepared = accepted["launch"]["payload"]["spec"]
-    assert prepared["training_config"]["learning_rate"] == rate
-    assert prepared["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] == rate
+    assert prepared["settings"]["optimizer"]["params"]["learning_rate"] == rate
     # A GPU venue passes its backend and x64 settings to ordinary Jobs admission.
     with monkeypatch.context() as venue:
         venue.setenv("JAX_PLATFORMS", "cuda")
