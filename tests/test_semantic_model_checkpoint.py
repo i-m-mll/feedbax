@@ -167,6 +167,16 @@ def test_thelen_model_slot_rebuilds_owner_from_restored_source_values(tmp_path, 
         GraphDocument(graph=_thelen_graph(structural | final_values)), ComponentRegistry(),
     ).graph
     template = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
+    inconsistent = eqx.tree_at(
+        lambda model: model.nodes["muscle"].state_index.init,
+        source,
+        replace_fn=lambda leaf: jnp.full_like(leaf, 0.75),
+    )
+    rejected_root = tmp_path / "unreconstructible"
+    with pytest.raises(ModelCheckpointError):
+        _publish(rejected_root, graph, (inconsistent,), (template,))
+    assert not (rejected_root / "latest.json").exists()
+
     written = _publish(tmp_path / "thelen", graph, (source,), (template,))
     selected = _open(written.root, written.latest_pointer).model
     restored = selected.restore(template)
