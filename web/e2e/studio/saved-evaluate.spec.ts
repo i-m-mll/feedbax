@@ -892,7 +892,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   expect(new Set(descriptions).size).toBe(descriptions.length);
   await scanStudio(page, info, 'evaluate-model');
   await tab(page, 'Task').click();
-  await expect(page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('button', { name: /^Task Document / })).toBeVisible();
   await scanStudio(page, info, 'evaluate-task');
   await chooseStep(page, 'finite');
   await footer(page).getByRole('button', { name: 'Activity', exact: true }).click();

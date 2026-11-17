@@ -503,7 +503,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     expect.objectContaining({ path: methodTarget, value: 6 }),
     expect.objectContaining({ path: `${carryoverPath}.progress.additional_batches`, value: 4 }),
   ]);
-  await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
+  await page.locator('[data-slot="secondary"]').getByRole('button', { name: 'Close Slot', exact: true }).click();
   const successors = await run(childId);
   const compiled = await plan();
   expect(compiled.window_map?.problems).toEqual([]);
@@ -617,7 +617,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     );
   }
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
-  await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
+  await page.locator('[data-slot="secondary"]').getByRole('button', { name: 'Close Slot', exact: true }).click();
   await rail.getByRole('tab', { name: 'Results', exact: true }).click();
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
   const desktopLoss = page.locator('[data-slot="primary"]').getByRole('img', { name: 'Loss', exact: true });

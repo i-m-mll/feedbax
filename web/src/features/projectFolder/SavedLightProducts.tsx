@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { z } from 'zod';
-import { apiErrorMessage, requestJson } from '@/api/request';
+import { requestJson } from '@/api/request';
+import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { studioName } from '@/components/activity/studioVocabulary';
 import type { StudioSavedLightHistory } from '@/generated/studioContracts';
@@ -39,7 +40,7 @@ const figureProduct = z.object({
 function SavedPlot({ url, name }: { url: string; name: string }) {
   const target = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
-  const [plotError, setPlotError] = useState<unknown>();
+  const [plot, setPlot] = useState<{ attempt: number; error?: unknown }>({ attempt: 0 });
   const theme = useRootAttribute('data-theme');
   const figure = useQuery({
     queryKey: ['saved-plotly-figure', url],
@@ -62,20 +63,24 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
         });
         if (active) setReady(true);
       } catch (error) {
-        if (active) setPlotError(error);
+        if (active) setPlot((current) => ({ ...current, error }));
       }
     })();
     return () => {
       active = false;
       purge?.();
     };
-  }, [figure.data, theme]);
-  const error = figure.error ?? plotError;
-  return <div>
-    {Boolean(error) && <p role="alert">{apiErrorMessage(error)}</p>}
-    <div ref={target} role="img" aria-label={name} className="min-h-64 w-full"
-      aria-busy={!ready && !error || undefined} />
-  </div>;
+  }, [figure.data, theme, plot.attempt]);
+  const error = figure.error ?? plot.error;
+  const state: StudioRegionState = error
+    ? { kind: 'failed', issue: studioRegionIssue('figures', error), retry: () => {
+      setPlot(({ attempt }) => ({ attempt: attempt + 1 }));
+      if (figure.error) void figure.refetch();
+    } }
+    : figure.data ? { kind: 'result', missing: [] } : { kind: 'loading' };
+  return <StudioRegion state={state} skeleton={<div className="min-h-64 rounded bg-shell-subtle motion-safe:animate-pulse" />}>
+    <div ref={target} role="img" aria-label={name} className="min-h-64 w-full" aria-busy={!ready || undefined} />
+  </StudioRegion>;
 }
 
 export function SavedFigureResult({ history, name }: { history: StudioSavedLightHistory; name: string }) {

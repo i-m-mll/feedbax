@@ -69,21 +69,6 @@ export function useTrialAuthoring(
   return { view: query.data, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
-export function TrialTaskPicker({ view, commit }: { view: StudioTrialAuthoring; commit?: Commit }) {
-  const [error, setError] = useState<string>();
-  return <>
-    <Select className="min-w-0" aria-label={studioName('taskDocument')} value={view.task_document ?? null}
-      placeholder={studioName('inlineTask')} disabled={!commit || view.tasks.length === 0}
-      items={view.tasks.map(({ document, problems }) => ({
-        value: document, label: document + (problems.length ? ' · ' + problems[0].reason : ''),
-      }))}
-      onValueChange={async (document) => {
-        setError(await commit?.(studioAccessibleName('select', studioName('task')), { kind: 'select_task', document }));
-      }} />
-    {error && <span role="alert">{error}</span>}
-  </>;
-}
-
 export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; commit?: Commit }) {
   const [error, setError] = useState<string>();
   const task = view.task;

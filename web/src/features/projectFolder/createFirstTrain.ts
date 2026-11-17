@@ -1,19 +1,9 @@
 import { studioName } from '@/components/activity/studioVocabulary';
 import type { Document, StudioProjectCreateFile, StudioProjectSnapshot } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
+import { blankDocuments } from './useProjectDocuments';
 
-const model: Document = {
-  schema: 'feedbax.spec.model',
-  payload: { step_seconds: 0.01, ports: {}, interior: {} },
-};
-const task: Document = {
-  schema: 'feedbax.spec.python_task',
-  payload: { type: 'feedbax.Reaching', params: {} },
-};
-const objective: Document = {
-  schema: 'feedbax.spec.objective_document',
-  payload: { id: 'objective', terms: [] },
-};
+const { model, task, objective } = blankDocuments;
 const taskDocumentSchema = 'feedbax.spec.task_document';
 export const supervisedTrainMethod = 'feedbax.supervised_gradient';
 

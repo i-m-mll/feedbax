@@ -1,7 +1,7 @@
 import {
   ArrowLeft, ArrowRight, BarChart3, Columns2, Command, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Scan, Settings2, Target, Workflow, X,
-  ZoomIn, ZoomOut, type LucideIcon,
+  Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Settings2, Target, Workflow, X,
+  type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
 import {
@@ -9,6 +9,8 @@ import {
   type CSSProperties, type Dispatch, type ReactNode, type SetStateAction,
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
+import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
+import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { Button, IconButton } from '@/components/ui/Button';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
@@ -19,9 +21,11 @@ import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
 import {
-  projectWindowSlotView, projectWindowViews, showProjectWindowView,
+  closeProjectWindowSlot, projectWindowSlotView, projectWindowViews, showProjectWindowView,
   type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
+import type { DocumentPickerModel } from './DocumentPicker';
+import { SlotHeader } from './SlotHeader';
 import { StudioCommandPalette } from './StudioCommandPalette';
 import { StudioSettings } from './StudioSettings';
 import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
@@ -32,6 +36,7 @@ import './projectWindow.css';
 
 export interface ProjectWindowViewRegion {
   body: ReactNode;
+  picker?: DocumentPickerModel;
   header?: ReactNode;
   drawer?: ReactNode;
   inspector?: ReactNode;
@@ -50,7 +55,7 @@ export interface ProjectWindowProps {
   onBack?: () => void;
   onForward?: () => void;
   commands: readonly StudioCommand[];
-  mapCommands?: readonly StudioCommand[];
+  mapCommands?: readonly CanvasViewportCommand[];
   focusRequest?: number;
   variant?: ReactNode;
   overlay?: ReactNode;
@@ -73,8 +78,6 @@ const views = {
   figures: Image,
   document: FileText,
 } satisfies Record<ProjectWindowView, LucideIcon>;
-
-const viewportIcons: Partial<Record<StudioCommand['id'], LucideIcon>> = { fitView: Scan, zoomIn: ZoomIn, zoomOut: ZoomOut };
 
 const modes = [
   { mode: 'map', id: 'showMap', icon: PanelTop },
@@ -220,11 +223,15 @@ export function ProjectWindow({
     moveFocus(other);
   }
 
+  function closeSlot(slot: ProjectWindowSlot) {
+    onStateChange((previous) => closeProjectWindowSlot(previous, slot));
+    moveFocus('primary');
+  }
+
   function splitDetails() {
-    onStateChange((previous) => split
-      ? { ...previous, secondaryView: null, focusedSlot: 'primary' }
-      : showProjectWindowView(previous, 'scene', 'secondary'));
-    moveFocus(split ? 'primary' : 'secondary');
+    if (split) return closeSlot(focusedSlot);
+    onStateChange((previous) => showProjectWindowView(previous, 'scene', 'secondary'));
+    moveFocus('secondary');
   }
 
   function cycleRegion(direction: number) {
@@ -274,6 +281,8 @@ export function ProjectWindow({
   const inspector = side('showInspector', 'inspectorOpen', 'inspector', inspectorVisible);
   const splitCommand = bindStudioCommand('splitDetails', splitDetails,
     { name: split ? 'closeSlot' : 'splitDetails', enabled: !!availableViews.length });
+  const closeCommand = (slot: ProjectWindowSlot) => bindStudioCommand('splitDetails', () => closeSlot(slot),
+    { name: 'closeSlot', keyboard: false });
   const switchCommand = bindStudioCommand('switchSlot', switchSlot, { enabled: split });
   const tabCommands = projectWindowViews.map((view) => bindStudioCommand(view, () => activateView(view),
     { enabled: availableViews.includes(view) }));
@@ -284,7 +293,7 @@ export function ProjectWindow({
     setPaletteScope((open) => open ? null : scope);
   });
   const settings = bindStudioCommand('settings', () => setSettingsOpen((open) => !open), { name: 'openSettings' });
-  const viewportIds = new Set(mapCommands?.map(({ id }) => id));
+  const viewportIds = new Set<StudioCommand['id']>(mapCommands?.map(({ id }) => id));
   const separator = mode === 'map' ? '100%' : `${mode === 'both' ? fit.mapHeight.size : compactMapHeight}px`;
   const viewportCommands = fullMapVisible && (mapHasFocus || !commands.some(({ id }) => viewportIds.has(id)))
     ? mapCommands ?? [] : [];
@@ -336,10 +345,11 @@ export function ProjectWindow({
     onResize: (size: number) => resize(key, size),
   });
   const offline = serviceFailure && <StudioRegion state={serviceFailure} />;
-  const regionBody = (name: StudioCommand['name'], body: ReactNode, dataBacked = true) => (
+  const focusedOwner = `${focusedSlot}:${shownViews[focusedSlot]}`;
+  const regionBody = (name: StudioCommand['name'], body: ReactNode, dataBacked = true, owner?: string) => (
     <>
       <div className="studio-window-region-content" hidden={!!offline && dataBacked}>
-        <StudioRegionBoundary name={name}>{body}</StudioRegionBoundary>
+        <StudioRegionBoundary key={owner} name={name}>{body}</StudioRegionBoundary>
       </div>
       {dataBacked && offline}
     </>
@@ -411,7 +421,7 @@ export function ProjectWindow({
           {fullMapVisible && mapCommands && (
             <div role="toolbar" aria-label={studioName('pipelineMap')} aria-orientation="vertical" className="studio-window-rail__map">
               {mapCommands.map((command) => (
-                <WindowButton key={command.id} command={command} icon={viewportIcons[command.id] ?? Scan} placement="right" />
+                <WindowButton key={command.id} command={command} icon={canvasViewportIcons[command.id]} placement="right" />
               ))}
             </div>
           )}
@@ -449,7 +459,7 @@ export function ProjectWindow({
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
-              {regionBody('detailsDrawer', focusedRegion?.drawer, Boolean(focusedRegion?.drawer))}
+              {regionBody('detailsDrawer', focusedRegion?.drawer, Boolean(focusedRegion?.drawer), focusedOwner)}
             </div>
             {detailsDrawerVisible && (
               <ResizeSeparator label={studioName('detailsDrawer')} controls={ids.detailsDrawer} axis="x" direction={1}
@@ -486,18 +496,11 @@ export function ProjectWindow({
                     pointerTransition.current = undefined;
                     focusSlot(slot);
                   }}>
-                  <header className="studio-window-slot__header">
-                    <h2 className="studio-window-slot__name">{studioName(view)}</h2>
-                    <div className="studio-window-slot__controls" hidden={!!offline && view !== 'runs'}>
-                      <StudioRegionBoundary key={view} name={view}>{region.header}</StudioRegionBoundary>
-                    </div>
-                    {slot === 'primary' && !split && (
-                      <WindowButton command={splitCommand} icon={Columns2} />
-                    )}
-                    {slot === 'secondary' && (
-                      <WindowButton command={splitCommand} icon={X} />
-                    )}
-                  </header>
+                  <SlotHeader view={view} icon={views[view]} picker={region.picker} hidden={!!offline && view !== 'runs'}
+                    trailing={split ? <WindowButton command={closeCommand(slot)} icon={X} />
+                      : <WindowButton command={splitCommand} icon={Columns2} />}>
+                    {region.header}
+                  </SlotHeader>
                   <div key={view} className="studio-window-slot__body">
                     {regionBody(view, region.body)}
                   </div>
@@ -512,7 +515,7 @@ export function ProjectWindow({
           <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>
-              {regionBody('windowInspector', focusedRegion?.inspector, Boolean(focusedRegion?.inspector))}
+              {regionBody('windowInspector', focusedRegion?.inspector, Boolean(focusedRegion?.inspector), focusedOwner)}
             </div>
             {inspectorVisible && (
               <ResizeSeparator label={studioName('windowInspector')} controls={ids.inspector} axis="x" direction={-1}

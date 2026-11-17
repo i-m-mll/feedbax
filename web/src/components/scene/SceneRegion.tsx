@@ -1,9 +1,10 @@
 import { useId, useLayoutEffect, useMemo, useRef, type PointerEvent, type ReactNode, type SVGProps } from 'react';
-import { LocateFixed, ZoomIn, ZoomOut } from 'lucide-react';
+import { Layers } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
+import { Menu, MenuCheckboxItem, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
-import { studioAccessibleName, studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { liveTrainingEffectorTrack, liveTrainingTargetTrack } from '@/features/scenario/liveTraining';
 import type { ResolvedScene, ResolvedSceneElement } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplayPolyline, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
@@ -235,37 +236,35 @@ export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: Sc
   }
 }
 
-export function SceneHeaderControls({
-  view, camera, onCameraChange, hiddenOverlays, onToggleOverlay, renderControl,
-}: {
-  view: SceneView;
-  camera: SceneCamera;
-  onCameraChange: (camera: SceneCamera) => void;
+const overlayOrder = ['objectives', 'observables', 'overlays'] as const satisfies readonly SceneOverlay[];
+
+/** What a view's strip can act on: whether there is anything to frame, and which layers it draws. */
+export function sceneLayers(view: SceneView): { navigable: boolean; overlays: readonly SceneOverlay[] } {
+  if (view.kind !== 'geometry' && view.kind !== 'live' && view.kind !== 'replay') return { navigable: false, overlays: [] };
+  const drawableIds = new Set(view.scene.elements.filter((element) => element.geometry.kind !== 'none').map((element) => element.entity_id));
+  const navigable = drawableIds.size > 0 || view.scene.anchors.some((anchor) => anchor.position && anchor.selectable) ||
+    !!sceneTrack(view)?.samples.length;
+  const present = new Set(view.scene.entities.filter((entity) => drawableIds.has(entity.id)).map(sceneEntityOverlay));
+  return { navigable, overlays: overlayOrder.filter((overlay) => present.has(overlay)) };
+}
+
+export function SceneLayers({ overlays, hiddenOverlays, onToggleOverlay }: {
+  overlays: readonly SceneOverlay[];
   hiddenOverlays: ReadonlySet<SceneOverlay>;
   onToggleOverlay: (overlay: SceneOverlay) => void;
-  renderControl?: (id: StudioNameId, button: ReactNode) => ReactNode;
 }) {
-  if (view.kind !== 'geometry' && view.kind !== 'live' && view.kind !== 'replay') return null;
-  const drawableIds = new Set(view.scene.elements.filter((element) => element.geometry.kind !== 'none').map((element) => element.entity_id));
-  if (!drawableIds.size && !view.scene.anchors.some((anchor) => anchor.position && anchor.selectable) &&
-    !sceneTrack(view)?.samples.length) return null;
-  const overlays = new Set(view.scene.entities.filter((entity) => drawableIds.has(entity.id)).map(sceneEntityOverlay));
-  const control = (id: StudioNameId, button: ReactNode) => renderControl ? renderControl(id, button) : button;
   return (
-    <div className="studio-scene-controls flex flex-wrap items-center gap-1">
-      {control('zoomIn', <IconButton label={studioName('zoomIn')} icon={<ZoomIn aria-hidden="true" />} onClick={() => onCameraChange(zoomScene(camera, 1.2))} />)}
-      {control('zoomOut', <IconButton label={studioName('zoomOut')} icon={<ZoomOut aria-hidden="true" />} onClick={() => onCameraChange(zoomScene(camera, 1 / 1.2))} />)}
-      {control('fitView', <IconButton label={studioName('fitView')} icon={<LocateFixed aria-hidden="true" />} onClick={() => onCameraChange(fittedCamera)} />)}
-      {(['objectives', 'observables', 'overlays'] as const).filter((overlay) => overlays.has(overlay)).map((overlay) => (
-        <span key={overlay}>
-          {control(overlay, (
-            <Button variant="ghost" pressed={!hiddenOverlays.has(overlay)} onClick={() => onToggleOverlay(overlay)}>
-              {studioName(overlay)}
-            </Button>
-          ))}
-        </span>
-      ))}
-    </div>
+    <Menu>
+      <MenuTrigger disabled={!overlays.length}
+        render={<IconButton label={studioName('layers')} icon={<Layers />} tipPlacement="right" />} />
+      <MenuContent side="right" aria-label={studioName('layers')}>
+        {overlays.map((overlay) => (
+          <MenuCheckboxItem key={overlay} checked={!hiddenOverlays.has(overlay)} onCheckedChange={() => onToggleOverlay(overlay)}>
+            {studioName(overlay)}
+          </MenuCheckboxItem>
+        ))}
+      </MenuContent>
+    </Menu>
   );
 }
 

@@ -51,7 +51,8 @@ import { settledWindowSelection, useProjectWindowSelection } from './projectWind
 import { CheckpointRuleEditor, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
 import { StudioEvaluationAttemptDetails, StudioEvaluationResults } from './StudioEvaluationResults';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
-import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, TrialTaskPicker, useTrialAuthoring } from './StudioTrialAuthoring';
+import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, useTrialAuthoring } from './StudioTrialAuthoring';
+import { useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
 
@@ -100,7 +101,7 @@ const viewsByKind = {
   report: ['runs', 'document'],
 } as const satisfies Record<string, readonly ProjectWindowView[]>;
 const emptyViews: readonly ProjectWindowView[] = [];
-const noView = <p className="p-3 text-sm text-shell-muted" role="status">{studioName('unavailable')}</p>;
+const noView = <StudioRegion state={{ kind: 'empty' }} />;
 
 function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResult'; result: NonNullable<SavedRow['result']> }) {
   const [copyError, setCopyError] = useState(false);
@@ -435,10 +436,21 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     : axis?.valueIds.length === 1 ? { kind: 'axis_value', axis: axis.sweepId, value: axis.valueIds[0] } as const
       : selectedDefinitionRows.length ? { kind: 'rows', rows: selectedDefinitionRows.map(({ key }) => key.row) } as const
         : undefined);
+  const documentEditable = !pending && !outside && !snapshot.saving;
+  const trialEditable = documentEditable && Boolean(evaluateScope ||
+    wholeStep && !authored?.sweep && !authored?.deltas?.length && step?.kind === 'train');
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
-    !pending && !outside && !snapshot.saving && Boolean(evaluateScope ||
-      wholeStep && !authored?.sweep && !authored?.deltas?.length && step?.kind === 'train'),
-    evaluateScope || undefined);
+    trialEditable, evaluateScope || undefined);
+  const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
+  const pickDocument = useProjectDocuments({
+    editor, stepId: step?.id, run: namedRun, scope: evaluateScope || undefined,
+    editable: documentEditable,
+    selectable: new Set<DocumentRole>([
+      ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective'] as const : ['task'] as const,
+      ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
+    ]),
+    onError: setCommandError,
+  });
   const chosenAxis = evaluateScope && evaluateScope.kind === 'axis_value'
     ? authored?.sweep?.axes?.[evaluateScope.axis] : undefined;
   const checkpointScope = !saved.project.sweep && !subject?.checkpoint_axis && evaluateScope && (
@@ -485,8 +497,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden',
     problemReveal: focusSlot === 'secondary' ? revealed : undefined, modelPath: windowState.modelPaths?.secondary,
     setModelPath: (document, path) => setModelPath('secondary', document, path) });
-  const focusedModel = windowState.mode !== 'map' && focusView === 'model'
-    ? (focusSlot === 'primary' ? primary : secondary).model : undefined;
+  const focusedDetail = windowState.mode !== 'map' && (focusView === 'model' || focusView === 'scene')
+    ? (focusSlot === 'primary' ? primary : secondary)[focusView] : undefined;
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition,
@@ -962,7 +974,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     }),
     ...runCommands.filter(({ id }) => id !== 'newStep'),
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep ? stoppedNewStep : nextStep,
-    ...(focusedModel?.commands ?? []),
+    ...(focusedDetail?.commands ?? []),
     ...analyze.commands,
     ...report.commands,
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
@@ -1023,7 +1035,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             </Button>
           </form>
         </Dialog>}
-        {focusedModel?.overlay}
+        {focusedDetail?.overlay}
         {analyze.overlay}
         {report.overlay}
         {machineQuote && <StudioMachineApproval quote={machineQuote} busy={busy} error={commandError}
@@ -1085,7 +1097,9 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           </Button>}>{body}</ProblemDestination> : body;
         if (view === 'analysis' || view === 'figures') {
           const detail = analyze[view];
-          return { ...detail, body: withProblem(detail.body) };
+          return { ...detail, body: withProblem(detail.body),
+            picker: view === 'analysis' && authored?.kind === 'analyze' ? pickDocument('analysis', documentBase) : undefined,
+            drawer: <StudioRegion state={analyze.catalog}>{detail.drawer}</StudioRegion> };
         }
         if ((view === 'task' || view === 'objective') && trialStep) {
           if (!namedRun) return { body: noView };
@@ -1097,29 +1111,25 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           const value = trial.view;
           const commit = trial.commit;
           if (view === 'task') return {
-            header: <TrialTaskPicker view={value} commit={commit} />,
+            picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
             body: withProblem(<TrialTaskForm view={value} commit={commit} />),
           };
           const selected = selectedTerm?.step === step?.id ? selectedTerm?.term : undefined;
           const choose = (term: string) => { if (step) setSelectedTerm({ step: step.id, term }); };
           return {
-            header: value.objective_document,
+            picker: pickDocument('objective', value.objective_document ?? undefined),
             body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose} />),
             inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
           };
         }
         if (view === 'model' || view === 'task' || view === 'scene') {
           const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
-          return { ...details[view], header: <>
-            {details[view].header}
-            {details[view].path}
-            {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
-              {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
-            </span>}
-          </>, body: withProblem(details[view].body) };
+          return { ...details[view], picker: pickDocument('model', details[view].documentId, scope),
+            header: details[view].path, body: withProblem(details[view].body) };
         }
-        if (!step) return { body: null };
-        if (view === 'document') return { body: withProblem(report.body ?? noView) };
+        if (!step) return { body: noView };
+        if (view === 'document') return { body: withProblem(report.body ?? noView),
+          picker: authored?.kind === 'report' ? pickDocument('report', documentBase) : undefined };
         if (view === 'runs') {
           const runSelection = { step, state, onSelectionChange: mapProps.onSelectionChange };
           const pivot = pivotCommand(slot);

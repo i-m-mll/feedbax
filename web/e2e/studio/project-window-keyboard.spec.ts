@@ -338,10 +338,10 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await expect(mapStep(page, 'alpha')).toBeVisible();
   await page.keyboard.press('Meta+2');
   const modelView = page.getByRole('tabpanel', { name: 'Model', exact: true });
-  const count = modelView.locator('header').getByRole('status').filter({ hasText: /^\s*· \d+ of \d+\s*$/ });
+  const count = modelView.locator('.studio-window-slot__header').getByRole('button', { name: /^Model Document / });
   const card = (step: string) => page.getByRole('article', { name: `Train ${step}`, exact: true });
   await expect(modelView).toBeFocused();
-  await expect(count).toHaveText('· 3 of 3');
+  await expect(count).not.toContainText(' of ');
   await expect(modelView.locator('header').first()).toContainText(model.id);
   for (const step of ['alpha', 'beta', 'gamma']) await expect(card(step)).toHaveAttribute('data-document-scope', 'lit');
   await expect(card('other')).toHaveAttribute('data-document-scope', 'faint');
@@ -373,10 +373,10 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   for (const step of ['alpha', 'beta', 'gamma']) expect(afterShared[step].request_id).not.toEqual(initial[step].request_id);
   expect(afterShared.other.request_id).toEqual(initial.other.request_id);
 
-  await expect(count).toHaveText('· 3 of 3');
+  await expect(count).not.toContainText(' of ');
   await activate(page, mapStep(page, 'gamma'), 'Shift+Enter');
   await activate(page, mapStep(page, 'alpha'), 'Shift+Enter');
-  await expect(count).toHaveText('· 2 of 3');
+  await expect(count).toContainText('2 of 3');
   await expect(card('gamma')).toHaveAttribute('data-document-scope', 'plain');
   await expect(card('alpha')).toHaveAttribute('data-document-scope', 'lit');
   await expect(mapStep(page, 'alpha')).toHaveAttribute('aria-current', 'step');
@@ -386,7 +386,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await expect(card('beta')).not.toHaveAttribute('data-document-scope');
   await page.keyboard.press('Meta+2');
   await expect(modelView).toBeFocused();
-  await expect(count).toHaveText('· 2 of 3');
+  await expect(count).toContainText('2 of 3');
   await expect(mass).toHaveValue('2');
 
   const rejected = post(page, `${projectPath}/model/fields`);
@@ -399,7 +399,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await mass.press('Escape');
 
   await activate(page, mapStep(page, 'gamma'), 'Shift+Enter');
-  await expect(count).toHaveText('· 3 of 3');
+  await expect(count).not.toContainText(' of ');
   const restoring = post(page, `${projectPath}/model/edit`);
   await enter(mass, '4');
   const restored = await savedModelWrite(restoring);
@@ -416,7 +416,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await expect(mass).toHaveValue('2');
 
   await page.reload();
-  await expect(count).toHaveText('· 3 of 3');
+  await expect(count).not.toContainText(' of ');
   await component.click();
   await expect(mass).toHaveValue('2');
   const reopened = await readSaved(request, projectPath);
@@ -508,7 +508,7 @@ test('the window commands, tab rail and selection history work without a pointer
   await scanStudio(page, info, 'train-model-inspector');
   const trainTab = (name: string) => page.getByRole('tabpanel', { name, exact: true });
   await page.keyboard.press('Meta+3');
-  await expect(trainTab('Task').getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+  await expect(trainTab('Task').getByRole('button', { name: /^Task Document / })).toBeVisible();
   await scanStudio(page, info, 'train-task');
   await page.keyboard.press('Meta+4');
   await expect(trainTab('Objective').getByRole('table')).toBeVisible();

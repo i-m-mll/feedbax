@@ -8,7 +8,7 @@ import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTrai
 import type { ResolvedScene } from '@/features/scenario/projections';
 import { WORKSPACE_REPLAY_FIXTURE } from '@/test/workspaceReplay.fixture';
 import { SceneClockControls } from './SceneClockControls';
-import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneHeaderControls } from './SceneRegion';
+import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneLayers } from './SceneRegion';
 import { fittedCamera, sceneTimeline, type SceneOverlay, type SceneView } from './sceneView';
 
 afterEach(cleanup);
@@ -54,7 +54,7 @@ describe('Scene regions', () => {
     expect(screen.getByRole('button', { name: 'Arm' }).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('shares entity selection between separately mounted canvas, drawer and inspector', () => {
+  it('shares entity selection between separately mounted canvas, drawer and inspector', async () => {
     function View() {
       const [selectedId, onSelect] = useState<string | null>(null);
       const [hiddenOverlays, setHidden] = useState<ReadonlySet<SceneOverlay>>(noOverlaysHidden);
@@ -62,7 +62,7 @@ describe('Scene regions', () => {
       const view: SceneView = { kind: 'geometry', scene };
       return (
         <>
-          <SceneHeaderControls view={view} camera={camera} onCameraChange={onCameraChange}
+          <SceneLayers overlays={sceneLayers(view).overlays}
             hiddenOverlays={hiddenOverlays} onToggleOverlay={(overlay) => setHidden(new Set([overlay]))} />
           <SceneCanvas view={view} time={0} selectedId={selectedId} onSelect={onSelect}
             camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} />
@@ -78,7 +78,8 @@ describe('Scene regions', () => {
     fireEvent.click(canvas.getByRole('button', { name: studioAccessibleName('select', 'Far goal') }));
     expect(screen.getByRole('button', { name: 'Far goal' }).getAttribute('aria-pressed')).toBe('true');
     expect(within(screen.getByRole('region', { name: studioName('details') })).getByRole('heading').textContent).toBe('Far goal');
-    fireEvent.click(screen.getByRole('button', { name: studioName('objectives') }));
+    await userEvent.click(screen.getByRole('button', { name: studioName('layers') }));
+    await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: studioName('objectives') }));
     expect(canvas.queryByRole('button', { name: studioAccessibleName('select', 'Reaching cost') })).toBeNull();
     expect(canvas.getByRole('button', { name: studioAccessibleName('select', 'Far goal') }).getAttribute('aria-pressed')).toBe('true');
   });

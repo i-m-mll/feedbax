@@ -4,6 +4,7 @@ import type {
 } from '@/generated/studioContracts';
 import { containsCreatedFile, ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
+import { blankDocuments } from './useProjectDocuments';
 import { planVariants, savedRunId, sharedRowTerms, stepSourceRows } from './projectWindowPlan';
 
 type NamedStep = CreateNamedStep['step'];
@@ -49,15 +50,7 @@ export function analyzeInput(
 }
 
 export function createAnalyze(editor: ProjectEditController, revision: string, source: StepReference) {
-  return createManagedStep(editor, revision, source.step, {
-    schema: 'feedbax.analysis_document.v1',
-    payload: {
-      schema_version: 'feedbax.analysis_document.v1',
-      inputs: { states: { kind: 'dataset' } },
-      operations: {},
-      views: {},
-    },
-  }, {
+  return createManagedStep(editor, revision, source.step, blankDocuments.analysis, {
     kind: 'analyze', inputs: { states: source },
   });
 }

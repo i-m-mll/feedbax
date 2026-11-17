@@ -1,6 +1,3 @@
-.studio-model-canvas { display: flex; height: 100%; min-height: 0; }
-.studio-model-strip { flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--app-divider); }
-.studio-model-strip > div { flex: 1; }
 .studio-model-surface { flex: 1; min-width: 0; min-height: 0; }
 .studio-model-card { width: 180px; border: 1px solid var(--studio-control-border); border-radius: 5px; background: var(--surface-header); font-size: 12px; }
 .studio-model-card[data-boundary="true"] { border-style: dashed; }

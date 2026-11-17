@@ -59,6 +59,17 @@ export function showProjectWindowView(
   };
 }
 
+/** Close one of two open slots; the other stays open, as the primary slot. */
+export function closeProjectWindowSlot(state: ProjectWindowState, slot: ProjectWindowSlot): ProjectWindowState {
+  if (!state.secondaryView) return state;
+  if (slot === 'secondary') return { ...state, secondaryView: null, focusedSlot: 'primary' };
+  const { secondary } = state.modelPaths ?? {};
+  return {
+    ...state, primaryView: state.secondaryView, secondaryView: null, focusedSlot: 'primary',
+    modelPaths: secondary ? { primary: secondary } : {},
+  };
+}
+
 export function projectWindowSlotView(
   state: ProjectWindowState,
   slot: ProjectWindowSlot,

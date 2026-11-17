@@ -898,7 +898,6 @@ export function useStoredModelView({ model, saved, editor, window: state, active
 
   return {
     documentId: model?.id,
-    header: model && <Button variant="ghost" onClick={() => go([])}>{model.id}</Button>,
     path: model && !!resolved?.entries.length && <nav className="flex min-w-0 items-center gap-1" aria-label={studioName('modelPath')}>
       <IconButton label={studioName('modelRoot')} icon={<House />} onClick={() => go([])} />
       {resolved?.entries.map(({ id, name }, index) => <Button key={id} variant="ghost"

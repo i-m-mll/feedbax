@@ -1,6 +1,7 @@
 import { ContextMenu as BaseContextMenu } from '@base-ui/react/context-menu';
 import { Menu as BaseMenu } from '@base-ui/react/menu';
 import clsx from 'clsx';
+import { Check } from 'lucide-react';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import { popupItem, popupSurface } from './styles';
 import { usePopupLayer } from './popupLayer';
@@ -62,6 +63,25 @@ export function MenuItem({ glyph, shortcut, children, className, ...props }: Men
   );
 }
 
+export interface MenuCheckboxItemProps {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+  children: ReactNode;
+}
+
+export function MenuCheckboxItem({ checked, onCheckedChange, disabled, children }: MenuCheckboxItemProps) {
+  return (
+    <BaseMenu.CheckboxItem className={popupItem} checked={checked} disabled={disabled} closeOnClick={false}
+      onCheckedChange={(next) => onCheckedChange(next)}>
+      <span className="flex size-[1em] shrink-0 items-center justify-center">
+        <BaseMenu.CheckboxItemIndicator keepMounted={false}><Check /></BaseMenu.CheckboxItemIndicator>
+      </span>
+      <span className="flex-1 truncate">{children}</span>
+    </BaseMenu.CheckboxItem>
+  );
+}
+
 export function MenuSeparator() {
   return <BaseMenu.Separator className="mx-1 my-1 h-px bg-shell-divider" />;
 }
@@ -71,3 +91,16 @@ export function MenuGroupLabel({ children }: { children: ReactNode }) {
 }
 
 export const MenuGroup = BaseMenu.Group;
+
+export const MenuRadioGroup = BaseMenu.RadioGroup;
+
+export function MenuRadioItem({ value, disabled, children }: { value: string; disabled?: boolean; children: ReactNode }) {
+  return (
+    <BaseMenu.RadioItem className={popupItem} value={value} disabled={disabled}>
+      <span className="flex size-[1em] shrink-0 items-center justify-center">
+        <BaseMenu.RadioItemIndicator keepMounted={false}><Check /></BaseMenu.RadioItemIndicator>
+      </span>
+      <span className="flex-1 truncate">{children}</span>
+    </BaseMenu.RadioItem>
+  );
+}

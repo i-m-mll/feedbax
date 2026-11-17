@@ -24,7 +24,7 @@ test('reports that the backend stopped and recovers in the same window', async (
   await runs.getByRole('button', { name: 'Split Details', exact: true }).click();
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
   await tab('Task').click();
-  const task = secondary.getByRole('combobox', { name: 'Task Document', exact: true });
+  const task = secondary.getByRole('button', { name: /^Task Document / });
   await expect(task).toBeVisible();
   const footer = page.locator('[data-studio-focus-region="bottom"]');
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
