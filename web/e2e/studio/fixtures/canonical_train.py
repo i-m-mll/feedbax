@@ -7,21 +7,21 @@ from pathlib import Path
 import sys
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.base import ParentRef
-from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
 from feedbax.host.plan_history import plan_run_key
 from feedbax.job_completion import verify_bound_training_completion
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project
@@ -35,11 +35,10 @@ def successor_file():
             "layer_id": "initialize",
             "patches": [
                 {
-                    "path": "method_payload.payload.checkpoint_initialization",
+                    "path": "checkpoint_initialization",
                     "op": "add",
                     "value": "initialize_from",
                 },
-                {"path": "method_payload.payload.target_total", "value": 1200},
                 {"path": "training_config.n_batches", "value": 1200},
             ],
         }],
@@ -53,7 +52,7 @@ def ordinary_files(batches: str, *rates: str):
         step["sweep"] = {
             "axes": {"rate": {"values": {
                 f"rate-{index}": {"label": rate, "patches": {
-                    "method_payload.payload.optimizer.params.learning_rate": {"value": float(rate)},
+                    "settings.optimizer.params.learning_rate": {"value": float(rate)},
                 }}
                 for index, rate in enumerate(rates)
             }}},
@@ -99,6 +98,13 @@ def last_train_interval(events, attempt: str):
         and event["kind"] == "progress"
         and "metric_interval" in event["data"]
     )
+
+
+def train_success(job, store):
+    ref = ContentObjectRef.model_validate(job["outcome"]["store_success"])
+    receipt = SuccessView(store).read_owned_success(ref).receipt
+    assert (receipt.attempt, receipt.request.id) == (job["id"], job["request"])
+    return ref, receipt
 
 
 def observe(
@@ -150,7 +156,7 @@ def observe(
     assert edge["binding"] == {"dependency_job_id": attempt, "completion": completion}
     assert stopped["edges"] == child_job["edges"]
     child_completion = child_job["outcome"]["completion"]
-    verify_bound_training_completion(child_completion)
+    child_binding = verify_bound_training_completion(child_completion)
     assert child_completion["producer_job_id"] == successor_attempt
     assert child_completion["request_id"] == child.request_id
     joined_stopped, joined_child = view.attempts_by_run[successor]
@@ -160,14 +166,20 @@ def observe(
     assert joined_child.successful_receipt.model_dump(mode="json") == child_completion["receipt"]
     assert view.history[successor].result.receipt == joined_child.successful_receipt
 
-    child_manifest = load_manifest(canonical_manifest_path(
-        "TrainingRunManifest", stopped["outcome"]["receipt"]["manifest_id"], root=view.settled.store_path,
-    ))
-    initialization = child_manifest.provenance.metadata["checkpoint_initialization"]
-    pointer = completion["checkpoint"]["pointer"]
-    assert initialization["mode"] == "initialize_from"
-    assert initialization["source"]["id"] == pointer["transaction_id"]
-    assert initialization["source"]["metadata"]["manifest_sha256"] == pointer["manifest_sha256"]
+    predecessor = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
+    stopped_checkpoint = PublishedTrainingCheckpoint.model_validate(stopped["checkpoint"])
+    assert child_binding.spec.checkpoint_initialization == "initialize_from"
+    assert child_binding.checkpoint_input is not None
+    assert child_binding.checkpoint_input.checkpoint == predecessor
+    assert child_binding.resume == stopped_checkpoint
+    source_ref, _ = train_success(job, store)
+    _, child_receipt = train_success(child_job, store)
+    (source,) = child_receipt.inputs["checkpoint"]
+    assert source.selection is not None and source.selection.receipt == source_ref
+    assert child_receipt.recovery is not None
+    assert (child_receipt.recovery.run_id, child_receipt.recovery.manifest_sha256) == (
+        stopped_attempt, stopped_checkpoint.pointer.manifest_sha256,
+    )
 
     ref = view.jobs.plan_ref
     assert ref is not None
@@ -192,7 +204,7 @@ def observe(
             "request": child.request_id, "attempt": successor_attempt, "delivery": child_job["delivery"],
             "completion_updates": child_completion["checkpoint"]["completed_updates"],
             "receipt": child_completion["receipt"], "joined_status": joined_child.status,
-            "initialization": initialization,
+            "initialization": child_binding.spec.checkpoint_initialization,
             "resumed_from": stopped["checkpoint"]["completed_updates"],
             "terminal_loss": terminal_loss,
         },
@@ -205,7 +217,7 @@ def history_files():
     *documents, train = ordinary_files("2")
     sibling = deepcopy(train)
     sibling["id"] = "sibling"
-    sibling["step"]["base"]["inline"]["method_payload"]["payload"]["seed"] = 91
+    sibling["step"]["base"]["inline"]["seed"] = 91
     return [*documents, train, sibling]
 
 
@@ -224,38 +236,32 @@ def observe_swept(home: Path, project: str, successors: list[str]):
         completion = job["outcome"]["completion"]
         assert (completion["producer_job_id"], completion["request_id"]) == (attempt, job["request"])
         verify_bound_training_completion(source)
-        verify_bound_training_completion(completion)
-        manifest = load_manifest(canonical_manifest_path(
-            "TrainingRunManifest", completion["receipt"]["manifest_id"], root=Path(completion["manifest_root"]),
-        ))
-        initialization = manifest.provenance.metadata["checkpoint_initialization"]
-        transform = initialization["transformation"]
-        pointer = source["checkpoint"]["pointer"]
-        producer_source = transform["producer_source"]
-        assert producer_source["id"] == pointer["transaction_id"]
-        assert producer_source["metadata"]["manifest_sha256"] == pointer["manifest_sha256"]
-        checkpoint = completion["checkpoint"]
-        terminal = checkpoint["pointer"]
-        custody = authenticate_checkpoint_custody_ref(
-            ParentRef(
-                kind="TrainingCheckpointTransactionManifest", id=terminal["transaction_id"],
-                role="training_checkpoint_custody", uri=terminal["manifest_relative_path"],
-                metadata={"manifest_sha256": terminal["manifest_sha256"]},
-            ),
-            allowed_root=checkpoint["checkpoint_root"],
-        )
+        binding = verify_bound_training_completion(completion)
+        policy = binding.spec.continuation
+        assert policy is not None and binding.checkpoint_input is not None
+        predecessor = PublishedTrainingCheckpoint.model_validate(source["checkpoint"])
+        assert binding.checkpoint_input.checkpoint == predecessor
+        assert policy.source_completed_updates == predecessor.completed_updates
+        store = ImmutableArtifactBlobProvider(binding.manifest_root)
+        source_ref, _ = train_success(jobs[producer], store)
+        _, receipt = train_success(job, store)
+        (selected,) = receipt.inputs["checkpoint"]
+        assert selected.selection is not None and selected.selection.receipt == source_ref
+        checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
+        manifest = read_method_checkpoint_manifest(checkpoint.checkpoint_root, checkpoint.pointer)
+        assert manifest.clock.segment_start == predecessor.completed_updates
         interval = last_train_interval(events, attempt)
         result[attempt] = {
             "producer": producer,
             "receipt": completion["receipt"],
-            "completed_updates": checkpoint["completed_updates"],
+            "completed_updates": manifest.clock.completed_updates,
             "source_checkpoint": {
-                "completed_updates": source["checkpoint"]["completed_updates"],
-                "transaction_id": pointer["transaction_id"],
-                "manifest_sha256": pointer["manifest_sha256"],
+                "completed_updates": predecessor.completed_updates,
+                "transaction_id": predecessor.pointer.transaction_id,
+                "manifest_sha256": predecessor.pointer.manifest_sha256,
             },
-            "schedule_origin_step": custody.manifest.completed_coordinate.schedule_origin_step,
-            "initialization": {"mode": initialization["mode"], **transform},
+            "schedule_origin": manifest.clock.schedule_origin,
+            "initialization": policy.model_dump(mode="json"),
             "last_loss": interval["metrics"]["train_loss"]["last"],
         }
     return result
