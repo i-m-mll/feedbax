@@ -1,0 +1,159 @@
+"""Behavioral witnesses for managed receipt source and environment evidence."""
+
+from hashlib import sha256
+import importlib.util
+from pathlib import Path
+import sys
+import time
+
+import pytest
+
+from feedbax.contracts.code_validity import SourcePath
+from feedbax.contracts.effective_success import Product
+from feedbax.contracts.request_identity import encode_request
+from feedbax.contracts.request_refs import ContentRef
+from feedbax.contracts.request_specs import ReportRequestSpec
+from feedbax.host.source_roster import SourceRoster
+from feedbax.orchestration.revision import FeedbaxProvenance
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView, store_request
+from feedbax.persistence.receipt_closure import ReceiptClosure
+from feedbax.plugins.declarations import DeclarationRegistry, DistributionSource
+from feedbax.validity.environment import EnvironmentMismatch, read_environment
+from feedbax.validity.evidence import stage_evidence
+from feedbax.validity.recording import WorkerRecorder, host_product, snapshot_execution
+from feedbax.validity.source import SourceCatalog
+
+
+def test_source_comparison_counts_new_names_and_only_observed_function_bodies(tmp_path):
+    source = tmp_path / "operation.py"
+    source.write_text("def used():\n    return len([1])\n\ndef skipped():\n    return 1\n")
+    path = SourcePath(scope="project", path=source.name)
+    catalog = SourceCatalog({"project": tmp_path})
+    original = catalog.read(path)
+    assert original is not None
+
+    def compare():
+        return catalog.compare_source(path, original.sha256, lambda: original.data, ("used",))
+
+    source.write_text(
+        'def used():\n    """Count the samples."""\n    return len( [1] )\n'
+        "\ndef skipped():\n    return 27\n"
+    )
+    assert compare() is None
+
+    with source.open("a") as stream:
+        stream.write("\ndef len(values):\n    return 7\n")
+    change = compare()
+    assert change is not None and change.statements == ("len",)
+
+    source.write_text("def used():\n    return 5\n\ndef skipped():\n    return 1\n")
+    change = compare()
+    assert change is not None and change.functions == ("used",)
+
+
+def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "operation.py"
+    source.write_text("def prepare():\n    return 7\n\ndef read_input(path):\n    return path.read_text()\n")
+    before = project / "before.txt"
+    before.write_text("first contents")
+    after = project / "after.txt"
+    after.write_text("second contents")
+    selected = project / "selected.txt"
+    selected.symlink_to(before.name)
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    monkeypatch.setattr(
+        "feedbax.validity.recording.resolve_feedbax_provenance",
+        lambda: FeedbaxProvenance(Path("/example/feedbax"), "a" * 40, False),
+    )
+    spec = importlib.util.spec_from_file_location("_managed_trace_test_operation", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    registry = DeclarationRegistry("operation")
+    named_file = SourcePath(scope="project", path=selected.name)
+
+    boot_ns = time.time_ns()
+    with SourceRoster(3, "test managed worker source") as roster:
+        roster.enable()
+        recorder = WorkerRecorder(roster.names, boot_ns=boot_ns)
+        with recorder.monitor():
+            spec.loader.exec_module(module)
+            recorder.note_preloaded_sources()
+            recorder.bind_project(project)
+            registry.add(
+                "example.operation", DistributionSource("example", "example", "1"), module.read_input,
+                None, renamed_from=("example.read",),
+            )
+            with recorder.delivery("preparation", store.root, tmp_path / "scratch"), host_product():
+                assert module.prepare() == 7
+
+            with recorder.delivery("final", store.root, tmp_path / "scratch"):
+                read = registry.resolve("example.read").defining_object
+                assert read(selected) == "first contents"
+                selected.unlink()
+                selected.symlink_to(after.name)
+                assert read(selected) == "second contents"
+                with store._exclusive_lock():
+                    evidence = snapshot_execution(store)
+                    assert evidence is not None
+                    stage = stage_evidence(store, evidence)
+
+            source.write_text("def prepare():\n    return 8\n")
+            assert recorder.changed()
+
+    request = store_request(store, encode_request(ReportRequestSpec(report_type="example.report"), {}))
+    blob = store.store_object(b"report")
+    product = Product(name="report", content=ContentRef(sha256=blob.sha256, size=blob.size_bytes))
+    success = SuccessView(store).publish_bound(
+        request, attempt="final", products={"report": (product,)}, bindings={}, execution_evidence=stage,
+    )
+    trace = success.receipt.trace
+    assert trace is not None
+    captured = next(item for item in trace.sources if item.path == SourcePath(scope="project", path=source.name))
+    assert "prepare" in captured.entered and "prepare" in captured.host_product
+    assert "read_input" in captured.entered and "read_input" not in captured.host_product
+    (registered,) = trace.registry
+    assert (registered.requested_key, registered.key, registered.source_path) == (
+        "example.read", "example.operation", captured.path,
+    )
+    assert {(item.path, item.sha256) for item in trace.files} == {(named_file, sha256(b"first contents").hexdigest())}
+    assert trace.indeterminate_files == (named_file,)
+    assert captured.content in ReceiptClosure(store).owned_objects(success.ref)
+    assert b"return 7" in store.get_object(captured.content)
+    assert recorder.catalog.file_digest(named_file) == sha256(b"second contents").hexdigest()
+
+
+def test_worker_environment_verifies_versions_from_the_active_lock_projection(tmp_path):
+    (tmp_path / "uv.lock").write_text(
+        'version = 1\n[[package]]\nname = "example-lib"\nversion = "1"\n'
+        'resolution-markers = ["python_version >= \'3.12\'"]\n'
+        '[[package]]\nname = "example-lib"\nversion = "0.9"\n'
+        'resolution-markers = ["python_version < \'3.12\'"]\n'
+    )
+    current = read_environment(tmp_path, installed={"example-lib": "2"})
+    assert current.versions == {"example-lib": "1"}
+    assert current.lock_sha256 is not None
+    with pytest.raises(EnvironmentMismatch, match="example-lib 2"):
+        read_environment(tmp_path, installed={"example-lib": "2"}, verify_installation=True)
+
+
+def test_warm_worker_retires_when_a_dependency_and_lock_upgrade_together(tmp_path, monkeypatch):
+    installed = {"example-lib": "1"}
+    monkeypatch.setattr("feedbax.validity.recording.installed_versions", lambda: installed.copy())
+    lock = tmp_path / "uv.lock"
+    lock.write_text('version = 1\n[[package]]\nname = "example-lib"\nversion = "1"\n')
+    recorder = WorkerRecorder({}, boot_ns=time.time_ns())
+    recorder.bind_project(tmp_path)
+    assert not recorder.changed()
+
+    with recorder.delivery("first", tmp_path / "store", tmp_path / "scratch"):
+        installed["example-lib"] = "2"
+        lock.write_text('version = 1\n[[package]]\nname = "example-lib"\nversion = "2"\n')
+        assert read_environment(tmp_path, installed=installed, verify_installation=True).versions == installed
+        with pytest.raises(EnvironmentMismatch, match=r"example-lib \(1 to 2\)"):
+            recorder.ensure_unchanged()
+
+    assert recorder.changed()

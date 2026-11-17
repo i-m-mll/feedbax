@@ -75,6 +75,28 @@ def append(path: Path, kind: str, data: JsonObject, *, sync: bool = False) -> No
         os.close(fd)
 
 
+def read_worker_result(path: Path, *, truncate_incomplete: bool = False) -> dict | None:
+    """Find the last complete result, optionally removing a torn final append."""
+    with path.open("r+b" if truncate_incomplete else "rb") as stream:
+        tail_start = max(0, stream.seek(0, os.SEEK_END) - 2 * 1024 * 1024)
+        stream.seek(tail_start)
+        tail = stream.read()
+        end = tail.rfind(b"\n")
+        if end == -1:
+            return None
+        if truncate_incomplete and end != len(tail) - 1:
+            stream.truncate(tail_start + end + 1)
+        for raw in reversed(tail[:end].split(b"\n")):
+            try:
+                event = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            if isinstance(event, dict) and event.get("kind") == "result":
+                value = event.get("data")
+                return value if isinstance(value, dict) else None
+    return None
+
+
 def receive(sock: socket.socket, limit: int) -> JsonObject:
     with sock.makefile("rb") as stream:
         line = stream.readline(limit + 1)

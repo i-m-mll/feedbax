@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import AwareDatetime, Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, PositiveInt, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.computation_validity import ComputationTrace
+from feedbax.contracts.computation_validity import ComputationTrace, DriverIdentity
 from feedbax.contracts.request_refs import Name, ReferenceValue, Sha256
 
 
@@ -45,7 +45,7 @@ class SourceSnapshot(ReferenceValue):
 class SourceDifference(ReferenceValue):
     kind: Literal["source"] = "source"
     path: SourcePath
-    before: Sha256
+    before: Sha256 | None
     after: Sha256 | None
     status: Literal["changed", "removed", "unreadable", "invalid", "indeterminate"]
     statements: tuple[str, ...] = ()
@@ -68,6 +68,20 @@ class FileSnapshot(ReferenceValue):
     sha256: Sha256
 
 
+class ComputationUnavailable(ReferenceValue):
+    reason: Literal["arguments"] = "arguments"
+    driver: DriverIdentity
+    completed_steps: PositiveInt
+    detail: Name | None = None
+    slots: tuple[Name, ...] = ()
+
+    @model_validator(mode="after")
+    def _exact_slot_count(self) -> ComputationUnavailable:
+        if self.slots and (len(self.slots) != self.completed_steps or len(set(self.slots)) != len(self.slots)):
+            raise ValueError("The unavailable computation must name each completed slot once")
+        return self
+
+
 class CodeTrace(ReferenceValue):
     sources: tuple[SourceSnapshot, ...]
     registry: tuple[RegistryBinding, ...]
@@ -77,6 +91,13 @@ class CodeTrace(ReferenceValue):
     indeterminate_files: tuple[SourcePath, ...] = Field(default=(), exclude_if=lambda value: not value)
     prefixes: tuple[ContentObjectRef, ...] = Field(default=(), exclude_if=lambda value: not value)
     computation: ComputationTrace | None = Field(default=None, exclude_if=lambda value: value is None)
+    computation_unavailable: ComputationUnavailable | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def _computation_proof_shape(self) -> CodeTrace:
+        if self.computation is not None and self.computation_unavailable is not None:
+            raise ValueError("A computation has either a captured proof or a reason it is unavailable")
+        return self
 
 
 class AttemptProvenance(ReferenceValue):
