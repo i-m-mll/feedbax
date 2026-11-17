@@ -23,7 +23,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
-import { Button, IconButton } from '@/components/ui/Button';
+import { IconButton } from '@/components/ui/Button';
 import { ListRow } from '@/components/ui/ListRow';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
@@ -722,15 +722,7 @@ export function StudioPipelineMap({
         insertAt(event.target);
       } : undefined}
     >
-      {!plan.steps.length ? (
-        firstStep && mode === 'map' && (
-          <Button data-empty-map-card className="absolute rounded-lg text-shell-muted"
-            style={{ left: mapPadding, top: mapPadding, width: mapCardWidth, height: '4rem' }}
-            {...commandAttributes(firstStep)} disabled={!firstStep.enabled} onClick={firstStep.invoke}>
-            <Plus aria-hidden="true" />
-          </Button>
-        )
-      ) : mode === 'line' ? (
+      {!plan.steps.length ? null : mode === 'line' ? (
         <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} />
       ) : (
         <>

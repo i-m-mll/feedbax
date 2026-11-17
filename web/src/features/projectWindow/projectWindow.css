@@ -75,10 +75,6 @@
   padding-block: var(--space-2);
 }
 
-:root:not([data-empty-map='card']) [data-empty-map-card] {
-  display: none;
-}
-
 .studio-window-panel {
   display: grid;
   position: relative;
