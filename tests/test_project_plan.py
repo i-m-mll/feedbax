@@ -32,7 +32,7 @@ LEARNING_RATE = "settings.optimizer.params.learning_rate"
 def _project_data():
     data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     fit = data["steps"].pop("train")
-    fit["base"]["inline"].update(seed=0, on_nan="raise")
+    fit["base"]["inline"]["seed"] = 0
     data["steps"] = {"fit": fit, "evaluate": managed_evaluation_step("fit")}
     return data
 
@@ -179,6 +179,9 @@ def _chained_train_data():
             "kind": "train",
             "base": {"step": "fit"},
             "inputs": {"checkpoint": {"step": "fit", "checkpoint": "last"}},
+            "deltas": [{"layer_id": "initialize", "patches": [
+                {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+            ]}],
         }
     steps["flat"]["sweep"] = {
         "axes": {
@@ -190,7 +193,7 @@ def _chained_train_data():
             }
         }
     }
-    steps["rewarm"]["deltas"] = [
+    steps["rewarm"]["deltas"] += [
         {"layer_id": "rewarm", "patches": [
             {"path": "training_config.n_batches", "value": 50},
         ]}
@@ -543,7 +546,7 @@ def test_exception_changes_only_selected_run_requests_and_exclusion_removes_run_
     fit["sweep"]["exceptions"] = {
         "replace_policy": {
             "where": {"rows": [changed.key.row]},
-            "patches": {"on_nan": {"value": "halt_restore_checkpoint"}},
+            "patches": {"training_config.batch_size": {"value": 7}},
         },
         "omit": {"where": {"rows": [excluded.key.row]}, "exclude": True},
     }
@@ -562,7 +565,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
     fit["deltas"] = [
         {
             "layer_id": "settings",
-            "patches": [{"path": "on_nan", "value": "halt_restore_checkpoint"}],
+            "patches": [{"path": "training_config.batch_size", "value": 7}],
         }
     ]
     fit["sweep"] = {
@@ -577,7 +580,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
         "exceptions": {
             "retry": {
                 "where": {"rows": ["seed=a"]},
-                "patches": {"on_nan": {"value": "halt_restore_checkpoint"}},
+                "patches": {"training_config.batch_size": {"value": 7}},
             }
         },
     }
@@ -597,7 +600,7 @@ def test_source_projection_uses_last_writer_and_only_the_requested_run_keys():
     ) == ("document", "point-mass", "/step_seconds")
     seed = sources["/payload/seed"]
     assert (seed.kind, seed.step, seed.axis, seed.value) == ("sweep_value", "fit", "seed", "a")
-    policy = sources["/payload/on_nan"]
+    policy = sources["/payload/training_config/batch_size"]
     assert (policy.kind, policy.step, policy.name) == ("exception", "fit", "retry")
     bound = plan.sources[consumer]["/inputs/subject"]
     assert (bound.kind, bound.variant, bound.step, bound.row) == (

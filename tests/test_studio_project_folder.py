@@ -162,7 +162,6 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
         for name in (trial[slot]["document"] for slot in ("model", "task", "objective"))
     ]
     train = {"kind": "step", "id": "train", "step": step}
-    trial = train["step"]["base"]["inline"]["trial_documents"]
     for entry in (
         model, task, objective,
         {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}},
@@ -196,6 +195,7 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
     assert not before.runs and not before.requests
     assert {item.path for item in before.diagnostics} == {
         "payload.method",
+        "payload.settings",
         "payload.training_config",
     }
     assert {(item.code, item.variant, item.step, item.row) for item in before.diagnostics} == {
@@ -481,6 +481,9 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
         "base": {"step": "fit"},
         "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
         "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
+        "deltas": [{"layer_id": "initialize", "patches": [
+            {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+        ]}],
     }
     authored["sweep"] = {"rows": {"base": {}, "compare": {}}}
     project = Project.model_validate(authored)
@@ -614,6 +617,9 @@ def _plan_dependencies(root: Path) -> None:
         "base": {"step": "fit"},
         "sweep": {"axes": {"seed": None, "checkpoint": {"input": "checkpoint"}}},
         "inputs": {"checkpoint": {"step": "fit", "where": {"subset": "selected"}}},
+        "deltas": [{"layer_id": "initialize", "patches": [
+            {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+        ]}],
     }
     independent = deepcopy(fit["base"]["inline"])
     independent["seed"] = 88
