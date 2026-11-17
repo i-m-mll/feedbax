@@ -556,12 +556,13 @@ class Store:
     def _publish_light_result(self, row: sqlite3.Row, outcome: dict) -> dict:
         from feedbax.light_jobs import publish_light_success
 
-        if outcome.keys() != {"outcome", "products"}:
-            raise ValueError("Light success must supply only its draft products.")
+        if outcome.keys() not in ({"outcome", "products"}, {"outcome", "products", "provider"}):
+            raise ValueError("Managed success must supply draft products and optional provider provenance.")
         payload = json.loads(row["launch"])["payload"]
         ref = publish_light_success(
             payload, row["id"], row["request"], self.light_origins(row), outcome["products"],
             checkpoint_bindings=tuple(self.completion_bindings(row["id"])),
+            provider=outcome.get("provider"),
             target=attempt_target(json.loads(row["data"]).get("target")),
         )
         return {
@@ -573,7 +574,7 @@ class Store:
     @staticmethod
     def _light_requests(launch: dict, project: str, request_id: str, slot: str) -> frozenset[str]:
         from feedbax.contracts.effective_success import exact_model_checkpoint_input
-        from feedbax.contracts.request_specs import AnalysisRequestSpec
+        from feedbax.light_jobs import validate_light_request
 
         payload = launch["payload"]
         root = Path(payload["manifest_root"])
@@ -586,11 +587,8 @@ class Store:
         decoded = Store._success_view(root).read_request(request)
         if decoded.kind not in ("analyze", "render", "report"):
             raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
-        numerical = None
-        if isinstance(decoded.spec, AnalysisRequestSpec):
-            if decoded.spec.computation is None:
-                raise ValueError("Managed Analysis requires a declared computation")
-            numerical = decoded.spec.computation.numerical
+        _, operation = validate_light_request(decoded)
+        numerical = operation.value.definition.numerical if operation is not None else None
         if slot != ("compute" if numerical else "light") or (
             numerical and any(launch["env"].get(key) != value for key, value in numerical.environment().items())
         ):

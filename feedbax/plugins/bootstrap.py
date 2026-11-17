@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -51,7 +51,6 @@ class RegistryKey(Generic[T]):
 @dataclass(frozen=True)
 class PluginProvenance:
     source: DistributionSource
-    registered_keys: Mapping[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -137,7 +136,8 @@ def _load_module(name: str, source: DistributionSource) -> ModuleType:
 
 def _package_modules(package: ModuleType, source: DistributionSource) -> Iterator[ModuleType]:
     yield package
-    for child in sorted(iter_modules(package.__path__, package.__name__ + ".")):
+    children = iter_modules(package.__path__, package.__name__ + ".")
+    for child in sorted(children, key=lambda item: item.name):
         module = _load_module(child.name, source)
         if child.ispkg:
             yield from _package_modules(module, source)

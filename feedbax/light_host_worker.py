@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from dataclasses import asdict
 from functools import lru_cache
 import os
 from pathlib import Path
@@ -38,7 +39,6 @@ from feedbax.light_jobs import (
     report_artifacts,
     operation_application,
     validate_light_request,
-    verify_delivery_provider,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
@@ -47,6 +47,7 @@ from feedbax.plot.dataset_figure import render as render_figure
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import RegisteredOperation
+    from feedbax.plugins.declarations import ResolvedDeclaration
 
 
 _MAX_CACHED_DATASET_BYTES = 4 * 1024 * 1024
@@ -111,16 +112,16 @@ def _compute(
     bindings: Bindings,
     attempt: str,
     role: str,
-    operation: RegisteredOperation | None,
+    operation: ResolvedDeclaration[RegisteredOperation] | None,
 ) -> Product:
     spec = request.spec
     if operation is not None:
         assert isinstance(spec, AnalysisRequestSpec)
         registry = operation_application()
-        parameters = operation.parameter_model.model_validate(spec.params)
+        parameters = operation.value.parameter_model.model_validate(spec.params)
         dataset_bindings = {
             name: bindings[name]
-            for name, port in operation.definition.inputs.items()
+            for name, port in operation.value.definition.inputs.items()
             if isinstance(port, DatasetPort)
         }
         with ExitStack() as stack:
@@ -174,15 +175,12 @@ def main(_argv: list[str]) -> int:
     view = SuccessView(store)
     request = view.read_request(delivery.request)
     role, operation = validate_light_request(request)
-    verify_delivery_provider(delivery, operation)
     with bind_managed_inputs(
         view, delivery.request, origins=exact.origins, checkpoint_bindings=exact.bindings, project=delivery.project_id,
     ) as (_, bindings):
         product = _compute(store, request, bindings, attempt, role, operation)
-    append(
-        log,
-        "result",
-        {"outcome": "succeeded", "products": {role: [product.model_dump(mode="json")]}},
-        sync=True,
-    )
+    result = {"outcome": "succeeded", "products": {role: [product.model_dump(mode="json")]}}
+    if operation is not None:
+        result["provider"] = asdict(operation.source)
+    append(log, "result", result, sync=True)
     return 0
