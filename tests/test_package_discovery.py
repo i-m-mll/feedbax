@@ -141,8 +141,17 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
     assert worker.returncode == 0, worker.stderr
     result = json.loads(log.read_text())["data"]
     assert result["outcome"] == "succeeded"
-    publish_light_success(delivery.model_dump(mode="json"), "test-attempt", request.id, origins, result["products"])
-    (shifted,) = SuccessView(store).read_attempt("test-attempt").receipt.products["shifted"]
+    publish_light_success(
+        delivery.model_dump(mode="json"), "test-attempt", request.id, origins, result["products"],
+        provider=result["provider"],
+    )
+    receipt = SuccessView(store).read_attempt("test-attempt").receipt
+    provider = receipt.provider
+    assert provider is not None
+    assert (provider.package, provider.distribution, provider.version) == (
+        "entry_point_provider.declarations", "feedbax-discovery-fixture", "2.7.1",
+    )
+    (shifted,) = receipt.products["shifted"]
     with open_stored_dataset(store, DatasetProductRef(
         content=shifted.content, descriptor_sha256=shifted.descriptor["descriptor_sha256"],
     )) as data:
