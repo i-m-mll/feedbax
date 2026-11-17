@@ -216,13 +216,13 @@ def test_named_draw_part_does_not_reset_attachment_anchors(authored):
 
 def test_document_variant_only_changes_the_addressed_base_model(authored):
     raw = document_project(authored, evaluation=False)
-    target = _wire_field("base", "fields", "factor")
+    address = _wire_field("base", "fields", "factor").to_text()
     _model_controller(raw)["wires"]["read"]["attachments"] = [
         _add_attachment(_attachment_owner("read"), "base", None, 0.9)["attachment"],
     ]
     raw["sweep"] = {"rows": {
         "original": {},
-        "variant": {"patches": {target.to_text(): {"value": 0.6}}},
+        "variant": {"patches": {f"documents.reach-model.{address}": {"value": 0.6}}},
     }}
     keys = tuple(RunKey(variant, "train", "default") for variant in ("original", "variant"))
     plan = compile_project(Project.model_validate(raw), source_runs=keys)
