@@ -33,7 +33,6 @@ from feedbax.contracts.evaluation_states import (
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
-    StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedExecutionContextError,
     StagedManifestRootBinding,
@@ -911,24 +910,6 @@ def _resolve_authenticated_input_authorities(
     return authenticated_inputs
 
 
-def _preflight_checkpoint_binding_names(
-    value: Any,
-    execution_context: StagedExecutionContext,
-) -> None:
-    """Validate authored checkpoint binding names before recipe execution."""
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            if key == "checkpoint_custody_binding":
-                if not isinstance(item, str) or not item:
-                    raise StagedExecutionContextError(
-                        "checkpoint_custody_binding must be a nonempty string"
-                    )
-                execution_context.checkpoint_custody_root(item)
-            else:
-                _preflight_checkpoint_binding_names(item, execution_context)
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        for item in value:
-            _preflight_checkpoint_binding_names(item, execution_context)
 
 
 def _admit_cached_analysis_manifest(
@@ -1026,7 +1007,6 @@ def execute_analysis_run_spec(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     validate_result: AnalysisRecipeResultValidator | None = None,
     fig_dump_path: Path | str | None = None,
     fig_dump_formats: Sequence[str] = ("html",),
@@ -1068,7 +1048,6 @@ def execute_analysis_run_spec(
         execution_descriptor is not None
         or bool(artifact_provider_bindings)
         or bool(manifest_root_bindings)
-        or bool(checkpoint_custody_bindings)
     )
     if explicit_runtime:
         if execution_context is not EMPTY_STAGED_EXECUTION_CONTEXT:
@@ -1079,7 +1058,6 @@ def execute_analysis_run_spec(
             execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
             manifest_root_bindings=manifest_root_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
         authenticated_parents = [
             ref for ref in run_spec.inputs if is_authenticated_manifest_ref(ref)
@@ -1091,7 +1069,6 @@ def execute_analysis_run_spec(
                 execution_context,
                 authenticated_parents,
             )
-        _preflight_checkpoint_binding_names(run_spec.params, execution_context)
     execution_context = with_staged_repo_root(execution_context, repo_root)
     if flattened is not None:
         # Mirror the evaluation-matrix convention: delta-authored runs embed the

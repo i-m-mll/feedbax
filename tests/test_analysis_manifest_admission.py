@@ -260,7 +260,6 @@ def _provider_backed_receipt(tmp_path: Path):
     context = StagedExecutionContext(
         descriptor=None,
         opened_artifact_providers={"certificates": provider},
-        checkpoint_custody_roots={},
         parent_execution_locations=(),
     )
     return provider, spec, manifest, computation, root, path, context

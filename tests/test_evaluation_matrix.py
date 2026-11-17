@@ -1134,7 +1134,6 @@ def test_matrix_resolves_shared_local_parents_across_trial_bank_role_transition(
         assert row.regeneration.parameters["parent_manifest_root"] == str(parent_root)
         assert row.regeneration.parameters["execution_descriptor"] is None
         assert row.regeneration.parameters["artifact_provider_bindings"] == []
-        assert row.regeneration.parameters["checkpoint_custody_bindings"] == []
         assert row.regeneration.parameters["staged_parents"] == result.metadata["staged_parents"]
         assert resolved_regeneration == row.regeneration
 
@@ -1202,7 +1201,6 @@ def test_matrix_resolves_shared_provider_parents_and_validates_durable_bank(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={"shared": ImmutableArtifactBlobProviderSpec()},
-        checkpoint_custody={},
     )
 
     kwargs = {

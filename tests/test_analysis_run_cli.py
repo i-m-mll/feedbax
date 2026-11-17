@@ -20,11 +20,6 @@ from feedbax.plugins import (
 from feedbax.plugins import bootstrap as plugin_bootstrap
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
-    execute_analysis_run_spec,
-)
-from feedbax.analysis.execution_context import (
-    StagedCheckpointCustodyRootBinding,
-    StagedExecutionContextError,
 )
 from feedbax.contracts.analysis_composition import AnalysisRunDeltaSpec
 from feedbax.bin import analysis as analysis_cli
@@ -46,7 +41,6 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-    StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
 from tests.support.analysis_fixtures import (
@@ -251,18 +245,16 @@ def test_plotly_template_default_honours_explicit_request(restore_plotly_templat
     assert pio.templates.default == PLOTLY_CONFIG.templates.default
 
 
-def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
+def test_run_subcommand_delta_binds_nested_manifest_without_copy(
     tmp_path: Path,
     capsys,
     analysis_state,
 ):
     analysis_type = "feedbax.test.direct_runtime_bindings"
     provider_root = tmp_path / "retained" / "parent" / "store"
-    checkpoint_root = tmp_path / "retained" / "parent" / "checkpoints"
     output_root = tmp_path / "analysis-output"
     manifest_dir = provider_root / "manifests" / "training_runs"
     manifest_dir.mkdir(parents=True)
-    checkpoint_root.mkdir(parents=True)
     training = TrainingRunManifest(
         id="feedbax-training-run:nested-retained",
         status="completed",
@@ -311,11 +303,6 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
         artifact_providers={},
-        checkpoint_custody={
-            "capture-checkpoints": StagedCheckpointCustodySpec(
-                backend="feedbax-checkpoint-transaction-tree"
-            )
-        },
     )
     descriptor_path = tmp_path / "execution.json"
     descriptor_path.write_text(descriptor.model_dump_json(indent=2), encoding="utf-8")
@@ -326,7 +313,6 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
         assert inputs[0].manifest == training
         assert inputs[0].path == source_path
         assert execution_context.repo_root == tmp_path.resolve()
-        assert execution_context.checkpoint_custody_root("capture-checkpoints") == checkpoint_root
         return AnalysisRecipeResult(
             analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
             data=build_toy_analysis_data(value=int(spec.params["value"])),
@@ -345,8 +331,6 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
             str(descriptor_path),
             "--manifest-root",
             f"retained={provider_root}",
-            "--checkpoint-custody",
-            f"capture-checkpoints={checkpoint_root}",
         ]
     )
 
@@ -357,49 +341,6 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
     assert source_path.stat().st_ino == source_stat.st_ino
     assert source_path.stat().st_size == source_stat.st_size
     assert not (output_root / "manifests" / "training_runs").exists()
-
-
-def test_direct_python_entrypoint_rejects_unknown_checkpoint_binding_before_recipe(
-    tmp_path: Path,
-    analysis_state,
-) -> None:
-    analysis_type = "feedbax.test.unknown_direct_checkpoint_binding"
-    checkpoint_root = tmp_path / "checkpoints"
-    checkpoint_root.mkdir()
-    calls = []
-
-    def recipe(*args):
-        calls.append(args)
-        raise AssertionError("recipe must not run")
-
-    analysis_state.analysis_recipes.register(analysis_type, recipe)
-    with pytest.raises(StagedExecutionContextError, match="unavailable.*unknown"):
-        execute_analysis_run_spec(
-            AnalysisRunSpec(
-                analysis_type=analysis_type,
-                params={"checkpoint_custody_binding": "unknown"},
-            ),
-            root=tmp_path / "output",
-            execution_descriptor=StagedExecutionDescriptor(
-                schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-                schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-                artifact_providers={},
-                checkpoint_custody={
-                    "known": StagedCheckpointCustodySpec(
-                        backend="feedbax-checkpoint-transaction-tree"
-                    )
-                },
-            ),
-            checkpoint_custody_bindings=[
-                StagedCheckpointCustodyRootBinding("known", checkpoint_root)
-            ],
-            registry=analysis_state.analysis_recipes,
-            evaluation_registry=analysis_state.evaluation_recipes,
-            experiment_registry=analysis_state.experiment_packages,
-        )
-
-    assert calls == []
-    assert not (tmp_path / "output").exists()
 
 
 def test_run_subcommand_rejects_missing_spec_argument():

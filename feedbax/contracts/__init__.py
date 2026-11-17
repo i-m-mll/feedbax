@@ -31,10 +31,8 @@ from feedbax.contracts.publication import (
     artifact_record,
 )
 from feedbax.contracts.staged_execution import (
-    STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-    StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
     validate_staged_binding_name,
 )
@@ -1002,10 +1000,8 @@ __all__ = [
     "realization_value_sha256",
     "semantic_value_sha256",
     "value_identity_record",
-    "STAGED_CHECKPOINT_CUSTODY_BACKEND",
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID",
     "STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION",
-    "StagedCheckpointCustodySpec",
     "StagedExecutionDescriptor",
     "validate_staged_binding_name",
     "dependency_value_sha256",

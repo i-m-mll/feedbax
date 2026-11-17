@@ -17,7 +17,6 @@ from pydantic import Field, field_validator, model_validator
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
     StagedArtifactProviderRootBinding,
-    StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedManifestRootBinding,
     StagedParentExecutionLocation,
@@ -644,7 +643,6 @@ def execute_report_spec(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     build_regeneration_spec: RegenerationSpecBuilder | None = None,
     capture: RenderPublicationCapture | None = None,
 ) -> tuple[ReportManifest, Path]:
@@ -657,7 +655,6 @@ def execute_report_spec(
         execution_descriptor is not None
         or bool(artifact_provider_bindings)
         or bool(manifest_root_bindings)
-        or bool(checkpoint_custody_bindings)
     )
     if explicit_runtime:
         if execution_context is not EMPTY_STAGED_EXECUTION_CONTEXT:
@@ -666,7 +663,6 @@ def execute_report_spec(
             execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
             manifest_root_bindings=manifest_root_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
         authenticated_inputs = [
             ref for ref in report_spec.inputs if is_authenticated_manifest_ref(ref)
@@ -747,7 +743,6 @@ def execute_authored_report_spec(
     root: Path | str,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
     execution_context: StagedExecutionContext | None = None,
 ) -> tuple[ReportManifest, Path]:
     """Execute one authored report against authoritative exact staged parents.
@@ -771,7 +766,6 @@ def execute_authored_report_spec(
         execution_context,
         execution_descriptor=execution_descriptor,
         artifact_provider_bindings=artifact_provider_bindings,
-        checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
     if isinstance(exact_parents, StagedExactParents):
         exact_payload = exact_parents.model_dump(mode="json")
@@ -799,7 +793,6 @@ def execute_authored_report_spec(
         execution_context = resolve_staged_execution_context(
             execution_descriptor,
             artifact_provider_bindings=artifact_provider_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
         )
         execution_context = with_staged_parent_execution_locations(
             execution_context,

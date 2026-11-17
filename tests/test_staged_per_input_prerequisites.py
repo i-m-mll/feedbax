@@ -225,7 +225,6 @@ def test_provider_backed_prerequisite_round_trips_through_provider_authority(
             schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
             schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
             artifact_providers={"external": ImmutableArtifactBlobProviderSpec()},
-            checkpoint_custody={},
         ),
         artifact_provider_bindings=[StagedArtifactProviderRootBinding("external", provider_root)],
         registries=application_registry_bundle,

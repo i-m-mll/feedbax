@@ -29,7 +29,6 @@ from pathlib import Path
 
 from feedbax.analysis.execution_context import (
     StagedArtifactProviderRootBinding,
-    StagedCheckpointCustodyRootBinding,
     StagedExecutionContext,
     StagedManifestRootBinding,
     resolve_staged_execution_context,
@@ -99,26 +98,16 @@ def add_staged_input_arguments(parser: argparse.ArgumentParser) -> argparse.Argu
             "Requires --execution-descriptor."
         ),
     )
-    parser.add_argument(
-        "--checkpoint-custody",
-        action="append",
-        default=[],
-        metavar="NAME=ROOT",
-        help=(
-            "Bind one named checkpoint custody root; may be repeated. "
-            "Requires --execution-descriptor."
-        ),
-    )
     return parser
 
 
 def require_descriptor_for_bindings(args: argparse.Namespace) -> None:
     """Refuse bound roots that no descriptor declares, before anything executes."""
-    if (args.artifact_provider or args.manifest_root or args.checkpoint_custody) and (
+    if (args.artifact_provider or args.manifest_root) and (
         args.execution_descriptor is None
     ):
         raise ValueError(
-            "--artifact-provider, --manifest-root, and --checkpoint-custody "
+            "--artifact-provider and --manifest-root "
             "require --execution-descriptor"
         )
 
@@ -148,12 +137,6 @@ def staged_execution_context(args: argparse.Namespace) -> StagedExecutionContext
         manifest_root_bindings=[
             StagedManifestRootBinding(*binding_parts(value, option="--manifest-root"))
             for value in args.manifest_root
-        ],
-        checkpoint_custody_bindings=[
-            StagedCheckpointCustodyRootBinding(
-                *binding_parts(value, option="--checkpoint-custody")
-            )
-            for value in args.checkpoint_custody
         ],
     )
 

@@ -2128,27 +2128,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
-            "StagedCheckpointCustodySpec",
-            STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
-            STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.staged_execution",
-            emitted_by=("feedbax.analysis.execute_staged_analysis_bundle",),
-            consumed_by=(
-                "feedbax.analysis.resolve_staged_execution_context",
-                "feedbax.bin.analysis",
-            ),
-            durable=False,
-            description=(
-                "Nested fixed-backend checkpoint authority covered by the staged descriptor."
-            ),
-            rejected_old_versions=(f"{STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID}.v0",),
-            required_tests=(
-                "tests/test_staged_execution_context.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-            covers="StagedExecutionDescriptor",
-        ),
-        _family(
             "ImmutableArtifactBlobProviderSpec",
             IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
             IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,

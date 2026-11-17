@@ -7,7 +7,7 @@ import hashlib
 import os
 import stat
 import weakref
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -19,6 +19,7 @@ import jax.tree_util as jtu
 import numpy as np
 from pydantic import BaseModel, ValidationError
 
+from feedbax._immutable_snapshot import _immutable_model_snapshot, _immutable_snapshot_value
 from feedbax._secure_fs import (
     SecurePathRigor,
     close_descriptors,
@@ -47,7 +48,6 @@ from feedbax.contracts.manifest import (
     load_manifest_bytes as parse_manifest_bytes,
 )
 from feedbax.contracts.staged_execution import (
-    STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
     StagedExecutionDescriptor,
@@ -56,12 +56,6 @@ from feedbax.contracts.staged_execution import (
 from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
     open_immutable_artifact_blob_provider,
-)
-from feedbax.training.checkpoint_custody import (
-    ResolvedCheckpointTransaction,
-    _immutable_model_snapshot,
-    _immutable_snapshot_value,
-    resolve_checkpoint_custody_ref as resolve_bound_checkpoint_custody_ref,
 )
 
 
@@ -88,14 +82,6 @@ class StagedLocatorTraversalError(StagedExecutionContextError):
 @dataclass(frozen=True, slots=True)
 class StagedArtifactProviderRootBinding:
     """One explicit runtime root for a logical immutable artifact provider."""
-
-    name: str
-    root: Path | str
-
-
-@dataclass(frozen=True, slots=True)
-class StagedCheckpointCustodyRootBinding:
-    """One explicit runtime root for a logical checkpoint-custody authority."""
 
     name: str
     root: Path | str
@@ -222,22 +208,6 @@ def resolve_evaluation_states(
 
 
 @dataclass(frozen=True, slots=True)
-class _CheckpointLookupKey:
-    parent: str
-    root: str
-    binding_name: str
-    slot_names: tuple[str, ...] | None
-
-
-@dataclass(frozen=True, slots=True)
-class _CheckpointAuthorityKey:
-    lookup: _CheckpointLookupKey
-    manifest_sha256: str
-    manifest_size_bytes: int
-    slots: tuple[tuple[str, str, int, str], ...]
-
-
-@dataclass(frozen=True, slots=True)
 class _MemoEntry:
     value: Any
     snapshots: tuple[_RetainedFileSnapshot, ...]
@@ -265,10 +235,6 @@ class _StagedExecutionMemo:
     state_keys_by_object_id: dict[int, _EvaluationStatesAuthorityKey] = field(default_factory=dict)
     state_object_refs_by_id: dict[int, weakref.ReferenceType[Any]] = field(default_factory=dict)
     authenticated_channels: dict[_EvaluationStatesAuthorityKey, Any] = field(default_factory=dict)
-    checkpoint_lookup: dict[_CheckpointLookupKey, _CheckpointAuthorityKey] = field(
-        default_factory=dict
-    )
-    checkpoints: dict[_CheckpointAuthorityKey, _MemoEntry] = field(default_factory=dict)
 
     def invalidate_manifest(self, key: _ManifestAuthorityKey) -> None:
         self.manifests.pop(key, None)
@@ -323,16 +289,10 @@ class StagedExecutionContext:
 
     descriptor: StagedExecutionDescriptor | None
     opened_artifact_providers: Mapping[str, ImmutableArtifactBlobProvider]
-    checkpoint_custody_roots: Mapping[str, Path]
     parent_execution_locations: tuple[StagedParentExecutionLocation, ...]
     parent_artifact_provider_bindings: tuple[StagedParentArtifactProviderBinding, ...] = ()
     manifest_roots: Mapping[str, Path] = field(default_factory=dict)
     repo_root: Path | None = None
-    _checkpoint_custody_root_identities: Mapping[str, tuple[int, int]] = field(
-        default_factory=dict,
-        repr=False,
-        compare=False,
-    )
     _artifact_provider_root_identities: Mapping[str, tuple[int, int]] = field(
         default_factory=dict,
         repr=False,
@@ -394,26 +354,6 @@ class StagedExecutionContext:
             self,
             "_manifest_root_identities",
             MappingProxyType(manifest_identities),
-        )
-        object.__setattr__(
-            self,
-            "checkpoint_custody_roots",
-            MappingProxyType(dict(self.checkpoint_custody_roots)),
-        )
-        identities = dict(self._checkpoint_custody_root_identities)
-        if not identities:
-            identities = {
-                name: _directory_identity(root, kind="checkpoint custody")
-                for name, root in self.checkpoint_custody_roots.items()
-            }
-        if set(identities) != set(self.checkpoint_custody_roots):
-            raise StagedExecutionContextError(
-                "checkpoint custody root identities must exactly match bound roots"
-            )
-        object.__setattr__(
-            self,
-            "_checkpoint_custody_root_identities",
-            MappingProxyType(identities),
         )
         object.__setattr__(
             self,
@@ -858,19 +798,6 @@ class StagedExecutionContext:
             )
         self._memo.authenticated_channels[key] = channels
 
-    def checkpoint_custody_root(self, name: str) -> Path:
-        """Return one explicitly bound trusted checkpoint-custody root by name."""
-        validate_staged_binding_name(name)
-        try:
-            root = self.checkpoint_custody_roots[name]
-            identity = self._checkpoint_custody_root_identities[name]
-        except KeyError as exc:
-            raise StagedExecutionContextError(
-                f"staged checkpoint custody binding is unavailable: {name!r}"
-            ) from exc
-        _require_directory_identity(root, identity, kind="checkpoint custody")
-        return root
-
     def parent_execution_location(self, parent: ParentRef) -> StagedParentExecutionLocation:
         """Return the location whose complete ParentRef value equals ``parent``."""
         matches = [
@@ -886,132 +813,10 @@ class StagedExecutionContext:
             )
         return matches[0]
 
-    def resolve_checkpoint_custody_ref(
-        self,
-        ref: ParentRef,
-        binding_name: str | None = None,
-        slot_names: Collection[str] | None = None,
-    ) -> ResolvedCheckpointTransaction:
-        """Resolve one checkpoint transaction under explicitly bound custody authority."""
-        metadata_binding = ref.metadata.get("checkpoint_custody_binding")
-        if metadata_binding is not None and (
-            not isinstance(metadata_binding, str) or not metadata_binding
-        ):
-            raise StagedExecutionContextError(
-                "ParentRef metadata.checkpoint_custody_binding must be a nonempty string"
-            )
-        if binding_name is not None:
-            validate_staged_binding_name(binding_name)
-        if (
-            binding_name is not None
-            and metadata_binding is not None
-            and binding_name != metadata_binding
-        ):
-            raise StagedExecutionContextError(
-                "explicit checkpoint custody binding disagrees with "
-                "ParentRef metadata.checkpoint_custody_binding"
-            )
-        selected_binding = binding_name or metadata_binding
-        if selected_binding is None:
-            raise StagedExecutionContextError(
-                "checkpoint custody resolution requires binding_name or "
-                "ParentRef metadata.checkpoint_custody_binding"
-            )
-        validate_staged_binding_name(selected_binding)
-        _validate_checkpoint_ref_uri(ref.uri)
-        root = self.checkpoint_custody_root(selected_binding)
-        expected_identity = self._checkpoint_custody_root_identities[selected_binding]
-        selection = _checkpoint_slot_selection_identity(slot_names)
-        lookup_key = _CheckpointLookupKey(
-            parent=ref.model_dump_json(exclude_none=False),
-            root=os.fspath(root),
-            binding_name=selected_binding,
-            slot_names=selection,
-        )
-        authority_key = self._memo.checkpoint_lookup.get(lookup_key)
-        if authority_key is not None:
-            cached = self._memo.checkpoints.get(authority_key)
-            if cached is not None and cached.is_current():
-                return cached.value
-            self._memo.checkpoint_lookup.pop(lookup_key, None)
-            self._memo.checkpoints.pop(authority_key, None)
-        try:
-            try:
-                manifest_before = _retained_file_snapshot(
-                    root,
-                    str(ref.uri),
-                    expected_root_identity=expected_identity,
-                    kind="checkpoint transaction manifest",
-                    require_single_link=False,
-                )
-            except StagedExecutionContextError:
-                # Preserve checkpoint custody's established public diagnostic.
-                resolve_bound_checkpoint_custody_ref(
-                    ref,
-                    allowed_root=root,
-                    slot_names=slot_names,
-                )
-                raise
-            resolved = resolve_bound_checkpoint_custody_ref(
-                ref,
-                allowed_root=root,
-                slot_names=slot_names,
-            )
-            resolved = replace(
-                resolved,
-                slots=_immutable_authenticated_snapshot(resolved.slots),
-            )
-            manifest_snapshot = _retained_file_snapshot(
-                root,
-                str(ref.uri),
-                expected_root_identity=expected_identity,
-                kind="checkpoint transaction manifest",
-                require_single_link=False,
-            )
-            if manifest_snapshot.state != manifest_before.state:
-                raise StagedExecutionContextError(
-                    "checkpoint transaction manifest identity changed during resolution"
-                )
-            slots_by_name = {slot.slot: slot for slot in resolved.manifest.slots}
-            selected_slots = tuple(slots_by_name[name] for name in resolved.slots)
-            slot_snapshots = tuple(
-                _retained_file_snapshot(
-                    root,
-                    _checkpoint_slot_relative_path(str(ref.uri), slot.relative_path),
-                    expected_root_identity=expected_identity,
-                    kind=f"checkpoint slot {slot.slot!r}",
-                    require_single_link=False,
-                )
-                for slot in selected_slots
-            )
-            authority_key = _CheckpointAuthorityKey(
-                lookup=lookup_key,
-                manifest_sha256=resolved.manifest_sha256,
-                manifest_size_bytes=manifest_snapshot.state[4],
-                slots=tuple(
-                    (slot.slot, slot.sha256, slot.size_bytes, slot.relative_path)
-                    for slot in selected_slots
-                ),
-            )
-            self._memo.checkpoint_lookup[lookup_key] = authority_key
-            self._memo.checkpoints[authority_key] = _MemoEntry(
-                resolved,
-                (manifest_snapshot, *slot_snapshots),
-            )
-            return resolved
-        finally:
-            _require_directory_identity(
-                root,
-                expected_identity,
-                kind="checkpoint custody",
-            )
-
-
 EMPTY_STAGED_EXECUTION_CONTEXT = StagedExecutionContext(
     descriptor=None,
     opened_artifact_providers={},
     manifest_roots={},
-    checkpoint_custody_roots={},
     parent_execution_locations=(),
 )
 
@@ -1021,11 +826,10 @@ def resolve_staged_execution_context(
     *,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
 ) -> StagedExecutionContext:
     """Validate and bind every runtime resource before staged recipe effects."""
     if descriptor is None:
-        if artifact_provider_bindings or manifest_root_bindings or checkpoint_custody_bindings:
+        if artifact_provider_bindings or manifest_root_bindings:
             raise StagedExecutionContextError(
                 "runtime staged bindings require an explicit StagedExecutionDescriptor"
             )
@@ -1042,18 +846,6 @@ def resolve_staged_execution_context(
         expected_names=None,
         kind="manifest store",
     )
-    checkpoint_roots = _validated_binding_roots(
-        checkpoint_custody_bindings,
-        expected_names=set(portable.checkpoint_custody),
-        kind="checkpoint custody",
-    )
-
-    for name, checkpoint_spec in portable.checkpoint_custody.items():
-        if checkpoint_spec.backend != STAGED_CHECKPOINT_CUSTODY_BACKEND:
-            raise StagedExecutionContextError(
-                f"unsupported checkpoint custody backend for {name!r}: {checkpoint_spec.backend!r}"
-            )
-
     opened = {
         name: open_immutable_artifact_blob_provider(spec, explicit_root=artifact_roots[name])
         for name, spec in portable.artifact_providers.items()
@@ -1062,7 +854,6 @@ def resolve_staged_execution_context(
         descriptor=portable,
         opened_artifact_providers=opened,
         manifest_roots=manifest_roots,
-        checkpoint_custody_roots=checkpoint_roots,
         parent_execution_locations=(),
     )
 
@@ -1241,7 +1032,6 @@ def require_exclusive_staged_runtime(
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
-    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
 ) -> None:
     """Refuse an already-resolved context handed in beside the raw bindings.
 
@@ -1257,7 +1047,6 @@ def require_exclusive_staged_runtime(
         execution_descriptor is not None
         or artifact_provider_bindings
         or manifest_root_bindings
-        or checkpoint_custody_bindings
     ):
         raise StagedExecutionContextError(
             "execution_context cannot be combined with direct runtime bindings; an "
@@ -1360,8 +1149,7 @@ def _coerce_descriptor(
 
 def _validated_binding_roots(
     bindings: Sequence[StagedArtifactProviderRootBinding]
-    | Sequence[StagedManifestRootBinding]
-    | Sequence[StagedCheckpointCustodyRootBinding],
+    | Sequence[StagedManifestRootBinding],
     *,
     expected_names: set[str] | None,
     kind: str,
@@ -1553,30 +1341,6 @@ def _provider_artifact_relative_path(digest: str) -> str:
     return f"artifacts/sha256/{digest[:2]}/{digest}"
 
 
-def _checkpoint_slot_selection_identity(
-    slot_names: Collection[str] | None,
-) -> tuple[str, ...] | None:
-    if slot_names is None:
-        return None
-    if isinstance(slot_names, (str, bytes, bytearray)):
-        return (str(slot_names),)
-    requested = tuple(slot_names)
-    if (
-        requested
-        and all(isinstance(name, str) and name for name in requested)
-        and len(requested) == len(set(requested))
-    ):
-        return tuple(sorted(requested))
-    return requested
-
-
-def _checkpoint_slot_relative_path(manifest_relative: str, slot_relative: str) -> str:
-    combined = os.path.normpath(
-        (PurePosixPath(manifest_relative).parent / PurePosixPath(slot_relative)).as_posix()
-    )
-    return _validate_relative_execution_uri(combined)
-
-
 def _mark_numpy_arrays_read_only(value: Any, *, _seen: set[int] | None = None) -> None:
     """Freeze NumPy arrays below real containers, including mapping proxies."""
     if isinstance(value, np.ndarray):
@@ -1610,12 +1374,6 @@ def _mark_numpy_arrays_read_only(value: Any, *, _seen: set[int] | None = None) -
         return
     for leaf in leaves:
         _mark_numpy_arrays_read_only(leaf, _seen=seen)
-
-
-def _immutable_authenticated_snapshot(value: Any) -> Any:
-    """Return a recursively immutable snapshot of already-verified values."""
-    _mark_numpy_arrays_read_only(value)
-    return _immutable_snapshot_value(value)
 
 
 def _evaluation_states_memo_value(value: Any) -> Any | None:
@@ -1932,45 +1690,12 @@ def _validate_relative_execution_uri(uri: str) -> str:
     return relative.as_posix()
 
 
-def _validate_checkpoint_ref_uri(uri: str | None) -> None:
-    if not isinstance(uri, str) or not uri:
-        raise StagedExecutionContextError(
-            "checkpoint custody ParentRef uri must be a nonempty relative path"
-        )
-    split = urlsplit(uri)
-    if split.scheme or split.netloc or split.query or split.fragment:
-        raise StagedExecutionContextError(
-            "checkpoint custody ParentRef uri must be scheme-free, query-free, "
-            "fragment-free, and relative"
-        )
-    decoded = unquote(split.path)
-    if "\x00" in decoded or "\\" in decoded:
-        raise StagedExecutionContextError(
-            "checkpoint custody ParentRef uri contains an unsupported path separator"
-        )
-    raw_parts = decoded.split("/")
-    relative = PurePosixPath(decoded)
-    if relative.is_absolute():
-        raise StagedExecutionContextError(
-            "checkpoint custody ParentRef uri must be relative to its bound custody root"
-        )
-    if ".." in raw_parts:
-        raise StagedExecutionContextError(
-            "checkpoint custody ParentRef uri escapes its bound custody root"
-        )
-    if not relative.parts or any(part in {"", "."} for part in raw_parts):
-        raise StagedExecutionContextError(
-            "checkpoint custody ParentRef uri must not contain empty or dot path segments"
-        )
-
-
 __all__ = [
     "EMPTY_STAGED_EXECUTION_CONTEXT",
     "EvaluationStatesResolutionRequest",
     "EvaluationStatesResolver",
     "ResolvedEvaluationStates",
     "StagedArtifactProviderRootBinding",
-    "StagedCheckpointCustodyRootBinding",
     "StagedExecutionContext",
     "StagedExecutionContextError",
     "StagedManifestRootBinding",
