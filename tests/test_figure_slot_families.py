@@ -34,7 +34,6 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.plot.constructors import register_figure_template
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract]
@@ -141,12 +140,12 @@ def test_public_resolution_matches_hand_enumerated_bindings(application_registry
     template = _template()
     compact = FigureSpec(
         name="compact",
-        template=template.name,
+        template=template,
         slot_families=[_family()],
     )
     enumerated = FigureSpec(
         name="enumerated",
-        template=template.name,
+        template=template,
         slot_bindings={
             "profiles": [
                 TraceBinding(
@@ -193,10 +192,9 @@ def test_slot_family_execution_equals_hand_enumerated_figure(
     tmp_path: Path, application_registry_bundle
 ) -> None:
     template = _template()
-    register_figure_template(template, registry=application_registry_bundle.figures)
     analysis = _analysis(tmp_path)
     common = {
-        "template": template.name,
+        "template": template,
         "inputs": [analysis],
         "panels": [{"name": "left"}, {"name": "right"}],
     }
@@ -298,7 +296,7 @@ def test_slot_family_slot_and_cardinality_validation_fail_closed(
         resolve_figure_trace_bindings(
             FigureSpec(
                 name="unknown",
-                template="template",
+                template=_template(),
                 slot_families=[family.model_copy(update={"slot": "unknown"})],
             ),
             _template(),
@@ -306,14 +304,14 @@ def test_slot_family_slot_and_cardinality_validation_fail_closed(
         )
     with pytest.raises(ValueError, match="requires exactly one TraceBinding"):
         resolve_figure_trace_bindings(
-            FigureSpec(name="one", template="template", slot_families=[family]),
+            FigureSpec(name="one", template=_template(multiplicity="one"), slot_families=[family]),
             _template(multiplicity="one"),
             registry=application_registry_bundle.figures,
         )
     with pytest.raises(ValidationError, match="bound by both"):
         FigureSpec(
             name="collision",
-            template="template",
+            template=_template(),
             slot_bindings={
                 "profiles": TraceBinding(name="concrete", constructor="feedbax.scalar_scatter")
             },
@@ -327,14 +325,14 @@ def test_required_slot_and_resolved_trace_name_collisions_fail_closed(
     template = _template()
     with pytest.raises(ValueError, match="missing required template slot"):
         resolve_figure_trace_bindings(
-            FigureSpec(name="missing", template=template.name),
+            FigureSpec(name="missing", template=template),
             template,
             registry=application_registry_bundle.figures,
         )
     with pytest.raises(ValidationError, match="collides with other trace names"):
         FigureSpec(
             name="trace collision",
-            template=template.name,
+            template=template,
             traces=[TraceBinding(name="left profile", constructor="feedbax.scalar_scatter")],
             slot_families=[_family()],
         )
@@ -344,9 +342,8 @@ def test_unknown_slot_execution_writes_failed_manifest(
     tmp_path: Path, application_registry_bundle
 ) -> None:
     template = _template()
-    register_figure_template(template, registry=application_registry_bundle.figures)
     family = _family().model_copy(update={"slot": "unknown"})
-    spec = FigureSpec(name="unknown", template=template.name, slot_families=[family])
+    spec = FigureSpec(name="unknown", template=template, slot_families=[family])
 
     with pytest.raises(FigureSpecExecutionError) as exc_info:
         execute_figure_spec(spec, root=tmp_path, registry=application_registry_bundle.figures)

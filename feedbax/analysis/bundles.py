@@ -2245,7 +2245,6 @@ def _execute_figure_stage(
     resolution = resolve_figure_spec(
         stage.figure,
         repo_root=execution_context.repo_root,
-        registry=registries.figures,
     )
     authored_figure = resolution.figure_spec
     for index, inputs in enumerate(input_groups):

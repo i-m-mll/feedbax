@@ -19,7 +19,7 @@ from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
-from feedbax.contracts.intent_diff import first_request_change
+from feedbax.contracts.intent_diff import first_request_change, layered_semantic_diff
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
@@ -96,6 +96,7 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.contracts.request_specs import (
     DocumentTrainingRequestSpec,
+    RenderRequestSpec,
     ReportRequestSpec,
 )
 from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
@@ -107,6 +108,7 @@ if TYPE_CHECKING:
     from feedbax.tasks.registry import PythonTaskRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.expression_registry import FunctionRegistry
+    from feedbax.plot.templates import FigureTemplateRegistry
 
 
 @cache
@@ -951,10 +953,12 @@ class ProjectPlanMemo:
 def _compiler_authority(
     components: ComponentRegistry | None, operations: OperationRegistry | None,
     functions: FunctionRegistry | None, python_tasks: PythonTaskRegistry | None,
+    figure_templates: FigureTemplateRegistry | None,
 ) -> tuple[object, ...]:
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
         request_identity.request_codec_authority(), components, operations, functions, python_tasks,
+        figure_templates,
     )
 
 
@@ -970,12 +974,14 @@ class _Compiler:
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
         *,
+        figure_templates: FigureTemplateRegistry | None = None,
         capture_sources: bool = False,
     ):
         self.project = project
         self.readers = readers
         self.previous = previous
         self.operations = operations
+        self.figure_templates = figure_templates
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
@@ -2137,6 +2143,7 @@ class _Compiler:
             sources,
             tuple(evaluations),
             self.operations,
+            figure_templates=self.figure_templates,
         )
         self.diagnostics.extend(problems)
         for request in encoded:
@@ -2544,9 +2551,10 @@ def compile_project(
     components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None,
     python_tasks: PythonTaskRegistry | None = None,
+    figure_templates: FigureTemplateRegistry | None = None,
     capture_sources: bool = False,
 ) -> ProjectPlan:
-    """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
+    """Plan static requests and value sources with the supplied declaration registries."""
     readers = replace(
         readers,
         external=cache(readers.external) if readers.external is not None else None,
@@ -2558,13 +2566,17 @@ def compile_project(
     ):
         return _Compiler(
             project, readers, source_runs, operations=operations, components=components,
-            functions=functions, python_tasks=python_tasks, capture_sources=capture_sources,
+            functions=functions, python_tasks=python_tasks, figure_templates=figure_templates,
+            capture_sources=capture_sources,
         ).plan()
-    authority = _compiler_authority(components, operations, functions, python_tasks)
+    authority = _compiler_authority(components, operations, functions, python_tasks, figure_templates)
     ticket, previous = memo._begin(authority)
-    compiler = _Compiler(project, readers, source_runs, previous, operations, components, functions, python_tasks)
+    compiler = _Compiler(
+        project, readers, source_runs, previous, operations, components, functions, python_tasks,
+        figure_templates=figure_templates,
+    )
     plan = compiler.plan()
-    if authority == _compiler_authority(components, operations, functions, python_tasks):
+    if authority == _compiler_authority(components, operations, functions, python_tasks, figure_templates):
         memo._publish(ticket, authority, compiler.work)
     return plan
 
@@ -2738,8 +2750,19 @@ def _authored_request_change(
     relative = change.parts[1:]
     if relative == ("analysis_type",):
         relative = ("operation",)
-    elif new.kind == "render" and relative[:1] == ("document",):
-        relative = ("figure", *relative[1:])
+    elif isinstance(new.spec, RenderRequestSpec) and relative[:1] in {("document",), ("template",)}:
+        assert isinstance(old.spec, RenderRequestSpec)
+        before, after = old.spec.template, new.spec.template
+        if before is None and after is None:
+            relative = ("figure", *relative[1:])
+        elif before is None or after is None:
+            relative = ("figure",)
+        else:
+            changes = layered_semantic_diff(before.model_dump(mode="json"), after.model_dump(mode="json"))
+            if changes and changes[0].parts[0] == "settings":
+                relative = ("figure", *changes[0].parts)
+            else:
+                relative = ("figure", "template")
     elif new.kind == "report" and relative[:1] == ("document",):
         relative = relative[1:]
     parts = prefix + relative

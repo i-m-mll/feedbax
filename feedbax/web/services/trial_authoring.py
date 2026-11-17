@@ -541,6 +541,7 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
             project, readers=settled.readers, source_runs=source_runs,
             operations=folders.operations, components=bundle.components,
             functions=bundle.expression_functions, python_tasks=bundle.python_tasks,
+            figure_templates=bundle.figure_templates,
         )
 
     candidate = compile_sources(authored, selected | outside)

@@ -85,6 +85,7 @@ from feedbax.contracts.studio_project import (
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.plot.templates import FigureTemplateRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.model_edit import (
         ModelClipboard, ModelEditProblem, ModelEditRequest,
@@ -259,6 +260,7 @@ def compile_saved_project(
     text: TextProject, *, project_id: str, store: Path, readers: BaseReaders,
     operations: OperationRegistry | None = None, components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None, python_tasks: PythonTaskRegistry | None = None,
+    figure_templates: FigureTemplateRegistry | None = None,
     source_runs: Iterable[RunKey] = (), memo: ProjectPlanMemo | None = None,
 ) -> SettledProjectPlan:
     """Compile a snapshot against the Store of its resolved local or delegated project."""
@@ -266,7 +268,7 @@ def compile_saved_project(
     plan = compile_project(
         text.project, source_runs=source_runs, memo=memo,
         operations=operations, components=components, functions=functions,
-        python_tasks=python_tasks, readers=readers,
+        python_tasks=python_tasks, figure_templates=figure_templates, readers=readers,
     )
     return SettledProjectPlan(
         project_id, text.revision, project_semantic_root(text.project), text.configuration, store, plan, readers,
@@ -666,11 +668,13 @@ class ProjectFolder:
         components: ComponentRegistry | None = None,
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
+        figure_templates: FigureTemplateRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
     ) -> None:
         self.root = root.resolve()
         self._local_folder = local_folder
         self.operations = operations
+        self.figure_templates = figure_templates
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
@@ -840,7 +844,8 @@ class ProjectFolder:
         return compile_saved_project(
             text, project_id=project_id, store=text.store_path, readers=self._base_readers(location, text),
             source_runs=source_runs, memo=self._plan_memo(project_id),
-            operations=self.operations, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
+            operations=self.operations, components=self.components, functions=self.functions,
+            python_tasks=self.python_tasks, figure_templates=self.figure_templates,
         )
 
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:

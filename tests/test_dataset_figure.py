@@ -10,18 +10,24 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.analysis.builtin_operations import register_builtin_operations
-from feedbax.analysis.figure_presets import velocity_summary_figure
+from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.analysis.report_document import render as render_report
+from feedbax.contracts.effective_success import BoundMember, success_content_ref
 from feedbax.contracts.figure_document import (
     FigureDocument,
     FigureLayerOmission,
     PlotlyFigureProduct,
+    ResolvedFigureTemplate,
     validate_figure_bindings,
 )
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.request_refs import ContentRef
+from feedbax.contracts.request_identity import decode_request, encode_request
+from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
+from feedbax.contracts.request_specs import RenderRequestSpec
 from feedbax.dataset import Dataset, Variable
+from feedbax.light_host_worker import _compute
+from feedbax.light_jobs import validate_light_request
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.plot.dataset_figure import render
@@ -34,7 +40,7 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
     tmp_path,
     monkeypatch,
 ):
-    document = velocity_summary_figure()
+    document = VelocitySummary(VelocitySummarySettings())
     registry = OperationRegistry()
     register_builtin_operations(registry)
     port = registry.resolve("feedbax.summarize_velocity").definition.outputs["summary"]
@@ -84,8 +90,23 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
         assert high.showlegend is False and low.showlegend is False
 
     figure_bytes = figure.to_json().encode()
-    saved = store.store_object(figure_bytes)
-    content = ContentRef(sha256=saved.sha256, size=saved.size_bytes, media_type="application/json")
+    encoded = encode_request(
+        RenderRequestSpec(
+            figure=None, document=document,
+            template=ResolvedFigureTemplate(
+                key="feedbax.VelocitySummary", settings={"checkpoint_index": 0}, revision=1,
+            ),
+        ),
+        {"summary": (InputMember(
+            key="summary", reference=ProductRef(request_id="analyze:" + "a" * 64, role="summary"),
+        ),)},
+    )
+    request = decode_request(encoded.data, encoded.documents.__getitem__)
+    bindings = {"summary": (BoundMember(
+        key="summary", content=ref.content, descriptor={"descriptor_sha256": ref.descriptor_sha256},
+    ),)}
+    saved = _compute(store, request, bindings, "render-attempt", validate_light_request(request))
+    content = saved.content
     document = ReportDocument.model_validate_json(
         (_FIXTURES / "velocity-summary.report.json").read_bytes()
     )
@@ -95,7 +116,7 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
     )
     ((path, product),) = result.figures.items()
     assert product == content
-    assert store.get_object(saved) == figure_bytes
+    assert store.get_object(success_content_ref(content)) == figure_bytes
     assert result.html.count(path) == 1
     assert result.html.count('src="plotly.min.js"') == 1
     assert figure_bytes.decode() not in result.html
@@ -155,7 +176,7 @@ def test_report_shares_repeated_figure_content_and_checks_omissions_before_rende
 
 
 def test_unknown_band_channel_is_refused_against_the_operation_declaration():
-    document = velocity_summary_figure().model_dump(mode="json")
+    document = VelocitySummary(VelocitySummarySettings()).model_dump(mode="json")
     document["layers"][0]["encode"]["upper"] = "missing_upper"
     registry = OperationRegistry()
     register_builtin_operations(registry)
