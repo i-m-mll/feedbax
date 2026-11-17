@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 TRAIN_PREFIX_UPDATES = 5
-TRAIN_DRIVER_REVISION = 0x55508287D5F8F
+TRAIN_DRIVER_REVISION = 0x63ED7A6B11FA4
 
 
 def carries_method_state(continuation: TrainContinuation | None, *, resume: bool) -> bool:
@@ -43,6 +43,7 @@ def train_start_clock(
 class TrainBlock:
     completed: int
     count: int
+    limit: int
     checkpoint: bool
 
 
@@ -70,10 +71,10 @@ class TrainSchedule:
             segment_updates = completed - self.segment_start
             cadence = completed + self.checkpoint_interval - segment_updates % self.checkpoint_interval
             checkpoint = min(cadence, next_requested, self.target)
-            boundary = min(checkpoint, end, self.prefix_end) if completed < self.prefix_end else min(checkpoint, end)
-            count = min(16, boundary - completed)
-            yield TrainBlock(completed, count, completed + count == checkpoint)
-            completed += count
+            count = min(16, checkpoint - completed)
+            limit = min(count, end - completed)
+            yield TrainBlock(completed, count, limit, completed + limit == checkpoint)
+            completed += limit
             if completed == next_requested:
                 next_requested = next(requested, self.target)
 
@@ -116,11 +117,11 @@ def drive_train[State, Block: CommittedBlock](
 
         result = step(state, block)
         state, completed = result.state, result.completed
-        if not block.completed <= completed <= block.completed + block.count:
+        if not block.completed <= completed <= block.completed + block.limit:
             raise ValueError("Train block committed updates outside its scheduled span")
         record(block, result)
         stopped = completed < schedule.target and should_stop()
-        if not (result.rejected or stopped) and completed != block.completed + block.count:
+        if not (result.rejected or stopped) and completed != block.completed + block.limit:
             raise ValueError("Train block accepted fewer updates without recording an interruption")
         if completed > block.completed and (block.checkpoint or stopped or result.rejected):
             checkpoint(completed == schedule.target or stopped or result.rejected)

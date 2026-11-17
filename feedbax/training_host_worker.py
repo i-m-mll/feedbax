@@ -15,10 +15,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from feedbax.contracts.artifact_custody import ContentObjectRef
+    from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.plugins.application import ApplicationRegistryBundle
     from feedbax.contracts.method_checkpoint import MethodCheckpointClock
+    from feedbax.contracts.receipt_validity import ValidityCheckDelivery, ValidityCheckEvidence
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
     from feedbax.runtime.graph import Graph
     from feedbax.runtime.trial_execution import TrialExecution
@@ -211,6 +212,7 @@ class _PreparedTrain:
     execution: TrialExecution
     model_writer: SemanticModelWriter
     templates: tuple[Graph, ...]
+    starting_validity: ContentTreeRef | None
 
 
 def _prepare_train(
@@ -302,19 +304,21 @@ def _prepare_train(
 
     validate_method_extra(state.extra, replicas=len(replica_ids))
     phase("compiling")
+    schedule = TrainSchedule(
+        start=clock.completed_updates, target=spec.target_total, segment_start=clock.segment_start,
+        checkpoint_interval=config.snapshot_interval, checkpoints=launch.checkpoint_catalog,
+    )
     loop = TrainingLoop(
         method, settings, execution=execution, objective=objective, batch_size=config.batch_size,
-        seed=clock.seed, replica_ids=replica_ids, start_step=clock.schedule_origin,
+        seed=clock.seed, replica_ids=replica_ids, start_step=clock.schedule_origin, sample_at=schedule.prefix_end,
     )
 
     return _PreparedTrain(
         state=state,
-        schedule=TrainSchedule(
-            start=clock.completed_updates, target=spec.target_total, segment_start=clock.segment_start,
-            checkpoint_interval=config.snapshot_interval, checkpoints=launch.checkpoint_catalog,
-        ),
+        schedule=schedule,
         clock=clock,
         loop=loop, execution=execution, model_writer=writer, templates=templates,
+        starting_validity=restored.manifest.validity if restored is not None else None,
     )
 
 
@@ -328,6 +332,7 @@ def _run(
     from feedbax._atomic import write_bytes_atomic
     from feedbax.contracts.base import ArtifactRef, Provenance, sha256_file, utc_now
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+    from feedbax.contracts.effective_success import RequestObject
     from feedbax.contracts.manifest import (
         InheritedTerminalCheckpoint, TrainingRunCertification, TrainingRunManifest,
         canonical_manifest_path, load_manifest_bytes, training_run_manifest_id, write_manifest,
@@ -350,6 +355,10 @@ def _run(
     from feedbax.training.method_checkpoint import write_method_checkpoint
     from feedbax.training.method_runtime import replica_value
     from feedbax.training.train_driver import drive_train
+    from feedbax.validity.recording import host_product, record_computation, set_execution_prefix
+    from feedbax.validity.train import (
+        CheckpointStart, TrainCapture, TrainReplay, archive_checkpoint_validity, checkpoint_evidence,
+    )
 
     events.current_phase = "binding"
     launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_bytes()))
@@ -379,6 +388,7 @@ def _run(
     )
     resume = launch.resume
     source_launch = None
+    collected = None
     checkpoint_ref = launch.canonical_request.checkpoint
     if launch.collected_resume is not None:
         if dependencies or launch.collected_resume == job_id:
@@ -434,6 +444,7 @@ def _run(
     manifest_id = training_run_manifest_id(job_id)
     manifest_path = canonical_manifest_path("TrainingRunManifest", manifest_id, root=manifest_root)
     checkpoints = []
+    checkpoint_validity: dict[str, ContentTreeRef] = {}
     latest_metrics = {}
     history = checkpoint_root / "metrics.jsonl"
     method_provenance = asdict(method.source) | {"key": method.key}
@@ -489,6 +500,34 @@ def _run(
         execution, writer, templates = prepared.execution, prepared.model_writer, prepared.templates
         completed = prepared.clock.completed_updates
         seed = prepared.clock.seed
+        replay_checkpoint = None
+        if producer is not None:
+            if resume is not None:
+                if prepared.starting_validity is None:
+                    raise ValueError("Resume checkpoint does not retain its executed prefix evidence.")
+                set_execution_prefix(checkpoint_evidence(store, prepared.starting_validity))
+            source_request = None
+            if source_launch is not None:
+                source_request = RequestObject(
+                    id=source_launch.request_id, object=source_launch.canonical_request.request,
+                    documents=source_launch.canonical_request.documents,
+                )
+            replay_checkpoint = CheckpointStart(
+                kind="resume" if resume is not None else "predecessor",
+                pointer=producer.pointer,
+                content=(collected.recovery.content if collected is not None else
+                         bind_method_checkpoint_content(producer.checkpoint_root, producer.pointer, store)),
+                source_request=source_request,
+            )
+        capture = TrainCapture(loop, state, prepared.schedule, TrainReplay(
+            request=RequestObject(
+                id=launch.request_id, object=launch.canonical_request.request,
+                documents=launch.canonical_request.documents,
+            ),
+            checkpoint_catalog=launch.checkpoint_catalog, checkpoint=replay_checkpoint,
+        ), store)
+        record_computation(lambda: capture.snapshot(completed))
+        loop.observe_lowering = capture.observe
         observation_key = derive_key(jr.PRNGKey(seed), "training-observation")
         start_boundary = completed
         events.completed_updates = completed
@@ -530,11 +569,16 @@ def _run(
                 reduction_start = completed
 
         def publish_checkpoint(*, final: bool) -> None:
+            with store._exclusive_lock():
+                validity = archive_checkpoint_validity(store)
             write = write_method_checkpoint(
                 checkpoint_root, run_id=job_id, identity=identity,
                 clock=prepared.clock.model_copy(update={"completed_updates": completed}),
                 state=state, model_writer=writer, model_templates=templates, replica_ids=replica_ids, final=final,
+                validity=validity,
             )
+            if validity is not None:
+                checkpoint_validity[write.latest_pointer.transaction_id] = validity
             checkpoint = PublishedTrainingCheckpoint(
                 checkpoint_root=write.root, completed_updates=completed, pointer=write.latest_pointer,
             )
@@ -579,13 +623,15 @@ def _run(
                 nonlocal state, completed, latest_metrics, pending
                 state, completed = batch.state, batch.completed
                 events.completed_updates = completed
-                for offset in range(completed - block.completed):
-                    latest_metrics = metrics_at(batch.metrics, offset)
-                    _accumulate_metrics(reductions, latest_metrics)
-                    stream.write(json.dumps({
-                        "update": block.completed + offset + 1, "metrics": latest_metrics,
-                    }, allow_nan=False) + "\n")
-                    pending = True
+                capture.prefix.record(block, batch)
+                with host_product():
+                    for offset in range(completed - block.completed):
+                        latest_metrics = metrics_at(batch.metrics, offset)
+                        _accumulate_metrics(reductions, latest_metrics)
+                        stream.write(json.dumps({
+                            "update": block.completed + offset + 1, "metrics": latest_metrics,
+                        }, allow_nan=False) + "\n")
+                        pending = True
                 if pending and events.elapsed() - last_progress >= 0.4:
                     publish_progress()
 
@@ -611,6 +657,9 @@ def _run(
                 custody = [{
                     "pointer": checkpoint.pointer.model_dump(mode="json"),
                     "content": bind_method_checkpoint_content(checkpoint.checkpoint_root, checkpoint.pointer, store).model_dump(mode="json"),
+                    **({"validity": validity.model_dump(mode="json")} if (
+                        validity := checkpoint_validity.get(checkpoint.pointer.transaction_id)
+                    ) is not None else {}),
                 } for checkpoint in checkpoints]
                 staged = store.store_object(canonical_json_v2_bytes(custody))
             except (OSError, ValueError) as error:
@@ -635,3 +684,13 @@ def _run(
             traceback.print_exc()
             receipt = None
         return _Result("failed", receipt=receipt, error=error)
+
+
+def check_train(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
+    """Re-prepare the exact recorded Train start for code or environment confirmation."""
+    from feedbax.validity.train import recheck_train
+
+    if _warm_registries is None:
+        prewarm()
+    assert _warm_registries is not None
+    return recheck_train(delivery, _warm_registries)

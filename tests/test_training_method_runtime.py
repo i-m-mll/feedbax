@@ -114,7 +114,7 @@ def _transcript_step(state, ctx):
     return TrainingState(state.model, proposed), {"key": key, "state": proposed}
 
 
-def test_train_driver_transcript_guards_revision():
+def _train_driver_revision():
     registry = TrainingMethodRegistry()
     registry.register_declaration(
         _transcript_step, callable_declaration(_transcript_step), key="witness.transcript",
@@ -153,18 +153,22 @@ def test_train_driver_transcript_guards_revision():
     fresh = train_start_clock(17, source=None, resume=False, continuation=None)
     plain, _, _ = run(fresh, 9, (), initial, interval=20)
     selected, _, _ = run(fresh, 12, (2, 8), initial)
-    stopped, state, clock = run(fresh, 12, (2, 8), initial, stop_at=5)
+    stopped, state, clock = run(fresh, 12, (2, 8), initial, stop_at=7)
     resumed_clock = train_start_clock(99, source=clock, resume=True, continuation=None)
     resumed, _, _ = run(resumed_clock, 12, (2, 8), state)
     events = [plain, selected, stopped, resumed]
     for keep, rng, schedule in product(("preserve", "reset"), ("carry", "reset"), ("continue", "restart")):
         continuation = TrainContinuation(
-            source_completed_updates=5, state=keep, rng=rng, schedule=schedule,
+            source_completed_updates=7, state=keep, rng=rng, schedule=schedule,
         )
         chained_clock = train_start_clock(29, source=clock, resume=False, continuation=continuation)
         start = state if carries_method_state(continuation, resume=False) else initial
-        chained, _, _ = run(chained_clock, 7, (), start)
+        chained, _, _ = run(chained_clock, 9, (), start)
         events.append(chained)
 
     digest = sha256(json.dumps(events, separators=(",", ":")).encode()).hexdigest()
-    assert TRAIN_DRIVER_REVISION == int(digest[:13], 16), digest
+    return int(digest[:13], 16)
+
+
+def test_train_driver_transcript_guards_revision():
+    assert TRAIN_DRIVER_REVISION == _train_driver_revision()
