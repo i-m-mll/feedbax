@@ -1,11 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from feedbax.contracts.code_validity import CodeTrace, SourcePath, SourceSnapshot
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.code_validity import AttemptProvenance, CodeTrace, ReceiptEvidence, SourcePath, SourceSnapshot
 from feedbax.contracts.receipt_validity import (
     CheckOutcome,
     FileDifference,
@@ -24,6 +25,7 @@ from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.receipt_validity import read_validity_records, record_validity
 from feedbax.validity.admission import decide_validity, observe_differences
 from feedbax.validity.light_products import light_product_matches
+from feedbax.validity.project_admission import is_quick
 from feedbax.validity.source import SourceCatalog
 from scripts.proofs.effective_binding_witness import prepare
 
@@ -157,3 +159,25 @@ def test_quick_replay_tolerates_float_rounding_but_preserves_labels_and_zero(tmp
     assert not light_product_matches(store, retained, product((1e-12, 1)))
     assert not light_product_matches(store, retained, product((0, 1.00001)))
     assert not light_product_matches(store, retained, product((0, 1), labels=("late", "early")))
+
+
+def test_an_expensive_prefix_cannot_make_a_short_resume_eligible_for_automatic_run(tmp_path):
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    case = prepare(store, b'{"kind":"test","id":"producer"}', b'{"kind":"test","id":"analysis"}')
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    trace = CodeTrace(sources=(), registry=(), files=(), environment={}, indeterminate=())
+    suffix = AttemptProvenance(
+        feedbax_commit="witness", feedbax_dirty=False, lock_sha256=None, platform="cpu",
+        started_at=started + timedelta(seconds=4), ended_at=started + timedelta(seconds=5),
+    )
+    before = ReceiptEvidence(
+        attempt="earlier", trace=trace, provenance=suffix.model_copy(update={
+            "started_at": started, "ended_at": started + timedelta(seconds=3),
+        }),
+    )
+    initial = case.original.receipt.model_copy(update={"trace": trace, "provenance": suffix})
+    assert is_quick(initial, timedelta(seconds=2), store)
+    prefix = store.store_object(canonical_json_v2_bytes(before.model_dump(mode="json")))
+    resumed = initial.model_copy(update={"trace": trace.model_copy(update={"prefixes": (prefix,)})})
+    assert not is_quick(resumed, timedelta(seconds=2), store)
+    assert is_quick(resumed, timedelta(seconds=4), store)

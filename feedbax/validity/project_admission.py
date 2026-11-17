@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.code_validity import CodeTrace, ReceiptEvidence
 from feedbax.contracts.computation_validity import NORMALIZATION_VERSION, ComputationTrace
 from feedbax.contracts.effective_success import EvaluationSubjectValue, Success, select_bound_product
 from feedbax.contracts.receipt_validity import CheckConditions, InputDifference, ReceiptValidity
@@ -22,6 +23,7 @@ from feedbax.validity.registry import snapshot_registry
 from feedbax.validity.source import source_catalog
 
 if TYPE_CHECKING:
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import PublishedSuccess, SuccessView
     from feedbax.plugins.application import ApplicationRegistryBundle
 
@@ -72,17 +74,7 @@ class ProjectValidity:
                 published.ref, conditions=conditions, has_trace=False, input_differences=inputs,
             ), conditions)
 
-        traces = [receipt.trace]
-        pending = list(receipt.trace.prefixes)
-        visited = set()
-        while pending:
-            ref = pending.pop()
-            if ref.sha256 in visited:
-                continue
-            visited.add(ref.sha256)
-            evidence = read_execution_evidence(view.store, ref)
-            traces.append(evidence.trace)
-            pending.extend(evidence.trace.prefixes)
+        traces = [receipt.trace, *(evidence.trace for evidence in _prefixes(view.store, receipt.trace))]
 
         conditions, files = observe_differences(
             traces, catalog=self._catalog, registry=self._registry, environment=self._environment,
@@ -97,7 +89,7 @@ class ProjectValidity:
         code_checkable = code_unavailable is None and all(computation is not None for computation in computations)
         environment_checkable = (
             all(computation is not None and computation.prefix is not None for computation in computations)
-            or (receipt.request.id.partition(":")[0] in ("analyze", "render", "report") and is_quick(receipt, self.quick_duration))
+            or (receipt.request.id.partition(":")[0] in ("analyze", "render", "report") and is_quick(receipt, self.quick_duration, view.store))
         )
         records = read_validity_records(view.store, receipt.request.id, published.ref)
         return ObservedReceiptValidity(decide_validity(
@@ -124,11 +116,30 @@ def _unavailable_computation(computations: tuple[ComputationTrace | None, ...]) 
     return None
 
 
-def is_quick(receipt: Success, duration: timedelta) -> bool:
-    return (
-        receipt.provenance is not None
-        and receipt.provenance.ended_at - receipt.provenance.started_at <= duration
-    )
+def _prefixes(store: ImmutableArtifactBlobProvider, trace: CodeTrace) -> Iterator[ReceiptEvidence]:
+    pending = list(trace.prefixes)
+    visited = set()
+    while pending:
+        ref = pending.pop()
+        if ref.sha256 in visited:
+            continue
+        visited.add(ref.sha256)
+        evidence = read_execution_evidence(store, ref)
+        yield evidence
+        pending.extend(evidence.trace.prefixes)
+
+
+def is_quick(receipt: Success, duration: timedelta, store: ImmutableArtifactBlobProvider) -> bool:
+    if receipt.provenance is None or receipt.trace is None:
+        return False
+    elapsed = receipt.provenance.ended_at - receipt.provenance.started_at
+    if elapsed > duration:
+        return False
+    for prefix in _prefixes(store, receipt.trace):
+        elapsed += prefix.provenance.ended_at - prefix.provenance.started_at
+        if elapsed > duration:
+            return False
+    return elapsed <= duration
 
 
 def current_input_differences(

@@ -1061,14 +1061,14 @@ class JobService(PlanJobReader):
                     ):
                         continue
                     if (result := authorized_success(request)) is not None:
-                        quick_run = allow_run and validity.state != "current" and is_quick(result.receipt, self._quick_duration)
+                        quick_run = allow_run and validity.state != "current" and is_quick(result.receipt, self._quick_duration, view.store)
                         if not quick_run:
                             self._submit_check(plan, result, observer.inspect(view, result))
                             available -= 1
             if allow_run and needed:
                 candidates = [authorized_success(request) for request in needed]
                 if all(
-                    candidate is not None and is_quick(candidate.receipt, self._quick_duration)
+                    candidate is not None and is_quick(candidate.receipt, self._quick_duration, view.store)
                     and attempts.by_request[request][-1] is results.get(request)
                     for request, candidate in zip(needed, candidates, strict=True)
                 ):
@@ -1159,7 +1159,7 @@ class JobService(PlanJobReader):
                     from feedbax.validity.project_admission import is_quick
 
                     latest = view.authored_ref(job.request)
-                    if latest is None or not is_quick(view.read_receipt(latest), self._quick_duration):
+                    if latest is None or not is_quick(view.read_receipt(latest), self._quick_duration, view.store):
                         chosen.append(_rejected(item.run_key, "This request requires explicit Run."))
                         continue
                 if reusable is not None:
@@ -1740,7 +1740,7 @@ class JobService(PlanJobReader):
             if result.state == "current":
                 return job["id"]
             if upstream and all(reason.kind in ("code", "environment") for reason in result.reasons) and (
-                result.state == "unchecked" or not is_quick(retained, self._quick_duration)
+                result.state == "unchecked" or not is_quick(retained, self._quick_duration, view.store)
             ):
                 return job["id"]
             if result.state == "unchecked" and not automatic:
