@@ -1,7 +1,7 @@
 import { Button as BaseButton } from '@base-ui/react/button';
 import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
-import { forwardRef, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { forwardRef, type ComponentPropsWithoutRef, type KeyboardEvent, type ReactNode } from 'react';
 import { disabledLook, focusRing, glyph } from './styles';
 
 export type ButtonVariant = 'default' | 'primary' | 'ghost' | 'bare';
@@ -36,6 +36,19 @@ const base = clsx('select-none', focusRing, disabledLook);
 
 type BaseProps = Omit<ComponentPropsWithoutRef<typeof BaseButton>, 'className'> & { className?: string };
 
+type BaseKeyboardEvent = KeyboardEvent<HTMLElement> & { preventBaseUIHandler?: () => void };
+
+/**
+ * A disabled control that keeps focus cancels every key but Tab in Base UI, which would stop
+ * window shortcuts while focus rests on it. Only activation keys stay cancelled.
+ */
+function keepShortcuts(disabled: boolean | undefined, onKeyDown: BaseProps['onKeyDown']) {
+  return (event: BaseKeyboardEvent) => {
+    onKeyDown?.(event as Parameters<NonNullable<BaseProps['onKeyDown']>>[0]);
+    if (disabled && event.key !== 'Enter' && event.key !== ' ') event.preventBaseUIHandler?.();
+  };
+}
+
 export interface ButtonProps extends BaseProps {
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -44,10 +57,11 @@ export interface ButtonProps extends BaseProps {
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { variant = 'default', size = 'control', align = 'center', pressed, className, type = 'button', ...props }, ref,
+  { variant = 'default', size = 'control', align = 'center', pressed, className, type = 'button', onKeyDown, ...props }, ref,
 ) {
   return <BaseButton ref={ref} type={type} aria-pressed={pressed}
-    className={clsx(base, variants[variant], textSizes[size], alignments[align], className)} {...props} />;
+    className={clsx(base, variants[variant], textSizes[size], alignments[align], className)} {...props}
+    onKeyDown={keepShortcuts(props.disabled, onKeyDown)} />;
 });
 
 export interface IconButtonProps extends Omit<ButtonProps, 'children' | 'aria-label' | 'align'> {
@@ -58,7 +72,7 @@ export interface IconButtonProps extends Omit<ButtonProps, 'children' | 'aria-la
 }
 
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
-  { label, icon, pressed, tipPlacement = 'bottom', variant = 'ghost', size = 'control', className, type = 'button', ...props }, ref,
+  { label, icon, pressed, tipPlacement = 'bottom', variant = 'ghost', size = 'control', className, type = 'button', onKeyDown, ...props }, ref,
 ) {
   return (
     <BaseButton
@@ -70,6 +84,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       className={clsx(base, variants[variant], iconSizes[size], 'justify-center px-0', className)}
       {...appTip(label, tipPlacement)}
       {...props}
+      onKeyDown={keepShortcuts(props.disabled, onKeyDown)}
     >
       {icon}
     </BaseButton>

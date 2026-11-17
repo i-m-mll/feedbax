@@ -1,56 +1,26 @@
-import { useId, useState, type ReactNode } from 'react';
-import type { ComponentDefinition, DelayAttachment, InterventionAttachment, JsonValue, ModelAddress, ModelDocument, ModelTime, ParamSchema, ProbeAttachment } from '@/generated/studioContracts';
-import { ModelAddressSchema } from '@/generated/studioContracts';
-import { z } from 'zod';
-import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
+import type { ComponentDefinition, DelayAttachment, InterventionAttachment, JsonValue, ModelDocument, ModelTime, ProbeAttachment } from '@/generated/studioContracts';
+import { studioName, studioReason, studioUnit } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
-import { Button } from '@/components/ui/Button';
-import { Checkbox } from '@/components/ui/Checkbox';
-import { Select } from '@/components/ui/Select';
-import { TextField } from '@/components/ui/TextField';
-import { addressKey, type Component } from './modelGraph';
+import type { FieldCommit, FieldModel } from '@/components/values/fieldModel';
+import { fromParamSchema } from '@/components/values/adapters/paramSchema';
+import { rawField, type RawChange } from '@/components/values/adapters/raw';
+import type { Component } from './modelGraph';
 
 export type Attachment = DelayAttachment | InterventionAttachment | ProbeAttachment;
-
-export function Field({ label, value, parse, commit, type = 'text', suffix, description }: {
-  label: string; value: string; parse(value: string): JsonValue | undefined;
-  commit?: (value: JsonValue) => void; type?: 'text' | 'number'; suffix?: ReactNode; description?: string;
-}) {
-  const [invalid, setInvalid] = useState(false);
-  const descriptionId = useId();
-  return <form className="grid gap-1" onSubmit={(event) => {
-    event.preventDefault();
-    if (!commit) return;
-    const raw = new FormData(event.currentTarget).get('value');
-    const parsed = typeof raw === 'string' ? parse(raw) : undefined;
-    setInvalid(parsed === undefined);
-    if (parsed !== undefined) commit(parsed);
-  }}>
-    <label className="grid gap-1">{label}
-      <TextField key={value} name="value" type={type} step="any" defaultValue={value}
-        disabled={!commit} aria-invalid={invalid || undefined} aria-describedby={description ? descriptionId : undefined}
-        onChange={() => setInvalid(false)} />
-    </label>
-    {description && <span id={descriptionId} className="text-xs text-shell-muted">{description}</span>}
-    {suffix}
-  </form>;
-}
-
-function numeric(raw: string): number | undefined {
-  const value = Number(raw);
-  return raw.trim() && Number.isFinite(value) ? value : undefined;
-}
+/** Writes a raw value at a path under the element; answers with a reason when the edit is refused. */
+export type FieldChange = (path: string[], value: JsonValue) => Promise<string | undefined>;
+export type AttachmentChange = (item: Attachment) => Promise<string | undefined> | void;
 
 function period(raw: string) {
-  const value = numeric(raw.trim().replace(/\s*s$/, ''));
-  return value !== undefined && value > 0 ? value : undefined;
+  const value = Number(raw.trim().replace(/\s*s$/, ''));
+  return raw.trim() && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-function duration(raw: string) {
+function duration(raw: string): ModelTime | undefined {
   const match = raw.trim().match(/^(\d+(?:\.\d+)?|\.\d+)\s*(s|st)$/);
   if (!match) return;
   const value = Number(match[1]);
-  const unit = match[2];
+  const unit = match[2] as ModelTime['unit'];
   return value > 0 && (unit === 's' || Number.isInteger(value)) ? { value, unit } : undefined;
 }
 
@@ -59,104 +29,115 @@ function conversion(delay: ModelTime, step: number) {
     : `${Number((delay.value * step).toPrecision(8))} ${studioUnit('second')}`;
 }
 
-function linkedAddress(value: string) {
-  try {
-    return ModelAddressSchema.parse(JSON.parse(value));
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof z.ZodError) return undefined;
-    throw error;
-  }
+/** The model's own fields, shown when nothing is selected. */
+export function modelFields(model: ModelDocument, change?: FieldChange): FieldModel[] {
+  const label = studioName('step');
+  return [rawField({
+    id: 'step_seconds', label, type: { kind: 'string' }, value: `${model.step_seconds} ${studioUnit('second')}`,
+    change: change && ((raw) => {
+      const value = period(String(raw));
+      return value === undefined ? studioReason('takesPositive', label) : change(['step_seconds'], value);
+    }),
+  })];
 }
 
-function fieldValue(value: JsonValue | undefined, schema: ParamSchema) {
-  const options = schema.options?.map((option) => typeof option === 'object' ? JSON.stringify(option) : String(option));
-  return { options, value: value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value) };
-}
-
-function Parameter({ name, schema, value, change }: {
-  name: string; schema: ParamSchema; value: JsonValue | undefined; change?: (value: JsonValue) => void;
-}) {
-  const label = humanizeLabel(name);
-  const field = fieldValue(value, schema);
-  if (typeof value === 'boolean') return <Checkbox label={label} checked={value} disabled={!change}
-    onCheckedChange={(checked) => change?.(checked)} />;
-  const options = field.options;
-  if (options?.length) return <div className="grid gap-1">{label}
-    <Select aria-label={label} value={field.value} disabled={!change}
-      items={options.map((option) => ({ value: option, label: option }))}
-      onValueChange={(option) => change?.(schema.options![options.indexOf(option)] as JsonValue)} />
-  </div>;
-  if (Array.isArray(value) && value.every((item) => typeof item === 'number' || typeof item === 'string')) {
-    return <fieldset className="grid gap-1"><legend>{label}</legend>
-      {value.map((item, index) => <Field key={index} label={String(index + 1)} value={String(item)}
-        type={typeof item === 'number' ? 'number' : 'text'} parse={typeof item === 'number' ? numeric : (raw) => raw}
-        commit={change && ((next) => change(value.map((old, position) => position === index ? next : old)))} />)}
-    </fieldset>;
-  }
-  if (value && typeof value === 'object') return <dl><dt>{label}</dt><dd>{field.value}</dd></dl>;
-  return <Field label={label} value={field.value} type={typeof value === 'number' ? 'number' : 'text'}
-    parse={typeof value === 'number' ? numeric : (raw) => raw} commit={change} />;
-}
-
-export function ModelFields({ model, change }: { model: ModelDocument; change?: (path: string[], value: JsonValue) => void }) {
-  return <Field label={studioName('step')} value={`${model.step_seconds} ${studioUnit('second')}`} parse={period} commit={change && ((value) => change(['step_seconds'], value))} />;
-}
-
-export function ComponentFields({ component, definition, change, projected }: {
-  component: Component; definition?: ComponentDefinition; change?: (path: string[], value: JsonValue) => void;
-  projected?: ReadonlySet<string>;
-}) {
+/** A component's raw fields: a composite's substeps, a leaf's declared parameters that the server does not project. */
+export function componentFields(component: Component, definition: ComponentDefinition | undefined, change?: FieldChange,
+  projected?: ReadonlySet<string>): FieldModel[] {
   if (component.kind === 'composite') {
     const domain = component.interior.physical_domain;
-    return !projected?.has('substeps') && (domain === 'planar_multibody' || domain === 'spatial_multibody')
-      ? <Field label={studioName('substeps')} value={String(component.substeps ?? 1)} type="number"
-        parse={(raw) => { const value = numeric(raw); return value && value > 0 && Number.isInteger(value) ? value : undefined; }}
-        commit={change && ((value) => change(['substeps'], value))} /> : null;
+    if (projected?.has('substeps') || (domain !== 'planar_multibody' && domain !== 'spatial_multibody')) return [];
+    const label = studioName('substeps');
+    return [rawField({
+      id: 'substeps', label, type: { kind: 'integer' }, value: component.substeps ?? 1,
+      change: change && ((value) => typeof value === 'number' && value > 0 ? change(['substeps'], value) : studioReason('takesPositive', label)),
+    })];
   }
   const values = { ...definition?.default_params, ...component.fields };
-  return <>{definition?.param_schema?.filter(({ name }) => name !== 'dt' && name !== 'control_dt' && !projected?.has(name)).map((schema) =>
-    <Parameter key={schema.name} name={schema.name} schema={schema} value={values[schema.name] as JsonValue | undefined}
-      change={change && ((value) => change(['fields', schema.name], value))} />)}</>;
+  return (definition?.param_schema ?? [])
+    .filter(({ name }) => name !== 'dt' && name !== 'control_dt' && !projected?.has(name))
+    .map((schema) => fromParamSchema(schema, values[schema.name] as JsonValue | undefined,
+      change && ((value) => change(['fields', schema.name], value))));
 }
 
-
-export function AttachmentFields({ item, step, change, arm, linkLabel, projected }: {
-  item: Attachment; step: number; change?: (value: Attachment) => void; arm?: () => void;
-  linkLabel?: (address: ModelAddress) => string;
-  projected?: ReadonlySet<string>;
-}) {
+/** An attachment's raw fields. A delay's Initial is the caller's row, since it can hold a link to a port. */
+export function attachmentFields(item: Attachment, step: number, change?: AttachmentChange,
+  projected?: ReadonlySet<string>): FieldModel[] {
+  const write = (next: Attachment): ReturnType<RawChange> => change?.(next);
   if (item.kind === 'delay') {
-    const initial = item.initial;
-    const linked = initial && typeof initial === 'object' && !Array.isArray(initial) &&
-      initial.kind === 'name' && typeof initial.reference === 'string' ? initial.reference : null;
-    const parsed = linked ? linkedAddress(linked) : undefined;
-    const label = parsed ? linkLabel?.(parsed) || addressKey(parsed) : linked;
-    return <>
-      {projected?.has('delay') ? <small>{conversion(item.delay, step)}</small> : <Field label={studioName('delay')} value={`${item.delay.value} ${item.delay.unit}`} parse={duration}
-        suffix={<small>{conversion(item.delay, step)}</small>}
-        commit={change && ((delay) => change({ ...item, delay: delay as unknown as ModelTime }))} />}
-      {linked ? <div>{studioName('initial')} <output>{label}</output>
-        {change && <Button variant="ghost" onClick={() => change({ ...item, initial: 0 })}>{studioName('clearLink')}</Button>}
-      </div> : !projected?.has('initial') && <Field label={studioName('initial')} value={String(initial ?? 0)} type="number" parse={numeric}
-        commit={change && ((value) => change({ ...item, initial: value }))} />}
-      {arm && <Button className="justify-self-start" onClick={arm}>{studioName('pickInitial')}</Button>}
-    </>;
+    if (projected?.has('delay')) return [];
+    const label = studioName('delay');
+    return [rawField({
+      id: 'delay', label, type: { kind: 'string' }, value: `${item.delay.value} ${item.delay.unit}`,
+      origin: conversion(item.delay, step),
+      change: change && ((raw) => {
+        const delay = duration(String(raw));
+        return delay ? write({ ...item, delay }) : studioReason('takesDuration', label);
+      }),
+    })];
   }
-  if (item.kind === 'probe') return <Field label={studioName('name')} value={item.name} parse={(raw) => raw.trim() || undefined}
-    commit={change && ((value) => change({ ...item, name: String(value) }))} />;
+  if (item.kind === 'probe') {
+    const label = studioName('name');
+    return [rawField({
+      id: 'name', label, type: { kind: 'string' }, value: item.name,
+      change: change && ((raw) => String(raw).trim() ? write({ ...item, name: String(raw).trim() }) : studioReason('takesText', label)),
+    })];
+  }
   const clamp = item.operation.toLowerCase() === 'clamp';
   const names = clamp ? ['low', 'high'] : ['factor'];
-  return <>
-    <div className="grid gap-1">{studioName('operation')}
-      <Select<'clamp' | 'scale'> aria-label={studioName('operation')} value={clamp ? 'clamp' : 'scale'} disabled={!change}
-        items={[{ value: 'clamp', label: studioName('clamp') }, { value: 'scale', label: studioName('scale') }]}
-        onValueChange={(operation) => {
-          change?.({ ...item, operation, fields: operation === 'clamp' ? { low: -1, high: 1 } : { factor: 1 } });
-        }} />
-    </div>
-    {names.filter((name) => !projected?.has(name)).map((name) => <Field key={name} label={humanizeLabel(name)} type="number"
-      value={String(item.fields?.[name] ?? '')} parse={numeric}
-      commit={change && ((value) => change({ ...item, fields: { ...item.fields, [name]: value } }))} />)}
-    <div>{studioName('window')} <output>{studioName('wholeTrial')}</output></div>
-  </>;
+  return [
+    rawField({
+      id: 'operation', label: studioName('operation'), value: clamp ? 'clamp' : 'scale',
+      type: { kind: 'choice', options: [{ value: 'clamp', label: studioName('clamp') }, { value: 'scale', label: studioName('scale') }] },
+      change: change && ((operation) => write({
+        ...item, operation: String(operation), fields: operation === 'clamp' ? { low: -1, high: 1 } : { factor: 1 },
+      })),
+    }),
+    ...names.filter((name) => !projected?.has(name)).map((name) => rawField({
+      id: name, label: humanizeLabel(name), type: { kind: 'number' }, value: item.fields?.[name] ?? null,
+      change: change && ((value) => write({ ...item, fields: { ...item.fields, [name]: value } })),
+    })),
+    rawField({ id: 'window', label: studioName('window'), type: { kind: 'readOnly' }, value: studioName('wholeTrial') }),
+  ];
+}
+
+export function initialField(item: DelayAttachment, linked: string | undefined, change?: AttachmentChange): FieldModel {
+  const label = studioName('initial');
+  if (linked !== undefined) return rawField({ id: 'initial', label, type: { kind: 'readOnly' }, value: linked });
+  return rawField({
+    id: 'initial', label, type: { kind: 'number' }, value: typeof item.initial === 'number' ? item.initial : 0,
+    change: change && ((value) => change({ ...item, initial: value })),
+  });
+}
+
+function sameValue(models: readonly FieldModel[]) {
+  const [first, ...rest] = models;
+  return rest.every((model) => model.text === first.text && JSON.stringify(model.value) === JSON.stringify(first.value));
+}
+
+/**
+ * The fields several selected elements share, matched by id: one row each, its value `Mixed` (text null) where they
+ * differ. Committing sets it on every element in turn and answers with the first refusal.
+ */
+export function sharedFields(lists: readonly (readonly FieldModel[])[]): FieldModel[] {
+  if (lists.length < 2) return [...lists[0] ?? []];
+  const [first, ...rest] = lists;
+  return first.flatMap((model) => {
+    const matches = [model, ...rest.map((list) => list.find(({ id, type }) => id === model.id && type.kind === model.type.kind))];
+    if (matches.some((match) => !match)) return [];
+    const all = matches as FieldModel[];
+    const commits = all.map(({ commit }) => commit);
+    const commit: FieldCommit | undefined = commits.every(Boolean) ? async (edit) => {
+      for (const each of commits) {
+        const reason = await each!(edit);
+        if (reason) return reason;
+      }
+      return undefined;
+    } : undefined;
+    const same = sameValue(all);
+    return [{
+      ...model, commit, members: undefined, parts: same ? model.parts : undefined,
+      ...(same ? {} : { text: null, value: undefined }),
+    }];
+  });
 }

@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
+import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { ArrowUp } from 'lucide-react';
@@ -8,23 +8,23 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Select } from '@/components/ui/Select';
 import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
+import { CatalogPicker } from '@/components/ui/CatalogPicker';
+import { FieldRow } from '@/components/ui/FieldRow';
+import { SettingsForm } from '@/components/values/SettingsForm';
 import { ValueField } from '@/components/values/ValueField';
+import { setIn } from '@/components/values/adapters/jsonSchema';
+import { isRecord, rawField } from '@/components/values/adapters/raw';
 import { fromFieldView } from '@/components/values/adapters/fieldView';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
   JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { Field } from './model/ModelInspector';
 import type { ProjectEditController } from './projectEditController';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 type Commit = (name: string, change: Change) => Promise<string | undefined>;
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
-
-function parameterValue(value: JsonValue | undefined) {
-  return typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean' ? String(value) : '';
-}
 
 function write(path: string, value: JsonValue, present: boolean): ProjectValueEdit {
   return { op: present ? 'replace' : 'add', path, value };
@@ -72,29 +72,37 @@ export function useTrialAuthoring(
 
 export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; commit?: Commit }) {
   const [error, setError] = useState<string>();
+  const catalog = useAuthoringCatalog();
+  const typeLabel = useId();
   const task = view.task;
   const selection = 'params' in task ? task : undefined;
   const type = view.task_types.find((item) => item.type === selection?.type);
-  const properties = type?.parameter_schema.properties;
-  const params = properties && typeof properties === 'object' && !Array.isArray(properties) ? Object.entries(properties) : [];
+  const packages = new Map(catalogEntries(catalog.data, 'python_tasks').map((entry) => [entry.key, entry.package]));
   const source = view.task_source && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(view.task_source)}</span>;
+  const edit = (name: string, edits: ProjectValueEdit[]) => commit && commit(studioAccessibleName('set', name), { kind: 'task', edits });
   return <div className="grid max-w-2xl gap-4 p-3 text-sm">
     {!type && source}
-    {type && <section className="grid gap-2" aria-label={studioName('parameters')}>
-      <h3 className="font-medium">{type.label}</h3>
-      {params.flatMap(([key, property]) => {
-        if (!property || typeof property !== 'object' || Array.isArray(property)) return [];
-        const name = typeof property.title === 'string' ? property.title : humanizeLabel(key);
-        const value = selection?.params[key] ?? property.default;
-        const number = property.type === 'number' || property.type === 'integer';
-        const origin = view.task_field_sources?.[key] ?? view.task_source;
-        return <Field key={key} label={name} value={parameterValue(value)} type={number ? 'number' : 'text'}
-          description={origin ? studioEvaluateValueSource(origin) : undefined}
-          parse={(raw) => number ? raw.trim() && Number.isFinite(Number(raw)) ? Number(raw) : undefined : raw}
-          commit={commit && (async (value) => setError(await commit('Set ' + name, {
-            kind: 'task', edits: [write(authoredPointer(['params', key]), value, !!selection && has(selection.params, key))],
-          })))} />;
-      })}
+    {type && selection && <section className="grid gap-1" aria-label={studioName('parameters')}>
+      <FieldRow label={studioName('task')} labelId={typeLabel}>
+        <CatalogPicker aria-labelledby={typeLabel} className="w-full" disabled={!commit} value={type.type}
+          entries={view.task_types.map((item) => ({ key: item.type, label: item.label, package: packages.get(item.type) }))}
+          onChoose={async (key) => setError(await edit(studioName('task'), [
+            write(authoredPointer(['type']), key, true), write(authoredPointer(['params']), {}, true),
+          ]))} />
+      </FieldRow>
+      <SettingsForm schema={type.parameter_schema} value={selection.params}
+        origin={([key]) => {
+          const origin = view.task_field_sources?.[key] ?? view.task_source;
+          return origin ? studioEvaluateValueSource(origin) : undefined;
+        }}
+        write={commit && (async (path, value) => {
+          const [key, ...rest] = path;
+          const property = type.parameter_schema.properties;
+          const name = isRecord(property) && isRecord(property[key]) && typeof property[key].title === 'string'
+            ? property[key].title : humanizeLabel(key);
+          return edit(name, [write(authoredPointer(['params', key]), setIn(selection.params[key], rest, value),
+            has(selection.params, key))]);
+        })} />
     </section>}
     <section aria-label={studioName('signals')}>
       <h3 className="font-medium">{studioName('signals')}</h3>
@@ -223,20 +231,19 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
 export function TrialObjectiveInspector({ view, commit, selected }: {
   view: StudioTrialAuthoring; commit?: Commit; selected?: string;
 }) {
-  const [error, setError] = useState<string>();
   const index = view.objective?.terms?.findIndex(({ id }) => id === selected) ?? -1;
   const term = view.objective?.terms?.[index];
   if (!term) return null;
-  const save = async (field: 'name' | 'reduction', value: JsonValue) => setError(await commit?.('Set ' + humanizeLabel(field), {
-    kind: 'objective', edits: [write('/terms/' + index + '/' + field, value, has(term, field))],
-  }));
-  return <div className="grid gap-2 p-2 text-sm">
-    <Field key={term.id} label={studioName('name')} value={term.name ?? ''} parse={(raw) => raw.trim() || undefined}
-      commit={commit && ((value) => { void save('name', value); })} />
-    <label className="grid gap-1">{studioName('reduction')} <Select aria-label={studioName('reduction')} value={term.reduction ?? 'mean'} disabled={!commit}
-      items={([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const).map(([value, name]) =>
-        ({ value, label: studioName(name) }))}
-      onValueChange={(value) => { void save('reduction', value); }} /></label>
-    {error && <p role="alert">{error}</p>}
+  const save = (field: 'name' | 'reduction') => commit && ((value: JsonValue) => commit(
+    studioAccessibleName('set', humanizeLabel(field)),
+    { kind: 'objective', edits: [write('/terms/' + index + '/' + field, value, has(term, field))] },
+  ));
+  return <div className="grid gap-1 p-2 text-sm">
+    <ValueField key={term.id + 'name'} model={rawField({ id: 'name', label: studioName('name'), type: { kind: 'string' },
+      value: term.name ?? '', change: save('name') })} />
+    <ValueField key={term.id + 'reduction'} model={rawField({ id: 'reduction', label: studioName('reduction'),
+      value: term.reduction ?? 'mean', change: save('reduction'), type: { kind: 'choice', options:
+        ([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const)
+          .map(([value, name]) => ({ value, label: studioName(name) })) } })} />
   </div>;
 }

@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -300,7 +301,16 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ 
     for (const cards of [20, 100]) {
       const { snapshot, projectPath } = await seedManagedProject(request, [
         { kind: 'document', id: 'model', document: { schema: 'feedbax.spec.model', payload: modelFixture(cards) } },
-        { kind: 'step', id: 'train', step: { kind: 'train', base: { inline: { graph: { document: 'model' } } } } },
+        { kind: 'document', id: 'task', document: {
+          schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+        } },
+        { kind: 'document', id: 'objective', document: {
+          schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+        } },
+        { kind: 'step', id: 'train', step: { kind: 'train', base: { inline: { trial_documents: {
+          model: { document: 'model' }, python_task: { document: 'task' },
+          objective: { document: 'objective' },
+        } } } } },
       ]);
       await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
       await mapStep(page, 'train').click();

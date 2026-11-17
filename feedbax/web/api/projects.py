@@ -114,7 +114,7 @@ def read_train_authoring(
         snapshot = folders.read(project_id, revision=body.revision)
         bundle = request.app.state.bootstrap_state.bundle
         try:
-            fields, patches, documents = project_train_fields(
+            fields, settings, patches, documents = project_train_fields(
                 snapshot.project, step_id, bundle.training_methods, body.change,
                 read_plan=lambda keys: folders.read_plan(project_id, revision=snapshot.revision, source_runs=keys).plan,
             )
@@ -122,7 +122,7 @@ def read_train_authoring(
             raise ProjectFolderInvalid(str(error)) from error
         return StudioTrainAuthoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision,
-            fields=fields, patches=patches, documents=documents,
+            fields=fields, settings=settings, patches=patches, documents=documents,
         )
 
     return _project_response(response, project_fields)

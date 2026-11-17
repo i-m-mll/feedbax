@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
   StudioEvaluationObjectiveSeries, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow,
   StudioSavedTrainRuns, WorkspaceReplayTrial,
@@ -8,7 +9,7 @@ import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
-import { pick } from './fixtures/controls';
+import { pick, reveal } from './fixtures/controls';
 
 test.use({
   channel: 'chrome',
@@ -48,10 +49,10 @@ async function chooseStep(page: Page, step: string) {
   await tab(page, 'Runs').click();
 }
 
-test('authors Evaluate conditions from one authenticated Train checkpoint', async ({ page, request }, info) => {
+test('authors Evaluate conditions from one authenticated Train checkpoint', async ({ page, request, studio }, info) => {
   test.setTimeout(60_000);
   const project: string = JSON.parse(await runProjectFixture(
-    'web.e2e.studio.fixtures.evaluate_authoring', String(info.config.metadata.home), 'authored-evaluate-conditions',
+    'web.e2e.studio.fixtures.evaluate_authoring', studio.home, 'authored-evaluate-conditions',
   ));
   const projectPath = '/api/projects/' + project;
   const runsPath = projectPath + '/train-runs';
@@ -161,7 +162,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await tab(page, 'Scene').click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   const trials = drawer.getByRole('combobox', { name: 'Trials' });
   const response = posted(page, path, trialId);
   await pick(trials, trialId);
@@ -190,13 +191,12 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await expect(scrubber).toHaveValue(String(replay.time.values!.at(-1)));
   await drawer.getByRole('button', { name: 'Effector', exact: true }).click();
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  if (!await inspector.isVisible()) await footer(page).getByRole('button', { name: 'Show Inspector' }).click();
+  await reveal(page, 'Inspector');
   await expect(inspector.getByRole('heading', { name: 'Effector' })).toBeVisible();
   return replay;
 }
 
-async function runSavedEvaluation(page: Page, request: APIRequestContext, info: TestInfo) {
-  const home = String(info.config.metadata.home);
+async function runSavedEvaluation(page: Page, request: APIRequestContext, info: TestInfo, home: string) {
   const projectId = JSON.parse(await runProjectFixture(fixture, 'seed', home, 'saved-evaluate'));
   const projectPath = `/api/projects/${projectId}`;
   const opened = await request.get(projectPath);
@@ -327,14 +327,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   return { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis };
 }
 
-test('saved Evaluate runs against its trained checkpoints', async ({ page, request }, info) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal application backend');
-  test.setTimeout(60_000);
-  await runSavedEvaluation(page, request, info);
-});
-
 test('authors selected saved Evaluate Model and Task inputs and repairs a refused edit', async ({ page, request }) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the managed Evaluate backend');
   test.setTimeout(59_000);
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -373,9 +366,9 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
-  const target = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
-  const targetY = task.getByRole('spinbutton', { name: 'Target y (m)', exact: true });
-  const taskSteps = task.getByRole('spinbutton', { name: 'N Steps', exact: true });
+  const target = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
+  const targetY = task.getByRole('textbox', { name: 'Target y (m)', exact: true });
+  const taskSteps = task.getByRole('textbox', { name: 'N Steps', exact: true });
   const stepField = inspector.getByRole('textbox', { name: 'Step', exact: true });
   const chooseRow = async (run = selectedKey, extend = false) => {
     const definition = (await plan()).window_map?.rows.find(({ key }) => key.step === run.step && key.row === run.row);
@@ -510,7 +503,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await expect.poll(async () => (await plan()).window_map?.problems.find(({ step, row }) =>
     step === selectedKey.step && row === selectedKey.row)).toMatchObject({
     path: '/step_seconds', detail: 'This Model field changes the trained graph interface or clock',
-    model_address: { document: 'point-mass', element: { kind: 'field', path: ['step_seconds'] } },
+    document: 'point-mass', model_address: { element: { kind: 'field', path: ['step_seconds'] } },
   });
   await tab(page, 'Runs').click();
   await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
@@ -535,7 +528,6 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
 });
 
 test('authors checkpoint rules and replays covered updates from Results', async ({ page, request }, info) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
   test.setTimeout(54_000);
   const files = JSON.parse(await runProjectFixture(fixture, 'series-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -576,8 +568,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   expect(planned.checkpoint_series?.requested).toEqual([2, 4]);
   await page.reload();
   await chooseStep(page, 'evaluate');
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true })).toBeVisible();
   await expect(field).toHaveValue('every 2');
   await field.fill('2, 2');
   await expect(page.getByRole('button', { name: 'Apply Checkpoints' })).toBeDisabled();
@@ -647,7 +638,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   });
 
   await chooseStep(page, 'evaluate');
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   await tab(page, 'Runs').click();
   async function edit(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>
@@ -679,13 +670,12 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   expect(undone.project.steps.evaluate.sweep?.axes?.update).toBeUndefined();
   await page.reload();
   await chooseStep(page, 'evaluate');
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   await expect(field).toHaveValue('4, 3, 2');
 });
 
-test('edits the checkpoint rule in the selected authored variant', async ({ page, request }, info) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
-  const project = JSON.parse(await runProjectFixture(fixture, 'seed-series-variants', String(info.config.metadata.home)));
+test('edits the checkpoint rule in the selected authored variant', async ({ page, request, studio }, info) => {
+  const project = JSON.parse(await runProjectFixture(fixture, 'seed-series-variants', studio.home));
   const projectPath = `/api/projects/${project}`;
   const host = await request.get('/api/jobs');
   expect(host.ok(), await host.text()).toBe(true);
@@ -700,7 +690,7 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   await chooseStep(page, 'evaluate');
   await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'comparison');
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
   await expect(field).toHaveValue('last');
   const saving = page.waitForResponse((response) =>
@@ -725,7 +715,6 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
 });
 
 test('edits a checkpoint axis value and one sibling row through saved Plan', async ({ page, request }) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
   const files = JSON.parse(await runProjectFixture(fixture, 'scoped-series-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const host = await request.get('/api/jobs');
@@ -743,7 +732,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   await page.goto(`/?project=${snapshot.project_id}`);
   await chooseStep(page, 'evaluate');
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
   async function save(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>
@@ -855,10 +844,10 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   });
 });
 
-test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request }, info) => {
+test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request, studio }, info) => {
   test.setTimeout(85_000);
   const { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis } =
-    (await runSavedEvaluation(page, request, info))!;
+    (await runSavedEvaluation(page, request, info, studio.home))!;
   const labels = new Map(completed.window_map!.rows.map(({ key, label }) => [JSON.stringify(key), label]));
   const conditions = single.filter(({ key }) => key.step === 'conditions');
   expect(conditions).toHaveLength(2);

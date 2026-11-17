@@ -892,11 +892,13 @@ class _Resolver:
         documents: dict[str, list[_DocumentRowPatch]] = {}
         path = "sweep"
         address = None
+        model_document = None
         fields = []
         document_uses = state.document_uses
         try:
             for path, write in row.patches.items():
                 address = None
+                model_document = None
                 if path == CHECKPOINT_RULE_TARGET:
                     if self.project.steps[name].kind != "evaluate":
                         raise ValueError("A checkpoint rule target requires an Evaluate subject")
@@ -905,8 +907,11 @@ class _Resolver:
                 patch = sweep_patch(path, write)
                 if isinstance(patch, SetField):
                     address = patch.address
-                    if model_field_target(path).step is not None:
-                        raise ValueError("A step-scoped Model target belongs in the project sweep")
+                    target = model_field_target(path)
+                    assert target is not None
+                    model_document = target.document
+                    if target.scope is not None:
+                        raise ValueError("Use an unscoped Model field target in a step sweep")
                     fields.append((path, patch))
                     continue
                 parts = patch.path.split(".")
@@ -984,7 +989,7 @@ class _Resolver:
         except ValueError as error:
             raise _Problem(
                 ResolutionCode.INVALID_SWEEP, path, str(error), step=name, layer=row.id,
-                document=address.document if address is not None else None, model_address=address,
+                document=model_document, model_address=address,
             ) from error
         return _StepState(
             payload, inputs=inputs, requires=state.requires, origins=origins, document_uses=document_uses,

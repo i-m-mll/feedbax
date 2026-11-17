@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { captureStudioWindow, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
@@ -9,11 +9,11 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   test.setTimeout(55_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const unrelated = { ...structuredClone(train), id: 'unrelated' };
-  train.step.base.inline.method_payload.payload.seed = 0;
+  train.step.base.inline.seed = 0;
   train.step.sweep = { axes: { seed: { values: {
-    first: { label: '1', patches: { 'method_payload.payload.seed': { value: 1 } } },
-    second: { label: '2', patches: { 'method_payload.payload.seed': { value: 2 } } },
-    third: { label: '3', patches: { 'method_payload.payload.seed': { value: 3 } } },
+    first: { label: '1', patches: { 'seed': { value: 1 } } },
+    second: { label: '2', patches: { 'seed': { value: 2 } } },
+    third: { label: '3', patches: { 'seed': { value: 3 } } },
   } } } };
   successor.step.inputs.checkpoint.where = { axes: { seed: ['first', 'third'] } };
   const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train, successor, unrelated]);

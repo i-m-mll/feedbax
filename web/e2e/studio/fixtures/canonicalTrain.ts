@@ -1,28 +1,14 @@
 import { expect, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import type { StudioProjectDocument } from '../../../src/generated/studioContracts';
+import { runPython } from './python';
 import { activate, activateMenuItem, chooseStepKind, number } from './studioKeyboard';
 
-const repo = fileURLToPath(new URL('../../../../', import.meta.url));
-const run = promisify(execFile);
 
 export async function runProjectFixture(
   fixture: string | { module: string; home: string }, ...arguments_: string[]
 ) {
-  const module = typeof fixture === 'string' ? fixture : fixture.module;
-  const env = typeof fixture === 'string' ? process.env : { ...process.env, FEEDBAX_STUDIO_TEST_HOME: fixture.home };
-  try {
-    const { stdout } = await run('uv', [
-      'run', '--no-sync', 'python', '-B', '-m', module, ...arguments_,
-    ], { cwd: repo, env, timeout: 12_000 });
-    return stdout;
-  } catch (error) {
-    const failure = error as Error & { code?: number | string; signal?: string; killed?: boolean; stderr?: string };
-    throw new Error(`${failure.message}\nExit ${failure.code ?? 'none'}, signal ${failure.signal ?? 'none'}, killed ${failure.killed ?? false}\n${failure.stderr ?? ''}`,
-      { cause: error });
-  }
+  if (typeof fixture === 'string') return runPython({ module: fixture }, arguments_);
+  return runPython({ module: fixture.module }, arguments_, { FEEDBAX_STUDIO_TEST_HOME: fixture.home });
 }
 
 export async function fixture(...arguments_: string[]) {

@@ -1,4 +1,5 @@
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import type { Locator } from '@playwright/test';
 import { captureStudioWindow, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette } from './fixtures/studioKeyboard';
 

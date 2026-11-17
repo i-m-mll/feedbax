@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import type { Page } from '@playwright/test';
 import type {
   StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
@@ -21,6 +22,13 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
   const header = primary.locator('.studio-window-slot__header');
   const rename = header.getByRole('textbox');
   const picker = (label: string) => header.getByRole('button', { name: new RegExp(`^${label} Document `) });
+  /** Opens a Document menu by keyboard. The menu takes focus on its first item after it mounts; keys sent before that reach the trigger. */
+  async function openMenu(label: string) {
+    await picker(label).press('Enter');
+    const menu = page.getByRole('menu', { name: `${label} Document`, exact: true });
+    await expect(menu.getByRole('menuitemradio').first()).toBeFocused();
+    return menu;
+  }
   async function saved() {
     const response = await request.get(projectPath);
     expect(response.ok()).toBe(true);
@@ -86,10 +94,11 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   await expect(picker('Objective')).toHaveText('simple-reaches-objective');
-  await picker('Objective').press('Enter');
+  const objectiveMenu = await openMenu('Objective');
   await page.keyboard.press('End');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
+  await expect(objectiveMenu.getByRole('menuitem', { name: 'New', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(rename).toBeFocused();
   await expect(rename).toHaveValue('objective');
@@ -102,18 +111,18 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
   await expect.poll(async () => (await uses('train'))?.objective.document).toBe('simple-reaches-objective');
 
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  await picker('Model').focus();
-  await page.keyboard.press('Enter');
-  const menu = page.getByRole('menu', { name: 'Model Document', exact: true });
+  const menu = await openMenu('Model');
   await expect(menu.getByRole('menuitemradio')).toHaveText(['point-mass']);
   await page.keyboard.press('End');
+  await expect(menu.getByRole('menuitem', { name: 'Rename', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(rename).toBeFocused();
   await expect(rename).toHaveValue('point-mass');
   await page.keyboard.press('Escape');
   await expect(picker('Model')).toHaveText('point-mass');
-  await picker('Model').press('Enter');
+  await openMenu('Model');
   await page.keyboard.press('End');
+  await expect(menu.getByRole('menuitem', { name: 'Rename', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await page.keyboard.type('arm');
   await page.keyboard.press('Enter');
@@ -138,7 +147,7 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-test('a Train step keeps a new or duplicated Model with its Problems, and one Undo restores it', async ({ page, request }) => {
+test('a Train step keeps a new Model with its Problems and a duplicated Model without any, and one Undo restores each', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
@@ -195,10 +204,15 @@ test('a Train step keeps a new or duplicated Model with its Problems, and one Un
     await expect(picker('Model')).toHaveText(created);
     await expect.poll(model).toBe(created);
     const { status, details } = await trainProblems();
-    expect(status).toBe('cannot_run');
-    expect(details.length).toBeGreaterThan(0);
-    for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here/);
-    await expect(page.getByRole('button', { name: /^Problems \d+$/ })).toBeVisible();
+    if (choice === 'New') {
+      expect(status).toBe('cannot_run');
+      expect(details.length).toBeGreaterThan(0);
+      for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here/);
+      await expect(page.getByRole('button', { name: /^Problems \d+$/ })).toBeVisible();
+    } else {
+      // Model addresses are relative to their document, so a copy's links and measures resolve as the original's.
+      expect(details).toEqual([]);
+    }
     await stillAuthored();
 
     await command('Undo');
@@ -217,9 +231,9 @@ test('a Train step keeps a new or duplicated Model with its Problems, and one Un
   expect((await saved()).project.documents).toEqual(objectiveBefore);
 });
 
-test('New in the Document header gives an empty report that cannot run', async ({ page, request }, info) => {
+test('New in the Document header gives an empty report that cannot run', async ({ page, request, studio }) => {
   const project = JSON.parse(await runProjectFixture(
-    'web.e2e.studio.fixtures.managed_report', 'seed', String(info.config.metadata.home), 'empty-report'));
+    'web.e2e.studio.fixtures.managed_report', 'seed', studio.home, 'empty-report'));
   const path = '/api/projects/' + project;
   const document = page.getByRole('tabpanel', { name: 'Document', exact: true });
   const header = document.locator('.studio-window-slot__header');

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
@@ -14,9 +15,9 @@ test.use({
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('authors a managed Analyze graph from one saved Evaluate run', async ({ page, request }, info) => {
+test('authors a managed Analyze graph from one saved Evaluate run', async ({ page, request, studio }, info) => {
   test.setTimeout(70_000);
-  const home = String(info.config.metadata.home);
+  const home = studio.home;
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', home, 'managed-analyze'));
   const path = '/api/projects/' + project;
   const runPath = path + '/train-runs';
@@ -92,7 +93,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
   ] as const) {
-    const select = inspector.getByRole('combobox', { name: 'Edit ' + field, exact: true });
+    const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => pick(select, label));
   }
   const dialog = page.getByRole('dialog', { name: 'Connect Ports', exact: true });
@@ -106,8 +107,8 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
 
   await edit(() => drawer.getByRole('button', { name: 'Add Trial summary', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
-  await edit(() => enter(inspector.getByRole('textbox', { name: 'Edit Bounds Scale', exact: true }), '1.5'));
-  const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Edit Ddof', exact: true }), '0'));
+  await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
+  const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   await chooseSource('states');
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
     Boolean(response.request().postDataJSON()?.wire));
@@ -132,7 +133,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   expect(original.edges).toContainEqual(expect.objectContaining({ from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }) }));
 
   await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
-  const revised = await edit(() => enter(inspector.getByRole('textbox', { name: 'Edit Bounds Scale', exact: true }), '2'));
+  const revised = await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '2'));
   const changed = requests(await plan(revised.revision));
   expect(changed.aligned_velocity).toBe(requests(original).aligned_velocity);
   expect(changed.summarize_velocity).not.toBe(requests(original).summarize_velocity);

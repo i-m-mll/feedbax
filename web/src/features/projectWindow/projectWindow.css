@@ -11,7 +11,7 @@
 
 .studio-window-bar {
   display: grid;
-  grid-template-columns: minmax(max-content, var(--studio-map-drawer-edge)) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(min-content, var(--studio-map-drawer-edge)) minmax(0, 1fr) auto;
   align-items: center;
   position: relative;
   z-index: 3;
@@ -126,6 +126,7 @@
 }
 
 .studio-project-window :where([data-model-port], svg [role='button']):focus-visible {
+  outline: 2px solid var(--shell-focus-color);
   outline-offset: 2px;
 }
 
@@ -402,4 +403,9 @@
   min-width: 8ch;
   max-width: 24ch;
   field-sizing: content;
+}
+
+.studio-window-side__contents[data-populated]:has(> .studio-window-region-content > [data-drawer-sections]) {
+  padding: 0;
+  overflow: hidden;
 }

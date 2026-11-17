@@ -213,7 +213,7 @@ def _prepare_model_rollout(
     documents: TrialDocuments, params: RolloutParameters, slot: SemanticModelSlot, coordinate: int,
     *, seed: int, registry: ApplicationRegistryBundle,
 ) -> PreparedRollout:
-    initial = InitialModelSource(model_name=documents.model_name, document=documents.model, seed=seed)
+    initial = InitialModelSource(document=documents.model, seed=seed)
     resolved = resolve_rollout(
         initial, documents.task_source, documents.objective, slot.graph, params, registry=registry,
         model_assets=slot.provider, input_overrides=documents.input_overrides,
@@ -651,9 +651,9 @@ def check_evaluate(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
             else:
                 comparison = compare_computation(former, replayed, read_blob=store.get_object)
                 if isinstance(comparison, ComputationDifferent):
-                    code = CheckOutcome(outcome="different", detail=comparison.model_dump_json())
+                    code = CheckOutcome(outcome="different", changes=comparison.changes)
                 elif isinstance(comparison, ComputationUnconfirmable):
-                    code = CheckOutcome(outcome="unavailable", detail=comparison.model_dump_json())
+                    code = CheckOutcome(outcome="unavailable", detail=comparison.reason)
                 else:
                     code = CheckOutcome(outcome="equal")
     environment = (

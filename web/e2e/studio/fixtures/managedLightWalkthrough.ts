@@ -4,8 +4,8 @@ import type {
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { authorLearningRateSweep, mapStep } from './canonicalTrain';
-import { activate, chooseOption, chooseStepKind, number, openView, palette } from './studioKeyboard';
-import { pick } from './controls';
+import { activate, chooseOption, chooseOutlineRow, chooseStepKind, number, openView, palette, tabTo } from './studioKeyboard';
+import { outlineRow, pick } from './controls';
 
 type Walkthrough = {
   page: Page;
@@ -45,11 +45,7 @@ export async function selectModelComponent(page: Page, componentId: string) {
   await expect(component).toHaveAttribute('aria-label', /.+/);
   const name = (await component.getAttribute('aria-label'))!;
   if (!await drawer(page).isVisible()) await palette(page, 'showDrawer', 'Show Drawer');
-  const outline = drawer(page).getByRole('button', { name: 'Outline', exact: true });
-  if (await outline.getAttribute('aria-pressed') !== 'true') await activate(page, outline);
-  const entry = drawer(page).getByRole('button', { name, exact: true });
-  await activate(page, entry);
-  await expect(entry).toHaveAttribute('aria-pressed', 'true');
+  await chooseOutlineRow(page, outlineRow(page, name), name);
 }
 
 function mutation({ page, projectPath }: Walkthrough, method: string, suffix = '') {
@@ -137,7 +133,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const sourceRow = (index: number) => table(page).getByRole('row').filter({ hasText: prefix[index].label }).getByRole('button');
+  const sourceRow = (index: number) => table(page).getByRole('button', { name: prefix[index].label, exact: true });
 
   async function selectTwo() {
     await openRuns(page, 'train');
@@ -220,7 +216,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const child = 'train-continuation';
   const continued = await addSuccessor('Train', child);
   expect(continued.project.steps?.[child]?.kind).toBe('train');
-  const carryover = drawer(page).getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
+  const carryover = drawer(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
   const carry = mutation(context, 'PATCH');
   await chooseOption(page, carryover, 'Carry training state');
   const carried = await carry;
@@ -267,7 +263,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       },
       progress: { completed_updates: childUpdates, total_updates: childUpdates },
     })]);
-    await activate(page, table(page).getByRole('row').filter({ hasText: producer.label }).getByRole('button'));
+    await activate(page, table(page).getByRole('button', { name: producer.label, exact: true }));
     if (index === 0) {
       await palette(page, 'splitDetails', 'Split Details');
       await openView(page, 'results');

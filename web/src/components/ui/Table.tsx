@@ -32,7 +32,8 @@ export const TableRow = forwardRef<HTMLTableRowElement, TableRowProps>(function 
       data-selected={selected || undefined}
       data-related={related || undefined}
       className={clsx(
-        'h-row hover:bg-shell-hover data-[related]:bg-shell-hover data-[selected]:bg-shell-selected data-[selected]:font-medium',
+        'h-row hover:[&:not([data-selected])]:bg-shell-row-hover data-[selected]:bg-shell-row-selected',
+        'data-[selected]:[&>:first-child]:font-medium data-[related]:[&>:first-child]:shadow-[inset_2px_0_0_var(--row-related-mark)]',
         'outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-shell-accent',
         className,
       )}
@@ -48,5 +49,5 @@ export function TableCell({ className, ...props }: TdHTMLAttributes<HTMLTableCel
 }
 
 export function TableRowHeader({ className, ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
-  return <th scope="row" className={clsx(cell, 'text-left font-medium', className)} {...props} />;
+  return <th scope="row" className={clsx(cell, 'text-left font-normal', className)} {...props} />;
 }

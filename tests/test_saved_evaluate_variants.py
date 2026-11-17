@@ -62,7 +62,7 @@ def _saved_variants():
     dtype["model_attachments"] = {"dtype": [{
         "op": "set_field",
         "address": {
-            "document": "reach-model", "composites": ["wrapper", "controller"],
+            "composites": ["wrapper", "controller"],
             "element": {"kind": "field", "parent": {"kind": "component", "id": "readout"}, "path": ["fields", "dtype"]},
         },
         "value": "float16",
@@ -83,7 +83,7 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
 
     model = ModelDocument.model_validate(definition["documents"]["reach-model"]["payload"])
     task = TaskDocument.model_validate(definition["documents"]["task"]["payload"])
-    graph = lower_model_document("reach-model", model, registries.components).graph
+    graph = lower_model_document(model, registries.components).graph
     first = next(wire for wire in graph.wires if wire.target_node == "plant")
     second = next(wire for wire in graph.wires if wire.target_node == "wrapper")
     baseline = deepcopy(definition["steps"]["baseline"])

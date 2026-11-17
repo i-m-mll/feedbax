@@ -44,7 +44,7 @@ def _edit(client, document, component, path, value):
         "document": document,
         "command": {"operation": {
             "op": "set_field", "value": value,
-            "address": {"document": document, "composites": ["mechanics"], "element": {
+            "address": {"composites": ["mechanics"], "element": {
                 "kind": "field", "parent": {"kind": "component", "id": component}, "path": ["fields", *path],
             }},
         }},

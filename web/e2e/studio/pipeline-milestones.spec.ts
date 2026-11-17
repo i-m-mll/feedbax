@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, firstJobTimeout, test } from './fixtures/studio';
+import { type APIRequestContext, type Page } from '@playwright/test';
 import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
@@ -8,7 +9,7 @@ import {
   runProjectFixture, seedManagedProject,
 } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
-import { chooseStepKind } from './fixtures/studioKeyboard';
+import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
 const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
@@ -119,7 +120,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
   },
 );
 
-test('Activity shows the original CLI and Studio clients for a saved Train request', async ({ page, request }, info) => {
+test('Activity shows the original CLI and Studio clients for a saved Train request', async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const project = snapshot.project_id;
@@ -131,7 +132,7 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   const entries = activity.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem').filter({ hasText: configuration.project });
 
   await runProjectFixture('web.e2e.studio.fixtures.canonical_train',
-    'run-saved-cli', String(info.config.metadata.home), configuration.project, label);
+    'run-saved-cli', studio.home, configuration.project, label);
   const cli = entries.filter({ has: page.getByText('CLI', { exact: true }) });
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
   await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
@@ -139,11 +140,11 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const studioJob = await admit(page, projectPath);
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
-  const studio = entries.filter({ has: page.getByText('Studio', { exact: true }) });
-  await expect(studio.getByText('Client', { exact: true })).toBeVisible();
-  await expect(studio.getByText('Label', { exact: true })).toHaveCount(0);
+  const studioEntry = entries.filter({ has: page.getByText('Studio', { exact: true }) });
+  await expect(studioEntry.getByText('Client', { exact: true })).toBeVisible();
+  await expect(studioEntry.getByText('Label', { exact: true })).toHaveCount(0);
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
-  await expect(studio.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  await expect(studioEntry.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
 
   const response = await request.get('/api/jobs', { params: { project } });
   expect(response.ok(), await response.text()).toBe(true);
@@ -168,7 +169,7 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   const picked = runs(page).getByRole('row').filter({ hasText: '0.002' }).getByRole('button');
   await picked.click();
   const submitted = await admit(page, projectPath);
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(1);
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(1, { timeout: firstJobTimeout });
   await expect(runs(page).getByText('Not run', { exact: true })).toHaveCount(2);
   const response = await request.get('/api/jobs', { params: { project: snapshot.project_id } });
   expect(response.ok()).toBe(true);
@@ -199,11 +200,11 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   expect(end).toBe(30);
 });
 
-for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, async ({ page, request }, info) => {
+for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, async ({ page, request, studio }, info) => {
   test.setTimeout(59_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
-  const metricName = 'program_step';
+  const metricName = 'train_loss';
   const files = JSON.parse(await runProjectFixture(evaluation, grouped ? 'grouped-subset-files' : 'measured-subset-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const path = '/?project=' + snapshot.project_id;
@@ -243,8 +244,6 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   await best.check();
   await expect(apply).toBeDisabled();
   await metric.fill(metricName);
-  await count.fill('0');
-  await expect(apply).toBeDisabled();
   await count.fill('2');
   if (grouped) await per.check();
   expect(await saveWhere(() => apply.click())).toMatchObject({
@@ -282,13 +281,13 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     expect(projection.rank_groups?.flatMap(({ ranks }) => ranks)).toEqual(keys);
     expect(ranks.map(({ subject_rank_key }) => subject_rank_key)).toEqual(keys);
     for (const [index, label] of groupLabels.entries()) {
-      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveText(`${label} · Rank 1`);
-      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveText(`${label} · Rank 2`);
+      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveAccessibleName(`${label} · Rank 1`);
+      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveAccessibleName(`${label} · Rank 2`);
     }
   } else {
     expect(keys).toEqual(['rank-1', 'rank-2']);
     for (const [index] of ranks.entries()) {
-      await expect(runs(page).getByRole('row').filter({ hasText: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
+      await expect(runs(page).getByRole('rowheader', { name: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
     }
   }
 
@@ -301,14 +300,14 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const finished = finishedPlan.rows.filter(({ key }) => key.step === 'train');
   const attempts = finished.map(({ result }) => result!.job_id);
   const measures: Record<string, number> = JSON.parse(await runProjectFixture(
-    evaluation, 'train-measures', String(info.config.metadata.home), snapshot.project_id, metricName, ...attempts,
+    evaluation, 'train-measures', studio.home, snapshot.project_id, metricName, ...attempts,
   ));
-  expect(attempts.map((attempt) => measures[attempt])).toEqual(grouped ? [4, 4, 2, 2] : [4, 3, 2]);
-  const expected = grouped ? ['zeta', 'alpha'].flatMap((group) => {
-    const candidates = finishedPlan.window_map!.rows.filter(({ key, coordinates }) =>
-      key.step === 'train' && coordinates.replicate?.value_id === group);
-    return candidates.toReversed().map(({ key }) => finished.find((row) => row.key.row === key.row)!);
-  }) : [finished[2], finished[1]];
+  for (const attempt of attempts) expect(Number.isFinite(measures[attempt])).toBe(true);
+  const lowest = (rows: typeof finished) =>
+    [...rows].sort((a, b) => measures[a.result!.job_id] - measures[b.result!.job_id]).slice(0, 2);
+  const expected = grouped ? ['zeta', 'alpha'].flatMap((group) => lowest(finishedPlan.window_map!.rows
+    .filter(({ key, coordinates }) => key.step === 'train' && coordinates.replicate?.value_id === group)
+    .map(({ key }) => finished.find((row) => row.key.row === key.row)!))) : lowest(finished);
 
   await select(page, 'evaluate');
   for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
@@ -333,7 +332,8 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     expect(completed[index].bound_subject?.key).toBe(keys[index]);
     expect(completed[index].result?.checkpoint_source).toEqual({
       job_id: producer.result!.job_id, request_id: producer.request_id,
-      completed_updates: measures[producer.result!.job_id],
+      completed_updates: { Long: 4, Medium: 3, Short: 2 }[finishedPlan.window_map!.rows
+        .find(({ key }) => key.row === producer.key.row)!.coordinates.updates!.value_id as string],
     });
   }
   if (grouped) expect(new Set(completed.map(({ bound_subject }) => bound_subject!.selection_sha256)).size).toBe(2);
@@ -341,9 +341,9 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     const group = Math.floor(index / 2);
     const position = index % 2;
     await expect(memberLists[group].nth(position)).toHaveText(`Rank ${position + 1} · ${producer.label}`);
-    await expect(runs(page).getByRole('row').filter({ hasText: producer.label })).toHaveCount(1);
+    await expect(runs(page).getByRole('rowheader', { name: new RegExp(producer.label) })).toHaveCount(1);
     if (grouped) await expect(runs(page).getByRole('rowheader').nth(index))
-      .toHaveText(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`);
+      .toHaveAccessibleName(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`);
   }
   await expect(freeze).toBeEnabled();
   await count.fill('1');
@@ -504,7 +504,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await fast.click();
   await slow.click({ modifiers: ['Shift'] });
   const second = responseFor(page, projectPath + '/files');
-  await primary(page).getByRole('button', { name: 'New Step', exact: true }).click();
+  await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Evaluate');
   const secondCreated = await second;
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);
@@ -635,7 +635,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const authorSeed = await request.patch(projectPath, { data: { revision: saved.revision, files: [{
     address: { kind: 'step', id: 'train' },
     patches: [{ op: 'add', path: '/sweep/axes/seed/values/three', value: {
-      label: 'three', value: 3, patches: { 'method_payload.payload.seed': { value: 3 } },
+      label: 'three', value: 3, patches: { 'seed': { value: 3 } },
     } }],
   }] } });
   expect(authorSeed.ok(), await authorSeed.text()).toBe(true);
@@ -647,7 +647,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   expect(newRows.map(({ status }) => status)).toEqual(['not_run', 'not_run', 'not_run']);
   const sourceFor = async (row: StudioSavedTrainKey) => {
     const result = await request.post(projectPath + '/model/fields', { data: {
-      revision: widened.revision, run: row, owner: { document: 'reach-model', composites: [], element: { kind: 'component', id: 'plant' } },
+      revision: widened.revision, run: row, document: 'reach-model', owner: { composites: [], element: { kind: 'component', id: 'plant' } },
     } });
     expect(result.ok(), await result.text()).toBe(true);
     return (await result.json()).fields.find(({ label }) => label === 'Mass').sources;

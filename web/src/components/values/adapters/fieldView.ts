@@ -14,6 +14,7 @@ export interface FieldViewOptions {
   kind?: FieldKind;
   /** The field shows the value on a selection of rows rather than the document's. */
   rowSelection?: boolean;
+  /** Several rows are selected and the source does not report whether they agree (`mixed`). */
   multipleRows?: boolean;
   selectedMembers?: ReadonlySet<string>;
   chooseMember?: (id: string, extend: boolean) => void;
@@ -79,7 +80,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     label,
     type: { kind: field.site.site.expected.base === 'integer' ? 'integer' : 'number' },
     unit: unit ?? undefined,
-    text: rowSelection && !sweep ? multipleRows ? null : effective ?? authored : authored,
+    text: rowSelection && !sweep ? multipleRows || field.mixed ? null : effective ?? authored : authored,
     kind,
     kinds: field.site.kinds.map((value) => ({
       kind: value,

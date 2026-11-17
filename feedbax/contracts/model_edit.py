@@ -209,6 +209,7 @@ class TaskSignalSource(StrictModel):
 
 class ModelConnectionReviewRequest(StrictModel):
     revision: Sha256
+    document: ProjectName
     graph: ModelAddress
     source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
 

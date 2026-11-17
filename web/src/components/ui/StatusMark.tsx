@@ -1,3 +1,4 @@
+import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
 import type { HTMLAttributes } from 'react';
 import type { ReceiptValidity, StudioActivityJob } from '@/generated/studioContracts';
@@ -33,7 +34,7 @@ const marks = {
 
 export interface StatusMarkProps extends Omit<HTMLAttributes<HTMLSpanElement>, 'children'> {
   status: StatusMarkStatus;
-  /** The status's word; omit where the mark sits beside it. */
+  /** The status's word, read aloud and shown as the tooltip; omit where the mark sits beside it. */
   label?: string;
 }
 
@@ -45,6 +46,7 @@ export function StatusMark({ status, label, className, ...props }: StatusMarkPro
       role={label ? 'img' : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
+      {...(label ? appTip(label) : {})}
       data-status-mark={status}
       className={clsx(
         'relative inline-flex size-4 shrink-0 items-center justify-center rounded-sm border-[1.5px] border-current',

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
@@ -12,6 +13,7 @@ import type {
   StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { pick } from './fixtures/controls';
+import { palette } from './fixtures/studioKeyboard';
 
 test.use({ trace: 'off', launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] } });
 
@@ -43,7 +45,7 @@ test('standalone Activity opens an existing run and hydrates its retained histor
     .jobs.some(({ job_id, seen }) => job_id === attempt.job_id && seen)).toBe(true);
 });
 
-test('Mounted saved Train runs a canonical successor through Jobs', async ({ page, request }, info) => {
+test('Mounted saved Train runs a canonical successor through Jobs', async ({ page, request, studio }, info) => {
   test.setTimeout(48_000);
   const created = await request.post('/api/projects');
   expect(created.status()).toBe(201);
@@ -121,7 +123,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
   await table.getByRole('button').first().click();
   const evidence = await fixture(
-    'observe', String(info.config.metadata.home), id, snapshot.revision, job, stoppedJob, successorJob,
+    'observe', studio.home, id, snapshot.revision, job, stoppedJob, successorJob,
   );
   expect(evidence).toMatchObject({
     request: original.request_id, attempt: job, delivery: 1,
@@ -166,7 +168,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   await page.route(`**${path}`, async (route) => {
     const change = await request.patch(projectPath, { data: {
       revision: snapshot.revision, address: { kind: 'step', id: 'train' },
-      patches: [{ op: 'add', path: '/base/inline/method_payload/payload/seed', value: 7 }],
+      patches: [{ op: 'add', path: '/base/inline/seed', value: 7 }],
     } });
     expect(change.ok(), await change.text()).toBe(true);
     edited = await change.json() as StudioProjectSnapshot;
@@ -183,7 +185,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   console.info('Mounted canonical Train', JSON.stringify({ ...evidence, refused_revision: edited!.revision }));
 });
 
-test('Saved Train compares authenticated receipts after a partial run and stopped edit', async ({ page, request }, info) => {
+test('Saved Train compares authenticated receipts after a partial run and stopped edit', async ({ page, request, studio }, info) => {
   test.setTimeout(65_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const created = await request.post('/api/projects');
@@ -230,7 +232,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   }
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
-  const observed = () => fixture('observe-history', String(info.config.metadata.home), id, snapshot.revision);
+  const observed = () => fixture('observe-history', studio.home, id, snapshot.revision);
   type LossSample = { update: number; value: number };
   async function expectLoss(jobId: string, expected: LossSample[]) {
     const series = loss.locator(`[data-result-attempt="${jobId}"]`);
@@ -317,14 +319,14 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   const changed = await trainRow();
   expect(changed.result!.job_id).toBe(changedJob);
   expect(changed.previous).toEqual(first);
-  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: null, after: 7 });
+  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: 0, after: 7 });
   const evidence = await observed();
   expect(evidence).toMatchObject({ current: changed.result, previous: first });
   async function compare() {
     await openResultsSlot(page);
     await results.locator('summary').getByText('Compare Results', { exact: true }).click();
     await expect(results.locator('details[open]')).toContainText(changed.change!.path);
-    await expect(results.locator('details[open]')).toContainText(/null\s*→\s*7/);
+    await expect(results.locator('details[open]')).toContainText(/0\s*→\s*7/);
     await expect(loss.locator('polyline')).toHaveCount(2);
     await expectLoss(changedJob, evidence.loss.current);
     await expectLoss(firstJob, evidence.loss.previous);
@@ -371,7 +373,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   console.info('Mounted saved Train history', JSON.stringify(evidence));
 });
 
-test('Mounted field sweep continues exactly two Train rows with state', async ({ page, request }, info) => {
+test('Mounted field sweep continues exactly two Train rows with state', async ({ page, request, studio }, info) => {
   test.setTimeout(47_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   let { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -456,11 +458,10 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
   await expect(mapStep(page, childId)).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
-  await expect(drawer.getByRole('combobox', { name: 'Edit Training method' })).toBeFocused();
+  await expect(drawer.getByRole('combobox', { name: 'Training method' })).toBeFocused();
 
-  const carryover = drawer.getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
-  const carryoverPath = 'method_payload.payload.checkpoint_initialization';
-  const methodTarget = 'method_payload.payload.target_total';
+  const carryover = drawer.getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
+  const carryoverPath = 'checkpoint_initialization';
   const checkpointInput = snapshot.project.steps?.[childId]?.inputs?.checkpoint;
   const beforeCarry = await plan();
   await expect(carryover).toHaveText('Initialize model only');
@@ -474,10 +475,8 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   expect(snapshot.project.steps?.[childId]?.inputs?.checkpoint).toEqual(checkpointInput);
   expect(snapshot.project.steps?.[childId]?.deltas?.[1]?.patches).toEqual([
     { op: 'replace', path: carryoverPath, value: {
-      mode: 'continue_from', progress: { source_completed_batches: 2, additional_batches: 2 },
-      optimizer: 'preserve', schedule: 'continue', rng: 'carry', cursor: 'carry',
+      mode: 'continue_from', source_completed_updates: 2, state: 'preserve', rng: 'carry', schedule: 'continue',
     } },
-    { op: 'replace', path: methodTarget, value: 4 },
   ]);
   await expect(carryover).toHaveText('Carry training state');
   const afterCarry = await plan();
@@ -499,8 +498,6 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   snapshot = await acknowledged.json() as StudioProjectSnapshot;
   expect(snapshot.project.steps?.[childId]?.deltas?.[2]?.patches).toEqual([
     expect.objectContaining({ path: 'training_config.n_batches', value: 4 }),
-    expect.objectContaining({ path: methodTarget, value: 6 }),
-    expect.objectContaining({ path: `${carryoverPath}.progress.additional_batches`, value: 4 }),
   ]);
   await page.locator('[data-slot="secondary"]').getByRole('button', { name: 'Close Slot', exact: true }).click();
   const successors = await run(childId);
@@ -544,9 +541,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await captureStudioWindow(page, info, '01-map-runs');
 
   await mapStep(page, 'train').click();
-  await table.getByRole('row').filter({ hasText: selected[0].label }).getByRole('button').click();
+  await table.getByRole('button', { name: selected[0].label, exact: true }).click();
   const explicit = submitted(page, filesPath);
-  await runs.getByRole('button', { name: 'New Step', exact: true }).click();
+  await palette(page, 'newStep', 'New Step');
   await chooseTrainSuccessor(page);
   const rowSaved = await explicit;
   expect(rowSaved.status(), await rowSaved.text()).toBe(201);
@@ -569,7 +566,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
   const evidence = await fixture(
-    'observe-swept', String(info.config.metadata.home), id, ...successorRows.map(({ attempts }) => attempts[0].job_id),
+    'observe-swept', studio.home, id, ...successorRows.map(({ attempts }) => attempts[0].job_id),
   );
   for (const [index, row] of successorRows.entries()) {
     const attempt = row.attempts[0];
@@ -579,15 +576,13 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
       source_checkpoint: {
         completed_updates: 2, transaction_id: expect.any(String), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
-      schedule_origin_step: 0,
+      schedule_origin: 0,
       initialization: {
-        mode: 'continue_from', optimizer_policy: 'preserve', rng_policy: 'carry', cursor_policy: 'carry',
-        learning_rate_schedule_policy: 'continue',
-        producer_content_binding: { root_kind: 'checkpoint-custody:batch_counter,model,optimizer,prng' },
+        mode: 'continue_from', source_completed_updates: 2, state: 'preserve', rng: 'carry', schedule: 'continue',
       },
     });
     const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-    const selectedRow = table.getByRole('row').filter({ hasText: selected[index].label }).getByRole('button');
+    const selectedRow = table.getByRole('button', { name: selected[index].label, exact: true });
     await selectedRow.click();
     await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
     await expect(runs.getByRole('region', { name: 'Made From' })).toContainText('train');

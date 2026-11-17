@@ -56,16 +56,15 @@ function showRuns(step: PlanStepView, run?: (selection: PipelineSelection | null
   return render(<TestRuns />);
 }
 
-it("preserves the sweep and row handles through the same Run command", () => {
+it("identifies runs by ordinal and the fields that differ, and runs the selected rows", () => {
   const perform = vi.fn();
   showRuns(train, perform);
   const table = screen.getByRole("table", { name: "Runs" });
-  const rate = within(screen.getByRole("group", { name: "Rate" })).getByRole("button", { name: "0.003" });
-  fireEvent.click(rate);
-  expect(screen.getByText("Rate 0.003 · 2 of 3")).toBeDefined();
-  expect(within(table).getByRole("row", { name: /B 0.003/ }).getAttribute("data-selected")).toBe("true");
-  fireEvent.click(screen.getByRole("button", { name: "Run" }));
-  expect(perform).toHaveBeenLastCalledWith({ kind: "values", stepId: "train", terms: [{ sweepId: "rate", valueIds: ["high"] }] });
+  expect(within(table).getAllByRole("columnheader").map(({ textContent }) => textContent)).toEqual(["Rate", "Seed", "Status", "Progress"]);
+  expect(within(table).getAllByRole("rowheader").map((header) => header.querySelector("[aria-hidden]")?.textContent))
+    .toEqual(["1", "2", "3"]);
+  expect(within(table).queryByRole("cell", { name: "B" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Rate" })).toBeNull();
 
   fireEvent.click(within(table).getByRole("button", { name: "B" }));
   fireEvent.click(within(table).getByRole("button", { name: "C" }), { metaKey: true });
@@ -125,7 +124,27 @@ it("names pivot cells from both axes and retains explicit rows without coordinat
   const pivot = within(screen.getByRole("table", { name: "Pivot" }));
   const run = pivot.getByRole("button", { name: "Select Rate 0.003 · Seed 1 · Done" });
   fireEvent.click(run);
-  expect(screen.getByText("B · 1 of 4")).toBeDefined();
+  expect(run.getAttribute("aria-pressed")).toBe("true");
   const rows = within(screen.getByRole("table", { name: "Runs" }));
   expect(rows.getByRole("button", { name: "Custom reach" })).toBeDefined();
+});
+
+it("draws a Results differ reason as one row per change", () => {
+  const receipt = { object_id: "content:a", sha256: "a".repeat(64), size_bytes: 1 };
+  const run = {
+    ...train.runs[0], status: "succeeded" as const, state: "stale" as const,
+    results: [{ requestId: "r", jobId: "j", validity: { receipt, state: "stale" as const, reasons: [{
+      kind: "code" as const, basis: "computation" as const, differences: [],
+      changes: [
+        { kind: "driver" as const, previous: { name: "train", revision: 1 }, present: { name: "train", revision: 2 } },
+        { kind: "steps" as const, previous: 2, present: 6 },
+      ],
+    }] } }],
+  };
+  render(<StudioRunDetails step={{ ...train, runs: [run] }}
+    state={{ ...selectStep(emptyPipelineSelection, "train"), selection: { kind: "rows", stepId: "train", runIds: [run.id] } }} />);
+  const reasons = within(screen.getByRole("list", { name: "Reason" }));
+  expect(reasons.getByText("Results differ")).toBeDefined();
+  expect(reasons.getAllByRole("listitem").slice(1).map(({ textContent }) => textContent))
+    .toEqual(["train revision 1 → 2", "Updates 2 → 6"]);
 });

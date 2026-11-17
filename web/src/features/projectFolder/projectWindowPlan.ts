@@ -1,7 +1,7 @@
 import { studioFormat, studioName, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
 import { runResultState, type PlanResultView, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
 import type {
-  Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
+  Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapCoordinate, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
 } from '@/generated/studioContracts';
 
@@ -42,6 +42,12 @@ export function planVariants(saved: StudioSavedTrainRuns | undefined) {
 export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | undefined): readonly StudioBestRankGroup[] {
   if (subset?.rank_groups?.length) return subset.rank_groups;
   return subset?.ranks?.length ? [{ coordinates: {}, ranks: subset.ranks }] : [];
+}
+
+/** A single value is drawn as its value; only a value without one has a name. */
+function coordinateText({ value, label, value_id }: StudioProjectWindowMapCoordinate) {
+  if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') return String(value);
+  return label ?? value_id;
 }
 
 function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {
@@ -128,10 +134,7 @@ export function projectWindowPlan(
     for (const [sweep, coordinate] of Object.entries(row.coordinates)) {
       let entries = sweeps.get(sweep);
       if (!entries) sweeps.set(sweep, entries = new Map());
-      const number = typeof coordinate.value === 'number' ? String(coordinate.value) : undefined;
-      const label = coordinate.label;
-      entries.set(coordinate.value_id, number && label && label !== number
-        ? `${label} · ${number}` : label ?? number ?? coordinate.value_id);
+      entries.set(coordinate.value_id, coordinateText(coordinate));
       values[sweep] = coordinate.value_id;
     }
     const id = savedRunId(row.key);

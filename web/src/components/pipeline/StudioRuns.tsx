@@ -3,7 +3,7 @@ import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from "@/co
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import {
   studioAccessibleName, studioCountOf, studioEnvironmentNotice, studioName, studioReason, studioRunStatus, studioValidityReason,
-  type StudioResultState,
+  type StudioResultState, type StudioValidityRows,
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
 import { commandAttributes, type StudioCommand } from "@/features/projectWindow/studioCommands";
@@ -18,9 +18,10 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
+import { CommandBar } from "@/components/ui/CommandBar";
 import { Select } from "@/components/ui/Select";
 import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/ui/Table";
-import { StudioRunTable, StudioSelectionSummary, StudioSweepValues, type RunSelectionProps } from "./StudioRunTable";
+import { StudioRunTable, type RunSelectionProps } from "./StudioRunTable";
 import type { RunMenu } from "./RunContextMenu";
 
 interface StudioRunsProps extends RunSelectionProps {
@@ -186,19 +187,19 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
   const counts = new Map<StudioResultState, number>();
   const reasons = new Set<string>();
   const openingErrors = new Set(selected.flatMap((run) => run.openingErrors ?? []));
-  const validity = new Map<string, { state: StudioResultState; parts: string[] }>();
+  const validity = new Map<string, { state: StudioResultState; rows: StudioValidityRows }>();
   for (const run of selected) {
     counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
     if (run.reason && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
     for (const { validity: { state, reasons: typed = [], environment } } of run.results) {
       const mark = state === "current" ? "succeeded" : state;
       for (const reason of typed) {
-        const parts = studioValidityReason(reason);
-        validity.set(JSON.stringify(parts), { state: mark, parts });
+        const rows = studioValidityReason(reason);
+        validity.set(JSON.stringify(rows), { state: mark, rows });
       }
       if (environment) {
-        const parts = studioEnvironmentNotice(environment);
-        validity.set(JSON.stringify(parts), { state: "environment", parts });
+        const rows = studioEnvironmentNotice(environment);
+        validity.set(JSON.stringify(rows), { state: "environment", rows });
       }
     }
   }
@@ -211,11 +212,14 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
       </li>)}
     </ul>
     {validity.size > 0 && <ul aria-label={studioName("reason")} className="divide-y divide-shell-divider border-y border-shell-divider">
-      {[...validity].map(([key, { state, parts: [kind, ...parts] }]) => <li key={key}
-        className="flex min-h-row items-start gap-1.5 py-1 text-xs">
-        <StatusMark status={state} label={studioRunStatus(state)} />
-        <span className="shrink-0 font-medium">{kind}</span>
-        <span className="min-w-0 break-words text-shell-muted">{parts.join(" · ")}</span>
+      {[...validity].map(([key, { state, rows: { title, changes } }]) => <li key={key} className="py-1 text-xs">
+        <div className="flex min-h-row items-center gap-1.5">
+          <StatusMark status={state} label={studioRunStatus(state)} />
+          <span className="font-medium">{title}</span>
+        </div>
+        {changes.length > 0 && <ul className="ps-[calc(1em+0.375rem)] text-shell-muted">
+          {changes.map((change) => <li key={change} className="break-words">{change}</li>)}
+        </ul>}
       </li>)}
     </ul>}
     {single && detail ? detail : reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
@@ -227,30 +231,25 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
   </section>;
 }
 
-export function StudioRunControls({ commands, machine, pivotCommand, pivotActive, reason }: {
+export function StudioRunControls({ commands = [], machine, pivotCommand, pivotActive, reason }: {
   commands?: readonly StudioCommand[];
   machine?: ReactNode;
   pivotCommand?: StudioCommand;
   pivotActive?: boolean;
   reason?: string;
 }) {
-  return <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+  return <div className="flex min-w-0 flex-1 items-center gap-1">
     {machine}
-    {commands?.map((command) => (
-      <Button key={command.id} {...commandAttributes(command)}
-        disabled={!command.enabled}
-        focusableWhenDisabled={command.id === 'run'}
-        tabIndex={!command.enabled && command.id === 'run' ? -1 : undefined}
-        aria-description={!command.enabled ? reason : undefined}
-        onClick={command.enabled ? command.invoke : undefined}>
-        {studioName(command.name)}
-      </Button>
-    ))}
-    {pivotCommand && (
-      <Button {...commandAttributes(pivotCommand)} pressed={pivotActive} onClick={pivotCommand.invoke}>
-        {studioName(pivotCommand.name)}
-      </Button>
-    )}
+    <CommandBar commands={pivotCommand ? [...commands, pivotCommand] : commands} moreLabel={studioName("more")}
+      itemProps={(command) => ({
+        ...commandAttributes(command),
+        ...(command === pivotCommand ? { pressed: pivotActive } : {}),
+        ...(command.id === "run" ? {
+          focusableWhenDisabled: true,
+          tabIndex: command.enabled ? undefined : -1,
+          "aria-description": command.enabled ? undefined : reason,
+        } : {}),
+      })} />
   </div>;
 }
 
@@ -263,10 +262,6 @@ function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstre
   const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const selection = { step, state, onSelectionChange };
   return <div className="flex h-full min-h-0 flex-col">
-    {step.sweeps.length > 0 && <div className="flex max-h-28 flex-wrap items-baseline justify-between gap-2 overflow-auto border-b border-shell-divider px-2 py-1 text-xs">
-      <StudioSweepValues {...selection} />
-      <StudioSelectionSummary step={step} state={state} />
-    </div>}
     <div className="min-h-0 flex-1 overflow-auto">
       {pivotActive
         ? <StudioRunPivot {...selection} rows={step.runs} related={related} runMenu={runMenu} />

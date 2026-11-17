@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type { ModelDocument, ModelEditResponse } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { expectVisibleFocus } from './fixtures/studioAccessibility';

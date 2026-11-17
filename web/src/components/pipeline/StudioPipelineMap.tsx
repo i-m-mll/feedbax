@@ -30,6 +30,7 @@ import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCan
 import { Button, IconButton } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { ListRow } from '@/components/ui/ListRow';
+import { Menu, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
 import {
@@ -105,6 +106,8 @@ export interface StudioPipelineMapProps {
   onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
   newStepCommand?: (source?: PipelineMapStepSource, subject?: string) => StudioCommand | undefined;
   newSweepCommand?: (stepId: string, subject?: string) => StudioCommand | undefined;
+  /** The open menu of a step's sweepable fields, anchored at the end of its card's shape line. */
+  sweepMenu?: SweepMenu;
   problemSteps?: ReadonlySet<string>;
   onProblems?: (stepId: string, opener: HTMLButtonElement) => void;
   activeStepId?: string | null;
@@ -167,6 +170,12 @@ function renameOnReturn(
   };
 }
 
+export interface SweepMenu {
+  readonly stepId: string;
+  readonly items: ReactNode;
+  close(): void;
+}
+
 const emptyPresentation: PipelineCardPresentation = {};
 
 function stepRunSelection(selection: PipelineSelection | null, stepId: string) {
@@ -192,13 +201,11 @@ function StatusCounts({ id, counts, onProblems }: {
       {statuses.map(([status, count]) => {
         const problem = status === 'cannot_run' && onProblems;
         if (count <= 0 && !problem) return null;
-        const word = studioRunStatus(status);
-        const name = count > 0 ? `${count} ${word}` : word;
-        const mark = <><StatusMark status={status} />{count > 0 && count}</>;
+        const mark = <><StatusMark status={status} label={studioRunStatus(status)} />{count > 0 && <>{' '}{count}</>}</>;
         return problem
           ? <Button variant="bare" size="content" key={status} className={className} aria-haspopup="dialog"
-            aria-label={name} {...appTip(word)} onClick={(event) => problem(event.currentTarget)}>{mark}</Button>
-          : <span key={status} role="img" aria-label={name} className={className} {...appTip(word)}>{mark}</span>;
+            onClick={(event) => problem(event.currentTarget)}>{mark}</Button>
+          : <span key={status} className={className}>{mark}</span>;
       })}
     </span>
   );
@@ -209,10 +216,10 @@ function stepLabel(step: PlanStepView, count?: string | number) {
 }
 
 function StepName({ step, rename }: { step: PlanStepView; rename?: MapStepRename }) {
-  const { Icon, name } = studioStep(step.kind);
+  const { Icon } = studioStep(step.kind);
   return (
     <span className="studio-card__title flex min-w-0 items-center gap-1.5">
-      <span className="studio-card__glyph" {...appTip(name)}><Icon aria-hidden="true" className="size-4" /></span>
+      <span className="studio-card__glyph" {...appTip(studioName(step.kind))}><Icon aria-hidden="true" className="size-4" /></span>
       {rename ? <StepNameEdit step={step} rename={rename} /> : <span className="truncate font-medium">{step.label}</span>}
     </span>
   );
@@ -256,6 +263,7 @@ function StepShape({
   applySelection,
   onPresentationChange,
   newSweep,
+  sweepMenu,
 }: {
   step: PlanStepView;
   sweeps: readonly PlanSweepView[];
@@ -265,6 +273,7 @@ function StepShape({
   applySelection: ApplyMapSelection;
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
   newSweep?: StudioCommand;
+  sweepMenu?: SweepMenu;
 }) {
   const dragging = useRef<string | null>(null);
   const [openSweep, setOpenSweep] = useState<string | null>(null);
@@ -347,8 +356,11 @@ function StepShape({
         );
       })}
       {newSweep && (
-        <IconButton variant="default" size="mark" label={newSweep.label} icon={<Plus aria-hidden="true" />}
-          {...commandAttributes(newSweep)} disabled={!newSweep.enabled} onClick={newSweep.invoke} />
+        <Menu open={!!sweepMenu} onOpenChange={(open) => { if (open) newSweep.invoke(); else sweepMenu?.close(); }}>
+          <MenuTrigger render={<IconButton variant="default" size="mark" label={newSweep.label} icon={<Plus aria-hidden="true" />}
+            {...commandAttributes(newSweep)} disabled={!newSweep.enabled} />} />
+          <MenuContent aria-label={studioName('newSweep')}>{sweepMenu?.items}</MenuContent>
+        </Menu>
       )}
     </div>
   );
@@ -364,6 +376,7 @@ const StepCard = memo(function StepCard({
   onPresentationChange,
   newStep,
   newSweep,
+  sweepMenu,
   onProblems,
   compact,
   dimmed,
@@ -381,6 +394,7 @@ const StepCard = memo(function StepCard({
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
   newStep?: StudioCommand;
   newSweep?: StudioCommand;
+  sweepMenu?: SweepMenu;
   onProblems?: StudioPipelineMapProps['onProblems'];
   compact: boolean;
   dimmed: boolean;
@@ -457,6 +471,7 @@ const StepCard = memo(function StepCard({
           applySelection={applySelection}
           onPresentationChange={onPresentationChange}
           newSweep={newSweep}
+          sweepMenu={sweepMenu}
         />}
         <PipelineRunMarks
           step={step}
@@ -605,7 +620,6 @@ function StepRow({ step, selection, related, focusedStepId, chooseStep, applySel
   const worst = worstStatus(step.statusCounts);
   const choose = selectionButton((extend) => chooseStep(step.id, extend));
   const { Icon } = studioStep(step.kind);
-  const word = worst && studioRunStatus(worst.status);
   const shown = worst && step.runs.length > 1 ? worst.count : undefined;
   return (
     <ListRow
@@ -622,15 +636,14 @@ function StepRow({ step, selection, related, focusedStepId, chooseStep, applySel
           aria-label={studioAccessibleName('select', stepLabel(step, summary))}
           aria-pressed={documentScope ? level === 'lit' : undefined}
           onKeyDown={renameOnReturn(rename, step.id, 'drawer', scope?.kind === 'steps', choose.onKeyDown)}>{step.label}</Button>}
-      trailing={worst && word && (
+      trailing={worst && (
         <Button variant="bare" size="content" className="inline-flex items-center gap-1 rounded-sm tabular-nums"
-          aria-label={studioAccessibleName('select', [shown, word].filter(Boolean).join(' '))} {...appTip(word)}
           onClick={(event) => {
             event.stopPropagation();
             const runIds = step.runs.filter(({ state }) => state === worst.status).map(({ id }) => id);
             applySelection(() => ({ selection: { kind: 'rows', stepId: step.id, runIds }, focus: null }));
           }}>
-          <StatusMark status={worst.status} />{shown}
+          <StatusMark status={worst.status} label={studioRunStatus(worst.status)} />{shown !== undefined && <>{' '}{shown}</>}
         </Button>
       )}
     />
@@ -757,6 +770,7 @@ export function StudioPipelineMap({
   onPresentationChange,
   newStepCommand,
   newSweepCommand,
+  sweepMenu,
   problemSteps,
   onProblems,
   activeStepId,
@@ -865,6 +879,7 @@ export function StudioPipelineMap({
                     onPresentationChange={onPresentationChange}
                     newStep={newStepCommand?.({ stepId: step.id, selection: stepRunSelection(state.selection, step.id) }, step.label)}
                     newSweep={newSweepCommand?.(step.id, step.label)}
+                    sweepMenu={sweepMenu?.stepId === step.id ? sweepMenu : undefined}
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                     runMenu={runMenu}
                     rename={rename}

@@ -1,7 +1,9 @@
-import { expect, type Page } from '@playwright/test';
+import { expect, firstJobTimeout } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import type { StudioJobSnapshot, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
-import { hostPid, processExists, recoveryTest as test } from './fixtures/studioRecovery';
+import { isolatedTest as test } from './fixtures/studio';
+import { hostPid, processExists } from './fixtures/studioRecovery';
 
 function lossCurve(page: Page) {
   return page.getByRole('img', { name: 'Loss', exact: true }).locator('polyline');
@@ -161,7 +163,7 @@ test('reopens the same live run and restores loss after backend and host restart
   browser, page, request, studio,
 }) => {
   test.setTimeout(50_000);
-  const batches = 2400;
+  const batches = 6000;
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', String(batches)), studio.origin);
   const mounted = '/?project=' + snapshot.project_id;
   const snapshots = new URL('/api/jobs', studio.origin);
@@ -189,7 +191,7 @@ test('reopens the same live run and restores loss after backend and host restart
   await page.getByRole('table', { name: 'Runs', exact: true }).getByRole('button').first().click();
   await openResultsSlot(page);
   const liveLoss = lossCurve(page);
-  await expect(liveLoss).toHaveAttribute('points', /\S+ \S+/);
+  await expect(liveLoss).toHaveAttribute('points', /\S+ \S+/, { timeout: firstJobTimeout });
   const retainedPoints = (await liveLoss.getAttribute('points'))!.split(' ').length;
   const live = await job();
   if (!live) throw new Error('The admitted reaching run is missing');

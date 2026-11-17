@@ -13,6 +13,8 @@ export interface SectionProps {
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   children: ReactNode;
+  /** A section inside another's body: no rule above it, its header indented under its parent's name. */
+  nested?: boolean;
   className?: string;
   bodyClassName?: string;
 }
@@ -22,7 +24,7 @@ export interface SectionProps {
  * shrinks with the others when the column is short, and scrolls its own body.
  */
 export function Section({
-  name, count, actions, open: controlled, defaultOpen = true, onOpenChange, children, className, bodyClassName,
+  name, count, actions, open: controlled, defaultOpen = true, onOpenChange, nested, children, className, bodyClassName,
 }: SectionProps) {
   const [uncontrolled, setUncontrolled] = useState(defaultOpen);
   const open = controlled ?? uncontrolled;
@@ -35,19 +37,20 @@ export function Section({
     <section
       data-open={open || undefined}
       className={clsx(
-        'flex min-h-[var(--row-height)] min-w-0 flex-col border-t border-shell-divider first:border-t-0',
+        'flex min-h-[var(--row-height)] min-w-0 flex-col',
+        !nested && 'border-t border-shell-divider first:border-t-0',
         open ? 'shrink' : 'shrink-0',
         className,
       )}
     >
-      <div className={clsx('flex h-row shrink-0 items-center gap-0.5 px-1 text-sm text-shell-muted', glyph)}>
+      <div className={clsx('flex h-row shrink-0 items-center gap-0.5 px-1 text-sm text-shell-muted', nested && 'pl-4', glyph)}>
         <button
           type="button"
           aria-expanded={open}
           aria-controls={body}
           onClick={toggle}
           className={clsx(
-            'flex h-full min-w-0 flex-1 cursor-default select-none items-center gap-1 rounded-row px-1 text-left hover:bg-shell-row',
+            'flex h-full min-w-0 flex-1 cursor-default select-none items-center gap-1 rounded-row px-1 text-left hover:bg-shell-row-hover',
             focusRing,
           )}
         >

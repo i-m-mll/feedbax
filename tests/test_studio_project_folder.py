@@ -38,7 +38,7 @@ _MODEL = "point-mass"
 _SETTINGS = "settings"
 _VALUE = "/payload/value"
 _MASS_ADDRESS = ModelAddress.model_validate({
-    "document": _MODEL, "composites": [],
+    "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
 })
 _SEED = "seed"
@@ -241,7 +241,7 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
         composed = client.post(
             f"{_URL}/authoring/train/fit", json={"revision": snapshot["revision"]},
         )
-        assert composed.status_code == 422, composed.text
+        assert composed.status_code == 200, composed.text
         assert _folder_state(root) == original
         response = client.post(
             f"{_URL}/files",
@@ -275,7 +275,7 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
 def test_initial_training_settings_retain_the_authored_method_rate_and_batch_count():
     registry = new_application_registry_bundle().training_methods
     project = managed_train_project(batches=25)
-    _, patches, _ = project_train_fields(
+    _, _, patches, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/training_config/snapshot_interval", value=12),
     )
@@ -283,20 +283,45 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
     assert patch.path == "/base/inline/training_config/snapshot_interval"
     assert patch.value == 12
 
-    fields, patches, _ = project_train_fields(project, "train", registry, None)
+    fields, _, patches, _ = project_train_fields(project, "train", registry, None)
     values = {field.id: field.value for field in fields}
     assert values["/training_config/n_batches"] == 25
     assert values["/settings/optimizer/params/learning_rate"] == (
         project.steps["train"].base.inline["settings"]["optimizer"]["params"]["learning_rate"]
     )
 
-    _, patches, _ = project_train_fields(
+    _, _, patches, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/seed", value=7.0),
     )
     seed, = patches
     assert seed.path == "/base/inline/seed"
     assert type(seed.value) is int and seed.value == 7
+
+
+def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
+    registry = new_application_registry_bundle().training_methods
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["sweep"] = {
+        "axes": {"seed": {"values": {"a": {"patches": {"seed": {"value": 1}}}, "b": {"patches": {"seed": {"value": 2}}}}}},
+        "exceptions": {"wide": {
+            "where": {"axes": {"seed": ["b"]}},
+            "patches": {"training_config.batch_size": {"value": 20}},
+        }},
+    }
+    project = Project.model_validate(raw)
+    fields, settings, _, _ = project_train_fields(project, "train", registry, None)
+    assert {field.id for field in fields} >= {"/method", "/training_config/batch_size"}
+    assert settings["optimizer"]["type"] == "adam"
+
+    _, _, patches, _ = project_train_fields(
+        project, "train", registry, StudioAuthoringChange(field="/settings/optimizer/type", value="sgd"),
+    )
+    assert [(patch.path, patch.value) for patch in patches] == [("/base/inline/settings/optimizer/type", "sgd")]
+    with pytest.raises(ValueError):
+        project_train_fields(
+            project, "train", registry, StudioAuthoringChange(field="/settings/optimizer/type", value=3),
+        )
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
@@ -383,7 +408,7 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
             "revision": widened.json()["revision"], "change": {**change, "value": "initialize_from"},
         })
         assert refused.status_code == 422, refused.text
-        assert "has no supported edit" in refused.text
+        assert "is read-only" in refused.text
 
 
 def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
@@ -411,12 +436,12 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         path.write_bytes(data)
 
     before = _read(client)
-    owner = {"document": _MODEL, "composites": [], "element": {"kind": "component", "id": "plant"}}
+    owner = {"composites": [], "element": {"kind": "component", "id": "plant"}}
     field = ModelAddress.model_validate(owner | {"element": {
         "kind": "field", "parent": owner["element"], "path": ["fields", "mass"],
     }})
     key = {"variant": "compare", "step": "fit", "row": "seed=10"}
-    body = {"revision": before["revision"], "run": key, "owner": owner}
+    body = {"revision": before["revision"], "run": key, "document": _MODEL, "owner": owner}
     change = {
         "address": field.model_dump(mode="json"), "edit": {"kind": "text", "text": "3"},
         "lit_steps": ["fit", "other"],
@@ -440,14 +465,15 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         assert reviewed.status_code == 200, reviewed.text
         recipe, = reviewed.json()["files"]
         assert recipe["address"] == {"kind": "variant", "id": "compare"}
-        assert recipe["patches"][0]["value"][field.to_text()] == {"op": "replace", "value": 3}
+        target = f"documents.{_MODEL}.{field.to_text()}"
+        assert recipe["patches"][0]["value"][target] == {"op": "replace", "value": 3}
         snapshot = client.patch(_URL, json={"revision": before["revision"], **recipe})
         assert snapshot.status_code == 200, snapshot.text
         after = snapshot.json()
         assert after["project"]["documents"] == before["project"]["documents"]
         assert after["project"]["steps"] == before["project"]["steps"]
         sweep = before["project"]["sweep"]
-        sweep["rows"]["compare"]["patches"][field.to_text()] = {"op": "replace", "value": 3}
+        sweep["rows"]["compare"]["patches"][target] = {"op": "replace", "value": 3}
         assert after["project"]["sweep"] == sweep
         stale = review(**change)
         assert stale.status_code == 409, stale.text
@@ -717,7 +743,7 @@ def test_incremental_plan_matches_fresh_compilation_and_skips_unchanged_work(tmp
         "document": "point-mass",
         "command": {"operation": {
             "op": "set_field", "value": 2,
-            "address": {"document": "point-mass", "composites": [], "element": {
+            "address": {"composites": [], "element": {
                 "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
             }},
         }},

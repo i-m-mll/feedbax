@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
@@ -9,9 +9,9 @@ test.use({
   viewport: { width: 1440, height: 900 },
 });
 
-test('a Model value edit changes only its authored variant and keeps exact shared Train results', async ({ page, request }, info) => {
+test('a Model value edit changes only its authored variant and keeps exact shared Train results', async ({ page, request, studio }, info) => {
   test.setTimeout(55_000);
-  const id = await fixture('seed-variants', String(info.config.metadata.home), 'model-variants');
+  const id = await fixture('seed-variants', studio.home, 'model-variants');
   const projectPath = `/api/projects/${id}`;
   const trainPath = `${projectPath}/train-runs`;
   async function snapshot(): Promise<StudioProjectSnapshot> {
@@ -79,8 +79,10 @@ test('a Model value edit changes only its authored variant and keeps exact share
   const patchEntries = Object.entries(edited.project.sweep?.rows?.compare?.patches ?? {});
   expect(patchEntries).toHaveLength(1);
   const [[key, writeValue]] = patchEntries;
-  expect(JSON.parse(key)).toEqual({
-    document: 'point-mass', composites: [], element: {
+  const prefix = 'documents.point-mass.';
+  expect(key.startsWith(prefix)).toBe(true);
+  expect(JSON.parse(key.slice(prefix.length))).toEqual({
+    composites: [], element: {
       kind: 'field', parent: { kind: 'component', id: 'plant' }, path: ['fields', 'mass'],
     },
   });

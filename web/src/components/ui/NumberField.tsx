@@ -49,7 +49,8 @@ export const NumberField = forwardRef<HTMLInputElement, NumberFieldProps>(functi
           {...aria}
         />
         {readOnly ? null : (
-          <span className="flex h-full w-4 shrink-0 flex-col border-l border-shell-divider">
+          // Pointer-only steppers; hidden so a wrapping label names just the input.
+          <span aria-hidden="true" className="flex h-full w-4 shrink-0 flex-col border-l border-shell-divider">
             <BaseNumberField.Increment tabIndex={-1} className={stepper}><ChevronUp /></BaseNumberField.Increment>
             <BaseNumberField.Decrement tabIndex={-1} className={stepper}><ChevronDown /></BaseNumberField.Decrement>
           </span>

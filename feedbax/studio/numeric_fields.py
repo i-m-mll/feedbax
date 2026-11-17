@@ -150,7 +150,7 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
 
 def project_numeric_field[View: StudioFieldView](
     view_type: type[View], field: NumericField, axis: FieldSweeps | None,
-    functions: FunctionRegistry, selected: PlannedRow | None, effective: object, **address,
+    functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *, mixed: bool = False, **address,
 ) -> View:
     site = project_site(field.site, functions)
     view = axis.view() if axis else None
@@ -176,6 +176,7 @@ def project_numeric_field[View: StudioFieldView](
         **address, label=field.label, text=print_field(shown, field.site), unit=field.unit,
         effective=print_field(field.literal(effective), field.site)
         if type(effective) in (int, float) and effective != field.value else None,
+        mixed=mixed,
         site=site, sweep=view, selected_value=coordinate.value_id if coordinate else None,
         can_sweep=bool(axis and axis.can_sweep and field.stored),
         can_change_axis=bool(axis and axis.simple and view and (

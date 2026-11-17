@@ -19,16 +19,17 @@ import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplay
 import {
   DocumentReferenceSchema, ModelDocumentSchema,
   type EvaluateAttachmentReadRequest, type GraphInterior, type ModelDocument, type StudioSavedEvaluationRow,
-  type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem,
+  type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem, type ModelAddress,
 } from '@/generated/studioContracts';
 import { modelDocumentId, directTrainStep } from './authoredEdits';
 import type { ProblemReveal } from './projectWindowProblems';
 import type { ProjectEditController } from './projectEditController';
-import { useElementSelection } from './ManagedDocumentCanvas';
 import { useStoredModelView } from './model/ModelView';
+import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ConfirmRunRemoval } from './runRemoval';
 import { modelSchema } from './model/modelGraph';
-import type { ModelSelectionStore } from './model/modelSelection';
+import { elementKey, isModelAddress, type ElementSelectionStore, type ModelLocation } from '@/features/projectWindow/elementSelection';
+import { useStore } from 'zustand';
 import { Select } from '@/components/ui/Select';
 
 type DetailName = 'model' | 'task' | 'scene';
@@ -67,12 +68,14 @@ interface DetailInputs {
   readonly fieldAxes?: Record<string, string[]>;
   readonly documentScopes: Readonly<Record<'graph' | 'task', NamedDocumentScope | undefined>>;
   readonly problemReveal?: ProblemReveal;
-  readonly modelWindow: ModelSelectionStore;
+  readonly elements: ElementSelectionStore;
   readonly modelPath?: { document: string; path: string[] };
   readonly setModelPath: (document: string, path: string[]) => void;
   readonly evaluateScope?: EvaluateAttachmentReadRequest['scope'];
   readonly modelSource?: string;
   readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
+  readonly drawerSections: DrawerSections;
+  readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
 }
 
 const rootModelPath: string[] = [];
@@ -183,11 +186,56 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   };
 }
 
-function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluationReplay }: DetailInputs,
+/** The Model element a Scene entity shows, or an anchor that is itself a model element (a joint). */
+function sceneAddress(id: string): ModelLocation | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(id);
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 4) return undefined;
+  const [, document, composites, element] = parsed as unknown[];
+  return typeof document === 'string' && Array.isArray(composites) && composites.every((item) => typeof item === 'string') &&
+    typeof element === 'string' ? { document, address: { composites, element: { kind: 'component', id: element } } } : undefined;
+}
+
+/**
+ * The Scene draws the window's selection: an entity is the Model component it shows. An anchor that is not an element
+ * of its own (a body's end, a muscle's path point) is selected as its entity, and the Scene keeps which anchor it was.
+ * An entity with no Model element (a replay's effector) is a named element of the Scene, `document`.
+ */
+function useSceneSelection(elements: ElementSelectionStore, scene: ResolvedScene | null, document: string) {
+  const selection = useStore(elements, (current) => current.selection);
+  const [anchor, setAnchor] = useState<string>();
+  const first = selection[0];
+  const owner = (id: string) => sceneAddress(id) ?? sceneAddress(scene?.anchors.find((item) => item.id === id)?.entity_id ?? '');
+  const anchorAddress = anchor ? owner(anchor) : undefined;
+  const selectedKey = first && isModelAddress(first) ? elementKey(first) : undefined;
+  const selectedId = !first || !scene ? null
+    : !isModelAddress(first) ? first.document === document ? first.element.id : null
+    : anchor && anchorAddress && elementKey(anchorAddress) === selectedKey ? anchor
+    : [...scene.entities.map(({ id }) => id), ...scene.anchors.map(({ id }) => id)]
+      .find((id) => { const address = sceneAddress(id); return address && elementKey(address) === selectedKey; }) ?? null;
+  return {
+    selectedId,
+    onSelect: (id: string | null) => {
+      const address = id === null ? undefined : owner(id);
+      setAnchor(address && !sceneAddress(id!) ? id! : undefined);
+      elements.setState({
+        selection: address ? [address] : id === null ? [] : [{ document, element: { kind: 'named', id } }],
+      });
+    },
+  };
+}
+
+function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluationReplay, elements }: DetailInputs,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const interiors = useMemo(() => model ? planarInteriors(model.value.interior) : [], [model]);
-  const interior = useElementSelection(scope);
-  const path = interiors.find((candidate) => JSON.stringify(candidate) === interior.selectedId) ?? interiors[0];
+  const [interiorChoice, chooseInterior] = useState<{ scope: string; path: string }>();
+  const chosenInterior = interiorChoice?.scope === scope ? interiorChoice.path : undefined;
+  const path = interiors.find((candidate) => JSON.stringify(candidate) === chosenInterior) ?? interiors[0];
   const source = model && path && activeView === 'scene'
     ? { document_id: model.id, node_path: path, revision } : null;
   const geometry = useProjectPlanarScene(projectId, source, referencePose, () => editor.connected());
@@ -197,13 +245,13 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
   const trials = evaluating ? evaluationReplay.trials : undefined;
   const checkpoints = evaluating ? evaluationReplay.checkpoints : undefined;
   const sceneScope = JSON.stringify([scope, path, evaluation?.result?.job_id]);
-  const selection = useElementSelection(sceneScope);
   const [cameraState, setCamera] = useState<{ scope: string; value: SceneCamera }>();
   const [overlayState, setOverlays] = useState<{ scope: string; value: ReadonlySet<SceneOverlay> }>();
   const camera = cameraState?.scope === sceneScope ? cameraState.value : fittedCamera;
   const onCameraChange = (value: SceneCamera) => setCamera({ scope: sceneScope, value });
   const hiddenOverlays = overlayState?.scope === sceneScope ? overlayState.value : shownOverlays;
   const scene = view.kind === 'geometry' || view.kind === 'replay' ? sceneGeometry(view, time) : null;
+  const selection = useSceneSelection(elements, scene, sceneScope);
   const layers = sceneLayers(view);
   const viewport = canvasViewportCommands(() => ({
     fitView: () => onCameraChange(fittedCamera),
@@ -216,7 +264,7 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
     documentId: model?.id,
     path: interiors.length > 1 && path && <Select aria-label={studioName('interior')} value={JSON.stringify(path)}
       items={interiors.map((candidate) => ({ value: JSON.stringify(candidate), label: candidate.join(' / ') }))}
-      onValueChange={interior.onSelect} />,
+      onValueChange={(value) => chooseInterior({ scope, path: value })} />,
     commands: viewport,
     body: source || trials ? <CanvasStrip viewport={viewport} tools={<SceneLayers overlays={layers.overlays}
       hiddenOverlays={hiddenOverlays} onToggleOverlay={(overlay) => {
@@ -258,7 +306,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
   const graphScope = input.documentScopes.graph;
   const storedView = useStoredModelView({
-    model: activeView === 'model' ? stored : undefined, editor, saved, window: input.modelWindow,
+    model: activeView === 'model' ? stored : undefined, editor, saved, elements: input.elements,
     active: activeView === 'model',
     selectedSweepValues: input.selectedSweepValues,
     confirmRunRemoval: input.confirmRunRemoval,
@@ -275,12 +323,14 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
-    problem: reveal?.problem.model_address && reveal.problem.model_address.document === storedId
+    problem: reveal?.problem.model_address && reveal.problem.document === storedId
       ? { address: reveal.problem.model_address, reason: reveal.problem.detail } : undefined,
-    problems: input.modelProblems?.flatMap((item) => item.model_address?.document === storedId
+    problems: input.modelProblems?.flatMap((item) => item.model_address && item.document === storedId
       ? [{ address: item.model_address, reason: item.detail }] : []),
     path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
     setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
+    sections: input.drawerSections,
+    openProblems: input.openModelProblems,
   });
   return {
     model: stored ? storedView : { body: <DetailReason reason="definitionUnavailable" name="model" /> },

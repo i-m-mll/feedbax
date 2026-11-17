@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { captureStudioWindow, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
@@ -9,15 +9,15 @@ test.use({
   launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
 });
 
-test('Studio visual decisions use shell roles and keep the narrow window usable', async ({ page }, info) => {
+test('Studio visual decisions use shell roles and keep the narrow window usable', async ({ page, studio }, info) => {
   const id = 'visual-decisions';
-  const folder = join(String(info.config.metadata.home), 'state', 'web', 'projects', id);
+  const folder = join(studio.home, 'state', 'web', 'projects', id);
   await runProjectFixture('tests.fixtures.scene_geometry', 'seed', folder);
   const steps = join(folder, 'steps');
   await mkdir(steps, { recursive: true });
   const kinds = ['train', 'evaluate', 'analyze', 'report'] as const;
   await Promise.all(kinds.map((kind) => writeFile(join(steps, `${kind}.json`), JSON.stringify({
-    kind, base: { inline: kind === 'train' ? { trial_documents: { model_name: 'chain', model: { document: 'chain' } } } : {} },
+    kind, base: { inline: kind === 'train' ? { trial_documents: { model: { document: 'chain' } } } : {} },
   }))));
   await page.goto(`/?project=${id}`);
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');

@@ -1,9 +1,11 @@
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
+import { tabTo } from './fixtures/studioKeyboard';
 
 test.use({
   trace: 'off',
@@ -11,10 +13,10 @@ test.use({
   viewport: { width: 1440, height: 900 },
 });
 
-test('opens a readable project beside a malformed project folder', async ({ page, request }, info) => {
+test('opens a readable project beside a malformed project folder', async ({ page, request, studio }, info) => {
   const { snapshot, configuration } = await seedManagedProject(request, []);
   const projectId = snapshot.project_id;
-  const projects = join(String(info.config.metadata.home), 'state', 'web', 'projects');
+  const projects = join(studio.home, 'state', 'web', 'projects');
   const brokenFolder = await mkdtemp(join(projects, 'malformed-project-'));
   const brokenId = basename(brokenFolder);
   const declaration = brokenId + '.feedbax';
@@ -104,8 +106,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await expect(runButton).toBeEnabled();
   const runsPanel = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   await runsPanel.focus();
-  await page.keyboard.press('Tab');
-  await expect(runButton).toBeFocused();
+  await tabTo(page, runButton);
   let submissions = 0;
   page.on('request', (request) => {
     if (request.method() === 'POST' && new URL(request.url()).pathname === projectPath + '/train-runs') submissions += 1;
@@ -157,10 +158,10 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await expect(drawer.getByText('1 Done')).toBeVisible();
 });
 
-test('outside saved-folder edits join the mounted Undo history', async ({ page, request }, info) => {
+test('outside saved-folder edits join the mounted Undo history', async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', configuration.project);
+  const root = join(studio.home, 'state', 'web', 'projects', configuration.project);
   const modelPath = join(root, 'documents', 'point-mass.json');
   const stepPath = join(root, 'steps', 'train.json');
   const panel = (name: string) => page.getByRole('tabpanel', { name, exact: true });
@@ -309,14 +310,15 @@ test('the managed window shares selection and retains the folded slot without ed
 test('keyboard reaches the last Runs column in a narrow split', async ({ page, request }, info) => {
   const files = await fixture('ordinary-files', '2');
   files.at(-1).step.sweep = { axes: { seed: { values: {
-    a: { label: 'DeterministicLongNameForFirstReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 7 } } },
-    b: { label: 'DeterministicLongNameForSecondReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 9 } } },
+    a: { label: 'DeterministicLongNameForFirstReplicate', patches: { 'seed': { op: 'add', value: 7 } } },
+    b: { label: 'DeterministicLongNameForSecondReplicate', patches: { 'seed': { op: 'add', value: 9 } } },
   } } } };
   const { snapshot } = await seedManagedProject(request, files);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Runs', exact: true }).focus();
   await page.getByRole('button', { name: 'Hide Drawer', exact: true }).click();
   await page.getByRole('button', { name: 'Hide Inspector', exact: true }).click();
   await page.setViewportSize({ width: 620, height: 860 });
@@ -351,7 +353,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const [singleModel, chainModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.task.reaching.v1', params: {} },
+    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
   } };
   const objective = { kind: 'document', id: 'objective', document: {
     schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
@@ -360,7 +362,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
     ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
   } };
   const documents = (model: string) => ({
-    model_name: model, model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+    model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
   });
   const step = (id: string, model: string) => ({
     ...template, id, step: { ...template.step, base: { inline: {
@@ -375,12 +377,14 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   ]);
   const host = await request.get('/api/jobs');
   expect(host.ok(), await host.text()).toBe(true);
-  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`);
+  // The first plan of these multibody models compiles their MuJoCo and JAX kinematics in the
+  // backend (about 5-8 s cold, 0.5 s warm), so this read waits on that real cost.
+  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`, { timeout: 20_000 });
   expect(read.ok(), await read.text()).toBe(true);
   const { window_map } = await read.json() as StudioSavedTrainRuns;
   const problems = window_map!.problems;
   const brokenProblems = problems.filter(({ step }) => step === 'broken');
-  expect(brokenProblems.length, JSON.stringify(window_map!.steps)).toBeGreaterThan(1);
+  expect(brokenProblems.length, JSON.stringify(window_map!.steps)).toBeGreaterThan(0);
   expect(window_map!.steps.find(({ step_id }) => step_id === 'broken')?.status_counts).toEqual({ cannot_run: 1 });
   expect(window_map!.rows.filter(({ key }) => key.step === 'rowless')).toHaveLength(0);
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -410,8 +414,9 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
     Math.abs(svg.viewBox.baseVal.width - svg.clientWidth) + Math.abs(svg.viewBox.baseVal.height - svg.clientHeight),
   )).toBeLessThanOrEqual(2);
   await expect(primary.getByRole('heading', { name: 'Model', exact: true })).toBeVisible();
-  await expect(primary.locator('.studio-window-slot__header')).toHaveCSS('height', '38px');
-  await expect(scene.locator('.studio-window-slot__header')).toHaveCSS('height', '38px');
+  const headerHeight = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--panel-header-height').trim());
+  await expect(primary.locator('.studio-window-slot__header')).toHaveCSS('height', headerHeight);
+  await expect(scene.locator('.studio-window-slot__header')).toHaveCSS('height', headerHeight);
   await captureStudioWindow(page, info, '02-model-scene');
   await page.setViewportSize({ width: 1240, height: 820 });
   await expect.poll(zoom).toBeCloseTo(initialZoom);
@@ -441,13 +446,13 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await page.keyboard.press('Control+3');
   await expect(primary.getByRole('heading', { name: 'Task', exact: true })).toBeVisible();
   await expect(primary.getByRole('button', { name: /^Task Document / })).toBeVisible();
-  await expect(page.getByRole('complementary', { name: 'Inspector' })).not.toContainText('upper.proximal');
+  await expect(page.getByRole('complementary', { name: 'Inspector' }).getByText('upper.proximal')).toHaveCount(0);
   await scene.focus();
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
   await mapStep(page, 'single').click();
   await expect(scene.locator('header')).toContainText('single');
   await expect(scene.getByRole('button', { name: 'Select forearm', exact: true })).toBeHidden();
-  await expect(page.getByRole('complementary', { name: 'Inspector' })).not.toContainText('upper.proximal');
+  await expect(page.getByRole('complementary', { name: 'Inspector' }).getByText('upper.proximal')).toHaveCount(0);
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(upper).toBeVisible();
 

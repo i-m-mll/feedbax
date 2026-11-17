@@ -1,20 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioCollectionProgress, StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioCountOf, studioName } from "@/components/activity/studioVocabulary";
+import { studioName } from "@/components/activity/studioVocabulary";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
   selectionButton,
   selectedRuns,
   selectRun,
-  selectSweepValue,
-  selectionTerms,
   type PipelineSelectionState,
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
 import { RunContextMenu, type RunMenu } from "./RunContextMenu";
+
+const gutter = "w-px pl-1 pr-2 text-right";
 
 const byteSize = new Intl.NumberFormat(undefined, { style: "unit", unit: "byte", unitDisplay: "narrow" });
 
@@ -24,35 +24,20 @@ export interface RunSelectionProps {
   onSelectionChange: (state: PipelineSelectionState) => void;
 }
 
-export function StudioSweepValues({ step, state, onSelectionChange }: RunSelectionProps) {
-  const selection = state.selection;
-  const terms = selection?.kind === "values" && selection.stepId === step.id ? selection.terms : [];
-  return (
-    <div className="flex flex-wrap gap-x-2 gap-y-1">
-      {step.sweeps.map((sweep) => {
-        const selected = terms.find(({ sweepId }) => sweepId === sweep.id);
-        return (
-          <fieldset key={sweep.id} className="flex flex-wrap items-center gap-1">
-            <legend className="font-medium text-shell-foreground">{sweep.label}</legend>
-            {sweep.values.map((value) => (
-              <Button
-                key={value.id}
-                pressed={selected?.valueIds.includes(value.id) ?? false}
-                {...selectionButton((extend) => onSelectionChange(selectSweepValue(state, step.id, sweep.id, value.id, extend)))}
-                className="tabular-nums"
-              >
-                {value.label}
-              </Button>
-            ))}
-          </fieldset>
-        );
-      })}
-    </div>
-  );
+/** The sweeps whose values differ between the shown rows: the fields that tell those runs apart. */
+function differingSweeps(step: PlanStepView, rows: readonly PlanRunView[]) {
+  return step.sweeps.filter((sweep) => new Set(rows.map(({ values }) => values[sweep.id])).size > 1);
 }
 
-function variedSweeps(step: PlanStepView) {
-  return step.sweeps.filter((sweep) => sweep.values.length > 1);
+/** Whether the shown columns leave two rows with the same cells, so the runs' own names must be drawn. */
+function needsNames(rows: readonly PlanRunView[], sweeps: readonly PlanSweepView[], showVariant: boolean) {
+  const seen = new Set<string>();
+  for (const run of rows) {
+    const cells = JSON.stringify([showVariant ? run.variant : null, ...sweeps.map(({ id }) => run.values[id] ?? null)]);
+    if (seen.has(cells)) return true;
+    seen.add(cells);
+  }
+  return false;
 }
 
 function useValueLabels(sweeps: readonly PlanSweepView[]) {
@@ -82,9 +67,11 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
     overscan: 6,
     initialRect: { width: 0, height: 360 },
   });
-  const sweeps = useMemo(() => variedSweeps(step), [step]);
+  const showVariant = new Set(rows.map(({ variant }) => variant)).size > 1;
+  const sweeps = useMemo(() => differingSweeps(step, rows), [step, rows]);
+  const named = useMemo(() => needsNames(rows, sweeps, showVariant), [rows, sweeps, showVariant]);
   const labels = useValueLabels(sweeps);
-  const showVariant = new Set(step.runs.map(({ variant }) => variant)).size > 1;
+  const ordinals = useMemo(() => new Map(step.runs.map(({ id }, index) => [id, index + 1])), [step.runs]);
   const selected = new Set(selectedRuns(step, state.selection).map(({ id }) => id));
   const focus = state.focus?.stepId === step.id ? state.focus.runId : null;
   const focusedIndex = focus === null ? -1 : rows.findIndex(({ id }) => id === focus);
@@ -125,7 +112,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
   const relatedIds = related.get(step.id);
   const items = virtual.getVirtualItems();
   const measure = step.kind === "evaluate" ? "size" : "progress";
-  const width = sweeps.length + (showVariant ? 4 : 3);
+  const width = sweeps.length + (showVariant ? 1 : 0) + (named ? 1 : 0) + 3;
   const cellFocus = "outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-shell-accent";
   const first = items[0];
   const last = items[items.length - 1];
@@ -137,7 +124,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
       <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1}>
         <thead className="sticky top-0 z-10">
           <tr aria-rowindex={1}>
-            <TableHeaderCell scope="col">{studioName("run")}</TableHeaderCell>
+            <TableHeaderCell aria-hidden="true" className={gutter} />
+            {named && <TableHeaderCell scope="col">{studioName("run")}</TableHeaderCell>}
             {showVariant && <TableHeaderCell scope="col">{studioName("variant")}</TableHeaderCell>}
             {sweeps.map((sweep) => <TableHeaderCell key={sweep.id} scope="col">{sweep.label}</TableHeaderCell>)}
             <TableHeaderCell scope="col">{studioName("status")}</TableHeaderCell>
@@ -175,18 +163,20 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                 onKeyDown={(event) => { if (!event.defaultPrevented) navigate(event, item.index); }}
                 className="studio-run-row"
               >
-                <TableRowHeader>
+                <TableRowHeader className={gutter}>
                   <Button
-                    variant="ghost" align="start"
+                    variant="bare" size="content"
                     pressed={state.selection?.kind === "rows" && lit}
                     aria-current={focus === run.id ? true : undefined}
                     onClick={selectRow.onClick}
                     onKeyDown={selectRow.onKeyDown}
-                    className="-ml-control-inline underline-offset-2 hover:underline aria-[current=true]:underline"
+                    className="w-full justify-end rounded-row tabular-nums text-shell-muted underline-offset-2 aria-[current=true]:underline"
                   >
-                    {run.label}
+                    <span aria-hidden="true">{ordinals.get(run.id)}</span>
+                    <span className="sr-only">{run.label}</span>
                   </Button>
                 </TableRowHeader>
+                {named && <TableCell tabIndex={-1} className={cellFocus}>{run.label}</TableCell>}
                 {showVariant && <TableCell tabIndex={-1} className={cellFocus}>{run.variant}</TableCell>}
                 {sweeps.map((sweep) => (
                   <TableCell key={sweep.id} tabIndex={-1} className={`${cellFocus} tabular-nums`}>
@@ -210,14 +200,4 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
       </Table>
     </div>
   );
-}
-
-export function StudioSelectionSummary({ step, state }: Pick<RunSelectionProps, "step" | "state">) {
-  const { selection } = state;
-  const active = selection?.kind === "steps" ? selection.stepIds.includes(step.id) : selection?.stepId === step.id;
-  if (!active) return null;
-  const selected = selectedRuns(step, selection);
-  const terms = selectionTerms(step, selection);
-  const count = studioCountOf(selected.length, step.runs.length);
-  return <p aria-live="polite" className="text-xs text-shell-muted">{[...terms, count].join(" · ")}</p>;
 }

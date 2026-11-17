@@ -36,6 +36,7 @@ class FieldNameEdit(StrictModel):
 
 class ModelFieldRequest(StrictModel):
     revision: Sha256
+    document: ProjectName
     owner: ModelAddress
     run: StudioSavedTrainKey | None = None
     evaluate_scope: EvaluateAttachmentScope | None = None
@@ -77,6 +78,9 @@ class StudioFieldView(StrictModel):
     label: str
     text: str
     effective: str | None = None
+    """The value the selected runs share where it differs from the document's."""
+    mixed: bool = False
+    """The selected runs hold different values."""
     unit: str | None = None
     site: SiteProjection
     sweep: StudioSweepList | StudioSweepRange | StudioSweepSampler | None = None

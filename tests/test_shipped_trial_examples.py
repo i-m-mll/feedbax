@@ -61,12 +61,11 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
         request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
         assert isinstance(request, DocumentTrainingRequestSpec)
         documents = request.trial_documents
-        assert documents.model_name == "point-mass"
         assert documents.task.id == documents.objective.id == name
         normalized, method, settings = normalize_train_method(request, registries.training_methods)
         seed = normalized.seed or 0
         paired = compile_trial_execution(
-            documents.model_name, documents.model, documents.task_source,
+            documents.model, documents.task_source,
             registries.components, registries.expression_functions, python_tasks=registries.python_tasks,
             objective=documents.objective, input_overrides=documents.input_overrides,
             initialization_key=model_initialization_key(seed),

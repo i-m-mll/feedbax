@@ -9,6 +9,8 @@ export interface Option<Value extends string> {
   value: Value;
   label: string;
   glyph?: ReactNode;
+  /** Trailing text in the list, such as a declaration's package. */
+  detail?: string;
   disabled?: boolean;
 }
 

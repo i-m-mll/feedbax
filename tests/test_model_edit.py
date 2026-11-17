@@ -21,7 +21,7 @@ SCALAR = Port(SignalType(base="scalar", shape=()))
 
 
 def _address(scope=(), kind="graph", **fields):
-    return {"document": "model", "composites": scope, "element": {"kind": kind, **fields}}
+    return {"composites": scope, "element": {"kind": kind, **fields}}
 
 
 def _end(component, port):
@@ -44,7 +44,7 @@ def _accepts(component, domain):
 
 def _execute(state, op, **fields):
     command = ModelEditCommand.model_validate({"operation": {"op": op, **fields}})
-    return apply_model_edit("model", state, command, ports=_ports, accepts=_accepts)
+    return apply_model_edit(state, command, ports=_ports, accepts=_accepts)
 
 
 def _bytes(state):
@@ -235,7 +235,6 @@ class ModelEdits(RuleBasedStateMachine):
         result = _execute(self.current, operation, **fields)
         assert _bytes(self.current) == before
         if isinstance(result, ModelEditProblem):
-            assert result.address.document == "model"
             return result
         if result.clipboard is not None:
             self.clipboard = result.clipboard

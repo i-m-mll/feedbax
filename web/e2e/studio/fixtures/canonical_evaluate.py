@@ -26,7 +26,7 @@ from tests.test_document_train_pair import authored_documents, document_project
 
 
 _MASS = ModelAddress.model_validate({
-    "document": "reach-model", "composites": [],
+    "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
 }).to_text()
 
@@ -102,7 +102,6 @@ def walkthrough_files(batches: str | None = None):
     if batches is not None:
         train = project["steps"]["train"]["base"]["inline"]
         train["training_config"]["n_batches"] = int(batches)
-        train["method_payload"]["payload"]["target_total"] = int(batches)
     documents = [
         {"kind": "document", "id": name, "document": document}
         for name, document in project["documents"].items()
@@ -121,7 +120,6 @@ def measured_subset_files():
     files[-1]["step"]["sweep"] = {"axes": {"updates": {"values": {
         name: {"label": name, "patches": {
             "training_config.n_batches": {"value": updates},
-            "method_payload.payload.target_total": {"value": updates},
         }}
         for name, updates in (("Long", 4), ("Medium", 3), ("Short", 2))
     }}}}
@@ -132,9 +130,9 @@ def grouped_subset_files():
     files = measured_subset_files()
     train = files[-1]["step"]
     del train["sweep"]["axes"]["updates"]["values"]["Medium"]
-    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["base"]["inline"]["seed"] = 0
     train["sweep"]["axes"]["replicate"] = {"values": {
-        name: {"label": label, "patches": {"method_payload.payload.seed": {"value": seed}}}
+        name: {"label": label, "patches": {"seed": {"value": seed}}}
         for name, label, seed in (("zeta", "First", 1), ("alpha", "Second", 2))
     }}
     return files
@@ -143,15 +141,15 @@ def grouped_subset_files():
 def task_pivot_files():
     files = walkthrough_files()
     train = files[-1]["step"]
-    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["base"]["inline"]["seed"] = 0
     train["sweep"] = {"axes": {
         "learning-rate": {"values": {
             name: {"label": name, "value": rate, "patches": {
-                "method_payload.payload.optimizer.params.learning_rate": {"value": rate},
+                "settings.optimizer.params.learning_rate": {"value": rate},
             }} for name, rate in (("Slow", 0.001), ("Medium", 0.002), ("Fast", 0.003))
         }},
         "seed": {"values": {
-            name: {"label": name, "value": seed, "patches": {"method_payload.payload.seed": {"value": seed}}}
+            name: {"label": name, "value": seed, "patches": {"seed": {"value": seed}}}
             for name, seed in (("one", 1), ("two", 2))
         }},
     }}

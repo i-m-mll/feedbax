@@ -139,7 +139,8 @@ def decide_validity(
     if code and not (assessed_code and assessed_code.outcome == "equal"):
         reason = CodeReason(
             basis="computation" if assessed_code and assessed_code.outcome == "different" else "source",
-            differences=code, detail=assessed_code.detail if assessed_code is not None else code_unavailable,
+            differences=code, changes=assessed_code.changes if assessed_code is not None else (),
+            detail=assessed_code.detail if assessed_code is not None else code_unavailable,
         )
         if assess and code_checkable and assessed_code is None:
             checks.append("code")
@@ -149,11 +150,15 @@ def decide_validity(
 
     notice = None
     if conditions.environment:
-        detail = assessed_environment.detail if assessed_environment is not None else None
+        finding = (
+            {"detail": assessed_environment.detail, "change": assessed_environment.change,
+             "drift": assessed_environment.drift}
+            if assessed_environment is not None else {}
+        )
         outcome = assessed_environment.outcome if assessed_environment is not None else None
         if outcome == "different":
             check = "different"
-            reasons.append(EnvironmentReason(differences=conditions.environment, detail=detail))
+            reasons.append(EnvironmentReason(differences=conditions.environment, **finding))
         elif outcome == "equal":
             check = "confirmed"
         elif outcome is None and assess and environment_checkable:
@@ -161,7 +166,7 @@ def decide_validity(
             checks.append("environment")
         else:
             check = "not_checked"
-        notice = EnvironmentNotice(differences=conditions.environment, check=check, detail=detail)
+        notice = EnvironmentNotice(differences=conditions.environment, check=check, **finding)
 
     state = "stale" if reasons else "unchecked" if unchecked_reason else "current"
     if unchecked_reason:
