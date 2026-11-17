@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import AwareDatetime, Field, PositiveInt, field_validator, model_validator
+from pydantic import AwareDatetime, Field, PositiveInt, UUID4, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.computation_validity import ComputationTrace, DriverIdentity
@@ -84,6 +84,17 @@ class ComputationUnavailable(ReferenceValue):
         return self
 
 
+class CheckpointEvidenceRoot(ReferenceValue):
+    kind: Literal["checkpoint_evidence"] = "checkpoint_evidence"
+    evidence: ContentObjectRef
+    store_id: UUID4
+    attempt: Name
+    completed_updates: PositiveInt
+
+
+type ExecutionEvidenceRef = ContentObjectRef | CheckpointEvidenceRoot
+
+
 class CodeTrace(ReferenceValue):
     sources: tuple[SourceSnapshot, ...]
     registry: tuple[RegistryBinding, ...]
@@ -91,7 +102,7 @@ class CodeTrace(ReferenceValue):
     environment: dict[Name, Name]
     indeterminate: tuple[SourcePath, ...]
     indeterminate_files: tuple[SourcePath, ...] = Field(default=(), exclude_if=lambda value: not value)
-    prefixes: tuple[ContentObjectRef, ...] = Field(default=(), exclude_if=lambda value: not value)
+    prefixes: tuple[ExecutionEvidenceRef, ...] = Field(default=(), exclude_if=lambda value: not value)
     computation: ComputationTrace | None = Field(default=None, exclude_if=lambda value: value is None)
     computation_unavailable: ComputationUnavailable | None = Field(default=None, exclude_if=lambda value: value is None)
 
