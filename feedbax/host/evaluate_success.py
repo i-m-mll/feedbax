@@ -9,6 +9,7 @@ from feedbax.contracts.effective_success import (
 from feedbax.contracts.dataset import DatasetDescriptor
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.jobs import JobReceipt
+from feedbax.contracts.live_evaluate import require_evaluation_coverage, rollout_slot
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.request_refs import ContentRef, ProductRef, UpdateSeriesMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -25,7 +26,7 @@ from feedbax.studio.canonical_evaluate import (
     exact_evaluation_subject, states_product, states_ref, verify_evaluation_receipt,
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-from feedbax.validity.evidence import verify_execution_replay
+from feedbax.validity.evidence import read_execution_evidence, verify_execution_replay
 
 
 def publish_evaluate_success(
@@ -74,10 +75,14 @@ def publish_evaluate_success(
             verify_execution_replay(saved, execution_evidence)
             view.ensure_published_run_ref(existing.ref, existing.receipt)
             return existing.ref
+        if execution_evidence is None:
+            raise ValueError("Managed Evaluate success lacks its execution evidence")
+        computation = read_execution_evidence(store, execution_evidence).trace.computation
         if isinstance(subject, ContentRef):
             from feedbax.studio.canonical_evaluate import initial_evaluation_references
 
             verify_initial_evaluation_states(store, manifest, initial_evaluation_references(decoded))
+            require_evaluation_coverage(computation, (rollout_slot(None, "0"),))
             _, bindings = view.bind(request, origins={})
             return view.publish_bound(
                 request, attempt=attempt, products={"states": (product,)}, bindings=bindings,
@@ -134,6 +139,12 @@ def publish_evaluate_success(
             raise ValueError("Evaluate resolved-input digest differs from its worker receipt")
         if value.resolved is None and "effective_binding_sha256" in manifest.metadata:
             raise ValueError("Evaluate receipt has a digest without resolved inputs")
+        members = value.resolved.members if value.resolved is not None else ()
+        require_evaluation_coverage(computation, tuple(
+            rollout_slot(item.coordinate, replica)
+            for item in members
+            for replica in item.replica_ids or ("0",)
+        ))
         params = RolloutParameters.model_validate(decoded.spec.params)
         observed = [item.coordinate for item in value.resolved.members] if value.resolved else []
         with (

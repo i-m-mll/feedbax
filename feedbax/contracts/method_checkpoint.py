@@ -57,10 +57,11 @@ class MethodCheckpointManifest(ReferenceValue):
     clock: MethodCheckpointClock
     model: MethodCheckpointModel
     extra: MethodCheckpointExtra
+    validity: ContentTreeRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @property
     def state_sha256(self) -> str:
-        state = self.model_dump(mode="json", exclude={"transaction_id", "run_id", "final"})
+        state = self.model_dump(mode="json", exclude={"transaction_id", "run_id", "final", "validity"})
         return sha256_bytes(canonical_json_v2_bytes(state))
 
 

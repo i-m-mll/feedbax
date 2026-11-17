@@ -1,5 +1,6 @@
 """Host entrypoint for read-only result checks and quick environment replay."""
 
+from collections.abc import Callable
 from pathlib import Path
 import os
 
@@ -12,7 +13,10 @@ def main(argv: list[str]) -> int:
     delivery = ValidityCheckDelivery.model_validate_json(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes())
     log = Path(os.environ["FEEDBAX_HOST_EVENT_LOG"])
     try:
+        verify = _observation_guard(delivery)
+        verify()
         evidence = _check(delivery)
+        verify()
         assert_execution_unchanged()
     except (OSError, ValueError) as error:
         evidence = ValidityCheckEvidence(**{
@@ -21,6 +25,31 @@ def main(argv: list[str]) -> int:
         })
     append(log, "result", {"outcome": "succeeded", "validity_evidence": evidence.model_dump(mode="json")}, sync=True)
     return 0
+
+
+def _observation_guard(delivery: ValidityCheckDelivery) -> Callable[[], None]:
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.effective_success import SuccessView
+    from feedbax.plugins.composition import load_application
+    from feedbax.validity.project_admission import ProjectValidity
+
+    store = ImmutableArtifactBlobProvider(delivery.store_root)
+    published = SuccessView(store).read_success(delivery.receipt)
+    if published.receipt.request.id != delivery.request_id:
+        raise ValueError("Validity check received data for a different request")
+    registries = load_application().bundle
+
+    def verify() -> None:
+        view = SuccessView(store)
+        if view.authored_ref(delivery.request_id) != delivery.receipt:
+            raise ValueError("The latest successful receipt changed before the validity check")
+        observed = ProjectValidity(delivery.project_root, registries).inspect(view, published)
+        if observed.conditions != delivery.conditions or any(
+            reason.kind in ("file", "input") for reason in observed.decision.reasons
+        ):
+            raise ValueError("The current replay conditions differ from those requested")
+
+    return verify
 
 
 def _check(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:

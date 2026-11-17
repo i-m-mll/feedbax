@@ -138,3 +138,22 @@ def test_worker_environment_verifies_versions_from_the_active_lock_projection(tm
     assert current.lock_sha256 is not None
     with pytest.raises(EnvironmentMismatch, match="example-lib 2"):
         read_environment(tmp_path, installed={"example-lib": "2"}, verify_installation=True)
+
+
+def test_warm_worker_retires_when_a_dependency_and_lock_upgrade_together(tmp_path, monkeypatch):
+    installed = {"example-lib": "1"}
+    monkeypatch.setattr("feedbax.validity.recording.installed_versions", lambda: installed.copy())
+    lock = tmp_path / "uv.lock"
+    lock.write_text('version = 1\n[[package]]\nname = "example-lib"\nversion = "1"\n')
+    recorder = WorkerRecorder({}, boot_ns=time.time_ns())
+    recorder.bind_project(tmp_path)
+    assert not recorder.changed()
+
+    with recorder.delivery("first", tmp_path / "store", tmp_path / "scratch"):
+        installed["example-lib"] = "2"
+        lock.write_text('version = 1\n[[package]]\nname = "example-lib"\nversion = "2"\n')
+        assert read_environment(tmp_path, installed=installed, verify_installation=True).versions == installed
+        with pytest.raises(EnvironmentMismatch, match=r"example-lib \(1 to 2\)"):
+            recorder.ensure_unchanged()
+
+    assert recorder.changed()

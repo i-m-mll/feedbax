@@ -4,14 +4,37 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.computation_validity import ComputationTrace, DriverIdentity, EvaluatePrefix
 from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.jobs import JobError, StudioEvaluationCheckpointGap
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.rollout import ResolvedRolloutMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 
 LIVE_EVALUATE_POINT = "evaluation_point"
+EVALUATE_DRIVER = DriverIdentity(name="evaluate.rollout", revision=3479529567574847)
+EVALUATE_PREFIX_STEPS = 5
+
+
+def rollout_slot(coordinate: int | None, replica: str) -> str:
+    return pointer(("initial" if coordinate is None else str(coordinate), replica))
+
+
+def require_evaluation_coverage(computation: ComputationTrace | None, slots: tuple[str, ...]) -> None:
+    if not slots and computation is None:
+        return
+    if (
+        computation is None or computation.driver.name != EVALUATE_DRIVER.name
+        or computation.completed_steps != len(slots)
+        or tuple(start.slot for start in computation.starts) != slots
+        or tuple(program.slot for program in computation.programs) != slots
+        or not isinstance(computation.prefix, EvaluatePrefix)
+        or len(computation.prefix.outputs) != min(EVALUATE_PREFIX_STEPS, len(slots))
+    ):
+        raise ValueError("Evaluate computation does not cover its exact checkpoint and replica slots")
 
 
 class ScoredEvaluationPoint(StrictModel):
@@ -20,6 +43,7 @@ class ScoredEvaluationPoint(StrictModel):
     member: ResolvedRolloutMember
     objective: Sha256
     total: float = Field(allow_inf_nan=False)
+    evidence: ContentObjectRef
 
 
 class FailedEvaluationPoint(StrictModel):

@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
-from functools import cached_property, lru_cache
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.computation_validity import NORMALIZATION_VERSION
+from feedbax.contracts.computation_validity import NORMALIZATION_VERSION, ComputationTrace
 from feedbax.contracts.effective_success import EvaluationSubjectValue, Success, select_bound_product
 from feedbax.contracts.receipt_validity import CheckConditions, InputDifference, ReceiptValidity
 from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
@@ -24,9 +24,6 @@ from feedbax.validity.source import source_catalog
 if TYPE_CHECKING:
     from feedbax.persistence.effective_success import PublishedSuccess, SuccessView
     from feedbax.plugins.application import ApplicationRegistryBundle
-
-
-_project_catalog = lru_cache(maxsize=16)(source_catalog)
 
 
 @dataclass(frozen=True)
@@ -57,7 +54,7 @@ class ProjectValidity:
 
     @cached_property
     def _catalog(self):
-        return _project_catalog(self.root)
+        return source_catalog(self.root)
 
     @cached_property
     def _environment(self):
@@ -91,27 +88,13 @@ class ProjectValidity:
             traces, catalog=self._catalog, registry=self._registry, environment=self._environment,
             read_object=view.store.get_object,
         )
-        computations = [trace.computation for trace in traces]
-        code_checkable = all(
-            computation is not None and all(
-                all(
-                    program is not None and all(call.kind != "unidentified" for call in program.calls)
-                    for program in (identity.reference, identity.execution)
-                )
-                for identity in computation.programs
-            )
-            for computation in computations
+        computations = tuple(trace.computation for trace in traces)
+        opaque = next((trace.computation_unavailable for trace in traces if trace.computation_unavailable), None)
+        code_unavailable = (
+            f"Starting arguments for {opaque.driver.name} are unavailable for comparison."
+            if opaque is not None else _unavailable_computation(computations)
         )
-        if code_checkable:
-            code_checkable = all(
-                computation.normalization_version == NORMALIZATION_VERSION
-                or all(
-                    program is not None and program.raw_program is not None
-                    for identity in computation.programs
-                    for program in (identity.reference, identity.execution)
-                )
-                for computation in computations if computation is not None
-            )
+        code_checkable = code_unavailable is None and all(computation is not None for computation in computations)
         environment_checkable = (
             all(computation is not None and computation.prefix is not None for computation in computations)
             or (receipt.request.id.partition(":")[0] in ("analyze", "render", "report") and is_quick(receipt, self.quick_duration))
@@ -120,8 +103,25 @@ class ProjectValidity:
         return ObservedReceiptValidity(decide_validity(
             published.ref, conditions=conditions, records=records,
             input_differences=inputs, file_differences=files,
-            code_checkable=code_checkable, environment_checkable=environment_checkable,
+            code_checkable=code_checkable, code_unavailable=code_unavailable,
+            environment_checkable=environment_checkable,
         ), conditions)
+
+
+def _unavailable_computation(computations: tuple[ComputationTrace | None, ...]) -> str | None:
+    for computation in computations:
+        if computation is None:
+            continue
+        for identity in computation.programs:
+            for program in (identity.reference, identity.execution):
+                if program is None:
+                    return "The fixed reference-platform program is unavailable."
+                unidentified = tuple(call.target for call in program.calls if call.kind == "unidentified")
+                if unidentified:
+                    return f"Unidentified foreign calls prevent an exact check ({', '.join(unidentified)})."
+                if computation.normalization_version != NORMALIZATION_VERSION and program.raw_program is None:
+                    return "The retained program cannot be compared under the current normalization."
+    return None
 
 
 def is_quick(receipt: Success, duration: timedelta) -> bool:

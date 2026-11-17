@@ -35,7 +35,8 @@ def schedule_check(
     ) if producer is not None else ()
     delivery = ValidityCheckDelivery(
         project_root=project_root, store_root=store, request_id=request_id, receipt=scope.receipt,
-        checks=scope.checks, producer_launch=original, completion_bindings=bindings,
+        checks=scope.checks, conditions=scope.conditions,
+        producer_launch=original, completion_bindings=bindings,
     )
     launch = replace(worker, warm_entrypoint=VALIDITY_CHECK_ENTRYPOINT, project_root=str(project_root),
                      payload=delivery.model_dump(mode="json"))

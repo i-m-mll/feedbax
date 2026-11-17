@@ -45,7 +45,7 @@ def _root_id(attempt: str) -> str:
     return f"execution-evidence:{attempt}"
 
 
-def _root_targets(
+def execution_evidence_targets(
     store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, evidence: ReceiptEvidence,
 ) -> tuple[ContentRetentionTarget, ...]:
     unique: dict[str, ContentObjectRef] = {}
@@ -63,7 +63,7 @@ def stage_evidence(store: ImmutableArtifactBlobProvider, evidence: ReceiptEviden
         ref = store.store_object(canonical_json_v2_bytes(evidence.model_dump(mode="json")))
         store.register_root(ContentRootRecord(
             root_id=_root_id(evidence.attempt), root_kind="run",
-            targets=_root_targets(store, ref, evidence),
+            targets=execution_evidence_targets(store, ref, evidence),
         ))
     return ref
 
@@ -73,7 +73,7 @@ def read_staged_evidence(
 ) -> ReceiptEvidence:
     evidence = read_execution_evidence(store, ref)
     (root,) = read_active_roots(store, (_root_id(attempt),))
-    if evidence.attempt != attempt or root.targets != _root_targets(store, ref, evidence):
+    if evidence.attempt != attempt or root.targets != execution_evidence_targets(store, ref, evidence):
         raise ValueError("Execution evidence differs from the recorded attempt and its Store root")
     return evidence
 

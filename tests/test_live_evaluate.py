@@ -246,6 +246,20 @@ _Events.append = append
     assert first.receipt.products == second.receipt.products
     assert first.receipt.evaluation_manifest != second.receipt.evaluation_manifest
     assert second.receipt.supersedes == first.ref
+    assert first.receipt.trace is not None and second.receipt.trace is not None
+    assert [ref.model_dump(mode="json") for ref in first.receipt.trace.prefixes] == [
+        point["result"]["evidence"] for point in points(evaluation)
+    ]
+    assert second.receipt.trace.prefixes == ()
+    from feedbax.contracts.receipt_validity import ValidityCheckDelivery
+    from feedbax.training.evaluate_worker import check_evaluate
+
+    checked = check_evaluate(ValidityCheckDelivery(
+        project_root=folders.root / project, store_root=plan.store_path,
+        request_id=rows["baseline"].request_id, receipt=first.ref, checks=("code", "environment"),
+    ))
+    assert checked.code is not None and checked.code.outcome == "equal"
+    assert checked.environment is not None and checked.environment.outcome == "unavailable"
 
 
 def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypatch):

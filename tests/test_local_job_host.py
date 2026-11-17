@@ -742,11 +742,18 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from feedbax.contracts.artifact_custody import ContentObjectRef
+    from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
     from feedbax.host.completion import read_completion_bindings
     from feedbax.job_completion import verify_bound_training_completion
     from feedbax.jobs import JobService
     from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.effective_success import SuccessView
     from feedbax.persistence.method_checkpoint import LATEST_NAME
+    from feedbax.training.method_runtime import TrainingLoop
+    from feedbax.training_host_worker import check_train
+    from feedbax.validity.evidence import read_execution_evidence
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
     from feedbax.contracts.project import Project
@@ -764,7 +771,7 @@ from feedbax.training.method_runtime import TrainingLoop
 run_block = TrainingLoop.run_block
 
 def pause_first_update(self, state, *, completed, count):
-    result = run_block(self, state, completed=completed, count=min(count, 1) if completed == 0 else count)
+    result = run_block(self, state, completed=completed, count=count)
     if completed == 0:
         Path({str(stop_ready)!r}).touch()
         stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
@@ -799,9 +806,9 @@ TrainingLoop.run_block = pause_first_update
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)
     folder = "document-resume"
-    _save_project(
-        app.state.project_folders, folder, Project.model_validate(document_project(authored_documents()))
-    )
+    raw = document_project(authored_documents())
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["snapshot_interval"] = 1
+    _save_project(app.state.project_folders, folder, Project.model_validate(raw))
     opened = app.state.project_folders.read_plan(folder, revision=None)
     project = opened.project_id
     revision = opened.revision
@@ -904,6 +911,23 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     finished = job_row(host, continued)
     assert finished["state"] == "succeeded", finished
     assert finished["outcome"]["store_success"]
+    store = ImmutableArtifactBlobProvider(Path(resumed_launch["payload"]["manifest_root"]))
+    reference = ContentObjectRef.model_validate(finished["outcome"]["store_success"])
+    trace = SuccessView(store).read_receipt(reference).trace
+    (previous,) = trace.prefixes
+    assert read_execution_evidence(store, previous).trace.computation.completed_steps == 1
+    assert trace.computation.completed_steps == 1
+
+    def unexpected_update(*args, **kwargs):
+        raise AssertionError("An exact Train check ran a numerical update")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(TrainingLoop, "run_block", unexpected_update)
+        evidence = check_train(ValidityCheckDelivery(
+            project_root=tmp_path, store_root=store.root, request_id=stopped["request"],
+            receipt=reference, checks=("code",), conditions=CheckConditions(code=(), environment=()),
+        ))
+    assert evidence.code.outcome == "equal", evidence
     pinned = wait_until(lambda: _bound_edge(host) or job_row(host, consumer.id, "blocked"))
     assert "completion" in pinned, (pinned, finished["outcome"])
     completion = pinned["completion"]
