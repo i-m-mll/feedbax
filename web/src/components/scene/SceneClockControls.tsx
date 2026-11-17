@@ -1,8 +1,12 @@
 import { Pause, Play, Repeat, RotateCcw, StepBack, StepForward, type LucideIcon } from 'lucide-react';
-import { appTip } from '@window-shell/browser/tooltip';
 import { studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { SPEED_OPTIONS, timelineOffset, usePlaybackTransport } from '@/components/viewer/usePlaybackTransport';
+import { IconButton } from '@/components/ui/Button';
+import { Select } from '@/components/ui/Select';
+import { Slider } from '@/components/ui/Slider';
 import type { SceneTimeline } from './sceneView';
+
+const speedItems = SPEED_OPTIONS.map((option) => ({ value: String(option), label: `${option}×` }));
 
 interface SceneClockProps {
   timeline: SceneTimeline;
@@ -19,10 +23,7 @@ function ClockButton({ name, icon: Icon, onClick, pressed }: {
   pressed?: boolean;
 }) {
   return (
-    <button type="button" aria-label={studioName(name)} {...appTip(studioName(name))} aria-pressed={pressed} onClick={onClick}
-      className="rounded p-1.5 text-shell-muted hover:bg-shell-hover aria-pressed:bg-shell-selected">
-      <Icon className="size-4" aria-hidden="true" />
-    </button>
+    <IconButton label={studioName(name)} icon={<Icon aria-hidden="true" />} pressed={pressed} onClick={onClick} />
   );
 }
 
@@ -50,17 +51,14 @@ function SceneClock({ timeline, time, speed, onTimeChange, onSpeedChange }: Scen
             ))}
           </div>
         )}
-        <input type="range" min={0} max={duration} step="any" value={transport.bounded}
-          aria-label={studioName('playbackPosition')} onChange={(event) => transport.seek(event.currentTarget.valueAsNumber)}
-          className="block w-full accent-shell-foreground" />
+        <Slider min={0} max={duration} step={duration / 1000 || 1} value={transport.bounded}
+          aria-label={studioName('playbackPosition')} onValueChange={transport.seek} />
       </div>
       <output className="whitespace-nowrap text-xs tabular-nums text-shell-muted">
         {transport.bounded.toFixed(2)} / {duration.toFixed(2)} {units ?? studioUnit('second')}
       </output>
-      <select value={speed} onChange={(event) => onSpeedChange(Number(event.currentTarget.value))}
-        aria-label={studioName('playbackSpeed')} className="rounded border border-shell-control bg-shell-surface px-1 py-0.5 text-xs">
-        {SPEED_OPTIONS.map((option) => <option key={option} value={option}>{option}×</option>)}
-      </select>
+      <Select items={speedItems} value={String(speed)} onValueChange={(value) => onSpeedChange(Number(value))}
+        aria-label={studioName('playbackSpeed')} />
     </div>
   );
 }

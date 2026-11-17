@@ -9,6 +9,9 @@ export default {
       xl: 'var(--text-xl)'
     },
     extend: {
+      borderColor: {
+        DEFAULT: 'var(--app-divider)'
+      },
       colors: {
         shell: {
           chrome: 'var(--surface-header)',
@@ -28,6 +31,7 @@ export default {
           'status-running': 'var(--studio-status-running)',
           'status-success': 'var(--studio-status-success)',
           'status-failure': 'var(--studio-status-failure)',
+          'status-ink': 'var(--studio-status-ink)',
           'scene-feature': 'var(--studio-scene-feature)',
           'scene-guide': 'var(--studio-scene-guide)',
         }
@@ -48,8 +52,8 @@ export default {
         surface: 'var(--radius-lg)'
       },
       boxShadow: {
-        soft: '0 12px 32px rgba(15, 23, 42, 0.08)',
-        lift: '0 18px 40px rgba(15, 23, 42, 0.12)'
+        soft: 'var(--studio-shadow-soft)',
+        lift: 'var(--studio-shadow-lift)'
       },
       fontFamily: {
         sans: 'var(--font-ui)'

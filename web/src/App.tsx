@@ -5,6 +5,7 @@ import { apiErrorMessage } from '@/api/request';
 import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import { StudioActivityPane } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { Button } from '@/components/ui/Button';
 
 const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
@@ -36,7 +37,7 @@ function ProjectEntry({ requestedId }: { requestedId: string | null }) {
   if (project.isError && !project.isFetching) return (
     <main className="p-4">
       <p role="alert">{apiErrorMessage(project.error)}</p>
-      <button type="button" onClick={() => void project.refetch()}>{studioName('retry')}</button>
+      <Button onClick={() => void project.refetch()}>{studioName('retry')}</Button>
     </main>
   );
   return <main aria-busy="true" />;
