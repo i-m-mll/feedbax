@@ -118,7 +118,6 @@ def declared_model_input_prototypes(model: ModelDocument) -> dict[str, jax.Shape
 
 
 def pair_trial_source(
-    model_name: str,
     model: ModelDocument,
     task: TaskDocument | PythonTaskSelection,
     components: ComponentRegistry,
@@ -146,7 +145,7 @@ def pair_trial_source(
     )
     declared_prototypes = declared_model_input_prototypes(model)
     try:
-        lowered = lower_model_document(model_name, model, components, supplied_inputs=supplied)
+        lowered = lower_model_document(model, components, supplied_inputs=supplied)
         prototypes = {
             target: (
                 jax.ShapeDtypeStruct(value.shape, _DTYPES[value.base])
@@ -163,9 +162,7 @@ def pair_trial_source(
                     reason="The selected task changes which optional inputs use the trained model's defaults.",
                 ),)
             lowered = replace(lowered, graph=graph_override)
-        interface = lowered.interface(
-            model_name, model, components, input_prototypes=prototypes,
-        )
+        interface = lowered.interface(model, components, input_prototypes=prototypes)
     except ModelCompilationProblem as error:
         return (Problem(code=ProblemCode.STRUCTURE, reason=str(error),
                         path=("model", *error.address.stored_path()), model_address=error.address),)
@@ -222,7 +219,6 @@ def _missing_required_inputs(
 
 
 def compile_trial_execution(
-    model_name: str,
     model: ModelDocument,
     task: TaskDocument | PythonTaskSelection,
     components: ComponentRegistry,
@@ -238,7 +234,7 @@ def compile_trial_execution(
 ) -> PreparedTrialExecution | tuple[Problem, ...]:
     """Bind a trial source and compile the paired model and optional objective."""
     trial = resolve_trial_execution(
-        model_name, model, task, components, functions, python_tasks=python_tasks,
+        model, task, components, functions, python_tasks=python_tasks,
         objective=objective, objective_use=objective_use, input_overrides=input_overrides,
         graph_override=graph_override,
     )
@@ -248,7 +244,6 @@ def compile_trial_execution(
 
 
 def resolve_trial_execution(
-    model_name: str,
     model: ModelDocument,
     task: TaskDocument | PythonTaskSelection,
     components: ComponentRegistry,
@@ -263,7 +258,7 @@ def resolve_trial_execution(
     """Validate the paired Model, Task and Objective before runtime construction."""
     try:
         pairing = pair_trial_source(
-            model_name, model, task, components, functions, python_tasks=python_tasks,
+            model, task, components, functions, python_tasks=python_tasks,
             input_overrides=input_overrides, graph_override=graph_override,
         )
         if isinstance(pairing, tuple):

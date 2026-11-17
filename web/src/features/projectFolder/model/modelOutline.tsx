@@ -15,7 +15,6 @@ export interface ModelOutline {
 }
 
 export interface OutlineInput {
-  document: string;
   model: ModelDocument;
   /** The model with its attachments as they apply here, when that differs from `model`. */
   effective?: ModelDocument;
@@ -35,7 +34,7 @@ function endName(owner: GraphOwner, end: ModelWire['source'] | ModelWire['target
   return `${component?.name ?? end.component}.${port?.name ?? end.port}`;
 }
 
-export function modelOutline({ document, model, effective, registry, attachmentName, trailing }: OutlineInput): ModelOutline {
+export function modelOutline({ model, effective, registry, attachmentName, trailing }: OutlineInput): ModelOutline {
   const addresses = new Map<string, ModelAddress>();
   const parents = new Set<string>();
   const row = (address: ModelAddress, name: string, glyph: ReactNode, children: TreeNode[] = [], renamable = false): TreeNode => {
@@ -60,7 +59,7 @@ export function modelOutline({ document, model, effective, registry, attachmentN
   const graphRows = (path: readonly string[]): TreeNode[] => {
     const owner = modelPath(model, path).owner;
     const applied = effective ? modelPath(effective, path).owner.interior : owner.interior;
-    const graph: ModelAddress = { document, composites: [...path], element: { kind: 'graph' } };
+    const graph: ModelAddress = { composites: [...path], element: { kind: 'graph' } };
     const components = Object.entries(owner.interior.components ?? {}).map(([id, component]: [string, Component]) => {
       const address = at(graph, { kind: 'component', id });
       const ports = portRows(graph, componentPorts(id, component, registry), applied.components?.[id]?.attachments);

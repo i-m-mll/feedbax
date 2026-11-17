@@ -31,7 +31,7 @@ from feedbax.contracts.project_inputs import (
     select_sweep_exception_rows,
 )
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
-type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:steps\.[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
+type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:(?:steps|documents)\.[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
 type IntegerSite = Callable[[str], bool]
 
 
@@ -63,19 +63,29 @@ def checkpoint_rule_write(subject: object, write: PatchValue) -> StepReference:
 @dataclass(frozen=True)
 class ModelFieldTarget:
     address: ModelAddress
-    step: str | None = None
+    scope: tuple[Literal["steps", "documents"], str] | None = None
+
+    @property
+    def step(self) -> str | None:
+        return self.scope[1] if self.scope and self.scope[0] == "steps" else None
+
+    @property
+    def document(self) -> str | None:
+        return self.scope[1] if self.scope and self.scope[0] == "documents" else None
 
 
 @lru_cache(maxsize=4096)
 def model_field_target(path: str) -> ModelFieldTarget | None:
     if path == CHECKPOINT_RULE_TARGET:
         return None
-    step = None
-    if path.startswith("steps.") and ".{" in path:
-        scope, _, path = path.partition(".{")
-        step = scope.removeprefix("steps.")
-        if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", step):
-            raise ValueError("A scoped Model field target must name one step")
+    scope = None
+    if path.startswith(("steps.", "documents.")) and ".{" in path:
+        prefix, _, path = path.partition(".{")
+        match = re.fullmatch(r"(steps|documents)\.([A-Za-z0-9_][A-Za-z0-9_-]*)", prefix)
+        if match is None:
+            raise ValueError("A scoped Model field target must name one step or document")
+        group, name = match.groups()
+        scope = ("steps" if group == "steps" else "documents", name)
         path = "{" + path
     elif not path.startswith("{"):
         return None
@@ -84,7 +94,7 @@ def model_field_target(path: str) -> ModelFieldTarget | None:
         not isinstance(part, str) for part in address.element.path
     ):
         raise ValueError("A Model sweep target must name a field using named parts")
-    return ModelFieldTarget(address, step)
+    return ModelFieldTarget(address, scope)
 
 
 def _target_prefix(parent: str, child: str) -> bool:
@@ -97,11 +107,11 @@ def _target_prefix(parent: str, child: str) -> bool:
         return False  # The addressed write reports its own invalid target.
     if owner is None:
         return target is None and child.startswith(parent + ".")
-    if target is None or owner.step != target.step:
+    if target is None or owner.scope != target.scope:
         return False
     owner, target = owner.address, target.address
     return (
-        owner.document == target.document and owner.composites == target.composites
+        owner.composites == target.composites
         and owner.element.parent == target.element.parent
         and owner.element.path == target.element.path[:len(owner.element.path)]
     )

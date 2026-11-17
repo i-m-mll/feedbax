@@ -114,13 +114,13 @@ class _Chain:
 
 
 def resolve_effective_model(
-    document: str, model: ModelDocument, components: ComponentRegistry,
+    model: ModelDocument, components: ComponentRegistry,
     differences: tuple[ModelDifference, ...], *, functions=None,
 ) -> ModelDocument:
     if not differences:
         return model
     ports = ModelRegistryPorts(components)
-    edit = ModelEditDraft(document, ModelEditState(document=model), ports.port, ports.accepts)
+    edit = ModelEditDraft(ModelEditState(document=model), ports.port, ports.accepts)
     draft = edit.document
     chains: dict[str, _Chain] = {}
 
@@ -135,8 +135,6 @@ def resolve_effective_model(
         address = difference.address
         element = address.element
         try:
-            if document != address.document:
-                raise ValueError("This step does not use the addressed Model document")
             if isinstance(difference, AddModelComponent):
                 _, graph = edit.context(address)
                 if element.id in graph["components"]:
@@ -240,13 +238,13 @@ def _graph_edits(before: GraphSpec, after: GraphSpec, path=("graph",)):
 
 
 def lower_evaluate_attachments(
-    document: str, model: ModelDocument, binding: StudioTaskBindingSpec | None, components: ComponentRegistry,
+    model: ModelDocument, binding: StudioTaskBindingSpec | None, components: ComponentRegistry,
     differences: tuple[ModelDifference, ...], *, functions=None,
 ) -> tuple[LoweredModelDocument, LoweredModelDocument, tuple[OverridePatch, ...]]:
     """Derive the scoped wire/port variation from the resolved authored model."""
-    before = lower_model_document(document, model, components, binding)
-    resolved = resolve_effective_model(document, model, components, differences, functions=functions)
-    after = lower_model_document(document, resolved, components, binding)
+    before = lower_model_document(model, components, binding)
+    resolved = resolve_effective_model(model, components, differences, functions=functions)
+    after = lower_model_document(resolved, components, binding)
     try:
         derived = tuple(sorted(_graph_edits(before.graph, after.graph), key=lambda edit: edit.path))
     except ValueError as error:

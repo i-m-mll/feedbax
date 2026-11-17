@@ -79,8 +79,10 @@ test('a Model value edit changes only its authored variant and keeps exact share
   const patchEntries = Object.entries(edited.project.sweep?.rows?.compare?.patches ?? {});
   expect(patchEntries).toHaveLength(1);
   const [[key, writeValue]] = patchEntries;
-  expect(JSON.parse(key)).toEqual({
-    document: 'point-mass', composites: [], element: {
+  const prefix = 'documents.point-mass.';
+  expect(key.startsWith(prefix)).toBe(true);
+  expect(JSON.parse(key.slice(prefix.length))).toEqual({
+    composites: [], element: {
       kind: 'field', parent: { kind: 'component', id: 'plant' }, path: ['fields', 'mass'],
     },
   });

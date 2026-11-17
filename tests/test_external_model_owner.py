@@ -44,7 +44,7 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
     component = model["interior"]["components"]["readout"]
     owner_type = "entry_point_provider.ObservedReadout"
     component.update(type=owner_type, revision=1)
-    address = {"document": model_name, "composites": []}
+    address = {"composites": []}
     raw["steps"]["evaluate"] = managed_evaluation_step("train") | {"model_attachments": {"observation": [
         {
             "op": "add_component",
@@ -101,7 +101,7 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
 
     documents = request.trial_documents
     initial = compile_trial_execution(
-        documents.model_name, documents.model, documents.task_source,
+        documents.model, documents.task_source,
         registry.components, registry.expression_functions,
         objective=documents.objective, initialization_key=model_initialization_key(request.seed),
     )

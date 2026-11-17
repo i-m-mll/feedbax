@@ -742,9 +742,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         selection.renameStep(left[0], arrived[0]);
         setStepFocus({ stepId: arrived[0], surface: windowState.mode === 'details' ? 'line' : 'card', force: true });
       }
-      if (changed?.length) {
-        const address = changed[0];
-        elements.setState({ reveal: address, selection: changed });
+      if (changed?.addresses.length) {
+        const address = changed.addresses[0];
+        elements.setState({
+          reveal: { document: changed.document, address },
+          selection: changed.addresses.map((item) => ({ document: changed.document, address: item })),
+        });
         if (focusView !== 'model') setWindowState((current) => showProjectWindowView(current, 'model', focusSlot));
       }
       await editor.flush();

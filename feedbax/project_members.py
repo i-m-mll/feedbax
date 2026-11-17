@@ -6,33 +6,20 @@ from typing import Any
 
 from pydantic import JsonValue
 
-from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_project import MemberFamily
 
 type _Json = Any
 
 _DOCUMENT_KEYED_STEP_FIELDS = ("document_overrides", "model_attachments")
-_DOCUMENT_NAME_MEMBERS = ("document", "model_name")
+_DOCUMENT_NAME_MEMBERS = ("document",)
 
 
 def _renamed_document_target(text: str, old: str, new: str) -> str:
-    """Rewrite a target or name that addresses the document by its name."""
+    """Rewrite a target that addresses the document by its name, `documents.<name>...`."""
     prefix = f"documents.{old}"
     if text == prefix or text.startswith(prefix + "."):
         return f"documents.{new}" + text.removeprefix(prefix)
-    scope, address = "", text
-    if text.startswith("steps.") and ".{" in text:
-        scope, _, address = text.partition(".{")
-        scope, address = scope + ".", "{" + address
-    if not address.startswith("{"):
-        return text
-    try:
-        parsed = ModelAddress.from_text(address)
-    except ValueError:
-        return text
-    if parsed.document != old:
-        return text
-    return scope + parsed.model_copy(update={"document": new}).to_text()
+    return text
 
 
 def _renamed_document(value: _Json, old: str, new: str) -> _Json:
@@ -136,10 +123,9 @@ def rename_member(
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     """Return the project and presentation with the member and its references renamed.
 
-    A document is referred to by document members (`{"document": name, ...}`, which covers
-    document references and Model addresses), a Train's `model_name`, Model addresses
-    written as text (sweep targets and names in expressions), `documents.<name>...`
-    targets, and the maps keyed by document name. A step is referred to by `StepBase.step`,
+    A document is referred to by document members (`{"document": name, ...}`),
+    `documents.<name>...` targets, and the maps keyed by document name. Model addresses
+    are relative to their document and carry no name. A step is referred to by `StepBase.step`,
     `StepReference.step` in other steps' inputs, and `steps.<name>...` targets in the
     project's, steps' and variants' sweeps. A step's group membership is its own `group`
     field, so it moves with the step. The presentation is keyed by member name.

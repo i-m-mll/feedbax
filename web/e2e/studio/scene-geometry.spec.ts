@@ -60,7 +60,7 @@ async function setFields(request: APIRequestContext, projectUrl: string, revisio
   for (const { component, path, value } of fields) {
     const response = await request.post(`${projectUrl}/model/edit`, { data: {
       ...revisions, document: 'chain', command: { operation: { op: 'set_field', value, address: {
-        document: 'chain', composites: ['mechanics'],
+        composites: ['mechanics'],
         element: { kind: 'field', parent: { kind: 'component', id: component }, path: ['fields', ...path] },
       } } },
     } });

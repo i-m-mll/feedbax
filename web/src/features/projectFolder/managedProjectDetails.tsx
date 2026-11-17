@@ -28,7 +28,7 @@ import { useStoredModelView } from './model/ModelView';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ConfirmRunRemoval } from './runRemoval';
 import { modelSchema } from './model/modelGraph';
-import { elementKey, isModelAddress, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import { elementKey, isModelAddress, type ElementSelectionStore, type ModelLocation } from '@/features/projectWindow/elementSelection';
 import { useStore } from 'zustand';
 import { Select } from '@/components/ui/Select';
 
@@ -186,8 +186,8 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   };
 }
 
-/** The Model address of a Scene entity or of an anchor that is itself a model element (a joint). */
-function sceneAddress(id: string): ModelAddress | undefined {
+/** The Model element a Scene entity shows, or an anchor that is itself a model element (a joint). */
+function sceneAddress(id: string): ModelLocation | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(id);
@@ -198,7 +198,7 @@ function sceneAddress(id: string): ModelAddress | undefined {
   if (!Array.isArray(parsed) || parsed.length !== 4) return undefined;
   const [, document, composites, element] = parsed as unknown[];
   return typeof document === 'string' && Array.isArray(composites) && composites.every((item) => typeof item === 'string') &&
-    typeof element === 'string' ? { document, composites, element: { kind: 'component', id: element } } : undefined;
+    typeof element === 'string' ? { document, address: { composites, element: { kind: 'component', id: element } } } : undefined;
 }
 
 /**
@@ -323,9 +323,9 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
-    problem: reveal?.problem.model_address && reveal.problem.model_address.document === storedId
+    problem: reveal?.problem.model_address && reveal.problem.document === storedId
       ? { address: reveal.problem.model_address, reason: reveal.problem.detail } : undefined,
-    problems: input.modelProblems?.flatMap((item) => item.model_address?.document === storedId
+    problems: input.modelProblems?.flatMap((item) => item.model_address && item.document === storedId
       ? [{ address: item.model_address, reason: item.detail }] : []),
     path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
     setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },

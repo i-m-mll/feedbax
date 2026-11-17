@@ -197,7 +197,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         plan = folders.read_plan(project, revision=revision)
         assert not plan.plan.diagnostics, plan.plan.diagnostics
         sample = client.post("/api/execution/task-trials/sample", json={
-            "model_name": "reach-model", "model": model,
+            "model": model,
             "python_task": view.task.model_dump(mode="json"),
             "input_overrides": {"reach_input": "reach_target"}, "count": 1,
         })

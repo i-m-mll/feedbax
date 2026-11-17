@@ -65,7 +65,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
 
   await enter(rateText, '0.001, 0.00275, 0.003');
   await expect(table.getByText('Out of date', { exact: true })).toHaveCount(1);
-  await expect(card.getByText('1 Out of date')).toBeVisible();
+  await expect(card.locator('[data-status-mark="stale"]')).toHaveCount(1);
   await table.getByRole('row').filter({ hasText: 'Out of date' }).getByRole('button').click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByText('0.0025 → 0.00275', { exact: false })).toBeVisible();
@@ -93,8 +93,9 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await enter(seedText, `${(await seedText.inputValue()).replace(/,$/, '')}, 9`);
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep seed' })).toHaveText('seed 2');
-  await expect(card).toContainText(/learning-rate 3\s*×\s*seed 2/);
-  await expect(table.getByRole('rowheader')).toHaveText(['1', '2', '3', '4', '5', '6']);
+  // Unarranged, the longer of the first two sweeps runs across, so seed comes first.
+  await expect(card).toContainText('seed 2 · learning-rate 3');
+  await expect(table.getByRole('rowheader').locator('[aria-hidden="true"]')).toHaveText(['1', '2', '3', '4', '5', '6']);
   await expect(table.getByRole('columnheader')).toHaveText(['learning-rate', 'seed', 'Status', 'Progress']);
   await expect(page.locator('body')).not.toContainText(/value-\w|=value\b/);
   const runsHeader = page.locator('.studio-window-slot__header').filter({ has: page.getByRole('combobox', { name: 'Machine' }) });
@@ -177,14 +178,14 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
   const { plan } = await readPlan(request, projectPath);
   expect(plan.window_map!.rows.map(({ coordinates }) => coordinates.mass.value)).toEqual([1, 2]);
   expect(new Set(plan.rows.map(({ request_id }) => request_id)).size).toBe(2);
-  await expect(page.getByRole('article', { name: 'Train train' }).getByText('2 Not run')).toBeVisible();
+  await expect(page.getByRole('article', { name: 'Train train' }).locator('[data-status-mark="not_run"]')).toHaveCount(2);
 });
 
 
 test('an authored component range reopens as its exact rule and To List keeps row IDs', async ({ page, request }) => {
   const [model, task, objective, train] = await fixture('ordinary-files', '2');
   train.step.sweep = { axes: { mass: {
-    path: JSON.stringify({ composites: [], document: model.id,
+    path: JSON.stringify({ composites: [],
       element: { kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['fields', 'mass'] },
     }),
     range: { start: 1.000123456789, stop: 2.000987654321, count: 3 },

@@ -173,7 +173,6 @@ function owners(element: Element): Element[] {
 
 /** Whether `address` is `holder` or lies inside it: a field of it, an attachment on it, a port of it, or an element of a composite's interior. */
 export function holds(holder: ModelAddress, address: ModelAddress) {
-  if (holder.document !== address.document) return false;
   const depth = holder.composites.length;
   if (!holder.composites.every((id, index) => address.composites[index] === id)) return false;
   if (holder.element.kind === 'component' && address.composites[depth] === holder.element.id) return true;

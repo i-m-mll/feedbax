@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import type { Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 
@@ -11,10 +12,10 @@ test.use({
 
 const runs = (page: Page) => page.getByRole('table', { name: 'Runs', exact: true });
 
-test('renaming a Train step keeps its runs and its Evaluate reader Done, and one Undo restores it', async ({ page, request }, info) => {
+test('renaming a Train step keeps its runs and its Evaluate reader Done, and one Undo restores it', async ({ page, request, studio }) => {
   test.setTimeout(90_000);
   const projectId: string = JSON.parse(await runProjectFixture(
-    'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', String(info.config.metadata.home), 'step-rename',
+    'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'step-rename',
   ));
   const projectPath = `/api/projects/${projectId}`;
   async function saved() {

@@ -42,7 +42,6 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
       kind: 'train',
       base: { inline: {
         trial_documents: {
-          model_name: graph,
           model: { document: graph },
           [taskField]: { document: taskDocument },
           objective: { document: objectiveDocument },

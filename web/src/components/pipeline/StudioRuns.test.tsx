@@ -1,19 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { PlanStepView, PlanView } from "@/features/pipeline/planView";
 import { emptyPipelineSelection, selectStep, type PipelineSelection, type PipelineSelectionState } from "@/features/pipeline/selection";
 import { bindStudioCommand } from "@/features/projectWindow/studioCommands";
 import { StudioRunControls, StudioRunDetails, StudioRuns } from "./StudioRuns";
-
-beforeEach(() => {
-  vi.stubGlobal("ResizeObserver", class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  });
-});
 
 const train: PlanStepView = {
   id: "train",
@@ -69,8 +61,9 @@ it("identifies runs by ordinal and the fields that differ, and runs the selected
   showRuns(train, perform);
   const table = screen.getByRole("table", { name: "Runs" });
   expect(within(table).getAllByRole("columnheader").map(({ textContent }) => textContent)).toEqual(["Rate", "Seed", "Status", "Progress"]);
-  expect(within(table).getAllByRole("rowheader").map(({ textContent }) => textContent)).toEqual(["1", "2", "3"]);
-  expect(within(table).queryByText("B")).toBeNull();
+  expect(within(table).getAllByRole("rowheader").map((header) => header.querySelector("[aria-hidden]")?.textContent))
+    .toEqual(["1", "2", "3"]);
+  expect(within(table).queryByRole("cell", { name: "B" })).toBeNull();
   expect(screen.queryByRole("group", { name: "Rate" })).toBeNull();
 
   fireEvent.click(within(table).getByRole("button", { name: "B" }));

@@ -18,25 +18,13 @@ const command = (page: Page, id: string) => page.locator(`button[data-command-id
 
 function alternateModelFiles(files: Awaited<ReturnType<typeof fixture>>, id: string) {
   const [model, task, objective, train] = structuredClone(files);
-  function rehome(value: unknown): unknown {
-    if (Array.isArray(value)) return value.map(rehome);
-    if (typeof value === 'string') {
-      return value.replaceAll(`"document":"${model.id}"`, `"document":"${id}-model"`);
-    }
-    if (value === null || typeof value !== 'object') return value;
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key,
-      key === 'document' && entry === model.id ? `${id}-model` : rehome(entry),
-    ]));
-  }
   const trial = train.step.base.inline.trial_documents;
-  trial.model_name = `${id}-model`;
   trial.model = { document: `${id}-model` };
   trial.task = { document: `${id}-task` };
   trial.objective = { document: `${id}-objective` };
   train.id = id;
   return [{ ...model, id: `${id}-model` },
-    { ...task, id: `${id}-task`, document: rehome(task.document) },
-    { ...objective, id: `${id}-objective`, document: rehome(objective.document) }, train];
+    { ...task, id: `${id}-task` }, { ...objective, id: `${id}-objective` }, train];
 }
 
 test('an empty saved project starts its first Train by pointer', async ({ page, request }) => {
@@ -61,7 +49,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(Object.keys(saved.project.steps ?? {})).toEqual(['train']);
   expect(saved.project.steps?.train).toMatchObject({
     kind: 'train', base: { inline: { trial_documents: {
-      model_name: 'model', model: { document: 'model' }, python_task: { document: 'task' },
+      model: { document: 'model' }, python_task: { document: 'task' },
       objective: { document: 'objective' },
     } } },
   });
@@ -76,7 +64,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(model).toBeFocused();
   await expect(model.locator('.react-flow')).toBeVisible();
   await expect(model.locator('[data-boundary="true"]')).toHaveCount(2);
-  await expect(model.getByRole('button', { name: 'model', exact: true })).toBeVisible();
+  await expect(model.getByRole('button', { name: 'Model Document model', exact: true })).toBeVisible();
   const card = page.getByRole('article', { name: 'Train train', exact: true });
   await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
 
@@ -133,7 +121,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await mapStep(page, 'train').click();
   await tab('Model').click();
   await expect(model.locator('.react-flow')).toBeVisible();
-  await expect(model.getByRole('button', { name: 'model', exact: true })).toBeVisible();
+  await expect(model.getByRole('button', { name: 'Model Document model', exact: true })).toBeVisible();
   await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
   await tab('Task').click();
   await expect(reach).toHaveValue('0.6');
@@ -168,7 +156,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const slow = train.getByRole('listitem').getByRole('button', { name: 'Select learning-rate 0.001', exact: true });
   await activate(page, slow);
   await expect(slow).toHaveAttribute('aria-pressed', 'true');
-  await expect(train).toContainText('1 of 3');
+  await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
 
   async function submit(keys: StudioSavedTrainKey[], revision: string) {
     const response = post(page, runsPath);
@@ -244,7 +232,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   if (!(await slow.isVisible())) await activate(page, sweep);
   await activate(page, slow);
   await expect(slow).toHaveAttribute('aria-pressed', 'true');
-  await expect(train).toContainText('1 of 3');
+  await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
   const creating = post(page, projectPath + '/files');
   await activate(page, train.getByRole('button', { name: 'New Step train', exact: true }));
   await chooseStepKind(page, 'Evaluate', true);
@@ -329,8 +317,8 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   }
 
   async function readMass(revision: string, run: StudioSavedTrainRuns['rows'][number]['key']) {
-    const response = await request.post(`${projectPath}/model/fields`, { data: { revision, run,
-      owner: { document: model.id, composites: [], element: { kind: 'component', id: 'plant' } },
+    const response = await request.post(`${projectPath}/model/fields`, { data: { revision, run, document: model.id,
+      owner: { composites: [], element: { kind: 'component', id: 'plant' } },
     } });
     expect(response.ok(), await response.text()).toBe(true);
     const field = (await response.json() as ModelFieldResponse).fields?.find(({ label }) => label === 'Mass');
@@ -593,10 +581,10 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(value('0.001')).toHaveAttribute('aria-pressed', 'true');
   await expect(value('0.003')).toHaveAttribute('aria-pressed', 'true');
   await expect(value('0.002')).toHaveAttribute('aria-pressed', 'false');
-  await expect(card).toContainText('2 of 3');
+  await expect(card.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(2);
   const marks = card.getByRole('grid', { name: 'Runs' });
   await tabTo(page, marks.getByRole('rowheader').first().getByRole('button'));
-  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowDown');
   await expect(marks.getByRole('gridcell').first().getByRole('button')).toBeFocused();
 
   const prefix = post(page, runsPath);
@@ -606,8 +594,8 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const sourceKeys = sourceRun.request().postDataJSON().run_keys as StudioSavedTrainRuns['rows'][number]['key'][];
   expect(sourceKeys).toHaveLength(2);
   const producer = (await sourceRun.json() as StudioJobSubmission).items[0].job_id;
-  await expect(card.getByText('2 Done', { exact: true })).toBeVisible({ timeout: firstJobTimeout });
-  await expect(card.getByText('1 Not run', { exact: true })).toBeVisible();
+  await expect(card.locator('[data-status-mark="succeeded"]')).toHaveCount(2, { timeout: firstJobTimeout });
+  await expect(card.locator('[data-status-mark="not_run"]')).toHaveCount(1);
 
   await expect(card.getByRole('button', { name: 'New Step train' })).toHaveAttribute('data-command-id', 'newStep');
   const create = post(page, `${projectPath}/files`);

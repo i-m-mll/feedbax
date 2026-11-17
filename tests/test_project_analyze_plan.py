@@ -80,7 +80,7 @@ def _project() -> Project:
 
 def _conditions() -> Step:
     mass = ModelAddress.model_validate({
-        "document": "point-mass", "composites": [],
+        "composites": [],
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
     }).to_text()
     return Step.model_validate(managed_evaluation_step("train") | {"sweep": {"axes": {"mass": {"values": {

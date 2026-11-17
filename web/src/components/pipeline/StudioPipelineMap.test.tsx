@@ -295,7 +295,7 @@ it('marks a drawer row with its worst state, and choosing the mark selects those
   const onSelectionChange = vi.fn();
   render(<StudioPipelineMapDrawer plan={{ steps: [step], edges: [] }} state={emptyPipelineSelection} onSelectionChange={onSelectionChange} />);
   const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
-  fireEvent.click(drawer.getByRole('button', { name: select(`2 ${studioRunStatus('failed')}`) }));
+  fireEvent.click(drawer.getByRole('button', { name: `${studioRunStatus('failed')} 2` }));
   expect(onSelectionChange).toHaveBeenCalledTimes(1);
   expect(onSelectionChange).toHaveBeenCalledWith({
     selection: { kind: 'rows', stepId: train.id, runIds: [runs[0].id, runs[1].id] }, focus: null,

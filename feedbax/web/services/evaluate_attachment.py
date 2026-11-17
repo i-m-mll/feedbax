@@ -31,7 +31,8 @@ from feedbax.contracts.project_plan import ProjectPlan, RunKey, compile_project
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import model_field_target
 from feedbax.contracts.studio_project import AuthoredFileAddress, SetProjectValue, StudioProjectFilePatch
-from feedbax.web.services.model_projection import selected_model
+from feedbax.project_folder import ProjectFolderInvalid
+from feedbax.project_model_selection import selected_model
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 
 
@@ -209,6 +210,7 @@ def _apply(records, difference):
 
 def read_evaluate_attachments(
     folders, project_id, body, components=None, *, selected: ProjectPlan | None = None,
+    model_document: str | None = None,
 ):
     snapshot = folders.read(project_id, revision=body.revision)
     key = _key(body)
@@ -231,10 +233,12 @@ def read_evaluate_attachments(
         train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(producer,)).plan
         train = train_plan.selected_definitions.get(producer)
         if train is not None:
-            document = train.document_ids.get("payload.trial_documents.model") or train.document_ids.get("payload.graph")
+            document = train.document_ids.get("payload.trial_documents.model")
+            if model_document is not None and document != model_document:
+                raise ProjectFolderInvalid("The selected run does not use this Model.")
             if document and (model := selected_model(train, document)) is not None:
                 resolved = resolve_effective_model(
-                    document, ModelDocument.model_validate(model), components or folders.components,
+                    ModelDocument.model_validate(model), components or folders.components,
                     differences, functions=folders.functions,
                 )
                 for batch, records in effective.items():

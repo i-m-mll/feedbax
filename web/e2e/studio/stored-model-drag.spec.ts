@@ -308,7 +308,7 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ 
           schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
         } },
         { kind: 'step', id: 'train', step: { kind: 'train', base: { inline: { trial_documents: {
-          model_name: 'model', model: { document: 'model' }, python_task: { document: 'task' },
+          model: { document: 'model' }, python_task: { document: 'task' },
           objective: { document: 'objective' },
         } } } } },
       ]);
