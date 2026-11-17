@@ -102,13 +102,6 @@ EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1 = SCHEMA_VERSION
 EVALUATION_RUN_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.evaluation_run.v2"
 FIGURE_MANIFEST_SCHEMA_ID = "feedbax.manifest.figure"
 FIGURE_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.figure.v1"
-TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID = (
-    "feedbax.manifest.training_metadata_projection_custody"
-)
-TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION = (
-    "feedbax.manifest.training_metadata_projection_custody.v1"
-)
-TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY = "manifest_metadata_projection"
 TRAINING_RUN_CERTIFICATION_SCHEMA_ID = "feedbax.manifest.training_run_certification"
 TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION = "feedbax.manifest.training_run_certification.v1"
 TRAINING_RUN_CERTIFICATION_REJECTED_VERSIONS = ("feedbax.manifest.training_run_certification.v0",)
@@ -486,78 +479,6 @@ class ModelArtifactManifest(BaseManifest):
 
 
 
-class TrainingManifestMetadataProjectionCustody(StrictModel):
-    """Auditable consistency binding for governed projected metadata.
-
-    The hashes detect partial drift among this record, the embedded source,
-    root metadata, and provenance. They do not prove authorship or authenticity;
-    that requires an external signed or content-addressed custody anchor.
-    """
-
-    schema_id: Literal["feedbax.manifest.training_metadata_projection_custody"] = (
-        TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID
-    )
-    schema_version: str = TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION
-    source_payload_kind: str = Field(min_length=1)
-    source_payload_schema_id: str = Field(min_length=1)
-    source_payload_schema_version: str = Field(min_length=1)
-    source_payload_sha256: str
-    projection_schema_id: str = Field(min_length=1)
-    projection_schema_version: str = Field(min_length=1)
-    values: dict[str, Any]
-    values_sha256: str
-    registration_owner: str = Field(min_length=1)
-    registration_package: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _validate_custody(self) -> "TrainingManifestMetadataProjectionCustody":
-        from feedbax.contracts.spec_storage import (
-            training_spec_canonical_bytes,
-            training_spec_sha256,
-            validate_sha256,
-        )
-
-        if self.schema_version != TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION:
-            raise ValueError(
-                "unsupported training metadata projection custody schema_version "
-                f"{self.schema_version!r}; expected "
-                f"{TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_VERSION!r}; "
-                "migration_intentionally_absent=yes"
-            )
-        validate_sha256(self.source_payload_sha256, field_name="source_payload_sha256")
-        validate_sha256(self.values_sha256, field_name="values_sha256")
-        # Trusted-internal, not an authority boundary: these bytes are the
-        # canonical serialization of ``self.values``, produced in this process
-        # one expression earlier. The document that carried ``self.values`` was
-        # already admitted by ``load_manifest_bytes``; this round-trip only
-        # compares the value against its own canonical form.
-        canonical_values = json.loads(training_spec_canonical_bytes(self.values))
-        if self.values != canonical_values:
-            raise ValueError("training metadata projection values are not JSON-canonical")
-        expected_digest = training_spec_sha256(self.values)
-        if self.values_sha256 != expected_digest:
-            raise ValueError(
-                "training metadata projection values_sha256 does not match canonical values; "
-                f"expected={expected_digest}, observed={self.values_sha256}"
-            )
-        return self
-
-    def provenance_summary(self) -> dict[str, Any]:
-        """Return the exact compact provenance record bound to this custody envelope."""
-        return {
-            "source_payload_kind": self.source_payload_kind,
-            "source_payload_schema_id": self.source_payload_schema_id,
-            "source_payload_schema_version": self.source_payload_schema_version,
-            "source_payload_sha256": self.source_payload_sha256,
-            "projection_schema_id": self.projection_schema_id,
-            "projection_schema_version": self.projection_schema_version,
-            "projected_keys": sorted(self.values),
-            "values_sha256": self.values_sha256,
-            "registration_owner": self.registration_owner,
-            "registration_package": self.registration_package,
-        }
-
-
 class TrainingRunCertification(StrictModel):
     """Why execution ended and the exact artifact prefix it certified.
 
@@ -623,7 +544,6 @@ class TrainingRunManifest(BaseManifest):
     resolved_semantics_root_hash: Optional[str] = None
     input_data_identities: list[dict[str, Any]] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
-    metadata_projection_custody: TrainingManifestMetadataProjectionCustody | None = None
     terminal_certification: TrainingRunCertification | None = None
     inherited_terminal_checkpoint: InheritedTerminalCheckpoint | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -696,48 +616,6 @@ class TrainingRunManifest(BaseManifest):
                     f"computed={expected!r}"
                 )
             object.__setattr__(self, "execution_hash", expected)
-        projection = self.metadata_projection_custody
-        if projection is not None:
-            if self.training_spec is None:
-                raise ValueError(
-                    "training metadata projection custody requires embedded training_spec"
-                )
-            training_spec_identity = (
-                self.training_spec.kind,
-                self.training_spec.schema_id,
-                self.training_spec.schema_version,
-            )
-            projection_source_identity = (
-                projection.source_payload_kind,
-                projection.source_payload_schema_id,
-                projection.source_payload_schema_version,
-            )
-            if projection_source_identity != training_spec_identity:
-                raise ValueError(
-                    "training metadata projection source identity disagrees with "
-                    "embedded training_spec"
-                )
-            from feedbax.contracts.spec_storage import training_spec_sha256
-
-            observed_source_sha256 = training_spec_sha256(self.training_spec.inline)
-            if projection.source_payload_sha256 != observed_source_sha256:
-                raise ValueError(
-                    "training metadata projection source hash disagrees with embedded training_spec"
-                )
-            for key, value in projection.values.items():
-                if key not in self.metadata or self.metadata[key] != value:
-                    raise ValueError(
-                        "training metadata projection custody disagrees with root metadata; "
-                        f"key={key!r}"
-                    )
-            expected_provenance = projection.provenance_summary()
-            observed_provenance = self.provenance.metadata.get(
-                TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY
-            )
-            if observed_provenance != expected_provenance:
-                raise ValueError(
-                    "training metadata projection custody disagrees with provenance summary"
-                )
         return self
 
 

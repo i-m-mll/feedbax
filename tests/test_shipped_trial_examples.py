@@ -8,7 +8,6 @@ import numpy as np
 
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_checkpoint import MODEL_CHECKPOINT_STORE
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_plan import compile_project
@@ -18,6 +17,7 @@ from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.examples import load_shipped_projects
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
