@@ -23,6 +23,7 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.method_checkpoint import MethodCheckpointModel
 from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH as _GRAPH,
     MODEL_TREE_MANIFEST_PATH as _MANIFEST,
@@ -41,12 +42,13 @@ from feedbax.persistence.array_container import (
 )
 from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
-    content_object_relative_path,
     decode_content_tree_descriptor,
 )
 from feedbax.persistence.model_tree import (
+    MODEL_CHECKPOINT_STORE as _MODEL_STORE,
     ModelTreeLayoutError,
     ModelTreeReplica,
+    checkpoint_model_object_path as _slot_path,
     model_tree_asset_path,
     read_model_tree,
 )
@@ -61,17 +63,12 @@ if TYPE_CHECKING:
 
 
 MODEL_TREE_SERIALIZER = "feedbax.semantic-model-tree.v2"
-_MODEL_STORE = Path("semantic-model")
 
 
 class ModelCheckpointError(CheckpointCustodyError):
     def __init__(self, path: str, message: str):
         self.path = path
         super().__init__(f"{path}: {message}")
-
-
-def _slot_path(ref: ContentObjectRef) -> Path:
-    return _MODEL_STORE / content_object_relative_path(ref.sha256)
 
 
 def _slot_tree(slot: CheckpointSlotBlobRef) -> ContentTreeRef:
@@ -123,21 +120,23 @@ class SemanticModelWriter:
         return cls(graph, assets)
 
     def publish(
-        self, transaction: Path, models: Sequence[Graph], *, replica_ids: tuple[str, ...],
-    ) -> tuple[Path, ContentObjectRef, SemanticModelEncoding]:
+        self, transaction: Path, models: Sequence[Graph], *,
+        templates: Sequence[Graph], replica_ids: tuple[str, ...],
+    ) -> MethodCheckpointModel:
         store = ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE)
-        if len(models) != len(replica_ids) or not replica_ids or len(set(replica_ids)) != len(replica_ids):
+        if not len(models) == len(templates) == len(replica_ids) or not replica_ids:
             raise ModelCheckpointError("/model", "models must match a nonempty ordered list of unique replicas")
         graph = effective_model_graph(self.graph, models[0])
         members = {
             _GRAPH: store.store_object(canonical_json_v2_bytes(graph.model_dump(mode="json"))),
         }
         replicas = []
-        for index, (replica_id, model) in enumerate(zip(replica_ids, models, strict=True)):
+        for index, (replica_id, model, template) in enumerate(zip(replica_ids, models, templates, strict=True)):
             path = model_replica_array_path(index)
             if effective_model_graph(self.graph, model) != graph:
                 raise ModelCheckpointError(path, "replicas do not share one effective graph")
-            arrays, declarations = _describe(self.graph, model)
+            arrays, declarations = _describe(graph, model)
+            _verify_exact_model(model, _restore_model(graph, template, arrays, declarations))
             try:
                 encoded = encode_array_container(arrays, metadata=declarations)
             except ArrayContainerError as exc:
@@ -157,7 +156,7 @@ class SemanticModelWriter:
             members, root_id="checkpoint:model", root_kind="logical-ref",
         )
         encoding = SemanticModelEncoding(descriptor_sha256=members[_MANIFEST].sha256)
-        return _slot_path(tree.descriptor), tree.descriptor, encoding
+        return MethodCheckpointModel(tree=tree, encoding=encoding)
 
 
 def semantic_model_member_files(
@@ -250,76 +249,7 @@ class SemanticModelSlot:
             )
         except ArrayContainerError as exc:
             raise ModelCheckpointError(path, str(exc)) from exc
-        expected, declarations = _describe(self.graph, template)
-        actual = decoded.descriptor.metadata
-        if not isinstance(actual, dict):
-            raise ModelCheckpointError("/v1/model", "missing value declarations")
-        _verify_values(expected, declarations, decoded.tensors, actual)
-
-        source_leaves = dict(graph_leaf_specs(self.graph))
-        retained = frozenset(source_leaves)
-        overrides: Mapping[str, float] = {}
-        if target is not None:
-            from feedbax.contracts.model_attachment import is_generated_attachment_node
-
-            destination_leaves = dict(graph_leaf_specs(target.graph))
-            removed = {
-                path for path in retained - destination_leaves.keys()
-                if is_generated_attachment_node(path[-1], source_leaves[path].type)
-                and not any(
-                    value.kind == "learned"
-                    for value in template.get_node(".".join(path[:-1])).component_bindings[path[-1]].model_facts.values
-                )
-            }
-            retained -= removed
-            destination, destination_declarations = _describe(
-                target.graph, target.template, retained=retained,
-            )
-            _verify_values(destination, destination_declarations, decoded.tensors, actual)
-            template, overrides = target.template, target.source_overrides
-
-        applied = set()
-
-        def restore_occurrences(current: Graph, scope: tuple[str, ...]) -> Graph:
-            nodes = dict(current.nodes)
-            for name, component in nodes.items():
-                path = (*scope, name)
-                if isinstance(component, Graph):
-                    nodes[name] = restore_occurrences(component, path)
-                    continue
-                if path not in retained:
-                    continue
-                binding = current.component_bindings[name]
-                source = {}
-                learned = []
-                owner = binding.model_facts
-                node = destination_leaves[path] if target is not None else source_leaves[path]
-                for value in owner.values if not owner.is_fixed_configuration(node) else ():
-                    address = semantic_key("model", "value", path, value.symbol)
-                    if address not in decoded.tensors:
-                        continue
-                    data = decoded.tensors[address]
-                    if value.kind == "source":
-                        if address in overrides:
-                            applied.add(address)
-                        source[value.symbol] = overrides.get(address, float(data))
-                    else:
-                        learned.append((value.field, jnp.asarray(data)))
-                if source:
-                    component = type(component).from_config(component.configuration_values() | source)
-                if learned:
-                    paths, tensors = zip(*learned, strict=True)
-                    component = eqx.tree_at(
-                        lambda owner: tuple(attrgetter(path)(owner) for path in paths),
-                        component, tensors,
-                    )
-                nodes[name] = component
-            return eqx.tree_at(lambda graph: graph.nodes, current, nodes)
-
-        restored = restore_occurrences(template, ())
-        if unexpected := overrides.keys() - applied:
-            raise ModelCheckpointError(min(unexpected), "override has no declared scalar source destination")
-        return restored.prepare()
+        return _restore_model(self.graph, template, decoded.tensors, decoded.descriptor.metadata, target)
 
     def restore_all(
         self, templates: Sequence[Graph], *,
@@ -332,6 +262,110 @@ class SemanticModelSlot:
             self.restore(template, target=None if targets is None else targets[index], replica_index=index)
             for index, template in enumerate(templates)
         )
+
+
+def _restore_model(
+    graph: GraphSpec, template: Graph, tensors: Mapping[str, np.ndarray],
+    actual: object, target: ModelRestoreTarget | None = None,
+) -> Graph:
+    expected, declarations = _describe(graph, template)
+    if not isinstance(actual, dict):
+        raise ModelCheckpointError("/v1/model", "missing value declarations")
+    _verify_values(expected, declarations, tensors, actual)
+
+    source_leaves = dict(graph_leaf_specs(graph))
+    retained = frozenset(source_leaves)
+    overrides: Mapping[str, float] = {}
+    if target is not None:
+        from feedbax.contracts.model_attachment import is_generated_attachment_node
+
+        destination_leaves = dict(graph_leaf_specs(target.graph))
+        removed = {
+            path for path in retained - destination_leaves.keys()
+            if is_generated_attachment_node(path[-1], source_leaves[path].type)
+            and not any(
+                value.kind == "learned"
+                for value in template.get_node(".".join(path[:-1])).component_bindings[path[-1]].model_facts.values
+            )
+        }
+        retained -= removed
+        destination, destination_declarations = _describe(
+            target.graph, target.template, retained=retained,
+        )
+        _verify_values(destination, destination_declarations, tensors, actual)
+        template, overrides = target.template, target.source_overrides
+
+    applied = set()
+
+    def restore_occurrences(current: Graph, scope: tuple[str, ...]) -> Graph:
+        nodes = dict(current.nodes)
+        for name, component in nodes.items():
+            path = (*scope, name)
+            if isinstance(component, Graph):
+                nodes[name] = restore_occurrences(component, path)
+                continue
+            if path not in retained:
+                continue
+            binding = current.component_bindings[name]
+            source = {}
+            learned = []
+            owner = binding.model_facts
+            node = destination_leaves[path] if target is not None else source_leaves[path]
+            for value in owner.values if not owner.is_fixed_configuration(node) else ():
+                address = semantic_key("model", "value", path, value.symbol)
+                if address not in tensors:
+                    continue
+                data = tensors[address]
+                if value.kind == "source":
+                    if address in overrides:
+                        applied.add(address)
+                    source[value.symbol] = overrides.get(address, float(data))
+                else:
+                    learned.append((value.field, jnp.asarray(data)))
+            if source:
+                component = type(component).from_config(component.configuration_values() | source)
+            if learned:
+                paths, replacements = zip(*learned, strict=True)
+                component = eqx.tree_at(
+                    lambda owner: tuple(attrgetter(path)(owner) for path in paths),
+                    component, replacements,
+                )
+            nodes[name] = component
+        return eqx.tree_at(lambda graph: graph.nodes, current, nodes)
+
+    restored = restore_occurrences(template, ())
+    if unexpected := overrides.keys() - applied:
+        raise ModelCheckpointError(min(unexpected), "override has no declared scalar source destination")
+    return restored.prepare()
+
+
+def _verify_exact_model(original: Graph, restored: Graph) -> None:
+    before, structure = jax.tree.flatten_with_path(original)
+    after, restored_structure = jax.tree.flatten(restored)
+    if structure != restored_structure:
+        raise ModelCheckpointError("/model", "model state structure differs from semantic reconstruction")
+    for (path, left), right in zip(before, after, strict=True):
+        if eqx.is_array(left) and eqx.is_array(right):
+            equal = (
+                type(left) is type(right)
+                and getattr(left, "weak_type", False) == getattr(right, "weak_type", False)
+                and left.dtype == right.dtype
+                and left.shape == right.shape
+                and _array_bytes(left) == _array_bytes(right)
+            )
+        else:
+            equal = bool(eqx.tree_equal(left, right, typematch=True))
+        if not equal:
+            raise ModelCheckpointError(
+                "/model" + jax.tree_util.keystr(path),
+                "state differs from semantic reconstruction; declare the value or keep it in method extra state",
+            )
+
+
+def _array_bytes(value: jax.Array | np.ndarray) -> bytes:
+    if isinstance(value, jax.Array) and jax.dtypes.issubdtype(value.dtype, jax.dtypes.prng_key):
+        value = jax.random.key_data(value)
+    return np.asarray(value).tobytes(order="C")
 
 
 def _verify_values(expected, declarations, tensors, saved_declarations) -> None:
