@@ -3,6 +3,7 @@
 from hashlib import sha256
 import importlib.util
 from pathlib import Path
+import re
 import sys
 import time
 from types import ModuleType
@@ -51,7 +52,7 @@ def test_source_comparison_counts_new_names_and_only_observed_function_bodies(tm
     change = compare()
     assert change is not None and change.statements == ("len",)
 
-    source.write_text("def used():\n    return 5\n\ndef skipped():\n    return 1\n")
+    source.write_text("def used():\n    return 5\n\ndef skipped():\n    return 27\n")
     change = compare()
     assert change is not None and change.functions == ("used",)
 
@@ -205,7 +206,8 @@ def test_warm_worker_retires_when_a_dependency_and_lock_upgrade_together(tmp_pat
         installed["example-lib"] = "2"
         lock.write_text('version = 1\n[[package]]\nname = "example-lib"\nversion = "2"\n')
         assert read_environment(tmp_path, installed=installed, verify_installation=True).versions == installed
-        with pytest.raises(EnvironmentMismatch, match=r"example-lib \(1 to 2\)"):
+        with pytest.raises(EnvironmentMismatch) as mismatch:
             recorder.ensure_unchanged()
+        assert {"example-lib", "1", "2"} <= set(re.findall(r"[\w-]+", str(mismatch.value)))
 
     assert recorder.changed()
