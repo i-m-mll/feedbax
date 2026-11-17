@@ -12,6 +12,7 @@ import numpy as np
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.computation_validity import (
+    NORMALIZATION_VERSION,
     ComputationDifferent,
     ComputationEqual,
     ComputationStart,
@@ -202,18 +203,19 @@ print(capture_arguments(arrays, static=static).sha256)
     assert len(digests[0]) == 64 and digests[0] == digests[1]
 
 
-def test_old_normalization_requires_retained_program_for_exact_comparison():
+def test_different_normalization_requires_retained_program_for_exact_comparison():
     objects = Objects()
     args = (jnp.array([4], dtype=jnp.int32),)
     traced = jax.jit(lambda x: x + 2).trace(*args)
     present = _trace(traced, args)
-    previous = present.model_copy(update={"normalization_version": 2})
+    other_version = NORMALIZATION_VERSION + 1
+    previous = present.model_copy(update={"normalization_version": other_version})
     assert compare_computation(previous, present) == ComputationUnconfirmable(
         reason="normalization",
         targets=("slot",),
     )
     archived = _trace(traced, args, retain=objects.store).model_copy(
-        update={"normalization_version": 2}
+        update={"normalization_version": other_version}
     )
     assert isinstance(
         compare_computation(archived, present, read_blob=objects.read), ComputationEqual
