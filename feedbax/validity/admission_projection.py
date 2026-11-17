@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from importlib import metadata
 from pathlib import Path
 import sys
@@ -13,7 +14,6 @@ from packaging.utils import canonicalize_name
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import CodeTrace, RegistryBinding
 from feedbax.validity.occurrence import FileStamp, occurrence
-from feedbax.validity.source import plugin_packages
 
 
 class FileObservation(StrictModel):
@@ -45,12 +45,14 @@ class AdmissionProjection(StrictModel):
     declarations: dict[str, tuple[FileObservation, ...]]
 
     @classmethod
-    def capture(cls, roots: dict[str, Path], registry: tuple[RegistryBinding, ...]) -> AdmissionProjection:
+    def capture(
+        cls, roots: dict[str, Path], registry: tuple[RegistryBinding, ...], owners: Mapping[str, str],
+    ) -> AdmissionProjection:
         paths = tuple(dict.fromkeys(Path(path).absolute() for path in sys.path))
         return cls(
             roots=roots, registry=registry, search_paths=paths,
             entrypoints=plugin_entrypoints(paths),
-            declarations=declaration_files(roots, registry),
+            declarations=declaration_files(roots, registry, owners),
         )
 
     def current(self, traces: tuple[CodeTrace, ...]) -> bool:
@@ -73,13 +75,13 @@ def plugin_entrypoints(paths: tuple[Path, ...]) -> tuple[PluginEntrypoint, ...]:
 
 
 def declaration_files(
-    roots: dict[str, Path], registry: tuple[RegistryBinding, ...],
+    roots: dict[str, Path], registry: tuple[RegistryBinding, ...], owners: Mapping[str, str],
 ) -> dict[str, tuple[FileObservation, ...]]:
     paths: dict[str, set[Path]] = {}
     for declaration in registry:
         if (source := declaration.source_path) is not None and (root := roots.get(source.scope)) is not None:
             paths.setdefault(declaration.distribution, set()).add(root / source.path)
-    for package, distribution in plugin_packages().items():
+    for package, distribution in owners.items():
         if isinstance(module := sys.modules.get(package), ModuleType):
             source = vars(module).get("__file__")
             if isinstance(source, str):

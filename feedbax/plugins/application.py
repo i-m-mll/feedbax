@@ -12,7 +12,7 @@ from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 
 from .bootstrap import RegistryKey
-from .declarations import DeclarationRegistry
+from .declarations import DeclarationRegistry, DistributionSource
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class ApplicationRegistryBundle:
     expression_functions: FunctionRegistry
     python_tasks: PythonTaskRegistry
     figure_templates: FigureTemplateRegistry
+    package_sources: tuple[DistributionSource, ...]
 
     def declaration_registries(self) -> tuple[DeclarationRegistry, ...]:
         return (
@@ -50,7 +51,9 @@ PYTHON_TASKS = RegistryKey("python_tasks", "python_tasks", PythonTaskRegistry)
 FIGURE_TEMPLATES = RegistryKey("figure_templates", "figure_templates", FigureTemplateRegistry)
 
 
-def empty_application_registry_bundle(components: ComponentRegistry) -> ApplicationRegistryBundle:
+def empty_application_registry_bundle(
+    components: ComponentRegistry, package_sources: tuple[DistributionSource, ...],
+) -> ApplicationRegistryBundle:
     """Create core services around a registry of discovered components."""
     from feedbax.expression_builtins import register_builtins
 
@@ -63,6 +66,7 @@ def empty_application_registry_bundle(components: ComponentRegistry) -> Applicat
         expression_functions=expression_functions,
         python_tasks=PythonTaskRegistry(),
         figure_templates=FigureTemplateRegistry(),
+        package_sources=package_sources,
     )
 
 

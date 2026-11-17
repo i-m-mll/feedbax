@@ -298,12 +298,14 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const [target] = targets;
   const [initialized] = await runSelected([target.key]);
   await expect(nestedTable.getByText('Done', { exact: true })).toHaveCount(1, { timeout: 24_000 });
-  const [result] = stepRows(await plan(context), nested);
-  expect(result.result).toMatchObject({
-    job_id: initialized,
-    checkpoint_source: {
-      job_id: producer.result!.job_id, request_id: producer.request_id, completed_updates: childUpdates,
-    },
-    progress: { completed_updates: additionalUpdates, total_updates: additionalUpdates },
+  const [{ result, attempts: nestedAttempts }] = stepRows(await plan(context), nested);
+  expect(result?.job_id).toBe(initialized);
+  expect(result?.request_id).toBe(target.request_id);
+  expect(result?.progress).toEqual({ completed_updates: additionalUpdates, total_updates: additionalUpdates });
+  const attempt = nestedAttempts.find(({ job_id }) => job_id === initialized);
+  expect(attempt?.successful_receipt).toBeTruthy();
+  expect(attempt?.successful_receipt).toEqual(result?.receipt);
+  expect(attempt?.checkpoint_source).toEqual({
+    job_id: producer.result!.job_id, request_id: producer.request_id, completed_updates: childUpdates,
   });
 }

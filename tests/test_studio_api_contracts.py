@@ -103,7 +103,7 @@ def test_component_api_serves_representation_contract() -> None:
         registry.seal()
         current = app.state.bootstrap_state
         app.state.bootstrap_state = BootstrapState(
-            replace(current.bundle, components=registry), current.provenance
+            replace(current.bundle, components=registry)
         )
         response = client.get("/api/components")
 

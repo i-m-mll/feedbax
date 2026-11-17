@@ -16,7 +16,6 @@ from .bootstrap import (
     BootstrapErrorCode,
     BootstrapState,
     PackageDeclarations,
-    PluginProvenance,
     installed_declarations,
     installed_packages,
     scan_packages,
@@ -31,7 +30,7 @@ def build_application(
     components = ComponentRegistry(
         (owner, package.source) for package in packages for owner in package.components
     )
-    bundle = empty_application_registry_bundle(components)
+    bundle = empty_application_registry_bundle(components, tuple(package.source for package in packages))
     for package in packages:
         source = package.source
         current = package.source.package
@@ -61,7 +60,7 @@ def build_application(
                 code, f"Cannot register {current!r} from {source.distribution!r}: {error}",
                 plugin_id=source.distribution,
             ) from error
-    return BootstrapState(bundle, tuple(PluginProvenance(package.source) for package in packages))
+    return BootstrapState(bundle)
 
 
 @lru_cache(maxsize=1)

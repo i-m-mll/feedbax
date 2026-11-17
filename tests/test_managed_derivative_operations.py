@@ -5,7 +5,6 @@ from datetime import timedelta
 import json
 import os
 from pathlib import Path
-import shutil
 
 import numpy as np
 import pytest
@@ -23,6 +22,7 @@ from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.composition import compose_application
 from feedbax.validity.environment import installed_versions
+from feedbax.validity.source import plugin_packages
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.support import derivative_witness as witness
@@ -31,6 +31,7 @@ from tests.test_local_job_host import host as host_fixture, restart, wait_until
 
 host = host_fixture
 _CAPTURE = Path(__file__).parent / "fixtures" / "derivative_fixed_points.json"
+_CALIBRATION_PLUGIN = "feedbax_witness_calibration"
 
 
 def _port(name, width):
@@ -195,14 +196,24 @@ def _project():
     })
 
 
-def _install_external_package(root, monkeypatch):
-    package = root / witness.PACKAGE
-    package.mkdir(parents=True)
-    shutil.copyfile(witness.__file__, package / "__init__.py")
-    metadata = root / f"{witness.PACKAGE}-1.0.dist-info"
+def _install_plugin(root, package, distribution, source):
+    package_root = root / package
+    package_root.mkdir(parents=True)
+    (package_root / "__init__.py").write_bytes(source)
+    metadata = root / f"{package}-1.0.dist-info"
     metadata.mkdir()
-    (metadata / "METADATA").write_text("Name: feedbax-witness\nVersion: 1.0\n")
-    (metadata / "entry_points.txt").write_text(f"[feedbax.plugins]\nwitness = {witness.PACKAGE}\n")
+    (metadata / "METADATA").write_text(f"Name: {distribution}\nVersion: 1.0\n")
+    (metadata / "entry_points.txt").write_text(f"[feedbax.plugins]\n{package} = {package}\n")
+
+
+def _install_external_package(root, monkeypatch):
+    _install_plugin(root, _CALIBRATION_PLUGIN, "feedbax-witness-calibration", b"GAIN_SCALE = 1\n")
+    source = Path(witness.__file__).read_bytes().replace(
+        b"from feedbax.analysis.eig import eig",
+        b"from feedbax_witness_calibration import GAIN_SCALE\n"
+        b"from feedbax.analysis.eig import eig",
+    ).replace(b"jnp.linalg.norm(forward(unit_vector))", b"GAIN_SCALE * jnp.linalg.norm(forward(unit_vector))")
+    _install_plugin(root, witness.PACKAGE, "feedbax-witness", source)
     monkeypatch.syspath_prepend(str(root))
     pythonpaths = (str(root), str(Path.cwd()), os.environ.get("PYTHONPATH"))
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(path for path in pythonpaths if path))
@@ -238,6 +249,7 @@ def _assert_fixed_point_products(dataset):
 
 
 def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_path, monkeypatch):
+    plugin_packages()
     _install_external_package(tmp_path / "installed", monkeypatch)
     restart(host)
     host.policy(compute=1, light=1)
@@ -311,6 +323,20 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     initial = retained()
     assert initial.status is JobStatus.SUCCEEDED
     assert initial.result.validity.state == "current"
+    calibration = tmp_path / "installed" / _CALIBRATION_PLUGIN / "__init__.py"
+    baseline_calibration = calibration.read_bytes()
+    calibration.write_text("GAIN_SCALE = 2\n")
+    edited = retained().result.validity
+    assert edited.state == "stale"
+    assert {
+        (change.path.scope, change.path.path, change.status)
+        for reason in edited.reasons if reason.kind == "code"
+        for change in reason.differences
+    } == {("plugin:feedbax-witness-calibration", "__init__.py", "changed")}
+    calibration.write_bytes(baseline_calibration)
+    restored = retained()
+    assert restored.status is JobStatus.SUCCEEDED
+    assert restored.result.receipt == initial.result.receipt
     source = tmp_path / "installed" / witness.PACKAGE / "__init__.py"
     original = source.read_text()
     body = "    def forward(disturbance):"

@@ -135,9 +135,9 @@ def plugin_packages() -> dict[str, str]:
     }
 
 
-def loaded_source_roots() -> dict[str, Path]:
+def loaded_source_roots(owners: Mapping[str, str]) -> dict[str, Path]:
     roots = {"feedbax": Path(__file__).resolve().parents[1]}
-    for package, distribution in sorted(plugin_packages().items()):
+    for package, distribution in sorted(owners.items()):
         module = sys.modules.get(package)
         if not isinstance(module, ModuleType):
             continue
@@ -156,11 +156,11 @@ def loaded_source_roots() -> dict[str, Path]:
 
 @lru_cache(maxsize=16)
 def _catalog(project_root: Path | None) -> SourceCatalog:
-    return SourceCatalog(_catalog_roots(project_root))
+    return SourceCatalog(_catalog_roots(project_root, plugin_packages()))
 
 
-def _catalog_roots(project_root: Path | None) -> dict[str, Path]:
-    roots = loaded_source_roots()
+def _catalog_roots(project_root: Path | None, owners: Mapping[str, str]) -> dict[str, Path]:
+    roots = loaded_source_roots(owners)
     if project_root is not None:
         roots["project"] = project_root.resolve()
     return roots
@@ -168,10 +168,20 @@ def _catalog_roots(project_root: Path | None) -> dict[str, Path]:
 
 def source_catalog(project_root: Path | None) -> SourceCatalog:
     result = _catalog(project_root)
-    roots = _catalog_roots(project_root)
+    roots = _catalog_roots(project_root, plugin_packages())
     if result.roots != roots:
         result.set_roots(roots)
     return result
+
+
+@lru_cache(maxsize=16)
+def _admission_catalog(roots: tuple[tuple[str, Path], ...]) -> SourceCatalog:
+    return SourceCatalog(dict(roots))
+
+
+def admission_source_catalog(project_root: Path, owners: Mapping[str, str]) -> SourceCatalog:
+    """Reuse source bytes while the composed package and project roots match."""
+    return _admission_catalog(tuple(_catalog_roots(project_root, owners).items()))
 
 
 @lru_cache(maxsize=512)

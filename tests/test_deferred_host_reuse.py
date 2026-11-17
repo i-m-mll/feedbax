@@ -126,7 +126,7 @@ def test_deferred_reuse_keeps_exact_result_across_reopening(tmp_path, action):
         asdict(AdmissionItem("report", dependent)),
     ]
     record = {"project": "project", "deferred_projection": AdmissionProjection.capture(
-        {"project": tmp_path}, (),
+        {"project": tmp_path}, (), {},
     ).model_dump(mode="json")}
     acknowledged = store.admit("joint", items, record)
     assert [row["id"] for row in store.ready()] == [new_series.id]
