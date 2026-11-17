@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from feedbax.analysis.builtin_operations import (
+from feedbax.builtins.operations import (
     AlignedVelocityParameters,
     VelocitySummaryParameters,
     aligned_velocity,

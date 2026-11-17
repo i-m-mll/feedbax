@@ -35,8 +35,8 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringChange,
     StudioAuthoringChoice,
+    StudioAuthoringDeclaration,
     StudioAuthoringField,
-    StudioAuthoringMethod,
     StudioAuthoringNumber,
     StudioAuthoringOption,
     StudioAuthoringOrigin,
@@ -49,7 +49,9 @@ from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.expression_registry import FunctionRegistry
-from feedbax.plugins.application import COMPONENTS, EXPRESSION_FUNCTIONS, OPERATIONS, TRAINING_PROGRAMS
+from feedbax.plugins.application import (
+    COMPONENTS, EXPRESSION_FUNCTIONS, FIGURE_TEMPLATES, OPERATIONS, PYTHON_TASKS, TRAINING_METHODS,
+)
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
@@ -78,7 +80,11 @@ def _document_schema(model: type[BaseModel]) -> str:
 
 def _origins(state: BootstrapState, family: str) -> dict[str, StudioAuthoringOrigin]:
     return {
-        key: StudioAuthoringOrigin(plugin=origin.plugin_id, distribution=origin.distribution)
+        key: StudioAuthoringOrigin(
+            package=origin.source.package,
+            distribution=origin.source.distribution,
+            version=origin.source.version,
+        )
         for origin in state.provenance
         for key in origin.registered_keys.get(family, ())
     }
@@ -102,20 +108,18 @@ def authoring_surface(
     state: BootstrapState, *, catalog: bool = False,
 ) -> StudioAuthoringSurface | StudioAuthoringCatalog:
     """Describe authored shapes and registry declarations from one bootstrap state."""
-    registry = state.bundle.training_programs
-    method_origins = _origins(state, TRAINING_PROGRAMS.family)
+    registry = state.bundle.training_methods
+    method_origins = _origins(state, TRAINING_METHODS.family)
     methods = [
-        StudioAuthoringMethod(
+        StudioAuthoringDeclaration(
             key=key,
-            schema_id=method.payload_schema_id,
-            schema_version=method.payload_schema_version,
-            owner=method.owner,
-            package=method.package,
-            plugin=origin.plugin if (origin := method_origins.get(key)) else None,
-            payload_schema=method.payload_model.model_json_schema(),
+            settings_schema=method.settings_model.model_json_schema(),
+            label=method.label or method.update.__name__,
+            revision=method.revision,
+            renamed_from=method.renamed_from,
         )
-        for key in registry.available_keys()
-        for method in (registry.resolve(key, path="/method_ref"),)
+        for key in registry.keys()
+        for method in (registry.resolve(key),)
     ]
     project_grammar = Project.model_json_schema(by_alias=True)
     train_documents = {
@@ -169,7 +173,29 @@ def authoring_surface(
                 entries=list(state.bundle.expression_functions.definitions()),
                 origins=_origins(state, EXPRESSION_FUNCTIONS.family),
             ),
-            "training_methods": StudioAuthoringRegistry(entries=methods, origins=method_origins),
+            TRAINING_METHODS.family: StudioAuthoringRegistry(entries=methods, origins=method_origins),
+            PYTHON_TASKS.family: StudioAuthoringRegistry(
+                entries=[
+                    StudioAuthoringDeclaration(
+                        key=task.key, label=task.label, revision=task.revision,
+                        renamed_from=task.renamed_from, settings_schema=task.parameters.model_json_schema(),
+                    )
+                    for key in state.bundle.python_tasks.keys()
+                    if (task := state.bundle.python_tasks.resolve(key)) is not None
+                ],
+                origins=_origins(state, PYTHON_TASKS.family),
+            ),
+            FIGURE_TEMPLATES.family: StudioAuthoringRegistry(
+                entries=[
+                    StudioAuthoringDeclaration(
+                        key=entry.key, label=entry.label, revision=entry.revision,
+                        renamed_from=entry.renamed_from, settings_schema=entry.settings_model.model_json_schema(),
+                    )
+                    for key in state.bundle.figure_templates.keys()
+                    for entry in (state.bundle.figure_templates.resolve(key),)
+                ],
+                origins=_origins(state, FIGURE_TEMPLATES.family),
+            ),
         },
     )
 

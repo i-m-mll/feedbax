@@ -10,7 +10,7 @@ import numpy as np
 from pydantic import Field
 
 from feedbax.analysis.aligned import project_onto_direction
-from feedbax.analysis.operations import DatasetOutput, OperationRegistry
+from feedbax.analysis.operations import DatasetOutput, operation
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields
@@ -139,6 +139,7 @@ def _product(port: DatasetPort, source: Dataset, arrays) -> Dataset:
     )
 
 
+@operation(settings=AlignedVelocityParameters, label="Aligned velocity")
 def aligned_velocity(
     states: Annotated[Dataset, _STATES],
     params: AlignedVelocityParameters,
@@ -189,6 +190,7 @@ def _summarize_trials(values, ddof, bounds_scale):
     }
 
 
+@operation(settings=VelocitySummaryParameters, label="Trial summary")
 def summarize_velocity(
     velocity: Annotated[Dataset, _VELOCITY],
     params: VelocitySummaryParameters,
@@ -203,7 +205,3 @@ def summarize_velocity(
     result = _summarize_trials(values, jnp.asarray(params.ddof), jnp.asarray(params.bounds_scale))
     return _product(_SUMMARY, velocity, result)
 
-
-def register_builtin_operations(registry: OperationRegistry) -> None:
-    registry.register("feedbax.aligned_velocity", aligned_velocity, label="Aligned velocity", owner="feedbax")
-    registry.register("feedbax.summarize_velocity", summarize_velocity, label="Trial summary", owner="feedbax")
