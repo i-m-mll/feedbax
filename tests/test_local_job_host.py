@@ -764,7 +764,7 @@ from feedbax.training.method_runtime import TrainingLoop
 run_block = TrainingLoop.run_block
 
 def pause_first_update(self, state, *, completed, count):
-    result = run_block(self, state, completed=completed, count=count)
+    result = run_block(self, state, completed=completed, count=min(count, 1) if completed == 0 else count)
     if completed == 0:
         Path({str(stop_ready)!r}).touch()
         stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])

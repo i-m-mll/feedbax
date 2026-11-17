@@ -33,7 +33,6 @@ def test_live_evaluate_replays_prefix_and_backfills_exact_interrupted_checkpoint
     raw = definition({"every": 2})
     train = raw["steps"]["train"]["base"]["inline"]
     train["training_config"]["n_batches"] = 8
-    train["method_payload"]["payload"]["target_total"] = 8
     raw["steps"]["other"] = deepcopy(raw["steps"]["baseline"])
     raw["steps"]["other"]["base"]["inline"]["params"]["seed"] += 1
     project = "delegated-evaluate"
