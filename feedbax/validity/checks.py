@@ -13,10 +13,9 @@ from feedbax.contracts.receipt_validity import (
     CheckOutcome, ReceiptValidity, ValidityAssessment, ValidityCheckDelivery, ValidityCheckEvidence,
     ValidityCheckScope,
 )
-from feedbax.host.protocol import AdmissionItem, HostError, Job, Launch, LIVE_STATES, Slot
+from feedbax.host.protocol import AdmissionItem, HostError, Job, Launch, LIVE_STATES, Slot, VALIDITY_CHECK_ENTRYPOINT
 from feedbax.persistence.effective_success import PublicationConflict, SuccessView
 from feedbax.persistence.receipt_validity import record_validity
-from feedbax.validity.check_worker import VALIDITY_ENTRYPOINT
 from feedbax.validity.project_admission import ObservedReceiptValidity, ProjectValidity
 
 
@@ -38,7 +37,7 @@ def schedule_check(
         project_root=project_root, store_root=store, request_id=request_id, receipt=scope.receipt,
         checks=scope.checks, producer_launch=original, completion_bindings=bindings,
     )
-    launch = replace(worker, warm_entrypoint=VALIDITY_ENTRYPOINT, project_root=str(project_root),
+    launch = replace(worker, warm_entrypoint=VALIDITY_CHECK_ENTRYPOINT, project_root=str(project_root),
                      payload=delivery.model_dump(mode="json"))
     job = Job(
         id=identity, project=project, request=f"validity-check:{identity}", launch=launch, slot=slot,
@@ -73,6 +72,7 @@ def settle_check(
     if view.authored_ref(scope.request_id) != scope.receipt:
         return None
     published = view.read_success(scope.receipt)
+    observer = observer.refresh()
     current = observer.inspect(view, published)
     owed = set(current.decision.checks).intersection(scope.checks)
     if current.conditions != scope.conditions or not owed:

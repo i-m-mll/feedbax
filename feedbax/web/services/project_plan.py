@@ -785,7 +785,7 @@ def _light_result(settled: SettledProjectPlan, attempt: PlanJobAttempt | None) -
             products[role] = f"{base}/{role}/{entry}"
     return StudioSavedLightResult(
         job_id=attempt.job_id, request_id=success.request.id, receipt=attempt.successful_receipt,
-        products=products, validity=attempt.validity,
+        products=products, validity=attempt.validity, provenance=attempt.provenance,
     )
 
 
@@ -813,9 +813,13 @@ def _evaluation_row(
     try:
         params, subject = reader.evaluation_parameters(settled.plan, run)
         trials = list(params.trials)
-        producers = (subject.request_id,) if isinstance(subject, ProductRef) else tuple(
-            candidate.reference.request_id for candidate in subject.candidates
-        )
+        match subject:
+            case ProductRef(request_id=request) if planned is None or planned.terminal is None:
+                producers = (request,)
+            case BestRank(candidates=candidates):
+                producers = tuple(candidate.reference.request_id for candidate in candidates)
+            case _:
+                producers = ()
         if not set(producers) <= jobs.checkpoint_producers:
             raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
         if isinstance(subject, ProductRef) and isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
@@ -841,7 +845,7 @@ def _evaluation_row(
             checkpoint_sources=list(success.checkpoint_sources) or None,
             checkpoint_gaps=list(success.checkpoint_gaps) if success.checkpoint_gaps is not None else None,
             placement=success.evaluation_placement if series is not None else None,
-            bound_subject=success.bound_subject, validity=success.validity,
+            bound_subject=success.bound_subject, validity=success.validity, provenance=success.provenance,
         )
     retained = bool(attempts and attempts[-1].collected_evaluate) or (
         success is not None and success.collected_evaluate
@@ -947,7 +951,8 @@ def _result(
     assert attempt.successful_receipt is not None
     return StudioSavedTrainResult(
         request_id=pointer["request_id"], job_id=attempt.job_id,
-        receipt=attempt.successful_receipt, progress=attempt.progress, validity=attempt.validity,
+        receipt=attempt.successful_receipt, progress=attempt.progress,
+        validity=attempt.validity, provenance=attempt.provenance,
     )
 
 

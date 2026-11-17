@@ -14,6 +14,7 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ElementKey, RunKey
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.jobs import JobStatus
 from feedbax.jobs import JobService
 from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -21,6 +22,7 @@ from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.composition import compose_application
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.support import derivative_witness as witness
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import host as host_fixture, restart, wait_until
@@ -300,3 +302,33 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
         estimate = dataset.data("gain")
         assert estimate.dtype == np.dtype("float64")
         assert estimate.item() == pytest.approx(3.0 * (1 + np.sqrt(2)), rel=1e-10)
+
+    gain_key = ElementKey(selected[2], "gain")
+
+    def retained():
+        return read_settled_project_plan(review, jobs).light[gain_key]
+
+    initial = retained()
+    assert initial.status is JobStatus.SUCCEEDED
+    assert initial.result.validity.state == "current"
+    source = tmp_path / "installed" / witness.PACKAGE / "__init__.py"
+    original = source.read_text()
+    body = "    def forward(disturbance):"
+    assert body in original
+    source.write_text(original.replace(body, "    scale = 2\n" + body, 1))
+    stale = retained()
+    assert stale.status is JobStatus.STALE
+    assert stale.result.receipt == initial.result.receipt
+    (reason,) = stale.result.validity.reasons
+    assert reason.kind == "code"
+    assert any("power_iteration" in change.functions for change in reason.differences)
+
+    judgement = jobs.result_validity_action(
+        review, gain, stale.result.validity.receipt,
+        judgement=(reason.differences, "Scientist", "Reviewed an unused local."),
+    )
+    assert judgement.state == "current"
+    assert retained().result.receipt == initial.result.receipt
+    source.write_text(original.replace(body, "    scale = 3\n" + body, 1))
+    assert retained().status is JobStatus.STALE
+    assert set(row["id"] for row in host.jobs(project=review.project_id)) == job_ids

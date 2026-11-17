@@ -25,6 +25,7 @@ from feedbax._secure_fs import (
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.code_validity import AttemptProvenance
 from feedbax.contracts.execution_target import (
     LOCAL_RUN_KINDS, LOCAL_TARGET, LOCAL_TARGET_ID, AttemptTarget, ExecutionTargets,
     SessionTarget, SessionTargetProfile, TargetRunKind, attempt_target,
@@ -155,6 +156,7 @@ class PlanJobAttempt:
     collected_evaluate: bool = False
     collection_progress: StoreTransferProgress | None = None
     validity: ReceiptValidity | None = None
+    provenance: AttemptProvenance | None = None
 
 
 @dataclass(frozen=True)
@@ -308,7 +310,7 @@ class PlanJobReader:
                     checkpoint_source = _collected_train_checkpoint_source(success_view, store_success)
             else:
                 receipt = _verified_training_receipt(job, store) if succeeded else None
-            validity = None
+            validity = provenance = None
             if observer is not None and receipt is not None and success_view is not None:
                 from feedbax.persistence.effective_success import PublishedSuccess
 
@@ -316,6 +318,7 @@ class PlanJobReader:
                 if ref is not None:
                     try:
                         published = PublishedSuccess(ref, store_success or success_view.read_receipt(ref))
+                        provenance = published.receipt.provenance
                         validity = observer.inspect(success_view, published).decision
                     except (KeyError, OSError, ValueError) as error:
                         damage, receipt = f"Cannot assess the committed result: {error}", None
@@ -357,7 +360,7 @@ class PlanJobReader:
                 checkpoint_attempt=_evaluation_checkpoint_attempt(job) if evaluate else None,
                 light_success=store_success if light else None,
                 train_request=store_success.request if collected_train and store_success is not None else None,
-                collected_evaluate=collected_evaluate, validity=validity,
+                collected_evaluate=collected_evaluate, validity=validity, provenance=provenance,
             )
             attempts.setdefault(request_id, []).append(attempt)
             if light and address in light_addresses:
@@ -980,7 +983,12 @@ class JobService(PlanJobReader):
             raise JobConflict("The latest successful receipt changed.")
         if judgement is None:
             if observation.decision.checks:
-                self._submit_check(plan, published, observation)
+                from feedbax.validity.checks import settle_check
+
+                check = self._submit_check(plan, published, observation)
+                (row,) = self.host.jobs(project=plan.project_id, job_id=check)
+                if (decided := settle_check(view, observer, row)) is not None:
+                    return decided
             return observation.decision
         differences, who, why = judgement
         pending = {
@@ -1007,8 +1015,8 @@ class JobService(PlanJobReader):
         available = 2 - sum(row["state"] in _LIVE_STATES for row in attempts.validity_checks)
         checked = False
         results = {
-            request: history[-1] for request, history in attempts.by_request.items()
-            if history and history[-1].validity is not None
+            request: result for request, history in attempts.by_request.items()
+            if (result := next((item for item in reversed(history) if item.validity is not None), None)) is not None
         }
         for row in attempts.validity_checks:
             scope = row["data"]["validity_check"]
@@ -1055,7 +1063,11 @@ class JobService(PlanJobReader):
                             available -= 1
             if allow_run and needed:
                 candidates = [authorized_success(request) for request in needed]
-                if all(candidate is not None and is_quick(candidate.receipt, self._quick_duration) for candidate in candidates):
+                if all(
+                    candidate is not None and is_quick(candidate.receipt, self._quick_duration)
+                    and attempts.by_request[request][-1] is results.get(request)
+                    for request, candidate in zip(needed, candidates, strict=True)
+                ):
                     automatic.append(row.key)
                     sources.update({
                         request: results[request].validity.receipt.sha256 for request in needed
@@ -1083,8 +1095,6 @@ class JobService(PlanJobReader):
         from feedbax.persistence.effective_success import SuccessView
         from feedbax.studio.canonical_evaluate import EvaluationRequestBinding
 
-        view = SuccessView(ImmutableArtifactBlobProvider(current.store_path))
-        observer = self._validity_observer(current.project_root)
         terminal_inputs = {}
         for item in candidates if reuse_completed else ():
             job = item.job
@@ -1098,6 +1108,8 @@ class JobService(PlanJobReader):
 
         for attempt in range(3):
             snapshot = self.host.jobs_snapshot(project=record["project"], terminal_train=terminal_train)
+            view = SuccessView(ImmutableArtifactBlobProvider(current.store_path))
+            observer = self._validity_observer(current.project_root)
             terminal_receipts = snapshot.get("terminal_train_receipts", {})
             history: dict[str, list[dict[str, Any]]] = {}
             attempts: dict[str, dict[str, Any]] = {}
@@ -1139,6 +1151,13 @@ class JobService(PlanJobReader):
                         attempts=attempts, automatic=automatic, upstream=not selected,
                         terminal_receipt=ContentObjectRef.model_validate(receipt) if receipt is not None else None,
                     )
+                if automatic and selected and reusable is None:
+                    from feedbax.validity.project_admission import is_quick
+
+                    latest = view.authored_ref(job.request)
+                    if latest is None or not is_quick(view.read_receipt(latest), self._quick_duration):
+                        chosen.append(_rejected(item.run_key, "This request requires explicit Run."))
+                        continue
                 if reusable is not None:
                     reused[job.id] = reusable
                     if job.request.startswith("train:"):
