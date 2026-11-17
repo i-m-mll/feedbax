@@ -6,12 +6,14 @@ import { readStudioAnalyze } from '@/api/studioAnalyze';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
-import { StudioDefinitionForm, type StudioFieldControl } from '@/components/pipeline/StudioDefinitionForm';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
+import { SettingsForm } from '@/components/values/SettingsForm';
+import { setIn } from '@/components/values/adapters/jsonSchema';
+import { fromParamSchema } from '@/components/values/adapters/paramSchema';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type JsonPrimitive, type JsonValue, type OperationElement,
@@ -26,20 +28,6 @@ import { problemReason, type ProblemReveal } from './projectWindowProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 
 type Source = OperationElement['inputs'][string];
-
-function fieldControl(schema: ParamSchema, variables?: string[]): StudioFieldControl | undefined {
-  const options = variables ?? schema.options;
-  if (options) return { kind: 'choice', options: options.map((value) => ({ value, label: value })) };
-  if (schema.type === 'bool') return { kind: 'boolean' };
-  if (schema.type === 'int' || schema.type === 'float') return {
-    kind: 'number', min: schema.min ?? undefined, max: schema.max ?? undefined,
-    step: schema.step ?? (schema.type === 'int' ? 1 : undefined),
-  };
-}
-
-function scalar(value: unknown): JsonPrimitive {
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null;
-}
 
 export function useManagedAnalyze({
   editor, key, projection, wholeStep, focusedView, reveal, savePosition,
@@ -209,24 +197,29 @@ export function useManagedAnalyze({
     })));
   const selectedProblems = diagnostics.filter((item) => selected && item.element === selected);
   const selectedPlan = selected ? planned.get(selected) : undefined;
+  function writeParameter(path: readonly string[], value: JsonValue) {
+    if (!operation || !selected) return;
+    const [name, ...rest] = path;
+    const next = setIn(operation.params?.[name], rest, value);
+    void perform(() => save(humanizeLabel(name), [operation.params
+      ? file(['operations', selected, 'params', name], next)
+      : file(['operations', selected, 'params'], { [name]: next })]));
+  }
   const inspector = <div className="space-y-2 p-2">
     {selectedProblems.map((problem) => <p key={problem.path + problem.detail} role="status">{problemReason(problem)}</p>)}
     {selectedPlan && <p role="status">{studioRunStatus(selectedPlan.status)}
       {selectedPlan.reason && <span className="block text-shell-muted">{selectedPlan.reason}</span>}
     </p>}
-    {operation && definition && key && <StudioDefinitionForm selection={{ kind: 'steps', stepIds: [key.step] }}
-      fields={definition.param_schema.map((schema) => ({
-        id: schema.name, label: humanizeLabel(schema.name),
-        resolved: [{ id: schema.name, value: scalar(operation.params?.[schema.name] ?? schema.default) }],
-        control: fieldControl(schema, catalog?.variables[definition.key]?.[schema.name]),
-        actions: canEdit ? ['set'] : [],
-      }))}
-      onEdit={({ fieldId, edit }) => {
-        if (edit.kind !== 'set' || !selected) return;
-        void perform(() => save(humanizeLabel(fieldId), [operation.params
-          ? file(['operations', selected, 'params', fieldId], edit.value)
-          : file(['operations', selected, 'params'], { [fieldId]: edit.value })]));
-      }} />}
+    {operation && definition && key && <div className="grid gap-1">
+      <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}
+        projected={(path) => {
+          const schema = path.length === 1 && definition.param_schema.find(({ name }) => name === path[0]);
+          const options = schema && catalog?.variables[definition.key]?.[schema.name];
+          return schema && options ? fromParamSchema(schema, operation.params?.[schema.name], canEdit
+            ? (value) => writeParameter(path, value) : undefined, { options }) : undefined;
+        }}
+        write={canEdit ? writeParameter : undefined} />
+    </div>}
     {figure && selected && selectedFigure && <label className="grid gap-1">
       {studioName('caption')}
       <TextField key={JSON.stringify([saved.revision, selected, selectedFigure.caption])}

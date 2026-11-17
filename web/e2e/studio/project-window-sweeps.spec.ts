@@ -85,7 +85,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   }
 
   await card.getByRole('button', { name: 'Add Sweep train' }).click();
-  await page.getByRole('dialog', { name: 'Add Sweep' }).getByRole('button', { name: 'Seed', exact: true }).click();
+  await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Seed', exact: true }).click();
   const seed = page.getByRole('region', { name: 'Seed field', exact: true });
   const seedText = seed.getByRole('textbox', { name: 'Seed', exact: true });
   await expect(seedText).toHaveValue(/^\d+,$/);
@@ -133,7 +133,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   }
   const base = kept.project.steps?.train.base;
   expect(base && 'inline' in base ? base.inline : {}).toMatchObject({
-    method_payload: { payload: { optimizer: { params: { learning_rate: 0.00275 } } } },
+    settings: { optimizer: { params: { learning_rate: 0.00275 } } },
   });
 });
 

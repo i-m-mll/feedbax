@@ -14,6 +14,7 @@ export interface ComboboxProps<Value extends string> {
   disabled?: boolean;
   invalid?: boolean;
   'aria-label'?: string;
+  'aria-labelledby'?: string;
   id?: string;
   className?: string;
 }
@@ -34,7 +35,7 @@ export function Combobox<Value extends string>(
       <BaseCombobox.InputGroup className={clsx(fieldBox, 'overflow-hidden', className)}>
         <BaseCombobox.Input id={id} placeholder={placeholder} aria-invalid={invalid || undefined}
           className={fieldInput} {...aria} />
-        <BaseCombobox.Trigger tabIndex={-1} aria-label={aria['aria-label']}
+        <BaseCombobox.Trigger tabIndex={-1} {...aria}
           className={clsx('flex h-full w-control items-center justify-center text-shell-muted outline-none', glyph)}>
           <ChevronDown />
         </BaseCombobox.Trigger>
@@ -50,7 +51,8 @@ export function Combobox<Value extends string>(
                     <BaseCombobox.ItemIndicator className="flex"><Check /></BaseCombobox.ItemIndicator>
                   </span>
                   {item.glyph}
-                  <span className="truncate">{item.label}</span>
+                  <span className="flex-1 truncate">{item.label}</span>
+                  {item.detail ? <span className="truncate pl-4 text-shell-muted">{item.detail}</span> : null}
                 </BaseCombobox.Item>
               )}
             </BaseCombobox.List>

@@ -373,9 +373,9 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
-  const target = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
-  const targetY = task.getByRole('spinbutton', { name: 'Target y (m)', exact: true });
-  const taskSteps = task.getByRole('spinbutton', { name: 'N Steps', exact: true });
+  const target = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
+  const targetY = task.getByRole('textbox', { name: 'Target y (m)', exact: true });
+  const taskSteps = task.getByRole('textbox', { name: 'N Steps', exact: true });
   const stepField = inspector.getByRole('textbox', { name: 'Step', exact: true });
   const chooseRow = async (run = selectedKey, extend = false) => {
     const definition = (await plan()).window_map?.rows.find(({ key }) => key.step === run.step && key.row === run.row);

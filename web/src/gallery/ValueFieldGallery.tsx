@@ -2,7 +2,8 @@ import { useState } from 'react';
 import type { JsonValue, ParamSchema, SiteProjection, StudioFieldView } from '@/generated/studioContracts';
 import { ValueField } from '@/components/values/ValueField';
 import { fromFieldView, type ProjectedEdit } from '@/components/values/adapters/fieldView';
-import { fromJsonSchema } from '@/components/values/adapters/jsonSchema';
+import { setIn } from '@/components/values/adapters/jsonSchema';
+import { SettingsForm } from '@/components/values/SettingsForm';
 import { fromParamSchema } from '@/components/values/adapters/paramSchema';
 
 const site = (kinds: SiteProjection['kinds']): SiteProjection => ({
@@ -54,10 +55,24 @@ const params: ParamSchema[] = [
   { name: 'checkpoint', type: 'object', default: { path: 'run/7' } },
 ];
 
-const taskSchema: Record<string, JsonValue> = {
-  n_reaches: { type: 'integer', title: 'Reaches', default: 8 },
-  workspace: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number' }, default: [0.2, 0.3] },
-  curriculum: { type: 'string', enum: ['none', 'linear'], default: 'none' },
+/** A method's settings: a referenced group with free parameters, an optional number, and a discriminated union. */
+const settingsSchema: JsonValue = {
+  type: 'object',
+  properties: {
+    n_reaches: { type: 'integer', title: 'Reaches', default: 8 },
+    workspace: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number' }, default: [0.2, 0.3] },
+    optimizer: { $ref: '#/$defs/Optimizer' },
+    grad_clip: { anyOf: [{ type: 'number' }, { type: 'null' }], default: 1, title: 'Grad Clip' },
+    schedule: { oneOf: [{ $ref: '#/$defs/Constant' }, { $ref: '#/$defs/Cosine' }] },
+  },
+  $defs: {
+    Optimizer: { title: 'Optimizer', type: 'object', properties: {
+      type: { type: 'string', enum: ['adam', 'sgd'], title: 'Type' },
+      params: { type: 'object', additionalProperties: { anyOf: [{ type: 'number' }, { type: 'boolean' }] } },
+    } },
+    Constant: { type: 'object', properties: { kind: { const: 'constant' } } },
+    Cosine: { type: 'object', properties: { kind: { const: 'cosine' }, warmup: { type: 'integer', default: 100 } } },
+  },
 };
 
 function useRaw(initial: Record<string, JsonValue>) {
@@ -70,7 +85,9 @@ export function ValueFieldGallery() {
   const rate = useProjected('Learning rate', '0.001', ['value', 'sweep', 'formula']);
   const step = useProjected('Step', '0.01', ['value']);
   const raw = useRaw(Object.fromEntries(params.map(({ name, default: value }) => [name, value as JsonValue])));
-  const task = useRaw({});
+  const [settings, setSettings] = useState<JsonValue>({
+    optimizer: { type: 'adam', params: { learning_rate: 0.001, nesterov: false } }, schedule: { kind: 'constant' },
+  });
   const rangeField: StudioFieldView = {
     label: 'Clip', text: 'geomspace(0.1, 10, 3)', site: site(['value', 'sweep', 'formula']),
     sweep: { kind: 'range', id: 'clip', rule: { start: 0.1, stop: 10, count: 3, scale: 'log' }, can_list: true },
@@ -96,8 +113,10 @@ export function ValueFieldGallery() {
         <div className="grid w-80 content-start gap-2 rounded-control border border-shell-divider p-2" aria-label="Parameters">
           {params.map((schema) => <ValueField key={schema.name}
             model={fromParamSchema(schema, raw.values[schema.name], raw.change(schema.name))} />)}
-          {Object.entries(taskSchema).map(([key, property]) => <ValueField key={key}
-            model={fromJsonSchema(key, property, task.values[key], task.change(key))} />)}
+        </div>
+        <div className="grid w-80 content-start gap-2 rounded-control border border-shell-divider p-2" aria-label="SettingsForm">
+          <SettingsForm schema={settingsSchema} value={settings}
+            write={(path, value) => { setSettings((current) => setIn(current, path, value)); }} />
           <ValueField model={fromParamSchema({ name: 'locked', type: 'float', default: 3 }, undefined)} />
         </div>
       </div>

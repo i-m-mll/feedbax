@@ -70,7 +70,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   const document = page.getByRole('tabpanel', { name: 'Document', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const boundsScale = inspector.getByRole('textbox', { name: 'Edit Bounds Scale', exact: true });
+  const boundsScale = inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true });
   const mutation = (method: string, route: string) => page.waitForResponse((response) =>
     response.request().method() === method && new URL(response.url()).pathname === route);
 
@@ -213,7 +213,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', paired ? /reach_target$/ : /target_pos$/],
   ] as const) {
-    const select = inspector.getByRole('combobox', { name: 'Edit ' + field, exact: true });
+    const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => chooseOption(page, select, label));
   }
   const dialog = page.getByRole('dialog', { name: 'Connect Ports', exact: true });
@@ -228,7 +228,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   await addOperation('Trial summary');
   await selectElement('summarize_velocity');
   await edit(() => number(page, boundsScale, '1.5'));
-  const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Edit Ddof', exact: true }), '0'));
+  const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   await chooseSource('states');
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
     Boolean(response.request().postDataJSON()?.wire));

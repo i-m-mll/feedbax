@@ -77,6 +77,9 @@ class StudioFieldView(StrictModel):
     label: str
     text: str
     effective: str | None = None
+    """The value the selected runs share where it differs from the document's."""
+    mixed: bool = False
+    """The selected runs hold different values."""
     unit: str | None = None
     site: SiteProjection
     sweep: StudioSweepList | StudioSweepRange | StudioSweepSampler | None = None

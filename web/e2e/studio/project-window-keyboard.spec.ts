@@ -117,7 +117,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(page.getByRole('textbox', { name: 'N Batches', exact: true })).toBeEnabled();
   await tab('Task').click();
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
-  const reach = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
+  const reach = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
   await expect(reach).toHaveValue('0.15');
   await expect(task.getByRole('alert')).toHaveCount(0);
   await enter(reach, '0.6');
@@ -632,7 +632,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
 
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await expect(drawer.getByRole('combobox', { name: 'Edit Training method' })).toBeFocused();
+  await expect(drawer.getByRole('combobox', { name: 'Training method' })).toBeFocused();
   const batches = drawer.getByRole('textbox', { name: 'N Batches' });
   const childEdit = page.waitForResponse((response) => response.request().method() === 'PATCH' &&
     new URL(response.url()).pathname === projectPath);

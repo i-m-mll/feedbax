@@ -25,6 +25,7 @@ import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/feat
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button, IconButton } from '@/components/ui/Button';
 import { ListRow } from '@/components/ui/ListRow';
+import { Menu, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
 import {
@@ -100,12 +101,20 @@ export interface StudioPipelineMapProps {
   onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
   newStepCommand?: (source?: PipelineMapStepSource, subject?: string) => StudioCommand | undefined;
   newSweepCommand?: (stepId: string, subject?: string) => StudioCommand | undefined;
+  /** The open menu of a step's sweepable fields, anchored at the end of its card's shape line. */
+  sweepMenu?: SweepMenu;
   problemSteps?: ReadonlySet<string>;
   onProblems?: (stepId: string, opener: HTMLButtonElement) => void;
   activeStepId?: string | null;
   viewportRef?: Ref<CanvasViewport>;
   fitReady?: boolean;
   runMenu?: RunMenu;
+}
+
+export interface SweepMenu {
+  readonly stepId: string;
+  readonly items: ReactNode;
+  close(): void;
 }
 
 const emptyPresentation: PipelineCardPresentation = {};
@@ -182,6 +191,7 @@ function StepShape({
   applySelection,
   onPresentationChange,
   newSweep,
+  sweepMenu,
 }: {
   step: PlanStepView;
   sweeps: readonly PlanSweepView[];
@@ -191,6 +201,7 @@ function StepShape({
   applySelection: ApplyMapSelection;
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
   newSweep?: StudioCommand;
+  sweepMenu?: SweepMenu;
 }) {
   const dragging = useRef<string | null>(null);
   const [openSweep, setOpenSweep] = useState<string | null>(null);
@@ -273,8 +284,11 @@ function StepShape({
         );
       })}
       {newSweep && (
-        <IconButton variant="default" size="mark" label={newSweep.label} icon={<Plus aria-hidden="true" />}
-          {...commandAttributes(newSweep)} disabled={!newSweep.enabled} onClick={newSweep.invoke} />
+        <Menu open={!!sweepMenu} onOpenChange={(open) => { if (open) newSweep.invoke(); else sweepMenu?.close(); }}>
+          <MenuTrigger render={<IconButton variant="default" size="mark" label={newSweep.label} icon={<Plus aria-hidden="true" />}
+            {...commandAttributes(newSweep)} disabled={!newSweep.enabled} />} />
+          <MenuContent aria-label={studioName('newSweep')}>{sweepMenu?.items}</MenuContent>
+        </Menu>
       )}
     </div>
   );
@@ -290,6 +304,7 @@ const StepCard = memo(function StepCard({
   onPresentationChange,
   newStep,
   newSweep,
+  sweepMenu,
   onProblems,
   compact,
   dimmed,
@@ -306,6 +321,7 @@ const StepCard = memo(function StepCard({
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
   newStep?: StudioCommand;
   newSweep?: StudioCommand;
+  sweepMenu?: SweepMenu;
   onProblems?: StudioPipelineMapProps['onProblems'];
   compact: boolean;
   dimmed: boolean;
@@ -375,6 +391,7 @@ const StepCard = memo(function StepCard({
         applySelection={applySelection}
         onPresentationChange={onPresentationChange}
         newSweep={newSweep}
+        sweepMenu={sweepMenu}
       />
       <StatusCounts id={`${id}-status`} counts={step.statusCounts} onProblems={problem} />
       <PipelineRunMarks
@@ -651,6 +668,7 @@ export function StudioPipelineMap({
   onPresentationChange,
   newStepCommand,
   newSweepCommand,
+  sweepMenu,
   problemSteps,
   onProblems,
   activeStepId,
@@ -755,6 +773,7 @@ export function StudioPipelineMap({
                     onPresentationChange={onPresentationChange}
                     newStep={newStepCommand?.({ stepId: step.id, selection: stepRunSelection(state.selection, step.id) }, step.label)}
                     newSweep={newSweepCommand?.(step.id, step.label)}
+                    sweepMenu={sweepMenu?.stepId === step.id ? sweepMenu : undefined}
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                     runMenu={runMenu}
                   />
