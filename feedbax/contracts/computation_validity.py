@@ -131,13 +131,15 @@ class ComputationTrace(ReferenceValue):
         slots = [start.slot for start in self.starts]
         signatures = [(program.slot, program.specialization) for program in self.programs]
         if len(set(slots)) != len(slots) or set(slots) != {slot for slot, _ in signatures}:
-            raise ValueError("Each computation slot must have one exact start and at least one program")
+            raise ValueError(
+                "Each computation slot must have one exact start and at least one program"
+            )
         if len(set(signatures)) != len(signatures):
             raise ValueError("Each computation specialization must occur once per slot")
         if isinstance(self.prefix, TrainPrefix) and self.completed_steps < len(self.prefix.losses):
             raise ValueError("The training prefix must consist of completed updates")
         if isinstance(self.prefix, EvaluatePrefix) and (
-            [output.slot for output in self.prefix.outputs] != slots[:len(self.prefix.outputs)]
+            [output.slot for output in self.prefix.outputs] != slots[: len(self.prefix.outputs)]
             or self.completed_steps < len(self.prefix.outputs)
         ):
             raise ValueError("The evaluation prefix must name the first completed slots")
@@ -148,7 +150,8 @@ class ComputationTrace(ReferenceValue):
         refs = [reference for start in self.starts for reference in start.binding_inputs]
         refs.extend(start.binding for start in self.starts if start.binding is not None)
         refs.extend(
-            lowering.raw_program for program in self.programs
+            lowering.raw_program
+            for program in self.programs
             for lowering in (program.reference, program.execution)
             if lowering is not None and lowering.raw_program is not None
         )
@@ -156,7 +159,16 @@ class ComputationTrace(ReferenceValue):
             refs.append(self.prefix.parameters)
         elif isinstance(self.prefix, EvaluatePrefix):
             refs.extend(output.values for output in self.prefix.outputs)
-        return tuple(refs)
+        return tuple(
+            {
+                (
+                    (ref.tree_id, ref.descriptor.size_bytes)
+                    if isinstance(ref, ContentTreeRef)
+                    else (ref.object_id, ref.size_bytes)
+                ): ref
+                for ref in refs
+            }.values()
+        )
 
 
 class DriverChanged(ReferenceValue):
