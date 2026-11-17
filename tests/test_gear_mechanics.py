@@ -6,11 +6,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.acausal import AcausalConnection, AcausalSystem
+from feedbax.acausal import AcausalConnection
+from feedbax.builtins.acausal.system import AcausalSystem
 from feedbax.acausal.assembly import assemble_system
 from feedbax.acausal.base import AcausalElement
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.acausal.rotational import (
+from feedbax.builtins.acausal.rotational import (
     AngleSensor,
     AngularVelocitySensor,
     GearRatio,
@@ -313,7 +314,7 @@ def test_grounded_net_torque_has_known_zero_acceleration_under_load():
 
 
 def test_prescribed_net_effort_requires_acceleration_authority():
-    from feedbax.acausal import ForceSensor, Mass, PrescribedMotion
+    from feedbax.builtins.acausal.translational import ForceSensor, Mass, PrescribedMotion
 
     elements = {
         "driver": PrescribedMotion("driver"),
@@ -326,7 +327,7 @@ def test_prescribed_net_effort_requires_acceleration_authority():
 
 
 def test_prescribed_coordinate_and_velocity_observations_use_supplied_values():
-    from feedbax.acausal import PositionSensor, PrescribedMotion, VelocitySensor
+    from feedbax.builtins.acausal.translational import PositionSensor, PrescribedMotion, VelocitySensor
 
     elements = {
         "driver": PrescribedMotion("driver"),

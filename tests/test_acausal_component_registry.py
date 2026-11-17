@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from feedbax.acausal.rotational import (
+from feedbax.builtins.acausal.rotational import (
     AngleSensor,
     AngularVelocitySensor,
     GearRatio,
@@ -17,7 +17,7 @@ from feedbax.acausal.rotational import (
     TorqueSource,
     TorsionalSpring,
 )
-from feedbax.acausal.translational import (
+from feedbax.builtins.acausal.translational import (
     ForceSensor,
     ForceSource,
     Ground,
@@ -141,7 +141,7 @@ def test_acausal_element_param_schemas_match_constructors(element_type: type[Any
 
 def test_physical_owner_validation_and_domain_variants_share_scientific_storage() -> None:
     from pydantic import ValidationError
-    from feedbax.acausal.translational import MechanicsMass
+    from feedbax.builtins.acausal.translational import MechanicsMass
     from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 
     registry = ComponentRegistry()

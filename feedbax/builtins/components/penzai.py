@@ -1,0 +1,921 @@
+"""Penzai model integration for feedbax Graphs.
+
+This module provides `PenzaiSubgraph`, a Component that wraps Penzai neural network
+models for use within feedbax computational graphs. It handles:
+
+- Input/output mapping between feedbax dict-based ports and Penzai layer interfaces
+- State variable extraction and binding at call boundaries
+- Treescope HTML rendering for model inspection
+
+:copyright: Copyright 2024 by MLL <mll@mll.bio>.
+:license: Apache 2.0. See LICENSE for details.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from importlib.util import find_spec
+from math import isfinite
+from typing import Any, Callable, Sequence
+
+from equinox import Module, field
+from equinox.nn import State, StateIndex
+from jaxtyping import PRNGKeyArray, PyTree
+
+from feedbax.runtime.graph import Component, GraphNode
+from feedbax.contracts.component import PortType, DynamicPortPolicy
+from feedbax.contracts.domain import PENZAI_DOMAIN_ID
+from feedbax.contracts.portable import Ports, ComponentOptions
+
+PENZAI_AVAILABLE = find_spec("penzai") is not None
+
+
+def _require_penzai() -> None:
+    """Check the optional Penzai backend at use."""
+    if not PENZAI_AVAILABLE:
+        raise ImportError(
+            "penzai is required for PenzaiSubgraph. Install it with: pip install penzai"
+        )
+
+
+def _penzai_state_variable_type() -> type:
+    from penzai.core.variables import StateVariable
+
+    return StateVariable
+
+
+# =============================================================================
+# Input/Output Mapping Types
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class PortSpec:
+    """Specification for a single port mapping."""
+
+    port_name: str
+    key_path: tuple[str | int, ...] = ()
+    transform: Callable[[PyTree], PyTree] | None = None
+
+    def extract_from_inputs(self, inputs: dict[str, PyTree]) -> PyTree:
+        """Extract value from inputs dict, then follow key_path if specified."""
+        result = inputs[self.port_name]
+        for key in self.key_path:
+            if isinstance(key, int):
+                result = result[key]
+            else:
+                result = result[key] if isinstance(result, dict) else getattr(result, key)
+        if self.transform is not None:
+            result = self.transform(result)
+        return result
+
+    def extract(self, data: PyTree) -> PyTree:
+        """Extract value from data following key_path (for output mapping)."""
+        result = data
+        for key in self.key_path:
+            if isinstance(key, int):
+                result = result[key]
+            else:
+                result = result[key] if isinstance(result, dict) else getattr(result, key)
+        if self.transform is not None:
+            result = self.transform(result)
+        return result
+
+    def insert(self, container: dict[str, PyTree], value: PyTree) -> dict[str, PyTree]:
+        """Insert value into container at port_name."""
+        container[self.port_name] = value
+        return container
+
+
+class InputMapping(Module):
+    """Maps feedbax input dict to Penzai layer input(s).
+
+    Handles translation from feedbax's dict-based port system to Penzai's
+    function-call interface. Supports:
+
+    - Single input: dict["input"] -> layer(x)
+    - Multiple inputs: dict["a", "b"] -> layer(a, b)
+    - Structured inputs: dict -> layer(struct)
+
+    Attributes:
+        port_specs: Sequence of port specifications for input mapping.
+        combine_fn: Optional function to combine extracted values into layer input.
+    """
+
+    port_specs: tuple[PortSpec, ...] = field(static=True)
+    combine_fn: Callable[..., PyTree] | None = field(default=None, static=True)
+
+    @classmethod
+    def single(cls, port_name: str = "input") -> "InputMapping":
+        """Create mapping for single input port."""
+        return cls(port_specs=(PortSpec(port_name),))
+
+    @classmethod
+    def multi(cls, *port_names: str) -> "InputMapping":
+        """Create mapping for multiple input ports passed as positional args."""
+        return cls(
+            port_specs=tuple(PortSpec(name) for name in port_names),
+            combine_fn=lambda *args: args,
+        )
+
+    @classmethod
+    def structured(
+        cls,
+        port_names: Sequence[str],
+        struct_fn: Callable[..., PyTree],
+    ) -> "InputMapping":
+        """Create mapping that combines ports into a structured input."""
+        return cls(
+            port_specs=tuple(PortSpec(name) for name in port_names),
+            combine_fn=struct_fn,
+        )
+
+    def __call__(self, inputs: dict[str, PyTree]) -> PyTree:
+        """Map feedbax inputs to Penzai layer input."""
+        values = [spec.extract_from_inputs(inputs) for spec in self.port_specs]
+        if len(values) == 1 and self.combine_fn is None:
+            return values[0]
+        if self.combine_fn is not None:
+            return self.combine_fn(*values)
+        return values[0]
+
+
+class OutputMapping(Module):
+    """Maps Penzai layer output to feedbax output dict.
+
+    Handles translation from Penzai's return values to feedbax's dict-based
+    port system. Supports:
+
+    - Single output: layer() -> dict["output"]
+    - Multiple outputs: (a, b) -> dict["a": a, "b": b]
+    - Structured outputs: struct -> dict (extracting fields)
+
+    Attributes:
+        port_specs: Sequence of port specifications for output mapping.
+        unpack_fn: Optional function to unpack layer output into values.
+    """
+
+    port_specs: tuple[PortSpec, ...] = field(static=True)
+    unpack_fn: Callable[[PyTree], Sequence[PyTree]] | None = field(default=None, static=True)
+
+    @classmethod
+    def single(cls, port_name: str = "output") -> "OutputMapping":
+        """Create mapping for single output port."""
+        return cls(port_specs=(PortSpec(port_name),))
+
+    @classmethod
+    def multi(cls, *port_names: str) -> "OutputMapping":
+        """Create mapping for multiple output ports from tuple return."""
+        return cls(
+            port_specs=tuple(PortSpec(name) for name in port_names),
+            unpack_fn=lambda x: x,  # Assume tuple-like
+        )
+
+    @classmethod
+    def structured(
+        cls,
+        port_specs: Sequence[PortSpec],
+    ) -> "OutputMapping":
+        """Create mapping that extracts fields from structured output."""
+        return cls(port_specs=tuple(port_specs))
+
+    def __call__(self, output: PyTree) -> dict[str, PyTree]:
+        """Map Penzai layer output to feedbax outputs dict."""
+        if self.unpack_fn is not None:
+            values = self.unpack_fn(output)
+            return {spec.port_name: values[i] for i, spec in enumerate(self.port_specs)}
+
+        if len(self.port_specs) == 1:
+            spec = self.port_specs[0]
+            if spec.key_path:
+                return {spec.port_name: spec.extract(output)}
+            return {spec.port_name: output}
+
+        return {spec.port_name: spec.extract(output) for spec in self.port_specs}
+
+
+# =============================================================================
+# State Variable Management
+# =============================================================================
+
+
+class UnsupportedPenzaiStateError(NotImplementedError):
+    """A model contains state variables that Feedbax cannot rebind."""
+
+    def __init__(self, paths: Sequence[str]):
+        self.paths = tuple(paths)
+        super().__init__(
+            "PenzaiSubgraph does not yet support stateful Penzai models. "
+            f"StateVariable paths were found at {', '.join(paths)}; "
+            "implement explicit Penzai state rebinding before using this model."
+        )
+
+
+class PenzaiStateManager(Module):
+    """Manages Penzai StateVariable extraction and binding.
+
+    Handles the boundary between feedbax's State system and Penzai's
+    StateVariable system. At each call:
+
+    1. Extracts current state values from feedbax State
+    2. Binds them to the Penzai model for execution
+    3. Unbinds updated state values after execution
+    4. Stores them back in feedbax State
+
+    Attributes:
+        state_index: StateIndex for storing Penzai state values.
+        variable_paths: Paths to StateVariable locations in the model tree.
+    """
+
+    state_index: StateIndex
+
+    @classmethod
+    def from_model(cls, pz_model: PyTree) -> "PenzaiStateManager":
+        """Create state manager by scanning model for StateVariables.
+
+        Args:
+            pz_model: Penzai model tree to scan for state variables.
+
+        Returns:
+            PenzaiStateManager configured for the model's state variables.
+            If penzai is not available, returns an empty state manager.
+        """
+        state_vars = penzai_state_variable_paths(pz_model)
+        if state_vars:
+            raise UnsupportedPenzaiStateError(state_vars)
+        return cls.empty()
+
+    @classmethod
+    def empty(cls) -> "PenzaiStateManager":
+        """Create an empty state manager for stateless models."""
+        initial_state: dict[tuple[Any, ...], Any] = {}
+        return cls(
+            state_index=StateIndex(initial_state),
+        )
+
+    def bind_state(self, pz_model: PyTree, state: State) -> PyTree:
+        """Bind stored state values into the Penzai model.
+
+        Args:
+            pz_model: Penzai model with unbound state variables.
+            state: Feedbax State containing stored values.
+
+        Returns:
+            Penzai model with state values bound.
+        """
+        if not PENZAI_AVAILABLE:
+            return pz_model
+
+        state_values = state.get(self.state_index)
+        if not state_values:
+            return pz_model
+
+        raise NotImplementedError(
+            "PenzaiStateManager.bind_state cannot safely rebind Penzai StateVariable "
+            "values yet. Stateful Penzai models are rejected at construction; this "
+            "manager received stored state values at call time, so execution is unsafe."
+        )
+
+    def unbind_state(self, pz_model: PyTree, state: State) -> tuple[PyTree, State]:
+        """Extract state values from model and store in feedbax State.
+
+        Args:
+            pz_model: Penzai model after execution.
+            state: Current feedbax State.
+
+        Returns:
+            Tuple of (model with unbound state, updated feedbax State).
+        """
+        if not PENZAI_AVAILABLE:
+            return pz_model, state
+
+        # Extract updated state values
+        state_vars: dict[tuple[Any, ...], Any] = {}
+        variable_type = _penzai_state_variable_type()
+
+        def find_state_vars(path: tuple, node: Any) -> None:
+            if isinstance(node, variable_type):
+                state_vars[path] = node.value
+
+        def walk_tree(path: tuple, node: Any) -> None:
+            find_state_vars(path, node)
+            if hasattr(node, "__dict__"):
+                for key, value in node.__dict__.items():
+                    walk_tree(path + (key,), value)
+            elif isinstance(node, (list, tuple)):
+                for i, value in enumerate(node):
+                    walk_tree(path + (i,), value)
+            elif isinstance(node, dict):
+                for key, value in node.items():
+                    walk_tree(path + (key,), value)
+
+        walk_tree((), pz_model)
+
+        if state_vars:
+            state = state.set(self.state_index, state_vars)
+
+        return pz_model, state
+
+
+# =============================================================================
+# PenzaiSubgraph Component
+# =============================================================================
+
+
+class PenzaiSubgraph(GraphNode):
+    """Component that wraps a Penzai model for use in feedbax Graphs.
+
+    PenzaiSubgraph bridges the Penzai neural network framework with feedbax's
+    computational graph system. It handles:
+
+    - **Input translation**: Maps feedbax's dict-based port inputs to Penzai's
+      function call interface via InputMapping.
+    - **Output translation**: Maps Penzai's return values back to feedbax's
+      dict-based port outputs via OutputMapping.
+    - **State management**: Extracts and binds Penzai StateVariable objects at
+      call boundaries, persisting them in feedbax's State system.
+    - **Visualization**: Provides treescope HTML rendering for model inspection.
+
+    Example:
+        >>> import penzai as pz
+        >>> from penzai import pz as pzl
+        >>>
+        >>> # Create a Penzai MLP
+        >>> mlp = pzl.nn.Sequential([
+        ...     pzl.nn.Linear(input_size=4, output_size=32),
+        ...     pzl.nn.ReLU(),
+        ...     pzl.nn.Linear(input_size=32, output_size=2),
+        ... ])
+        >>>
+        >>> # Wrap for feedbax
+        >>> component = PenzaiSubgraph.from_layer(mlp)
+        >>>
+        >>> # Use in a Graph
+        >>> graph = Graph(
+        ...     nodes={"encoder": component, ...},
+        ...     wires=(...),
+        ...     ...
+        ... )
+
+    Attributes:
+        pz_model: The wrapped Penzai model (pz.Struct tree).
+        input_mapping: Mapping from feedbax inputs to layer input.
+        output_mapping: Mapping from layer output to feedbax outputs.
+        state_manager: Manager for Penzai StateVariable persistence.
+        input_ports: Tuple of input port names (from input_mapping).
+        output_ports: Tuple of output port names (from output_mapping).
+    """
+
+    pz_model: PyTree
+    input_mapping: InputMapping
+    output_mapping: OutputMapping
+    state_manager: PenzaiStateManager
+    builder_name: str | None  # Bug: bc551f7 — stored for serialization round-trip
+
+    # Override ClassVars from Component with instance fields
+    # These are dynamically set based on the input/output mappings
+    input_ports: tuple[str, ...] = ()  # type: ignore[misc]
+    output_ports: tuple[str, ...] = ()  # type: ignore[misc]
+
+    def __init__(
+        self,
+        pz_model: PyTree,
+        input_mapping: InputMapping,
+        output_mapping: OutputMapping,
+        state_manager: PenzaiStateManager | None = None,
+        builder_name: str | None = None,
+    ):
+        """Initialize PenzaiSubgraph.
+
+        Args:
+            pz_model: Penzai model to wrap.
+            input_mapping: How to map feedbax inputs to layer input.
+            output_mapping: How to map layer output to feedbax outputs.
+            state_manager: Optional state manager. If None, one is created
+                by scanning the model for StateVariables.
+            builder_name: Name of the registered builder used to create this
+                component. Stored for serialization round-tripping via
+                graph_to_spec / compile_graph.
+        """
+        self.pz_model = pz_model
+        self.input_mapping = input_mapping
+        self.output_mapping = output_mapping
+        self.state_manager = (
+            state_manager if state_manager is not None else PenzaiStateManager.from_model(pz_model)
+        )
+        self.builder_name = builder_name
+        self.input_ports = tuple(spec.port_name for spec in input_mapping.port_specs)
+        self.output_ports = tuple(spec.port_name for spec in output_mapping.port_specs)
+
+    @classmethod
+    def from_layer(
+        cls,
+        layer: PyTree,
+        input_port: str = "input",
+        output_port: str = "output",
+    ) -> "PenzaiSubgraph":
+        """Create PenzaiSubgraph from a single-input, single-output layer.
+
+        This is the simplest way to wrap a Penzai layer. The layer should
+        accept a single argument and return a single value.
+
+        Args:
+            layer: Penzai layer (e.g., pz.nn.Linear, pz.nn.Sequential).
+            input_port: Name for the input port. Default: "input".
+            output_port: Name for the output port. Default: "output".
+
+        Returns:
+            PenzaiSubgraph wrapping the layer.
+
+        Example:
+            >>> layer = pzl.nn.Linear(input_size=4, output_size=2)
+            >>> component = PenzaiSubgraph.from_layer(layer)
+        """
+        _require_penzai()
+        return cls(
+            pz_model=layer,
+            input_mapping=InputMapping.single(input_port),
+            output_mapping=OutputMapping.single(output_port),
+        )
+
+    @classmethod
+    def from_sequential(
+        cls,
+        layers: Sequence[PyTree],
+        input_port: str = "input",
+        output_port: str = "output",
+    ) -> "PenzaiSubgraph":
+        """Create PenzaiSubgraph from a sequence of Penzai layers.
+
+        Wraps the layers in a pz.nn.Sequential and creates appropriate
+        input/output mappings.
+
+        Args:
+            layers: Sequence of Penzai layers to compose.
+            input_port: Name for the input port. Default: "input".
+            output_port: Name for the output port. Default: "output".
+
+        Returns:
+            PenzaiSubgraph wrapping the sequential composition.
+
+        Example:
+            >>> layers = [
+            ...     pzl.nn.Linear(input_size=4, output_size=32),
+            ...     pzl.nn.ReLU(),
+            ...     pzl.nn.Linear(input_size=32, output_size=2),
+            ... ]
+            >>> component = PenzaiSubgraph.from_sequential(layers)
+        """
+        _require_penzai()
+        from penzai import pz as pzl
+
+        sequential = pzl.nn.Sequential(list(layers))
+        return cls.from_layer(sequential, input_port, output_port)
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        """Execute the wrapped Penzai model.
+
+        Args:
+            inputs: Dict mapping input port names to values.
+            state: Current feedbax State.
+            key: JAX PRNG key for stochastic operations.
+
+        Returns:
+            Tuple of (output dict, updated state).
+        """
+        # Map inputs to layer input format
+        layer_input = self.input_mapping(inputs)
+
+        # Bind state variables into model
+        bound_model = self.state_manager.bind_state(self.pz_model, state)
+
+        if not callable(bound_model):
+            raise TypeError(
+                "PenzaiSubgraph requires the wrapped model to be callable; "
+                f"got {type(bound_model).__name__}. Non-callable models cannot "
+                "be treated as identity nodes."
+            )
+
+        layer_output = bound_model(layer_input)
+
+        # Unbind state variables and update feedbax state
+        _, state = self.state_manager.unbind_state(bound_model, state)
+
+        # Map layer output to feedbax output format
+        outputs = self.output_mapping(layer_output)
+
+        return outputs, state
+
+    def init_state(self, *, key: PRNGKeyArray) -> State:
+        """Return initial state for this component.
+
+        Returns:
+            State with Penzai StateVariable initial values.
+        """
+        return State(self)
+
+    def treescope_html(self) -> str:
+        """Render the Penzai model to HTML using treescope.
+
+        Returns:
+            HTML string containing the treescope visualization.
+
+        Raises:
+            ImportError: If treescope is not installed.
+        """
+        return render_penzai_model_html(self.pz_model)
+
+    def state_view(self, state: State) -> PyTree | None:
+        """Return the state view for this component.
+
+        Returns the current Penzai state variable values.
+        """
+        try:
+            return state.get(self.state_manager.state_index)
+        except (KeyError, ValueError):
+            return None
+
+    def __repr__(self) -> str:
+        return (
+            f"PenzaiSubgraph("
+            f"input_ports={self.input_ports}, "
+            f"output_ports={self.output_ports}, "
+            f"pz_model={type(self.pz_model).__name__})"
+        )
+
+
+# =============================================================================
+# Factory Registry for Serialization
+# =============================================================================
+
+
+# Registry of model builders for web UI serialization
+# Maps builder name to (builder_fn, default_params, metadata) tuple.
+_PENZAI_MODEL_BUILDERS: dict[
+    str,
+    tuple[Callable[..., PyTree], dict[str, Any], dict[str, Any]],
+] = {}
+
+
+def _snapshot_builder_data(data: Mapping[str, Any], field: str) -> dict[str, Any]:
+    """Copy an acyclic builder data tree, preserving list and tuple types."""
+    if not isinstance(data, Mapping):
+        raise TypeError(f"{field} must be a mapping")
+    active: set[int] = set()
+
+    def snapshot(value: Any, path: str) -> Any:
+        value_type = type(value)
+        if value is None or value_type in (str, bool, int):
+            return value
+        if value_type is float:
+            if not isfinite(value):
+                raise ValueError(f"{path} must be a finite number")
+            return value
+        if not (isinstance(value, Mapping) or value_type in (list, tuple)):
+            raise TypeError(
+                f"{path} has unsupported Penzai builder data type {value_type.__name__}"
+            )
+
+        identity = id(value)
+        if identity in active:
+            raise ValueError(f"{path} contains a cycle")
+        active.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                result = {}
+                for key, child in value.items():
+                    if type(key) is not str:
+                        raise TypeError(f"{path} must have string keys")
+                    result[key] = snapshot(child, f"{path}[{key!r}]")
+                return result
+            items = (snapshot(child, f"{path}[{i}]") for i, child in enumerate(value))
+            return list(items) if value_type is list else tuple(items)
+        finally:
+            active.remove(identity)
+
+    return snapshot(data, field)
+
+
+def register_penzai_builder(
+    name: str,
+    builder_fn: Callable[..., PyTree],
+    default_params: Mapping[str, Any] | None = None,
+    *,
+    description: str | None = None,
+    input_shape: Sequence[int | str] | None = None,
+    output_shape: Sequence[int | str] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Register a Penzai model builder for web UI serialization.
+
+    This allows the web UI to reconstruct Penzai models from specifications
+    without needing to serialize the model weights directly.
+
+    Defaults and metadata are snapshotted as acyclic data trees of string-keyed
+    mappings, lists, tuples, and scalar strings, booleans, finite numbers, or
+    None. Mappings become plain dicts. Builders can bind other resources in
+    their callable.
+
+    Args:
+        name: Unique name for the builder (e.g., "penzai_mlp").
+        builder_fn: Function that takes params dict and returns Penzai model.
+        default_params: Default parameter values for the builder.
+        description: Short human-readable builder description for Studio.
+        input_shape: Optional expected input shape summary.
+        output_shape: Optional expected output shape summary.
+        metadata: Optional extra discoverability metadata.
+
+    Example:
+        >>> def build_mlp(params):
+        ...     return pzl.nn.Sequential([
+        ...         pzl.nn.Linear(params["input_size"], params["hidden_size"]),
+        ...         pzl.nn.ReLU(),
+        ...         pzl.nn.Linear(params["hidden_size"], params["output_size"]),
+        ...     ])
+        >>>
+        >>> register_penzai_builder(
+        ...     "penzai_mlp",
+        ...     build_mlp,
+        ...     {"input_size": 4, "hidden_size": 64, "output_size": 2},
+        ... )
+    """
+    _require_penzai()
+    builder_metadata = _snapshot_builder_data(metadata if metadata is not None else {}, "metadata")
+    builder_metadata.setdefault(
+        "description",
+        description or getattr(builder_fn, "__doc__", None) or f"Penzai builder {name}.",
+    )
+    if input_shape is not None:
+        builder_metadata["input_shape"] = [str(item) for item in input_shape]
+    if output_shape is not None:
+        builder_metadata["output_shape"] = [str(item) for item in output_shape]
+    _PENZAI_MODEL_BUILDERS[name] = (
+        builder_fn,
+        _snapshot_builder_data(
+            default_params if default_params is not None else {}, "default_params"
+        ),
+        builder_metadata,
+    )
+
+
+def get_penzai_builder(name: str) -> tuple[Callable[..., PyTree], dict[str, Any]] | None:
+    """Get a registered Penzai model builder by name.
+
+    Args:
+        name: Name of the registered builder.
+
+    Returns:
+        Tuple of (builder_fn, detached default_params) or None if not found.
+    """
+    builder_info = _PENZAI_MODEL_BUILDERS.get(name)
+    if builder_info is None:
+        return None
+    builder_fn, default_params, _ = builder_info
+    return builder_fn, _snapshot_builder_data(default_params, "default_params")
+
+
+def list_penzai_builder_info() -> list[dict[str, Any]]:
+    """Return detached registry-visible metadata for all Penzai builders."""
+
+    builders: list[dict[str, Any]] = []
+    for name, (_, default_params, metadata) in sorted(_PENZAI_MODEL_BUILDERS.items()):
+        snapshot = _snapshot_builder_data(metadata, "metadata")
+        builders.append(
+            {
+                "name": name,
+                "description": str(snapshot.pop("description", None) or f"Penzai builder {name}."),
+                "default_params": _snapshot_builder_data(default_params, "default_params"),
+                "input_shape": snapshot.pop("input_shape", None),
+                "output_shape": snapshot.pop("output_shape", None),
+                "metadata": snapshot,
+            }
+        )
+    return builders
+
+
+def list_penzai_builders() -> list[str]:
+    """List all registered Penzai model builder names.
+
+    Returns:
+        List of registered builder names.
+    """
+    return list(_PENZAI_MODEL_BUILDERS.keys())
+
+
+def _walk_state_variables(
+    path: tuple[Any, ...], node: Any, paths: list[str], variable_type: type,
+) -> None:
+    if isinstance(node, variable_type):
+        paths.append(_format_penzai_path(path))
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _walk_state_variables(path + (key,), value, paths, variable_type)
+        return
+    if isinstance(node, (list, tuple)):
+        for index, value in enumerate(node):
+            _walk_state_variables(path + (index,), value, paths, variable_type)
+        return
+    if hasattr(node, "__dict__"):
+        for key, value in vars(node).items():
+            _walk_state_variables(path + (key,), value, paths, variable_type)
+
+
+def _format_penzai_path(path: tuple[Any, ...]) -> str:
+    if not path:
+        return "<root>"
+    parts: list[str] = []
+    for item in path:
+        if isinstance(item, int):
+            parts.append(f"[{item}]")
+        else:
+            text = str(item)
+            if parts:
+                parts.append(f".{text}")
+            else:
+                parts.append(text)
+    return "".join(parts)
+
+
+def penzai_state_variable_paths(pz_model: PyTree) -> list[str]:
+    """Return formatted paths for Penzai ``StateVariable`` leaves."""
+
+    if not PENZAI_AVAILABLE:
+        return []
+    paths: list[str] = []
+    _walk_state_variables((), pz_model, paths, _penzai_state_variable_type())
+    return paths
+
+
+def penzai_structure_summary(pz_model: PyTree) -> dict[str, int]:
+    """Return a compact structural summary for authoring diagnostics."""
+
+    array_leaves: list[Any] = []
+    submodule_count = 0
+    seen: set[int] = set()
+
+    def visit(node: Any) -> None:
+        nonlocal submodule_count
+        node_id = id(node)
+        if node_id in seen:
+            return
+        seen.add(node_id)
+        if hasattr(node, "shape") and hasattr(node, "dtype"):
+            array_leaves.append(node)
+            return
+        if hasattr(node, "__dict__"):
+            submodule_count += 1
+            for value in vars(node).values():
+                visit(value)
+        elif isinstance(node, dict):
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                visit(value)
+
+    visit(pz_model)
+    parameter_count = 0
+    for leaf in array_leaves:
+        size = getattr(leaf, "size", None)
+        if isinstance(size, int):
+            parameter_count += size
+    return {
+        "parameter_count": parameter_count,
+        "array_leaf_count": len(array_leaves),
+        "submodule_count": max(submodule_count, 1),
+    }
+
+
+class UnknownPenzaiBuilderError(ValueError):
+    """The requested name has no registered model builder."""
+
+
+def resolve_penzai_model(
+    builder_name: str,
+    params: Mapping[str, Any] | None = None,
+) -> PyTree:
+    """Construct a model with a local parameter tree and top-level overrides.
+
+    Overrides use the same data-tree domain as registered defaults.
+    """
+    builder_info = _PENZAI_MODEL_BUILDERS.get(builder_name)
+    if builder_info is None:
+        raise UnknownPenzaiBuilderError(
+            f"Unknown Penzai builder {builder_name!r}. Available builders: {list_penzai_builders()}"
+        )
+    _require_penzai()
+    builder_fn, default_params, _ = builder_info
+    effective_params = {**default_params, **(params if params is not None else {})}
+    return builder_fn(_snapshot_builder_data(effective_params, "params"))
+
+
+def render_penzai_model_html(model: PyTree) -> str:
+    """Render an already constructed Penzai model."""
+    import treescope
+
+    assert treescope is not None
+    return str(treescope.render_to_html(model, roundtrip_mode=False))
+
+
+def build_penzai_subgraph(
+    builder_name: str,
+    params: Mapping[str, Any] | None = None,
+    input_port: str = "input",
+    output_port: str = "output",
+) -> PenzaiSubgraph:
+    """Build a PenzaiSubgraph from a registered builder.
+
+    Args:
+        builder_name: Name of the registered builder.
+        params: Parameters to pass to the builder (merged with defaults).
+        input_port: Name for the input port. Default: "input".
+        output_port: Name for the output port. Default: "output".
+
+    Returns:
+        PenzaiSubgraph wrapping the built model.
+
+    Raises:
+        ValueError: If builder_name is not registered.
+    """
+    return PenzaiSubgraph(
+        pz_model=resolve_penzai_model(builder_name, params),
+        input_mapping=InputMapping.single(input_port),
+        output_mapping=OutputMapping.single(output_port),
+        builder_name=builder_name,
+    )
+
+
+class PenzaiAdapter(PenzaiSubgraph, Component):
+    """Wrap a registered Penzai model builder for portable inference."""
+
+    ports = Ports(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+        dynamic=DynamicPortPolicy(
+            count_mode="names",
+            input_name_params=("input_port",),
+            output_name_params=("output_port",),
+            dynamic_port_type=PortType(dtype="any"),
+        ),
+    )
+    component_options = ComponentOptions(interior_domain=PENZAI_DOMAIN_ID, template_kind="display")
+
+    def __init__(self, builder_name: str, input_port: str = "input", output_port: str = "output"):
+        if not builder_name:
+            raise ValueError("PenzaiAdapter requires 'builder_name' parameter")
+        _require_penzai()
+        try:
+            super().__init__(
+                pz_model=resolve_penzai_model(builder_name),
+                input_mapping=InputMapping.single(input_port),
+                output_mapping=OutputMapping.single(output_port),
+                builder_name=builder_name,
+            )
+        except UnsupportedPenzaiStateError as exc:
+            raise ValueError(
+                "penzai.stateful_unsupported: PenzaiAdapter node uses unsupported "
+                + f"StateVariable leaves at {', '.join(exc.paths)}"
+            ) from exc
+
+    @property
+    def input_port(self):
+        (name,) = self.input_ports
+        return name
+
+    @property
+    def output_port(self):
+        (name,) = self.output_ports
+        return name
+
+
+# =============================================================================
+# Convenience exports
+# =============================================================================
+
+
+__all__ = [
+    # Core types
+    "PenzaiSubgraph",
+    "PenzaiAdapter",
+    "InputMapping",
+    "OutputMapping",
+    "PortSpec",
+    "PenzaiStateManager",
+    # Factory functions
+    "register_penzai_builder",
+    "get_penzai_builder",
+    "list_penzai_builder_info",
+    "list_penzai_builders",
+    "build_penzai_subgraph",
+    "penzai_state_variable_paths",
+    "penzai_structure_summary",
+    "PENZAI_AVAILABLE",
+]

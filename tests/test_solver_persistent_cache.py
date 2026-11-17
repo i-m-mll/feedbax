@@ -19,7 +19,7 @@ _PROBE = dedent(
     import jax.numpy as jnp
     import jax.tree as jt
     import numpy as np
-    from feedbax.runtime.filters import LowPassFilter
+    from feedbax.builtins.runtime.filters import LowPassFilter
 
     class CacheHits(logging.Handler):
         def __init__(self):
