@@ -14,12 +14,13 @@ from feedbax.contracts.task_document import (
 )
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-from feedbax.contracts.project_inputs import InputBinding, NonemptyText, ProjectName, RowKey
+from feedbax.contracts.project_inputs import (
+    DocumentReference as DocumentReference, InputBinding, NonemptyText, Pointer as Pointer, ProjectName, RowKey,
+)
 from feedbax.contracts.project_sweep import PatchPath, Sweep
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 
 type Payload = dict[str, JsonValue]
-type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)*$")]
 type DocumentOverridePath = Annotated[Pointer, StringConstraints(min_length=1)]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "evaluate", "analyze", "report"]
@@ -98,11 +99,6 @@ class Document(StrictModel):
         elif self.schema_id == OBJECTIVE_DOCUMENT_SCHEMA_ID:
             ObjectiveDocument.model_validate(self.payload)
         return self
-
-
-class DocumentReference(StrictModel):
-    document: ProjectName
-    pointer: Pointer | None = None
 
 
 class InlineBase(StrictModel):

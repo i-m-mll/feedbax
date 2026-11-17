@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import pytest
 from equinox.nn import State, StateIndex
 
-from feedbax.mechanics.force_fields import FixedField, FixedFieldParams
+from feedbax.builtins.mechanics.force_fields import FixedField, FixedFieldParams
 from feedbax.runtime.state_indices import set_state_matching_dtypes
 
 

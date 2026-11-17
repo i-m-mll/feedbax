@@ -97,6 +97,7 @@ class RolloutSettings(StrictModel):
     trial_policy: Literal["paired"]
     retention: Literal["raw_states", "observations"] = "raw_states"
     variation: VariationEdits
+    input_overrides: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     @field_validator("variation")
     @classmethod
@@ -144,6 +145,14 @@ class ResolvedRolloutMember(StrictModel):
     model: Sha256
     task: Sha256
     trials: tuple[str, ...]
+    replica_ids: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
+
+
+class ResolvedInitialRollout(StrictModel):
+    initial_model: Sha256
+    model: Sha256
+    task: Sha256
+    trials: tuple[str, ...]
 
 
 def rollout_semantics(
@@ -167,8 +176,8 @@ class ResolvedRolloutBinding(StrictModel):
     """Scientific inputs bound by the worker before starting the paired rollout."""
 
     schema_id: Literal["feedbax.evaluate.binding.v1"] = "feedbax.evaluate.binding.v1"
-    members: tuple[ResolvedRolloutMember, ...] = Field(min_length=1)
-    objective: Sha256
+    members: Annotated[tuple[ResolvedRolloutMember, ...], Field(min_length=1)] | tuple[ResolvedInitialRollout]
+    objective: Sha256 | None = Field(default=None, exclude_if=lambda value: value is None)
     seed: int
     trial_policy: Literal["paired"]
 

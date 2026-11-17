@@ -16,9 +16,8 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.runtime.graph import Graph, init_state_from_component
-from feedbax.components.penzai import (
+from feedbax.builtins.components.penzai import (
     PENZAI_AVAILABLE,
-    TREESCOPE_AVAILABLE,
     PenzaiSubgraph,
     InputMapping,
     OutputMapping,
@@ -30,7 +29,7 @@ from feedbax.components.penzai import (
     list_penzai_builders,
     build_penzai_subgraph,
 )
-from feedbax.components.penzai import PenzaiAdapter
+from feedbax.builtins.components.penzai import PenzaiAdapter
 from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report, inspect_penzai_model
 from feedbax.compiler.serialization import graph_to_spec
 
@@ -241,7 +240,7 @@ class TestPenzaiSubgraph:
         )
 
         # Mock penzai availability check
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         original_require = pc._require_penzai
 
@@ -403,7 +402,7 @@ class TestPenzaiStateManager:
 
     def test_stateful_penzai_model_raises_until_rebinding_contract_exists(self, monkeypatch):
         """StateVariable discovery must fail closed instead of installing a no-op manager."""
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         class FakeStateVariable:
             def __init__(self, value):
@@ -414,14 +413,14 @@ class TestPenzaiStateManager:
                 self.running = FakeStateVariable(jnp.array([1.0]))
 
         monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
-        monkeypatch.setattr(pc, "StateVariable", FakeStateVariable)
+        monkeypatch.setattr(pc, "_penzai_state_variable_type", lambda: FakeStateVariable)
 
         with pytest.raises(NotImplementedError, match="does not yet support stateful Penzai"):
             PenzaiStateManager.from_model(FakeModel())
 
     def test_bind_state_raises_if_stored_state_reaches_call_boundary(self, monkeypatch):
         """bind_state must not discard already-stored Penzai state values."""
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
         manager = PenzaiStateManager(
@@ -443,7 +442,7 @@ class TestFactoryRegistry:
 
     def test_register_and_get_builder(self):
         """Test registering and retrieving a builder."""
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         # Bypass penzai requirement
         original_require = pc._require_penzai
@@ -489,7 +488,7 @@ class TestFactoryRegistry:
 
     def test_list_builders(self):
         """Test listing registered builders."""
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         original_require = pc._require_penzai
         pc._require_penzai = lambda: None
@@ -512,7 +511,7 @@ class TestFactoryRegistry:
 
     def test_build_penzai_subgraph(self):
         """Test building PenzaiSubgraph from registered builder."""
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         original_require = pc._require_penzai
         pc._require_penzai = lambda: None
@@ -549,12 +548,13 @@ class TestFactoryRegistry:
             build_penzai_subgraph("nonexistent_builder")
 
     def test_authoring_report_for_stateless_builder_is_ok(self, monkeypatch):
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
         import feedbax.compiler.penzai_compiler as compiler
 
         monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
         monkeypatch.setattr(compiler, "PENZAI_AVAILABLE", True)
         monkeypatch.setattr(pc, "_require_penzai", lambda: None)
+        monkeypatch.setattr(compiler, "penzai_state_variable_paths", lambda model: [])
 
         def mock_builder(params):
             return MockPenzaiLayer(
@@ -578,7 +578,7 @@ class TestFactoryRegistry:
             pc._PENZAI_MODEL_BUILDERS.pop("test_compile_stateless", None)
 
     def test_authoring_report_for_stateful_builder_names_state_variables(self, monkeypatch):
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
         import feedbax.compiler.penzai_compiler as compiler
 
         class FakeStateVariable:
@@ -591,7 +591,7 @@ class TestFactoryRegistry:
 
         monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
         monkeypatch.setattr(compiler, "PENZAI_AVAILABLE", True)
-        monkeypatch.setattr(pc, "StateVariable", FakeStateVariable)
+        monkeypatch.setattr(pc, "_penzai_state_variable_type", lambda: FakeStateVariable)
         monkeypatch.setattr(pc, "_require_penzai", lambda: None)
 
         try:
@@ -610,7 +610,7 @@ class TestFactoryRegistry:
             pc._PENZAI_MODEL_BUILDERS.pop("test_compile_stateful", None)
 
     def test_runtime_stateful_adapter_error_is_not_notimplemented(self, monkeypatch):
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         class FakeStateVariable:
             def __init__(self, value):
@@ -621,7 +621,7 @@ class TestFactoryRegistry:
                 self.running = FakeStateVariable(jnp.array([1.0]))
 
         monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
-        monkeypatch.setattr(pc, "StateVariable", FakeStateVariable)
+        monkeypatch.setattr(pc, "_penzai_state_variable_type", lambda: FakeStateVariable)
         monkeypatch.setattr(pc, "_require_penzai", lambda: None)
 
         try:
@@ -633,12 +633,12 @@ class TestFactoryRegistry:
             pc._PENZAI_MODEL_BUILDERS.pop("test_runtime_stateful", None)
 
     @pytest.mark.skipif(
-        not (PENZAI_AVAILABLE and TREESCOPE_AVAILABLE), reason="penzai and treescope required"
+        not PENZAI_AVAILABLE, reason="penzai not installed"
     )
     def test_seeded_build_and_inspection_isolate_nested_params(self):
         from penzai import pz
 
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         @pz.pytree_dataclass
         class Projection(pz.nn.Layer):
@@ -705,7 +705,7 @@ class TestFactoryRegistry:
     @pytest.mark.skipif(not PENZAI_AVAILABLE, reason="penzai not installed")
     def test_graph_executes_the_model_resolved_during_compilation(self):
         from penzai import pz
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
 
         constructions = 0
 
@@ -765,7 +765,7 @@ class TestFactoryRegistry:
             pc._PENZAI_MODEL_BUILDERS.pop(builder_name, None)
 
     @pytest.mark.skipif(
-        not (PENZAI_AVAILABLE and TREESCOPE_AVAILABLE), reason="penzai and treescope required"
+        not PENZAI_AVAILABLE, reason="penzai not installed"
     )
     def test_inspector_renders_the_model_described_by_its_report(
         self
@@ -774,7 +774,7 @@ class TestFactoryRegistry:
         from fastapi.testclient import TestClient
         from penzai import pz
 
-        import feedbax.components.penzai as pc
+        import feedbax.builtins.components.penzai as pc
         from feedbax.web.api import penzai as penzai_api
 
         @pz.pytree_dataclass
@@ -806,7 +806,6 @@ class TestFactoryRegistry:
 # =============================================================================
 
 
-@pytest.mark.skipif(not TREESCOPE_AVAILABLE, reason="treescope not installed")
 class TestTreescopeIntegration:
     """Tests for treescope HTML rendering."""
 

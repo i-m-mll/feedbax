@@ -19,7 +19,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.dataset import Variable
 from feedbax.runtime.graph import Graph, _nested_cycle_key, init_state_from_component
-from feedbax.contracts.model_values import MODEL_OWNERS, StateValue
+from feedbax.contracts.model_values import StateValue
 
 
 class StateLayoutError(ValueError):
@@ -28,13 +28,14 @@ class StateLayoutError(ValueError):
         super().__init__(reason)
 
 
-def scene_position_key(graph: GraphSpec) -> str | None:
+def scene_position_key(graph: GraphSpec, runtime: Graph) -> str | None:
     """Resolve the declared Scene effector from the effective model."""
-    leaves = dict(graph_leaf_specs(graph))
-    candidates = {
-        scope: owner for scope, node in leaves.items()
-        if (owner := MODEL_OWNERS.get(node.type)) is not None and owner.scene_position is not None
-    }
+    candidates = {}
+    for scope, _ in graph_leaf_specs(graph):
+        parent = runtime.get_node(".".join(scope[:-1])) if len(scope) > 1 else runtime
+        binding = parent.component_bindings[scope[-1]]
+        if (facts := binding.model_facts) is not None and facts.scene_position is not None:
+            candidates[scope] = facts
     if len(candidates) == 1:
         (scope, owner), = candidates.items()
         return semantic_key("model", "state", scope, owner.scene_position)
@@ -83,7 +84,8 @@ class RawStateLayout:
                     labels = ["x", "y"] if axis == "xy" else np.arange(size)
                     coordinates[axis] = Variable(np.asarray(labels), (axis,))
             variables[value.key] = Variable(
-                samples[None, None], dims, units=value.units, frame=value.frame,
+                samples.reshape((1,) * (len(axes) - 1) + samples.shape),
+                dims, units=value.units, frame=value.frame,
             )
         return variables, coordinates
 
@@ -104,11 +106,11 @@ def _bind_owner(
     path = pointer(("inputs", "subject", "graph", *(
         token for parent in scope for token in ("subgraphs", parent)
     ), "nodes", name))
-    owner = MODEL_OWNERS.get(binding.type_id)
+    owner = binding.model_facts
     node = authored.nodes[name]
     if (
-        owner is None or owner.states is None or binding.revision != owner.revision
-        or node.type != binding.type_id or node.revision not in {None, owner.revision}
+        owner is None or owner.states is None or not isinstance(component, binding.owner_class)
+        or node.type != binding.type_id or node.revision not in (None, binding.revision)
     ):
         raise StateLayoutError(path, "owner revision has no declared raw-state layout")
     index = getattr(component, "state_index", None)
@@ -120,7 +122,7 @@ def _bind_owner(
             raise StateLayoutError(path, "runtime configuration slots differ from the owner declaration")
         indices = [slot for slot in indices if slot is not configured]
     declared = owner.states
-    if not indices and (not declared or binding.type_id == "feedbax.GRU" and index is None):
+    if not indices and (not declared or not owner.has_state(node)):
         return ()
     if len(indices) != 1 or indices[0] is not index or not declared:
         raise StateLayoutError(path, "runtime state slots differ from the owner declaration")

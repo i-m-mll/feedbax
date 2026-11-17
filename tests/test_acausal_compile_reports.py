@@ -20,7 +20,7 @@ from feedbax.contracts.graph import (
     WorkspaceDocument,
 )
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
-from feedbax.compiler.mechanics_templates import two_link_arm_6muscle_template_graph
+from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
 
 
 pytestmark = pytest.mark.feedbax_contract

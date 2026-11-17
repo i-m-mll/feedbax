@@ -121,6 +121,9 @@ feedbax-run = "feedbax.bin.run:main"
 feedbax-analysis = "feedbax.bin.analysis:main"
 feedbax-figure = "feedbax.bin.figure:main"
 
+[project.entry-points."feedbax.plugins"]
+feedbax = "feedbax.builtins"
+
 [project.urls]
 repository = "https://github.com/i-m-mll/feedbax"
 documentation = "https://docs.lprt.ca/feedbax"

@@ -12,11 +12,11 @@ from equinox import Module
 from jaxtyping import PRNGKeyArray
 
 from feedbax._vendor.jax_cookbook import identity as identity_func
-from feedbax.runtime.components import GRU, LSTM, named_activation
+from feedbax.builtins.runtime.components import GRU, LSTM, named_activation
 from feedbax.runtime.graph import Graph
 
 if TYPE_CHECKING:
-    from feedbax.models.networks import PopulationStructure
+    from feedbax.builtins.models.networks import PopulationStructure
 
 
 def recurrent_controller(
@@ -45,9 +45,9 @@ def recurrent_controller(
     The carry includes the hidden signal after any activation and noise.
     """
     from feedbax.compiler.graph import GraphDocument, compile_graph
-    from feedbax.compiler.templates import recurrent_controller_template_graph
+    from feedbax.builtins.templates.templates import recurrent_controller_template_graph
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.models.networks import (
+    from feedbax.builtins.models.networks import (
         LeakyRNNCell,
         VanillaRNN,
         normalize_recurrent_cell_type,

@@ -46,7 +46,6 @@ class RunPodEnvironment(SessionModel):
     groups: tuple[DependencyName, ...] = ()
     extras: tuple[DependencyName, ...] = ()
     enable_x64: bool = False
-    bootstrap_modules: tuple[str, ...] = ()
 
     @field_validator("workspace", "bootstrap_python", "uv")
     @classmethod
@@ -364,5 +363,5 @@ class RunPodSessionProvider:
         return SessionJobs(driver, session_id, venue_jobs=VenueJobs(
             self._connection(resource), python=layout.python, cwd=layout.root / "repo",
             host_root=layout.host, projects_root=layout.root / "projects", stores_root=layout.root / "stores",
-            bootstrap_modules=self.environment.bootstrap_modules, worker_environment=self.environment.worker_environment,
+            worker_environment=self.environment.worker_environment,
         ))

@@ -1,0 +1,332 @@
+"""AcausalSystem: bridge between acausal elements and the feedbax DAE framework.
+
+An ``AcausalSystem`` is a ``DAEComponent`` whose vector field is produced by
+the assembly algorithm at ``__init__`` time.  At runtime it behaves exactly
+like any other ``Component`` in a feedbax ``Graph``.
+
+:copyright: Copyright 2024-2025 by MLL <mll@mll.bio>.
+:license: Apache 2.0.  See LICENSE for details.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Callable, Optional, Type
+
+import diffrax as dfx
+from equinox import Module, field
+from equinox.nn import State
+import jax.numpy as jnp
+from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
+import optimistix as optx
+
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.graph import ComponentSpec
+from feedbax.contracts.model_values import ModelFacts
+from feedbax.contracts.portable import ComponentOwner, ComponentOptions, Ports
+from feedbax.contracts.component import PortType
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
+from feedbax._acausal_payload import SourcePayload
+
+
+class AcausalSystemConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    dt: float = Field(default=0.01, gt=0, allow_inf_nan=False)
+    domain: Literal["translational", "rotational"] = "translational"
+
+
+from feedbax.mechanics.dae import DAEComponent
+from feedbax.acausal.assembly import assemble_system
+from feedbax.acausal.base import (
+    AcausalConnection,
+    AcausalElement,
+    StateLayout,
+)
+
+
+# ---------------------------------------------------------------------------
+# State / Params
+# ---------------------------------------------------------------------------
+
+
+class AcausalSystemState(Module):
+    """Flat state vector for an assembled acausal system."""
+
+    y: Float[Array, " n"]
+
+
+class AcausalParams(Module):
+    """Named parameter array for an acausal system.
+
+    Attributes:
+        values: Mapping of parameter names to scalar arrays.
+    """
+
+    values: dict[str, Array]
+
+    def get(self, name: str) -> Scalar:
+        """Look up a parameter value by name."""
+        return self.values[name]
+
+
+# ---------------------------------------------------------------------------
+# AcausalSystem
+# ---------------------------------------------------------------------------
+
+
+class AcausalSystem(DAEComponent[AcausalSystemState], ComponentOwner):
+    """Assembled acausal system as a standard DAE component.
+
+    Construction-time:
+        Takes element descriptors and connections, runs the assembly
+        algorithm, and captures the resulting vector field and layout.
+
+    Runtime:
+        Standard ``DAEComponent`` execution through ``diffrax``.
+
+    Attributes:
+        params: Trainable physical parameters (mass, stiffness, ...).
+    """
+
+    @staticmethod
+    def _checkpointable(node: ComponentSpec, interior: AcausalGraphSpec) -> bool:
+        return (
+            interior.mujoco_asset is not None
+            and interior.solver.solver_type == "mujoco"
+            and interior.solver.mjx_backend == "jax"
+            and node.params.get("trainable") is not True
+        )
+
+    model_facts = ModelFacts(states=None, physical_checkpoint=_checkpointable)
+    config = AcausalSystemConfig
+    component_options = ComponentOptions(
+        is_composite=True,
+        interior_domain=ACAUSAL_DOMAIN_ID,
+        build_context_fields=(
+            "elements",
+            "connections",
+            "solver_type",
+            "root_finder",
+            "input_bindings",
+            "output_bindings",
+            "key",
+        ),
+    )
+    ports = Ports({"input": PortType(dtype="vector")}, {"state": PortType(dtype="state")})
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return cls(dt=config.dt, **context)
+
+    def configuration_values(self):
+        raise ValueError("AcausalSystem export requires its authoritative graph interior")
+
+    # Override ClassVar with instance fields so each instance can differ.
+    input_ports: tuple[str, ...]
+    output_ports: tuple[str, ...]
+
+    params: AcausalParams
+    _layout: StateLayout = field(static=True)
+    _compiled_vf: Callable = field(static=True)
+    _compiled_sensor_fn: Callable = field(static=True)
+    input_payloads: dict[str, SourcePayload] = field(static=True)
+    _input_slots: tuple[tuple[str, int], ...] = field(static=True)
+    _output_bindings: dict[str, str] = field(static=True)
+
+    def __init__(
+        self,
+        elements: dict[str, AcausalElement],
+        connections: list[AcausalConnection],
+        dt: float | None = None,
+        solver_type: Type[dfx.AbstractSolver] | dfx.AbstractSolver = dfx.Euler,
+        root_finder: Optional[optx.AbstractRootFinder] = None,
+        *,
+        input_bindings: Mapping[str, str] | None = None,
+        output_bindings: Mapping[str, str] | None = None,
+        key: Optional[PRNGKeyArray] = None,
+    ):
+        """Assemble acausal elements into a DAE component.
+
+        Args:
+            elements: Named acausal element descriptors.
+            connections: Port-level connections.
+            dt: Integration time step.
+            solver_type: Diffrax solver class or preconfigured instance.
+            root_finder: Optional Optimistix root finder for an implicit solver class.
+            input_bindings: Optional mapping from public causal input port
+                names to source element names in the assembled acausal graph.
+            output_bindings: Optional mapping from public causal output port
+                names to sensor element names in the assembled acausal graph.
+            key: PRNG key (passed through to ``DAEComponent``).
+        """
+
+        from feedbax.contracts.portable import default_configuration
+
+        config = default_configuration(type(self), **({} if dt is None else {"dt": dt}))
+        dt = config.dt
+
+        # ---- Assembly ----------------------------------------------------
+        layout, vf_fn, params_dict, sensor_fn = assemble_system(elements, connections)
+
+        self._layout = layout
+        self._compiled_vf = vf_fn
+        self._compiled_sensor_fn = sensor_fn
+
+        # ---- Parameters --------------------------------------------------
+        param_values = {name: jnp.zeros(()) + value for name, value in params_dict.items()}
+        self.params = AcausalParams(values=param_values)
+
+        # ---- Ports -------------------------------------------------------
+        element_slots: dict[str, list[str]] = {}
+        ordered_inputs = sorted(layout._inputs, key=layout._inputs.__getitem__)
+        for variable in ordered_inputs:
+            element_name, slot = layout._input_specs[variable]
+            slots = element_slots.setdefault(element_name, [])
+            if slot == len(slots):
+                slots.append(variable.rsplit(".", 1)[-1])
+        element_payloads = {
+            name: elements[name].source_payload or SourcePayload(tuple(slots))
+            for name, slots in element_slots.items()
+        }
+        if input_bindings is None:
+            public_input_bindings = {name: name for name in element_payloads}
+            include_default_input_port = not public_input_bindings
+        else:
+            public_input_bindings = dict(input_bindings)
+            include_default_input_port = False
+            bound_elements = set(public_input_bindings.values())
+            unknown_inputs = bound_elements - element_payloads.keys()
+            if unknown_inputs:
+                raise ValueError(
+                    "AcausalSystem input bindings reference unknown source elements: "
+                    f"{sorted(unknown_inputs)!r}"
+                )
+            missing_inputs = element_payloads.keys() - bound_elements
+            if missing_inputs:
+                raise ValueError(
+                    f"AcausalSystem source elements have no input binding: {sorted(missing_inputs)!r}"
+                )
+            if len(bound_elements) != len(public_input_bindings):
+                raise ValueError("AcausalSystem requires one public input per source element")
+        if output_bindings is None:
+            public_output_bindings = {name: name for name in sorted(layout._outputs)}
+            include_state_port = True
+        else:
+            public_output_bindings = dict(output_bindings)
+            unknown_outputs = set(public_output_bindings.values()) - set(layout._outputs)
+            if unknown_outputs:
+                raise ValueError(
+                    "AcausalSystem output bindings reference unknown sensor elements: "
+                    f"{sorted(unknown_outputs)!r}"
+                )
+            include_state_port = False
+
+        self.input_payloads = {
+            port: element_payloads[element] for port, element in public_input_bindings.items()
+        }
+        public_port_by_element = {element: port for port, element in public_input_bindings.items()}
+        self._input_slots = tuple(
+            (public_port_by_element[element], slot)
+            for element, slot in (layout._input_specs[variable] for variable in ordered_inputs)
+        )
+        self._output_bindings = public_output_bindings
+        self.input_ports = (
+            tuple(public_input_bindings)
+            if public_input_bindings or not include_default_input_port
+            else ("input",)
+        )
+
+        output_port_names = tuple(public_output_bindings)
+        self.output_ports = (
+            output_port_names + ("state",) if include_state_port else output_port_names
+        )
+
+        # ---- DAEComponent base init -------------------------------------
+        super().__init__(
+            dt=dt,
+            solver_type=solver_type,
+            root_finder=root_finder,
+            key=key,
+        )
+
+    # -- DAEComponent abstract method implementations ---------------------
+
+    def vector_field(
+        self,
+        t: Scalar,
+        state: AcausalSystemState,
+        input_val: PyTree[Array],
+    ) -> AcausalSystemState:
+        """Compute dy/dt for the assembled system."""
+        dy = self._compiled_vf(t, state.y, (input_val, self.params.values))
+        return AcausalSystemState(y=dy)
+
+    def init_system_state(self, *, key: PRNGKeyArray) -> AcausalSystemState:
+        """Return a zero-initialised state vector."""
+        y0 = jnp.zeros(self._layout.total_size)
+        return AcausalSystemState(y=y0)
+
+    def extract_outputs(self, state: AcausalSystemState) -> dict[str, PyTree]:
+        """Leave sensor extraction to __call__, where actual inputs are available."""
+        return {}
+
+    @property
+    def input_size(self) -> int:
+        """Number of scalar causal inputs."""
+        return max(len(self._input_slots), 1)
+
+    # -- Override __call__ for input routing --------------------------------
+
+    def __call__(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[str, PyTree], State]:
+        """Execute one integration step.
+
+        Collects causal inputs into a flat array and delegates to the base
+        ``DAEComponent.__call__``.
+        """
+        dtype = jnp.zeros(()).dtype
+        payloads: dict[str, Array] = {}
+        for port, payload in self.input_payloads.items():
+            if port not in inputs or inputs[port] is None:
+                raise ValueError(f"Missing required acausal source input {port!r}")
+            value = jnp.asarray(inputs[port])
+            payload.validate_shape(port, value.shape)
+            payloads[port] = jnp.atleast_1d(value).astype(dtype)
+
+        input_val = (
+            jnp.stack([payloads[port][slot] for port, slot in self._input_slots])
+            if self._input_slots
+            else self._get_zero_input()
+        )
+
+        modified_inputs = {"input": input_val}
+        outputs, state = super().__call__(modified_inputs, state, key=key)
+        if "state" not in self.output_ports:
+            outputs = {key: value for key, value in outputs.items() if key != "state"}
+
+        dae_state = self.state_view(state)
+        sensor_outputs = self._compiled_sensor_fn(dae_state.system.y, input_val, self.params.values)
+        internal_outputs = {**outputs, **sensor_outputs}
+        for public_port, sensor_element in self._output_bindings.items():
+            if sensor_element in internal_outputs:
+                outputs[public_port] = internal_outputs[sensor_element]
+        if "state" not in self.output_ports:
+            outputs = {
+                port_name: outputs[port_name]
+                for port_name in self.output_ports
+                if port_name in outputs
+            }
+        else:
+            outputs.update(sensor_outputs)
+        return outputs, state
+
+    def _get_zero_input(self) -> Array:
+        """Zero-valued input for solver initialisation."""
+        return jnp.zeros(self.input_size)

@@ -5,9 +5,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.acausal import (
-    AcausalConnection,
-    AcausalSystem,
+from feedbax.acausal import AcausalConnection
+from feedbax.builtins.acausal.system import AcausalSystem
+from feedbax.builtins.acausal.translational import (
     ForceSource,
     Ground,
     LinearDamper,

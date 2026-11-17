@@ -5,11 +5,11 @@ import jax.numpy as jnp
 import equinox as eqx
 import pytest
 
-from feedbax.runtime.channel import Channel
-from feedbax.runtime.components import DelayLine, Linear
-from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.builtins.runtime.channel import Channel
+from feedbax.builtins.runtime.components import DelayLine, Linear
+from feedbax.builtins.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Graph, GraphTraceRequest, Wire, init_state_from_component
-from feedbax.compiler.templates import (
+from feedbax.builtins.templates.templates import (
     network_template_graph,
     recurrent_graph_input_initializer,
     recurrent_node_output_initializer,
@@ -18,7 +18,7 @@ from feedbax.compiler.templates import (
 )
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
-from feedbax.models.networks import LeakyRNNCell, VanillaRNN, recurrent_controller
+from feedbax.builtins.models.networks import LeakyRNNCell, VanillaRNN, recurrent_controller
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.compiler.serialization import graph_to_spec

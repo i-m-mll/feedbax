@@ -20,7 +20,7 @@ def Arm6MuscleRigidTendon(
     """Compile the arm force generator with the supplied geometry and parameters."""
     from feedbax.component_registry import ComponentRegistry
     from feedbax.compiler import GraphDocument, compile_graph
-    from feedbax.compiler.muscle_templates import arm_6muscle_rigid_tendon_graph
+    from feedbax.builtins.templates.muscle_templates import arm_6muscle_rigid_tendon_graph
 
     spec = arm_6muscle_rigid_tendon_graph(
         dt,

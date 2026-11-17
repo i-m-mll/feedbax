@@ -6,7 +6,7 @@ import re
 from feedbax.component_registry import ComponentPack
 from feedbax.contracts.representation import RepresentationSpec
 
-from feedbax.runtime.components import Gain
+from feedbax.builtins.runtime.components import Gain
 from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports
 from feedbax.studio.component_presentation import PresentationOverride

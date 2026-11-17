@@ -15,7 +15,7 @@ from feedbax.acausal.analysis import (
     StructuralAnalysis,
     analyze_system,
 )
-from feedbax.acausal.system import AcausalSystem
+from feedbax.builtins.acausal.system import AcausalSystem
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
     AcausalGraphSpec,

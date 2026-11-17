@@ -17,6 +17,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef, ContinuationOccurrence
 from feedbax.contracts.execution_target import AttemptTarget
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
+from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE
 from feedbax.contracts.rollout import ResolvedRolloutBinding
 from feedbax.contracts.request_identity import DecodedRequest, decode_request, effective_binding_id
 from feedbax.contracts.request_refs import (
@@ -183,10 +184,23 @@ class Success(ReferenceValue):
             if member.evaluation_subject is not None
         ]
         if projected or self.evaluation_manifest is not None:
+            inputs = self.inputs
+            subject = inputs.get("subject", ())
+            initial = len(subject) == 1 and subject[0].content.media_type == INITIAL_MODEL_MEDIA_TYPE
+            roles = {"subject": INITIAL_MODEL_MEDIA_TYPE, "task": TASK_INPUT_MEDIA_TYPE}
+            if "objective" in inputs:
+                roles["objective"] = OBJECTIVE_INPUT_MEDIA_TYPE
+            if initial:
+                valid = not projected and inputs.keys() == roles.keys() and all(
+                    len(inputs[role]) == 1 and inputs[role][0].content.media_type == media_type
+                    and not inputs[role][0].content.tree and inputs[role][0].selection is None
+                    for role, media_type in roles.items()
+                )
+            else:
+                valid = projected == ["subject"] and inputs.keys() == {"subject"} and len(subject) == 1
             if (
-                self.evaluation_manifest is None or projected != ["subject"]
-                or not self.request.id.startswith("evaluate:") or self.inputs.keys() != {"subject"}
-                or len(self.inputs["subject"]) != 1 or set(self.products) != {"states"}
+                self.evaluation_manifest is None or not valid
+                or not self.request.id.startswith("evaluate:") or set(self.products) != {"states"}
                 or len(self.products["states"]) != 1
             ):
                 raise ValueError("Evaluate success requires its accepted manifest, one subject and states product")
