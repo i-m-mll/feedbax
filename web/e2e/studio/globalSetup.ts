@@ -35,6 +35,8 @@ export default function globalSetup() {
   mkdirSync(join(jaxCaches, lock), { recursive: true, mode: 0o700 });
   for (const entry of readdirSync(jaxCaches)) if (entry !== lock) rmSync(join(jaxCaches, entry), { recursive: true, force: true });
   process.env.FEEDBAX_STUDIO_E2E_JAX_CACHE = join(jaxCaches, lock);
+  // JAX otherwise keys entries by a GPU autotune directory inside each home's cache, so no home could reuse another's.
+  process.env.JAX_PERSISTENT_CACHE_ENABLE_XLA_CACHES = 'none';
   // Workers run many small JAX programs at once; one thread each avoids oversubscribing the CPU.
   process.env.XLA_FLAGS = '--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1';
 }
