@@ -94,11 +94,12 @@ function TreeDemo() {
   const [selected, setSelected] = useState<string[]>(['gru']);
   const [names, setNames] = useState<Record<string, string>>({});
   const rename = (id: string, name: string) => setNames((current) => ({ ...current, [id]: name }));
+  const [entered, setEntered] = useState<string>();
   return (
     <div className="grid gap-2">
       <div className="h-72 w-72 overflow-auto rounded-control border border-shell-divider">
         <Tree ref={tree} aria-label="Outline" nodes={treeNodes(outline, names)} defaultExpanded={['model']}
-          selected={selected} onSelectedChange={setSelected} onRename={rename}
+          selected={selected} onSelectedChange={setSelected} onRename={rename} onActivate={setEntered}
           menu={(node) => (
             <>
               <MenuItem onClick={() => tree.current?.rename(node.id)}>Rename</MenuItem>
@@ -112,6 +113,7 @@ function TreeDemo() {
         <Button onClick={() => tree.current?.reveal('muscles')}>Reveal Muscles</Button>
       </div>
       <span className="text-xs text-shell-muted" data-testid="tree-selection">{selected.join(', ')}</span>
+      <span className="text-xs text-shell-muted" data-testid="tree-entered">{entered}</span>
     </div>
   );
 }
