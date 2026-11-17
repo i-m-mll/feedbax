@@ -48,7 +48,7 @@ def _component(tap: TapSpec) -> tuple[ComponentSpec, StudioInterventionTransform
             or value.variation.scope != "fixed"
         ):
             raise ValueError("scale requires a fixed scalar literal")
-        kind, params = "Scale", {"scale": _number(value.value), "fixed": True}
+        kind, params = "feedbax.Scale", {"scale": _number(value.value), "fixed": True}
     elif intervention.operation == "clamp":
         bounds = intervention.bounds
         if (
@@ -61,7 +61,7 @@ def _component(tap: TapSpec) -> tuple[ComponentSpec, StudioInterventionTransform
         lower, upper = _number(bounds.min), _number(bounds.max)
         if lower > upper:
             raise ValueError("clamp minimum must be at most its maximum")
-        kind, params = "Saturation", {"min_val": lower, "max_val": upper}
+        kind, params = "feedbax.Saturation", {"min_val": lower, "max_val": upper}
     else:
         raise ValueError(
             f"unsupported executable intervention operation {intervention.operation!r}"

@@ -38,7 +38,7 @@ def _tap(namespace, compact, *, operation="scale", **intervention):
 
 def _gain():
     return {
-        "type": "Gain",
+        "type": "feedbax.Gain",
         "params": {"gain": 1.0},
         "input_ports": ["input"],
         "output_ports": ["output"],
@@ -58,7 +58,7 @@ def _wire(source_node, target_node, source_port="output", **fields):
 def _fanout():
     return {
         "nodes": {
-            "source": {"type": "Constant", "params": {"value": 2.0}, "output_ports": ["output"]},
+            "source": {"type": "feedbax.Constant", "params": {"value": 2.0}, "output_ports": ["output"]},
             "left": _gain(),
             "right": _gain(),
         },
