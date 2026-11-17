@@ -958,9 +958,13 @@ class JobService(PlanJobReader):
             "train": self._training_worker,
             "evaluate": self._evaluation_worker,
         }.get(kind, self._light_worker)
-        if _is_light_request(request_id) and producer is not None and producer.get("launch"):
-            original = producer["launch"]
-            worker = replace(worker, env=original["env"], preload=tuple(original["preload"]))
+        if producer is not None and (original := producer.get("launch")):
+            if _is_light_request(request_id):
+                worker = replace(worker, env=original["env"], preload=tuple(original["preload"]))
+            else:
+                observed = original["env"]
+                numerical = {key: observed[key] for key in ("JAX_ENABLE_X64", "XLA_FLAGS") if key in observed}
+                worker = replace(worker, env=worker.env | numerical)
         return schedule_check(
             self.host, project=plan.project_id, project_root=plan.project_root, store=plan.store_path,
             observation=observation, request_id=request_id, producer=producer, worker=worker,
