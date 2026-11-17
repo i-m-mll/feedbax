@@ -17,12 +17,19 @@ import { fromFieldView, type ProjectedEdit } from '@/components/values/adapters/
 import { rawField } from '@/components/values/adapters/raw';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
+import {
+  StepReferenceSchema, type StepReference,
+} from '@/generated/studioContracts';
 import type {
   AuthoredFileAddress, JsonValue, StudioAuthoringField, StudioSavedTrainKey, StudioTrainAuthoringRequest, TrainFieldView,
 } from '@/generated/studioContracts';
-import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
+import { modelDocumentId, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
-import { sweepValueRuns, useRunRemoval } from './runRemoval';
+import { filesRemoval, sweepValueRuns, useRunRemoval } from './runRemoval';
+import { checkpointStartEdits } from './createCheckpointTrain';
+import { documentChoice, stepChoice, stepChoiceId, stepGroup } from './referenceChoices';
+import { ReferenceField } from '@/components/values/ReferenceField';
+import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 
 interface Props {
   readonly editor: ProjectEditController;
@@ -34,6 +41,9 @@ interface Props {
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
   readonly focusFirstField?: boolean;
   readonly onFirstFieldFocused?: () => void;
+  /** The project's Train steps, whose checkpoints the step can start from. */
+  readonly trains?: readonly PlanStepView[];
+  readonly picking?: ElementSelectionStore;
 }
 
 const settingsPrefix = '/settings';
@@ -115,6 +125,46 @@ function choiceField(field: StudioAuthoringField, commit?: (value: JsonValue) =>
     type: field.control?.kind === 'choice' ? { kind: 'choice', options: field.control.options } : { kind: 'readOnly' },
     change: field.control ? commit : undefined,
   });
+}
+
+/** Where a Train step starts: its Model, or another Train step's last checkpoint. */
+function CheckpointStart({ editor, stepId, step, trains, picking, editable }: {
+  editor: ProjectEditController; stepId: string; step?: PlanStepView; trains: readonly PlanStepView[];
+  picking?: ElementSelectionStore; editable: boolean;
+}) {
+  const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  const confirmRemoval = useRunRemoval();
+  const labelId = useId();
+  const authored = saved.project.steps?.[stepId];
+  const model = modelDocumentId(step?.documentIds);
+  if (!authored || !model) return null;
+  const source = StepReferenceSchema.safeParse(authored.inputs?.checkpoint);
+  const sources = trains.filter(({ id }) => id !== stepId);
+  const current = source.success ? sources.find(({ id }) => id === source.data.step) : undefined;
+  const inherited = 'step' in authored.base &&
+    !!trains.find(({ id }) => 'step' in authored.base && id === authored.base.step)?.inputs.some(({ id }) => id === 'checkpoint');
+  const name = studioName('start');
+  async function start(next: StepReference | null) {
+    const files = [{ address: { kind: 'step' as const, id: stepId }, patches: checkpointStartEdits(authored!, inherited, next) }];
+    if (!files[0].patches.length) return;
+    const { revision } = editor.getSnapshot().saved;
+    if (!await confirmRemoval(filesRemoval(saved.project_id, revision, files, editor.signal))) return;
+    editor.editFiles(name, files, {
+      reviewedRevision: revision,
+      dependencies: next ? [{ kind: 'step', id: next.step }] : [{ kind: 'document', id: model! }],
+    });
+    await editor.flush();
+  }
+  return <FieldRow label={name} labelId={labelId}>
+    <ReferenceField label={name} aria-labelledby={labelId} picking={picking}
+      groups={[{ label: studioName('documents'), choices: [documentChoice('model', model)] }, stepGroup(sources)]}
+      value={source.success ? current ? stepChoice(current) : { id: stepChoiceId(source.data.step), label: source.data.step }
+        : documentChoice('model', model)}
+      onChoose={editable ? (choice) => {
+        const train = sources.find(({ id }) => stepChoiceId(id) === choice.id);
+        void start(train ? { step: train.id, checkpoint: 'last' } : null);
+      } : undefined} />
+  </FieldRow>;
 }
 
 export function StudioTrainAuthoringForm(props: Props) {
@@ -202,6 +252,8 @@ export function StudioTrainAuthoringForm(props: Props) {
         void catalog.refetch();
       })}>
       <section ref={region} aria-label={studioName('definition')} className="grid gap-1">
+        {props.trains && <CheckpointStart editor={editor} stepId={stepId} step={props.step} trains={props.trains}
+          picking={props.picking} editable={editable} />}
         {methodField && <FieldRow label={methodField.label} labelId={methodLabel}>
           <CatalogPicker aria-labelledby={methodLabel} className="w-full" entries={methods}
             value={typeof methodField.value === 'string' ? methodField.value : null}

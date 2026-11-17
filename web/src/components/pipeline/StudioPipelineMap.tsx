@@ -25,6 +25,7 @@ import {
   type StudioResultState,
 } from '@/components/activity/studioVocabulary';
 import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
+import type { ReferencePick } from '@/features/projectWindow/elementSelection';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button, IconButton } from '@/components/ui/Button';
 import { ListRow } from '@/components/ui/ListRow';
@@ -111,6 +112,8 @@ export interface StudioPipelineMapProps {
   viewportRef?: Ref<CanvasViewport>;
   fitReady?: boolean;
   runMenu?: RunMenu;
+  /** An armed reference pick: a card it accepts fills the reference when its head is chosen. */
+  pick?: ReferencePick | null;
 }
 
 export interface SweepMenu {
@@ -321,6 +324,7 @@ const StepCard = memo(function StepCard({
   upstream,
   downstream,
   runMenu,
+  pick,
 }: {
   step: PlanStepView;
   selection: PipelineSelection | null;
@@ -338,8 +342,11 @@ const StepCard = memo(function StepCard({
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   runMenu?: RunMenu;
+  pick?: ReferencePick | null;
 }) {
   const id = useId();
+  const picked = { kind: 'step', step: step.id } as const;
+  const pickable = pick ? pick.accepts(picked) : undefined;
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
   const folded = foldedMapSweep(step, sweeps, presentation);
   const level = documentLevel(documentScope, step.id);
@@ -359,6 +366,7 @@ const StepCard = memo(function StepCard({
       data-map-related={related || undefined}
       data-map-dimmed={dimmed || undefined}
       data-document-scope={level}
+      data-pick={pickable === undefined ? undefined : pickable ? 'allowed' : 'refused'}
       selected={selection?.kind === 'steps'}
       status={cardStatus(step.statusCounts)}
       role="article"
@@ -382,7 +390,11 @@ const StepCard = memo(function StepCard({
           aria-describedby={[`${id}-summary`, compact ? `${id}-status` : '', related ? `${id}-related` : ''].filter(Boolean).join(' ')}
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
           aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
-          {...selectionButton((extend) => chooseStep(step.id, extend))}
+          {...selectionButton((extend) => {
+            if (pick) {
+              if (pickable) pick.choose(picked);
+            } else chooseStep(step.id, extend);
+          })}
         >
           <StepName step={step} />
         </Button>
@@ -697,6 +709,7 @@ export function StudioPipelineMap({
   viewportRef,
   fitReady,
   runMenu,
+  pick,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
@@ -797,6 +810,7 @@ export function StudioPipelineMap({
                     sweepMenu={sweepMenu?.stepId === step.id ? sweepMenu : undefined}
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                     runMenu={runMenu}
+                    pick={pick}
                   />
                 ))}
               </div>

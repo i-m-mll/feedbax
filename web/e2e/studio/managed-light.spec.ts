@@ -8,7 +8,7 @@ import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
-import { activate, chooseOption, chooseStepKind, number, openView, palette, typeValue } from './fixtures/studioKeyboard';
+import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo, typeValue } from './fixtures/studioKeyboard';
 
 import { pick } from './fixtures/controls';
 
@@ -217,35 +217,29 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => chooseOption(page, select, label));
   }
-  const dialog = page.getByRole('dialog', { name: 'Connect Ports', exact: true });
-  async function chooseSource(label: string) {
-    await palette(page, 'connectPorts', 'Connect Ports');
-    await chooseOption(page, dialog.getByRole('combobox', { name: 'Source Port' }), label);
-  }
-  const connect = () => activate(page, dialog.getByRole('button', { name: 'Connect Ports', exact: true }));
-  await chooseSource('states');
-  await edit(connect);
+  const roleField = (name: string) => inspector.getByRole('combobox', { name, exact: true });
+  await edit(() => chooseOption(page, roleField('States'), 'states'));
 
   await addOperation('Trial summary');
   await selectElement('summarize_velocity');
   await edit(() => number(page, boundsScale, '1.5'));
   const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
-  await chooseSource('states');
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
     Boolean(response.request().postDataJSON()?.wire));
-  await connect();
+  await tabTo(page, roleField('Velocity'));
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.type('states');
+  await page.keyboard.press('Enter');
   expect((await refusal).status()).toBe(422);
-  await expect(dialog.getByRole('alert')).toContainText('Requires dataset schemas');
+  await expect(analysis.getByRole('alert')).toContainText('Requires dataset schemas');
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
-  await chooseOption(page, dialog.getByRole('combobox', { name: 'Source Port' }), 'aligned_velocity.velocity');
-  await edit(connect);
+  await edit(() => chooseOption(page, roleField('Velocity'), 'aligned_velocity.velocity'));
 
   await openView(page, 'figures');
   await edit(() => palette(page, 'addComponent', 'Add Figure'));
   await openView(page, 'analysis');
   await selectElement('velocity_summary');
-  await chooseSource('summarize_velocity.summary');
-  const wired = await edit(connect);
+  const wired = await edit(() => chooseOption(page, roleField('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   if (first) {
     const authored = wired.project.documents.analyze.payload as unknown as AnalysisDocument;

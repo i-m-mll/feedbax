@@ -13,11 +13,17 @@ export interface NamedElementAddress {
 /** What the window's selection holds: the address of an element of a document. */
 export type ElementAddress = ModelAddress | NamedElementAddress;
 
-type Pick = { accepts(address: ModelAddress, port: Port): boolean; choose(address: ModelAddress): void };
+/** What a click can fill a reference with while picking: a Model port, a step's card, or a named element. */
+export type PickTarget =
+  | { readonly kind: 'port'; readonly address: ModelAddress; readonly port: Port }
+  | { readonly kind: 'step'; readonly step: string }
+  | { readonly kind: 'element'; readonly address: NamedElementAddress };
+
+export interface ReferencePick { accepts(target: PickTarget): boolean; choose(target: PickTarget): void }
 type State = {
   selection: readonly ElementAddress[];
   /** A reference field's crosshair: the next element clicked fills it instead of being selected. */
-  pick: Pick | null;
+  pick: ReferencePick | null;
   /** A Model address the slot showing its document moves to. */
   reveal: ModelAddress | null;
 };
@@ -59,6 +65,30 @@ export function selectElement(store: ElementSelectionStore, address: ElementAddr
   const key = elementKey(address);
   const other = current.filter((item) => elementKey(item) !== key);
   store.setState({ selection: other.length === current.length ? [...other, address] : other });
+}
+
+export function pickKey(target: PickTarget) {
+  switch (target.kind) {
+    case 'port': return JSON.stringify(['port', addressKey(target.address)]);
+    case 'step': return JSON.stringify(['step', target.step]);
+    case 'element': return JSON.stringify(['element', elementKey(target.address)]);
+  }
+}
+
+const unpicked = createStore<State>(() => ({ selection: [], pick: null, reveal: null }));
+
+/** The armed pick, or null while nothing is being picked. */
+export function usePick(store: ElementSelectionStore | undefined) {
+  return useStore(store ?? unpicked, (state) => state.pick);
+}
+
+/** Fills the armed reference with `target` and disarms it. */
+export function choosePick(store: ElementSelectionStore, target: PickTarget) {
+  const { pick } = store.getState();
+  if (!pick?.accepts(target)) return false;
+  store.setState({ pick: null });
+  pick.choose(target);
+  return true;
 }
 
 export function clearSelection(store: ElementSelectionStore) {

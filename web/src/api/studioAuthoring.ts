@@ -5,6 +5,7 @@ import {
   parseContract,
   type StudioAuthoringCatalog,
   type StudioCheckpointRuleRequest,
+  type StudioRemovedRunsRequest,
   type StudioSubsetToRowsRequest,
   type StudioTrialAuthoring,
   type StudioTrialAuthoringRequest,
@@ -39,6 +40,21 @@ export async function prepareSubsetToRows(projectId: string, body: StudioSubsetT
     return edit;
   } catch (error) {
     throw asApiRequestError(error, path, 'The subset edit did not match its contract');
+  }
+}
+
+/** The planned runs the files would remove or replace, keyed as the window map keys its rows. */
+export async function reviewRemovedRuns(projectId: string, body: StudioRemovedRunsRequest, signal: AbortSignal) {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/removed-runs`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: JSON.stringify(parseContract('StudioRemovedRunsRequest', body)), cache: 'no-store', signal,
+    });
+    const removed = parseContract('StudioRemovedRuns', response);
+    if (removed.revision !== body.revision) throw new Error('The removal review revision changed');
+    return removed.runs;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The removal review did not match its contract');
   }
 }
 

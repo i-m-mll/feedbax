@@ -22,13 +22,15 @@ type CanvasProps = {
   rememberPoint?: (point: PresentationPosition | null) => void;
   placing?: boolean;
   viewportRef?: Ref<CanvasViewport>;
+  /** An armed reference pick over the items' selection ids: an accepted item fills the reference when clicked. */
+  pick?: { accepts(id: string): boolean; choose(id: string): void } | null;
 };
 
 export function ManagedDocumentCanvas(props: CanvasProps) {
   return <ReactFlowProvider><Canvas {...props} /></ReactFlowProvider>;
 }
 
-function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing, viewportRef }: CanvasProps) {
+function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing, viewportRef, pick }: CanvasProps) {
   const { screenToFlowPosition } = useReactFlow();
   const { nodes, edges } = useMemo(() => {
     const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR' }).setDefaultEdgeLabel(() => ({}));
@@ -48,8 +50,12 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
     return { nodes, edges };
   }, [items, connections, positions]);
   const shownNodes = useMemo(() => nodes.map((node) => ({
-    ...node, selected: selectedId === node.data.selectionId,
-  })), [nodes, selectedId]);
+    ...node, selected: !pick && selectedId === node.data.selectionId,
+    ...pick && {
+      selectable: false,
+      domAttributes: { 'data-pick': pick.accepts(node.data.selectionId as string) ? 'allowed' : 'refused' } as Node['domAttributes'],
+    },
+  })), [nodes, selectedId, pick]);
   const shownEdges = useMemo(() => edges.map((edge) => ({ ...edge, selected: selectedId === edge.id })), [edges, selectedId]);
   return <div className="h-full min-h-0"
     onPointerMove={(event) => {
@@ -63,6 +69,10 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
     }}>
     <StudioCanvas nodes={shownNodes} edges={shownEdges} fitNewContent lockAutoFit={placing} viewportRef={viewportRef}
       zoomOnDoubleClick={!openAt}
+      onNodeClick={pick ? (_, node) => {
+        const id = node.data.selectionId;
+        if (typeof id === 'string' && pick.accepts(id)) pick.choose(id);
+      } : undefined}
       onNodesChange={(changes) => {
         const change = changes.find((item) => item.type === 'select' && item.selected);
         const node = change?.type === 'select' ? nodes.find(({ id }) => id === change.id) : undefined;
