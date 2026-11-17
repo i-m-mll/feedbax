@@ -22,6 +22,9 @@ import optimistix as optx
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.graph import ComponentSpec
+from feedbax.contracts.model_values import ModelFacts
 from feedbax.contracts.portable import ComponentOwner, ComponentOptions, Ports
 from feedbax.contracts.component import PortType
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
@@ -87,6 +90,16 @@ class AcausalSystem(DAEComponent[AcausalSystemState], ComponentOwner):
         params: Trainable physical parameters (mass, stiffness, ...).
     """
 
+    @staticmethod
+    def _checkpointable(node: ComponentSpec, interior: AcausalGraphSpec) -> bool:
+        return (
+            interior.mujoco_asset is not None
+            and interior.solver.solver_type == "mujoco"
+            and interior.solver.mjx_backend == "jax"
+            and node.params.get("trainable") is not True
+        )
+
+    model_facts = ModelFacts(states=None, physical_checkpoint=_checkpointable)
     config = AcausalSystemConfig
     component_options = ComponentOptions(
         is_composite=True,

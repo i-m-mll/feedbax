@@ -162,7 +162,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     variation_hash = canonical_sha256(params.model_dump(mode="json")["variation"])
     documents = train_request.trial_documents
     assert documents is not None
-    variant = resolve_evaluation_variant(slot.graph, documents.task, params.variation)
+    variant = resolve_evaluation_variant(slot.graph, documents.task, params.variation, components=registry.components)
     task_hash = sha256(canonical_json_v2_bytes(variant.task.model_dump(mode="json"))).hexdigest()
     paired = compile_trial_execution(
         documents.model_name,
@@ -315,7 +315,9 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
     documents = decode_request(
         snapshot.plan.requests[train_run.request_id], snapshot.plan.documents.__getitem__,
     ).spec.trial_documents
-    variant = resolve_evaluation_variant(slot.graph, documents.task_source, params.variation)
+    variant = resolve_evaluation_variant(
+        slot.graph, documents.task_source, params.variation, components=registry.components,
+    )
     expected_overrides = {semantic_key("model", "value", ("muscle",), "optimal_muscle_length"): 0.24}
     assert variant.source_overrides == expected_overrides
     paired = compile_trial_execution(
@@ -500,7 +502,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     with pytest.raises(CannotRun, match="preserves retained learned values"):
         edits = {name: OverridePatch.model_validate(edit) for name, edit in
                  steps["learned"]["base"]["inline"]["params"]["variation"].items()}
-        resolve_evaluation_variant(slot.graph, documents.task_source, edits)
+        resolve_evaluation_variant(slot.graph, documents.task_source, edits, components=registry.components)
     results = {}
     for step, item in zip(("baseline", "curl"), evaluations, strict=True):
         (edge,) = settled(item.job_id)["edges"]
@@ -537,7 +539,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
 def test_native_subject_refuses_before_backend_realization():
     native = GraphSpec.model_validate({"nodes": {"physics": {"type": "feedbax.AcausalSystem"}}})
     with pytest.raises(CannotRun, match="no qualified Evaluate realization") as refused:
-        validate_evaluation_source(native)
+        validate_evaluation_source(native, new_application_registry_bundle().components)
     assert refused.value.path == "/inputs/subject/graph/nodes/physics"
 
 
@@ -547,5 +549,5 @@ def test_authored_variation_refuses_added_native_owner(authored):  # noqa: F811
         path="graph.nodes.physics", op="add", value={"type": "feedbax.AcausalSystem"},
     )}
     with pytest.raises(CannotRun, match="no qualified declaration") as refused:
-        resolve_evaluation_variant(GraphSpec(), task, variation)
+        resolve_evaluation_variant(GraphSpec(), task, variation, components=new_application_registry_bundle().components)
     assert refused.value.path == "/params/variation/native"

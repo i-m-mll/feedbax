@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as ConfigField
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType
+from feedbax.contracts.model_values import ModelFacts
 from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
 from feedbax.runtime.graph import Component, GraphNode, Wire
 from feedbax.runtime.prototypes import _required_input
@@ -118,6 +119,8 @@ class StateSelection(GraphNode):
 class SelectState(StateSelection, Component):
     """Portable SelectState with a reconstructible typed configuration."""
 
+    model_facts = ModelFacts()
+
     ports: ClassVar = StateSelection.ports
 
     config: ClassVar[type[BaseModel]] = _SelectStateConfig
@@ -143,6 +146,8 @@ class _AssembleFeedbackConfig(BaseModel):
 
 class AssembleFeedback(Component):
     """Reassemble independent channel values in the controller's feedback tree."""
+
+    model_facts = ModelFacts()
 
     config: ClassVar[type[BaseModel]] = _AssembleFeedbackConfig
 
