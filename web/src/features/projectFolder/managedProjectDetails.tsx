@@ -26,6 +26,7 @@ import { useElementSelection } from './ManagedDocumentCanvas';
 import { useStoredModelView } from './model/ModelView';
 import { modelSchema } from './model/modelGraph';
 import type { ModelSelectionStore } from './model/modelSelection';
+import { Select } from '@/components/ui/Select';
 
 type DetailName = 'model' | 'task' | 'scene';
 type StoredModel = { id: string; value: ModelDocument };
@@ -207,12 +208,9 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
     documentId: model?.id,
     header: <>
       {model?.id}
-      {interiors.length > 1 && path && <select aria-label={studioName('interior')} value={JSON.stringify(path)}
-        onChange={({ currentTarget }) => interior.onSelect(currentTarget.value)}>
-        {interiors.map((candidate) => <option key={JSON.stringify(candidate)} value={JSON.stringify(candidate)}>
-          {candidate.join(' / ')}
-        </option>)}
-      </select>}
+      {interiors.length > 1 && path && <Select aria-label={studioName('interior')} value={JSON.stringify(path)}
+        items={interiors.map((candidate) => ({ value: JSON.stringify(candidate), label: candidate.join(' / ') }))}
+        onValueChange={interior.onSelect} />}
       <SceneHeaderControls view={view} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays}
         onToggleOverlay={(overlay) => {
           const next = new Set(hiddenOverlays);

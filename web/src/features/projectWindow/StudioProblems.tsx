@@ -2,6 +2,7 @@ import { TriangleAlert, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { commandAttributes, type StudioCommand } from './studioCommands';
+import { Button, IconButton } from '@/components/ui/Button';
 
 export function StudioProblems({ command, count, open, opener, onOpen, onClose, children }: {
   command: StudioCommand;
@@ -66,22 +67,18 @@ export function StudioProblems({ command, count, open, opener, onOpen, onClose, 
         event.stopPropagation();
         closeAndRestore();
       }}>
-      <button ref={trigger} type="button" {...commandAttributes(command)} aria-label={undefined} aria-haspopup="dialog"
+      <Button ref={trigger} variant="ghost" {...commandAttributes(command)} aria-label={undefined} aria-haspopup="dialog"
         aria-expanded={open} aria-controls={open ? id : undefined}
-        onClick={(event) => onOpen(event.currentTarget)}
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium text-shell-foreground hover:bg-shell-hover">
-        <TriangleAlert aria-hidden="true" className="size-4" />
+        onClick={(event) => onOpen(event.currentTarget)} className="font-medium">
+        <TriangleAlert aria-hidden="true" />
         {studioName('problems')} <span className="tabular-nums">{count}</span>
-      </button>
+      </Button>
       {open && (
         <section ref={panel} id={id} role="dialog" aria-labelledby={`${id}-title`}
           className="absolute bottom-full right-0 z-50 mb-2 grid w-[34rem] gap-3 overflow-auto rounded-shell-control border border-shell-divider bg-shell-chrome p-4 text-shell-foreground shadow-xl">
           <header className="flex items-center justify-between gap-2">
             <h2 id={`${id}-title`} className="font-semibold">{studioName('problems')}</h2>
-            <button ref={close} type="button" aria-label={studioName('close')} onClick={closeAndRestore}
-              className="rounded p-1 hover:bg-shell-hover">
-              <X aria-hidden="true" className="size-4" />
-            </button>
+            <IconButton ref={close} label={studioName('close')} icon={<X aria-hidden="true" />} onClick={closeAndRestore} />
           </header>
           {children}
         </section>

@@ -10,6 +10,7 @@ import {
   studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
   studioStep, type StudioRunStatusId,
 } from './studioVocabulary';
+import { Button } from '@/components/ui/Button';
 
 const liveStatuses = new Set<StudioRunStatusId>([
   'queued',
@@ -87,12 +88,13 @@ function ActivityRun({
       style={{ borderLeftColor: tint }}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <button
-          type="button"
+        <Button
+          variant="bare"
+          size="content"
           aria-current={selected ? 'true' : undefined}
           onClick={() => void open()}
           disabled={pending}
-          className="min-w-0 flex-1 rounded-sm text-left hover:underline disabled:opacity-60"
+          className="min-w-0 flex-1 rounded-sm text-left hover:[&:not([data-disabled])]:underline"
         >
           <span className="flex items-center gap-1.5 text-xs font-medium text-shell-muted">
             <Icon aria-hidden="true" className="size-3.5 shrink-0" />
@@ -100,7 +102,7 @@ function ActivityRun({
             {project && <span className="truncate font-normal">{project}</span>}
           </span>
           <span className="block break-words font-medium">{job.label}</span>
-        </button>
+        </Button>
         <StudioRunStatus status={job.status} />
       </div>
       {(coordinates.length > 0 || actor || machine) && (
@@ -197,8 +199,7 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
       </ol>
     </details>}
     {error && <p role="alert">{error}</p>}
-    <button type="button" disabled={!machine.can_close || busy} onClick={() => void close()}
-      className="rounded border border-shell-divider px-2 py-1 disabled:opacity-50">{studioName('close')}</button>
+    <Button disabled={!machine.can_close || busy} onClick={() => void close()}>{studioName('close')}</Button>
   </section>;
 }
 
@@ -213,15 +214,9 @@ function ActivityCommand({
 }) {
   const command = bindStudioCommand(name, onClick, { enabled: !pending, keyboard: false });
   return (
-    <button
-      type="button"
-      {...commandAttributes(command)}
-      disabled={!command.enabled}
-      onClick={command.invoke}
-      className="rounded border border-shell-control bg-shell-surface px-2 py-1 text-xs font-medium hover:bg-shell-hover disabled:opacity-60"
-    >
+    <Button {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}>
       {studioName(name)}
-    </button>
+    </Button>
   );
 }
 

@@ -2,8 +2,9 @@ import { installTooltips } from '@window-shell/browser/tooltip';
 import {
   Box, ChartLine, ChevronDown, FileText, FlaskConical, Maximize, Plus, Search, Settings, ZoomIn, ZoomOut,
 } from 'lucide-react';
-import { useLayoutEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useLayoutEffect, useState, type ReactNode } from 'react';
 import { setAppearance } from '@/appearance/appearance';
+import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Combobox } from '@/components/ui/Combobox';
@@ -17,20 +18,13 @@ import { NumberField } from '@/components/ui/NumberField';
 import { PanelHeader } from '@/components/ui/PanelHeader';
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { Slider } from '@/components/ui/Slider';
 import { Select, type Option } from '@/components/ui/Select';
 import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
 import { TextField } from '@/components/ui/TextField';
 
 type Theme = 'light' | 'dark';
 type Density = 'compact' | 'regular';
-
-function useRootAttribute<Value extends string>(name: string) {
-  return useSyncExternalStore((notify) => {
-    const observer = new MutationObserver(notify);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: [name] });
-    return () => observer.disconnect();
-  }, () => document.documentElement.getAttribute(name) as Value);
-}
 
 const kinds = [
   { value: 'train', label: 'Train', glyph: <Box /> },
@@ -67,6 +61,7 @@ export function Gallery() {
   const density = useRootAttribute<Density>('data-density');
   const [text, setText] = useState('policy');
   const [number, setNumber] = useState<number | null>(0.001);
+  const [position, setPosition] = useState(0.6);
   const [checked, setChecked] = useState(true);
   const [kind, setKind] = useState<string | null>('train');
   const [optimizer, setOptimizer] = useState<string | null>('adam');
@@ -123,6 +118,10 @@ export function Gallery() {
           <State name="disabled"><NumberField aria-label="Steps" value={100} onValueChange={() => undefined} disabled /></State>
         </Section>
 
+        <Section name="Slider">
+          <State name="default"><Slider aria-label="Position" value={position} onValueChange={setPosition} min={0} max={1} step={0.01} className="w-48" /></State>
+          <State name="disabled"><Slider aria-label="Locked" value={0.3} onValueChange={() => undefined} min={0} max={1} step={0.01} disabled className="w-48" /></State>
+        </Section>
         <Section name="Checkbox">
           <State name="checked"><Checkbox label="Shuffle" checked={checked} onCheckedChange={setChecked} /></State>
           <State name="unchecked"><Checkbox label="Clip" checked={false} onCheckedChange={() => undefined} /></State>

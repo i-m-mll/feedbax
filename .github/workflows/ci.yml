@@ -88,6 +88,9 @@ jobs:
       - name: Check Studio vocabulary
         run: bun scripts/check-studio-vocabulary.ts
 
+      - name: Check the shared control layer
+        run: bun scripts/check-control-layer.ts
+
       - name: Install Playwright browsers
         run: bun x --bun --no-install playwright install --with-deps chromium
 

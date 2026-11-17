@@ -18,6 +18,7 @@ import {
   type PipelineSelectionState,
 } from '@/features/pipeline/selection';
 import { mapRunCells, type RunMark } from './pipelineMapLayout';
+import { Button } from '@/components/ui/Button';
 
 export type ApplyMapSelection = (change: (state: PipelineSelectionState) => PipelineSelectionState) => void;
 
@@ -38,15 +39,16 @@ export function MapSweepValue({
     (term) => term.sweepId === sweep.id && term.valueIds.includes(value.id),
   );
   return (
-    <button
-      type="button"
-      className="studio-map-value rounded px-1 text-xs text-shell-muted hover:bg-shell-hover aria-pressed:font-semibold"
+    <Button
+      variant="ghost"
+      size="mark"
+      className="studio-map-value"
       aria-label={studioAccessibleName('select', `${sweep.label} ${value.label}`)}
-      aria-pressed={selected}
+      pressed={selected}
       {...selectionButton((extend) => applySelection((state) => selectSweepValue(state, stepId, sweep.id, value.id, extend)))}
     >
       {value.label}
-    </button>
+    </Button>
   );
 }
 
@@ -100,8 +102,9 @@ function MarkButton({
     : null;
   const name = [label, status, share].filter(Boolean).join(' · ');
   return (
-    <button
-      type="button"
+    <Button
+      variant="bare"
+      size="content"
       aria-label={studioAccessibleName('select', name)}
       aria-pressed={!selectedCount ? false : selectedCount === runs.length ? true : 'mixed'}
       aria-description={lineageDescription || undefined}
@@ -128,7 +131,7 @@ function MarkButton({
           ? 'absolute left-0 top-0 h-0 border-t-2 border-dotted border-shell-foreground'
           : 'absolute -inset-[2px] rounded-[3px] border border-dashed border-shell-foreground'}
         style={mark.kind === 'group' ? { width: `${100 * relatedCount / runs.length}%` } : undefined} />}
-    </button>
+    </Button>
   );
 }
 
