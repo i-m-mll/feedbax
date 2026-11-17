@@ -18,7 +18,7 @@ from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.request_refs import BestRank, ContentRef, LastMember, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
-from feedbax.host.best_selection import BestMetricUnavailable, completion_score
+from feedbax.host.best_selection import BestMetricUnavailable, completion_score, ranked_requests
 from feedbax.host.checkpoint_selection import (
     CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
 )
@@ -1035,6 +1035,14 @@ class Store:
                 raise HostError("admission_changed", str(error)) from error
         if (terminal := item.get("terminal_reuse")) is not None:
             self._recheck_terminal_reuse(row, root, terminal)
+        if row["request"].startswith(("analyze:", "evaluate:")):
+            from feedbax.host.current_checkpoints import CurrentCheckpoints
+
+            view = self._success_view(root)
+            if (ref := view.attempt_ref(row["id"])) is not None:
+                difference = CurrentCheckpoints(self, view, row["project"]).compare(view.read_receipt(ref), launch)
+                if difference is not None:
+                    raise HostError("admission_changed", difference.detail)
         self._require_admission_current(row, cursor)
 
     def _recheck_terminal_reuse(self, row: sqlite3.Row, root: str, expected: dict) -> None:
@@ -1363,9 +1371,50 @@ class Store:
             cursor = max(after, self.event_head)
         return {"events": events, "cursor": cursor, "head": self.event_head, "oldest_cursor": 0}
 
+    @inspect_without_recording()
+    def checkpoint_producer(self, *, project: str, manifest_root: str, request: str) -> str | None:
+        from feedbax.host.current_checkpoints import CurrentCheckpoints
+
+        return CurrentCheckpoints(self, self._success_view(manifest_root), project).native_anchor(request)
+
+    @inspect_without_recording()
+    def _project_checkpoints(
+        self, rows: list[dict], project: str, root: str, requests: list[str], *, include_producers: bool,
+    ) -> tuple[dict, dict]:
+        from feedbax.host.current_checkpoints import CurrentCheckpoints
+
+        view = self._success_view(root)
+        selection = CurrentCheckpoints(self, view, project)
+        wanted = set(requests)
+        producers = {}
+        if include_producers:
+            for request in {job["request"] for job in rows if job["request"].startswith("train:")}:
+                if (anchor := selection.native_anchor(request)) is not None:
+                    producers[request] = anchor
+        differences = {}
+        for job in rows:
+            if (
+                job["request"] not in wanted or job["state"] != "succeeded"
+                or job["data"].get("manifest_root") != root
+                or not job["request"].startswith(("analyze:", "evaluate:"))
+                or (ref := view.attempt_ref(job["id"])) is None
+            ):
+                continue
+            try:
+                receipt = view.read_receipt(ref)
+            except (OSError, ValueError):
+                continue
+            launch = job.get("launch")
+            if launch is None:
+                launch = json.loads(self.get(job["id"])["launch"])
+            if (difference := selection.compare(receipt, launch)) is not None:
+                differences[job["id"]] = difference.model_dump(mode="json")
+        return differences, producers
+
     def jobs_snapshot(
         self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None,
         checkpoint_objective_root: str | None = None, terminal_train: tuple[str, list[str]] | None = None,
+        checkpoint_admission: tuple[str, list[str]] | None = None,
         **filters,
     ) -> dict:
         snapshot = {"cursor": self.event_head, "oldest_cursor": 0, "jobs": self.jobs(**filters)}
@@ -1394,6 +1443,15 @@ class Store:
                 ):
                     receipts[job["id"]] = pin.receipt.model_dump(mode="json")
             snapshot["terminal_train_receipts"] = receipts
+        if checkpoint_admission is not None:
+            project = filters.get("project")
+            if project is None:
+                raise HostError("invalid_request", "Checkpoint admission requires one project.")
+            differences, producers = self._project_checkpoints(
+                snapshot["jobs"], project, *checkpoint_admission,
+                include_producers=bool(filters.get("include_launch")),
+            )
+            snapshot.update(checkpoint_differences=differences, checkpoint_producers=producers)
         return snapshot
 
     @inspect_without_recording()
@@ -2024,8 +2082,8 @@ class Store:
                 "code": code, "message": str(error), "path": "/inputs/subject",
             }})
             return
-        ordered = [candidate.reference.request_id for candidate in rule.candidates]
-        winner = completed[ordered[rule.winner([scored[request] for request in ordered])]]
+        ordered, selected = ranked_requests(rule, scored)
+        winner = completed[selected]
         binding = winner | {"best_rank": {
             "key": rule.key, "rank": rule.rank, "candidates": [
                 {"completion": completed[request]["completion"], "score": scored[request]}

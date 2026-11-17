@@ -1,5 +1,6 @@
 """Rank completed Train requests from their exact attested receipt bytes."""
 
+from collections.abc import Mapping
 from hashlib import sha256
 from math import isfinite
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import canonical_manifest_path, training_run_manifest_id
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.request_refs import BestRank, RequestId
 from feedbax.host.completion import CompletionFileError, completion_file
 
 
@@ -67,3 +69,8 @@ def completion_score(completion: dict, metric: str) -> float:
     except (ValueError, OSError, KeyError, TypeError) as error:
         raise CompletionFileError(f"Cannot measure exact Train receipt: {error}") from error
     return rank_train_metric(raw, receipt, attempt, metric)
+
+
+def ranked_requests(rule: BestRank, scores: Mapping[RequestId, float]) -> tuple[tuple[RequestId, ...], RequestId]:
+    ordered = tuple(candidate.reference.request_id for candidate in rule.candidates)
+    return ordered, ordered[rule.winner([scores[request] for request in ordered])]

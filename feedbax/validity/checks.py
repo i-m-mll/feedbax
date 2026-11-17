@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -10,7 +11,7 @@ from typing import Any
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.receipt_validity import (
-    CheckOutcome, ReceiptValidity, ValidityAssessment, ValidityCheckDelivery, ValidityCheckEvidence,
+    CheckOutcome, InputDifference, ReceiptValidity, ValidityAssessment, ValidityCheckDelivery, ValidityCheckEvidence,
     ValidityCheckScope,
 )
 from feedbax.host.protocol import AdmissionItem, HostError, Job, Launch, LIVE_STATES, Slot, VALIDITY_CHECK_ENTRYPOINT
@@ -65,7 +66,8 @@ def wait_for_check(host, *, project: str, job_id: str) -> dict[str, Any]:
 
 
 def settle_check(
-    view: SuccessView, observer: ProjectValidity, row: dict[str, Any],
+    view: SuccessView, observer: ProjectValidity, row: dict[str, Any], *,
+    current_checkpoints: Callable[[str, str], tuple[InputDifference, ...]],
 ) -> ReceiptValidity | None:
     if row["state"] in LIVE_STATES or row["data"].get("manifest_root") != str(view.store.root):
         return None
@@ -74,7 +76,8 @@ def settle_check(
         return None
     published = view.read_success(scope.receipt)
     observer = observer.refresh()
-    current = observer.inspect(view, published)
+    checkpoints = current_checkpoints(scope.request_id, published.receipt.attempt)
+    current = observer.inspect(view, published, checkpoint_differences=checkpoints)
     owed = set(current.decision.checks).intersection(scope.checks)
     if current.conditions != scope.conditions or not owed:
         return current.decision
@@ -99,4 +102,4 @@ def settle_check(
         record_validity(view.store, scope.request_id, assessment)
     except PublicationConflict:
         return None
-    return observer.inspect(view, published).decision
+    return observer.inspect(view, published, checkpoint_differences=checkpoints).decision

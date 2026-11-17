@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import os
 import sys
-from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
@@ -65,16 +65,15 @@ from feedbax.contracts.project_plan import (
     planned_input_groups,
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
-from feedbax.contracts.receipt_validity import CodeDifference, ReceiptValidity, ValidityJudgement
+from feedbax.contracts.receipt_validity import CodeDifference, InputDifference, ReceiptValidity, ValidityJudgement
 from feedbax.contracts.effective_success import EvaluationSubjectValue, TerminalTrainSubject
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
-from feedbax.host.checkpoint_selection import is_checkpoint_producer
 from feedbax.host.live_evaluate import DELEGATION_EVENT
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
-from feedbax.host.protocol import LIGHT_ENTRYPOINT, TerminalReuse, can_resume_attempt
+from feedbax.host.protocol import LIGHT_ENTRYPOINT, JobsSnapshot, TerminalReuse, can_resume_attempt
 from feedbax.orchestration.session import SessionError
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -238,6 +237,7 @@ class PlanJobReader:
         snapshot = self.host.jobs_snapshot(
             project=project, start_host=False, record_keys=(key,), include_launch=include_producers,
             checkpoint_progress_root=manifest_root if include_producers else None,
+            checkpoint_admission=(manifest_root, sorted(requests)),
         )
         plan_ref = cast(AuthoredTrainPlanRef | None, snapshot.get("records", {}).get(key))
         wanted = set(requests)
@@ -252,22 +252,9 @@ class PlanJobReader:
             job["id"]: job for job in cast(list[dict[str, Any]], snapshot["jobs"])
             if job["data"].get("manifest_root") == manifest_root
         }
-        producers = Counter(
-            job["request"] for job in by_id.values()
-            if include_producers and job["request"].startswith("train:")
-            and is_checkpoint_producer(
-                job["launch"], continues=job["continues"], manifest_root=manifest_root,
-                collected=job["data"].get("collected_train", False),
-            )
-        )
         catalogs = {
-            job["request"]: tuple(job["launch"]["payload"].get("checkpoint_catalog", ()))
-            for job in by_id.values()
-            if producers[job["request"]] == 1
-            and is_checkpoint_producer(
-                job["launch"], continues=job["continues"], manifest_root=manifest_root,
-                collected=job["data"].get("collected_train", False),
-            )
+            request: tuple(by_id[anchor]["launch"]["payload"].get("checkpoint_catalog", ()))
+            for request, anchor in snapshot.get("checkpoint_producers", {}).items()
         }
         from feedbax.persistence.effective_success import SuccessView
 
@@ -319,7 +306,9 @@ class PlanJobReader:
                     try:
                         published = PublishedSuccess(ref, store_success or success_view.read_receipt(ref))
                         provenance = published.receipt.provenance
-                        validity = observer.inspect(success_view, published).decision
+                        validity = observer.inspect(
+                            success_view, published, checkpoint_differences=_checkpoint_differences(snapshot, job["id"]),
+                        ).decision
                     except (KeyError, OSError, ValueError) as error:
                         damage, receipt = f"Cannot assess the committed result: {error}", None
             completion = (job.get("outcome") or {}).get("completion") or {}
@@ -374,6 +363,11 @@ class PlanJobReader:
             MappingProxyType({address: tuple(rows) for address, rows in light_attempts.items()}),
             tuple(job for job in by_id.values() if "validity_check" in job["data"]),
         )
+
+
+def _checkpoint_differences(snapshot: JobsSnapshot, attempt: str) -> tuple[InputDifference, ...]:
+    difference = snapshot.get("checkpoint_differences", {}).get(attempt)
+    return (InputDifference.model_validate(difference),) if difference is not None else ()
 
 
 class SessionSubmission(Protocol):
@@ -717,15 +711,7 @@ class JobService(PlanJobReader):
         )
 
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
-        anchors = [
-            row["id"]
-            for row in self.host.jobs(project=project, request=request, include_launch=True)
-            if is_checkpoint_producer(
-                row["launch"], continues=row["continues"], manifest_root=str(root),
-                collected=bool(row["data"].get("collected_train")),
-            )
-        ]
-        return anchors[0] if len(anchors) == 1 else None
+        return self.host.checkpoint_producer(project=project, manifest_root=str(root), request=request)
 
     def _light_item(
         self, project: str, plan: ProjectPlan, store: ImmutableArtifactBlobProvider,
@@ -925,7 +911,7 @@ class JobService(PlanJobReader):
         result = wait_for_check(self.host, project=plan.project_id, job_id=check)
         fresh = self._result_observation(plan, request)
         if fresh is not None:
-            settle_check(fresh[0], fresh[1], result)
+            settle_check(fresh[0], fresh[1], result, current_checkpoints=partial(self._result_checkpoints, plan))
 
     def _result_observation(
         self, plan: SettledProjectPlan, request: RequestId,
@@ -941,7 +927,19 @@ class JobService(PlanJobReader):
         if published is None:
             return None
         observer = self._validity_observer(plan.project_root)
-        return view, observer, published, observer.inspect(view, published)
+        differences = self._result_checkpoints(plan, request, published.receipt.attempt)
+        return view, observer, published, observer.inspect(view, published, checkpoint_differences=differences)
+
+    def _result_checkpoints(
+        self, plan: SettledProjectPlan, request: RequestId, attempt: str,
+    ) -> tuple[InputDifference, ...]:
+        if not request.startswith(("analyze:", "evaluate:")):
+            return ()
+        snapshot = self.host.jobs_snapshot(
+            project=plan.project_id, job_id=attempt, start_host=False,
+            checkpoint_admission=(str(plan.store_path), [request]),
+        )
+        return _checkpoint_differences(snapshot, attempt)
 
     def _submit_check(
         self, plan: SettledProjectPlan, result: PublishedSuccess, observation: ObservedReceiptValidity,
@@ -991,7 +989,8 @@ class JobService(PlanJobReader):
 
                 check = self._submit_check(plan, published, observation)
                 (row,) = self.host.jobs(project=plan.project_id, job_id=check)
-                if (decided := settle_check(view, observer, row)) is not None:
+                decided = settle_check(view, observer, row, current_checkpoints=partial(self._result_checkpoints, plan))
+                if decided is not None:
                     return decided
             return observation.decision
         differences, who, why = judgement
@@ -1005,7 +1004,9 @@ class JobService(PlanJobReader):
         record_validity(view.store, request, ValidityJudgement(
             receipt=published.ref, differences=differences, who=who, when=datetime.now(UTC), why=why,
         ))
-        return observer.inspect(view, published).decision
+        return observer.refresh().inspect(
+            view, published, checkpoint_differences=self._result_checkpoints(plan, request, published.receipt.attempt),
+        ).decision
 
     def maintain_plan_validity(
         self, folders: SavedProjectPlans, plan: SettledProjectPlan, attempts: PlanJobAttempts,
@@ -1026,7 +1027,7 @@ class JobService(PlanJobReader):
             scope = row["data"]["validity_check"]
             attempt = results.get(scope["request_id"])
             if attempt is not None and attempt.validity is not None and attempt.validity.checks:
-                decided = settle_check(view, observer, row)
+                decided = settle_check(view, observer, row, current_checkpoints=partial(self._result_checkpoints, plan))
                 checked |= decided is not None and decided != attempt.validity
         if checked or self._automatic_run == "off":
             return checked
@@ -1063,8 +1064,11 @@ class JobService(PlanJobReader):
                     if (result := authorized_success(request)) is not None:
                         quick_run = allow_run and validity.state != "current" and is_quick(result.receipt, self._quick_duration, view.store)
                         if not quick_run:
-                            self._submit_check(plan, result, observer.inspect(view, result))
-                            available -= 1
+                            differences = self._result_checkpoints(plan, request, result.receipt.attempt)
+                            observation = observer.inspect(view, result, checkpoint_differences=differences)
+                            if observation.decision.checks:
+                                self._submit_check(plan, result, observation)
+                                available -= 1
             if allow_run and needed:
                 candidates = [authorized_success(request) for request in needed]
                 if all(
@@ -1110,8 +1114,12 @@ class JobService(PlanJobReader):
         native_requests = sorted({request for request, pin in terminal_inputs.values() if pin is None})
         terminal_train = (record["command"]["store"], native_requests) if native_requests else None
 
+        requested = sorted({item.job.request for item in candidates if item.job is not None})
         for attempt in range(3):
-            snapshot = self.host.jobs_snapshot(project=record["project"], terminal_train=terminal_train)
+            snapshot = self.host.jobs_snapshot(
+                project=record["project"], terminal_train=terminal_train,
+                checkpoint_admission=(str(current.store_path), requested),
+            )
             view = SuccessView(ImmutableArtifactBlobProvider(current.store_path))
             observer = self._validity_observer(current.project_root)
             terminal_receipts = snapshot.get("terminal_train_receipts", {})
@@ -1152,7 +1160,7 @@ class JobService(PlanJobReader):
                 if eligible and (terminal is None or receipt is not None):
                     reusable = self._reusable(
                         job, history.get(job.request, ()), view=view, observer=observer,
-                        attempts=attempts, automatic=automatic, upstream=not selected,
+                        attempts=attempts, snapshot=snapshot, automatic=automatic, upstream=not selected,
                         terminal_receipt=ContentObjectRef.model_validate(receipt) if receipt is not None else None,
                     )
                 if automatic and selected and reusable is None:
@@ -1705,18 +1713,20 @@ class JobService(PlanJobReader):
 
     def _reusable(
         self, candidate: Job, jobs: Sequence[dict[str, Any]], *, view: SuccessView, observer: ProjectValidity,
-        attempts: Mapping[str, dict[str, Any]], automatic: bool, upstream: bool,
+        attempts: Mapping[str, dict[str, Any]], snapshot: JobsSnapshot, automatic: bool, upstream: bool,
         terminal_receipt: ContentObjectRef | None = None,
     ) -> str | None:
         from feedbax.persistence.effective_success import PublishedSuccess
 
-        parent_ids = {edge.job_id for edge in candidate.edges}
+        parents = tuple(edge for edge in candidate.edges if not edge.authenticated_completion)
+        parent_ids = {edge.job_id for edge in parents}
+        if any(edge.job_id not in attempts for edge in candidate.edges):
+            return None
         origins = {}
-        for edge in candidate.edges:
-            parent = attempts.get(edge.job_id)
-            if parent is not None and parent["state"] == "succeeded":
-                if (ref := view.attempt_ref(edge.job_id)) is not None:
-                    origins[parent["request"]] = ref
+        for edge in parents:
+            parent = attempts[edge.job_id]
+            if parent["state"] == "succeeded" and (ref := view.attempt_ref(edge.job_id)) is not None:
+                origins[parent["request"]] = ref
         for job in reversed(jobs):
             if job["state"] in _LIVE_STATES:
                 return None
@@ -1727,16 +1737,19 @@ class JobService(PlanJobReader):
                 job, terminal_receipt=terminal_receipt,
             ):
                 return None
-            old_parents = {edge["job_id"] for edge in job["edges"]}
+            old_parents = {edge["job_id"] for edge in job["edges"] if not edge.get("authenticated_completion")}
             if (
                 terminal_receipt is None and old_parents != parent_ids
-                and (not _is_light_request(candidate.request) or len(origins) != len(candidate.edges))
+                and (not _is_light_request(candidate.request) or len(origins) != len(parents))
             ):
                 return None
             from feedbax.validity.project_admission import is_quick
 
             retained = view.read_receipt(ref)
-            result = observer.inspect(view, PublishedSuccess(ref, retained), origins=origins).decision
+            result = observer.inspect(
+                view, PublishedSuccess(ref, retained), origins=origins,
+                checkpoint_differences=_checkpoint_differences(snapshot, job["id"]),
+            ).decision
             if result.state == "current":
                 return job["id"]
             if upstream and all(reason.kind in ("code", "environment") for reason in result.reasons) and (

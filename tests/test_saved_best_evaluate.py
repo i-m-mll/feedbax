@@ -160,6 +160,7 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
     assert "rank_groups" not in planned_subset.model_dump()
     by_key = {item.key.row: item for item in response.window_map.evaluations}
     best_results = [by_key[run.key.row].result for run in rankings]
+    assert {item.validity.state for item in best_results} == {"current"}
     assert [item.bound_subject.row for item in best_results] == ranked
     assert len({item.bound_subject.selection_sha256 for item in best_results}) == 1
     assert [item.job_id for item in best_results] == attempts[-2:]

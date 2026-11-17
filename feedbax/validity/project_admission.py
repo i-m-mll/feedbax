@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
@@ -65,9 +65,10 @@ class ProjectValidity:
     def inspect(
         self, view: SuccessView, published: PublishedSuccess, *,
         origins: Mapping[str, ContentObjectRef] | None = None,
+        checkpoint_differences: Sequence[InputDifference] = (),
     ) -> ObservedReceiptValidity:
         receipt = published.receipt
-        inputs = current_input_differences(view, receipt, origins=origins)
+        inputs = (*checkpoint_differences, *current_input_differences(view, receipt, origins=origins))
         if receipt.trace is None:
             conditions = CheckConditions(code=(), environment=())
             return ObservedReceiptValidity(decide_validity(

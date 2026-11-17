@@ -154,3 +154,5 @@ class JobsSnapshot(TypedDict):
     jobs: list[JsonObject]
     records: NotRequired[dict[str, JsonObject]]
     terminal_train_receipts: NotRequired[dict[str, JsonObject]]
+    checkpoint_differences: NotRequired[dict[str, JsonObject]]
+    checkpoint_producers: NotRequired[dict[str, str]]

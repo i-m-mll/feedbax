@@ -36,7 +36,8 @@ POLL_SECONDS = 0.20
 TERM_GRACE = 2
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
-    "ping", "events", "jobs_snapshot", "stopped_checkpoint", "jobs", "submissions", "record_get", "record_get_many",
+    "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
+    "record_get", "record_get_many",
 }
 
 
@@ -935,6 +936,8 @@ class Host:
                 return await self._events(**message)
             case "jobs_snapshot":
                 return self.store.jobs_snapshot(**message)
+            case "checkpoint_producer":
+                return self.store.checkpoint_producer(**message)
             case "stopped_checkpoint":
                 return self.store.stopped_checkpoint(**message)
             case "admit" | "admit_with_completion":
