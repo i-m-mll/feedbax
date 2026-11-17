@@ -8,10 +8,13 @@ import sys
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax._src.interpreters.mlir import make_ir_context
+from jaxlib.mlir import ir
 import numpy as np
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.computation_validity import (
+    NORMALIZATION_VERSION,
     ComputationDifferent,
     ComputationEqual,
     ComputationStart,
@@ -27,6 +30,7 @@ from feedbax.contracts.computation_validity import (
     UnidentifiedCall,
 )
 from feedbax.validity.computation import (
+    _canonical_asm,
     argument_signature,
     bounded_program_archive,
     capture_arguments,
@@ -103,6 +107,20 @@ def test_private_rename_keeps_exact_computation_but_numeric_edit_and_driver_bump
     assert compare_computation(original, bumped) == ComputationDifferent(
         changes=(DriverChanged(previous=original.driver, present=bumped.driver),)
     )
+
+
+def test_private_symbol_references_in_array_and_dictionary_attributes_are_renamed():
+    def module(symbol):
+        return ir.Module.parse(
+            f'module attributes {{feedbax.references = [{{callee = @{symbol}, label = "external"}}]}} '
+            f"{{func.func private @{symbol}() {{return}}}}"
+        )
+
+    with make_ir_context():
+        former = _canonical_asm(module("alpha").operation)
+        current = _canonical_asm(module("beta").operation)
+        reserved = _canonical_asm(module("__feedbax_func_0").operation)
+    assert former == current == reserved
 
 
 def test_cpu_reference_does_not_hide_an_execution_platform_edit():
@@ -202,18 +220,19 @@ print(capture_arguments(arrays, static=static).sha256)
     assert len(digests[0]) == 64 and digests[0] == digests[1]
 
 
-def test_old_normalization_requires_retained_program_for_exact_comparison():
+def test_different_normalization_requires_retained_program_for_exact_comparison():
     objects = Objects()
     args = (jnp.array([4], dtype=jnp.int32),)
     traced = jax.jit(lambda x: x + 2).trace(*args)
     present = _trace(traced, args)
-    previous = present.model_copy(update={"normalization_version": 2})
+    other_version = NORMALIZATION_VERSION + 1
+    previous = present.model_copy(update={"normalization_version": other_version})
     assert compare_computation(previous, present) == ComputationUnconfirmable(
         reason="normalization",
         targets=("slot",),
     )
     archived = _trace(traced, args, retain=objects.store).model_copy(
-        update={"normalization_version": 2}
+        update={"normalization_version": other_version}
     )
     assert isinstance(
         compare_computation(archived, present, read_blob=objects.read), ComputationEqual
