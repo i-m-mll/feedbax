@@ -10,7 +10,7 @@ import signal
 import numpy as np
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.effective_success import success_content_ref
+from feedbax.contracts.effective_success import EvaluationSubjectValue, success_content_ref
 from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
@@ -59,7 +59,7 @@ packages = ["managed_method_probe"]
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, (str(site), os.environ.get("PYTHONPATH")))))
 
 
-def _write_project(folders, project, store):
+def _write_project(folders, project, store, *, evaluate_request=None):
     raw = managed_train_project(batches=_TOTAL).model_dump(mode="json", by_alias=True, exclude_unset=True)
     authored = raw["steps"]["train"]["base"]["inline"]
     authored.update(
@@ -81,6 +81,8 @@ def _write_project(folders, project, store):
         "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
     }
     raw["steps"]["evaluate"] = managed_evaluation_step("train")
+    if evaluate_request is not None:
+        raw["steps"]["evaluate"]["inputs"]["subject"] = {"run": evaluate_request}
     for name, data in dump_text_project(
         Project.model_validate(raw), ProjectConfiguration(project=project, store=str(store)),
     ).items():
@@ -147,6 +149,7 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     gate = tmp_path / "stop.armed"
+    model_only = gate.with_suffix(".model-only")
     monkeypatch.setenv("FEEDBAX_TEST_ADVERSARIAL_STOP", str(gate))
     local = request.getfixturevalue("host")
     registries = load_application().bundle
@@ -164,6 +167,20 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
         venue.policy(compute=1)
         uninterrupted_id = _launch(venue_jobs, folders, plan, "train", "uninterrupted")
         uninterrupted = _terminal(venue, uninterrupted_id, "succeeded")
+        control = _checkpoint(uninterrupted)
+        uninterrupted_success = _success(source, uninterrupted)
+
+        model_only.touch()
+        receiver_id = _launch(venue_jobs, folders, plan, "receiver", "receiver")
+        received = _terminal(venue, receiver_id, "succeeded")
+        receiver_checkpoint = _checkpoint(received)
+        assert receiver_checkpoint.model.tree == control.model.tree
+        (counts,) = _extra(source, receiver_checkpoint).values()
+        np.testing.assert_array_equal(counts, [42, 42])
+        (source_checkpoint,) = _success(source, received).receipt.inputs["checkpoint"]
+        assert source_checkpoint.selection.receipt == uninterrupted_success.ref
+        model_only.unlink()
+
         gate.touch()
         stopped_id = _launch(venue_jobs, folders, plan, "train", "stop-and-collect")
         _await_stop_gate(venue, stopped_id, gate)
@@ -180,8 +197,7 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
             os.kill(venue.ping()["pid"], signal.SIGTERM)
             wait_until(lambda: not venue.address.exists())
 
-    control = _checkpoint(uninterrupted)
-    uninterrupted_metrics = _retained_metrics(source, _success(source, uninterrupted))
+    uninterrupted_metrics = _retained_metrics(source, uninterrupted_success)
     local_plan = _write_project(folders, project, tmp_path / "local-results")
     destination = ImmutableArtifactBlobProvider(local_plan.store_path)
     local_jobs = JobService(local, registries)
@@ -228,8 +244,9 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
     terminal = next(event for event in events if event["job_id"] == attempt.job_id and event["kind"] == "terminal")
     assert live[-1]["cursor"] < terminal["cursor"]
 
-    gate.with_suffix(".model-only").touch()
-    evaluator_id = _launch(local_jobs, folders, local_plan, "evaluate", "evaluate")
+    model_only.touch()
+    evaluation_plan = _write_project(folders, project, local_plan.store_path, evaluate_request=resumed["request"])
+    evaluator_id = _launch(local_jobs, folders, evaluation_plan, "evaluate", "evaluate")
     evaluation = _terminal(local, evaluator_id, "succeeded")
     result = local_jobs.read_evaluation_result(
         project=local_plan.project_id, store=local_plan.store_path, job_id=evaluator_id,
@@ -239,12 +256,7 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
         assert dataset.data("replicate").tolist() == ["0", "1"]
     (evaluated_subject,) = _success(destination, evaluation).receipt.inputs["subject"]
     assert evaluated_subject.evaluation_subject.terminal_receipt == resumed_success.ref
-
-    receiver_id = _launch(local_jobs, folders, local_plan, "receiver", "receiver")
-    received = _terminal(local, receiver_id, "succeeded")
-    receiver_checkpoint = _checkpoint(received)
-    assert receiver_checkpoint.model.tree == restored.model.tree
-    (counts,) = _extra(destination, receiver_checkpoint).values()
-    np.testing.assert_array_equal(counts, [42, 42])
-    (source_checkpoint,) = _success(destination, received).receipt.inputs["checkpoint"]
-    assert source_checkpoint.selection.receipt == resumed_success.ref
+    binding = EvaluationSubjectValue.model_validate(evaluated_subject.descriptor)
+    assert binding.resolved is not None
+    (model,) = binding.resolved.members
+    assert model.model_tree == restored.model.tree.descriptor.sha256
