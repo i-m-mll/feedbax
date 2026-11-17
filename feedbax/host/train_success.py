@@ -116,7 +116,6 @@ def publish_train_success(
             clock=manifest.clock,
             state=CarriedMethodState(
                 method_key=manifest.identity.method_key,
-                method_revision=manifest.identity.method_revision,
                 extra=manifest.extra,
             ),
         )

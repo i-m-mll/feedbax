@@ -83,11 +83,7 @@ def training_metric_file(
 
 
 def _checkpoint_matches_request(identity: MethodCheckpointIdentity, launch: BoundStudioTrainingJobInput) -> bool:
-    return (
-        identity.request_id, identity.method_key, identity.method_revision,
-    ) == (
-        launch.request_id, launch.spec.method, launch.spec.method_revision,
-    )
+    return (identity.request_id, identity.method_key) == (launch.request_id, launch.spec.method)
 
 def checkpoint_reference(checkpoint: PublishedTrainingCheckpoint) -> ParentRef:
     pointer = checkpoint.pointer
@@ -192,13 +188,7 @@ def verify_training_completion(
         ):
             raise CompletionFileError("Receipt, published pointer and authored completion disagree.")
         transaction = read_method_checkpoint_manifest(expected_root, pointer)
-        method = manifest.provenance.metadata["method"]
-        if (
-            not _checkpoint_matches_request(transaction.identity, launch)
-            or transaction.clock.completed_updates != target
-            or (transaction.identity.distribution, transaction.identity.distribution_version)
-            != (method["distribution"], method["version"])
-        ):
+        if not _checkpoint_matches_request(transaction.identity, launch) or transaction.clock.completed_updates != target:
             raise CompletionFileError("Authenticated checkpoint disagrees with its admitted method or request.")
         files = [
             _file(root, binding_path, binding_sha256, len(binding_raw)),

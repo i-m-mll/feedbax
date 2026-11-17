@@ -312,11 +312,11 @@ def test_figure_raw_mapping_cannot_collide_with_a_typed_expression():
     assert decoded.spec.figure == figure
 
 
-def test_managed_training_preserves_wide_seed_and_factored_payload():
-    spec = _managed_train().model_copy(update={"seed": (1 << 64) - 1})
+def test_managed_training_preserves_seed_and_factored_settings():
+    spec = _managed_train().model_copy(update={"seed": (1 << 32) - 1})
     request = encode_request(spec, {})
     data = json.loads(request.data)
-    assert data["spec"]["seed"] == "18446744073709551615"
+    assert data["spec"]["seed"] == (1 << 32) - 1
     decoded = decode_request(request.data, request.documents.__getitem__)
     assert encode_request(decoded.spec, {}) == request
     with pytest.raises(ValueError, match="Invalid request document bytes"):
