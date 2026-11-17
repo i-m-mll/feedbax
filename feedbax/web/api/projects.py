@@ -21,8 +21,8 @@ from feedbax.contracts.studio_authoring import (
     StudioTrainAuthoringRequest,
 )
 from feedbax.contracts.studio_project import (
-    StudioDocumentCommand,
-    StudioDocumentCommandResult,
+    StudioMemberCommand,
+    StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectCreateFile,
     StudioProjectDocument,
@@ -371,12 +371,12 @@ def create_project_file(
     )
 
 
-@router.post("/{project_id}/documents/command", response_model_exclude_unset=True)
-def command_project_document(
-    project_id: ProjectName, body: StudioDocumentCommand, request: Request, response: Response
-) -> StudioDocumentCommandResult:
+@router.post("/{project_id}/members/command", response_model_exclude_unset=True)
+def command_project_member(
+    project_id: ProjectName, body: StudioMemberCommand, request: Request, response: Response
+) -> StudioMemberCommandResult:
     return _project_response(
-        response, lambda: request.app.state.project_folders.document_command(project_id, body)
+        response, lambda: request.app.state.project_folders.member_command(project_id, body)
     )
 
 

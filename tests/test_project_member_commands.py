@@ -1,4 +1,4 @@
-"""Rename, duplicate and use a project document through Studio's routes."""
+"""Rename a project document or step, and duplicate and use a document, through Studio's routes."""
 
 from copy import deepcopy
 
@@ -36,7 +36,7 @@ def _snapshot(client):
 
 
 def _command(client, snapshot, command, status=200):
-    response = client.post(f"{URL}/documents/command", json={
+    response = client.post(f"{URL}/members/command", json={
         "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
         "command": command,
     })
@@ -58,23 +58,7 @@ def _files(folders):
     }
 
 
-def test_rename_rewrites_every_reference_and_replays_back(studio):
-    client, folders = studio
-    before = _snapshot(client)
-    files = _files(folders)
-    assert _requests(folders, before["revision"]).keys() == set(STEPS)
-
-    result = _command(client, before, {"kind": "rename", "document": "reach-model", "name": "arm"})
-    after = result["snapshot"]
-    assert result["document"] == "arm"
-    assert "reach-model" not in after["project"]["documents"]
-    for step in STEPS:
-        trial = after["project"]["steps"][step]["base"]["inline"]["trial_documents"]
-        assert trial["model"] == {"document": "arm"} and trial["model_name"] == "arm"
-    assert set(after["presentation"]["documents"]) == {"arm"}
-    assert _requests(folders, after["revision"]).keys() == set(STEPS)
-
-    # A client's Undo replays the prior bytes of every changed file and the presentation.
+def _replay(client, before, after):
     prior = {(item["address"]["kind"], item["address"]["id"]): item for item in before["file_revisions"]}
     current = {(item["address"]["kind"], item["address"]["id"]): item for item in after["file_revisions"]}
     replay = [
@@ -83,10 +67,35 @@ def test_rename_rewrites_every_reference_and_replays_back(studio):
         for kind, id in prior.keys() | current.keys()
         if prior.get((kind, id), {}).get("revision") != current.get((kind, id), {}).get("revision")
     ]
-    response = client.post(f"{URL}/history/replay", json={
+    if before["declaration"]["authored_revision"] != after["declaration"]["authored_revision"]:
+        replay.append({
+            "address": {"kind": "declaration", "id": "declaration"},
+            "before": after["declaration"]["revision"], "after": before["declaration"]["data"],
+        })
+    return client.post(f"{URL}/history/replay", json={
         "revision": after["revision"], "files": replay,
         "presentation": {"before": after["presentation_revision"], "after": before["presentation"]},
     })
+
+
+def test_rename_rewrites_every_reference_and_replays_back(studio):
+    client, folders = studio
+    before = _snapshot(client)
+    files = _files(folders)
+    assert _requests(folders, before["revision"]).keys() == set(STEPS)
+
+    result = _command(client, before, {"kind": "rename", "family": "documents", "member": "reach-model", "name": "arm"})
+    after = result["snapshot"]
+    assert result["member"] == "arm"
+    assert "reach-model" not in after["project"]["documents"]
+    for step in STEPS:
+        trial = after["project"]["steps"][step]["base"]["inline"]["trial_documents"]
+        assert trial["model"] == {"document": "arm"} and trial["model_name"] == "arm"
+    assert set(after["presentation"]["documents"]) == {"arm"}
+    assert _requests(folders, after["revision"]).keys() == set(STEPS)
+
+    # A client's Undo replays the prior bytes of every changed file and the presentation.
+    response = _replay(client, before, after)
     assert response.status_code == 200, response.text
     restored = _files(folders)
     assert restored.keys() == files.keys()
@@ -97,20 +106,20 @@ def test_rename_rewrites_every_reference_and_replays_back(studio):
 def test_rename_refuses_a_name_already_in_use(studio):
     client, folders = studio
     snapshot = _snapshot(client)
-    _command(client, snapshot, {"kind": "rename", "document": "reach-model", "name": "task"}, 409)
+    _command(client, snapshot, {"kind": "rename", "family": "documents", "member": "reach-model", "name": "task"}, 409)
     raw = snapshot["project"]
     raw["steps"]["train-b"]["base"]["inline"]["trial_documents"]["objective"] = {"document": "missing"}
     _save_project(folders, PROJECT, Project.model_validate(raw))
     snapshot = _snapshot(client)
-    _command(client, snapshot, {"kind": "rename", "document": "objective", "name": "missing"}, 422)
+    _command(client, snapshot, {"kind": "rename", "family": "documents", "member": "objective", "name": "missing"}, 422)
 
 
 def test_a_step_using_a_duplicate_diverges_alone(studio):
     client, folders = studio
     snapshot = _snapshot(client)
     original = _requests(folders, snapshot["revision"])
-    result = _command(client, snapshot, {"kind": "duplicate", "document": "task"})
-    copy = result["document"]
+    result = _command(client, snapshot, {"kind": "duplicate", "family": "documents", "member": "task"})
+    copy = result["member"]
     assert copy == "task-2"
     assert result["snapshot"]["project"]["documents"][copy] == snapshot["project"]["documents"]["task"]
 
@@ -138,7 +147,7 @@ def test_a_step_using_a_duplicate_diverges_alone(studio):
 
 def test_a_step_uses_a_duplicated_model_and_reports_what_does_not_resolve(studio):
     client, folders = studio
-    result = _command(client, _snapshot(client), {"kind": "duplicate", "document": "reach-model", "name": "arm"})
+    result = _command(client, _snapshot(client), {"kind": "duplicate", "family": "documents", "member": "reach-model", "name": "arm"})
     assert result["snapshot"]["presentation"]["documents"]["arm"] == result["snapshot"]["presentation"]["documents"]["reach-model"]
     run = {"variant": "default", "step": "train-b", "row": "default"}
     response = client.post(f"{URL}/authoring/trials", json={
@@ -171,3 +180,74 @@ def test_choosing_a_document_of_another_role_is_refused(studio):
         "change": {"kind": "select_document", "role": "model", "document": "task"},
     })
     assert response.status_code == 422, response.text
+
+
+MASS = {
+    "document": "reach-model", "composites": [],
+    "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+}
+
+
+@pytest.fixture
+def evaluated(tmp_path):
+    from feedbax.contracts.model_address import ModelAddress
+
+    app = create_app(projects_dir=tmp_path / "projects")
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        raw = document_project(authored_documents(), evaluation=True)
+        target = "steps.train." + ModelAddress.model_validate(MASS).to_text()
+        raw["sweep"] = {"axes": {"mass": {"values": {
+            name: {"value": value, "patches": {target: {"value": value}}} for name, value in (("nominal", 1), ("heavy", 2))
+        }}}}
+        raw["steps"]["train"]["group"] = "fitting"
+        _save_project(folders, PROJECT, Project.model_validate(raw))
+        (folders.root / PROJECT / "presentation.json").write_text(
+            '{"steps": {"train": {"sweep_order": ["mass"], "folded_sweep_id": "mass"}}}\n',
+        )
+        yield client, folders
+
+
+def _step_requests(folders, revision):
+    plan = folders.read_plan(PROJECT, revision=revision).plan
+    assert not plan.diagnostics, plan.diagnostics
+    return {(run.key.variant, run.key.step, run.key.row): run.request_id for run in plan.runs}
+
+
+def test_a_step_rename_rewrites_its_references_and_keeps_every_request(evaluated):
+    client, folders = evaluated
+    before = _snapshot(client)
+    files = _files(folders)
+    requests = _step_requests(folders, before["revision"])
+    assert {step for _, step, _ in requests} == {"train", "baseline"}
+
+    result = _command(client, before, {"kind": "rename", "family": "steps", "member": "train", "name": "fit"})
+    after = result["snapshot"]
+    assert result["member"] == "fit"
+    steps = after["project"]["steps"]
+    assert set(steps) == {"fit", "baseline"} and steps["fit"]["group"] == "fitting"
+    assert steps["baseline"]["inputs"]["subject"]["step"] == "fit"
+    targets = {target for value in after["project"]["sweep"]["axes"]["mass"]["values"].values() for target in value["patches"]}
+    assert targets and all(target.startswith("steps.fit.{") for target in targets)
+    assert after["presentation"]["steps"] == {"fit": {"sweep_order": ["mass"], "folded_sweep_id": "mass"}}
+    renamed = _files(folders)
+    assert "steps/fit.json" in renamed and "steps/train.json" not in renamed
+    assert _step_requests(folders, after["revision"]) == {
+        (variant, "fit" if step == "train" else step, row): request for (variant, step, row), request in requests.items()
+    }
+
+    response = _replay(client, before, after)
+    assert response.status_code == 200, response.text
+    restored = _files(folders)
+    assert restored.keys() == files.keys()
+    # Replay re-encodes the declaration it restores.
+    assert response.json()["project"] == before["project"]
+    assert all(restored[name] == files[name] for name in files if name not in {"presentation.json", "documents.feedbax"})
+    assert response.json()["presentation"] == before["presentation"]
+
+
+def test_a_step_rename_refuses_a_taken_name(evaluated):
+    client, folders = evaluated
+    snapshot = _snapshot(client)
+    _command(client, snapshot, {"kind": "rename", "family": "steps", "member": "train", "name": "baseline"}, 409)
+    _command(client, snapshot, {"kind": "rename", "family": "steps", "member": "missing", "name": "other"}, 404)

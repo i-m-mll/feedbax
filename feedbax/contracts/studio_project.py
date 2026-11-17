@@ -137,30 +137,35 @@ class StudioProjectRename(StrictModel):
     name: ProjectName
 
 
-class RenameDocument(StrictModel):
-    """Rename a document and every authored reference to it."""
+type MemberFamily = Literal["documents", "steps"]
+
+
+class RenameMember(StrictModel):
+    """Rename a document or step and every authored reference to it."""
 
     kind: Literal["rename"]
-    document: ProjectName
+    family: MemberFamily
+    member: ProjectName
     name: ProjectName
 
 
-class DuplicateDocument(StrictModel):
+class DuplicateMember(StrictModel):
     """Copy a document and its presentation under a new name, generated when omitted."""
 
     kind: Literal["duplicate"]
-    document: ProjectName
+    family: Literal["documents"]
+    member: ProjectName
     name: ProjectName | None = None
 
 
-class StudioDocumentCommand(StrictModel):
+class StudioMemberCommand(StrictModel):
     revision: Sha256
     presentation_revision: Sha256
-    command: Annotated[RenameDocument | DuplicateDocument, Field(discriminator="kind")]
+    command: Annotated[RenameMember | DuplicateMember, Field(discriminator="kind")]
 
 
-class StudioDocumentCommandResult(StrictModel):
-    document: ProjectName
+class StudioMemberCommandResult(StrictModel):
+    member: ProjectName
     snapshot: StudioProjectSnapshot
 
 

@@ -2723,9 +2723,10 @@ export type DrawValue = {
   "per"?: "run" | "trial";
 };
 
-export type DuplicateDocument = {
+export type DuplicateMember = {
   "kind": "duplicate";
-  "document": string;
+  "family": "documents";
+  "member": string;
   "name"?: string | null;
 };
 
@@ -2966,6 +2967,8 @@ export type MatrixCompositionDelta = {
   "schema_version"?: string | null;
 };
 
+export type MemberFamily = "documents" | "steps";
+
 export type ModelPort = {
   "kind"?: "model";
 };
@@ -3166,9 +3169,10 @@ export type RemoveValue = {
   "op": "remove";
 };
 
-export type RenameDocument = {
+export type RenameMember = {
   "kind": "rename";
-  "document": string;
+  "family": MemberFamily;
+  "member": string;
   "name": string;
 };
 
@@ -3510,17 +3514,6 @@ export type StudioCheckpointRuleToSweep = {
   "kind": "to_sweep";
 };
 
-export type StudioDocumentCommand = {
-  "revision": Sha256;
-  "presentation_revision": Sha256;
-  "command": RenameDocument | DuplicateDocument;
-};
-
-export type StudioDocumentCommandResult = {
-  "document": string;
-  "snapshot": StudioProjectSnapshot;
-};
-
 export type StudioEvaluateStep = {
   "kind": "evaluate";
   "base": Base;
@@ -3556,6 +3549,17 @@ export type StudioEvaluationPointProgress = {
   "publication_cursor": number;
   "transaction_root_sha256": string;
   "status": "scored" | "failed";
+};
+
+export type StudioMemberCommand = {
+  "revision": Sha256;
+  "presentation_revision": Sha256;
+  "command": RenameMember | DuplicateMember;
+};
+
+export type StudioMemberCommandResult = {
+  "member": string;
+  "snapshot": StudioProjectSnapshot;
 };
 
 export type StudioNameSweepValue = {
@@ -8813,13 +8817,14 @@ export const DrawValueSchema: z.ZodType<DrawValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DrawValue>;
 
-export const DuplicateDocumentSchema: z.ZodType<DuplicateDocument> = z.lazy(() =>
+export const DuplicateMemberSchema: z.ZodType<DuplicateMember> = z.lazy(() =>
   z.object({
     "kind": z.literal("duplicate"),
-    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "family": z.literal("documents"),
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "name": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
-) as unknown as z.ZodType<DuplicateDocument>;
+) as unknown as z.ZodType<DuplicateMember>;
 
 export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
   z.object({
@@ -9136,6 +9141,10 @@ export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z
   }).strict()
 ) as unknown as z.ZodType<MatrixCompositionDelta>;
 
+export const MemberFamilySchema: z.ZodType<MemberFamily> = z.lazy(() =>
+  z.union([z.literal("documents"), z.literal("steps")])
+) as unknown as z.ZodType<MemberFamily>;
+
 export const ModelPortSchema: z.ZodType<ModelPort> = z.lazy(() =>
   z.object({
     "kind": z.literal("model").optional(),
@@ -9414,13 +9423,14 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
 
-export const RenameDocumentSchema: z.ZodType<RenameDocument> = z.lazy(() =>
+export const RenameMemberSchema: z.ZodType<RenameMember> = z.lazy(() =>
   z.object({
     "kind": z.literal("rename"),
-    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "family": MemberFamilySchema,
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
-) as unknown as z.ZodType<RenameDocument>;
+) as unknown as z.ZodType<RenameMember>;
 
 export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
   z.object({
@@ -9870,21 +9880,6 @@ export const StudioCheckpointRuleToSweepSchema: z.ZodType<StudioCheckpointRuleTo
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleToSweep>;
 
-export const StudioDocumentCommandSchema: z.ZodType<StudioDocumentCommand> = z.lazy(() =>
-  z.object({
-    "revision": Sha256Schema,
-    "presentation_revision": Sha256Schema,
-    "command": z.union([RenameDocumentSchema, DuplicateDocumentSchema]),
-  }).strict()
-) as unknown as z.ZodType<StudioDocumentCommand>;
-
-export const StudioDocumentCommandResultSchema: z.ZodType<StudioDocumentCommandResult> = z.lazy(() =>
-  z.object({
-    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "snapshot": StudioProjectSnapshotSchema,
-  }).strict()
-) as unknown as z.ZodType<StudioDocumentCommandResult>;
-
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
@@ -9929,6 +9924,21 @@ export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPoin
     "status": z.union([z.literal("scored"), z.literal("failed")]),
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluationPointProgress>;
+
+export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "presentation_revision": Sha256Schema,
+    "command": z.union([RenameMemberSchema, DuplicateMemberSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioMemberCommand>;
+
+export const StudioMemberCommandResultSchema: z.ZodType<StudioMemberCommandResult> = z.lazy(() =>
+  z.object({
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "snapshot": StudioProjectSnapshotSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioMemberCommandResult>;
 
 export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.lazy(() =>
   z.object({
@@ -10701,8 +10711,8 @@ export const contractSchemas = {
   RemoveProjectValue: RemoveProjectValueSchema,
   SetProjectValue: SetProjectValueSchema,
   StudioAuthoredFileRevision: StudioAuthoredFileRevisionSchema,
-  StudioDocumentCommand: StudioDocumentCommandSchema,
-  StudioDocumentCommandResult: StudioDocumentCommandResultSchema,
+  StudioMemberCommand: StudioMemberCommandSchema,
+  StudioMemberCommandResult: StudioMemberCommandResultSchema,
   StudioPresentationWrite: StudioPresentationWriteSchema,
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
@@ -10851,8 +10861,8 @@ export interface ContractTypeMap {
   RemoveProjectValue: RemoveProjectValue;
   SetProjectValue: SetProjectValue;
   StudioAuthoredFileRevision: StudioAuthoredFileRevision;
-  StudioDocumentCommand: StudioDocumentCommand;
-  StudioDocumentCommandResult: StudioDocumentCommandResult;
+  StudioMemberCommand: StudioMemberCommand;
+  StudioMemberCommandResult: StudioMemberCommandResult;
   StudioPresentationWrite: StudioPresentationWrite;
   StudioProjectCreateFile: StudioProjectCreateFile;
   StudioProjectDocument: StudioProjectDocument;
