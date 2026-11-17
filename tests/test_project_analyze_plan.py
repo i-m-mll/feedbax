@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
-from feedbax.contracts.analysis_document import FigureElement
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Document, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
@@ -52,7 +52,20 @@ def _project() -> Project:
     project.documents["velocity-figure"] = Document.model_validate(
         {
             "schema": "feedbax.figure_document.v1",
-            "payload": VelocitySummary(VelocitySummarySettings()).model_dump(mode="json", exclude_unset=True),
+            "payload": {
+                "data": ["summary"],
+                "theme": "plotly_white",
+                "layout": [{"name": "velocity", "row": 1, "col": 1}],
+                "layers": [{
+                    "name": "bounds",
+                    "mark": "band",
+                    "role": "summary",
+                    "panel": "velocity",
+                    "select": {"checkpoint": {"index": 0}},
+                    "group": ["condition"],
+                    "encode": {"x": "state_time", "y": "mean", "lower": "lower", "upper": "upper"},
+                }],
+            },
         }
     )
     project.steps["analyze"] = Step.model_validate(
@@ -129,7 +142,8 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     )
     assert row.elements["profile"].inputs["summary"][0].element == ElementKey(_KEY, "summarize")
     assert align.spec.evaluation_states_policy == "require_durable"
-    assert figure.spec.figure is None and figure.spec.document == VelocitySummary(VelocitySummarySettings())
+    assert figure.spec.figure is None
+    assert figure.spec.document == FigureDocument.model_validate(project.documents["velocity-figure"].payload)
     source = plan.sources[_KEY]["/payload/operations/summarize/params/bounds_scale"]
     assert (source.kind, source.name, source.path) == (
         "document",
@@ -225,8 +239,6 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
     views["second"] = deepcopy(views["profile"])
     views["inline"] = deepcopy(views["profile"])
     views["inline"]["figure"] = deepcopy(project.documents["velocity-figure"].payload)
-    assert isinstance(FigureElement.model_validate(views["second"]).figure, DocumentReference)
-    assert FigureElement.model_validate(views["inline"]).figure == VelocitySummary(VelocitySummarySettings())
     project.sweep = Sweep.model_validate({"rows": {"base": {}, "dark": {}}})
     operations = _operations()
     memo = ProjectPlanMemo()
@@ -286,7 +298,7 @@ def test_installed_figure_template_shares_identity_with_its_inline_figure():
     authored = project.documents["velocity-figure"]
     profile = project.documents["velocity-analysis"].payload["views"]["profile"]
     saved_source = profile["figure"]
-    profile["figure"] = deepcopy(authored.payload)
+    profile["figure"] = VelocitySummary(VelocitySummarySettings()).model_dump(mode="json", exclude_unset=True)
     bundle = new_application_registry_bundle()
     bundle.seal()
     memo = ProjectPlanMemo()

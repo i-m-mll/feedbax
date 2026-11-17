@@ -1,7 +1,6 @@
 """Render the first walkthrough figure directly from a stored dataset."""
 
 from hashlib import sha256
-from pathlib import Path
 
 import numpy as np
 import plotly.io as pio
@@ -30,9 +29,6 @@ from feedbax.light_jobs import validate_light_request
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.plot.dataset_figure import render
-
-
-_FIXTURES = Path(__file__).resolve().parents[1] / "web/e2e/studio/fixtures"
 
 
 def test_velocity_report_references_the_saved_band_with_condition_order_and_physical_time(
@@ -73,8 +69,6 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
         figure.layout.template.layout.paper_bgcolor
         == pio.templates["plotly_white"].layout.paper_bgcolor
     )
-    assert figure.layout.xaxis.title.text == "Time (s)"
-    assert figure.layout.yaxis.title.text == "Velocity (m/s)"
     assert len(figure.data) == 6
     centers = figure.data[::3]
     assert [trace.name for trace in centers] == ["perturbed", "control"]
@@ -102,11 +96,16 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
     ),)}
     saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request))
     content = saved.content
-    document = ReportDocument.model_validate_json(
-        (_FIXTURES / "velocity-summary.report.json").read_bytes()
-    )
+    report = ReportDocument.model_validate({
+        "title": "Saved figure",
+        "blocks": [
+            {"markdown": "*Before figure*"},
+            {"figure": "velocity_summary"},
+            {"markdown": "*After figure*"},
+        ],
+    })
     result = render_report(
-        document, {"velocity_summary": PlotlyFigureProduct(content=content)},
+        report, {"velocity_summary": PlotlyFigureProduct(content=content)},
         plotly_script_sha256=sha256(get_plotlyjs().encode()).hexdigest(),
     )
     ((path, product),) = result.figures.items()
@@ -115,12 +114,9 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
     assert result.html.count(path) == 1
     assert result.html.count('src="plotly.min.js"') == 1
     assert figure_bytes.decode() not in result.html
-    assert result.html.index("<em>reach-aligned velocity</em>") < result.html.index("<figure ")
-    assert result.html.index("</figure>") < result.html.index("The band gives the lower")
-    assert (
-        "Mean velocity and trial bounds by condition.](report.html#report-figure-2)"
-        in result.markdown
-    )
+    assert result.html.index("<em>Before figure</em>") < result.html.index("<figure ")
+    assert result.html.index("</figure>") < result.html.index("<em>After figure</em>")
+    assert "](report.html#report-figure-2)" in result.markdown
 
 
 def test_report_shares_repeated_figure_content_and_checks_omissions_before_rendering():

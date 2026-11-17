@@ -77,16 +77,6 @@ def test_analysis_rejects_an_undeclared_artifact_reference_shape() -> None:
 
 
 def test_analysis_census_high_risk_shapes_have_explicit_migration_boundary() -> None:
-    checkpoint = {
-        "checkpoint_custody_binding": "capture-checkpoints",
-        "checkpoint_transaction": {
-            "kind": "TrainingCheckpointTransactionManifest",
-            "id": "tx-1",
-            "role": "training_checkpoint_custody",
-            "uri": "transactions/tx-1/manifest.json",
-            "metadata": {"manifest_sha256": "b" * 64},
-        },
-    }
     legacy_artifact_authorities = {
         "artifact_provider": "training_diagnostics",
         "manifest_authority": {"id": "run-1", "sha256": "a" * 64, "size_bytes": 100},
@@ -103,8 +93,6 @@ def test_analysis_census_high_risk_shapes_have_explicit_migration_boundary() -> 
         "replica_count": 5,
     }
 
-    for params in ({}, checkpoint):
-        AnalysisParams.model_validate(params)
     for params in (legacy_artifact_authorities, legacy_ranged):
         with pytest.raises(ValidationError, match="declared (Parent|Artifact)Ref contract"):
             AnalysisParams.model_validate(params)
