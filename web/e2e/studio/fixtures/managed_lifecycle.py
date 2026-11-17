@@ -20,9 +20,9 @@ def read_job(host, project, attempt):
 
 
 def stopped_checkpoint(paths, host, project, attempt):
-    from feedbax.contracts.base import ParentRef
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-    from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
+    from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
+    from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
     from feedbax.web.services.project_folder import ProjectFolderService
 
     row = read_job(host, project, attempt)
@@ -31,19 +31,12 @@ def stopped_checkpoint(paths, host, project, attempt):
     _, location = ProjectFolderService(paths.web / "projects").open_native_id(project)
     assert checkpoint.checkpoint_root.is_relative_to(location.path)
     pointer = checkpoint.pointer
-    transaction = authenticate_checkpoint_custody_ref(
-        ParentRef(
-            kind="TrainingCheckpointTransactionManifest",
-            id=pointer.transaction_id,
-            role="training_checkpoint_custody",
-            uri=pointer.manifest_relative_path,
-            metadata={"manifest_sha256": pointer.manifest_sha256},
-        ),
-        allowed_root=checkpoint.checkpoint_root,
-    ).manifest
+    transaction = read_method_checkpoint_manifest(checkpoint.checkpoint_root, pointer)
+    launch = BoundStudioTrainingJobInput.model_validate(row["launch"]["payload"])
     assert transaction.run_id == attempt == pointer.run_id
-    assert transaction.completed_training_batches == checkpoint.completed_updates
-    assert transaction.content_integrity_digest.transaction_root_sha256 == pointer.transaction_root_sha256
+    assert transaction.clock.completed_updates == checkpoint.completed_updates
+    assert transaction.identity.request_id == row["request"] == launch.request_id
+    assert transaction.identity.method_key == launch.spec.method
     return row["checkpoint"]
 
 
@@ -65,7 +58,7 @@ def restart(paths, host, project, attempt):
                 raise
         else:
             if new_pid != old_pid:
-                assert read_job(host, project, attempt)["checkpoint"] == checkpoint
+                assert stopped_checkpoint(paths, host, project, attempt) == checkpoint
                 return {"old_host": old_pid, "new_host": new_pid, "checkpoint": checkpoint}
         time.sleep(0.05)
     raise RuntimeError("The isolated Host did not restart")
@@ -107,7 +100,10 @@ def completed_receipt(host, project, attempt, successor):
 
 
 def result(paths, host, project, attempt, successor, revision, evaluation, trial):
+    from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.jobs import JobService
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.effective_success import SuccessView
     from feedbax.plugins.application import new_application_registry_bundle
     from feedbax.web.services.project_folder import ProjectFolderService
 
@@ -116,6 +112,16 @@ def result(paths, host, project, attempt, successor, revision, evaluation, trial
     plan = folders.read_plan(project, revision=revision)
     jobs = JobService(host, new_application_registry_bundle())
     result = jobs.read_evaluation_result(project=project, store=plan.store_path, job_id=evaluation)
+    train = read_job(host, project, successor)
+    rollout = read_job(host, project, evaluation)
+    train_ref = ContentObjectRef.model_validate(train["outcome"]["store_success"])
+    rollout_ref = ContentObjectRef.model_validate(rollout["outcome"]["store_success"])
+    view = SuccessView(ImmutableArtifactBlobProvider(plan.store_path))
+    receipt = view.read_owned_success(rollout_ref).receipt
+    assert receipt.attempt == evaluation
+    (bound,) = receipt.inputs["subject"]
+    assert bound.evaluation_subject is not None
+    assert bound.evaluation_subject.terminal_receipt == train_ref
     with result.open_states(verify=True) as dataset:
         position = dataset.descriptor.attrs["scene_position"]
         samples = dataset.select(position, labels={"trial": trial})[0, 0].tolist()
