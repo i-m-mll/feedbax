@@ -62,10 +62,16 @@ import shlex
 import subprocess
 import sys
 
-position = sys.argv.index("root@127.0.0.1")
-options = sys.argv[1:position]
+arguments = sys.argv[1:]
+if "root@127.0.0.1" in arguments:
+    position = arguments.index("root@127.0.0.1")
+    options = arguments[:position]
+else:
+    position = arguments.index("127.0.0.1")
+    assert arguments[position - 2:position] == ["-l", "root"]
+    options = arguments[:position - 2]
 assert "StrictHostKeyChecking=yes" in options and "IdentitiesOnly=yes" in options and "2222" in options
-forwarded = shlex.split(" ".join(sys.argv[position + 1:]))
+forwarded = shlex.split(" ".join(arguments[position + 1:]))
 with open({str(trace)!r}, "a") as log:
     log.write(("rsync" if "--server" in forwarded else " ".join(forwarded[:3])) + "\\n")
 if forwarded[0] == "nvidia-smi":
