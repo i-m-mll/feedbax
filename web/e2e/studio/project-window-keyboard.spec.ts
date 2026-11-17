@@ -389,7 +389,8 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await expect(count).toContainText('2 of 3');
   await expect(mass).toHaveValue('2');
 
-  const rejected = post(page, `${projectPath}/model/fields`);
+  const rejected = page.waitForResponse((response) => response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === `${projectPath}/model/fields` && !!response.request().postDataJSON()?.edit);
   await enter(mass, '3');
   const refusal = await (await rejected).json() as ModelFieldResponse;
   expect(refusal.problems?.[0].reason).toBe('Select all steps that use this Model to change its document value.');
@@ -416,7 +417,9 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await expect(mass).toHaveValue('2');
 
   await page.reload();
-  await expect(count).not.toContainText(' of ');
+  await expect(mapStep(page, 'alpha')).toBeVisible();
+  await page.keyboard.press('Meta+2');
+  await expect(count).toHaveText('· 3 of 3');
   await component.click();
   await expect(mass).toHaveValue('2');
   const reopened = await readSaved(request, projectPath);

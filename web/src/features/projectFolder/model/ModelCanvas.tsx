@@ -15,6 +15,7 @@ import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@
 import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { Button, IconButton } from '@/components/ui/Button';
+import { Card as SurfaceCard, CardHead } from '@/components/ui/Card';
 import { TextField } from '@/components/ui/TextField';
 import { portId, portTypeLabel, type Port } from './modelGraph';
 import './modelCanvas.css';
@@ -99,10 +100,10 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
     [key, port.name, port.mark, verdict === 'allowed', !!problem])]);
   useEffect(() => { update(id); }, [id, update, geometry]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
-  return <article className="studio-model-card" data-stacked={data.stacked} data-selected={data.selected}
+  return <SurfaceCard as="article" className="studio-model-card" data-stacked={data.stacked} selected={data.selected}
     data-holds-selection={data.holdsSelection} data-boundary={data.address.element.kind === 'graph'}
     aria-labelledby={nameId}>
-    <header className="studio-model-card-header">
+    <CardHead as="header" className="studio-model-card-header">
       <strong id={nameId} className={data.renaming ? 'sr-only' : undefined}>{data.name}</strong>
       {data.renaming && <form className="nodrag min-w-0 flex-1" onSubmit={(event) => {
         event.preventDefault();
@@ -116,7 +117,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
       </form>}
       {data.caption && <span>{data.caption}</span>}
       {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
-    </header>
+    </CardHead>
     {ports.map(({ port, key, reason, available, problem, verdict }) => {
       const location = side(port, Boolean(data.flipped));
       const physical = port.direction === 'physical';
@@ -173,7 +174,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
     })}
     {data.addPort && <IconButton className="nodrag studio-model-add-port" size="mark" label={studioName('addPort')} icon={<Plus />}
       onClick={(event) => { event.stopPropagation(); data.addPort?.(); }} />}
-  </article>;
+  </SurfaceCard>;
 });
 
 function rounded(points: readonly ModelPosition[]) {

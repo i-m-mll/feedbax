@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useStore } from 'zustand';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage, isUnanswered } from '@/api/request';
@@ -41,7 +42,7 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdits';
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
-import { useModelSelectionStore } from './model/modelSelection';
+import { isModelAddress, selectElement, useElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
@@ -195,7 +196,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const queries = useQueryClient();
   const actions = useStudioJobActions();
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
-  const modelWindow = useModelSelectionStore();
+  const elements = useElementSelectionStore();
+  const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
@@ -234,7 +236,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [reportChoices, setReportChoices] = useState<{ revision: string; figures: ReportFigureSource[] }>();
   const inFlight = useRef(false);
   const [sweepStep, setSweepStep] = useState<string>();
-  const [selectedTerm, setSelectedTerm] = useState<{ step: string; term: string }>();
   const submission = useRef<{ intent: string; token: string }>();
   const projection = useQuery({
     queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor, jobs.data?.remote_version],
@@ -488,7 +489,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
-    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
+    namedRun, documentScopes, elements, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
     fieldAxes: state.selection?.kind === 'values' ? Object.fromEntries(
       state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
@@ -509,7 +510,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ? (focusSlot === 'primary' ? primary : secondary)[focusView] : undefined;
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
-    focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition,
+    focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: data, variant, stepId: step?.kind === 'report' ? step.id : undefined,
@@ -720,7 +721,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const changed = await editor[action]();
       if (changed?.length) {
         const address = changed[0];
-        modelWindow.setState({ reveal: address, selection: changed });
+        elements.setState({ reveal: address, selection: changed });
         if (focusView !== 'model') setWindowState((current) => showProjectWindowView(current, 'model', focusSlot));
       }
       await editor.flush();
@@ -1141,8 +1142,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
               body: withProblem(<TrialTaskForm view={value} commit={commit} />),
             };
-            const selected = selectedTerm?.step === step?.id ? selectedTerm?.term : undefined;
-            const choose = (term: string) => { if (step) setSelectedTerm({ step: step.id, term }); };
+            const document = value.objective_document ?? step?.id ?? '';
+            const first = selectedElements[0];
+            const selected = first && !isModelAddress(first) && first.document === document ? first.element.id : undefined;
+            const choose = (term: string) => selectElement(elements, { document, element: { kind: 'named', id: term } });
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined),
               body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose} />),
