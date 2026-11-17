@@ -145,10 +145,11 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     await expect(train(page)).toContainText('2 of 3');
   }
 
-  async function addSuccessor(kind: 'Train' | 'Evaluate', id: string) {
+  async function addSuccessor(kind: 'Train' | 'Evaluate', id: string, producer = 'train') {
     const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
       new URL(response.url()).pathname === context.projectPath + '/files' && response.request().postDataJSON().file.id === id);
-    await activate(page, train(page).locator('button[data-command-id="newStep"]'));
+    const card = page.getByRole('article', { name: 'Train ' + producer, exact: true });
+    await activate(page, card.locator('button[data-command-id="newStep"]'));
     await activate(page, page.getByRole('dialog', { name: 'New Step', exact: true })
       .getByRole('button', { name: kind, exact: true }));
     const response = await saved;
@@ -277,4 +278,22 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       `train 1–${sourceUpdates}`, `${child} ${sourceUpdates + 1}–${childUpdates}`,
     ]);
   }
+
+  const producer = children[0];
+  await openRuns(page, child);
+  await activate(page, table(page).getByRole('button', { name: producer.label, exact: true }));
+  const nested = child + '-continuation';
+  await addSuccessor('Train', nested, child);
+  await openRuns(page, nested);
+  const [target] = stepRows(await plan(context), nested);
+  const [initialized] = await runSelected([target.key]);
+  await expect(table(page).getByText('Done', { exact: true })).toHaveCount(1, { timeout: 24_000 });
+  const [result] = stepRows(await plan(context), nested);
+  expect(result.result).toMatchObject({
+    job_id: initialized,
+    checkpoint_source: {
+      job_id: producer.result!.job_id, request_id: producer.request_id, completed_updates: childUpdates,
+    },
+    progress: { completed_updates: additionalUpdates, total_updates: additionalUpdates },
+  });
 }

@@ -46,6 +46,7 @@ export async function createCheckpointTrain(
   const name = `${stepId}-continuation`;
   const stepIds = new Set(Object.keys(editor.getSnapshot().saved.project.steps ?? {}));
   const inheritsInitialization = step.inputs.some(({ id }) => id === 'checkpoint');
+  const initializationPath = 'checkpoint_initialization';
   let id = name;
   for (let number = 2; stepIds.has(id); number += 1) id = `${name}-${number}`;
   await editor.createFile({
@@ -54,11 +55,12 @@ export async function createCheckpointTrain(
       kind: 'train',
       base: { step: stepId },
       inputs: { checkpoint: { step: stepId, checkpoint: 'last', ...(where && { where }) } },
-      deltas: inheritsInitialization ? [] : [{
+      deltas: [{
         layer_id: 'initialize',
         patches: [{
-          path: 'checkpoint_initialization', op: 'add', value: 'initialize_from',
+          path: initializationPath, op: inheritsInitialization ? 'replace' : 'add', value: 'initialize_from',
         }],
+        ...(inheritsInitialization && { acknowledges_ancestor_paths: [initializationPath] }),
       }],
     },
   }, projection.revision);
