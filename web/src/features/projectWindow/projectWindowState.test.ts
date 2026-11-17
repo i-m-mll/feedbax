@@ -7,6 +7,7 @@ import {
 } from './projectWindowState';
 
 afterEach(() => {
+  localStorage.clear();
   vi.unstubAllGlobals();
   delete document.documentElement.dataset.shellHost;
 });
@@ -69,15 +70,18 @@ describe('Studio window arrangement', () => {
     expect(reopened.result.current[0]).toEqual(defaultProjectWindowState);
   });
 
-  it('keeps ordinary browser arrangements in memory', () => {
+  it('restores a browser arrangement per project from local storage', async () => {
+    localStorage.clear();
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
     const first = renderHook(() => useProjectWindowState('one'));
-    act(() => first.result.current[1]((state) => ({ ...state, mapHeight: 400 })));
-    expect(first.result.current[0].mapHeight).toBe(400);
+    act(() => first.result.current[1]((state) => ({ ...showProjectWindowView(state, 'model', 'primary'), mapHeight: 400 })));
+    await waitFor(() => expect(localStorage.length).toBe(1));
     first.unmount();
-    expect(renderHook(() => useProjectWindowState('one')).result.current[0].mapHeight)
-      .toBe(defaultProjectWindowState.mapHeight);
+    const reopened = renderHook(({ id }) => useProjectWindowState(id), { initialProps: { id: 'one' } });
+    await waitFor(() => expect(reopened.result.current[0]).toMatchObject({ primaryView: 'model', mapHeight: 400 }));
+    await act(async () => reopened.rerender({ id: 'two' }));
+    expect(reopened.result.current[0]).toEqual(defaultProjectWindowState);
     expect(fetch).not.toHaveBeenCalled();
   });
 

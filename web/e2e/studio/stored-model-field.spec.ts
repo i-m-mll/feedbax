@@ -38,7 +38,7 @@ test('reopens a Model duration range and an integer sample in their saved forms'
   });
   await page.reload();
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(model).toBeVisible();
   await model.locator('.react-flow__node').filter({ hasText: 'VanillaRNN' }).locator('header').click();
   await expect(tauText).toHaveValue('linspace(0.02 s, 0.04 s, 4)');
   await expect(hidden).toHaveValue(/sample\(choice\(8, 12, per=run\), 4\)/);
@@ -93,7 +93,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
 
   await page.reload();
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(model).toBeVisible();
   await model.locator('.react-flow__node').filter({ hasText: 'GRU' }).locator('header').click();
   await expect(hidden).toHaveValue('64, 100, 128');
   const invalid = page.waitForResponse((response) => response.url().endsWith('/model/fields') &&

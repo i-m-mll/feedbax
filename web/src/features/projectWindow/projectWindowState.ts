@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { shellHost } from '@window-shell/browser/titlebar';
 
 export const projectWindowViews = [
@@ -114,9 +114,39 @@ function arrangementPayload(state: ProjectWindowState) {
   return JSON.stringify(payload);
 }
 
+/** Where a window's arrangement is kept: the native shell's preferences, or this browser's storage. */
+interface ArrangementStore {
+  read(signal: AbortSignal): Promise<unknown>;
+  write(body: string): Promise<void>;
+}
+
+function arrangementStore(native: boolean, windowKey: string): ArrangementStore {
+  if (!native) {
+    const key = `feedbax.studio.window.${windowKey}`;
+    return {
+      read: async () => JSON.parse(localStorage.getItem(key) ?? 'null'),
+      write: async (body) => localStorage.setItem(key, body),
+    };
+  }
+  const endpoint = `/api/desktop/preferences/windows/${encodeURIComponent(windowKey)}`;
+  return {
+    read: async (signal) => {
+      const response = await fetch(endpoint, { signal });
+      if (!response.ok) throw new Error(`Studio preferences returned ${response.status}`);
+      return response.json();
+    },
+    write: async (body) => {
+      const response = await fetch(endpoint, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body, keepalive: true,
+      });
+      if (!response.ok) throw new Error(`Studio preferences returned ${response.status}`);
+    },
+  };
+}
+
 export function useProjectWindowState(windowKey: string): [ProjectWindowState, Dispatch<SetStateAction<ProjectWindowState>>] {
   const native = shellHost() === 'native';
-  const endpoint = `/api/desktop/preferences/windows/${encodeURIComponent(windowKey)}`;
+  const store = useMemo(() => arrangementStore(native, windowKey), [native, windowKey]);
   const [entry, setEntry] = useState(() => ({ key: windowKey, state: defaultProjectWindowState, edited: false }));
   const lastSaved = useRef<string>();
   const desired = useRef<string>();
@@ -130,11 +160,9 @@ export function useProjectWindowState(windowKey: string): [ProjectWindowState, D
     setEntry((current) => current.key === windowKey
       ? current
       : { key: windowKey, state: defaultProjectWindowState, edited: false });
-    if (!native) return;
     const request = new AbortController();
-    void fetch(endpoint, { signal: request.signal }).then(async (response) => {
-      if (!response.ok) throw new Error(`Studio preferences returned ${response.status}`);
-      const restored = windowArrangement(await response.json());
+    void store.read(request.signal).then((saved) => {
+      const restored = windowArrangement(saved);
       if (request.signal.aborted) return;
       if (desired.current === undefined) lastSaved.current = arrangementPayload(restored);
       setEntry((current) => current.key !== windowKey || current.edited
@@ -144,21 +172,18 @@ export function useProjectWindowState(windowKey: string): [ProjectWindowState, D
       if (!request.signal.aborted) console.error('Studio window preferences could not be read', error);
     });
     return () => request.abort();
-  }, [endpoint, native, windowKey]);
+  }, [store, windowKey]);
 
   const flush = useCallback(() => {
     const operation = saving.current.then(async () => {
       for (let body = desired.current; body !== undefined && body !== lastSaved.current; body = desired.current) {
-        const response = await fetch(endpoint, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body, keepalive: true,
-        });
-        if (!response.ok) throw new Error(`Studio preferences returned ${response.status}`);
+        await store.write(body);
         lastSaved.current = body;
       }
     });
     saving.current = operation.catch(() => {});
     return operation;
-  }, [endpoint]);
+  }, [store]);
 
   useEffect(() => {
     if (!native) return;
@@ -177,12 +202,12 @@ export function useProjectWindowState(windowKey: string): [ProjectWindowState, D
   }, [flush, native]);
 
   useLayoutEffect(() => {
-    if (!native || entry.key !== windowKey || !entry.edited) return;
+    if (entry.key !== windowKey || !entry.edited) return;
     const body = arrangementPayload(entry.state);
     if (body === desired.current || (desired.current === undefined && body === lastSaved.current)) return;
     desired.current = body;
     void flush().catch((error: unknown) => console.error('Studio window preferences could not be saved', error));
-  }, [entry, flush, native, windowKey]);
+  }, [entry, flush, windowKey]);
 
   const setState = useCallback<Dispatch<SetStateAction<ProjectWindowState>>>((update) => {
     if (closing.current) return;
