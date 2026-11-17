@@ -72,6 +72,7 @@ class NumericField:
 
 def _list_axis(sweep: FieldSweeps, values: list[int | float]) -> NamedAxis:
     previous = sweep.covering[0][1] if len(sweep.covering) == 1 else None
+    named = isinstance(previous, NamedAxis)
     if isinstance(previous, ListedAxis | RangeAxis | SampledAxis):
         previous = sweep.to_list(previous)
     old = previous.values if isinstance(previous, NamedAxis) else {}
@@ -87,12 +88,14 @@ def _list_axis(sweep: FieldSweeps, values: list[int | float]) -> NamedAxis:
     old_keys = list(old)
     for index, (value, identity) in enumerate(zip(values, identities, strict=True)):
         key = by_value.get(identity)
+        # A name belongs to its value: it stays with the value, never with a reused id, and a rule's values have none.
+        label = old[key].label if key is not None and named else None
         if key is None and index < len(old_keys) and old_keys[index] not in retained:
             key = old_keys[index]
         if key is None:
             key = sweep._fresh_id(f"value-{index + 1}", reserved)
             reserved.add(key)
-        entries[key] = sweep.target.entry(value, old[key].label if key in old else None)
+        entries[key] = sweep.target.entry(value, label)
     return NamedAxis(values=entries)
 
 

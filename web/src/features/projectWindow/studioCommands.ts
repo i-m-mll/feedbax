@@ -134,10 +134,23 @@ export function studioCommandContext(target: EventTarget | null, paletteOpen: bo
   };
 }
 
+/** Commands that act on the Model canvas's selection; a focused text field keeps their keys. */
+const canvasCommands = new Set<StudioCommandId>([
+  'addComponent', 'leave', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup',
+  'modelUngroup', 'modelCopy', 'modelCut', 'modelPaste',
+]);
+
+/** ⌘Z, ⇧⌘Z, ⌘A, ⌘C, ⌘V, ⌘X and ⌘-arrows edit or move within text. */
+function editsText(shortcut: Shortcut | undefined) {
+  return !!shortcut?.primary && !shortcut.control && !shortcut.alt &&
+    (['z', 'a', 'c', 'v', 'x'].includes(shortcut.key.toLowerCase()) || shortcut.key.startsWith('Arrow'));
+}
+
+/** Inside a text field, window commands still run from their chords; text-editing chords and canvas commands do not. */
 export function commandInContext(command: StudioCommand, context: ReturnType<typeof studioCommandContext>) {
   if (context.dialog && !(context.paletteOpen && command.id === 'commandPalette')) return false;
-  if (context.editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run' ||
-      command.id === 'addComponent' || command.id === 'leave' || command.id.startsWith('model'))) return false;
+  if (context.editable && (canvasCommands.has(command.id) ||
+      editsText((shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[command.id]))) return false;
   return !(context.activity && command.selectionScoped);
 }
 

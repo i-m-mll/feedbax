@@ -40,10 +40,11 @@ test('Training and Runs edit the same saved values and project the selected sour
   const axes = (await saved()).project.steps?.train.sweep?.axes;
   const initial = axes?.['learning-rate'];
   expect(initial).toHaveProperty('values');
-  const values = (initial as { values: Record<string, { patches: Record<string, { value: number }> }> }).values;
+  const values = (initial as { values: Record<string, { label?: string; patches: Record<string, { value: number }> }> }).values;
+  expect(Object.values(values).map(({ label }) => label)).toEqual([undefined, undefined, undefined]);
   for (const entry of Object.values(values)) {
     const patches = entry.patches;
-    expect(Object.keys(patches)).toEqual(['method_payload.payload.optimizer.params.learning_rate']);
+    expect(Object.keys(patches)).toEqual(['settings.optimizer.params.learning_rate']);
   }
   await enter(rateText, '0.001, 0.0025, 0.003');
   await expect.poll(async () => (await plan())?.rows.filter((row, index) => row.request_id !== before[index].request_id).length).toBe(1);
