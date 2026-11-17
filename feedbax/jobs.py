@@ -692,7 +692,7 @@ class JobService(PlanJobReader):
             raise ValueError(f"{problem.path}: {problem.detail}")
         raw = plan.requests[node.request_id]
         decoded = decode_request(raw, plan.documents.__getitem__)
-        validate_light_request(decoded, registry=self.registries)
+        _, operation = validate_light_request(decoded, registry=self.registries)
         encoded = encode_request(decoded.spec, decoded.inputs)
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")
@@ -727,7 +727,10 @@ class JobService(PlanJobReader):
         if isinstance(node, PlannedElement):
             data["label"] = f"{data['label']} · {node.key.name}"
         store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
-        payload = LightDelivery(project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded))
+        payload = LightDelivery(
+            project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded),
+            provider=operation.source if operation is not None else None,
+        )
         profile = self._light_worker
         slot = "light"
         if isinstance(decoded.spec, AnalysisRequestSpec) and (computation := decoded.spec.computation) is not None:
