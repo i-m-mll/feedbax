@@ -10,8 +10,8 @@ import signal
 import numpy as np
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.effective_success import success_content_ref
+from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.host import HostClient
