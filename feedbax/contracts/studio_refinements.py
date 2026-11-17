@@ -561,14 +561,11 @@ CROSS_FIELD_REFINEMENTS.update(
         ),
         "LrScheduleSpec": (
             _typescript_refinement(
-                "lr-schedule.identity",
-                "unsupported LrScheduleSpec schema identity",
-                "value.schema_id !== 'feedbax.spec.training.lr_schedule' || value.schema_version !== 'feedbax.spec.training.lr_schedule.v2'",
-            ),
-            _typescript_refinement(
                 "lr-schedule.shape",
                 "learning-rate schedule fields must match its kind",
-                "(value.kind !== 'constant' && value.total_steps == null) || (value.kind === 'warmup_cosine' && (value.constant_lr_iterations < 1 || (value.total_steps != null && value.constant_lr_iterations >= value.total_steps))) || (value.kind === 'delayed_cosine' && value.total_steps != null && value.constant_lr_iterations >= value.total_steps)",
+                "(value.kind === 'warmup_cosine' || value.kind === 'delayed_cosine') && "
+                "(value.total_steps == null || (value.constant_lr_iterations ?? 0) >= value.total_steps || "
+                "(value.kind === 'warmup_cosine' && (value.constant_lr_iterations ?? 0) < 1))",
             ),
         ),
         "SelectionSpec": (
