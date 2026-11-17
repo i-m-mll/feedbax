@@ -6,13 +6,11 @@ from dataclasses import replace
 from functools import wraps
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
-import optax
 import pytest
 
+from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.compiler import trial_execution
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
 from feedbax.component_registry import ComponentRegistry
@@ -26,12 +24,16 @@ from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.jobs import JobStatus
+from feedbax.contracts.training import OptimizerSpec
 from feedbax.expression_builtins import register_builtins
 from feedbax.expression_registry import FunctionRegistry
+from feedbax.plugins.declarations import DistributionSource, callable_declaration
+from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
-from feedbax.tasks.reaching import builtin_python_tasks
+from feedbax.tasks.registry import application_python_tasks
 from feedbax.training.evaluate_worker import score_paired_validation
-from feedbax.training.managed_studio import prepare_trial_update
+from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
+from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.web.services import project_plan as window_service
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_evaluation_step
@@ -81,7 +83,8 @@ def prepared_trials(monkeypatch):
 def test_bounded_train_and_evaluate_share_trial_objective(authored):
     functions, model, task, objective = authored
     registry = ComponentRegistry()
-    keys = jr.split(jr.PRNGKey(10), 3)
+    seed = 10
+    validation_key = jr.key(3)
     paired = compile_trial_execution(
         "reach-model",
         model,
@@ -90,7 +93,7 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
         functions,
         objective=objective,
         input_overrides={"reach_target": "target_pos"},
-        initialization_key=keys[0],
+        initialization_key=model_initialization_key(seed),
     )
     assert isinstance(paired, PreparedTrialExecution), paired
     assert paired.objective is not None
@@ -99,80 +102,41 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
         ModelAddress.from_text(paired.execution.observations[0].selector).element.end.port
         == "command"
     )
-    opt = optax.adam(0.003)
+    methods = TrainingMethodRegistry()
+    methods.register_declaration(
+        supervised_gradient, callable_declaration(supervised_gradient),
+        key="feedbax.supervised_gradient", source=DistributionSource("feedbax", "feedbax", "0.2.0"),
+    )
+    method = methods.resolve("feedbax.supervised_gradient")
+
+    def observe(state, ctx):
+        next_state, metrics = supervised_gradient(state, ctx)
+        trials, trial_keys = ctx.sample_trials()
+        (command,) = ctx.rollout(state.model, trials, trial_keys).values()
+        return next_state, {**metrics, "command": command, "move_start": trials.epochs.starts[:, -1]}
+
+    settings = StandardTrainingSettings(optimizer=OptimizerSpec(type="adam", params={"learning_rate": 0.003}))
+    initial = initialize_method(method, settings, models=(graph,), seed=seed, replica_ids=("0",))
+    result = TrainingLoop(
+        replace(method, update=observe), settings, execution=paired.execution, objective=paired.objective,
+        batch_size=4, seed=seed, replica_ids=("0",),
+    ).run_block(initial, completed=0, count=1)
+    assert not result.rejected and result.completed == 1
+    command = result.metrics["command"][0, 0]
+    move_start = result.metrics["move_start"][0, 0]
+    assert len(np.unique(move_start)) > 1
+    movement = np.arange(paired.execution.task.n_steps) >= move_start[:, None]
+    oracle = np.mean(
+        np.sum(np.where(movement, np.sum(command**2, axis=-1), 0), axis=-1)
+        / np.sum(movement, axis=-1)
+    )
+    assert result.metrics["train_loss"][0, 0] == pytest.approx(float(oracle), rel=1e-5)
+    assert result.metrics["grad_norm"][0, 0] > 0
+    trained = replica_value(result.state.model, 0)
+    assert not eqx.tree_equal(graph, trained)
+
     parameters = TaskParameters()
-    kernel = prepare_trial_update(
-        graph,
-        paired.execution,
-        paired.objective,
-        parameters=parameters,
-        run_key=keys[1],
-        batch_size=4,
-        trainable_filter=eqx.is_inexact_array,
-        optimizer=opt,
-    )
-    slots = {
-        "model": graph,
-        "optimizer": opt.init(eqx.filter(graph, eqx.is_inexact_array)),
-        "prng": keys[2],
-        "batch_counter": jnp.array(0, dtype=jnp.int32),
-    }
-    _, update_key = jr.split(keys[2])
-    expected = paired.execution.training_batch(
-        graph,
-        paired.objective,
-        parameters,
-        run_key=keys[1],
-        update_key=update_key,
-        count=4,
-    )
-    assert int(expected.terms["effort"].covered) == 4
-    from feedbax.runtime._graph_key_schedule import sample_training_trials
-
-    def score_one(key):
-        trial = paired.execution.task.ahead(parameters, keys[1], key)
-        return trial, key
-
-    trials, trial_keys = sample_training_trials(score_one, update_key, 4)
-    assert len(np.unique(np.asarray(trials.epochs.starts[:, 1]))) > 1
-    scored = paired.execution.score(
-        graph, paired.objective, trials, run_key=keys[1], trial_keys=trial_keys
-    )
-    (command,) = scored.retained.values()
-    movement = jnp.arange(paired.execution.task.n_steps) >= trials.epochs.starts[:, -1, None]
-    oracle = jnp.mean(
-        jnp.sum(jnp.where(movement, jnp.sum(command**2, axis=-1), 0), axis=-1)
-        / jnp.sum(movement, axis=-1)
-    )
-    assert float(expected.loss) == pytest.approx(float(oracle), rel=1e-5)
-    update = kernel(slots)
-    assert float(update["train_loss"]) == pytest.approx(float(expected.loss), rel=1e-5)
-    assert float(update["grad_norm"]) > 0
-    assert int(update["batch_counter"]) == 1
-    assert not eqx.tree_equal(graph, update["model"])
-
-    uninterrupted = kernel(update)
-    restored = jax.tree.map(
-        lambda value: jnp.asarray(np.asarray(value)) if eqx.is_array(value) else value, update
-    )
-    resumed = kernel(restored)
-    for name in ("model", "optimizer", "prng", "batch_counter"):
-        assert eqx.tree_equal(uninterrupted[name], resumed[name])
-
-    validation = score_paired_validation(
-        resumed["model"],
-        paired.execution,
-        paired.objective,
-        parameters,
-        key=keys[1],
-    )
-    repeated = paired.execution.validation(
-        resumed["model"],
-        paired.objective,
-        parameters,
-        key=keys[1],
-    )
-    assert eqx.tree_equal(validation.objective, repeated.objective)
+    validation = score_paired_validation(trained, paired.execution, paired.objective, parameters, key=validation_key)
     assert int(validation.objective.terms["effort"].covered) == 28
     assert validation.trials.epochs.starts.shape[0] == 28
 
@@ -373,7 +337,7 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     raw = document_project(authored)
     _two_optimizer_rates(raw)
     folders = ProjectFolderService(tmp_path)
-    evaluation_tasks = builtin_python_tasks()
+    evaluation_tasks = application_python_tasks()
 
     def projected(view):
         return view.window_map(evaluation_tasks=evaluation_tasks).model_dump(mode="json")
@@ -429,7 +393,7 @@ def test_saved_window_keeps_verification_for_wide_float_requests(authored, tmp_p
     view = window_service.ProjectPlanRead.without_history(settled)
     (run,) = settled.plan.runs
     assert settled.plan.train_evaluation_source(run.request_id) is None
-    evaluation_tasks = builtin_python_tasks()
+    evaluation_tasks = application_python_tasks()
     if reject:
         with pytest.raises(ValueError, match="unsafe_integer"):
             view.window_map(evaluation_tasks=evaluation_tasks)

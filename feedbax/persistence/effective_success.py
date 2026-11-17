@@ -35,7 +35,7 @@ from feedbax.contracts.request_identity import (
     EncodedRequest,
     effective_binding_id,
 )
-from feedbax.contracts.model_input import DOCUMENT_INPUT_MEDIA_TYPES, document_input_object, read_document_input
+from feedbax.contracts.model_input import DOCUMENT_INPUT_MEDIA_TYPES, decode_document_input, document_input_object
 from feedbax.contracts.request_refs import (
     BestRank,
     ContentRef,
@@ -58,6 +58,7 @@ from feedbax.persistence.store_damage import KnownDamage, require_sound
 
 if TYPE_CHECKING:
     from feedbax.contracts.effective_success import TerminalTrainSubject
+    from feedbax.plugins.declarations import DistributionSource
 
 
 class PublicationConflict(ValueError):
@@ -122,9 +123,9 @@ def store_document_inputs(
                 continue
             exact = document_input_object(content)
             raw = read_document(exact.sha256)
+            decode_document_input(content, raw)
             if store.store_rooted_object(raw, namespace="project-document-input") != exact:
                 raise ValueError("Planned document input differs from its immutable reference")
-            read_document_input(content, store)
             refs[exact.sha256] = exact
     return tuple(refs.values())
 
@@ -412,12 +413,13 @@ class SuccessView:
         continuation: ContinuationOccurrence | None = None,
         recovery: CheckpointOccurrenceRef | None = None,
         evaluation_manifest: ContentObjectRef | None = None,
+        provider: DistributionSource | None = None,
         target: AttemptTarget = LOCAL_TARGET,
     ) -> PublishedSuccess:
         """Commit an accepted attempt using its pinned bindings, including on replay."""
         return self._publish(
             request, attempt, products, bindings=bindings, continuation=continuation, recovery=recovery,
-            evaluation_manifest=evaluation_manifest, target=target,
+            evaluation_manifest=evaluation_manifest, provider=provider, target=target,
         )
 
     def _publish(
@@ -425,6 +427,7 @@ class SuccessView:
         continuation: ContinuationOccurrence | None = None,
         recovery: CheckpointOccurrenceRef | None = None,
         evaluation_manifest: ContentObjectRef | None = None,
+        provider: DistributionSource | None = None,
         target: AttemptTarget = LOCAL_TARGET,
     ) -> PublishedSuccess:
         with self.store._exclusive_lock():
@@ -435,8 +438,8 @@ class SuccessView:
                 if (
                     published.receipt.request, published.receipt.products, published.receipt.inputs,
                     published.receipt.continuation, published.receipt.recovery, published.receipt.evaluation_manifest,
-                    published.receipt.target,
-                ) != (request, products, bindings, continuation, recovery, evaluation_manifest, target):
+                    published.receipt.provider, published.receipt.target,
+                ) != (request, products, bindings, continuation, recovery, evaluation_manifest, provider, target):
                     raise ValueError("Published attempt has different request, bindings, or products")
                 self.ensure_published_run_ref(existing, published.receipt)
                 return published
@@ -467,6 +470,7 @@ class SuccessView:
                 continuation=continuation,
                 recovery=recovery,
                 evaluation_manifest=evaluation_manifest,
+                provider=provider,
             )
             if evaluation_manifest is not None:
                 verify_evaluation_success_evidence(self.store, receipt)

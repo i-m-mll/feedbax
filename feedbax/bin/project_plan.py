@@ -143,8 +143,7 @@ def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
 def _read_plan(
     project_dir: Path, *, capture_sources: bool = False,
 ) -> tuple[ProjectFolderLocation, TextProject, ProjectPlan, set[Path], dict[str, bytes]]:
-    from feedbax.analysis.builtin_operations import register_builtin_operations
-    from feedbax.analysis.operations import OperationRegistry
+    from feedbax.plugins.composition import load_application
     from feedbax.project_folder import ProjectFolderInvalid, ProjectFolderLocation, ProjectFolderNotFound
 
     root, declaration = locate_text_project(project_dir)
@@ -156,9 +155,7 @@ def _read_plan(
     except (ProjectFolderInvalid, ProjectFolderNotFound) as error:
         raise ProjectReadError(root, str(error)) from error
 
-    operations = OperationRegistry()
-    register_builtin_operations(operations)
-    operations.seal()
+    registry = load_application().bundle
     external = TextProjectExternalInputs(text)
     observed: dict[str, bytes] = {}
 
@@ -171,7 +168,10 @@ def _read_plan(
         external=read, figure_external=read, terminal_train=terminal_train_reader(text.store_path),
     )
     return location, text, compile_project(
-        text.project, operations=operations, readers=readers, capture_sources=capture_sources,
+        text.project, operations=registry.operations, components=registry.components,
+        functions=registry.expression_functions, python_tasks=registry.python_tasks,
+        figure_templates=registry.figure_templates,
+        readers=readers, capture_sources=capture_sources,
     ), external.paths, observed
 
 

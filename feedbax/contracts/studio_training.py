@@ -8,8 +8,9 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.checkpoints import CheckpointContinuationRequest, CheckpointLatestPointer
-from feedbax.contracts.training import MethodRefSpec, OptimizerSpec, TrainingRunSpec
+from feedbax.contracts.checkpoints import CheckpointContinuationRequest
+from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
+from feedbax.contracts.training import MethodRefSpec, OptimizerSpec
 
 STUDIO_GRAPH_METHOD = MethodRefSpec(package="feedbax", name="studio_graph", version="v1")
 STUDIO_GRAPH_METHOD_PAYLOAD_ID = "feedbax.spec.training_method.studio_graph"
@@ -88,12 +89,3 @@ class PublishedTrainingCheckpoint(StrictModel):
     checkpoint_root: Path
     completed_updates: int = Field(ge=0)
     pointer: CheckpointLatestPointer
-
-
-class StudioTrainingJobInput(StrictModel):
-    spec: TrainingRunSpec
-    project_id: str
-    request_id: str
-    manifest_root: Path
-    bootstrap_modules: tuple[str, ...] = ()
-    resume: PublishedTrainingCheckpoint | None = None

@@ -1,6 +1,6 @@
 """Force component imports used by existing downstream models."""
 
-from feedbax.mechanics.force_fields import (
+from feedbax.builtins.mechanics.force_fields import (
     PlanarTargetRelativeSelector,
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,

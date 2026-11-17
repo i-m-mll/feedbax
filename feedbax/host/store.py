@@ -368,7 +368,7 @@ class Store:
         stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
         ref = ContentObjectRef.model_validate(staged)
         checkpoints = TypeAdapter(tuple[TrainJobCheckpoint, ...]).validate_json(view.store.get_object(ref))
-        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_training_batches:
+        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_updates:
             raise ValueError("Train Stop differs from its staged recovery publication")
         accepted = {
             PublishedTrainingCheckpoint.model_validate(data["checkpoint"]).pointer.transaction_id: data["checkpoint"]
@@ -432,7 +432,7 @@ class Store:
                 raise HostError("invalid_request", "Collected Train Stop differs from its stored binding.")
             if ref is not None:
                 outcome["store_job_entry"] = ref.model_dump(mode="json")
-            checkpoint = {"completed_updates": entry.recovery.pointer.completed_training_batches}
+            checkpoint = {"completed_updates": entry.recovery.pointer.completed_updates}
         self._mirror_collected_terminal(job, state, outcome, progress, checkpoint, delivery)
 
     def mirror_collected_evaluate(
@@ -468,7 +468,7 @@ class Store:
         ):
             raise HostError("invalid_request", "Collected Evaluate differs from its admitted Store receipt.")
         _, _, subject = decode_rollout_request(job["request"], view.store.get_object(success.request.object))
-        if subject != payload.canonical_request.checkpoint:
+        if subject != payload.canonical_request.subject:
             raise HostError("invalid_request", "Collected Evaluate changed its canonical subject.")
         outcome = {
             "outcome": "succeeded",
@@ -522,7 +522,9 @@ class Store:
 
         payload = json.loads(row["launch"])["payload"]
         terminal = payload["canonical_request"].get("terminal")
-        if terminal is None:
+        if payload["canonical_request"].get("initial_model") is not None:
+            binding = {}
+        elif terminal is None:
             (binding,) = self.completion_bindings(row["id"])
         else:
             binding = {"terminal": terminal}
@@ -541,6 +543,7 @@ class Store:
         payload = json.loads(row["launch"])["payload"]
         ref = publish_light_success(
             payload, row["id"], row["request"], self.light_origins(row), outcome["products"],
+            checkpoint_bindings=tuple(self.completion_bindings(row["id"])),
             target=attempt_target(json.loads(row["data"]).get("target")),
         )
         return {
@@ -550,7 +553,11 @@ class Store:
         }
 
     @staticmethod
-    def _light_requests(payload: dict, project: str, request_id: str) -> frozenset[str]:
+    def _light_requests(launch: dict, project: str, request_id: str, slot: str) -> frozenset[str]:
+        from feedbax.contracts.effective_success import exact_model_checkpoint_input
+        from feedbax.contracts.request_specs import AnalysisRequestSpec
+
+        payload = launch["payload"]
         root = Path(payload["manifest_root"])
         request = RequestObject.model_validate(payload["request"])
         if (
@@ -561,10 +568,23 @@ class Store:
         decoded = Store._success_view(root).read_request(request)
         if decoded.kind not in ("analyze", "render", "report"):
             raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
+        numerical = None
+        if isinstance(decoded.spec, AnalysisRequestSpec):
+            if decoded.spec.computation is None:
+                raise ValueError("Managed Analysis requires a declared computation")
+            numerical = decoded.spec.computation.numerical
+        if slot != ("compute" if numerical else "light") or (
+            numerical and any(launch["env"].get(key) != value for key, value in numerical.environment().items())
+        ):
+            raise ValueError("Managed delivery worker does not match the declared numerical requirements")
         inputs = [member.reference for members in decoded.inputs.values() for member in members]
         if any(not isinstance(ref, (ProductRef, ContentRef)) for ref in inputs):
             raise ValueError("Light jobs require exact Store inputs or terminal products.")
-        return frozenset(ref.request_id for ref in inputs if isinstance(ref, ProductRef))
+        exact = exact_model_checkpoint_input(decoded)
+        return frozenset(
+            ref.request_id for ref in inputs
+            if isinstance(ref, ProductRef) and (exact is None or ref != exact[2])
+        )
 
     def _light_parents(self, project: str, root: str, expected: frozenset[str], parents: Sequence[str]) -> list[sqlite3.Row]:
         rows = []
@@ -603,12 +623,13 @@ class Store:
         return ref.model_dump(mode="json")
 
     def light_origins(self, row: sqlite3.Row) -> dict:
-        payload = json.loads(row["launch"])["payload"]
+        launch = json.loads(row["launch"])
+        payload = launch["payload"]
         root = payload["manifest_root"]
         try:
-            expected = self._light_requests(payload, row["project"], row["request"])
+            expected = self._light_requests(launch, row["project"], row["request"], row["slot"])
             parents = tuple(edge["parent"] for edge in self.db.execute(
-                "SELECT parent FROM edges WHERE job=? ORDER BY parent", (row["id"],)
+                "SELECT parent FROM edges WHERE job=? AND NOT authenticated_completion ORDER BY parent", (row["id"],)
             ))
             sources = self._light_parents(row["project"], root, expected, parents)
             view = self._success_view(root)
@@ -637,8 +658,8 @@ class Store:
         if launch["warm_entrypoint"] and ":" not in launch["warm_entrypoint"]:
             raise HostError("invalid_request", "Warm entrypoint must be module:function.")
         if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT and (
-            job["slot"] != "light" or job["continues"] is not None
-            or any(edge["publication"] is not None or edge.get("authenticated_completion") for edge in job["edges"])
+            job["continues"] is not None
+            or any(edge["publication"] is not None for edge in job["edges"])
         ):
             raise HostError("invalid_request", "Managed light jobs require singleton launches and terminal edges.")
 
@@ -731,7 +752,34 @@ class Store:
                 checkpoint_parents = None
                 best = isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank"
                 terminal = canonical_request.get("terminal") if evaluate else None
-                if terminal is not None:
+                initial = canonical_request.get("initial_model") if evaluate else None
+                if initial is not None:
+                    from feedbax.contracts.model_input import read_document_input
+                    from feedbax.studio.canonical_evaluate import (
+                        BoundEvaluationJobInput, decode_rollout_request, initial_evaluation_references,
+                    )
+
+                    try:
+                        launch = BoundEvaluationJobInput.model_validate(payload)
+                        if (
+                            not allow_completion or job["continues"] is not None or job["edges"]
+                            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+                        ):
+                            raise ValueError("Initial Evaluate requires a standalone rollout launch.")
+                        view = self._success_view(str(launch.manifest_root))
+                        request = RequestObject(id=launch.request_id, object=launch.canonical_request.request, documents=())
+                        _, _, subject = decode_rollout_request(launch.request_id, view.store.get_object(request.object))
+                        if subject != launch.canonical_request.subject:
+                            raise ValueError("Initial Evaluate differs from its canonical request.")
+                        for content in initial_evaluation_references(view.read_request(request)).values():
+                            read_document_input(content, view.store)
+                    except (OSError, TypeError, ValueError, KeyError) as error:
+                        results.append({
+                            "run_key": run_key, "job_id": None, "disposition": "rejected",
+                            "reason": f"{input_path}: {error}",
+                        })
+                        continue
+                elif terminal is not None:
                     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
                     from feedbax.persistence.evaluation_subject import read_terminal_train_subject
 
@@ -1115,10 +1163,13 @@ class Store:
         if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
             payload = job["launch"]["payload"]
             try:
-                expected = self._light_requests(payload, job["project"], job["request"])
+                expected = self._light_requests(job["launch"], job["project"], job["request"], job["slot"])
                 self._light_parents(
                     job["project"], payload["manifest_root"], expected,
-                    tuple(aliases.get(edge["job_id"], edge["job_id"]) for edge in job["edges"]),
+                    tuple(
+                        aliases.get(edge["job_id"], edge["job_id"])
+                        for edge in job["edges"] if not edge.get("authenticated_completion")
+                    ),
                 )
             except (ValueError, KeyError, TypeError, OSError) as error:
                 raise HostError("invalid_request", str(error)) from error

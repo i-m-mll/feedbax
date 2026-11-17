@@ -21,7 +21,6 @@ from feedbax.persistence.manifest_index import iter_manifest_files
 from feedbax.plot.constructors import (
     constructor_catalog,
     registered_figure_pieces,
-    registered_figure_templates,
 )
 
 router = APIRouter()
@@ -166,15 +165,23 @@ async def list_figure_constructors(request: Request) -> list[dict[str, Any]]:
 @router.get("/templates", response_model=list[RegistryItem])
 async def list_figure_templates(request: Request) -> list[RegistryItem]:
     """List registered figure templates."""
+    registry = request.app.state.bootstrap_state.bundle.figure_templates
     return [
         RegistryItem(
-            name=template.name,
+            name=template.key,
             description=template.description,
-            metadata=template.model_dump(mode="json", exclude_none=True),
+            metadata={
+                "label": template.label,
+                "revision": template.revision,
+                "renamed_from": list(template.renamed_from),
+                "settings_schema": template.settings_model.model_json_schema(),
+                "package": template.source.package,
+                "distribution": template.source.distribution,
+                "version": template.source.version,
+            },
         )
-        for template in registered_figure_templates(
-            registry=request.app.state.bootstrap_state.bundle.figures
-        )
+        for key in registry.keys()
+        for template in (registry.resolve(key),)
     ]
 
 

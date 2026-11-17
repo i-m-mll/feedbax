@@ -4,11 +4,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from feedbax.acausal import translational as linear, rotational as angular
-from feedbax.acausal import AcausalSystem
+import feedbax.builtins.acausal.translational as linear
+import feedbax.builtins.acausal.rotational as angular
+from feedbax.builtins.acausal.system import AcausalSystem
 from feedbax.acausal.assembly import assemble_system
 from feedbax.acausal.base import AcausalConnection
-from feedbax.acausal.system import AcausalSystemState
+from feedbax.builtins.acausal.system import AcausalSystemState
 from feedbax.mechanics.dae import DAEState
 
 pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_contract]

@@ -2,20 +2,25 @@
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTree, ContentTreeFile, ContentTreeRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.dataset import DatasetDescriptor
 from feedbax.contracts.effective_success import (
     EVALUATION_SUBJECT_MEDIA_TYPE, BoundMember, CheckpointPublicationSource,
     EvaluationSubjectValue, Success, TerminalTrainSubject,
     read_effective_request, read_success_object, read_success_request, select_success_product, success_content_ref,
 )
 from feedbax.contracts.base import ParentRef, Provenance
-from feedbax.contracts.manifest import TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
+from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec, TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
-from feedbax.studio.canonical_evaluate import decode_evaluation_manifest, evaluation_manifest_id, states_product
+from feedbax.studio.canonical_evaluate import (
+    decode_evaluation_manifest, evaluation_manifest_id, initial_evaluation_references, states_product, states_ref,
+    verify_initial_rollout,
+)
+from feedbax.persistence.array_container import open_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.checkpoint_publication import model_product, read_retained_checkpoint
 from feedbax.persistence.method_checkpoint import parse_method_checkpoint_manifest
@@ -284,6 +289,31 @@ def evaluation_subject_objects(
     return (tree_ref.descriptor, descriptor, *objects)
 
 
+def verify_initial_evaluation_states(
+    store: ImmutableArtifactBlobProvider, manifest: EvaluationRunManifest, refs: dict[str, ContentRef],
+) -> None:
+    member = verify_initial_rollout(manifest, refs)
+    spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
+    params = RolloutParameters.model_validate(spec.params)
+    states = states_ref(manifest)
+    should_score = "objective" in refs
+    with (
+        store.open_owned_object(states.object_ref) as path,
+        open_array_container(path, expected_descriptor_sha256=states.descriptor_sha256) as reader,
+    ):
+        descriptor = DatasetDescriptor.from_json_value(reader.descriptor.metadata)
+        descriptor.validate_tensor_shapes({name: value.shape for name, value in reader.descriptor.tensors.items()})
+        if (
+            descriptor.schema_id != params.states_schema
+            or set(descriptor.dimensions).intersection(("checkpoint", "update", "replicate"))
+            or descriptor.coords["trial"].inline_values != member.trials
+            or member.trials != params.trials
+            or ("objective/total" in descriptor.variables) != should_score
+            or ("objective/total" in manifest.summary_metrics) != should_score
+        ):
+            raise ValueError("Initial Evaluate states differ from the accepted document rollout")
+
+
 def verify_evaluation_success_evidence(
     store: ImmutableArtifactBlobProvider, success: Success, *, visitors: ClosureVisitors | None = None,
     verify_bound_closure: bool = True,
@@ -294,6 +324,15 @@ def verify_evaluation_success_evidence(
         store, store.get_object(ref), ref, success.attempt, success.request.id,
         JobReceipt(manifest_id=evaluation_manifest_id(success.attempt), manifest_sha256=ref.sha256),
     )
+    if isinstance(subject, ContentRef):
+        decoded = read_effective_request(success, store.get_object)
+        if (
+            success.products != {"states": (states_product(manifest),)}
+            or manifest.metadata["canonical_request"] != success.request.object.model_dump(mode="json")
+        ):
+            raise ValueError("Accepted initial rollout differs from its Store success")
+        verify_initial_evaluation_states(store, manifest, initial_evaluation_references(decoded))
+        return (ref,)
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject
     assert source is not None

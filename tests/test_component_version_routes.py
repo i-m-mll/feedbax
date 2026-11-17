@@ -169,7 +169,7 @@ def test_published_history_destinations_cannot_be_reindexed(changes):
 
 
 def test_unversioned_evidence_requires_a_unique_endpoint():
-    from feedbax.mechanics.force_fields import CurlField
+    from feedbax.builtins.mechanics.force_fields import CurlField
 
     class EvidenceComponent(CurlField):
         pass

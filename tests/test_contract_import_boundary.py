@@ -69,7 +69,7 @@ def test_core_training_contract_imports_do_not_load_web_package() -> None:
             "feedbax.contracts.migrations",
             "feedbax.contracts.retention_artifact_schema",
             "feedbax.contracts.training",
-            "feedbax.compiler.templates",
+            "feedbax.builtins.templates.templates",
             "feedbax.integrations.provider",
             "feedbax.objectives.service",
             "feedbax.compiler.serialization",

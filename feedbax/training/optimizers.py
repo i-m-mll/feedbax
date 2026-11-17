@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 import inspect
+from math import isfinite
 from typing import Any
 
 import jax
@@ -120,21 +122,11 @@ def build_optimizer(
     """
     spec = OptimizerSpec.model_validate(optimizer_spec)
     params = dict(spec.params)
-    transforms: list[optax.GradientTransformationExtraArgs | optax.GradientTransformation] = []
-    if gradient_clip is not None:
-        transforms.append(optax.clip_by_global_norm(float(gradient_clip)))
-
     if spec.lr_schedule is None:
-        learning_rate = params.pop("learning_rate", None)
-        if learning_rate is None:
-            raise ValueError("/params/learning_rate is required when lr_schedule is absent")
-        transforms.append(_optimizer_factory(spec.type)(float(learning_rate), **params))
-        return optax.chain(*transforms)
+        rate = _fixed_rate(params)
+        return _chain_optimizer(_optimizer_factory(spec.type)(rate, **params), gradient_clip)
 
-    if "learning_rate" in params:
-        raise ValueError(
-            "/params/learning_rate must be omitted when /lr_schedule declares the schedule"
-        )
+    _require_scheduled_rate(params)
     schedule_position = int(current_step) - int(schedule_origin_step)
     if schedule_position < 0:
         raise ValueError(
@@ -149,15 +141,61 @@ def build_optimizer(
             (jnp.asarray(count, dtype=jnp.int32) - count_origin) + schedule_position
         )
 
-    factory = _optimizer_factory(spec.type)
-    static_args = ("mask",) if "mask" in inspect.signature(factory).parameters else ()
-    transforms.append(
-        optax.inject_hyperparams(factory, static_args=static_args)(
-            learning_rate=shifted_schedule,
-            **params,
+    return _schedule_optimizer(spec.type, params, shifted_schedule, gradient_clip)
+
+
+@dataclass(frozen=True)
+class _StepSchedule:
+    rate: optax.Schedule
+
+    def init(self) -> tuple[()]:
+        return ()
+
+    def update(self, state: tuple[()], **_extra_args) -> tuple[()]:
+        return state
+
+    def __call__(self, _state: tuple[()], *, schedule_step: int | jax.Array = 0, **_extra_args):
+        return self.rate(schedule_step)
+
+
+def build_step_optimizer(
+    spec: OptimizerSpec, *, gradient_clip: float | None = None,
+) -> optax.GradientTransformationExtraArgs:
+    """Build an optimizer whose learning rate follows an explicit update clock."""
+    params = dict(spec.params)
+    if spec.lr_schedule is None:
+        schedule = optax.constant_schedule(_fixed_rate(params))
+    else:
+        _require_scheduled_rate(params)
+        schedule = learning_rate_schedule(spec.lr_schedule)
+    return _schedule_optimizer(spec.type, params, _StepSchedule(schedule), gradient_clip)
+
+
+def _fixed_rate(params: dict[str, Any]) -> float:
+    rate = params.pop("learning_rate", None)
+    if type(rate) not in (int, float) or not isfinite(rate) or rate <= 0:
+        raise ValueError("/params/learning_rate requires a finite positive rate")
+    return float(rate)
+
+
+def _require_scheduled_rate(params: Mapping[str, Any]) -> None:
+    if "learning_rate" in params:
+        raise ValueError(
+            "/params/learning_rate must be omitted when /lr_schedule declares the schedule"
         )
-    )
-    return optax.chain(*transforms)
+
+
+def _schedule_optimizer(kind, params, schedule, gradient_clip):
+    factory = _optimizer_factory(kind)
+    static_args = ("mask",) if "mask" in inspect.signature(factory).parameters else ()
+    optimizer = optax.inject_hyperparams(factory, static_args=static_args)(learning_rate=schedule, **params)
+    return _chain_optimizer(optimizer, gradient_clip)
+
+
+def _chain_optimizer(optimizer, gradient_clip):
+    if gradient_clip is None:
+        return optax.chain(optimizer)
+    return optax.chain(optax.clip_by_global_norm(float(gradient_clip)), optimizer)
 
 
 def validate_optimizer_state_for_spec(optimizer_spec: OptimizerSpec, opt_state: Any) -> None:

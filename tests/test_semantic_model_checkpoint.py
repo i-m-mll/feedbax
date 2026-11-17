@@ -25,7 +25,7 @@ from feedbax.contracts.method_checkpoint import (
     method_checkpoint_extra_path,
 )
 from feedbax.dataset import Dataset, Variable
-from feedbax.mechanics.muscles import RigidTendonHillMuscleThelen
+from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.runtime.raw_state import bind_raw_state

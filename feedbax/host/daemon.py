@@ -357,7 +357,7 @@ class Host:
             return
         origins = None
         try:
-            if reusable:
+            if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                 origins = self.store.light_origins(row)
             train_slots = train_source_slots(launch)
             payload = launch["payload"]
