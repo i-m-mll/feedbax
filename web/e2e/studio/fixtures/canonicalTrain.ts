@@ -74,7 +74,11 @@ export async function authorLearningRateSweep(rate: Locator) {
   for (const [index, name] of ['Slow', 'Medium', 'Fast'].entries()) {
     const valueName = rate.getByRole('textbox', { name: `Learning Rate value ${index + 1} name`, exact: true });
     await expect(valueName).toBeEditable();
+    // Each name saves; the value fields are read-only until that save settles.
+    const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
+      && /^\/api\/projects\/[^/]+$/.test(new URL(response.url()).pathname), { timeout: 5_000 });
     await number(page, valueName, name);
+    expect((await saved).ok()).toBe(true);
     await expect(rate.getByRole('textbox', { name: `Value ${name}`, exact: true })).toBeVisible();
   }
 }

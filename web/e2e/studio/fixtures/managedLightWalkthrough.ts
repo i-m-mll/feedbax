@@ -4,7 +4,7 @@ import type {
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { authorLearningRateSweep, mapStep } from './canonicalTrain';
-import { activate, chooseOption, chooseStepKind, number, openView, palette } from './studioKeyboard';
+import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo } from './studioKeyboard';
 import { pick } from './controls';
 
 type Walkthrough = {
@@ -46,7 +46,14 @@ export async function selectModelComponent(page: Page, componentId: string) {
   const name = (await component.getAttribute('aria-label'))!;
   if (!await drawer(page).isVisible()) await palette(page, 'showDrawer', 'Show Drawer');
   const outline = drawer(page).getByRole('button', { name: 'Outline', exact: true });
-  if (await outline.getAttribute('aria-pressed') !== 'true') await activate(page, outline);
+  if (await outline.getAttribute('aria-pressed') !== 'true') {
+    // The Model Drawer segments rove focus: Tab reaches the pressed Library segment.
+    await tabTo(page, drawer(page).getByRole('button', { name: 'Library', exact: true }));
+    await page.keyboard.press('ArrowRight');
+    await expect(outline).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(outline).toHaveAttribute('aria-pressed', 'true');
+  }
   const entry = drawer(page).getByRole('button', { name, exact: true });
   await activate(page, entry);
   await expect(entry).toHaveAttribute('aria-pressed', 'true');

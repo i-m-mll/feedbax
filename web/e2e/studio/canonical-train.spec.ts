@@ -318,14 +318,14 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   const changed = await trainRow();
   expect(changed.result!.job_id).toBe(changedJob);
   expect(changed.previous).toEqual(first);
-  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: null, after: 7 });
+  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: 0, after: 7 });
   const evidence = await observed();
   expect(evidence).toMatchObject({ current: changed.result, previous: first });
   async function compare() {
     await openResultsSlot(page);
     await results.locator('summary').getByText('Compare Results', { exact: true }).click();
     await expect(results.locator('details[open]')).toContainText(changed.change!.path);
-    await expect(results.locator('details[open]')).toContainText(/null\s*→\s*7/);
+    await expect(results.locator('details[open]')).toContainText(/0\s*→\s*7/);
     await expect(loss.locator('polyline')).toHaveCount(2);
     await expectLoss(changedJob, evidence.loss.current);
     await expectLoss(firstJob, evidence.loss.previous);
@@ -462,7 +462,6 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
 
   const carryover = drawer.getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
   const carryoverPath = 'checkpoint_initialization';
-  const methodTarget = 'method_payload.payload.target_total';
   const checkpointInput = snapshot.project.steps?.[childId]?.inputs?.checkpoint;
   const beforeCarry = await plan();
   await expect(carryover).toHaveText('Initialize model only');
@@ -476,10 +475,8 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   expect(snapshot.project.steps?.[childId]?.inputs?.checkpoint).toEqual(checkpointInput);
   expect(snapshot.project.steps?.[childId]?.deltas?.[1]?.patches).toEqual([
     { op: 'replace', path: carryoverPath, value: {
-      mode: 'continue_from', progress: { source_completed_batches: 2, additional_batches: 2 },
-      optimizer: 'preserve', schedule: 'continue', rng: 'carry', cursor: 'carry',
+      mode: 'continue_from', source_completed_updates: 2, state: 'preserve', rng: 'carry', schedule: 'continue',
     } },
-    { op: 'replace', path: methodTarget, value: 4 },
   ]);
   await expect(carryover).toHaveText('Carry training state');
   const afterCarry = await plan();
@@ -501,8 +498,6 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   snapshot = await acknowledged.json() as StudioProjectSnapshot;
   expect(snapshot.project.steps?.[childId]?.deltas?.[2]?.patches).toEqual([
     expect.objectContaining({ path: 'training_config.n_batches', value: 4 }),
-    expect.objectContaining({ path: methodTarget, value: 6 }),
-    expect.objectContaining({ path: `${carryoverPath}.progress.additional_batches`, value: 4 }),
   ]);
   await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
   const successors = await run(childId);
@@ -581,11 +576,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
       source_checkpoint: {
         completed_updates: 2, transaction_id: expect.any(String), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
-      schedule_origin_step: 0,
+      schedule_origin: 0,
       initialization: {
-        mode: 'continue_from', optimizer_policy: 'preserve', rng_policy: 'carry', cursor_policy: 'carry',
-        learning_rate_schedule_policy: 'continue',
-        producer_content_binding: { root_kind: 'checkpoint-custody:batch_counter,model,optimizer,prng' },
+        mode: 'continue_from', source_completed_updates: 2, state: 'preserve', rng: 'carry', schedule: 'continue',
       },
     });
     const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });

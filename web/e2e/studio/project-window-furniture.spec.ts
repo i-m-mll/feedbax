@@ -54,8 +54,8 @@ test('an empty project draws only the bar, the map with its drawer, the rail and
   for (const name of ['Fit View', 'Zoom In', 'Zoom Out']) {
     await expect(rail(page).getByRole('button', { name, exact: true })).toHaveAttribute('aria-disabled', 'true');
   }
-  await expect(page.locator('[data-empty-map-card]')).toBeHidden();
 
+  await expect(add).toBeEnabled();
   await add.press('Enter');
   await expectMenuBeside(page, (await add.boundingBox())!);
   await expect(menu(page).getByRole('menuitem', { name: 'Train' })).not.toHaveAttribute('aria-disabled', 'true');
@@ -65,14 +65,6 @@ test('an empty project draws only the bar, the map with its drawer, the rail and
   await menu(page).getByRole('menuitem', { name: 'Train' }).click();
   await expect(page.getByRole('tabpanel', { name: 'Model', exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-});
-
-test('the outlined empty-map card opens the same menu', async ({ page, request }) => {
-  const { snapshot } = await seedManagedProject(request, []);
-  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}&empty-map=card`);
-  const card = page.locator('[data-empty-map-card]');
-  await card.click();
-  await expectMenuBeside(page, (await card.boundingBox())!);
 });
 
 test('the rail separator follows the divider and every view keeps its place', async ({ page, request, studio }, info) => {

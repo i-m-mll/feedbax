@@ -1,11 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const web = fileURLToPath(new URL('../../', import.meta.url));
 const cache = join(web, 'node_modules', '.cache', 'studio-e2e-dist');
+const jaxCaches = join(web, 'node_modules', '.cache', 'studio-e2e-jax');
 
 function inputHash() {
   const files = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z', '--', '.', ':!e2e'], { cwd: web })
@@ -29,6 +30,11 @@ export default function globalSetup() {
   }
   for (const entry of readdirSync(cache)) if (entry !== key) rmSync(join(cache, entry), { recursive: true, force: true });
   process.env.FEEDBAX_STUDIO_E2E_DIST = dist;
+  // Homes share JAX compilations; a dependency change starts a new cache rather than growing the old one.
+  const lock = createHash('sha256').update(readFileSync(join(web, '..', 'uv.lock'))).digest('hex').slice(0, 16);
+  mkdirSync(join(jaxCaches, lock), { recursive: true, mode: 0o700 });
+  for (const entry of readdirSync(jaxCaches)) if (entry !== lock) rmSync(join(jaxCaches, entry), { recursive: true, force: true });
+  process.env.FEEDBAX_STUDIO_E2E_JAX_CACHE = join(jaxCaches, lock);
   // Workers run many small JAX programs at once; one thread each avoids oversubscribing the CPU.
   process.env.XLA_FLAGS = '--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1';
 }

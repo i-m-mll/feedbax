@@ -9,7 +9,7 @@ import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
-import { pick } from './fixtures/controls';
+import { pick, reveal } from './fixtures/controls';
 
 test.use({
   channel: 'chrome',
@@ -162,7 +162,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await tab(page, 'Scene').click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   const trials = drawer.getByRole('combobox', { name: 'Trials' });
   const response = posted(page, path, trialId);
   await pick(trials, trialId);
@@ -191,7 +191,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await expect(scrubber).toHaveValue(String(replay.time.values!.at(-1)));
   await drawer.getByRole('button', { name: 'Effector', exact: true }).click();
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  if (!await inspector.isVisible()) await footer(page).getByRole('button', { name: 'Show Inspector' }).click();
+  await reveal(page, 'Inspector');
   await expect(inspector.getByRole('heading', { name: 'Effector' })).toBeVisible();
   return replay;
 }
@@ -568,8 +568,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   expect(planned.checkpoint_series?.requested).toEqual([2, 4]);
   await page.reload();
   await chooseStep(page, 'evaluate');
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true })).toBeVisible();
   await expect(field).toHaveValue('every 2');
   await field.fill('2, 2');
   await expect(page.getByRole('button', { name: 'Apply Checkpoints' })).toBeDisabled();
@@ -639,7 +638,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   });
 
   await chooseStep(page, 'evaluate');
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   await tab(page, 'Runs').click();
   async function edit(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>
@@ -671,7 +670,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   expect(undone.project.steps.evaluate.sweep?.axes?.update).toBeUndefined();
   await page.reload();
   await chooseStep(page, 'evaluate');
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   await expect(field).toHaveValue('4, 3, 2');
 });
 
@@ -691,7 +690,7 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   await chooseStep(page, 'evaluate');
   await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'comparison');
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
   await expect(field).toHaveValue('last');
   const saving = page.waitForResponse((response) =>
@@ -733,7 +732,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   await page.goto(`/?project=${snapshot.project_id}`);
   await chooseStep(page, 'evaluate');
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
+  await reveal(page, 'Drawer');
   const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
   async function save(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>

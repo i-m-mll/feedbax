@@ -162,8 +162,10 @@ export function ProjectWindow({
   const detailsVisible = mode !== 'map';
   const fullMapVisible = mode === 'map' || (mode === 'both' && fit.mapHeight.open);
   const mapDrawerVisible = fullMapVisible && fit.mapDrawer.open;
-  const detailsDrawerVisible = detailsVisible && fit.detailsDrawer.open;
-  const inspectorVisible = detailsVisible && fit.inspector.open;
+  // Before the panel is measured, its sides follow the saved state rather than a zero-width fit.
+  const measured = width > 0;
+  const detailsDrawerVisible = detailsVisible && (measured ? fit.detailsDrawer.open : focusedSides.drawer && state.detailsDrawerOpen);
+  const inspectorVisible = detailsVisible && (measured ? fit.inspector.open : focusedSides.inspector && state.inspectorOpen);
   const split = secondaryView !== null;
   const folded = split && !fit.secondary.open;
   const slotWidth = (slot: ProjectWindowSlot) => folded

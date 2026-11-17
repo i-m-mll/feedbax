@@ -629,7 +629,6 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   });
   expect(child?.deltas?.at(-1)?.patches).toEqual([
     { op: 'replace', path: 'training_config.n_batches', value: 4 },
-    { op: 'replace', path: 'method_payload.payload.target_total', value: 4 },
   ]);
   expect(edited.project.steps?.train).toEqual(initial.project.steps?.train);
   expect(edited.project.sweep).toEqual(initial.project.sweep);

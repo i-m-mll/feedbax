@@ -20,6 +20,14 @@ const backendModules: Record<StudioBackend, string> = {
   remote: 'web.e2e.studio.fixtures.remote_runs_backend',
 };
 
+/**
+ * Bounds the wait for a Studio's first job to report progress. Each Studio home starts with an
+ * idle Host, so its first worker imports feedbax and, for programs the shared JAX cache lacks,
+ * compiles (about 10 s, more under parallel load) before training starts; later jobs report
+ * within about 3 s.
+ */
+export const firstJobTimeout = 20_000;
+
 export type Studio = {
   origin: string;
   home: string;
@@ -49,14 +57,14 @@ async function loopbackPorts(count: number) {
   }
 }
 
-async function stop(child: ChildProcess) {
+async function stop(child: ChildProcess, log: readonly string[]) {
   if (child.exitCode === null && child.signalCode === null) {
     const exited = once(child, 'exit');
     child.kill('SIGTERM');
     await exited;
   }
   if (child.exitCode !== 0 && child.exitCode !== 143) {
-    throw new Error(`Studio launcher exited with ${child.exitCode ?? child.signalCode}`);
+    throw new Error(`Studio launcher exited with ${child.exitCode ?? child.signalCode}\n${log.join('').slice(-4000)}`);
   }
 }
 
@@ -94,7 +102,9 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
   };
   const dist = process.env.FEEDBAX_STUDIO_E2E_DIST;
   if (frontend === 'preview' && dist === undefined) throw new Error('The Studio global setup did not build the frontend');
-  const main = start('--port', String(webPort), '--remove-test-home',
+  const jaxCache = process.env.FEEDBAX_STUDIO_E2E_JAX_CACHE;
+  if (jaxCache === undefined) throw new Error('The Studio global setup did not create the JAX cache');
+  const main = start('--port', String(webPort), '--remove-test-home', '--jax-cache', jaxCache,
     ...(frontend === 'preview' ? ['--preview-from', dist!] : []));
   while (!await healthy()) {
     if (main.exitCode !== null || main.signalCode !== null) {
@@ -119,7 +129,7 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
   return {
     studio,
     close: async () => {
-      const stopped = await Promise.allSettled(launchers.map(stop));
+      const stopped = await Promise.allSettled(launchers.map((child) => stop(child, log)));
       for (const result of stopped) if (result.status === 'rejected') throw result.reason;
     },
   };

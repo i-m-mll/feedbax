@@ -104,13 +104,37 @@ def stop_isolated_host(root: Path) -> None:
     wait_until(lambda: not process_exists(pid), f"Isolated Studio host did not exit in {root}")
 
 
-def finish_test_home(home: Path, host_root: Path, lease: BinaryIO, *, remove: bool) -> None:
+def seed_jax_cache(shared: Path, host_root: Path) -> None:
+    host_root.mkdir(mode=0o700, parents=True)
+    subprocess.run(["cp", "-cR", f"{shared}/", str(host_root / "jax")], check=True)
+    (host_root / "jax").chmod(0o700)
+
+
+def publish_jax_cache(host_root: Path, shared: Path) -> None:
+    """Link this home's complete JAX cache entries, which JAX names by content, into the shared cache.
+
+    JAX writes an entry's access-time file after its value, so a value without one may be partial.
+    """
+    for atime in (host_root / "jax").glob("*-atime"):
+        value = atime.with_name(atime.name.removesuffix("-atime") + "-cache")
+        for entry in (value, atime):
+            try:
+                os.link(entry, shared / entry.name)
+            except FileExistsError:
+                pass
+
+
+def finish_test_home(
+    home: Path, host_root: Path, lease: BinaryIO, *, remove: bool, jax_cache: Path | None
+) -> None:
     wait_until(
         lambda: try_test_lock(lease, fcntl.LOCK_EX, TEST_BACKEND_LOCK),
         f"A restarted Studio backend is still using {home}",
         timeout=6,
     )
     stop_isolated_host(host_root)
+    if jax_cache is not None and (host_root / "jax").is_dir():
+        publish_jax_cache(host_root, jax_cache)
     if remove:
         shutil.rmtree(home)
 
@@ -130,7 +154,11 @@ def claim_test_home(home: Path, paths: AppPaths, args: argparse.Namespace, scope
     lease = scope.enter_context(lease_path.open("a+b"))
     if not try_test_lock(lease, fcntl.LOCK_EX, TEST_OWNER_LOCK):
         raise RuntimeError(f"Another Studio test launcher owns {home}")
-    scope.callback(finish_test_home, home, paths.host, lease, remove=args.remove_test_home)
+    if args.jax_cache is not None:
+        seed_jax_cache(args.jax_cache, paths.host)
+    scope.callback(
+        finish_test_home, home, paths.host, lease, remove=args.remove_test_home, jax_cache=args.jax_cache
+    )
 
 
 def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: str) -> int:
@@ -194,6 +222,11 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
     parser.add_argument(
         "--remove-test-home", action="store_true", help="remove a new test home after its jobs settle"
     )
+    parser.add_argument(
+        "--jax-cache",
+        type=Path,
+        help="seed a new test home's JAX compilation cache from this directory and add its new entries back",
+    )
     args = parser.parse_args()
     if args.backend_only and args.home is None:
         parser.error("--backend-only requires --home")
@@ -207,6 +240,8 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
         parser.error("a test runner requires --home")
     if args.remove_test_home and (args.owner is None or args.backend_only):
         parser.error("--remove-test-home requires the main test launcher")
+    if args.jax_cache is not None and (args.owner is None or args.backend_only or not args.jax_cache.is_dir()):
+        parser.error("--jax-cache requires the main test launcher and an existing directory")
 
     signal.signal(signal.SIGINT, exit_on_signal)
     signal.signal(signal.SIGTERM, exit_on_signal)

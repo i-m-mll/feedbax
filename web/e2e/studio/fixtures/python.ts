@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { join } from 'node:path';
 import { repo } from './studio';
 
 export type PythonProgram = { module: string } | { path: string } | { code: string };
@@ -7,7 +8,8 @@ export type PythonProgram = { module: string } | { path: string } | { code: stri
 type Runner = { child: ChildProcess; ready: Promise<void>; stdout: Buffer[]; stderr: Buffer[] };
 
 function startRunner(): Runner {
-  const child = spawn('uv', ['run', '--offline', '--no-sync', 'python', '-B', '-m', 'web.e2e.studio.fixtures.runner'], {
+  // The runner exits when its parent does, so the worker is its direct parent rather than `uv run`.
+  const child = spawn(join(repo, '.venv', 'bin', 'python'), ['-B', '-m', 'web.e2e.studio.fixtures.runner'], {
     cwd: repo, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const runner: Runner = { child, ready: Promise.resolve(), stdout: [], stderr: [] };

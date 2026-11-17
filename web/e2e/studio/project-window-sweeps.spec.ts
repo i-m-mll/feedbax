@@ -140,9 +140,13 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
+  // The inspector first projects the authored fields, then the selected run's; only the latter can sweep.
+  const runFields = page.waitForResponse((response) => response.url().endsWith('/model/fields')
+    && 'run' in JSON.parse(response.request().postData() ?? '{}'));
   await page.getByRole('tabpanel', { name: 'Model', exact: true })
     .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
   const field = page.getByRole('region', { name: 'Mass field', exact: true });
+  await runFields;
   await field.getByRole('button', { name: 'Mass kind: Value', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   await enter(field.getByRole('textbox', { name: 'Mass', exact: true }), '1, 2');
@@ -175,8 +179,8 @@ test('an authored component range reopens as its exact rule and To List keeps ro
   await expect(field.getByRole('textbox', { name: 'Count', exact: true })).toHaveValue('3');
   const { plan: authored } = await readPlan(request, projectPath);
   await field.getByRole('button', { name: 'To List', exact: true }).click();
-  await expect(field.getByRole('textbox', { name: 'Mass value 1', exact: true })).toHaveValue('1.000123456789');
-  await expect(field.getByRole('textbox', { name: 'Mass value 3', exact: true })).toHaveValue('2.000987654321');
+  await expect(field.getByRole('textbox', { name: 'Value 1.000123456789', exact: true })).toHaveValue('1.000123456789');
+  await expect(field.getByRole('textbox', { name: 'Value 2.000987654321', exact: true })).toHaveValue('2.000987654321');
   const { plan: listed } = await readPlan(request, projectPath);
   expect(listed.rows).toEqual(authored.rows);
 });

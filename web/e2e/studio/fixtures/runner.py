@@ -14,6 +14,8 @@ import json
 import os
 import runpy
 import sys
+import threading
+import time
 
 PRELOAD = (
     "web.e2e.studio.fixtures.canonical_evaluate",
@@ -24,7 +26,14 @@ PRELOAD = (
 )
 
 
+def exit_with_parent(parent: int) -> None:
+    while os.getppid() == parent:
+        time.sleep(1)
+    os._exit(1)
+
+
 def main() -> None:
+    threading.Thread(target=exit_with_parent, args=(os.getppid(),), daemon=True).start()
     for module in PRELOAD:
         importlib.import_module(module)
     print("ready", file=sys.stderr, flush=True)

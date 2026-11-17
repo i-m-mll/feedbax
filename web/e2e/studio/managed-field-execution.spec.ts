@@ -64,6 +64,8 @@ test('saves and runs managed optimizer and attachment sweeps', async ({ page, re
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await expect(rate).toHaveValue('geomspace(0.001, 0.004, 2)');
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await model.locator('[data-id="wrapper"] header').dblclick();
+  await model.locator('[data-id="controller"] header').dblclick();
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(factor).toHaveValue('linspace(0.5, 1, 2)');
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();

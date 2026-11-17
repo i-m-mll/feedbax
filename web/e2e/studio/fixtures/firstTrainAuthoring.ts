@@ -1,6 +1,7 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
+import { pick } from './controls';
 import { activate, number, palette, post, readSaved } from './studioKeyboard';
 
 export async function authorFirstTrain(
@@ -94,12 +95,9 @@ export async function authorFirstTrain(
   await setLinearSize('Output size', 'output_size');
   if (forceComparison) {
     const activation = inspector.getByRole('combobox', { name: 'Activation', exact: true });
-    // Repeated initials cycle the options. The inspector saves and disables the field between keys.
-    for (const value of ['sigmoid', forceComparison.activation]) {
-      await activate(page, activation, 's');
-      await expect(activation).toHaveValue(value);
-      await expect.poll(async () => linearField((await savedProject()).project, 'activation')).toBe(value);
-    }
+    await pick(activation, new RegExp(`^${forceComparison.activation}$`, 'i'));
+    await expect(activation).toHaveText(new RegExp(forceComparison.activation, 'i'));
+    await expect.poll(async () => linearField((await savedProject()).project, 'activation')).toBe(forceComparison.activation);
   }
   await page.keyboard.press('Meta+2');
   const plant = await add('PointMass', 'Mechanics');

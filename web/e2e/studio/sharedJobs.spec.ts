@@ -1,4 +1,4 @@
-import { expect, test } from './fixtures/studio';
+import { expect, firstJobTimeout, test } from './fixtures/studio';
 import { runPython } from './fixtures/python';
 import { type APIRequestContext, type Page } from '@playwright/test';
 import type {
@@ -239,7 +239,7 @@ test('opens a ninth project window while one stream serves active projects', asy
     ));
     await expect.poll(subscriptions).toEqual([[...runningProjects].sort()]);
     await Promise.all(windows.map((window) =>
-      expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/),
+      expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/, { timeout: firstJobTimeout }),
     ));
     expect(windows).toHaveLength(8);
 

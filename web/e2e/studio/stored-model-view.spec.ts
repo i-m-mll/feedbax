@@ -213,6 +213,9 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   expect(saved.project.steps?.baseline).toMatchObject({ model_attachments: expect.any(Object) });
   await page.reload();
   await mapStep(page, 'baseline').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await model.locator('[data-id="wrapper"] header').dblclick();
+  await model.locator('[data-id="controller"] header').dblclick();
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
