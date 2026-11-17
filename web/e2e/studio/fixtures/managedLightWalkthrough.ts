@@ -233,7 +233,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       state: 'preserve', schedule: 'continue', rng: 'carry',
     },
   }]);
-  await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
+  await expect(carryover).toHaveText('Carry training state');
   const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
   await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');

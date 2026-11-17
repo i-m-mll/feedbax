@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import userEvent from '@testing-library/user-event';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -37,7 +38,7 @@ const scene: ResolvedScene = {
 const noOverlaysHidden = new Set<SceneOverlay>();
 
 describe('Scene regions', () => {
-  it('selects a supplied trial independently of the entity selection', () => {
+  it('selects a supplied trial independently of the entity selection', async () => {
     const chooseTrial = vi.fn();
     const chooseEntity = vi.fn();
     render(<SceneDrawer scene={scene} selectedId="arm" onSelect={chooseEntity} trials={{
@@ -45,7 +46,9 @@ describe('Scene regions', () => {
       selectedId: 'trial-a',
       onSelect: chooseTrial,
     }} />);
-    fireEvent.change(screen.getByRole('combobox', { name: 'Trials' }), { target: { value: 'trial-b' } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Trials' }));
+    await user.click(await screen.findByRole('option', { name: 'Curl reach' }));
     expect(chooseTrial).toHaveBeenCalledWith('trial-b');
     expect(chooseEntity).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Arm' }).getAttribute('aria-pressed')).toBe('true');

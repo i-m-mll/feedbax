@@ -1,4 +1,6 @@
 import { UpdateCadenceSchema, type StudioSavedEvaluationRow } from '@/generated/studioContracts';
+import { Button } from '@/components/ui/Button';
+import { Table, TableCell, TableHeaderCell, TableRowHeader } from '@/components/ui/Table';
 import { studioCheckpointStatus, studioEvaluationPlacement, studioFormat, studioName, studioReason, studioReplayLabel } from '@/components/activity/studioVocabulary';
 
 const percent = new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 });
@@ -54,24 +56,23 @@ export function StudioEvaluationResults({ evaluation, onReplay }: {
   const points = new Map(attempt?.points?.map(({ completed_updates, status }) => [completed_updates, status]));
   return <div className="space-y-2 p-3 text-sm">
     <StudioEvaluationAttemptDetails evaluation={evaluation} />
-    <table aria-label={studioName('checkpointResults')} className="w-full border-collapse text-left">
+    <Table aria-label={studioName('checkpointResults')}>
       <thead>
-        <tr className="border-b border-shell-divider">
-          <th scope="col" className="py-1 pr-3 font-medium">{studioName('update')}</th>
-          <th scope="col" className="py-1 font-medium">{studioName('result')}</th>
+        <tr>
+          <TableHeaderCell scope="col">{studioName('update')}</TableHeaderCell>
+          <TableHeaderCell scope="col">{studioName('result')}</TableHeaderCell>
         </tr>
       </thead>
-      <tbody>{series.requested.map((update) => <tr key={update} className="border-b border-shell-divider">
-        <th scope="row" className="py-1 pr-3 font-normal tabular-nums">{update}</th>
-        <td className="py-1">
-          {sources.has(update) ? <button type="button"
-            className="rounded px-1 underline underline-offset-2 hover:bg-shell-hover"
+      <tbody>{series.requested.map((update) => <tr key={update}>
+        <TableRowHeader className="font-normal tabular-nums">{update}</TableRowHeader>
+        <TableCell>
+          {sources.has(update) ? <Button variant="ghost" className="-ml-control-inline"
             aria-label={studioReplayLabel(update)}
-            onClick={() => onReplay(update)}>{studioName('replay')}</button>
+            onClick={() => onReplay(update)}>{studioName('replay')}</Button>
             : gaps.get(update) === 'checkpoint_unavailable' ? studioReason('unavailable', studioName('checkpoint'))
               : studioCheckpointStatus(points.get(update) ?? 'requested')}
-        </td>
+        </TableCell>
       </tr>)}</tbody>
-    </table>
+    </Table>
   </div>;
 }

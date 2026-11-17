@@ -12,6 +12,8 @@ import {
   type PipelineSelectionState,
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
+import { Button } from "@/components/ui/Button";
+import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
 
 const byteSize = new Intl.NumberFormat(undefined, { style: "unit", unit: "byte", unitDisplay: "narrow" });
 
@@ -29,18 +31,17 @@ export function StudioSweepValues({ step, state, onSelectionChange }: RunSelecti
       {step.sweeps.map((sweep) => {
         const selected = terms.find(({ sweepId }) => sweepId === sweep.id);
         return (
-          <fieldset key={sweep.id} className="flex flex-wrap items-baseline gap-1">
+          <fieldset key={sweep.id} className="flex flex-wrap items-center gap-1">
             <legend className="font-medium text-shell-foreground">{sweep.label}</legend>
             {sweep.values.map((value) => (
-              <button
+              <Button
                 key={value.id}
-                type="button"
-                aria-pressed={selected?.valueIds.includes(value.id) ?? false}
+                pressed={selected?.valueIds.includes(value.id) ?? false}
                 {...selectionButton((extend) => onSelectionChange(selectSweepValue(state, step.id, sweep.id, value.id, extend)))}
-                className="rounded border border-shell-control px-2 py-0.5 tabular-nums aria-pressed:border-shell-foreground aria-pressed:bg-shell-selected"
+                className="tabular-nums"
               >
                 {value.label}
-              </button>
+              </Button>
             ))}
           </fieldset>
         );
@@ -123,7 +124,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
   const items = virtual.getVirtualItems();
   const measure = step.kind === "evaluate" ? "size" : "progress";
   const width = sweeps.length + (showVariant ? 4 : 3);
-  const cellClass = "border-t border-shell-divider p-2 focus-visible:outline focus-visible:-outline-offset-2 focus-visible:outline-shell-accent";
+  const cellFocus = "outline-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-shell-accent";
   const first = items[0];
   const last = items[items.length - 1];
   const top = first?.start ?? 0;
@@ -131,14 +132,14 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
 
   return (
     <div ref={scroll} className={`${fillSlot ? "h-full" : "max-h-96"} overflow-auto`}>
-      <table className="w-full border-separate border-spacing-0 text-left text-sm" aria-label={studioName("runs")} aria-rowcount={rows.length + 1}>
-        <thead className="sticky top-0 z-10 bg-shell-subtle">
+      <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1}>
+        <thead className="sticky top-0 z-10">
           <tr aria-rowindex={1}>
-            <th scope="col" className="p-2">{studioName("run")}</th>
-            {showVariant && <th scope="col" className="p-2">{studioName("variant")}</th>}
-            {sweeps.map((sweep) => <th key={sweep.id} scope="col" className="p-2">{sweep.label}</th>)}
-            <th scope="col" className="p-2">{studioName("status")}</th>
-            <th scope="col" className="p-2">{studioName(measure)}</th>
+            <TableHeaderCell scope="col">{studioName("run")}</TableHeaderCell>
+            {showVariant && <TableHeaderCell scope="col">{studioName("variant")}</TableHeaderCell>}
+            {sweeps.map((sweep) => <TableHeaderCell key={sweep.id} scope="col">{sweep.label}</TableHeaderCell>)}
+            <TableHeaderCell scope="col">{studioName("status")}</TableHeaderCell>
+            <TableHeaderCell scope="col">{studioName(measure)}</TableHeaderCell>
           </tr>
         </thead>
         <tbody>
@@ -149,7 +150,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
             const summary = run.openingReason ?? (run.status === "stale" ? undefined : run.reason);
             const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
-              <tr
+              <TableRow
                 key={run.id}
                 ref={(node) => {
                   virtual.measureElement(node);
@@ -165,45 +166,45 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   }
                 }}
                 data-index={item.index}
-                data-selected={lit || undefined}
-                data-related={relatedIds?.has(run.id) || undefined}
+                selected={lit}
+                related={relatedIds?.has(run.id)}
                 aria-rowindex={item.index + 2}
                 onKeyDown={(event) => { if (!event.defaultPrevented) navigate(event, item.index); }}
-                className="studio-run-row data-[related=true]:bg-shell-subtle data-[selected=true]:bg-shell-selected"
+                className="studio-run-row"
               >
-                <th scope="row" className="border-t border-shell-divider p-2 font-medium">
-                  <button
-                    type="button"
-                    aria-pressed={state.selection?.kind === "rows" && lit}
+                <TableRowHeader>
+                  <Button
+                    variant="ghost" align="start"
+                    pressed={state.selection?.kind === "rows" && lit}
                     aria-current={focus === run.id ? true : undefined}
                     onClick={selectRow.onClick}
                     onKeyDown={selectRow.onKeyDown}
-                    className="rounded text-left underline-offset-2 hover:underline aria-[current=true]:underline"
+                    className="-ml-control-inline underline-offset-2 hover:underline aria-[current=true]:underline"
                   >
                     {run.label}
-                  </button>
-                </th>
-                {showVariant && <td tabIndex={-1} className={cellClass}>{run.variant}</td>}
+                  </Button>
+                </TableRowHeader>
+                {showVariant && <TableCell tabIndex={-1} className={cellFocus}>{run.variant}</TableCell>}
                 {sweeps.map((sweep) => (
-                  <td key={sweep.id} tabIndex={-1} className={`${cellClass} tabular-nums`}>
+                  <TableCell key={sweep.id} tabIndex={-1} className={`${cellFocus} tabular-nums`}>
                     {labels.get(sweep.id)?.get(run.values[sweep.id])}
-                  </td>
+                  </TableCell>
                 ))}
-                <td tabIndex={-1} className={cellClass}>
+                <TableCell tabIndex={-1} className={cellFocus}>
                   <StudioRunStatus status={run.status} />
-                  {summary && <div className="text-xs text-shell-muted">{summary}</div>}
-                </td>
-                <td tabIndex={-1} className={cellClass}>
+                  {summary && <div className="truncate text-xs text-shell-muted">{summary}</div>}
+                </TableCell>
+                <TableCell tabIndex={-1} className={cellFocus}>
                   {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
                   {run.status === "collecting" && <StudioCollectionProgress progress={run.collectionProgress} />}
                   {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             );
           })}
           {bottom > 0 && <tr aria-hidden="true"><td colSpan={width} style={{ height: bottom }} /></tr>}
         </tbody>
-      </table>
+      </Table>
     </div>
   );
 }

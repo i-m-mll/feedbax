@@ -152,7 +152,7 @@ export async function authorFirstTrain(
 
   await page.keyboard.press('Meta+4');
   const measure = objective.getByRole('combobox', { name: 'Measure Source', exact: true });
-  await expect(measure.locator('option:checked')).toHaveText('Command');
+  await expect(measure).toHaveText('Command');
   await activate(page, objective.getByRole('button', { name: 'Add Term', exact: true }));
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
   await setNumber(weight, 2, (project) => {

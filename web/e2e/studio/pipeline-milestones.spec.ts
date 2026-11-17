@@ -7,6 +7,7 @@ import {
   appendManagedFiles, authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot,
   runProjectFixture, seedManagedProject,
 } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
 const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
@@ -216,7 +217,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   expect((await created).status()).toBe(201);
   const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
   const metric = subset.getByRole('textbox', { name: 'Metric', exact: true });
-  const count = subset.getByRole('spinbutton', { name: 'Count', exact: true });
+  const count = subset.getByRole('textbox', { name: 'Count', exact: true });
   const best = subset.getByRole('checkbox', { name: 'Best', exact: true });
   const apply = subset.getByRole('button', { name: 'Apply Subset', exact: true });
   const order = subset.getByRole('combobox', { name: 'Order', exact: true });
@@ -255,7 +256,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   await expect(best).toBeChecked();
   await expect(metric).toHaveValue(metricName);
   await expect(count).toHaveValue('2');
-  await expect(order).toHaveValue('min');
+  await expect(order).toHaveText('Lowest');
   await expect(inputs).toContainText(grouped ? '4 of 4' : '2 of 3');
   const memberLists = grouped ? groupedLists : [members];
   if (grouped) {
@@ -426,7 +427,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(members.getByRole('listitem')).toHaveText(sourceRows.slice(0, 2).map(({ label }) => label));
   const trialSet = drawer.getByRole('group', { name: 'Trial Set', exact: true });
   await expect(trialSet.getByRole('combobox')).toBeFocused();
-  await trialSet.getByRole('combobox').selectOption('conditions');
+  await pick(trialSet.getByRole('combobox'), 'Selected Conditions');
   for (const condition of conditionIds) await trialSet.getByRole('checkbox', { name: condition, exact: true }).check();
   const edited = (path: string) => page.waitForResponse((response) => {
     const request = response.request();
@@ -513,11 +514,11 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
     where: { rows: [authoredRows[0], authoredRows[2]] },
   });
   await expect(members.getByRole('listitem')).toHaveText(picked.map(({ label }) => label));
-  await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
+  await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');
   await select(page, 'evaluate');
-  await expect(trialSet.getByRole('combobox')).toHaveValue('conditions');
+  await expect(trialSet.getByRole('combobox')).toHaveText('Selected Conditions');
   await select(page, 'evaluate-2');
-  await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
+  await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');
   await expect(trialSet.getByRole('button', { name: 'Apply Trials', exact: true })).toBeDisabled();
   await subset.getByRole('checkbox', { name: sourceRows[1].label, exact: true }).check();
   const widenRows = edited('/inputs/subject/where');
@@ -556,8 +557,8 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   expect(evaluation.map(({ trials }) => trials.length)).toEqual([2, 3, 2, 3]);
 
   const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
-  await primary(page).getByRole('combobox', { name: 'Rows', exact: true }).selectOption('learning-rate');
-  await primary(page).getByRole('combobox', { name: 'Columns', exact: true }).selectOption('task');
+  await pick(primary(page).getByRole('combobox', { name: 'Rows', exact: true }), 'learning-rate');
+  await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
   const cell = (model: string, task: string, status: string) => pivot.getByRole('button', {
     name: `Select learning-rate ${model} · task ${task} · ${status}`, exact: true,
   });
@@ -570,7 +571,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(6, { timeout: 26_000 });
   const trainDone = (await read()).rows;
   await select(page, 'evaluate');
-  await primary(page).getByRole('combobox', { name: 'Columns', exact: true }).selectOption('task');
+  await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
   const sampled = cell('Fast · 0.003', 'Long Task', 'Not run');
   const target = rows[3].key;
   await sampled.click();

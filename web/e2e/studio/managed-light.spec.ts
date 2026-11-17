@@ -69,7 +69,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   const document = page.getByRole('tabpanel', { name: 'Document', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const boundsScale = inspector.getByRole('spinbutton', { name: 'Edit Bounds Scale', exact: true });
+  const boundsScale = inspector.getByRole('textbox', { name: 'Edit Bounds Scale', exact: true });
   const mutation = (method: string, route: string) => page.waitForResponse((response) =>
     response.request().method() === method && new URL(response.url()).pathname === route);
 
@@ -226,7 +226,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   await addOperation('Trial summary');
   await selectElement('summarize_velocity');
   await edit(() => number(page, boundsScale, '1.5'));
-  const beforeRefusal = await edit(() => number(page, inspector.getByRole('spinbutton', { name: 'Edit Ddof', exact: true }), '0'));
+  const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Edit Ddof', exact: true }), '0'));
   await chooseSource('states');
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
     Boolean(response.request().postDataJSON()?.wire));

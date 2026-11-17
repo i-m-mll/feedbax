@@ -2,6 +2,7 @@ import { expect, test, type APIRequestContext, type CDPSession, type Locator, ty
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
 test.use({ headless: true, trace: 'off', viewport: { width: 1440, height: 900 } });
 
@@ -367,7 +368,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   const responded = page.waitForResponse((response) => response.request().method() === 'POST' &&
     new URL(response.url()).pathname === path + '/evaluate-replay' && response.request().postDataJSON().trial === trial);
   void responded.catch(() => {});
-  await trials.selectOption(trial);
+  await pick(trials, trial);
   const loaded = await responded;
   expect(loaded.ok(), await loaded.text()).toBe(true);
   expect(loaded.request().postDataJSON()).toMatchObject({ key: row.key, job_id: evaluation.job_id, trial });

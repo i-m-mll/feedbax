@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { Check, ChevronsUpDown } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { disabledLook, focusRing, glyph, popupItem, popupSurface } from './styles';
+import { usePopupLayer } from './popupLayer';
 
 export interface Option<Value extends string> {
   value: Value;
@@ -44,7 +45,7 @@ export function Select<Value extends string>(
         <BaseSelect.Value className="truncate data-[placeholder]:text-shell-muted" placeholder={placeholder} />
         <BaseSelect.Icon className="flex text-shell-muted"><ChevronsUpDown /></BaseSelect.Icon>
       </BaseSelect.Trigger>
-      <BaseSelect.Portal>
+      <BaseSelect.Portal container={usePopupLayer()}>
         <BaseSelect.Positioner className="z-50 outline-none" sideOffset={4} alignItemWithTrigger={false} align="start">
           <BaseSelect.Popup className={clsx(popupSurface, 'min-w-[var(--anchor-width)]')}>
             <BaseSelect.List className="max-h-[var(--available-height)] overflow-y-auto">

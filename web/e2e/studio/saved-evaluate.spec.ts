@@ -7,6 +7,7 @@ import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
+import { pick } from './fixtures/controls';
 
 test.use({
   channel: 'chrome',
@@ -162,7 +163,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
   const trials = drawer.getByRole('combobox', { name: 'Trials' });
   const response = posted(page, path, trialId);
-  await trials.selectOption(trialId);
+  await pick(trials, trialId);
   const reply = await response;
   expect(reply.ok(), await reply.text()).toBe(true);
   expect(reply.request().postDataJSON()).toMatchObject({
@@ -952,16 +953,16 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await plans(page).getByRole('button', { name: labels.get(JSON.stringify(finiteRow.key))!, exact: true }).click();
   await tab(page, 'Scene').click();
   const checkpoints = page.getByRole('combobox', { name: 'Checkpoint', exact: true });
-  await expect(checkpoints).toHaveValue('2');
+  await expect(checkpoints).toHaveText('2');
   const finiteTrials = page.getByRole('combobox', { name: 'Trials', exact: true });
   let selectedReplay = posted(page, replayPath, trialId);
-  await finiteTrials.selectOption(trialId);
+  await pick(finiteTrials, trialId);
   let selected = await selectedReplay;
   expect(selected.ok(), await selected.text()).toBe(true);
   expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 2 });
   expect((await selected.json() as WorkspaceReplayTrial).tracks![0].samples).toEqual(fromCheckpoint.checkpoints[0].samples);
   selectedReplay = posted(page, replayPath, trialId);
-  await checkpoints.selectOption('1');
+  await pick(checkpoints, '1');
   selected = await selectedReplay;
   expect(selected.ok(), await selected.text()).toBe(true);
   expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 1 });
@@ -974,7 +975,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await expect(cursors).toHaveCount(2);
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   await expect(clock).toHaveCount(1);
-  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveValue(trialId);
+  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveText(trialId);
   // Each slot projects the same trial into its own fitted viewport.
   const frame = (end: boolean) => cursors.evaluateAll((points, end) => points.map((point) => {
     const cursor = point as SVGCircleElement;

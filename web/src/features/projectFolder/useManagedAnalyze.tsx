@@ -4,7 +4,10 @@ import { apiErrorMessage } from '@/api/request';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StudioDefinitionForm, type StudioFieldControl } from '@/components/pipeline/StudioDefinitionForm';
+import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
+import { Select } from '@/components/ui/Select';
+import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import {
@@ -20,8 +23,6 @@ import { problemReason, type ProblemReveal } from './projectWindowProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 
 type Source = OperationElement['inputs'][string];
-const control = 'rounded-shell-control border border-shell-divider px-2 py-1 disabled:opacity-50';
-const dialogClass = 'grid w-[min(26rem,90vw)] gap-3 rounded-shell-control border border-shell-divider bg-shell-chrome p-4 text-shell-foreground shadow-xl';
 
 function fieldControl(schema: ParamSchema, variables?: string[]): StudioFieldControl | undefined {
   const options = variables ?? schema.options;
@@ -221,7 +222,7 @@ export function useManagedAnalyze({
       }} />}
     {figure && selected && selectedFigure && <label className="grid gap-1">
       {studioName('caption')}
-      <input className={control} key={JSON.stringify([saved.revision, selected, selectedFigure.caption])}
+      <TextField key={JSON.stringify([saved.revision, selected, selectedFigure.caption])}
         defaultValue={selectedFigure.caption ?? ''} disabled={!canEdit || !inlineFigure}
         onBlur={({ currentTarget }) => {
           const caption = currentTarget.value;
@@ -232,26 +233,24 @@ export function useManagedAnalyze({
         onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
     </label>}
   </div>;
-  const drawer = <div className="space-y-2 p-2">
-    {catalog?.operations.map((entry) => <button key={entry.key} type="button" className={control} disabled={!canEdit}
+  const drawer = <div className="flex flex-wrap gap-2 p-2">
+    {catalog?.operations.map((entry) => <Button key={entry.key} disabled={!canEdit}
       aria-label={studioAccessibleName('add', entry.label)}
       onClick={() => addOperation(entry.key)}>
       {entry.label}
-    </button>)}
-    <button type="button" className={control} disabled={!canEdit} onClick={addFigure}>{studioName('addFigure')}</button>
-    <button type="button" className={control} {...commandAttributes(connect)} disabled={!connect.enabled} onClick={connect.invoke}>
+    </Button>)}
+    <Button disabled={!canEdit} onClick={addFigure}>{studioName('addFigure')}</Button>
+    <Button {...commandAttributes(connect)} disabled={!connect.enabled} onClick={connect.invoke}>
       {connect.label}
-    </button>
+    </Button>
   </div>;
   const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => {
     const caption = figureDefinition(name, view.figure)?.caption;
     const result = planned.get(name);
-    return <li key={name}>
-      <button type="button" className={control} aria-pressed={selected === name} onClick={() => element.onSelect(name)}>
-        {name}
-      </button>
-      {caption && <span className="px-2">{caption}</span>}
-      {result && <span className="px-2">{studioRunStatus(result.status)}</span>}
+    return <li key={name} className="flex items-center gap-2">
+      <Button pressed={selected === name} onClick={() => element.onSelect(name)}>{name}</Button>
+      {caption && <span>{caption}</span>}
+      {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
   })}</ul>;
   const alert = !opened && issue && <p className="p-2" role="alert">{issue}</p>;
@@ -272,30 +271,27 @@ export function useManagedAnalyze({
     </>, drawer, inspector: figure ? inspector : undefined },
     commands: document && (focusedView === 'analysis' || focusedView === 'figures') ? [addCommand, connect] : [],
     overlay: opened && <Dialog ariaLabel={studioName(opened.mode === 'add' ? 'addOperation' : 'connectPorts')}
-      manageFocus panelClassName={dialogClass} onClose={() => setDialog(undefined)}>
+      manageFocus panelClassName="grid w-[min(26rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
       {issue && <p role="alert">{issue}</p>}
       {opened.mode === 'add' ? <>
-        <input data-dialog-autofocus className={control} aria-label={studioName('operations')} value={query}
-          onChange={(event) => setQuery(event.currentTarget.value)} />
+        <TextField data-dialog-autofocus aria-label={studioName('operations')} value={query} onValueChange={setQuery} />
         {catalog?.operations.filter(({ label }) => label.toLowerCase().includes(query.toLowerCase()))
-          .map((entry) => <button key={entry.key} type="button" className={control} disabled={!canEdit}
+          .map((entry) => <Button key={entry.key} variant="ghost" align="start" disabled={!canEdit}
             onClick={() => addOperation(entry.key, opened.point)}>
             {entry.label}
-          </button>)}
+          </Button>)}
       </> : <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); connectSelected(); }}>
         <label className="grid gap-1">{studioName('sourcePort')}
-          <select data-dialog-autofocus className={control} value={sourceIndex} onChange={(event) => setSourceIndex(event.currentTarget.value)}>
-            <option value="" disabled />{sources.map(({ label }, index) => <option key={label} value={index}>{label}</option>)}
-          </select>
+          <Select aria-label={studioName('sourcePort')} value={sourceIndex === '' ? null : sourceIndex} onValueChange={setSourceIndex}
+            items={sources.map(({ label }, index) => ({ value: String(index), label }))} />
         </label>
         <label className="grid gap-1">{studioName('inputPort')}
-          <select className={control} value={role} onChange={(event) => setRole(event.currentTarget.value)}>
-            <option value="" disabled />{roles.map((name) => <option key={name} value={name}>{selected}.{name}</option>)}
-          </select>
+          <Select aria-label={studioName('inputPort')} value={role || null} onValueChange={setRole}
+            items={roles.map((name) => ({ value: name, label: selected + '.' + name }))} />
         </label>
-        <button type="submit" className={control} disabled={!canEdit || sourceIndex === '' || !role}>
+        <Button type="submit" className="justify-self-end" disabled={!canEdit || sourceIndex === '' || !role}>
           {studioName('connectPorts')}
-        </button>
+        </Button>
       </form>}
     </Dialog>,
   };

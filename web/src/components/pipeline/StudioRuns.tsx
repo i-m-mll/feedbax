@@ -13,6 +13,9 @@ import {
   selectSweepGroup,
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
+import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
+import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/ui/Table";
 import { StudioRunTable, StudioSelectionSummary, StudioSweepValues, type RunSelectionProps } from "./StudioRunTable";
 
 interface StudioRunsProps extends RunSelectionProps {
@@ -49,13 +52,13 @@ function StudioRunLineage({
               const summary = studioCountOf(members.size, step.runs.length);
               return (
                 <li key={step.id}>
-                  <button
-                    type="button" aria-label={studioAccessibleName("select", `${step.label} ${summary}`)}
-                    onClick={() => onChoose(step.id)} className="flex w-full justify-between gap-2 text-left hover:underline"
+                  <Button
+                    variant="ghost" aria-label={studioAccessibleName("select", `${step.label} ${summary}`)}
+                    onClick={() => onChoose(step.id)} className="w-full justify-between"
                   >
-                    <span className="min-w-0">{step.label}</span>{" "}
+                    <span className="min-w-0 truncate">{step.label}</span>{" "}
                     <span className="shrink-0 tabular-nums text-shell-muted">{summary}</span>
-                  </button>
+                  </Button>
                   {single && <ul className="ps-2 text-shell-muted">
                     {step.runs.filter(({ id }) => members.has(id)).map(({ id, label }) => <li key={id}>{label}</li>)}
                   </ul>}
@@ -103,29 +106,27 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        <label className="flex gap-2">
+        <label className="flex items-center gap-2">
           {studioName("rows")}
-          <select value={y.id} onChange={(event) => setRowId(event.currentTarget.value)}>
-            {step.sweeps.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-          </select>
+          <Select aria-label={studioName("rows")} value={y.id} onValueChange={setRowId}
+            items={step.sweeps.map(({ id, label }) => ({ value: id, label }))} />
         </label>
-        <label className="flex gap-2">
+        <label className="flex items-center gap-2">
           {studioName("columns")}
-          <select value={x.id} onChange={(event) => setColumnId(event.currentTarget.value)}>
-            {step.sweeps.filter(({ id }) => id !== y.id).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-          </select>
+          <Select aria-label={studioName("columns")} value={x.id} onValueChange={setColumnId}
+            items={step.sweeps.filter(({ id }) => id !== y.id).map(({ id, label }) => ({ value: id, label }))} />
         </label>
       </div>
-      <div className="max-h-96 overflow-auto rounded border border-shell-divider">
-        <table aria-label={studioName("pivot")} className="w-full border-separate border-spacing-0 text-left text-sm">
+      <div className="max-h-96 overflow-auto rounded-surface border border-shell-divider">
+        <Table aria-label={studioName("pivot")}>
           <thead><tr>
-            <th scope="col" className="p-2">{y.label}</th>
-            {x.values.map((value) => <th key={value.id} scope="col" className="p-2">{value.label}</th>)}
+            <TableHeaderCell scope="col">{y.label}</TableHeaderCell>
+            {x.values.map((value) => <TableHeaderCell key={value.id} scope="col">{value.label}</TableHeaderCell>)}
           </tr></thead>
           <tbody>
             {y.values.map((row) => (
               <tr key={row.id}>
-                <th scope="row" className="border-t border-shell-divider p-2">{row.label}</th>
+                <TableRowHeader>{row.label}</TableRowHeader>
                 {x.values.map((column) => {
                   const cell: readonly PlanRunView[] = pivot.groups.get(row.id)?.get(column.id) ?? [];
                   const count = new Map<PlanRunView["status"], number>();
@@ -134,13 +135,13 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
                     ? `${amount} ${studioRunStatus(status)}`
                     : studioRunStatus(status));
                   return (
-                    <td key={column.id} className="border-t border-shell-divider p-2 align-top">
+                    <TableCell key={column.id}>
                       {cell.length > 0 && (
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
                           aria-label={studioAccessibleName("select", [`${y.label} ${row.label}`, `${x.label} ${column.label}`, ...labels].join(" · "))}
-                          aria-pressed={cell.every(({ id }) => selected.has(id))}
-                          className="flex flex-wrap gap-2 rounded px-1 aria-pressed:bg-shell-selected"
+                          pressed={cell.every(({ id }) => selected.has(id))}
+                          className="-ml-control-inline gap-2"
                           {...selectionButton((extend) => onSelectionChange(cell.length === 1
                             ? selectRun(state, { stepId: step.id, runId: cell[0].id }, extend)
                             : selectSweepGroup(step.id, [{ sweepId: y.id, valueIds: [row.id] }, { sweepId: x.id, valueIds: [column.id] }])))}
@@ -151,15 +152,15 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
                               <StudioRunStatus status={status} />
                             </span>
                           ))}
-                        </button>
+                        </Button>
                       )}
-                    </td>
+                    </TableCell>
                   );
                 })}
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       </div>
       {pivot.unplaced.length > 0 && (
         <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={pivot.unplaced} related={related} />
@@ -208,21 +209,19 @@ export function StudioRunControls({ commands, machine, pivotCommand, pivotActive
   return <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
     {machine}
     {commands?.map((command) => (
-      <button type="button" key={command.id} {...commandAttributes(command)}
-        disabled={!command.enabled && command.id !== 'run'}
-        aria-disabled={!command.enabled && command.id === 'run' || undefined}
+      <Button key={command.id} {...commandAttributes(command)}
+        disabled={!command.enabled}
+        focusableWhenDisabled={command.id === 'run'}
         tabIndex={!command.enabled && command.id === 'run' ? -1 : undefined}
         aria-description={!command.enabled ? reason : undefined}
-        className="shrink-0 rounded border border-shell-divider px-2 py-1 disabled:opacity-50 aria-disabled:opacity-50"
         onClick={command.enabled ? command.invoke : undefined}>
         {studioName(command.name)}
-      </button>
+      </Button>
     ))}
     {pivotCommand && (
-      <button type="button" {...commandAttributes(pivotCommand)} aria-pressed={pivotActive}
-        onClick={pivotCommand.invoke} className="shrink-0 rounded border border-shell-divider px-2 py-1">
+      <Button {...commandAttributes(pivotCommand)} pressed={pivotActive} onClick={pivotCommand.invoke}>
         {studioName(pivotCommand.name)}
-      </button>
+      </Button>
     )}
   </div>;
 }
@@ -258,8 +257,8 @@ export function StudioRuns(props: StudioRunsProps) {
       <StudioRegionBoundary name="runs">
         <StudioRegion
           state={props.region}
-          skeleton={<div className="h-28 motion-safe:animate-pulse rounded bg-shell-divider" />}
-          empty={<div className="h-12 rounded border border-dashed border-shell-divider" />}
+          skeleton={<div className="h-28 motion-safe:animate-pulse rounded-surface bg-shell-divider" />}
+          empty={<div className="h-12 rounded-surface border border-dashed border-shell-divider" />}
         >
           <RunsContent key={props.step.id} {...props} />
         </StudioRegion>

@@ -1,7 +1,10 @@
 import { useState, type FormEvent } from 'react';
 import { apiErrorMessage } from '@/api/request';
 import { studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
+import { Select } from '@/components/ui/Select';
+import { TextArea, TextField } from '@/components/ui/TextField';
 import { bindStudioCommand, commandAttributes, type StudioCommand, type StudioCommandId } from '@/features/projectWindow/studioCommands';
 import type { PlanView } from '@/features/pipeline/planView';
 import {
@@ -13,10 +16,6 @@ import type { ProjectEditController, ProjectEditSnapshot } from './projectEditCo
 import { savedRunId } from './projectWindowPlan';
 import { SavedReportResult } from './SavedLightProducts';
 
-const control = 'rounded-shell-control border border-shell-divider px-2 py-1 text-sm disabled:opacity-50';
-const button = control + ' hover:bg-shell-hover';
-const label = 'grid gap-1 text-sm';
-const dialogClass = 'grid w-[min(28rem,90vw)] gap-3 rounded-shell-control border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-xl';
 type Block = ReportDocument['blocks'][number];
 type BlockAction = Extract<StudioCommandId, 'moveEarlier' | 'moveLater' | 'remove'>;
 
@@ -55,6 +54,7 @@ export function useManagedReport({
   const previewUrl = retained?.products.report;
   const scope = JSON.stringify([saved.project_id, variant, stepId, document]);
   const [dialog, setDialog] = useState<{ scope: string; revision: string; kind: 'text' | 'figure' }>();
+  const [figureChoice, setFigureChoice] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ scope: string; index: number }>();
   const [error, setError] = useState<{ scope: string; message: string }>();
   const shared = document && (plan.steps.some(({ id, documentUses }) => id !== stepId && documentUses?.includes(document))
@@ -125,7 +125,10 @@ export function useManagedReport({
 
   const blockActions = ['moveEarlier', 'moveLater', 'remove'] as const;
   const addText = bindStudioCommand('addText', () => setDialog({ scope, revision: saved.revision, kind: 'text' }), { enabled: editable });
-  const addFigure = bindStudioCommand('addFigure', () => setDialog({ scope, revision: saved.revision, kind: 'figure' }), {
+  const addFigure = bindStudioCommand('addFigure', () => {
+    setFigureChoice(null);
+    setDialog({ scope, revision: saved.revision, kind: 'figure' });
+  }, {
     enabled: editable && figures.length > 0,
   });
   const commands = focused && report ? [
@@ -136,7 +139,7 @@ export function useManagedReport({
   function addBlock(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!opened || !report) return;
-    const value = new FormData(event.currentTarget).get('block');
+    const value = opened === 'text' ? new FormData(event.currentTarget).get('block') : figureChoice;
     if (typeof value !== 'string' || !value.trim()) return;
     let accepted: boolean;
     if (opened === 'text') {
@@ -167,8 +170,8 @@ export function useManagedReport({
   }
 
   function action(command: StudioCommand) {
-    return <button key={command.id} type="button" className={button} {...commandAttributes(command)}
-      disabled={!command.enabled} onClick={command.invoke}>{studioName(command.name)}</button>;
+    return <Button key={command.id} {...commandAttributes(command)}
+      disabled={!command.enabled} onClick={command.invoke}>{studioName(command.name)}</Button>;
   }
 
   const issue = error?.scope === scope ? <p role="alert">{error.message}</p> : null;
@@ -179,8 +182,8 @@ export function useManagedReport({
     </p>}
     {previewUrl && <SavedReportResult key={retained.job_id} url={previewUrl} />}
     <div className="flex flex-wrap items-end gap-3">
-      <label className={label + ' min-w-36 flex-1'}>{studioName('reportTitle')}
-        <input className={control} defaultValue={report.title} key={scope + report.title} disabled={!editable}
+      <label className="grid min-w-36 flex-1 gap-1">{studioName('reportTitle')}
+        <TextField defaultValue={report.title} key={scope + report.title} disabled={!editable}
           onBlur={({ currentTarget }) => {
             const title = currentTarget.value.trim() || report.title;
             currentTarget.value = title;
@@ -188,34 +191,34 @@ export function useManagedReport({
           }}
           onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
       </label>
-      <label className={label}>{studioName('completeness')}
-        <select className={control} disabled={!editable} value={report.completeness ?? 'complete'}
-          onChange={({ currentTarget }) => save(studioName('completeness'), [{
-            op: report.completeness === undefined ? 'add' : 'replace', path: '/payload/completeness',
-            value: currentTarget.value,
-          }])}>
-          <option value="complete">{studioName('complete')}</option>
-          <option value="allow_omissions">{studioName('allowOmissions')}</option>
-        </select>
+      <label className="grid gap-1">{studioName('completeness')}
+        <Select aria-label={studioName('completeness')} disabled={!editable} value={report.completeness ?? 'complete'}
+          items={[
+            { value: 'complete', label: studioName('complete') },
+            { value: 'allow_omissions', label: studioName('allowOmissions') },
+          ]}
+          onValueChange={(value) => save(studioName('completeness'), [{
+            op: report.completeness === undefined ? 'add' : 'replace', path: '/payload/completeness', value,
+          }])} />
       </label>
     </div>
     <ol className="grid gap-3" key={scope}>
       {report.blocks.map((block, index) => {
         const reference = 'figure' in block ? StepReferenceSchema.safeParse(inputs[block.figure]) : undefined;
-        return <li key={index} className="grid gap-2 rounded-shell-control border border-shell-divider p-3"
+        return <li key={index} className="grid gap-2 rounded-surface border border-shell-divider p-3"
           onFocus={() => setSelection({ scope, index })}>
-          {'markdown' in block ? <label className={label}>{studioName('text')}
-            <textarea className={control + ' min-h-20'} disabled={!editable} defaultValue={block.markdown} key={block.markdown}
+          {'markdown' in block ? <label className="grid gap-1">{studioName('text')}
+            <TextArea disabled={!editable} defaultValue={block.markdown} key={block.markdown}
               onBlur={({ currentTarget }) => {
                 const markdown = currentTarget.value;
                 if (!markdown.trim()) currentTarget.value = block.markdown;
                 else if (markdown !== block.markdown) changeBlock(index, { markdown });
               }} />
           </label> : <>
-            <span className="text-sm font-medium">{reference?.success && reference.data.element
+            <span className="font-medium">{reference?.success && reference.data.element
               ? reference.data.step + ' · ' + reference.data.element : block.figure}</span>
-            <label className={label}>{studioName('caption')}
-              <input className={control} defaultValue={block.caption ?? ''} key={block.caption ?? ''} disabled={!editable}
+            <label className="grid gap-1">{studioName('caption')}
+              <TextField defaultValue={block.caption ?? ''} key={block.caption ?? ''} disabled={!editable}
                 onBlur={({ currentTarget }) => {
                   const caption = currentTarget.value.trim() || null;
                   currentTarget.value = caption ?? '';
@@ -231,23 +234,19 @@ export function useManagedReport({
     <div className="flex gap-2">{action(addText)}{action(addFigure)}</div>
   </div>;
   const overlay = opened && <Dialog ariaLabel={opened === 'text' ? addText.label : addFigure.label}
-    manageFocus panelClassName={dialogClass} onClose={() => setDialog(undefined)}>
+    manageFocus panelClassName="grid w-[min(28rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
     {issue}
     <form className="grid gap-2" onSubmit={addBlock}>
-      {opened === 'text' ? <label className={label}>{studioName('text')}
-        <textarea className={control + ' min-h-24'} name="block" required data-dialog-autofocus />
-      </label> : <label className={label}>{studioName('figures')}
-        <select className={control} name="block" defaultValue="" required data-dialog-autofocus>
-          <option value="" disabled />
-          {figures.map((source) => {
-            const address = figureAddress(source);
-            return <option key={address} value={address}>{figureLabel(source)}</option>;
-          })}
-        </select>
+      {opened === 'text' ? <label className="grid gap-1">{studioName('text')}
+        <TextArea name="block" required data-dialog-autofocus />
+      </label> : <label className="grid gap-1">{studioName('figures')}
+        <Select aria-label={studioName('figures')} value={figureChoice} onValueChange={setFigureChoice}
+          items={figures.map((source) => ({ value: figureAddress(source), label: figureLabel(source) }))} />
       </label>}
-      <button className={button} type="submit" disabled={!editable || opened === 'figure' && !addFigure.enabled}>
+      <Button type="submit" className="justify-self-end"
+        disabled={!editable || opened === 'figure' && (!addFigure.enabled || figureChoice === null)}>
         {opened === 'text' ? addText.label : addFigure.label}
-      </button>
+      </Button>
     </form>
   </Dialog>;
   return { body, commands, overlay };

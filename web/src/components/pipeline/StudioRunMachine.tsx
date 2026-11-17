@@ -1,6 +1,8 @@
 import { useId, type ReactNode } from 'react';
 import { studioDateTime, studioMachineStatus, studioMoney, studioName, studioRunStatus, studioUnit } from '@/components/activity/studioVocabulary';
+import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
+import { Select } from '@/components/ui/Select';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { ExecutionTargets, StudioMachineQuote } from '@/generated/studioContracts';
 
@@ -17,18 +19,16 @@ export function StudioRunMachine({ catalog, value, disabled, onChange }: {
   const unavailable = current && current.availability.state !== 'ready' ? current.availability : undefined;
   return <label className="flex shrink-0 items-center gap-1">
     {studioName('machine')}
-    <select value={selection} disabled={disabled}
-      aria-describedby={unavailable ? id : undefined}
-      className="max-w-48 rounded border border-shell-divider bg-shell-surface px-2 py-1"
-      onChange={(event) => onChange(event.target.value)}>
-      {catalog?.targets.map(({ profile, availability }) => (
-        <option key={profile.id} value={profile.id} disabled={availability.state !== 'ready'}>
-          {profile.label} · {studioMachineStatus(availability.state)}
-        </option>
-      )) ?? <option value={local}>{studioName('thisMac')}</option>}
-      {selection !== local && !current &&
-        <option value={selection} disabled>{studioMachineStatus('off')}</option>}
-    </select>
+    <Select value={selection} disabled={disabled} aria-label={studioName('machine')}
+      aria-describedby={unavailable ? id : undefined} className="max-w-48"
+      onValueChange={onChange}
+      items={[
+        ...catalog?.targets.map(({ profile, availability }) => ({
+          value: profile.id, label: `${profile.label} · ${studioMachineStatus(availability.state)}`,
+          disabled: availability.state !== 'ready',
+        })) ?? [{ value: local, label: studioName('thisMac') }],
+        ...selection !== local && !current ? [{ value: selection, label: studioMachineStatus('off'), disabled: true }] : [],
+      ]} />
     {unavailable && <span id={id} className="sr-only">
       {unavailable.reason}
     </span>}
@@ -79,7 +79,7 @@ export function StudioMachineApproval({ quote, busy, error, onApprove, onCancel 
   ];
   return <Dialog ariaLabel={status} manageFocus onClose={onCancel}
     closeOnEscape={!busy} closeOnBackdrop={false}
-    panelClassName="max-h-[90vh] w-[min(32rem,90vw)] overflow-auto rounded bg-shell-surface p-4 shadow">
+    panelClassName="max-h-[90vh] w-[min(32rem,90vw)] overflow-auto">
     <h2 className="font-semibold">{status}</h2>
     <dl className="my-3 space-y-2 text-sm">
       {values.map(([label, value]) => <div key={label} className="grid grid-cols-[9rem_minmax(0,1fr)] gap-2">
@@ -88,10 +88,8 @@ export function StudioMachineApproval({ quote, busy, error, onApprove, onCancel 
     </dl>
     {error && <p className="text-shell-status-failure" role="alert">{error}</p>}
     <div className="mt-3 flex justify-end gap-2">
-      <button type="button" data-dialog-autofocus className="rounded border border-shell-divider px-3 py-1"
-        onClick={onCancel} disabled={busy}>{studioName('cancel')}</button>
-      <button type="button" className="rounded border border-shell-divider px-3 py-1"
-        onClick={onApprove} disabled={busy}>{studioName('approve')}</button>
+      <Button data-dialog-autofocus onClick={onCancel} disabled={busy}>{studioName('cancel')}</Button>
+      <Button variant="primary" onClick={onApprove} disabled={busy}>{studioName('approve')}</Button>
     </div>
   </Dialog>;
 }

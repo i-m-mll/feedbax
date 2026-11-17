@@ -1,4 +1,6 @@
 import { studioAccessibleName, studioName } from "@/components/activity/studioVocabulary";
+import { Button } from "@/components/ui/Button";
+import { Select } from "@/components/ui/Select";
 import type { StudioDefinitionField } from "./StudioDefinitionForm";
 
 interface SweepAxisView {
@@ -28,8 +30,6 @@ interface SweepOverviewProps {
   onToRows?: () => void;
 }
 
-const commandClass = "rounded border border-shell-control px-2 py-1 text-sm";
-
 function Changes({ entries }: { entries: ExceptionView["changes"] }) {
   return (
     <dl className="flex flex-wrap gap-x-2 gap-y-1">
@@ -46,30 +46,29 @@ export function StudioSweepOverview({ axes, exceptions, combination, onMove, onR
       <div className="flex flex-wrap items-baseline gap-2">
         <h2 className="font-semibold">{studioName("sweep")}</h2>
         {combination && (
-          <label className="flex items-baseline gap-2">
+          <label className="flex items-center gap-2">
             {studioName("combination")}
-            <select className={commandClass} disabled={!combination.onChange} value={combination.id} onChange={(event) => combination.onChange?.(event.currentTarget.value)}>
-              {combination.options.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
-            </select>
+            <Select disabled={!combination.onChange} value={combination.id} onValueChange={(id) => combination.onChange?.(id)}
+              items={combination.options.map(({ id, label }) => ({ value: id, label }))} />
           </label>
         )}
-        {onToRows && <button type="button" className={commandClass} onClick={onToRows}>{studioName("toRows")}</button>}
+        {onToRows && <Button onClick={onToRows}>{studioName("toRows")}</Button>}
       </div>
-      {axes.length > 0 && <ul className="divide-y divide-shell-divider rounded border border-shell-divider">
+      {axes.length > 0 && <ul className="divide-y divide-shell-divider rounded-surface border border-shell-divider">
         {axes.map((axis, index) => (
           <li className="p-2" key={axis.id}>
-            <div className="flex flex-wrap items-baseline gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <strong>{axis.label}</strong>
               {onMove && index > 0 && (
-                <button type="button" className={commandClass} aria-label={studioAccessibleName("moveEarlier", axis.label)} onClick={() => onMove(axis.id, axes[index - 1].id)}>{studioName("moveEarlier")}</button>
+                <Button aria-label={studioAccessibleName("moveEarlier", axis.label)} onClick={() => onMove(axis.id, axes[index - 1].id)}>{studioName("moveEarlier")}</Button>
               )}
               {onMove && index + 1 < axes.length && (
-                <button type="button" className={commandClass} aria-label={studioAccessibleName("moveLater", axis.label)} onClick={() => onMove(axis.id, axes[index + 2]?.id ?? null)}>{studioName("moveLater")}</button>
+                <Button aria-label={studioAccessibleName("moveLater", axis.label)} onClick={() => onMove(axis.id, axes[index + 2]?.id ?? null)}>{studioName("moveLater")}</Button>
               )}
             </div>
             <ul className="mt-1 grid gap-1 sm:grid-cols-2">
               {axis.values.map((value) => (
-                <li key={value.id} className="rounded bg-shell-subtle p-1.5">
+                <li key={value.id} className="rounded-row bg-shell-subtle p-1.5">
                   <span className="font-medium">{value.label}</span>
                   <Changes entries={value.changes} />
                 </li>
@@ -81,13 +80,13 @@ export function StudioSweepOverview({ axes, exceptions, combination, onMove, onR
       {exceptions.length > 0 && (
         <div className="space-y-1">
           <h3 className="font-medium">{studioName("exceptions")}</h3>
-          <ul className="divide-y divide-shell-divider rounded border border-shell-divider">
+          <ul className="divide-y divide-shell-divider rounded-surface border border-shell-divider">
             {exceptions.map((exception) => (
               <li key={exception.id} className="space-y-1 p-2">
-                <div className="flex items-baseline justify-between gap-2">
+                <div className="flex items-center justify-between gap-2">
                   <span>{[...exception.terms, exception.count].join(" · ")}</span>
                   {onRemoveException && exception.removable !== false &&
-                    <button type="button" className={commandClass} onClick={() => onRemoveException(exception.id)}>{studioName("remove")}</button>}
+                    <Button onClick={() => onRemoveException(exception.id)}>{studioName("remove")}</Button>}
                 </div>
                 <Changes entries={exception.changes} />
               </li>
@@ -103,7 +102,7 @@ export function StudioSweepPicker({ fields, onChoose }: { fields: readonly Studi
   return (
     <ul aria-label={studioName("newSweep")} className="space-y-1">
       {fields.filter(({ actions, resolved, sweep }) => actions.includes("toSweep") && resolved.length === 1 && !sweep).map(({ id, label }) => (
-        <li key={id}><button type="button" className={commandClass} onClick={() => onChoose(id)}>{label}</button></li>
+        <li key={id}><Button onClick={() => onChoose(id)}>{label}</Button></li>
       ))}
     </ul>
   );
