@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -74,9 +75,9 @@ test('the outlined empty-map card opens the same menu', async ({ page, request }
   await expectMenuBeside(page, (await card.boundingBox())!);
 });
 
-test('the rail separator follows the divider and every view keeps its place', async ({ page, request }, info) => {
+test('the rail separator follows the divider and every view keeps its place', async ({ page, request, studio }, info) => {
   const project: string = JSON.parse(await runProjectFixture(
-    'web.e2e.studio.fixtures.managed_report', 'seed', String(info.config.metadata.home), 'furniture-kinds',
+    'web.e2e.studio.fixtures.managed_report', 'seed', studio.home, 'furniture-kinds',
   ));
   const response = await request.get(`/api/projects/${project}`);
   const steps = Object.entries((await response.json() as StudioProjectSnapshot).project.steps ?? {});

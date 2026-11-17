@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type Page } from '@playwright/test';
 import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
@@ -119,7 +120,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
   },
 );
 
-test('Activity shows the original CLI and Studio clients for a saved Train request', async ({ page, request }, info) => {
+test('Activity shows the original CLI and Studio clients for a saved Train request', async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const project = snapshot.project_id;
@@ -131,7 +132,7 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   const entries = activity.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem').filter({ hasText: configuration.project });
 
   await runProjectFixture('web.e2e.studio.fixtures.canonical_train',
-    'run-saved-cli', String(info.config.metadata.home), configuration.project, label);
+    'run-saved-cli', studio.home, configuration.project, label);
   const cli = entries.filter({ has: page.getByText('CLI', { exact: true }) });
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
   await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
@@ -139,11 +140,11 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const studioJob = await admit(page, projectPath);
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
-  const studio = entries.filter({ has: page.getByText('Studio', { exact: true }) });
-  await expect(studio.getByText('Client', { exact: true })).toBeVisible();
-  await expect(studio.getByText('Label', { exact: true })).toHaveCount(0);
+  const studioEntry = entries.filter({ has: page.getByText('Studio', { exact: true }) });
+  await expect(studioEntry.getByText('Client', { exact: true })).toBeVisible();
+  await expect(studioEntry.getByText('Label', { exact: true })).toHaveCount(0);
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
-  await expect(studio.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  await expect(studioEntry.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
 
   const response = await request.get('/api/jobs', { params: { project } });
   expect(response.ok(), await response.text()).toBe(true);
@@ -199,7 +200,7 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   expect(end).toBe(30);
 });
 
-for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, async ({ page, request }, info) => {
+for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, async ({ page, request, studio }, info) => {
   test.setTimeout(59_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
@@ -301,7 +302,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const finished = finishedPlan.rows.filter(({ key }) => key.step === 'train');
   const attempts = finished.map(({ result }) => result!.job_id);
   const measures: Record<string, number> = JSON.parse(await runProjectFixture(
-    evaluation, 'train-measures', String(info.config.metadata.home), snapshot.project_id, metricName, ...attempts,
+    evaluation, 'train-measures', studio.home, snapshot.project_id, metricName, ...attempts,
   ));
   expect(attempts.map((attempt) => measures[attempt])).toEqual(grouped ? [4, 4, 2, 2] : [4, 3, 2]);
   const expected = grouped ? ['zeta', 'alpha'].flatMap((group) => {
@@ -636,7 +637,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const authorSeed = await request.patch(projectPath, { data: { revision: saved.revision, files: [{
     address: { kind: 'step', id: 'train' },
     patches: [{ op: 'add', path: '/sweep/axes/seed/values/three', value: {
-      label: 'three', value: 3, patches: { 'method_payload.payload.seed': { value: 3 } },
+      label: 'three', value: 3, patches: { 'seed': { value: 3 } },
     } }],
   }] } });
   expect(authorSeed.ok(), await authorSeed.text()).toBe(true);

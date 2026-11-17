@@ -1,15 +1,14 @@
-import { expect, test, type Page } from '@playwright/test';
-import { execFile } from 'node:child_process';
+import { expect, test } from './fixtures/studio';
+import { runPython } from './fixtures/python';
+import { type Page } from '@playwright/test';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import type { openProjectEditor } from '../../src/features/projectFolder/openProjectEditor';
 import type { StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture } from './fixtures/canonicalTrain';
 
-const repo = fileURLToPath(new URL('../../../', import.meta.url));
-const run = promisify(execFile);
+test.use({ studioFrontend: 'dev' });
+
 const massPath = '/payload/interior/components/plant/fields/mass';
 type Probe = {
   folderEditor: Awaited<ReturnType<typeof openProjectEditor>>;
@@ -18,8 +17,7 @@ type Probe = {
 };
 
 async function folderFixture(action: 'seed' | 'read', root: string) {
-  return run('uv', ['run', '--no-sync', 'python', '-B', 'web/e2e/studio/fixtures/folder_project.py', action, root],
-    { cwd: repo, timeout: 10_000 });
+  return { stdout: await runPython({ path: 'web/e2e/studio/fixtures/folder_project.py' }, [action, root]) };
 }
 
 async function open(page: Page, id: string) {
@@ -56,12 +54,12 @@ async function outsideWrite(root: string, mass: number) {
   await rename(replacement, path);
 }
 
-test('the focused File Rename command follows the declaration and refuses a stale dialog', async ({ page, request }, info) => {
+test('the focused File Rename command follows the declaration and refuses a stale dialog', async ({ page, request, studio }, info) => {
   const created = await request.post('/api/projects');
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot, configuration } = await created.json();
   const projectId = snapshot.project_id;
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', configuration.project);
+  const root = join(studio.home, 'state', 'web', 'projects', configuration.project);
   const declaration = join(root, `${configuration.project}.feedbax`);
   const bytes = await readFile(declaration);
 
@@ -114,9 +112,9 @@ test('the focused File Rename command follows the declaration and refuses a stal
   await expect(name).toHaveValue('renamed');
 });
 
-test('M2 folder controller settles, reopens, observes disk changes, and resolves a stale edit', async ({ page }, info) => {
+test('M2 folder controller settles, reopens, observes disk changes, and resolves a stale edit', async ({ page, studio }, info) => {
   const alias = 'controller-reach';
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', alias);
+  const root = join(studio.home, 'state', 'web', 'projects', alias);
   await folderFixture('seed', root);
   await page.goto('/');
   await open(page, alias);
@@ -168,8 +166,8 @@ test('M2 folder controller settles, reopens, observes disk changes, and resolves
   await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
 });
 
-test('M2 managed commands preserve edits, identity and names across Rename and reopen', async ({ page, request }, info) => {
-  const projects = join(String(info.config.metadata.home), 'state', 'web', 'projects');
+test('M2 managed commands preserve edits, identity and names across Rename and reopen', async ({ page, request, studio }, info) => {
+  const projects = join(studio.home, 'state', 'web', 'projects');
   const alias = 'commands-reach';
   const root = join(projects, alias);
   await folderFixture('seed', root);
@@ -312,7 +310,7 @@ test('M2 managed commands preserve edits, identity and names across Rename and r
   await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
 });
 
-test('M2 managed New authors a Train with named trial documents', async ({ page, request }, info) => {
+test('M2 managed New authors a Train with named trial documents', async ({ page, request, studio }, info) => {
   const [model, task, objective, definedTrain] = await fixture('ordinary-files', '8');
   const train = { ...definedTrain, step: { ...definedTrain.step, base: { inline: {} } } };
   await page.goto('/');
@@ -324,7 +322,7 @@ test('M2 managed New authors a Train with named trial documents', async ({ page,
     const result = await session.editor.createFile(file);
     return { id: result.snapshot.project_id, folderName: result.configuration.project };
   }, train);
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', folderName);
+  const root = join(studio.home, 'state', 'web', 'projects', folderName);
   expect(JSON.parse(await readFile(join(root, 'steps', 'train.json'), 'utf8'))).toEqual(train.step);
   const path = `/api/projects/${id}/files`;
   const routePath = `**${path}`;

@@ -1,4 +1,5 @@
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
@@ -11,10 +12,10 @@ test.use({
   viewport: { width: 1440, height: 900 },
 });
 
-test('opens a readable project beside a malformed project folder', async ({ page, request }, info) => {
+test('opens a readable project beside a malformed project folder', async ({ page, request, studio }, info) => {
   const { snapshot, configuration } = await seedManagedProject(request, []);
   const projectId = snapshot.project_id;
-  const projects = join(String(info.config.metadata.home), 'state', 'web', 'projects');
+  const projects = join(studio.home, 'state', 'web', 'projects');
   const brokenFolder = await mkdtemp(join(projects, 'malformed-project-'));
   const brokenId = basename(brokenFolder);
   const declaration = brokenId + '.feedbax';
@@ -157,10 +158,10 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   await expect(drawer.getByText('1 Done')).toBeVisible();
 });
 
-test('outside saved-folder edits join the mounted Undo history', async ({ page, request }, info) => {
+test('outside saved-folder edits join the mounted Undo history', async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
-  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', configuration.project);
+  const root = join(studio.home, 'state', 'web', 'projects', configuration.project);
   const modelPath = join(root, 'documents', 'point-mass.json');
   const stepPath = join(root, 'steps', 'train.json');
   const panel = (name: string) => page.getByRole('tabpanel', { name, exact: true });
@@ -309,8 +310,8 @@ test('the managed window shares selection and retains the folded slot without ed
 test('keyboard reaches the last Runs column in a narrow split', async ({ page, request }, info) => {
   const files = await fixture('ordinary-files', '2');
   files.at(-1).step.sweep = { axes: { seed: { values: {
-    a: { label: 'DeterministicLongNameForFirstReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 7 } } },
-    b: { label: 'DeterministicLongNameForSecondReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 9 } } },
+    a: { label: 'DeterministicLongNameForFirstReplicate', patches: { 'seed': { op: 'add', value: 7 } } },
+    b: { label: 'DeterministicLongNameForSecondReplicate', patches: { 'seed': { op: 'add', value: 9 } } },
   } } } };
   const { snapshot } = await seedManagedProject(request, files);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);

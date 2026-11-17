@@ -1,15 +1,14 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { execFile } from 'node:child_process';
+import { expect, test } from './fixtures/studio';
+import { runPython } from './fixtures/python';
+import { type APIRequestContext, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import type { PlanarScenePose } from '../../src/components/scene/planarModel';
 import type { StudioPlanarSceneRequest, StudioProjectDocument } from '../../src/generated/studioContracts';
 import type { mountSceneProbe } from './fixtures/sceneGeometryProbe';
 
-const repo = fileURLToPath(new URL('../../../', import.meta.url));
-const run = promisify(execFile);
+test.use({ studioFrontend: 'dev' });
+
 const alias = 'scene-geometry';
 const params = '/payload/interior/components/mechanics/interior/components';
 type Probe = Window & { sceneProof: ReturnType<typeof mountSceneProbe> };
@@ -27,8 +26,7 @@ test.use({ locale: 'en-US' });
 async function fixture(action: 'seed' | 'read', folder: string, ...documents: string[]) {
   const output = join(folder, '..', '..', 'scene-native.json');
   const args = action === 'seed' ? [folder] : [folder, output, ...documents];
-  await run('uv', ['run', '--no-sync', 'python', '-B', '-m', 'tests.fixtures.scene_geometry', action, ...args],
-    { cwd: repo, timeout: 15_000 });
+  await runPython({ module: 'tests.fixtures.scene_geometry' }, [action, ...args]);
   return action === 'read' ? JSON.parse(await readFile(output, 'utf8')) as Record<string, NativeModel> : {};
 }
 
@@ -132,9 +130,9 @@ async function comparePose(page: Page, address: StudioPlanarSceneRequest, sample
   return { maxPosition, maxRotation };
 }
 
-test('M2 Scene geometry agrees with compiled kinematics across a saved folder edit', async ({ page, request }, info) => {
+test('M2 Scene geometry agrees with compiled kinematics across a saved folder edit', async ({ page, request, studio }, info) => {
   test.setTimeout(40_000);
-  const folder = join(String(info.config.metadata.home), 'state', 'web', 'projects', alias);
+  const folder = join(studio.home, 'state', 'web', 'projects', alias);
   await fixture('seed', folder);
   const initial = await fixture('read', folder, 'single', 'chain');
   const opened = await request.get(`/api/projects/${alias}/open`);

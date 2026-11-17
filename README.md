@@ -60,7 +60,7 @@ bun install --cwd web --frozen-lockfile
 
 Open http://127.0.0.1:3008 in your browser. Each launch uses a fresh temporary data home. Use `./scripts/dev.sh --home /path/to/studio-data` to keep projects and runs across launches, or add `--preview` to serve a production build at http://127.0.0.1:3009.
 
-Run the isolated browser walkthrough with `cd web && bun run test:studio`. Set `FEEDBAX_STUDIO_E2E_PREVIEW=1` to exercise the production frontend.
+Run the isolated browser walkthrough with `cd web && bun run test:studio`. Each Playwright worker serves the production frontend from its own Studio home; set `FEEDBAX_STUDIO_E2E_WORKERS` to change their number and `FEEDBAX_STUDIO_MEASURE=1` to include the responsiveness measurements.
 
 ## Building application packages on feedbax
 

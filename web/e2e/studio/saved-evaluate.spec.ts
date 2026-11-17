@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
   StudioEvaluationObjectiveSeries, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow,
   StudioSavedTrainRuns, WorkspaceReplayTrial,
@@ -48,10 +49,10 @@ async function chooseStep(page: Page, step: string) {
   await tab(page, 'Runs').click();
 }
 
-test('authors named Evaluate conditions from one authenticated Train checkpoint', async ({ page, request }, info) => {
+test('authors named Evaluate conditions from one authenticated Train checkpoint', async ({ page, request, studio }, info) => {
   test.setTimeout(60_000);
   const project: string = JSON.parse(await runProjectFixture(
-    'web.e2e.studio.fixtures.evaluate_authoring', String(info.config.metadata.home), 'authored-evaluate-conditions',
+    'web.e2e.studio.fixtures.evaluate_authoring', studio.home, 'authored-evaluate-conditions',
   ));
   const projectPath = '/api/projects/' + project;
   const runsPath = projectPath + '/train-runs';
@@ -195,8 +196,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   return replay;
 }
 
-async function runSavedEvaluation(page: Page, request: APIRequestContext, info: TestInfo) {
-  const home = String(info.config.metadata.home);
+async function runSavedEvaluation(page: Page, request: APIRequestContext, info: TestInfo, home: string) {
   const projectId = JSON.parse(await runProjectFixture(fixture, 'seed', home, 'saved-evaluate'));
   const projectPath = `/api/projects/${projectId}`;
   const opened = await request.get(projectPath);
@@ -327,14 +327,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   return { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis };
 }
 
-test('saved Evaluate runs against its trained checkpoints', async ({ page, request }, info) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the normal application backend');
-  test.setTimeout(60_000);
-  await runSavedEvaluation(page, request, info);
-});
-
 test('authors selected saved Evaluate Model and Task inputs and repairs a refused edit', async ({ page, request }) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1', 'Requires the managed Evaluate backend');
   test.setTimeout(59_000);
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -535,7 +528,6 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
 });
 
 test('authors checkpoint rules and replays covered updates from Results', async ({ page, request }, info) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
   test.setTimeout(54_000);
   const files = JSON.parse(await runProjectFixture(fixture, 'series-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -683,9 +675,8 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   await expect(field).toHaveValue('4, 3, 2');
 });
 
-test('edits the checkpoint rule in the selected authored variant', async ({ page, request }, info) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
-  const project = JSON.parse(await runProjectFixture(fixture, 'seed-series-variants', String(info.config.metadata.home)));
+test('edits the checkpoint rule in the selected authored variant', async ({ page, request, studio }, info) => {
+  const project = JSON.parse(await runProjectFixture(fixture, 'seed-series-variants', studio.home));
   const projectPath = `/api/projects/${project}`;
   const host = await request.get('/api/jobs');
   expect(host.ok(), await host.text()).toBe(true);
@@ -725,7 +716,6 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
 });
 
 test('edits a checkpoint axis value and one sibling row through saved Plan', async ({ page, request }) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE !== '1', 'Requires the isolated series fixture');
   const files = JSON.parse(await runProjectFixture(fixture, 'scoped-series-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const host = await request.get('/api/jobs');
@@ -855,10 +845,10 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   });
 });
 
-test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request }, info) => {
+test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request, studio }, info) => {
   test.setTimeout(85_000);
   const { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis } =
-    (await runSavedEvaluation(page, request, info))!;
+    (await runSavedEvaluation(page, request, info, studio.home))!;
   const labels = new Map(completed.window_map!.rows.map(({ key, label }) => [JSON.stringify(key), label]));
   const conditions = single.filter(({ key }) => key.step === 'conditions');
   expect(conditions).toHaveLength(2);

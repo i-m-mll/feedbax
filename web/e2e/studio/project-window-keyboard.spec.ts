@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
@@ -142,10 +143,10 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(reopened.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
 });
 
-test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', async ({ page, request }, info) => {
+test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', async ({ page, request, studio }, info) => {
   test.setTimeout(100_000);
   const totalUpdates = 6000;
-  const home = String(info.config.metadata.home);
+  const home = studio.home;
   const { saved, projectPath, savedProject, plan } = await authorFirstTrain(page, request, totalUpdates);
   const runsPath = projectPath + '/train-runs';
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });

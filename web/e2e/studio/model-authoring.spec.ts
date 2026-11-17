@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Locator, type Page } from '@playwright/test';
 import type {
   ModelDocument, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';

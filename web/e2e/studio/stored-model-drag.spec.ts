@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 

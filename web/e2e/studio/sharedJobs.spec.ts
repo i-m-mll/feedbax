@@ -1,7 +1,6 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { expect, test } from './fixtures/studio';
+import { runPython } from './fixtures/python';
+import { type APIRequestContext, type Page } from '@playwright/test';
 import type {
   StudioActivityJob,
   StudioJobSnapshot,
@@ -10,12 +9,10 @@ import type {
 import { observeJobStreams } from './observeJobStreams';
 import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
 
-const repo = fileURLToPath(new URL('../../../', import.meta.url));
-const run = promisify(execFile);
 const rates = ['0.0003', '0.0004', '0.0005', '0.0006', '0.0007', '0.0008'];
 
 async function hostCommand(home: string, command: string, ...args: string[]): Promise<string> {
-  const { stdout } = await run('uv', ['run', '--no-sync', 'python', '-B', '-c', `
+  const stdout = await runPython({ code: `
 from pathlib import Path
 import sys
 from feedbax.desktop.release import AppPaths
@@ -24,7 +21,7 @@ from feedbax.host import HostClient
 paths = AppPaths.resolve(instance_root=Path(sys.argv[1]))
 host = HostClient(paths.host)
 ${command}
-`, home, ...args], { cwd: repo, timeout: 8_000 });
+` }, [home, ...args]);
   return stdout.trim();
 }
 
@@ -58,9 +55,8 @@ async function drainProjects(request: APIRequestContext, projects: string[]) {
 }
 
 test('shares live Jobs across windows and observes the four-slot queue', async ({
-  page, context, request, baseURL,
+  page, context, request, baseURL, studio,
 }, testInfo) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_PREVIEW !== '1', 'Requires production preview');
   test.setTimeout(50_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '6000', ...rates));
@@ -75,7 +71,7 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
       await window.getByRole('tab', { name: 'Runs', exact: true }).click();
     };
     await open(page);
-    const home = testInfo.config.metadata.home as string;
+    const home = studio.home;
     const slots = Number(await hostCommand(home, 'print(host.policy()["compute"])'));
     expect(slots).toBe(4);
 
@@ -205,7 +201,6 @@ raise TimeoutError("No isolated sibling published a checkpoint")
 test('opens a ninth project window while one stream serves active projects', async ({
   context, page, request, baseURL,
 }) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_PREVIEW !== '1', 'Requires production preview');
   test.setTimeout(45_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
   const files = await fixture('ordinary-files', '12000');

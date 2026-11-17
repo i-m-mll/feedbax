@@ -1,7 +1,9 @@
-import { expect, type Page } from '@playwright/test';
+import { expect } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import type { StudioJobSnapshot, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
-import { hostPid, processExists, recoveryTest as test } from './fixtures/studioRecovery';
+import { isolatedTest as test } from './fixtures/studio';
+import { hostPid, processExists } from './fixtures/studioRecovery';
 
 function lossCurve(page: Page) {
   return page.getByRole('img', { name: 'Loss', exact: true }).locator('polyline');

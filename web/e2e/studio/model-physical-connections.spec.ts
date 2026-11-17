@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -22,9 +23,9 @@ async function revealModel(page: Page, url: string) {
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
 }
 
-test('edits a conserving connection only inside its physical interior', async ({ page, request }, info) => {
+test('edits a conserving connection only inside its physical interior', async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'equations');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'equations');
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
   const model = modelPanel(page);
   const fit = () => model.getByRole('button', { name: 'Fit View', exact: true }).click();
@@ -122,9 +123,9 @@ for (const { scope, element, composites, target } of [
   { scope: 'within-step', element: { kind: 'wire', id: 'drive' }, composites: [],
     target: (model: Locator) => edge(model, 'drive') },
 ]) {
-  test(`reveals the saved Plan problem at its ${element.kind} address (${scope})`, async ({ page, request }, info) => {
+  test(`reveals the saved Plan problem at its ${element.kind} address (${scope})`, async ({ page, request, studio }, info) => {
     const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
-    await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, scope);
+    await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, scope);
     const plan = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/train-runs` &&
       new URL(response.url()).searchParams.get('window_map') === 'true');
     await revealModel(page, `/?project=${encodeURIComponent(snapshot.project_id)}`);

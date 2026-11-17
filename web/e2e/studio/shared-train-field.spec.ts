@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -43,7 +43,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   const values = (initial as { values: Record<string, { patches: Record<string, { value: number }> }> }).values;
   for (const entry of Object.values(values)) {
     const patches = entry.patches;
-    expect(Object.keys(patches)).toEqual(['method_payload.payload.optimizer.params.learning_rate']);
+    expect(Object.keys(patches)).toEqual(['settings.optimizer.params.learning_rate']);
   }
   const second = rate.getByRole('textbox', { name: 'Learning Rate value 2', exact: true });
   await enter(second, '0.0025');

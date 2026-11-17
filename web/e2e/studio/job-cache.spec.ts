@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 
 test.use({ serviceWorkers: 'allow' });
 
@@ -6,7 +6,6 @@ test('does not present a cached local session when the production browser loses 
   context,
   page,
 }) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_PREVIEW !== '1', 'Requires the production service worker');
 
   await page.goto('/');
   await page.evaluate(async () => {

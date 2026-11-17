@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
@@ -420,9 +421,8 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
     callbackGaps: statistics(gaps(samples.callbacks)) };
 }
 
-test('measures mounted Model, Runs and Scene responsiveness @responsiveness', async ({ page, request, browser }, info) => {
+test('measures mounted Model, Runs and Scene responsiveness @responsiveness', async ({ page, request, browser, studio }, info) => {
   test.setTimeout(100_000);
-  expect(process.env.FEEDBAX_STUDIO_E2E_PREVIEW).toBe('1');
   const files = await fixture('ordinary-files', '2');
   const modelFile = files.find((file: { document?: { schema: string } }) => file.document?.schema === 'feedbax.spec.model');
   const stepFile = files.find((file: { kind: string }) => file.kind === 'step');
@@ -463,7 +463,7 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
     await info.attach('mounted-runs-scroll', { body: JSON.stringify(scroll), contentType: 'application/json' });
     expect(scroll.end.lastRowVisible).toBe(true);
     expect(Math.abs(scroll.end.offset - scroll.end.distance)).toBeLessThanOrEqual(1);
-    const replay = await measureReplay(page, request, context, String(info.config.metadata.home));
+    const replay = await measureReplay(page, request, context, studio.home);
     await info.attach('mounted-scene-playback', { body: JSON.stringify(replay), contentType: 'application/json' });
     const longTasks = [...field.commit.longTasks, ...drag.flatMap(({ samples }) => samples.longTasks), ...replay.samples.longTasks];
     expect.soft(longTasks.filter(({ duration }) => duration > 50), 'drag, commit and active playback main-thread tasks over 50 ms').toEqual([]);

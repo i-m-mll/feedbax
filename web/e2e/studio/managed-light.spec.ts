@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test';
+import { expect, isolatedTest, test, type Studio } from './fixtures/studio';
+import { type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test';
 import type {
   AnalysisDocument, ReportDocument, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainKey, StudioSavedTrainRuns,
@@ -8,7 +9,7 @@ import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
 import { activate, chooseOption, chooseStepKind, number, openView, palette, typeValue } from './fixtures/studioKeyboard';
-import { recoveryTest, type RecoveryStudio } from './fixtures/studioRecovery';
+
 import { pick } from './fixtures/controls';
 
 test.use({
@@ -19,7 +20,7 @@ test.use({
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-type WalkthroughContext = { page: Page; request: APIRequestContext };
+type WalkthroughContext = { page: Page; request: APIRequestContext; home: string };
 type PlotSamples = number[] | { dtype: string; bdata: string };
 type PlotTrace = { name: string; x: PlotSamples; y: PlotSamples; showlegend?: boolean };
 
@@ -43,7 +44,7 @@ async function expectSeparateVelocityLines(figure: Locator) {
   })).toEqual({ count: 2, shapes: 2 });
 }
 
-async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: RecoveryStudio) {
+async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: Studio) {
   test.setTimeout(studio ? 190_000 : 130_000);
   const start = performance.now();
   const first = studio ? await test.step('Author, Stop, Resume and recover the first Train', () =>
@@ -54,11 +55,11 @@ async function savedLightGate(context: WalkthroughContext, info: TestInfo, studi
   });
 }
 
-async function exerciseSavedResults({ page, request }: WalkthroughContext, info: TestInfo,
+async function exerciseSavedResults({ page, request, home: suiteHome }: WalkthroughContext, info: TestInfo,
   first?: Awaited<ReturnType<typeof authorAndRecoverTrain>>,
 ) {
   const paired = first !== undefined;
-  const home = first?.home ?? String(info.config.metadata.home);
+  const home = first?.home ?? suiteHome;
   const fixture = 'web.e2e.studio.fixtures.managed_light';
   const project: string = first?.project ?? JSON.parse(await runProjectFixture(fixture, 'seed', home, 'managed-light'));
   const scope = paired ? 'base' : 'default';
@@ -483,15 +484,15 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   }
 }
 
-test('runs and reopens saved figures and Report from a selected Evaluate row', ({ page, request }, info) =>
-  savedLightGate({ page, request }, info));
+test('runs and reopens saved figures and Report from a selected Evaluate row', ({ page, request, studio }, info) =>
+  savedLightGate({ page, request, home: studio.home }, info));
 
-recoveryTest('walks one saved project through paired results, variants, widened Evaluate and chained Train', ({ page, request, studio }, info) =>
-  savedLightGate({ page, request }, info, studio));
+isolatedTest('walks one saved project through paired results, variants, widened Evaluate and chained Train', ({ page, request, studio }, info) =>
+  savedLightGate({ page, request, home: studio.home }, info, studio));
 
-test('authors a paired Analyze and shared successors from the primary variant', async ({ page, request }, info) => {
+test('authors a paired Analyze and shared successors from the primary variant', async ({ page, request, studio }, info) => {
   test.setTimeout(65_000);
-  const home = String(info.config.metadata.home);
+  const home = studio.home;
   const project = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.managed_light', 'seed-variants', home, 'managed-light-variants',
   ));

@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
@@ -129,7 +130,7 @@ test('the saved Train field, map and Runs share named sweep values and row ident
   }
   const base = kept.project.steps?.train.base;
   expect(base && 'inline' in base ? base.inline : {}).toMatchObject({
-    method_payload: { payload: { optimizer: { params: { learning_rate: 0.00275 } } } },
+    settings: { optimizer: { params: { learning_rate: 0.00275 } } },
   });
 });
 
