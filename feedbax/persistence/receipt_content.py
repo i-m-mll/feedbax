@@ -8,8 +8,8 @@ from feedbax.contracts.checkpoint_projection import ContinuationEncoding, Contin
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import Product, success_content_ref
 from feedbax.contracts.model_checkpoint import (
-    MODEL_TREE_ARRAY_PATH,
     MODEL_TREE_GRAPH_PATH,
+    MODEL_TREE_MANIFEST_PATH,
     MODEL_TREE_MEDIA_TYPE,
     SemanticModelEncoding,
 )
@@ -33,29 +33,26 @@ def tree_objects(
 ) -> tuple[ContentObjectRef, ...]:
     if visitors is not None:
         visitors.object(ref.descriptor)
-    tree = store.get_tree(ref)
     if model_encoding is not None:
-        from feedbax.contracts.graph import GraphSpec
         from feedbax.persistence.array_container import open_array_container
-        from feedbax.persistence.model_tree import model_tree_assets
+        from feedbax.persistence.model_tree import read_model_tree
 
-        members = {file.relative_path: file.object for file in tree.files}
-        if MODEL_TREE_GRAPH_PATH not in members:
-            raise ValueError("Semantic model tree is missing its graph")
+        tree = read_model_tree(store, ref, model_encoding)
         if visitors is not None:
-            visitors.object(members[MODEL_TREE_GRAPH_PATH])
-        graph = GraphSpec.model_validate_json(store.get_object(members[MODEL_TREE_GRAPH_PATH]))
-        model_tree_assets(graph, members)
-        array = members[MODEL_TREE_ARRAY_PATH]
-        digest = model_encoding.array_descriptor_sha256
-        if visitors is not None:
-            visitors.array(array, digest)
-        else:
-            with (
-                store.open_owned_object(array) as path,
-                open_array_container(path, expected_descriptor_sha256=digest),
-            ):
-                pass
+            visitors.object(tree.members[MODEL_TREE_GRAPH_PATH])
+            visitors.object(tree.members[MODEL_TREE_MANIFEST_PATH])
+        for replica in tree.replicas:
+            digest = replica.descriptor.array_descriptor_sha256
+            if visitors is not None:
+                visitors.array(replica.arrays, digest)
+            else:
+                with (
+                    store.open_owned_object(replica.arrays) as path,
+                    open_array_container(path, expected_descriptor_sha256=digest),
+                ):
+                    pass
+        return (ref.descriptor, *tree.members.values())
+    tree = store.get_tree(ref)
     return (ref.descriptor, *(file.object for file in tree.files))
 
 

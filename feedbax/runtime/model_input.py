@@ -6,16 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-import jax
-
-from feedbax.compiler.graph import ExecutableGraph, GraphCompilationError, GraphDocument, compile_graph
+from feedbax.compiler.graph import ExecutableGraph, GraphCompilationError, GraphDocument, GraphResolution, realize_graph, resolve_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution, declared_model_input_prototypes
+from feedbax.compiler.trial_execution import PreparedTrialExecution, declared_model_input_prototypes, resolve_trial_execution
 from feedbax.contracts.expression_values import Problem, ProblemCode
 from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, ModelSource
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.objectives.document import ObjectiveUse
-from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget, SemanticModelSlot
 
 if TYPE_CHECKING:
@@ -32,11 +30,14 @@ if TYPE_CHECKING:
 class ReconstructedModel:
     executable: ExecutableGraph
     source: ModelSource
-    replicate_ids: tuple[str, ...] = ("0",)
+    replica_ids: tuple[str, ...]
+    graphs: tuple[Graph, ...]
 
     @property
     def graph(self) -> Graph:
-        return self.executable.graph
+        if len(self.graphs) != 1:
+            raise ValueError("Model contains several replicas")
+        return self.graphs[0]
 
     @property
     def resolved(self) -> ResolvedGraph:
@@ -49,54 +50,70 @@ class PreparedModelTask:
     paired: PreparedTrialExecution
 
 
-def model_initialization_key(seed: int) -> jax.Array:
-    """Use the named model stream shared with training."""
-    return derive_key(jax.random.PRNGKey(seed), "studio_training", "model")
-
-
 def reconstruct_model(
     source: ModelSource,
     *,
     registry: ApplicationRegistryBundle,
     artifacts: ImmutableArtifactBlobProvider,
-    template: ExecutableGraph | None = None,
-    variant: ExecutableGraph | None = None,
+    template: ExecutableGraph | GraphResolution | None = None,
+    variant: ExecutableGraph | GraphResolution | None = None,
+    variant_seed: int | None = None,
     source_overrides: Mapping[str, float] | None = None,
+    slot: SemanticModelSlot | None = None,
 ) -> ReconstructedModel | tuple[Problem, ...]:
     """Build an initial model or restore learned values onto a compiled template."""
+    def materialize(value, seed, replica):
+        if isinstance(value, ExecutableGraph):
+            return value
+        return realize_graph(value, initialization_key=model_initialization_key(seed, replica), artifact_provider=artifacts)
+
     try:
         if isinstance(source, InitialModelSource):
             if template is None:
                 lowered = lower_model_document(source.model_name, source.document, registry.components)
                 prototypes = declared_model_input_prototypes(source.document)
-                template = compile_graph(
+                template = resolve_graph(
                     GraphDocument(graph=lowered.graph), registry.components,
                     {
                         target: prototypes[name]
                         for name, target in lowered.graph.input_bindings.items()
                         if name in prototypes
                     },
-                    initialization_key=model_initialization_key(source.seed), artifact_provider=artifacts,
                 )
-            return ReconstructedModel(variant or template, source)
+            executable = materialize(variant or template, source.seed if variant_seed is None else variant_seed, "0")
+            return ReconstructedModel(executable, source, ("0",), (executable.graph,))
 
-        slot = SemanticModelSlot.open_store(artifacts, source.tree, source.encoding)
+        if slot is None:
+            slot = SemanticModelSlot.open_store(artifacts, source.tree, source.encoding, components=registry.components)
+        elif (slot.tree, slot.encoding) != (source.tree, source.encoding):
+            raise ModelCheckpointError("/model", "model slot differs from its authenticated source")
+        definition = source.initial
         if template is None:
-            prototypes = {} if source.initial is None else declared_model_input_prototypes(source.initial.document)
-            template = compile_graph(
+            prototypes = declared_model_input_prototypes(definition.document)
+            template = resolve_graph(
                 GraphDocument(graph=slot.graph), registry.components,
                 {
                     target: prototypes[name]
                     for name, target in slot.graph.input_bindings.items()
                     if name in prototypes
                 },
-                artifact_provider=artifacts,
             )
-        target = None if variant is None else ModelRestoreTarget(
-            variant.resolved.graph, variant.graph, source_overrides or {},
+        ids = slot.replica_ids
+        if len(ids) != 1 and (isinstance(template, ExecutableGraph) or isinstance(variant, ExecutableGraph)):
+            raise ModelCheckpointError("/model/replicas", "replica restore requires an unrealized template")
+        sources = tuple(materialize(template, definition.seed, replica) for replica in ids)
+        targets = sources if variant is None else tuple(
+            materialize(variant, definition.seed if variant_seed is None else variant_seed, replica) for replica in ids
         )
-        graph = slot.restore(template.graph, target=target)
-        return ReconstructedModel(replace(variant or template, graph=graph), source)
+        graphs = slot.restore_all(
+            tuple(source.graph for source in sources),
+            targets=None if variant is None else tuple(
+                ModelRestoreTarget(target.resolved.graph, target.graph, source_overrides or {}) for target in targets
+            ),
+        )
+        return ReconstructedModel(
+            replace(targets[0], graph=graphs[0]), source, ids, graphs,
+        )
     except ModelCompilationProblem as error:
         return (Problem(
             code=ProblemCode.STRUCTURE, path=("model", *error.address.stored_path()),
@@ -128,18 +145,16 @@ def prepare_model_task(
 ) -> PreparedModelTask | tuple[Problem, ...]:
     """Pair a source with task-derived prototypes and its optional objective."""
     definition = source.initial if isinstance(source, CheckpointModelSource) else source
-    if definition is None:
-        return (Problem(
-            code=ProblemCode.STRUCTURE, path=("model",),
-            reason="Task pairing requires the checkpoint's authored Model definition.",
-        ),)
-    paired = compile_trial_execution(
+    resolved = resolve_trial_execution(
         definition.model_name, definition.document, task, registry.components, registry.expression_functions,
         python_tasks=registry.python_tasks, objective=objective, objective_use=objective_use,
         input_overrides=input_overrides, graph_override=graph_override,
-        initialization_key=model_initialization_key(definition.seed), artifact_provider=artifacts,
     )
-    if isinstance(paired, tuple):
-        return paired
-    model = reconstruct_model(source, registry=registry, artifacts=artifacts, template=paired.executable)
-    return model if isinstance(model, tuple) else PreparedModelTask(model, paired)
+    if isinstance(resolved, tuple):
+        return resolved
+    model = reconstruct_model(source, registry=registry, artifacts=artifacts, template=resolved.graph)
+    if isinstance(model, tuple):
+        return model
+    return PreparedModelTask(model, PreparedTrialExecution(
+        model.executable, resolved.execution, resolved.objective, resolved.lowered, resolved.task_source, resolved.graph,
+    ))
