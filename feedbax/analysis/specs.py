@@ -1093,9 +1093,10 @@ def execute_analysis_run_spec(
                     path=existing_path,
                     execution_context=execution_context,
                 )
-                if not outcome.admitted:
+                if outcome.admitted:
+                    return existing_manifest, existing_path
+                if existing_manifest.status != "failed" or outcome.codes != ("status_not_completed",):
                     raise FulfillmentAdmissionError(outcome)
-                return existing_manifest, existing_path
 
         resolved_inputs = resolve_analysis_inputs(
             run_spec,
