@@ -119,7 +119,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(selected).toHaveCount(2);
   await expect(selected.getByRole('cell', { name: '0.00275', exact: true })).toHaveCount(2);
   await expect(seed.getByRole('button', { name: /^Select Seed /, pressed: true })).toHaveCount(2);
-  await expect(card.getByText('2 of 6', { exact: false })).toBeVisible();
+  await expect(card.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(2);
   await expect(rate.getByRole('button', { name: 'Select Learning Rate 0.00275' })).toHaveAttribute('aria-pressed', 'true');
   await expect(rate.getByRole('button', { name: 'Select Learning Rate 0.001' })).toHaveAttribute('aria-pressed', 'false');
 
