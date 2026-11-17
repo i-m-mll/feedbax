@@ -177,3 +177,53 @@ def test_unknown_band_channel_is_refused_against_the_operation_declaration():
     port = registry.resolve("feedbax.summarize_velocity").value.definition.outputs["summary"]
     with pytest.raises(ValueError, match="trial-summary.*upper.*missing_upper"):
         validate_figure_bindings(FigureDocument.model_validate(document), {"summary": port})
+
+
+def test_sparse_panels_keep_authored_positions_and_share_their_rendered_range():
+    values = Dataset.from_arrays(
+        {
+            "earlier": Variable(np.array([1.0, 3.0]), ("time",)),
+            "later": Variable(np.array([7.0, 11.0]), ("time",)),
+        },
+        coords={"time": Variable(np.array([0.0, 1.0]), ("time",), units="s")},
+        schema_id="figure.panel_values.v1",
+    )
+    range_group = {"derived_range": {"group": "amplitude", "padding_fraction": 0.1}}
+    document = FigureDocument.model_validate({
+        "data": ["values"],
+        "layout": [
+            {"name": "later", "row": 1, "col": 3, "y_axis": range_group},
+            {
+                "name": "earlier",
+                "row": 1,
+                "col": 1,
+                "y_axis": range_group,
+                "x_axis": {"range": [-1, 9]},
+                "axes_labels": {"x": "Elapsed time"},
+            },
+        ],
+        "layers": [
+            {
+                "name": name, "role": "values", "panel": name,
+                "mark": "line", "encode": {"x": "time", "y": name},
+            }
+            for name in ("earlier", "later")
+        ],
+        "view": {
+            "shared_yaxes": False,
+            "width": 600,
+            "margin": {"l": 40, "r": 60},
+            "legend_gutter": 50,
+        },
+    })
+
+    figure = render(document, {"values": values})
+
+    assert [trace.xaxis for trace in figure.data] == ["x3", "x"]
+    left, right = figure.layout.annotations
+    assert left.text == "earlier" and left.x < 0.5
+    assert right.text == "later" and right.x > 0.5
+    assert figure.layout.xaxis.title.text == "Elapsed time"
+    assert figure.layout.xaxis.range == (-1, 9)
+    assert figure.layout.yaxis.range == figure.layout.yaxis3.range == (0, 12)
+    assert figure.layout.legend.x == pytest.approx(1.1)

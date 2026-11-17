@@ -1,10 +1,82 @@
-"""Layout settings shared by the figure assemblers."""
+"""Authored Cartesian layout settings for dataset figures."""
 
+import math
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
+
+
+DATA_DERIVED_AXIS_RANGE_SCHEMA_ID = "feedbax.spec.data_derived_axis_range"
+DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION = "feedbax.spec.data_derived_axis_range.v1"
+
+
+class AxisLabels(StrictModel):
+    """Per-panel axis labels.
+
+    ``z`` labels the third axis of a ``scene`` panel and has no meaning on a
+    Cartesian one, so declaring it elsewhere is rejected rather than dropped.
+    """
+
+    x: str | None = None
+    y: str | None = None
+    z: str | None = None
+
+
+class DataDerivedAxisRange(StrictModel):
+    """One rendered-data range shared by a named group of panel axes."""
+
+    schema_id: str = DATA_DERIVED_AXIS_RANGE_SCHEMA_ID
+    schema_version: str = DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION
+    group: str = Field(min_length=1)
+    padding_fraction: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_declaration(self) -> "DataDerivedAxisRange":
+        if self.schema_id != DATA_DERIVED_AXIS_RANGE_SCHEMA_ID:
+            raise ValueError(f"unsupported DataDerivedAxisRange schema_id: {self.schema_id!r}")
+        if self.schema_version != DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported DataDerivedAxisRange schema_version: {self.schema_version!r}"
+            )
+        if self.group != self.group.strip():
+            raise ValueError("DataDerivedAxisRange group must not have surrounding whitespace")
+        if not math.isfinite(self.padding_fraction):
+            raise ValueError("DataDerivedAxisRange padding_fraction must be finite")
+        return self
+
+
+class PanelAxis(StrictModel):
+    """Declarative settings for one panel axis."""
+
+    type: Literal["linear", "log"] | None = None
+    range: tuple[float, float] | None = None
+    derived_range: DataDerivedAxisRange | None = None
+    quantity: str | None = Field(default=None, min_length=1, max_length=128)
+    unit: str | None = Field(default=None, min_length=1, max_length=128)
+    frame: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def _validate_range_authority(self) -> "PanelAxis":
+        if self.derived_range is not None and self.range is not None:
+            raise ValueError("PanelAxis cannot declare both range and derived_range")
+        if self.derived_range is not None and self.type == "log":
+            raise ValueError("PanelAxis derived_range requires a linear axis")
+        if (self.quantity is None) != (self.unit is None):
+            raise ValueError("PanelAxis quantity and unit must be declared together")
+        if self.frame is not None and self.quantity is None:
+            raise ValueError("PanelAxis frame requires quantity and unit")
+        for name in ("quantity", "unit", "frame"):
+            value = getattr(self, name)
+            if value is not None and value != value.strip():
+                raise ValueError(f"PanelAxis {name} must not have surrounding whitespace")
+        return self
 
 
 class ComparisonGridParams(StrictModel):
@@ -40,5 +112,4 @@ class FigureView(StrictModel):
     legend_yanchor: Literal["auto", "top", "middle", "bottom"] | None = None
     margin: FigureMarginParams | None = None
     hovermode: Literal["x", "y", "closest", "x unified", "y unified", False] | None = None
-    row_label_gutter: float | None = Field(default=None, ge=0.0, le=256.0)
     legend_gutter: float | None = Field(default=None, ge=0.0, le=512.0)

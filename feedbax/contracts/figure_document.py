@@ -9,8 +9,7 @@ from pydantic import AfterValidator, Field, JsonValue, StrictBool, StrictFloat, 
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor, Name
-from feedbax.contracts.figure_layout import ComparisonGridParams, FigureView
-from feedbax.contracts.figures import AxisLabels, PanelAxis
+from feedbax.contracts.figure_layout import AxisLabels, ComparisonGridParams, FigureView, PanelAxis
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project_inputs import NonemptyText
 from feedbax.contracts.request_refs import ContentRef
