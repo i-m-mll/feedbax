@@ -22,6 +22,7 @@ from jaxtyping import PRNGKeyArray, PyTree
 from pydantic import BaseModel, ConfigDict
 
 from feedbax.contracts.array_values import ArrayValueSpec
+from feedbax.contracts.model_values import ModelFacts
 from feedbax.contracts.portable import ComponentOptions, ComponentOwner, GraphTemplate
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.contracts.model_delay import ModelDelayCarry
@@ -318,6 +319,11 @@ class ComponentBinding:
     # Checkpoint slot fingerprints include the binding's repr via the PyTree definition.
     trainable_override: bool | None = dataclasses.field(default=None, repr=False)
     authored_arrays: tuple[AuthoredArrayEncoding, ...] = dataclasses.field(default=(), repr=False)
+    owner_class: type[ComponentOwner] | None = dataclasses.field(default=None, compare=False, repr=False)
+
+    @property
+    def model_facts(self) -> ModelFacts | None:
+        return None if self.owner_class is None else self.owner_class.model_facts
 
 
 class Graph(GraphNode):

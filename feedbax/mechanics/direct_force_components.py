@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from functools import partial
 from pydantic import Field
 from feedbax.contracts.component import PortType
+from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
 from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
 from feedbax.runtime.graph import Component
 from feedbax.mechanics.mechanics import Mechanics
@@ -38,6 +39,30 @@ class TwoLinkArm(Mechanics, Component):
 
 class PointMass(Mechanics, Component):
     """Point-mass plant with direct force input."""
+
+    model_facts = ModelFacts(
+        values=(
+            ModelValue("mass", "plant.skeleton.mass", "source"),
+            ModelValue("damping", "plant.skeleton.damping", "source"),
+            ModelValue("dt", "dt", "source"),
+        ),
+        states=(
+            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world"),
+            StateValue("skeleton/velocity", ("plant", "skeleton", "vel"), "m/s", "xy", "world"),
+            StateValue("skeleton/force", ("plant", "skeleton", "force"), "N", "xy", "world"),
+            StateValue(
+                "effector/position", ("effector", "pos"), "m", "xy", "world",
+                reset=StateReset("effector", ("pos",)),
+            ),
+            StateValue(
+                "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",
+                reset=StateReset("effector", ("vel",)),
+            ),
+            StateValue("effector/force", ("effector", "force"), "N", "xy", "world"),
+        ),
+        scene_effector_port="effector",
+        scene_position="effector/position",
+    )
 
     ports = _MECHANICS_PORTS
     config_bindings = (

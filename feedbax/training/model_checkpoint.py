@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Set
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from operator import attrgetter
 from pathlib import Path
@@ -24,13 +24,16 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_checkpoint import (
-    MODEL_TREE_ARRAY_PATH as _ARRAY,
     MODEL_TREE_GRAPH_PATH as _GRAPH,
+    MODEL_TREE_MANIFEST_PATH as _MANIFEST,
     MODEL_TREE_MEDIA_TYPE as MODEL_TREE_MEDIA_TYPE,
+    ModelReplica,
+    ModelReplicaManifest,
     SemanticModelEncoding,
+    model_replica_array_path,
 )
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.model_occurrence import graph_leaf_specs
+from feedbax.contracts.model_occurrence import graph_leaf_occurrences, graph_leaf_specs
 from feedbax.persistence.array_container import (
     ArrayContainerError,
     decode_array_container,
@@ -43,19 +46,21 @@ from feedbax.persistence.artifact_custody import (
 )
 from feedbax.persistence.model_tree import (
     ModelTreeLayoutError,
+    ModelTreeReplica,
     model_tree_asset_path,
-    model_tree_assets,
+    read_model_tree,
 )
 from feedbax.runtime.graph import Graph
-from feedbax.contracts.model_values import MODEL_OWNERS, model_owner_problem
+from feedbax.contracts.model_values import model_owner_problem
 from feedbax.training.checkpoint_errors import CheckpointCustodyError
 
 if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider
     from feedbax.contracts.checkpoints import CheckpointSlotBlobRef
 
 
-MODEL_TREE_SERIALIZER = "feedbax.semantic-model-tree.v1"
+MODEL_TREE_SERIALIZER = "feedbax.semantic-model-tree.v2"
 _MODEL_STORE = Path("semantic-model")
 
 
@@ -111,24 +116,36 @@ class SemanticModelWriter:
 
     @classmethod
     def for_graph(
-        cls, graph: GraphSpec, assets: ArtifactBlobProvider | None,
+        cls, graph: GraphSpec, assets: ArtifactBlobProvider | None, components: ComponentRegistry,
     ) -> SemanticModelWriter | None:
-        if not graph.nodes or model_owner_problem(graph, "checkpoint") is not None:
+        if not graph.nodes or model_owner_problem(graph, "checkpoint", components) is not None:
             return None
         return cls(graph, assets)
 
-    def publish(self, transaction: Path, model: Graph) -> tuple[Path, ContentObjectRef, dict]:
+    def publish(
+        self, transaction: Path, models: Sequence[Graph], *, replica_ids: tuple[str, ...],
+    ) -> tuple[Path, ContentObjectRef, SemanticModelEncoding]:
         store = ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE)
-        arrays, declarations = _describe(self.graph, model)
-        graph = effective_model_graph(self.graph, model)
-        try:
-            encoded = encode_array_container(arrays, metadata=declarations)
-        except ArrayContainerError as exc:
-            raise ModelCheckpointError("/v1/model", str(exc)) from exc
+        if len(models) != len(replica_ids) or not replica_ids or len(set(replica_ids)) != len(replica_ids):
+            raise ModelCheckpointError("/model", "models must match a nonempty ordered list of unique replicas")
+        graph = effective_model_graph(self.graph, models[0])
         members = {
             _GRAPH: store.store_object(canonical_json_v2_bytes(graph.model_dump(mode="json"))),
-            _ARRAY: store.store_object(encoded.data),
         }
+        replicas = []
+        for index, (replica_id, model) in enumerate(zip(replica_ids, models, strict=True)):
+            path = model_replica_array_path(index)
+            if effective_model_graph(self.graph, model) != graph:
+                raise ModelCheckpointError(path, "replicas do not share one effective graph")
+            arrays, declarations = _describe(self.graph, model)
+            try:
+                encoded = encode_array_container(arrays, metadata=declarations)
+            except ArrayContainerError as exc:
+                raise ModelCheckpointError(path, str(exc)) from exc
+            members[path] = store.store_object(encoded.data)
+            replicas.append(ModelReplica(id=replica_id, array_descriptor_sha256=encoded.descriptor_sha256))
+        manifest = ModelReplicaManifest(replicas=tuple(replicas))
+        members[_MANIFEST] = store.store_object(canonical_json_v2_bytes(manifest.model_dump(mode="json")))
         for path, asset in model_asset_refs(graph):
             if self.assets is None:
                 raise ModelCheckpointError(path, "missing model asset provider")
@@ -139,8 +156,8 @@ class SemanticModelWriter:
         tree, _ = store.publish_rooted_tree(
             members, root_id="checkpoint:model", root_kind="logical-ref",
         )
-        encoding = SemanticModelEncoding(array_descriptor_sha256=encoded.descriptor_sha256)
-        return _slot_path(tree.descriptor), tree.descriptor, encoding.model_dump(mode="json")
+        encoding = SemanticModelEncoding(descriptor_sha256=members[_MANIFEST].sha256)
+        return _slot_path(tree.descriptor), tree.descriptor, encoding
 
 
 def semantic_model_member_files(
@@ -164,16 +181,20 @@ class ModelRestoreTarget:
 class SemanticModelSlot:
     provider: ImmutableArtifactBlobProvider
     graph: GraphSpec
-    arrays: ContentObjectRef
+    replicas: tuple[ModelTreeReplica, ...]
     encoding: SemanticModelEncoding
     tree: ContentTreeRef
+    components: ComponentRegistry
 
     @classmethod
-    def open(cls, transaction: Path, slot: CheckpointSlotBlobRef) -> SemanticModelSlot:
+    def open(
+        cls, transaction: Path, slot: CheckpointSlotBlobRef, *, components: ComponentRegistry,
+    ) -> SemanticModelSlot:
         try:
             return cls.open_store(
                 ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE), _slot_tree(slot),
                 SemanticModelEncoding.model_validate(slot.metadata["semantic_model"]),
+                components=components,
             )
         except ModelCheckpointError:
             raise
@@ -183,15 +204,15 @@ class SemanticModelSlot:
     @classmethod
     def open_store(
         cls, provider: ImmutableArtifactBlobProvider, tree: ContentTreeRef, encoding: SemanticModelEncoding,
+        *, components: ComponentRegistry,
     ) -> SemanticModelSlot:
         try:
-            members = {file.relative_path: file.object for file in provider.get_tree(tree).files}
-            graph = GraphSpec.model_validate_json(_read(provider, members[_GRAPH], "/graph"))
-            if SemanticModelWriter.for_graph(graph, provider) is None:
+            model = read_model_tree(provider, tree, encoding)
+            if SemanticModelWriter.for_graph(model.graph, provider, components) is None:
                 raise ModelCheckpointError("/graph", "graph has an undeclared semantic model owner")
-            for path, asset in model_tree_assets(graph, members):
+            for path, asset in model.assets:
                 _read(provider, asset, path)
-            return cls(provider, graph, members[_ARRAY], encoding, tree)
+            return cls(provider, model.graph, model.replicas, encoding, tree, components)
         except ModelCheckpointError:
             raise
         except ModelTreeLayoutError as exc:
@@ -199,46 +220,56 @@ class SemanticModelSlot:
         except (ValueError, KeyError, OSError) as exc:
             raise ModelCheckpointError("/v1/model", str(exc)) from exc
 
+    @property
+    def replica_ids(self) -> tuple[str, ...]:
+        return tuple(replica.descriptor.id for replica in self.replicas)
+
     def template(self) -> Graph:
         from feedbax.compiler import GraphDocument, compile_graph
-        from feedbax.component_registry import ComponentRegistry
 
         return compile_graph(
-            GraphDocument(graph=self.graph), ComponentRegistry(),
+            GraphDocument(graph=self.graph), self.components,
             artifact_provider=self.provider,
         ).graph
 
     def restore(
-        self, template: Graph | None = None, *, target: ModelRestoreTarget | None = None,
+        self, template: Graph | None = None, *,
+        target: ModelRestoreTarget | None = None, replica_index: int = 0,
     ) -> Graph:
         """Verify the source slot, then bind compatible retained values to the target."""
         if template is None:
             template = self.template()
+        if not 0 <= replica_index < len(self.replicas):
+            raise ModelCheckpointError("/model/replicas", "unknown replica index")
+        replica = self.replicas[replica_index]
+        path = model_replica_array_path(replica_index)
         try:
             decoded = decode_array_container(
-                _read(self.provider, self.arrays, "/v1/model"),
-                expected_descriptor_sha256=self.encoding.array_descriptor_sha256,
+                _read(self.provider, replica.arrays, path),
+                expected_descriptor_sha256=replica.descriptor.array_descriptor_sha256,
             )
         except ArrayContainerError as exc:
-            raise ModelCheckpointError("/v1/model", str(exc)) from exc
+            raise ModelCheckpointError(path, str(exc)) from exc
         expected, declarations = _describe(self.graph, template)
         actual = decoded.descriptor.metadata
         if not isinstance(actual, dict):
             raise ModelCheckpointError("/v1/model", "missing value declarations")
         _verify_values(expected, declarations, decoded.tensors, actual)
 
-        retained = frozenset(path for path, _ in graph_leaf_specs(self.graph))
+        source_leaves = dict(graph_leaf_specs(self.graph))
+        retained = frozenset(source_leaves)
         overrides: Mapping[str, float] = {}
         if target is not None:
             from feedbax.contracts.model_attachment import is_generated_attachment_node
 
             destination_leaves = dict(graph_leaf_specs(target.graph))
-            source_leaves = dict(graph_leaf_specs(self.graph))
             removed = {
                 path for path in retained - destination_leaves.keys()
                 if is_generated_attachment_node(path[-1], source_leaves[path].type)
-                and (owner := MODEL_OWNERS.get(source_leaves[path].type)) is not None
-                and not any(value.kind == "learned" for value in owner.values)
+                and not any(
+                    value.kind == "learned"
+                    for value in template.get_node(".".join(path[:-1])).component_bindings[path[-1]].model_facts.values
+                )
             }
             retained -= removed
             destination, destination_declarations = _describe(
@@ -261,8 +292,9 @@ class SemanticModelSlot:
                 binding = current.component_bindings[name]
                 source = {}
                 learned = []
-                owner = MODEL_OWNERS[binding.type_id]
-                for value in owner.values if not owner.fixed_configuration else ():
+                owner = binding.model_facts
+                node = destination_leaves[path] if target is not None else source_leaves[path]
+                for value in owner.values if not owner.is_fixed_configuration(node) else ():
                     address = semantic_key("model", "value", path, value.symbol)
                     if address not in decoded.tensors:
                         continue
@@ -288,6 +320,18 @@ class SemanticModelSlot:
         if unexpected := overrides.keys() - applied:
             raise ModelCheckpointError(min(unexpected), "override has no declared scalar source destination")
         return restored.prepare()
+
+    def restore_all(
+        self, templates: Sequence[Graph], *,
+        targets: Sequence[ModelRestoreTarget] | None = None,
+    ) -> tuple[Graph, ...]:
+        """Restore every replica using templates in checkpoint order."""
+        if len(templates) != len(self.replicas) or (targets is not None and len(targets) != len(templates)):
+            raise ModelCheckpointError("/model/replicas", "templates do not match the checkpoint replica count")
+        return tuple(
+            self.restore(template, target=None if targets is None else targets[index], replica_index=index)
+            for index, template in enumerate(templates)
+        )
 
 
 def _verify_values(expected, declarations, tensors, saved_declarations) -> None:
@@ -329,7 +373,7 @@ def _describe(
 
     verify_occurrences(graph, model, ())
     arrays, declarations = {}, {}
-    specs = dict(graph_leaf_specs(graph))
+    specs = {path: (node, physical) for path, node, physical in graph_leaf_occurrences(graph)}
     if retained is None:
         retained = specs.keys()
     if missing := retained - specs.keys():
@@ -350,17 +394,16 @@ def _describe(
         binding = scope.component_bindings.get(name)
         if component is None or binding is None:
             raise ModelCheckpointError(owner_path, "effective graph and realized owner occurrences differ")
-        owner = MODEL_OWNERS.get(binding.type_id)
+        node, physical = specs[path]
+        owner = binding.model_facts
         if (
-            owner is not None and owner.fixed_configuration and binding.revision == owner.revision
-            and specs[path].type == binding.type_id and specs[path].params.get("fixed") is True
-        ):
-            continue
-        if (
-            owner is None or not owner.checkpointable or specs[path].type != binding.type_id
-            or binding.revision != owner.revision
+            owner is None or node.type != binding.type_id or node.revision not in (None, binding.revision)
+            or not owner.supports_checkpoint(node, physical)
+            or (physical is None and not isinstance(component, binding.owner_class))
         ):
             raise ModelCheckpointError(owner_path, "unsupported runtime owner identity or revision")
+        if owner.is_fixed_configuration(node):
+            continue
         for value in owner.values:
             address = semantic_key("model", "value", path, value.symbol)
             leaf = attrgetter(value.field)(component)
