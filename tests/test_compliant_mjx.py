@@ -92,9 +92,6 @@ def _document(provider, dt):
 
 
 def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch):
-    import pickle
-    import subprocess
-    import sys
     from types import SimpleNamespace
 
     pytest.importorskip("fastapi")
@@ -102,10 +99,6 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
     from fastapi.testclient import TestClient
 
     from feedbax.contracts.artifact_custody import ContentGcRequest
-    from feedbax.training.checkpoint_custody import (
-        _semantic_structural_abi_sha256,
-        structural_abi_fingerprint,
-    )
     from feedbax.studio import paths
     from feedbax.web.api import graphs, projects
     from feedbax.persistence.model_assets import model_artifact_provider
@@ -155,44 +148,10 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         assert binding["asset"] == imported.json()
 
     reopened = GraphSpec.model_validate(payload)
-    compiled = compile_graph(
+    compile_graph(
         GraphDocument(graph=reopened), app.state.bootstrap_state.bundle.components,
         artifact_provider=model_artifact_provider(reopened),
     ).graph
-    restored = pickle.loads(pickle.dumps(compiled))
-    assert jax.tree.structure(restored) == jax.tree.structure(compiled)
-    assert structural_abi_fingerprint(restored) == structural_abi_fingerprint(compiled)
-
-    model_file = tmp_path / "model.pkl"
-    model_file.write_bytes(pickle.dumps(compiled))
-    fingerprint_file = tmp_path / "fingerprint.txt"
-    subprocess.run(
-        [sys.executable, "-B", "-c", """
-import pickle
-import sys
-from pathlib import Path
-
-import jax
-from feedbax.training.checkpoint_custody import (
-    _semantic_structural_abi_sha256, structural_abi_fingerprint,
-)
-
-jax.config.update("jax_enable_x64", True)
-model = pickle.loads(Path(sys.argv[1]).read_bytes())
-fingerprint = _semantic_structural_abi_sha256(structural_abi_fingerprint(model), value=model)
-Path(sys.argv[2]).write_text(fingerprint)
-""", str(model_file), str(fingerprint_file)],
-        check=True,
-        timeout=25,
-    )
-    assert fingerprint_file.read_text() == _semantic_structural_abi_sha256(
-        structural_abi_fingerprint(compiled), value=compiled,
-    )
-
-    mjx_model = compiled.nodes["physics"].plant.skeleton.mjx_model
-    different_limits = np.logical_not(mjx_model.jnt_limited).astype(mjx_model.jnt_limited.dtype)
-    changed_model = mjx_model.replace(jnt_limited=different_limits)
-    assert structural_abi_fingerprint(changed_model) != structural_abi_fingerprint(mjx_model)
 
 
 def _reference_equilibrium(angle):

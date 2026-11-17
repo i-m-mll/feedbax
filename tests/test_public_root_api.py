@@ -26,7 +26,7 @@ def test_runtime_mapping_is_available_from_package_root() -> None:
 
 @pytest.mark.parametrize(
     "module_name",
-    ("feedbax.training.metrics", "feedbax.orchestration.runpod"),
+    ("feedbax.training.methods", "feedbax.orchestration.runpod"),
 )
 def test_execution_support_modules_import_in_a_fresh_process(module_name: str) -> None:
     result = subprocess.run(

@@ -12,13 +12,6 @@ from feedbax.contracts.artifact_custody import (
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
 )
-from feedbax.contracts.checkpoints import (
-    CHECKPOINT_FORK_PLAN_SCHEMA_ID,
-    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION,
-    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
-    CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
-    CheckpointForkPlan,
-)
 from feedbax.contracts.migrations import (
     SchemaMigration,
     STUDIO_TASK_BINDING_LEGACY_V1,
@@ -29,12 +22,6 @@ from feedbax.contracts.migrations import (
     default_spec_registry,
     migrate_studio_task_binding_spec,
     migrate_structured_spec_payload,
-)
-from feedbax.contracts.nan_attribution import (
-    NAN_ATTRIBUTION_DETECTION_SCHEMA_ID,
-    NAN_ATTRIBUTION_DETECTION_SCHEMA_VERSION,
-    NAN_ATTRIBUTION_RESTORATION_SCHEMA_ID,
-    NAN_ATTRIBUTION_RESTORATION_SCHEMA_VERSION,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_VERSION,
@@ -79,11 +66,6 @@ from feedbax.contracts.workspace_replay import (
     WORKSPACE_REPLAY_SCHEMA_VERSION,
 )
 from feedbax.contracts.value_schema import ValueSchema
-from feedbax.training.diagnostics import (
-    TRAINING_DIAGNOSTICS_SCHEMA_ID,
-    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
-    TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4,
-)
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
 
@@ -315,63 +297,6 @@ def test_retention_v1_migration_preserves_expiry_as_fail_closed() -> None:
     )
 
 
-def test_training_diagnostics_v3_migrates_explicit_failure_kind_field() -> None:
-    migrated = default_spec_registry.migrate(
-        "TrainingDiagnostics",
-        {
-            "schema_id": TRAINING_DIAGNOSTICS_SCHEMA_ID,
-            "schema_version": TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V3,
-            "terminal_status": "completed",
-        },
-    )
-
-    assert migrated.payload["schema_version"] == TRAINING_DIAGNOSTICS_SCHEMA_VERSION_V4
-    assert migrated.payload["failure_kind"] is None
-    assert [record.migration_id for record in migrated.migration_records] == [
-        "training-diagnostics-v3-to-v4-failure-kind"
-    ]
-
-
-@pytest.mark.parametrize(
-    ("kind", "schema_id", "schema_version"),
-    [
-        (
-            "NanAttributionDetection",
-            NAN_ATTRIBUTION_DETECTION_SCHEMA_ID,
-            NAN_ATTRIBUTION_DETECTION_SCHEMA_VERSION,
-        ),
-        (
-            "NanAttributionRestorationOutcome",
-            NAN_ATTRIBUTION_RESTORATION_SCHEMA_ID,
-            NAN_ATTRIBUTION_RESTORATION_SCHEMA_VERSION,
-        ),
-    ],
-)
-def test_nan_attribution_families_are_versioned_and_reject_unknown_versions(
-    kind: str,
-    schema_id: str,
-    schema_version: str,
-) -> None:
-    family = default_spec_registry.resolve(kind)
-    assert family.identity == schema_id
-    assert family.current_version == schema_version
-    assert family.policy is not None
-    assert family.policy.stance == "reject"
-    assert (
-        default_spec_registry.migrate(
-            kind,
-            {"schema_id": schema_id, "schema_version": schema_version},
-        ).target_version
-        == schema_version
-    )
-
-    with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
-        default_spec_registry.migrate(
-            kind,
-            {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
-        )
-
-
 def test_structured_spec_registry_reports_unknown_family() -> None:
     registry = _registry()
 
@@ -544,10 +469,6 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         "ModelArtifactManifest": "feedbax.manifest.model_artifact",
         "SpecPayload": "feedbax.manifest.spec_payload",
         "StagedAnalysisBundleExecution": "feedbax.manifest.analysis_bundle_execution",
-        "TrainingCheckpointTransactionManifest": (
-            "feedbax.manifest.training_checkpoint_transaction"
-        ),
-        "TrainingCheckpointLatestPointer": "feedbax.manifest.training_checkpoint_latest_pointer",
         "TrainingRunManifest": "feedbax.manifest.training_run",
         "WorkspaceReplayProduct": WORKSPACE_REPLAY_SCHEMA_ID,
     }
@@ -583,10 +504,6 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
     spec_kinds = {
         "GraphSpec",
         "PopulationStructureSpec",
-        "TrainingRunSpec",
-        "RunControlSpec",
-        "LrScheduleSpec",
-        "StandardSupervisedMethodPayload",
         "AnalysisDataProductRequirement",
         "VariableDescriptor",
         "ComponentDescriptor",
@@ -607,8 +524,6 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ModelArtifactManifest",
         "ArrayStorePayload",
         "ArrayRecord",
-        "TrainingCheckpointTransactionManifest",
-        "TrainingCheckpointLatestPointer",
         "TrainingRunManifest",
         "AnalysisDataProduct",
         "StagedAnalysisBundleExecution",
@@ -644,78 +559,6 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
             assert policy.supported_old_versions, family.kind
         else:
             assert policy.rejected_old_versions, family.kind
-
-
-def test_checkpoint_fork_plan_schema_accepts_current_and_rejects_v0() -> None:
-    family = default_spec_registry.resolve("CheckpointForkPlan")
-    assert family.identity == CHECKPOINT_FORK_PLAN_SCHEMA_ID
-    assert family.current_version == CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
-    current = default_spec_registry.migrate(
-        "CheckpointForkPlan",
-        {"schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION},
-    )
-    assert not current.migrated
-    with pytest.raises(UnsupportedSpecVersion, match="current_version"):
-        default_spec_registry.migrate(
-            "CheckpointForkPlan",
-            {"schema_version": "feedbax.spec.training_checkpoint_fork_plan.v0"},
-        )
-
-
-def test_checkpoint_fork_plan_v1_migration_preserves_modes_and_guards_v2_mode() -> None:
-    for mode in (None, "preserve"):
-        policy = {} if mode is None else {"mode": mode}
-        result = default_spec_registry.migrate(
-            "CheckpointForkPlan",
-            {
-                "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
-                "source": {"checkpoint_root_ref": "source"},
-                "targets": [
-                    {
-                        "target_id": "target",
-                        "checkpoint_root_ref": "target",
-                        "run_spec_ref": "run",
-                        "slot_template_ref": "slots",
-                        "history_policy": policy,
-                        "compatibility": {
-                            "run_contract_algorithm_version": "v1",
-                            "run_contract_hash_domain": "test",
-                            "run_contract_projection_sha256": "a" * 64,
-                            "slot_structural_abi_sha256": {"model": "b" * 64},
-                        },
-                    }
-                ],
-            },
-        )
-        assert result.payload["schema_version"] == CHECKPOINT_FORK_PLAN_SCHEMA_VERSION
-        assert result.payload["targets"][0]["history_policy"] == policy
-        CheckpointForkPlan.model_validate(result.payload)
-
-    for mode in ("prepare_continuation", "unknown"):
-        with pytest.raises(ValueError, match="unsupported history mode"):
-            default_spec_registry.migrate(
-                "CheckpointForkPlan",
-                {
-                    "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
-                    "targets": [{"history_policy": {"mode": mode}}],
-                },
-            )
-    with pytest.raises(ValueError, match="re-author/rebind"):
-        default_spec_registry.migrate(
-            "CheckpointForkPlan",
-            {
-                "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V1,
-                "targets": [{"history_policy": {"mode": "continue_segment"}}],
-            },
-        )
-    with pytest.raises(ValueError, match="implementation version and sha256"):
-        default_spec_registry.migrate(
-            "CheckpointForkPlan",
-            {
-                "schema_version": CHECKPOINT_FORK_PLAN_SCHEMA_VERSION_V2,
-                "source": {"transforms": [{}]},
-            },
-        )
 
 
 def test_immutable_blob_provider_family_has_canonical_reject_policy() -> None:

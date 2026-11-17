@@ -16,7 +16,7 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.studio_training import PublishedTrainingCheckpoint, StudioGraphMethodPayload
+from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.evaluate_success import publish_evaluate_success
 from feedbax.jobs import JobConflict, JobService
 from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
@@ -29,8 +29,8 @@ from feedbax.studio.canonical_evaluate import (
 )
 from feedbax.tasks.document import TaskParameters
 from feedbax.training import evaluate_worker
-from feedbax.training.checkpoint_custody import open_published_model_slot
-from feedbax.training.studio_executor import studio_training_key
+from feedbax.training.method_checkpoint import read_method_checkpoint
+from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
@@ -196,18 +196,18 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     cold_plan = ProjectFolderService(folders.root).read_plan(project, revision=None).plan
     assert cold_plan.requests == settled_plan.requests and cold_plan.documents == settled_plan.documents
     checkpoint = PublishedTrainingCheckpoint.model_validate(trained["outcome"]["completion"]["checkpoint"])
-    slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
+    slot = read_method_checkpoint(checkpoint.checkpoint_root, checkpoint.pointer, components=registry.components).model
     assert slot is not None
     spec = decode_request(plan.plan.requests[by_key[train].request_id], plan.plan.documents.__getitem__).spec
     documents = spec.trial_documents
-    seed = StudioGraphMethodPayload.model_validate(spec.method_payload.payload).seed
+    seed = spec.seed or 0
 
     def template(initialization_seed):
         result = compile_trial_execution(
             documents.model_name, documents.model, documents.task_source,
             registry.components, registry.expression_functions, objective=documents.objective,
             input_overrides=documents.input_overrides,
-            initialization_key=studio_training_key(initialization_seed, "model"),
+            initialization_key=model_initialization_key(initialization_seed),
             artifact_provider=slot.provider,
         )
         assert isinstance(result, PreparedTrialExecution), result

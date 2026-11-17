@@ -10,7 +10,7 @@ import pytest
 
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentObjectRef
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef
-from feedbax.contracts.checkpoints import CheckpointTransactionManifest
+from feedbax.contracts.method_checkpoint import MethodCheckpointManifest, method_checkpoint_extra_path
 from feedbax.contracts.jobs import JobStatus
 from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
 from feedbax.host import HostClient
@@ -172,9 +172,8 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
 
         members = {file.relative_path: file.object for file in source.get_tree(recovery_tree).files}
         manifest_path = Path(exact.recovery.pointer.manifest_relative_path)
-        manifest = CheckpointTransactionManifest.model_validate_json(source.get_object(members[manifest_path.as_posix()]))
-        (prng,) = (slot for slot in manifest.slots if slot.slot == "prng")
-        damaged = members[(manifest_path.parent / prng.relative_path).as_posix()]
+        manifest = MethodCheckpointManifest.model_validate_json(source.get_object(members[manifest_path.as_posix()]))
+        damaged = members[(manifest_path.parent / method_checkpoint_extra_path(manifest.extra)).as_posix()]
         with writable_store_object(source.object_path(damaged)) as path:
             raw = path.read_bytes()
             path.write_bytes(raw[:-1] + bytes([raw[-1] ^ 1]))

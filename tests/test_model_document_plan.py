@@ -11,13 +11,14 @@ from fastapi.testclient import TestClient
 
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
-from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
+from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.component_registry import ComponentRegistry
 from tests.support.component_owners import register_owners
 from feedbax.contracts.model_document import ModelDocument
@@ -26,19 +27,20 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import RolloutParameters
+from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.studio.model_edit import apply_model_edit
 from feedbax.studio.model_ports import ModelRegistryPorts
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.builtins.runtime.components import Input
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
-from feedbax.training.checkpoint_custody import open_published_model_slot
+from feedbax.training.method_checkpoint import read_method_checkpoint
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
-from feedbax.training.managed_studio import prepare_managed_training
+from feedbax.runtime._graph_key_schedule import model_initialization_key
+from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.evaluate_attachment import prepare_evaluate_attachment
@@ -49,6 +51,18 @@ from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import host as host_fixture, job_row, wait_until
 
 host = host_fixture
+
+
+def _prepare_request(request, registry) -> PreparedTrialExecution:
+    documents = request.trial_documents
+    paired = compile_trial_execution(
+        documents.model_name, documents.model, documents.task_source,
+        registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
+        objective=documents.objective, input_overrides=documents.input_overrides,
+        initialization_key=model_initialization_key(request.seed or 0),
+    )
+    assert isinstance(paired, PreparedTrialExecution), paired
+    return paired
 
 
 def _end(component, port):
@@ -369,7 +383,7 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
     raw["steps"].pop("baseline")
     _save_project(ProjectFolderService(tmp_path), "managed-rate", Project.model_validate(raw))
     url = "/api/projects/managed-rate"
-    field_path = "/method_payload/payload/optimizer/params/learning_rate"
+    field_path = "/settings/optimizer/params/learning_rate"
     endpoint = url + "/authoring/train/train/fields"
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         initial = client.get(url).json()
@@ -402,7 +416,7 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
         for key, expected in zip(keys, np.geomspace(1e-4, 1e-2, 5), strict=True):
             resolved = plan.selected_definitions[key]
             assert "learning_rate" not in resolved.payload["training_config"]
-            assert resolved.payload["method_payload"]["payload"]["optimizer"]["params"]["learning_rate"] == pytest.approx(expected)
+            assert resolved.payload["settings"]["optimizer"]["params"]["learning_rate"] == pytest.approx(expected)
             assert resolved.sources["/payload" + field_path].kind == "sweep_value"
 
 
@@ -450,9 +464,7 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     run = next(run for run in before.runs if run.kind == "train")
     spec = decode_request(before.requests[run.request_id], before.documents.__getitem__).spec
     registry = new_application_registry_bundle()
-    executable = lower_canonical_train(spec, registry.training_programs, registries=registry)
-    prepared = prepare_managed_training(executable, registry)
-    graph = prepared.initial_slots["model"]
+    graph = _prepare_request(spec, registry).executable.graph
     assert graph.period_seconds == spec.trial_documents.model.step_seconds == graph.nodes["plant"].dt
     assert graph.nodes["wrapper"].nodes["controller"].period_seconds == graph.period_seconds
     assert graph.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
@@ -788,8 +800,7 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
     assert not planned.diagnostics, planned.diagnostics
     train = next(run for run in planned.runs if run.kind == "train")
     spec = decode_request(planned.requests[train.request_id], planned.documents.__getitem__).spec
-    executable = lower_canonical_train(spec, registry.training_programs, registries=registry)
-    graph = GraphSpec.model_validate(executable.graph.inline)
+    graph = _prepare_request(spec, registry).executable.resolved.graph
     resolved = graph.subgraphs["wrapper"].subgraphs["controller"]
     (delay,) = [wire.recurrent_initializer for wire in resolved.wires if wire.temporality == "recurrent"]
     assert delay["shape"] == [controller["interior"]["components"]["cell"]["fields"]["hidden_size"]]
@@ -885,8 +896,7 @@ def test_linked_delay_repeats_the_completed_reset_state():
     train = next(run for run in plan.runs if run.kind == "train")
     request = decode_request(plan.requests[train.request_id], plan.documents.__getitem__).spec
     registry = new_application_registry_bundle()
-    executable = lower_canonical_train(request, registry.training_programs, registries=registry)
-    graph = prepare_managed_training(executable, registry).initial_slots["model"]
+    graph = _prepare_request(request, registry).executable.graph
     state = graph.init_state(key=jax.random.key(3))
     cell = graph.nodes["wrapper"].nodes["controller"].nodes["cell"]
     state = cell.replace_state_value(state, ("hidden",), jnp.full((cell.hidden_size,), 2.0, dtype=jnp.float32))
@@ -1147,7 +1157,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     trained = finished(train_job)
     assert trained["state"] == "succeeded", trained.get("outcome")
     checkpoint = PublishedTrainingCheckpoint.model_validate(trained["outcome"]["completion"]["checkpoint"])
-    slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
+    slot = read_method_checkpoint(checkpoint.checkpoint_root, checkpoint.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     restored = slot.restore()
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
@@ -1167,8 +1177,10 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
         return receipts
 
     original_receipts = authenticated_receipts()
+    request_id = next(row.request_id for row in plan.plan.runs if row.kind == "train")
+    train_request = decode_request(plan.plan.requests[request_id], plan.plan.documents.__getitem__).spec
+    n_samples = _prepare_request(train_request, new_application_registry_bundle()).execution.task.n_steps + 1
     with result.open_states() as dataset:
-        n_samples = raw["steps"]["train"]["base"]["inline"]["training_config"]["n_reach_steps"] + 1
         assert dataset.data("/v1/model/state/wrapper/controller/cell/hidden").shape[-2] == n_samples
         carry = dataset.data("/v1/model/carry/wrapper/controller/carry/carry")
         assert carry.shape[-(3 if grouped else 2)] == n_samples
@@ -1224,20 +1236,24 @@ def test_same_seed_nested_rename_preserves_values_and_batch_loss():
         plan = compile_project(Project.model_validate(raw))
         row = next(run for run in plan.runs if run.kind == "train")
         request = decode_request(plan.requests[row.request_id], plan.documents.__getitem__).spec
-        run = lower_canonical_train(request, registry.training_programs, registries=registry)
-        prepared = prepare_managed_training(run, registry)
-        update = prepared.kernel_context["studio_graph_update"].reported_update
-        state, losses = prepared.initial_slots, []
-        for _ in range(2):
-            state = update(state)
-            losses.append((state["train_loss"], state["loss_terms"]))
-        model = state["model"].nodes["wrapper"].nodes["controller"]
+        paired = _prepare_request(request, registry)
+        _, method, settings = normalize_train_method(request, registry.training_methods)
+        seed = request.seed or 0
+        ids = ("0",)
+        state = initialize_method(method, settings, models=(paired.executable.graph,), seed=seed, replica_ids=ids)
+        result = TrainingLoop(
+            method, settings, execution=paired.execution, objective=paired.objective,
+            batch_size=request.training_config.batch_size, seed=seed, replica_ids=ids,
+        ).run_block(state, completed=0, count=2)
+        assert result.completed == 2
+        losses = result.metrics["train_loss"]
+        model = replica_value(result.state.model, 0).nodes["wrapper"].nodes["controller"]
         return losses, jax.tree.leaves(eqx.filter(model, eqx.is_array))
 
     before, values = trained()
     _rename_components(raw["documents"]["reach-model"]["payload"])
     after, renamed = trained()
-    assert before == after
+    np.testing.assert_array_equal(before, after)
     assert len(values) == len(renamed) and values
     for a, b in zip(values, renamed, strict=True):
         np.testing.assert_array_equal(a, b)
