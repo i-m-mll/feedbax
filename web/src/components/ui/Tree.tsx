@@ -32,8 +32,9 @@ export interface TreeProps {
   nodes: readonly TreeNode[];
   selected: readonly string[];
   onSelectedChange: (ids: string[]) => void;
-  /** Return false to refuse the name and stay in editing. */
+  /** Return false to refuse the name and stay in editing. F2 and a double-click on the name start it. */
   onRename?: (id: string, name: string) => boolean | void;
+  /** Goes into the row: Return, or a double-click outside its name. Return also opens a closed parent. */
   onActivate?: (id: string) => void;
   /** The row's commands, as menu items. */
   menu?: (node: TreeNode) => ReactNode;
@@ -255,6 +256,11 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
         return move(visible[visible.length - 1].id);
       case 'Enter':
         handled();
+        if (branch(node) && !open) toggle(node, true, false);
+        if (!node.disabled) onActivate?.(node.id);
+        return;
+      case 'F2':
+        handled();
         if (onRename && renamable(node)) setEditing(node.id);
         return;
       case ' ':
@@ -326,7 +332,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
             selected={selectedSet.has(node.id)}
             holdsSelection={open === false && holders.has(node.id)}
             disabled={node.disabled}
-            name={onRename && renamable(node) ? (
+            name={onRename && renamable(node) ? <span data-tree-name>
               <InlineEdit
                 value={node.name}
                 editing={editing === node.id}
@@ -337,9 +343,13 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
                 onCommit={(name) => onRename(node.id, name)}
                 aria-label={renameLabel}
               />
-            ) : node.name}
+            </span> : node.name}
             onClick={(event) => onRowClick(event, node)}
-            onDoubleClick={() => { if (!node.disabled) onActivate?.(node.id); }}
+            onDoubleClick={(event) => {
+              if (node.disabled) return;
+              if (onRename && event.target instanceof Element && event.target.closest('[data-tree-name]')) setEditing(node.id);
+              else onActivate?.(node.id);
+            }}
             onContextMenu={() => onContextMenu(node)}
           />
         );

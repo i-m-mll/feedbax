@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 
 import jax
@@ -19,7 +19,7 @@ from feedbax.compiler.graph import (
 from feedbax.compiler.model_document import (
     LoweredModelDocument, ModelCompilationProblem, ResolvedModelInterface, lower_model_document,
 )
-from feedbax.compiler.resolution import ParameterResolutionError
+from feedbax.compiler.resolution import ParameterResolutionError, ParameterResolutionErrors
 from feedbax.contracts.graph import GraphSpec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
@@ -167,10 +167,9 @@ def pair_trial_source(
         return (Problem(code=ProblemCode.STRUCTURE, reason=str(error),
                         path=("model", *error.address.stored_path()), model_address=error.address),)
     except ParameterResolutionError as error:
-        address = lowered.source_address(error.authored_path)
-        path = address.stored_path() if address else json_pointer_parts(error.authored_path)
-        return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=("model", *path),
-                        model_address=address),)
+        return tuple(_parameter_problem(lowered, item) for item in (
+            error.errors if isinstance(error, ParameterResolutionErrors) else (error,)
+        ))
     if isinstance(task, TaskDocument):
         compiled = compile_task(task, functions, model=replace(interface, inputs=()), sites=task_sites)
     else:
@@ -187,13 +186,19 @@ def pair_trial_source(
     return TrialPair(interface, compiled, lowered, prototypes, bindings, problems, task)
 
 
-def _missing_required_input(
+def _parameter_problem(lowered: LoweredModelDocument, error: ParameterResolutionError) -> Problem:
+    address = lowered.source_address(error.authored_path)
+    path = address.stored_path() if address else json_pointer_parts(error.authored_path)
+    return Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=("model", *path), model_address=address)
+
+
+def _missing_required_inputs(
     graph: GraphSpec, model: ModelDocument, components: ComponentRegistry,
     bound_ports: frozenset[str],
-) -> Problem | None:
+) -> tuple[Problem, ...]:
     def check(
         graph: GraphSpec, interior: GraphInterior, path: tuple[str, ...], supplied: set[str],
-    ) -> Problem | None:
+    ) -> Iterator[Problem]:
         connected = {(wire.target_node, wire.target_port) for wire in graph.wires}
         connected.update(graph.input_bindings[name] for name in supplied if name in graph.input_bindings)
         for name, component in interior.components.items():
@@ -201,19 +206,16 @@ def _missing_required_input(
             child = (graph.subgraphs or {}).get(name)
             if component.kind == "composite":
                 if isinstance(child, GraphSpec) and isinstance(component.interior, GraphInterior):
-                    ports = {port for node, port in connected if node == name}
-                    if problem := check(child, component.interior, here, ports):
-                        return problem
+                    yield from check(child, component.interior, here, {port for node, port in connected if node == name})
             elif (owner := components.get(component.type)) is not None:
                 for port in owner.compiler.required_inputs:
                     if (name, port) not in connected:
-                        return Problem(
+                        yield Problem(
                             code=ProblemCode.STRUCTURE, path=("model", *here),
                             reason=f"{component.name} input {port!r} needs a connection.",
                         )
-        return None
 
-    return check(graph, model.interior, (), set(bound_ports))
+    return tuple(check(graph, model.interior, (), set(bound_ports)))
 
 
 def compile_trial_execution(
@@ -263,10 +265,10 @@ def resolve_trial_execution(
             return pairing
         if pairing.problems:
             return pairing.problems
-        if problem := _missing_required_input(
+        if problems := _missing_required_inputs(
             pairing.lowered.graph, model, components, frozenset(port for port, _ in pairing.input_bindings),
         ):
-            return (problem,)
+            return problems
         interface, compiled_task = pairing.model, pairing.task
         scorer = None
         observations = ()

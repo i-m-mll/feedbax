@@ -36,7 +36,7 @@ import {
   holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Component, type Port,
 } from './modelGraph';
 import { choosePick, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
-import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
 import { modelOutline } from './modelOutline';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
@@ -994,11 +994,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     attachmentName: (item, address) => attachmentName(item) + (isAuthored(address) ? ' ◇' : ''),
     trailing: (address) => {
       const count = problemCount(address);
-      return count > 0 && <button type="button" className={clsx('flex items-center gap-0.5 rounded-sm text-shell-status-failure', focusRing)}
+      return count > 0 && <Button variant="ghost" size="mark" className="gap-0.5 text-shell-status-failure"
         aria-label={studioAccessibleName('problems', count)} onClick={(event) => {
           event.stopPropagation();
           openProblems?.(address, event.currentTarget);
-        }}><TriangleAlert aria-hidden /><span className="tabular-nums">{count}</span></button>;
+        }}><TriangleAlert aria-hidden /><span className="tabular-nums">{count}</span></Button>;
     },
   });
   const outlineRow = (address: ModelAddress): string | undefined => {
@@ -1091,7 +1091,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         <StudioRegion state={studioReadState(
           'library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); },
         )}>
-          <LibraryList sections={sections} section="model.library" searchLabel={studioName('searchLibrary')}
+          <LibraryList sections={sections} section="model.library" searchName="searchLibrary"
             items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
             onInspect={(name) => setLibraryItem(registry.get(name))}
             onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
@@ -1111,8 +1111,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           onActivate={(id) => {
             const address = outline.addresses.get(id);
             const element = address?.element;
-            if (address && element?.kind === 'component' && modelPath(shownModel!, [...address.composites, element.id]).entries.length > address.composites.length) {
+            if (!address || !element) return;
+            if (element.kind === 'component' && modelPath(shownModel!, [...address.composites, element.id]).entries.length > address.composites.length) {
               go([...address.composites, element.id]);
+            } else if (!outline.parents.has(id)) {
+              focusInspectorField();
             }
           }}
           onRename={editTopology ? (id, name) => {

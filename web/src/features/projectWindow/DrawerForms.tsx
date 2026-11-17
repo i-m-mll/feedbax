@@ -37,3 +37,15 @@ export function DrawerSection({ sections, id, initially = true, forceOpen, ...pr
   return <Section {...props} open={forceOpen || sections.isOpen(id, initially)}
     onOpenChange={(open) => sections.setOpen(id, open)} />;
 }
+
+const inspectorField = [
+  'input:not([disabled]):not([type="hidden"])', 'textarea:not([disabled])', 'select:not([disabled])',
+  '[role="combobox"]:not([aria-disabled="true"])',
+].map((field) => `[data-studio-focus-region="inspector"] ${field}`).join(', ');
+
+/** Return on a drawer row with nothing inside it: focus moves to the inspector's first field once the inspector shows it. */
+export function focusInspectorField(frames = 30) {
+  const field = document.querySelector<HTMLElement>(inspectorField);
+  if (field) field.focus();
+  else if (frames > 0) requestAnimationFrame(() => focusInspectorField(frames - 1));
+}

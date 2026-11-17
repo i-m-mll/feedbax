@@ -6,6 +6,8 @@ import { focusRing, glyph } from './styles';
 
 export interface SectionProps {
   name: ReactNode;
+  /** Id for the name, for a body that is labelled by it. */
+  nameId?: string;
   count?: number;
   /** Trailing commands, drawn in the header. */
   actions?: ReactNode;
@@ -24,7 +26,7 @@ export interface SectionProps {
  * shrinks with the others when the column is short, and scrolls its own body.
  */
 export function Section({
-  name, count, actions, open: controlled, defaultOpen = true, onOpenChange, nested, children, className, bodyClassName,
+  name, nameId, count, actions, open: controlled, defaultOpen = true, onOpenChange, nested, children, className, bodyClassName,
 }: SectionProps) {
   const [uncontrolled, setUncontrolled] = useState(defaultOpen);
   const open = controlled ?? uncontrolled;
@@ -55,7 +57,7 @@ export function Section({
           )}
         >
           <ChevronRight aria-hidden className={clsx('transition-transform', open && 'rotate-90')} />
-          <span className="min-w-0 truncate font-medium text-shell-foreground">{name}</span>
+          <span id={nameId} className="min-w-0 truncate font-medium text-shell-foreground">{name}</span>
           {count === undefined ? null : <span className="tabular-nums">{count}</span>}
         </button>
         {actions ? <div className="flex shrink-0 items-center gap-0.5">{actions}</div> : null}
