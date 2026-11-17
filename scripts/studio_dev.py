@@ -146,6 +146,8 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
     )
     os.environ.pop("VITE_FEEDBAX_E2E", None)
     print(f"Studio data home: {home}", flush=True)
+    # Saved-project reads observe the host without starting it, so the launcher starts it.
+    HostClient(paths.host).ping()
 
     backend = [sys.executable, "-B", "-m", "uvicorn", backend_app]
     vite = ["bun", "--bun", "vite"]

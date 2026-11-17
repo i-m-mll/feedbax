@@ -1,52 +1,55 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createInterface } from 'node:readline';
+import { once } from 'node:events';
 import { repo } from './studio';
-
-type Reply = { id: number; code: number; stdout: string; stderr: string };
-
-let server: { child: ChildProcess; ready: Promise<void>; replies: Map<number, (reply: Reply) => void> } | undefined;
-let nextId = 0;
-
-function start() {
-  const child = spawn('uv', ['run', '--offline', '--no-sync', 'python', '-B', '-m', 'web.e2e.studio.fixtures.runner'], {
-    cwd: repo, stdio: ['pipe', 'pipe', 'inherit'],
-  });
-  const replies = new Map<number, (reply: Reply) => void>();
-  let ready!: () => void;
-  const started = new Promise<void>((resolve) => { ready = resolve; });
-  createInterface({ input: child.stdout! }).on('line', (line) => {
-    const message = JSON.parse(line) as Reply | { ready: true };
-    if ('ready' in message) return ready();
-    replies.get(message.id)!(message);
-    replies.delete(message.id);
-  });
-  child.on('exit', (code, signal) => {
-    for (const reply of replies.values()) reply({ id: -1, code: -1, stdout: '', stderr: `Fixture server exited with ${code ?? signal}` });
-    server = undefined;
-  });
-  child.unref();
-  (child.stdin as unknown as { unref?: () => void }).unref?.();
-  (child.stdout as unknown as { unref?: () => void }).unref?.();
-  return { child, ready: started, replies };
-}
 
 export type PythonProgram = { module: string } | { path: string } | { code: string };
 
+type Runner = { child: ChildProcess; ready: Promise<void>; stdout: Buffer[]; stderr: Buffer[] };
+
+function startRunner(): Runner {
+  const child = spawn('uv', ['run', '--offline', '--no-sync', 'python', '-B', '-m', 'web.e2e.studio.fixtures.runner'], {
+    cwd: repo, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const runner: Runner = { child, ready: Promise.resolve(), stdout: [], stderr: [] };
+  child.stdout!.on('data', (chunk: Buffer) => runner.stdout.push(chunk));
+  runner.ready = new Promise((resolve, reject) => {
+    let preamble = '';
+    const preload = (chunk: Buffer) => {
+      preamble += chunk.toString();
+      const marker = preamble.indexOf('ready\n');
+      if (marker < 0) return;
+      child.stderr!.off('data', preload);
+      child.stderr!.on('data', (data: Buffer) => runner.stderr.push(data));
+      runner.stderr.push(Buffer.from(preamble.slice(marker + 'ready\n'.length)));
+      resolve();
+    };
+    child.stderr!.on('data', preload);
+    child.once('exit', (code, signal) => reject(new Error(`Fixture runner exited with ${code ?? signal}\n${preamble}`)));
+  });
+  runner.ready.catch(() => undefined);
+  child.unref();
+  for (const stream of [child.stdin, child.stdout, child.stderr]) (stream as unknown as { unref?: () => void }).unref?.();
+  return runner;
+}
+
+let warm: Runner | undefined;
+
 /**
- * Runs a Python program as `__main__` in a fork of this worker's preloaded fixture interpreter
- * and returns its standard output.
+ * Runs a Python program as `__main__` in this worker's warm fixture interpreter, which has
+ * already imported the fixture modules, and returns its standard output. Each program gets a
+ * fresh interpreter; the next one starts importing as soon as this one is taken.
  */
 export async function runPython(program: PythonProgram, argv: readonly string[] = [], env: Record<string, string> = {}) {
-  server ??= start();
-  const current = server;
-  await current.ready;
-  const id = nextId++;
-  const reply = await new Promise<Reply>((resolve) => {
-    current.replies.set(id, resolve);
-    current.child.stdin!.write(JSON.stringify({ id, program, argv, env: { ...process.env, ...env } }) + '\n');
-  });
-  if (reply.code !== 0) {
-    throw new Error(`Fixture ${Object.values(program)[0].slice(0, 80)} ${argv.join(' ')} exited with ${reply.code}\n${reply.stderr}`);
+  const runner = warm ?? startRunner();
+  warm = startRunner();
+  await runner.ready;
+  const exited = once(runner.child, 'close') as Promise<[number | null, NodeJS.Signals | null]>;
+  runner.child.stdin!.end(JSON.stringify({ program, argv, env: { ...process.env, ...env } }) + '\n');
+  const [code, signal] = await exited;
+  const stdout = Buffer.concat(runner.stdout).toString();
+  if (code !== 0) {
+    const stderr = Buffer.concat(runner.stderr).toString();
+    throw new Error(`Fixture ${Object.values(program)[0].slice(0, 80)} ${argv.join(' ')} exited with ${code ?? signal}\n${stderr}`);
   }
-  return reply.stdout;
+  return stdout;
 }

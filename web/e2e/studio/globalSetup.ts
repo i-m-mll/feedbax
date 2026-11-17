@@ -29,4 +29,6 @@ export default function globalSetup() {
   }
   for (const entry of readdirSync(cache)) if (entry !== key) rmSync(join(cache, entry), { recursive: true, force: true });
   process.env.FEEDBAX_STUDIO_E2E_DIST = dist;
+  // Workers run many small JAX programs at once; one thread each avoids oversubscribing the CPU.
+  process.env.XLA_FLAGS = '--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1';
 }

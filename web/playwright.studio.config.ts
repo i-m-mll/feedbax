@@ -1,11 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
-import { mkdtempSync } from 'node:fs';
-import { availableParallelism, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { availableParallelism } from 'node:os';
 
 export default defineConfig({
   testDir: './e2e/studio',
-  outputDir: mkdtempSync(join(tmpdir(), 'feedbax-studio-results-')),
+  outputDir: './node_modules/.cache/studio-e2e-results',
   globalSetup: './e2e/studio/globalSetup.ts',
   grepInvert: process.env.FEEDBAX_STUDIO_MEASURE === '1' ? undefined : /@responsiveness/,
   fullyParallel: true,
