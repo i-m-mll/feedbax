@@ -11,7 +11,7 @@ import struct
 from types import BuiltinFunctionType, FunctionType, MethodType
 from typing import TYPE_CHECKING
 
-from equinox._module._module import _flatten_sentinel
+from equinox._module._module import _FlattenedData, _flatten_sentinel
 import jax
 from jax._src.interpreters.mlir import make_ir_context
 from jaxlib import cpu_sparse, gpu_linalg, gpu_prng, gpu_solver, gpu_sparse, lapack
@@ -121,6 +121,13 @@ def _array_bytes(value: Operand) -> memoryview:
 def _project_argument_metadata(value: object) -> object:
     if value is _flatten_sentinel:
         return "equinox-unset-field"
+    if isinstance(value, _FlattenedData):
+        # Equinox builds wrapper fields from a set and restores them by name.
+        return (
+            value.dynamic_field_names,
+            value.static_fields,
+            tuple(sorted(value.wrapper_fields, key=lambda field: field[0])),
+        )
     if isinstance(value, jax.tree_util.GetAttrKey):
         return value.name
     if isinstance(value, jax.tree_util.SequenceKey):
