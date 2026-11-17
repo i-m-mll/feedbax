@@ -86,11 +86,11 @@ A core feature of Feedbax is the ability to modify models and tasks with [interv
 
 In control theory, the neural network is a *controller*. In reinforcement learning, we'd call it an *agent*—or at a given moment, a *policy*.
 
-[`recurrent_controller`][feedbax.models.networks.recurrent_controller] builds a graph with an optional encoder, a recurrent cell, and a readout. [`cde_controller`][feedbax.models.cde.cde_controller] builds a neural controlled differential equation graph. In either case, the graph exposes the controller's `hidden` and `output` ports for wiring and observation.
+[`recurrent_controller`][feedbax.builtins.models.networks.recurrent_controller] builds a graph with an optional encoder, a recurrent cell, and a readout. [`cde_controller`][feedbax.models.cde.cde_controller] builds a neural controlled differential equation graph. In either case, the graph exposes the controller's `hidden` and `output` ports for wiring and observation.
 
 ### Channels
 
-[`Channel`][feedbax.runtime.channel.Channel] is a model of delayed, noisy transmission of data. It's a modified [queue](https://en.wikipedia.org/wiki/Queue_(abstract_data_type)): it stores a number of samples of data in the order they were received; each time it receives a new sample, the oldest sample in the queue is pushed out the back, and the new one enters at the front. Noise is added to the oldest sample before it is returned.
+[`Channel`][feedbax.builtins.runtime.channel.Channel] is a model of delayed, noisy transmission of data. It's a modified [queue](https://en.wikipedia.org/wiki/Queue_(abstract_data_type)): it stores a number of samples of data in the order they were received; each time it receives a new sample, the oldest sample in the queue is pushed out the back, and the new one enters at the front. Noise is added to the oldest sample before it is returned.
 
 `Channel` is used by `SimpleFeedback` to model sensory feedback, but it can also be used wherever delayed, noisy transmission is required in a model.
 

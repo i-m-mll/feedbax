@@ -9,7 +9,7 @@ import pytest
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
-from feedbax.compiler.cde_templates import cde_controller_spec
+from feedbax.builtins.templates.cde_templates import cde_controller_spec
 from feedbax.models.cde import cde_controller
 
 

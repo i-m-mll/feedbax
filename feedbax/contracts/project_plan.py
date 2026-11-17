@@ -1572,9 +1572,10 @@ class _Compiler:
         )
         if (prepared := self.trial_preparations.get(identity)) is not None:
             return prepared
+        components = self.components or _builtin_model_registry()
         paired = compile_trial_execution(
             authored.model_name, authored.model, authored.task_source,
-            self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
+            components, self.functions or _builtin_expression_registry(),
             python_tasks=self.python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
         )
         result: _TrainPreparation | tuple[Problem, ...]
@@ -1583,12 +1584,12 @@ class _Compiler:
         else:
             graph = paired.executable.resolved.graph
             checkpoint_problem = None
-            if problem := model_owner_problem(graph, "checkpoint"):
+            if problem := model_owner_problem(graph, "checkpoint", components):
                 address = paired.lowered.source_address(pointer(problem.path))
                 path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
                 checkpoint_problem = RunProblem(pointer(path), problem.reason, address)
             evaluation: GraphSpec | ProjectDiagnostic = graph
-            if problem := model_owner_problem(graph, "evaluate"):
+            if problem := model_owner_problem(graph, "evaluate", components):
                 address = paired.lowered.source_address(pointer(problem.path))
                 evaluation = ProjectDiagnostic(
                     ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
@@ -1722,6 +1723,7 @@ class _Compiler:
             documents = train.trial_documents
             variant = resolve_evaluation_variant(
                 model_source.evaluation_graph, documents.task_source, settings.variation,
+                components=self.components or _builtin_model_registry(),
             )
             if any(target[0] == "task" for target in variant.edit_origins):
                 pairing = pair_trial_source(
@@ -1794,7 +1796,9 @@ class _Compiler:
             if isinstance(prior, dict):
                 prior = tuple(prior[name] for name in sorted(prior))
             variation = (*prior, *derived)
-            effective = resolve_evaluation_variant(before.graph, documents.task_source, variation)
+            effective = resolve_evaluation_variant(
+                before.graph, documents.task_source, variation, components=components,
+            )
             issues = validate_graph_connection_schema(
                 effective.graph, "/graph",
                 component_registry=components,

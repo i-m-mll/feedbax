@@ -2,19 +2,27 @@
 
 from collections.abc import Iterator
 
+from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 
 
 def graph_leaf_specs(
     graph: GraphSpec, scope: tuple[str, ...] = (),
 ) -> Iterator[tuple[tuple[str, ...], ComponentSpec]]:
+    for path, node, _ in graph_leaf_occurrences(graph, scope):
+        yield path, node
+
+
+def graph_leaf_occurrences(
+    graph: GraphSpec, scope: tuple[str, ...] = (),
+) -> Iterator[tuple[tuple[str, ...], ComponentSpec, AcausalGraphSpec | None]]:
     for name, node in graph.nodes.items():
         path = (*scope, name)
         interior = (graph.subgraphs or {}).get(name)
         if isinstance(interior, GraphSpec):
-            yield from graph_leaf_specs(interior, path)
+            yield from graph_leaf_occurrences(interior, path)
         else:
-            yield path, node
+            yield path, node, interior
 
 
 def graph_output_sources(graph: GraphSpec) -> Iterator[tuple[tuple[str, ...], str]]:

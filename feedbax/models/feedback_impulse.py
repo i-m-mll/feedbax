@@ -8,8 +8,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from feedbax.runtime.signal_transforms import ConstantInput, ConstantInputParams
-from feedbax.runtime.graph import Component, Graph
+from feedbax.builtins.runtime.signal_transforms import ConstantInputParams, ConstantInputTransform
+from feedbax.runtime.graph import Graph
 
 
 def random_unit_vector(key, dim):
@@ -17,7 +17,7 @@ def random_unit_vector(key, dim):
     return v / jnp.linalg.norm(v)
 
 
-class _FeedbackOffset(ConstantInput):
+class _FeedbackOffset(ConstantInputTransform):
     input_ports = ("input", "scheduled_active")
 
     feedback_var: int = eqx.field(static=True)
@@ -92,7 +92,7 @@ def feedback_impulse(
     feedback_var: int,
     start_timestep: int,
     feedback_dim: int | None = None,
-) -> Component:
+) -> Graph:
     """Add an offset to a point mass's ``(position, velocity)`` feedback tuple.
 
     ``feedback_var`` selects position (0) or velocity (1). With ``feedback_dim``

@@ -31,7 +31,7 @@ from feedbax.contracts.migrations import default_spec_registry
 
 
 def test_builtin_mux_and_demux_policies_preserve_dynamic_port_layouts() -> None:
-    from feedbax.runtime.components import Demux, Input, Mux
+    from feedbax.builtins.runtime.components import Demux, Input, Mux
 
     direct_mux = Mux(n_inputs=3)
     direct_demux = Demux(sizes=(2, 1, 3))

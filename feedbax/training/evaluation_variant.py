@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -14,8 +15,11 @@ from feedbax.contracts.matrix_core import apply_override_patch_in_place
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.rollout import VariationEdits, authored_variation
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.model_values import MODEL_OWNERS, SPATIAL_OWNER, model_owner_problem
+from feedbax.contracts.model_values import component_model_facts, model_owner_problem
 from feedbax.studio.canonical_evaluate import CannotRun
+
+if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
 
 
 _MANAGED_TASK = TypeAdapter(TaskDocument | PythonTaskSelection)
@@ -87,8 +91,8 @@ def _addressable_graph(graph: GraphSpec) -> tuple[dict, dict[tuple[str, ...], tu
     return payload, wire_ids
 
 
-def validate_evaluation_source(graph: GraphSpec) -> None:
-    if problem := model_owner_problem(graph, "evaluate"):
+def validate_evaluation_source(graph: GraphSpec, components: ComponentRegistry) -> None:
+    if problem := model_owner_problem(graph, "evaluate", components):
         raise CannotRun(pointer(("inputs", "subject", *problem.path)), problem.reason)
 
 
@@ -110,6 +114,7 @@ def _replacement_task(patch, path):
 
 def resolve_evaluation_variant(
     graph: GraphSpec, task: TaskDocument | PythonTaskSelection, patches: VariationEdits,
+    *, components: ComponentRegistry,
 ) -> EvaluationVariant:
     """Apply the existing project patch grammar with a bounded compatibility policy."""
     graph_payload, wire_ids = _addressable_graph(graph)
@@ -168,11 +173,8 @@ def resolve_evaluation_variant(
                     if name in raw["nodes"]:
                         raise ValueError("cannot replace a retained owner with an addition")
                     component = ComponentSpec.model_validate(patch.value)
-                    owner = MODEL_OWNERS.get(component.type)
-                    if (
-                        component.type == SPATIAL_OWNER or owner is None or owner.states is None
-                        or component.revision not in {None, owner.revision}
-                    ):
+                    owner = component_model_facts(component, components)
+                    if owner is None or owner.states is None:
                         raise ValueError(f"added owner {component.type!r} has no qualified declaration")
                 case ["nodes", name], ("remove" | "replace"):
                     node = current.nodes.get(name)
@@ -186,11 +188,8 @@ def resolve_evaluation_variant(
                     node = current.nodes.get(name)
                     if node is None:
                         raise ValueError("parameter patch must name a retained owner")
-                    owner = MODEL_OWNERS.get(node.type)
-                    if (
-                        owner is None or owner.states is None or not owner.checkpointable
-                        or node.revision not in {None, owner.revision}
-                    ):
+                    owner = component_model_facts(node, components)
+                    if owner is None or owner.states is None or not owner.checkpointable:
                         raise ValueError(f"retained owner {node.type!r} has no qualified declaration")
                     declared = next((value for value in owner.values if value.symbol == parameter), None)
                     if declared is not None:

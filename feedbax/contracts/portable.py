@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel, ConfigDict, create_model
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
+from feedbax.contracts.model_values import ModelFacts
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -382,6 +383,7 @@ class ComponentOwner:
     component_history: ClassVar[History | None] = None
     component_presentation: ClassVar[PresentationOverride | None] = None
     component_sources: ClassVar[tuple[Path, ...]] = ()
+    model_facts: ClassVar[ModelFacts | None] = None
 
     @classmethod
     def from_config(cls, config, **context):
