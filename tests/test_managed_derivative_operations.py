@@ -102,11 +102,25 @@ def _variable(name, value):
     return {"id": name, "name": name, "type": {"base": "real"}, "value": _literal(value)}
 
 
+def _vector_signal(name, terms):
+    return {
+        "id": name, "name": name, "type": {"base": "real", "shape": [len(terms)]},
+        "cells": [{
+            "first_epoch": "rollout", "last_epoch": "rollout",
+            "value": {"kind": "call", "function": "vector", "args": terms},
+        }],
+    }
+
+
 def _conditioning_task():
+    zero = _literal(0.0)
     return {
         "id": "conditioning", "variables": [_variable("conditioning", 0.0)],
         "epochs": [{"id": "rollout", "name": "Rollout"}], "fixed_steps": 2,
-        "signals": [],
+        "signals": [
+            _vector_signal("feedback", [zero, zero, {"kind": "name", "reference": "conditioning"}]),
+            _vector_signal("memory", [zero] * 4),
+        ],
         "validation_trials": [{"variables": {"conditioning": level}} for level in (0.0, 0.5, 1.0)],
     }
 
@@ -241,7 +255,9 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
 
     def finished():
         rows = [row for row in host.jobs(project=review.project_id) if row["id"] in job_ids]
-        return rows if len(rows) == len(job_ids) and all(row["outcome"] is not None for row in rows) else None
+        terminal = [row for row in rows if row["outcome"] is not None]
+        if any(row["state"] != "succeeded" for row in terminal) or len(terminal) == len(job_ids):
+            return terminal
 
     rows = wait_until(finished, timeout=45)
     assert all(row["state"] == "succeeded" for row in rows), {
@@ -265,6 +281,8 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
 
     def results(request, role):
         success = view.authored(request)
+        provider = success.receipt.provider
+        assert (provider.distribution, provider.version) == ("feedbax-witness", "1.0")
         (product,) = success.receipt.products[role]
         return open_stored_dataset(store, dataset_member(product))
 
