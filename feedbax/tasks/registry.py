@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -25,20 +25,20 @@ class PythonTaskTemplate:
 
 
 @dataclass(frozen=True)
-class PythonTaskDefinition:
+class PythonTaskDefinition[Settings: BaseModel]:
     key: str
     label: str
-    parameters: type[BaseModel]
-    template: Callable[..., PythonTaskTemplate]
+    parameters: type[Settings]
+    template: Callable[[Settings], PythonTaskTemplate]
     parameter_sites: Mapping[str, Site]
 
 
 class PythonTaskRegistry:
     def __init__(self) -> None:
-        self._entries: dict[str, PythonTaskDefinition] = {}
+        self._entries: dict[str, PythonTaskDefinition[Any]] = {}
         self._sealed = False
 
-    def register(self, definition: PythonTaskDefinition) -> None:
+    def register(self, definition: PythonTaskDefinition[Any]) -> None:
         if self._sealed:
             raise RuntimeError("Python task registry is sealed")
         if definition.key in self._entries:
@@ -48,7 +48,7 @@ class PythonTaskRegistry:
     def keys(self) -> tuple[str, ...]:
         return tuple(sorted(self._entries))
 
-    def resolve(self, key: str) -> PythonTaskDefinition | None:
+    def resolve(self, key: str) -> PythonTaskDefinition[Any] | None:
         return self._entries.get(key)
 
     def seal(self) -> None:
