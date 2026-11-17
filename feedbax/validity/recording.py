@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -14,20 +13,20 @@ from pathlib import Path
 import platform
 import sys
 from threading import local
-import time
-from types import CodeType, ModuleType
+from types import ModuleType
 
 from packaging.utils import canonicalize_name
 
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.contracts.code_validity import AttemptProvenance, CodeTrace, FileSnapshot, ReceiptEvidence, SourcePath, SourceSnapshot
 from feedbax.contracts.computation_validity import ComputationTrace
+from feedbax.host.source_roster import SourceRoster
 from feedbax.orchestration.revision import resolve_feedbax_provenance
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.declarations import ResolvedDeclaration, observe_declarations
 from feedbax.validity.environment import EnvironmentSnapshot, read_environment
 from feedbax.validity.registry import registry_binding
-from feedbax.validity.source import SourceCatalog, SourceFile, plugin_packages, source_catalog
+from feedbax.validity.source import SourceFile, plugin_packages, source_catalog
 
 
 type ComputationSnapshot = Callable[[], ComputationTrace | None]
@@ -70,12 +69,12 @@ class ExecutionDependencies:
 class WorkerRecorder:
     """Two lifetime rosters and a job-scoped audit over one worker process."""
 
-    def __init__(self, project: Path):
-        self.project = project.resolve()
-        self.catalog = source_catalog(self.project)
-        self.boot_ns = time.time_ns()
-        self.entered: dict[str, set[str]] = defaultdict(set)
-        self.host: dict[str, set[str]] = defaultdict(set)
+    def __init__(self, entered: dict[str, set[str]], *, boot_ns: int):
+        self.project: Path | None = None
+        self.catalog = source_catalog(None)
+        self.boot_ns = boot_ns
+        self.entered = entered
+        self.host = SourceRoster(4, "Feedbax host product source")
         self.loaded: dict[SourcePath, SourceFile] = {}
         self.attempt: _Attempt | None = None
         self._audit = local()
@@ -94,48 +93,27 @@ class WorkerRecorder:
         global _recorder, _audit_installed
         if _recorder is not None:
             raise RuntimeError("A worker recorder already owns this process")
-        monitor = sys.monitoring
-        with_monitor = [ident for ident in (3, 4) if monitor.get_tool(ident) is None]
-        if len(with_monitor) != 2:
-            raise RuntimeError("Managed validity requires two free Python monitoring tool identifiers")
-        self._entered_id, self._host_id = with_monitor
-        monitor.use_tool_id(self._entered_id, "Feedbax executed source")
-        monitor.use_tool_id(self._host_id, "Feedbax host product source")
-        monitor.register_callback(self._entered_id, monitor.events.PY_START, self._enter)
-        monitor.register_callback(self._host_id, monitor.events.PY_START, self._host_enter)
-        monitor.set_events(self._entered_id, monitor.events.PY_START)
         _recorder = self
         if not _audit_installed:
             sys.addaudithook(_observe_open)
             _audit_installed = True
         try:
-            yield
+            with self.host:
+                yield
         finally:
             _recorder = None
-            for identifier in with_monitor:
-                monitor.set_events(identifier, 0)
-                monitor.register_callback(identifier, monitor.events.PY_START, None)
-                monitor.free_tool_id(identifier)
-
-    def _enter(self, code: CodeType, _offset: int):
-        self.entered[code.co_filename].add(code.co_qualname.replace(".<locals>.", "."))
-        return sys.monitoring.DISABLE
-
-    def _host_enter(self, code: CodeType, _offset: int):
-        self.host[code.co_filename].add(code.co_qualname.replace(".<locals>.", "."))
-        return sys.monitoring.DISABLE
 
     @contextmanager
     def host_product(self) -> Iterator[None]:
         if self._host_depth == 0:
-            sys.monitoring.set_events(self._host_id, sys.monitoring.events.PY_START)
+            self.host.enable()
         self._host_depth += 1
         try:
             yield
         finally:
             self._host_depth -= 1
             if self._host_depth == 0:
-                sys.monitoring.set_events(self._host_id, 0)
+                self.host.disable()
 
     def _source_paths(self) -> dict[SourcePath, tuple[set[str], set[str]]]:
         self.catalog = source_catalog(self.project)
@@ -155,13 +133,21 @@ class WorkerRecorder:
                 continue
             names, host = result.setdefault(source, (set(), set()))
             names.update(self.entered.get(name, ()))
-            host.update(self.host.get(name, ()))
+            host.update(self.host.names.get(name, ()))
         return result
 
     def note_preloaded_sources(self) -> None:
         for source in self._source_paths():
-            if (present := self.catalog.read(source)) is not None:
+            if source not in self.loaded and (present := self.catalog.read(source)) is not None:
                 self.loaded[source] = present
+
+    def bind_project(self, project: Path) -> None:
+        root = project.resolve(strict=True)
+        if self.project is None:
+            self.project = root
+            self.note_preloaded_sources()
+        elif self.project != root:
+            raise ValueError("A managed worker cannot change its project source authority")
 
     def changed(self) -> bool:
         for source, expected in self.loaded.items():
@@ -175,6 +161,7 @@ class WorkerRecorder:
 
     @contextmanager
     def delivery(self, job: str, store_root: Path, scratch: Path) -> Iterator[None]:
+        assert self.project is not None
         environment = read_environment(self.project, verify_installation=True)
         store = ImmutableArtifactBlobProvider(store_root)
         excluded = (store_root.resolve(), scratch.resolve(), *self._interpreter_roots)
@@ -245,7 +232,9 @@ class WorkerRecorder:
 
     def _snapshot(self, attempt: _Attempt, store: ImmutableArtifactBlobProvider) -> ReceiptEvidence:
         sources = []
-        order = lambda source: (source.scope, source.path)
+        def order(source: SourcePath) -> tuple[str, str]:
+            return source.scope, source.path
+
         for path, (entered, host) in sorted(self._source_paths().items(), key=lambda item: order(item[0])):
             source = self._current_source(path)
             if source is None:
@@ -266,13 +255,7 @@ class WorkerRecorder:
                 path=path, content=ref, entered=tuple(sorted(entered)), host_product=tuple(sorted(host)),
             ))
         provenance = resolve_feedbax_provenance()
-        for path, digest in attempt.files.items():
-            try:
-                stable = self.catalog.file_digest(path) == digest
-            except OSError:
-                stable = False
-            if not stable:
-                attempt.indeterminate_files.add(path)
+        self._verify_file_reads(attempt)
         return ReceiptEvidence(
             attempt=attempt.id,
             trace=CodeTrace(
@@ -301,13 +284,38 @@ class WorkerRecorder:
         except OSError:
             present = None
         if (captured := self.loaded.get(path)) is not None:
-            if present is None or present.sha256 != captured.sha256:
+            if present is None or present.sha256 != captured.sha256 or present.modified_ns > self.boot_ns:
                 assert self.attempt is not None
                 self.attempt.indeterminate.add(path)
             return captured
         if present is not None:
             self.loaded[path] = present
         return present
+
+    def _verify_file_reads(self, attempt: _Attempt) -> None:
+        for path, digest in attempt.files.items():
+            try:
+                stable = self.catalog.file_digest(path) == digest
+            except OSError:
+                stable = False
+            if not stable:
+                attempt.indeterminate_files.add(path)
+
+    def ensure_unchanged(self) -> None:
+        attempt = self.attempt
+        assert attempt is not None and self.project is not None
+        self._audit.reading = True
+        try:
+            for path in self._source_paths():
+                source = self._current_source(path)
+                if source is None or source.modified_ns > self.boot_ns:
+                    attempt.indeterminate.add(path)
+            self._verify_file_reads(attempt)
+            current = read_environment(self.project, verify_installation=True)
+        finally:
+            self._audit.reading = False
+        if attempt.indeterminate or attempt.indeterminate_files or current != attempt.environment:
+            raise ValueError("Source files, read dependencies, or environment changed during the computation check")
 
     def _loaded_environment(self, environment: EnvironmentSnapshot) -> dict[str, str]:
         first_party = {"feedbax", *plugin_packages().values()}
@@ -353,6 +361,12 @@ def snapshot_execution(store: ImmutableArtifactBlobProvider) -> ReceiptEvidence 
     if _recorder is None or _recorder.attempt is None:
         return None
     return _recorder.snapshot(store)
+
+
+def assert_execution_unchanged() -> None:
+    if _recorder is None or _recorder.attempt is None:
+        raise RuntimeError("Validity checking requires a scoped Host recorder")
+    _recorder.ensure_unchanged()
 
 
 def execution_dependencies() -> ExecutionDependencies | None:
