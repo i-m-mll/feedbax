@@ -91,3 +91,16 @@ export function MenuGroupLabel({ children }: { children: ReactNode }) {
 }
 
 export const MenuGroup = BaseMenu.Group;
+
+export const MenuRadioGroup = BaseMenu.RadioGroup;
+
+export function MenuRadioItem({ value, disabled, children }: { value: string; disabled?: boolean; children: ReactNode }) {
+  return (
+    <BaseMenu.RadioItem className={popupItem} value={value} disabled={disabled}>
+      <span className="flex size-[1em] shrink-0 items-center justify-center">
+        <BaseMenu.RadioItemIndicator keepMounted={false}><Check /></BaseMenu.RadioItemIndicator>
+      </span>
+      <span className="flex-1 truncate">{children}</span>
+    </BaseMenu.RadioItem>
+  );
+}

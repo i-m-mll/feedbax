@@ -71,7 +71,7 @@ test('a failed Task read retries in its slot without disturbing Runs', async ({ 
     await retry.press('Enter');
     await expect(task).toBeFocused();
     await expect(task.getByRole('alert')).toHaveCount(0);
-    await expect(task.getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+    await expect(task.getByRole('button', { name: /^Task Document / })).toBeVisible();
     await expect(table).toBeVisible();
     const current = await request.get(projectPath);
     expect(current.ok()).toBe(true);
@@ -440,7 +440,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await primary.focus();
   await page.keyboard.press('Control+3');
   await expect(primary.getByRole('heading', { name: 'Task', exact: true })).toBeVisible();
-  await expect(primary.getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+  await expect(primary.getByRole('button', { name: /^Task Document / })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Inspector' })).not.toContainText('upper.proximal');
   await scene.focus();
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');

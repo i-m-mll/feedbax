@@ -41,7 +41,6 @@ export interface NamedDocumentScope extends MapDocumentScope {
 
 export interface ManagedProjectDetail {
   readonly documentId?: string;
-  readonly header: ReactNode;
   readonly body: ReactNode;
   readonly drawer?: ReactNode;
   readonly inspector?: ReactNode;
@@ -214,7 +213,6 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
     : <DetailReason reason="definitionUnavailable" name="scene" />;
   return {
     documentId: model?.id,
-    header: model?.id,
     path: interiors.length > 1 && path && <Select aria-label={studioName('interior')} value={JSON.stringify(path)}
       items={interiors.map((candidate) => ({ value: JSON.stringify(candidate), label: candidate.join(' / ') }))}
       onValueChange={interior.onSelect} />,
@@ -283,8 +281,8 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
   });
   return {
-    model: stored ? storedView : { header: null, body: <DetailReason reason="definitionUnavailable" name="model" /> },
-    task: { header: null, body: <DetailReason reason="definitionUnavailable" name="task" /> },
+    model: stored ? storedView : { body: <DetailReason reason="definitionUnavailable" name="model" /> },
+    task: { body: <DetailReason reason="definitionUnavailable" name="task" /> },
     scene: useSceneDetail(input, stored, JSON.stringify([scope, storedId]), saved.project_id, saved.revision),
   };
 }

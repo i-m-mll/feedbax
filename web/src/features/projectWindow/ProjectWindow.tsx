@@ -21,9 +21,11 @@ import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
 import {
-  projectWindowSlotView, projectWindowViews, showProjectWindowView,
+  closeProjectWindowSlot, projectWindowSlotView, projectWindowViews, showProjectWindowView,
   type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
+import type { DocumentPickerModel } from './DocumentPicker';
+import { SlotHeader } from './SlotHeader';
 import { StudioCommandPalette } from './StudioCommandPalette';
 import { StudioSettings } from './StudioSettings';
 import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
@@ -34,6 +36,7 @@ import './projectWindow.css';
 
 export interface ProjectWindowViewRegion {
   body: ReactNode;
+  picker?: DocumentPickerModel;
   header?: ReactNode;
   drawer?: ReactNode;
   inspector?: ReactNode;
@@ -220,11 +223,15 @@ export function ProjectWindow({
     moveFocus(other);
   }
 
+  function closeSlot(slot: ProjectWindowSlot) {
+    onStateChange((previous) => closeProjectWindowSlot(previous, slot));
+    moveFocus('primary');
+  }
+
   function splitDetails() {
-    onStateChange((previous) => split
-      ? { ...previous, secondaryView: null, focusedSlot: 'primary' }
-      : showProjectWindowView(previous, 'scene', 'secondary'));
-    moveFocus(split ? 'primary' : 'secondary');
+    if (split) return closeSlot(focusedSlot);
+    onStateChange((previous) => showProjectWindowView(previous, 'scene', 'secondary'));
+    moveFocus('secondary');
   }
 
   function cycleRegion(direction: number) {
@@ -274,6 +281,8 @@ export function ProjectWindow({
   const inspector = side('showInspector', 'inspectorOpen', 'inspector', inspectorVisible);
   const splitCommand = bindStudioCommand('splitDetails', splitDetails,
     { name: split ? 'closeSlot' : 'splitDetails', enabled: !!availableViews.length });
+  const closeCommand = (slot: ProjectWindowSlot) => bindStudioCommand('splitDetails', () => closeSlot(slot),
+    { name: 'closeSlot', keyboard: false });
   const switchCommand = bindStudioCommand('switchSlot', switchSlot, { enabled: split });
   const tabCommands = projectWindowViews.map((view) => bindStudioCommand(view, () => activateView(view),
     { enabled: availableViews.includes(view) }));
@@ -487,18 +496,11 @@ export function ProjectWindow({
                     pointerTransition.current = undefined;
                     focusSlot(slot);
                   }}>
-                  <header className="studio-window-slot__header">
-                    <h2 className="studio-window-slot__name">{studioName(view)}</h2>
-                    <div className="studio-window-slot__controls" hidden={!!offline && view !== 'runs'}>
-                      <StudioRegionBoundary key={view} name={view}>{region.header}</StudioRegionBoundary>
-                    </div>
-                    {slot === 'primary' && !split && (
-                      <WindowButton command={splitCommand} icon={Columns2} />
-                    )}
-                    {slot === 'secondary' && (
-                      <WindowButton command={splitCommand} icon={X} />
-                    )}
-                  </header>
+                  <SlotHeader view={view} icon={views[view]} picker={region.picker} hidden={!!offline && view !== 'runs'}
+                    trailing={split ? <WindowButton command={closeCommand(slot)} icon={X} />
+                      : <WindowButton command={splitCommand} icon={Columns2} />}>
+                    {region.header}
+                  </SlotHeader>
                   <div key={view} className="studio-window-slot__body">
                     {regionBody(view, region.body)}
                   </div>

@@ -15,7 +15,7 @@ import { InlineEdit } from '@/components/ui/InlineEdit';
 import { ListRow } from '@/components/ui/ListRow';
 import {
   ContextMenu, ContextMenuContent, ContextMenuTrigger, Menu, MenuCheckboxItem, MenuContent, MenuGroup, MenuGroupLabel, MenuItem,
-  MenuSeparator, MenuTrigger,
+  MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger,
 } from '@/components/ui/Menu';
 import { NumberField } from '@/components/ui/NumberField';
 import { PanelHeader } from '@/components/ui/PanelHeader';
@@ -235,6 +235,11 @@ export function Gallery() {
                 <MenuCheckboxItem checked={chosen !== 'Hide grid'} onCheckedChange={(shown) => setChosen(shown ? '' : 'Hide grid')}>
                   Grid
                 </MenuCheckboxItem>
+                <MenuSeparator />
+                <MenuRadioGroup value={chosen === 'arm' ? 'arm' : 'point-mass'} onValueChange={(value: string) => setChosen(value)}>
+                  <MenuRadioItem value="point-mass">point-mass</MenuRadioItem>
+                  <MenuRadioItem value="arm">arm</MenuRadioItem>
+                </MenuRadioGroup>
               </MenuContent>
             </Menu>
           </State>
