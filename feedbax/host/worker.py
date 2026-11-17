@@ -207,9 +207,7 @@ def _record_execution(message, recorder, log: Path, entrypoint, argv) -> int:
                 and status == 0 and (read_worker_result(log) or {}).get("outcome") == "succeeded"
             ):
                 store = ImmutableArtifactBlobProvider(root)
-                with store._exclusive_lock():
-                    evidence = recorder.snapshot(store)
-                    ref = stage_evidence(store, evidence)
+                ref = stage_evidence(store, lambda: recorder.snapshot(store))
                 try:
                     write_json(log.with_name(EVIDENCE_FILE), ref.model_dump(mode="json"))
                 except OSError:
