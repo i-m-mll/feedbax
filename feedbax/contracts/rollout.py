@@ -97,6 +97,7 @@ class RolloutSettings(StrictModel):
     trial_policy: Literal["paired"]
     retention: Literal["raw_states", "observations"] = "raw_states"
     variation: VariationEdits
+    input_overrides: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     @field_validator("variation")
     @classmethod
