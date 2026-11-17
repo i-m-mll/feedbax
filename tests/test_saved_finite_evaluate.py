@@ -25,7 +25,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
+from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
 from tests.support.finite_train import damaged_checkpoint_model, install_finite_gate
 
 host = host_fixture
@@ -368,25 +368,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
     pending(last)
     try:
-        (late,) = launch("late", "late")
-        assert late.disposition == "admitted"
-        pinned = wait_until(lambda: (
-            row["edges"][0]["binding"] if (row := job_row(host, late.job_id, "queued")) else None
-        ))
-        assert pinned == binding
-        with damaged_checkpoint_model(checkpoint):
-            assert host.stopped_checkpoint(producer.job_id, project=plan.project_id, manifest_root=str(plan.store_path)) is None
-            # A fresh admission detects corruption at selection. The earlier pin also
-            # detects the same damage before delivery.
-            (corrupt,) = launch("corrupt", "exact")
-            rejected = terminal(corrupt.job_id, "blocked")
-            assert not rejected["edges"][0]["satisfied"]
-            host.policy(compute=2)
-            refused = terminal(late.job_id, "blocked")
-            assert refused["edges"][0]["binding"] == binding
-            for row in (rejected, refused):
-                assert row["outcome"]["error"]["code"] == "dependency_corrupt"
-                assert row["delivery"] == 0 and "receipt" not in row["outcome"]
+        host.policy(compute=2)
         released = terminal(future.job_id, "succeeded")["edges"][0]["binding"]["checkpoint_selection"]
         assert job_row(host, resumed.job_id, "running") is not None
     finally:
@@ -433,7 +415,6 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         "message": "Producer closed without checkpoint coordinates [3].",
     }
 
-
     # Native Host continuations can branch even though Studio Resume offers a single child.
     (tmp_path / "resume-model-factor").write_text("1.25")
     [first_resume] = host.jobs(job_id=resumed.job_id, include_launch=True)
@@ -462,6 +443,36 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     assert future_selection["lineage"] == [producer.job_id, sibling.id]
     assert future_selection["members"][0]["producer_job_id"] == sibling.id
     assert service.read(project, revision=plan.revision).evaluations[future_run.key].result.validity.state == "current"
+
+    # Check both new and already pinned consumers after valid reuse. Observed Store damage is durable.
+    host.policy(compute=1)
+    release = tmp_path / "release-pinned"
+    gate = run_job(
+        "hold-pinned", f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+        project=plan.project_id,
+    )
+    admit(host, "hold-pinned", gate)
+    try:
+        wait_until(lambda: job_row(host, gate.id, "running"))
+        (late,) = launch("late", "late")
+        assert late.disposition == "admitted"
+        pinned = wait_until(lambda: (
+            row["edges"][0]["binding"] if (row := job_row(host, late.job_id, "queued")) else None
+        ))
+        assert pinned == binding
+        with damaged_checkpoint_model(checkpoint):
+            assert host.stopped_checkpoint(producer.job_id, project=plan.project_id, manifest_root=str(plan.store_path)) is None
+            (corrupt,) = launch("corrupt", "exact")
+            rejected = terminal(corrupt.job_id, "blocked")
+            assert not rejected["edges"][0]["satisfied"]
+            release.touch()
+            refused = terminal(late.job_id, "blocked")
+            assert refused["edges"][0]["binding"] == binding
+            for row in (rejected, refused):
+                assert row["outcome"]["error"]["code"] == "dependency_corrupt"
+                assert row["delivery"] == 0 and "receipt" not in row["outcome"]
+    finally:
+        release.touch()
 
 
 def test_saved_fixed_evaluate_reuses_only_equal_current_train_model(host, tmp_path, monkeypatch):
