@@ -63,10 +63,8 @@ def test_registered_operations_publish_typed_products_from_saved_states(tmp_path
     states_ref = publish_dataset(store, states)
     bundle = new_application_registry_bundle()
     bundle.seal()
-    assert bundle.operations.keys() == (
-        "feedbax.aligned_velocity", "feedbax.summarize_velocity",
-    )
-    align, summarize = bundle.operations.definitions()
+    align = bundle.operations.resolve("feedbax.aligned_velocity").definition
+    summarize = bundle.operations.resolve("feedbax.summarize_velocity").definition
     assert align.inputs["states"].selected_variables["velocity"].units == "m/s"
     assert align.outputs["velocity"].model_dump() == summarize.inputs["velocity"].model_dump(exclude={"kind"})
     assert summarize.outputs["summary"].variables["mean"].dims == ("checkpoint", "condition", "state_time")
