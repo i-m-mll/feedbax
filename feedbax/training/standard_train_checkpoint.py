@@ -11,9 +11,6 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 
-from feedbax.contracts.checkpoint_projection import (
-    STANDARD_TRAIN_STATE_MEDIA_TYPE as STANDARD_TRAIN_STATE_MEDIA_TYPE,
-)
 from feedbax.contracts.checkpoint_initialization import checkpoint_leaf_path
 from feedbax.contracts.checkpoints import (
     CheckpointSemanticAbi,
@@ -32,6 +29,7 @@ if TYPE_CHECKING:
     from feedbax.runtime.graph import Graph
 
 
+STANDARD_TRAIN_STATE_MEDIA_TYPE = "application/vnd.feedbax.standard-train-state+safetensors"
 STANDARD_TRAIN_STATE_CODEC_ID = "feedbax.training.standard_train_state"
 STANDARD_TRAIN_STATE_CODEC_VERSION = f"{STANDARD_TRAIN_STATE_CODEC_ID}.v1"
 STANDARD_TRAIN_SLOTS = {"optimizer": "optimizer", "prng": "prng", "batch_counter": "auxiliary"}

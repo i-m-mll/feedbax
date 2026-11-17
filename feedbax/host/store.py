@@ -368,7 +368,7 @@ class Store:
         stopped = PublishedTrainingCheckpoint.model_validate(outcome["checkpoint"])
         ref = ContentObjectRef.model_validate(staged)
         checkpoints = TypeAdapter(tuple[TrainJobCheckpoint, ...]).validate_json(view.store.get_object(ref))
-        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_training_batches:
+        if not checkpoints or checkpoints[-1].pointer != stopped.pointer or stopped.completed_updates != stopped.pointer.completed_updates:
             raise ValueError("Train Stop differs from its staged recovery publication")
         accepted = {
             PublishedTrainingCheckpoint.model_validate(data["checkpoint"]).pointer.transaction_id: data["checkpoint"]
@@ -432,7 +432,7 @@ class Store:
                 raise HostError("invalid_request", "Collected Train Stop differs from its stored binding.")
             if ref is not None:
                 outcome["store_job_entry"] = ref.model_dump(mode="json")
-            checkpoint = {"completed_updates": entry.recovery.pointer.completed_training_batches}
+            checkpoint = {"completed_updates": entry.recovery.pointer.completed_updates}
         self._mirror_collected_terminal(job, state, outcome, progress, checkpoint, delivery)
 
     def mirror_collected_evaluate(
@@ -740,9 +740,15 @@ class Store:
                         raise HostError("invalid_request", "Invalid authenticated completion edge.")
                 try:
                     selected = requested_checkpoint_selection(job["request"], job["launch"])
-                except (ValueError, KeyError, TypeError) as exc:
+                except (OSError, ValueError, KeyError, TypeError) as exc:
                     raise HostError("invalid_request", str(exc)) from exc
                 checkpoint = canonical_request.get("checkpoint") if canonical_request is not None else None
+                if light:
+                    if selected is not None and selected.producer_request is not None:
+                        checkpoint = {"request_id": selected.producer_request}
+                        input_path = f"/inputs/{selected.role}"
+                    elif any(edge.get("authenticated_completion") for edge in job["edges"]):
+                        raise HostError("invalid_request", "Managed operations require an authored exact checkpoint edge.")
                 checkpoint_parents = None
                 best = isinstance(checkpoint, dict) and checkpoint.get("kind") == "best_rank"
                 terminal = canonical_request.get("terminal") if evaluate else None
@@ -1833,7 +1839,7 @@ class Store:
         return _CompletionCandidate(None, {
             "code": "input_unavailable",
             "message": missing or "Producer ended without a resumable completion.",
-            **({"path": "/inputs/subject/checkpoint"} if selection is not None else {}),
+            **({"path": f"/inputs/{selection.role}/checkpoint"} if selection is not None else {}),
         }, rejections)
 
     def _record_completion_rejections(
@@ -2007,10 +2013,10 @@ class Store:
                         self._resolve_best_completion(job, BestRank.model_validate(checkpoint), candidates)
                         best_processed.add(job["id"])
                     continue
-                selection = requested_checkpoint_selection(job["request"], launch)
                 try:
+                    selection = requested_checkpoint_selection(job["request"], launch)
                     train_slots = train_source_slots(launch)
-                except CompletionFileError as error:
+                except (CompletionFileError, OSError, KeyError, TypeError, ValueError) as error:
                     self.finished(job, {
                         "outcome": "blocked",
                         "error": {"code": "invalid_request", "message": str(error)},
