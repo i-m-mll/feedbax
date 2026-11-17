@@ -60,6 +60,12 @@ def derive_key(
     return scoped_key if index is None else jr.fold_in(scoped_key, index)
 
 
+def model_initialization_key(seed: int, replica: str = "0") -> PRNGKeyArray:
+    """Share one keyed model initialization stream between Train and Evaluate."""
+    root = derive_key(jr.PRNGKey(seed), "studio_training", "model")
+    return root if replica == "0" else derive_key(root, "replica", replica)
+
+
 def _derive_many(
     derive: Callable[[PRNGKeyArray, jax.Array], PRNGKeyArray],
     key: PRNGKeyArray | None,
