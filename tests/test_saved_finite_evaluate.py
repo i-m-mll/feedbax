@@ -8,10 +8,12 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.contracts.effective_success import EvaluationSubjectValue
+from feedbax.contracts.jobs import JobStatus
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request, effective_binding_id
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, CheckpointCadence
 from feedbax.contracts.rollout import ResolvedRolloutBinding
+from feedbax.host.protocol import Job, Launch
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -23,7 +25,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
+from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, wait_until
 from tests.support.finite_train import damaged_checkpoint_model, install_finite_gate
 
 host = host_fixture
@@ -432,10 +434,35 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     }
 
 
+    # Native Host continuations can branch even though Studio Resume offers a single child.
+    (tmp_path / "resume-model-factor").write_text("1.25")
+    [first_resume] = host.jobs(job_id=resumed.job_id, include_launch=True)
+    sibling = Job(
+        id="current-sibling", project=plan.project_id, request=first_resume["request"],
+        launch=Launch(**first_resume["launch"]), continues=producer.job_id,
+        data={key: value for key, value in first_resume["data"].items() if key != "run_key"},
+    )
+    admit(host, "resume-again", sibling)
+    terminal(sibling.id, "succeeded")
+    future_run = by_step["future"]
+    earlier = settled.evaluations[future_run.key].result
+    now = service.read(project, revision=plan.revision).evaluations[future_run.key]
+    assert now.status is JobStatus.STALE and now.can_run
+    assert now.result.receipt == earlier.receipt
+    assert {reason.kind for reason in now.result.validity.reasons} == {"input"}
+
+    (fresh,) = jobs.admit_plan(
+        folders, plan, run_keys=(future_run.key,), token="evaluate-current-sibling", reuse_completed=True,
+    ).items
+    assert fresh.disposition == "admitted"
+    future_selection = terminal(fresh.job_id, "succeeded")["edges"][0]["binding"]["checkpoint_selection"]
+    assert future_selection["lineage"] == [producer.job_id, sibling.id]
+    assert future_selection["members"][0]["producer_job_id"] == sibling.id
+    assert service.read(project, revision=plan.revision).evaluations[future_run.key].result.validity.state == "current"
+
+
 def test_saved_fixed_evaluate_reuses_only_equal_current_train_model(host, tmp_path, monkeypatch):
     from dataclasses import replace
-
-    from feedbax.contracts.jobs import JobStatus
 
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")

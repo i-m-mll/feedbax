@@ -1456,7 +1456,7 @@ class Store:
 
     @inspect_without_recording()
     def _terminal_train_for_anchor(self, anchor: str) -> TerminalTrainSubject | None:
-        binding = self._completion_candidate(anchor, terminal_model=True).binding
+        binding = self._completion_candidate(anchor, terminal_model=True, current=True).binding
         return TerminalTrainSubject.model_validate(binding["terminal"]) if binding is not None else None
 
     @inspect_without_recording()
@@ -1482,7 +1482,7 @@ class Store:
                 if tip["state"] in TERMINAL_STATES:
                     return
             tip_id = tip["id"] if tip is not None else None
-            candidate = self._completion_candidate(anchor, selection, tip=tip_id, observe=True)
+            candidate = self._completion_candidate(anchor, selection, tip=tip_id, observe=True, current=not is_live)
             if include_objective and is_live and candidate.rejections:
                 job["checkpoint_objective_error"] = True
             pending = candidate.pending
@@ -1764,15 +1764,32 @@ class Store:
                 return {"kind": "recovery", "product": members[0]}
         return None
 
+    @inspect_without_recording()
+    def _current_completion_tip(self, anchor: str) -> str | None:
+        from feedbax.host.current_checkpoints import CurrentCheckpoints
+
+        producer = self.get(anchor)
+        if producer is None or not producer["request"].startswith("train:"):
+            return None
+        root = json.loads(producer["data"]).get("manifest_root")
+        if root is None:
+            return None
+        return CurrentCheckpoints(self, self._success_view(root), producer["project"]).tip_for_anchor(producer)
+
     def _completion_candidate(
         self, anchor: str, selection: CheckpointSelection | None = None, *,
         train_slots: frozenset[str] | None = None, tip: str | None = None, observe: bool = False,
-        terminal_model: bool = False,
+        terminal_model: bool = False, current: bool = False,
     ) -> _CompletionCandidate:
         """Select an authenticated final product or exact checkpoint publications.
 
         An earlier attempt can still produce another child whenever M1 permits its resume.
         """
+        if current and tip is None:
+            try:
+                tip = self._current_completion_tip(anchor)
+            except (KeyError, OSError, ValueError) as error:
+                return _CompletionCandidate(None, {"code": "dependency_corrupt", "message": str(error)}, [])
         attempts = self.db.execute(
             """WITH RECURSIVE lineage(id) AS (
                    VALUES (?) UNION ALL
@@ -2058,7 +2075,7 @@ class Store:
         for request, anchor in roots.items():
             key = anchor, None, None, None
             if key not in candidates:
-                candidates[key] = self._completion_candidate(anchor)
+                candidates[key] = self._completion_candidate(anchor, current=True)
             candidate = candidates[key]
             binding, error, rejections = candidate.binding, candidate.error, candidate.rejections
             self._record_completion_rejections(job, anchor, rejections)
@@ -2148,6 +2165,7 @@ class Store:
                 if key not in candidates:
                     candidates[key] = self._completion_candidate(
                         anchor, selection, train_slots=train_slots, tip=tip_id, terminal_model=terminal_model,
+                        current=not is_live,
                     )
                 candidate = candidates[key]
                 binding, error, rejections = candidate.binding, candidate.error, candidate.rejections

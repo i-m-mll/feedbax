@@ -107,6 +107,14 @@ class CurrentCheckpoints:
             return None
         return producer.anchor if producer is not None else None
 
+    def tip_for_anchor(self, row: Row) -> str | None:
+        """Use the current successful tip only inside the explicitly chosen root."""
+        request = row["request"]
+        if not self._belongs(row, request):
+            return None
+        producer = self._producer(request)
+        return producer.tip if producer is not None and producer.anchor == row["id"] else None
+
     def _selection(self, producer: _Producer, selection: CheckpointSelection | None) -> dict | None:
         if producer.anchor is None:
             return None
