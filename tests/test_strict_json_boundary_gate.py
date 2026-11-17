@@ -76,22 +76,6 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
         "Pydantic re-validates candidate.raw_bytes only after those exact bytes were admitted by "
         "strict_json_loads in _load_candidate."
     ),
-    ("feedbax/analysis/harness.py", "_execute_evaluation_batch_partition"): (
-        "Deep copy of in-memory declaration parameters through json.dumps output."
-    ),
-    ("feedbax/orchestration/conformance.py", "_canonical_training_payload"): (
-        "Normalization round-trips of the in-memory observed and expected mappings through "
-        "json.dumps output."
-    ),
-    ("feedbax/orchestration/executor_family.py", "evaluation_lifecycle_payload"): (
-        "Projection of a model admitted by strict_model_validate_json immediately beforehand."
-    ),
-    ("feedbax/training/authoring.py", "_project_domain"): (
-        "Round-trip of the projector mapping through json.dumps output in the same try block."
-    ),
-    ("feedbax/training/run_matrix.py", "_planned_run_id"): (
-        "Fresh copies of canonical bytes serialized from the admitted payload and coordinates."
-    ),
 }
 
 _PERMISSIVE_JSON_ATTRS = frozenset({"loads", "load"})
