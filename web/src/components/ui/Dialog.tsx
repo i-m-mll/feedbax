@@ -1,6 +1,8 @@
 import clsx from 'clsx';
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 
+const panelStyle = 'rounded-surface border border-shell-divider bg-shell-chrome p-3 text-shell-foreground shadow-lift outline-none';
+
 interface DialogProps {
   onClose: () => void;
   children: ReactNode;
@@ -70,7 +72,7 @@ export function Dialog({
       open={!manageFocus}
       className={clsx(
         'z-50 m-0 h-full max-h-none w-full max-w-none border-0 p-0 text-inherit backdrop:bg-transparent',
-        className ?? 'fixed inset-0 flex items-center justify-center bg-black/30',
+        className ?? 'fixed inset-0 flex items-center justify-center bg-shell-scrim',
         className && 'bg-transparent',
       )}
       onClick={(event) => {
@@ -81,7 +83,7 @@ export function Dialog({
       aria-label={ariaLabel}
       onCancel={manageFocus ? (event) => event.preventDefault() : undefined}
     >
-      <div className={panelClassName} ref={panel} tabIndex={manageFocus ? -1 : undefined}
+      <div className={clsx(panelStyle, panelClassName)} ref={panel} tabIndex={manageFocus ? -1 : undefined}
         onKeyDown={manageFocus ? (event) => {
           if (event.key !== 'Tab') return;
           const controls = tabbable(event.currentTarget);

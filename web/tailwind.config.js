@@ -21,6 +21,7 @@ export default {
           hover: 'var(--surface-hover)',
           accent: 'var(--studio-shell-accent)',
           selected: 'var(--studio-shell-selection)',
+          scrim: 'var(--studio-scrim)',
           'status-idle': 'var(--studio-status-idle)',
           'status-neutral': 'var(--studio-status-neutral)',
           'status-warning': 'var(--studio-status-warning)',
@@ -41,7 +42,10 @@ export default {
         'shell-inset': 'var(--space-3)'
       },
       borderRadius: {
-        'shell-control': 'var(--radius-lg)'
+        'shell-control': 'var(--radius-lg)',
+        control: 'var(--radius-md)',
+        row: 'var(--radius-sm)',
+        surface: 'var(--radius-lg)'
       },
       boxShadow: {
         soft: '0 12px 32px rgba(15, 23, 42, 0.08)',
