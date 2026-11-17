@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from functools import cache, cached_property
@@ -26,6 +26,7 @@ from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFEREN
 from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.model_input import authored_document_input, encode_document_input
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
@@ -36,6 +37,7 @@ from feedbax.contracts.project_inputs import (
     CheckpointRule,
     CheckpointBatches,
     CheckpointCadence,
+    DocumentInputReference,
     InputBinding,
     NamedSubset,
     OmittedReference,
@@ -181,6 +183,14 @@ class PlannedInput:
         return ElementKey(self.producer, self.producer_element) if self.producer and self.producer_element else None
 
 
+def plan_document_input(
+    reference: DocumentInputReference, document: Document, objects: MutableMapping[str, bytes],
+) -> PlannedInput:
+    content, raw = encode_document_input(authored_document_input(reference, document))
+    objects[content.sha256] = raw
+    return PlannedInput(None, InputMember(key=reference.source.document, reference=content))
+
+
 def _upstream_source(binding: PlannedInput) -> ValueSource | None:
     producer = binding.producer
     if producer is None:
@@ -286,6 +296,7 @@ class SelectedRunDefinition:
     document_uses: frozenset[str]
     document_pointers: Mapping[str, str] = field(default_factory=dict)
     document_problems: tuple[ProjectDiagnostic, ...] = ()
+    input_documents: Mapping[str, Document] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1406,6 +1417,7 @@ class _Compiler:
                 resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
                 MappingProxyType(resolved.document_pointers),
                 resolved.document_problems,
+                MappingProxyType(resolved.input_documents),
             )
 
         if self.previous is None:
