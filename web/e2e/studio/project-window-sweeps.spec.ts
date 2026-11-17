@@ -108,8 +108,9 @@ test('the saved Train field, map and Runs share named sweep values and row ident
     crossed.rows.find((row) => row.key.row === key.row)!.request_id]));
   await mapStep(page, 'train').click();
   await rate.getByRole('button', { name: 'Learning Rate kind: Sweep' }).click();
-  await rate.getByRole('menuitem', { name: 'Value' }).click();
-  await rate.getByRole('combobox', { name: 'Keep Value Learning Rate' }).selectOption({ label: '0.00275' });
+  await page.getByRole('menuitem', { name: 'Value' }).click();
+  await rate.getByRole('combobox', { name: 'Keep Value Learning Rate' }).click();
+  await page.getByRole('option', { name: '0.00275', exact: true }).click();
   await rate.getByRole('button', { name: 'Keep Value' }).click();
   await expect(rate.getByRole('textbox', { name: 'Learning Rate', exact: true })).toHaveValue('0.00275');
   await expect(table).toHaveAttribute('aria-rowcount', '3');
@@ -142,7 +143,7 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
     .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
   const field = page.getByRole('region', { name: 'Mass field', exact: true });
   await field.getByRole('button', { name: 'Mass kind: Value', exact: true }).click();
-  await field.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   await enter(field.getByRole('textbox', { name: 'Mass', exact: true }), '1, 2');
   await expect(field.getByRole('textbox', { name: 'Mass value 2', exact: true })).toHaveValue('2');
   const { plan } = await readPlan(request, projectPath);

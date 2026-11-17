@@ -4,11 +4,13 @@ import { ModelAddressSchema } from '@/generated/studioContracts';
 import { z } from 'zod';
 import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
+import { Button } from '@/components/ui/Button';
+import { Checkbox } from '@/components/ui/Checkbox';
+import { Select } from '@/components/ui/Select';
+import { TextField } from '@/components/ui/TextField';
 import { addressKey, type Component } from './modelGraph';
 
 export type Attachment = DelayAttachment | InterventionAttachment | ProbeAttachment;
-const inputClass = 'min-w-0 w-full rounded border border-shell-divider bg-shell-chrome px-1 py-0.5';
-const action = 'rounded px-1.5 py-0.5 hover:bg-shell-hover disabled:opacity-50';
 
 export function Field({ label, value, parse, commit, type = 'text', suffix, description }: {
   label: string; value: string; parse(value: string): JsonValue | undefined;
@@ -25,7 +27,7 @@ export function Field({ label, value, parse, commit, type = 'text', suffix, desc
     if (parsed !== undefined) commit(parsed);
   }}>
     <label className="grid gap-1">{label}
-      <input key={value} className={inputClass} name="value" type={type} step="any" defaultValue={value}
+      <TextField key={value} name="value" type={type} step="any" defaultValue={value}
         disabled={!commit} aria-invalid={invalid || undefined} aria-describedby={description ? descriptionId : undefined}
         onChange={() => setInvalid(false)} />
     </label>
@@ -76,15 +78,14 @@ function Parameter({ name, schema, value, change }: {
 }) {
   const label = humanizeLabel(name);
   const field = fieldValue(value, schema);
-  if (typeof value === 'boolean') return <label className="flex items-center gap-2">
-    <input type="checkbox" checked={value} disabled={!change} onChange={(event) => change?.(event.currentTarget.checked)} />{label}
-  </label>;
-  if (field.options?.length) return <label className="grid gap-1">{label}
-    <select className={inputClass} value={field.value} disabled={!change}
-      onChange={(event) => change?.(schema.options![Number(event.currentTarget.selectedOptions[0].dataset.index)] as JsonValue)}>
-      {field.options.map((option, index) => <option key={option} data-index={index} value={option}>{option}</option>)}
-    </select>
-  </label>;
+  if (typeof value === 'boolean') return <Checkbox label={label} checked={value} disabled={!change}
+    onCheckedChange={(checked) => change?.(checked)} />;
+  const options = field.options;
+  if (options?.length) return <div className="grid gap-1">{label}
+    <Select aria-label={label} value={field.value} disabled={!change}
+      items={options.map((option) => ({ value: option, label: option }))}
+      onValueChange={(option) => change?.(schema.options![options.indexOf(option)] as JsonValue)} />
+  </div>;
   if (Array.isArray(value) && value.every((item) => typeof item === 'number' || typeof item === 'string')) {
     return <fieldset className="grid gap-1"><legend>{label}</legend>
       {value.map((item, index) => <Field key={index} label={String(index + 1)} value={String(item)}
@@ -135,10 +136,10 @@ export function AttachmentFields({ item, step, change, arm, linkLabel, projected
         suffix={<small>{conversion(item.delay, step)}</small>}
         commit={change && ((delay) => change({ ...item, delay: delay as unknown as ModelTime }))} />}
       {linked ? <div>{studioName('initial')} <output>{label}</output>
-        {change && <button className={action} type="button" onClick={() => change({ ...item, initial: 0 })}>{studioName('clearLink')}</button>}
+        {change && <Button variant="ghost" onClick={() => change({ ...item, initial: 0 })}>{studioName('clearLink')}</Button>}
       </div> : !projected?.has('initial') && <Field label={studioName('initial')} value={String(initial ?? 0)} type="number" parse={numeric}
         commit={change && ((value) => change({ ...item, initial: value }))} />}
-      {arm && <button className={action} type="button" onClick={arm}>{studioName('pickInitial')}</button>}
+      {arm && <Button className="justify-self-start" onClick={arm}>{studioName('pickInitial')}</Button>}
     </>;
   }
   if (item.kind === 'probe') return <Field label={studioName('name')} value={item.name} parse={(raw) => raw.trim() || undefined}
@@ -146,14 +147,13 @@ export function AttachmentFields({ item, step, change, arm, linkLabel, projected
   const clamp = item.operation.toLowerCase() === 'clamp';
   const names = clamp ? ['low', 'high'] : ['factor'];
   return <>
-    <label className="grid gap-1">{studioName('operation')}
-      <select className={inputClass} value={item.operation.toLowerCase()} disabled={!change} onChange={(event) => {
-        const operation = event.currentTarget.value;
-        change?.({ ...item, operation, fields: operation === 'clamp' ? { low: -1, high: 1 } : { factor: 1 } });
-      }}>
-        <option value="clamp">{studioName('clamp')}</option><option value="scale">{studioName('scale')}</option>
-      </select>
-    </label>
+    <div className="grid gap-1">{studioName('operation')}
+      <Select<'clamp' | 'scale'> aria-label={studioName('operation')} value={clamp ? 'clamp' : 'scale'} disabled={!change}
+        items={[{ value: 'clamp', label: studioName('clamp') }, { value: 'scale', label: studioName('scale') }]}
+        onValueChange={(operation) => {
+          change?.({ ...item, operation, fields: operation === 'clamp' ? { low: -1, high: 1 } : { factor: 1 } });
+        }} />
+    </div>
     {names.filter((name) => !projected?.has(name)).map((name) => <Field key={name} label={humanizeLabel(name)} type="number"
       value={String(item.fields?.[name] ?? '')} parse={numeric}
       commit={change && ((value) => change({ ...item, fields: { ...item.fields, [name]: value } }))} />)}

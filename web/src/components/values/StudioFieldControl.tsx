@@ -1,14 +1,16 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { FunctionSquare } from 'lucide-react';
 import type { ModelFieldRequest, StudioEvaluateValueSource, StudioFieldView, StudioPlanReviewSource } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
 import { studioAccessibleName, studioEvaluateValueSource, studioFieldKindLabel, studioFieldLabel, studioFieldValueLabel, studioName, studioPlanValueSource } from '@/components/activity/studioVocabulary';
 import { selectionButton } from '@/features/pipeline/selection';
+import { Button, IconButton } from '@/components/ui/Button';
+import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
+import { Select } from '@/components/ui/Select';
+import { TextField } from '@/components/ui/TextField';
 
 type Edit = NonNullable<ModelFieldRequest['edit']>;
 type Commit = (edit: Edit) => Promise<string | undefined>;
-const inputClass = 'min-w-0 rounded border border-shell-divider bg-shell-chrome px-1 py-0.5 tabular-nums';
-const buttonClass = 'rounded px-1.5 py-0.5 hover:bg-shell-hover disabled:opacity-50';
 type FieldKind = StudioFieldView['site']['kinds'][number];
 
 export function StudioFieldControl({ field, commit, source, planSources, selectedValues, rowSelection = false, multipleRows = false, onChooseValue, valueKind = 'value' }: {
@@ -27,7 +29,6 @@ export function StudioFieldControl({ field, commit, source, planSources, selecte
   const reasonId = useId();
   const sourceId = useId();
   const textInput = useRef<HTMLInputElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<string>();
   const [reason, setReason] = useState<string>();
   const [menu, setMenu] = useState(false);
@@ -50,10 +51,6 @@ export function StudioFieldControl({ field, commit, source, planSources, selecte
   const effective = multipleRows ? undefined : field.effective;
   const sourceLabel = planSources?.length ? [...new Set(planSources.map(studioPlanValueSource))].join(', ')
     : source && studioEvaluateValueSource(source);
-
-  useEffect(() => {
-    if (menu) menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-  }, [menu]);
 
   async function submit(edit: Edit) {
     if (!commit || busy) return false;
@@ -89,40 +86,29 @@ export function StudioFieldControl({ field, commit, source, planSources, selecte
     void submit({ kind: 'text', text: `${next.scale === 'log' ? 'geomspace' : 'linspace'}(${next.start} ${rangeUnit}, ${next.stop} ${rangeUnit}, ${next.count})` });
   }
 
-  return <section className="grid min-w-0 gap-1" aria-label={studioFieldLabel('field', label)}>
+  return <section className="grid min-w-0 gap-1 tabular-nums" aria-label={studioFieldLabel('field', label)}>
     <label htmlFor={fieldId}>{label}</label>
     {sourceLabel && <span id={sourceId} className="text-xs text-shell-muted">{sourceLabel}</span>}
-    <div className="relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1">
-      <button type="button" className={`${buttonClass} ${sweep ? '' : 'text-shell-muted'}`}
-        aria-label={studioFieldKindLabel(label, kind)} aria-haspopup="menu" aria-expanded={menu}
-        onClick={() => setMenu(!menu)}>{valueKind === 'formula' && !sweep
-          ? <FunctionSquare aria-hidden="true" size={12} />
-          : <span aria-hidden="true">{sweep ? '◇' : valueKind === 'link' ? '↗' : '·'}</span>}</button>
-      {menu && <div ref={menuRef} role="menu" aria-label={studioFieldLabel('kinds', label)}
-        className="absolute left-0 top-full z-10 grid rounded border border-shell-divider bg-shell-chrome p-1 shadow-md"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') { event.stopPropagation(); setMenu(false); textInput.current?.focus(); }
-          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            event.preventDefault();
-            const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
-            const index = items.indexOf(document.activeElement as HTMLButtonElement);
-            const next = event.key === 'ArrowDown' ? index + 1 : index < 0 ? items.length - 1 : index - 1;
-            items[(next + items.length) % items.length]?.focus();
-          }
-        }}>
-        {field.site.kinds.map((value) => <button key={value} type="button" role="menuitem"
-          className={buttonClass}
-          disabled={readOnly || rowSelection && value !== kind ||
-            value === 'sweep' && !sweep && !field.can_sweep ||
-            value === 'value' && !!sweep && (!choices.length || !field.can_change_axis)}
-          onClick={() => choose(value)}>{studioName(value)}</button>)}
-      </div>}
-      <input ref={textInput} id={fieldId} type="text" className={inputClass}
+    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1">
+      <Menu open={menu} onOpenChange={setMenu}>
+        <MenuTrigger render={<IconButton label={studioFieldKindLabel(label, kind)} className={sweep ? undefined : 'text-shell-muted'}
+          icon={valueKind === 'formula' && !sweep
+            ? <FunctionSquare aria-hidden="true" />
+            : <span aria-hidden="true">{sweep ? '◇' : valueKind === 'link' ? '↗' : '·'}</span>} />} />
+        <MenuContent aria-label={studioFieldLabel('kinds', label)} finalFocus={textInput}>
+          {field.site.kinds.map((value) => <MenuItem key={value}
+            disabled={readOnly || rowSelection && value !== kind ||
+              value === 'sweep' && !sweep && !field.can_sweep ||
+              value === 'value' && !!sweep && (!choices.length || !field.can_change_axis)}
+            onClick={() => choose(value)}>{studioName(value)}</MenuItem>)}
+        </MenuContent>
+      </Menu>
+      <TextField ref={textInput} id={fieldId} type="text"
         value={draft ?? (rowSelection && !sweep ? multipleRows ? '' : effective ?? authored : authored)}
         placeholder={multipleRows && !sweep ? studioName('selectedRuns') : undefined}
         readOnly={readOnly} aria-invalid={!!reason || undefined}
         aria-describedby={[sourceLabel && sourceId, reason && reasonId].filter(Boolean).join(' ') || undefined}
-        onChange={(event) => { setDraft(event.currentTarget.value); setReason(undefined); }}
+        onValueChange={(value) => { setDraft(value); setReason(undefined); }}
         onKeyDown={(event) => {
           if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
             event.preventDefault();
@@ -147,14 +133,13 @@ export function StudioFieldControl({ field, commit, source, planSources, selecte
     {reason && <p role="alert" id={reasonId} className="text-xs">{reason}</p>}
     {list && <div className="grid gap-1 border-l border-shell-divider pl-2">
       {list.values.map(({ id, label: memberLabel, value }, index) => <div key={id} className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-1">
-        {onChooseValue ? <button type="button" className={buttonClass} aria-pressed={picked.has(id)}
-          aria-label={studioAccessibleName('select', `${label} ${memberLabel ?? value}`)}
-          {...selectionButton((extend) => onChooseValue(id, extend))}>
-          {picked.has(id) ? '◆' : '·'}
-        </button> : <span aria-hidden="true" className={picked.has(id) ? 'font-bold' : 'text-shell-muted'}>{picked.has(id) ? '◆' : '·'}</span>}
-        <input type="text" className={inputClass} aria-label={memberLabel ? studioAccessibleName('value', memberLabel) : studioFieldValueLabel(label, index + 1)}
+        {onChooseValue ? <IconButton pressed={picked.has(id)}
+          label={studioAccessibleName('select', `${label} ${memberLabel ?? value}`)}
+          {...selectionButton((extend) => onChooseValue(id, extend))}
+          icon={picked.has(id) ? '◆' : '·'} /> : <span aria-hidden="true" className={picked.has(id) ? 'font-bold' : 'text-shell-muted'}>{picked.has(id) ? '◆' : '·'}</span>}
+        <TextField type="text" aria-label={memberLabel ? studioAccessibleName('value', memberLabel) : studioFieldValueLabel(label, index + 1)}
           value={members[id] ?? String(value)} readOnly={readOnly || !list.editable}
-          onChange={(event) => { setMembers({ ...members, [id]: event.currentTarget.value }); setReason(undefined); }}
+          onValueChange={(next) => { setMembers({ ...members, [id]: next }); setReason(undefined); }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && members[id] !== undefined) {
               event.preventDefault();
@@ -162,7 +147,7 @@ export function StudioFieldControl({ field, commit, source, planSources, selecte
             }
             if (event.key === 'Escape') { setMembers({}); setReason(undefined); }
           }} />
-        {list.editable && <input className={inputClass} type="text" readOnly={readOnly}
+        {list.editable && <TextField type="text" readOnly={readOnly}
           aria-label={studioFieldValueLabel(label, index + 1, true)} placeholder={studioName('name')} key={memberLabel ?? ''}
           defaultValue={memberLabel ?? ''} onKeyDown={(event) => {
             if (event.key === 'Enter') {
@@ -176,32 +161,30 @@ export function StudioFieldControl({ field, commit, source, planSources, selecte
         event.preventDefault();
         void submit({ kind: 'text', text: `${authored.replace(/,$/, '')}, ${newValue}` });
       }}>
-        <input aria-label={studioAccessibleName('newValue', label)} autoFocus className={inputClass} value={newValue}
-          onChange={(event) => setNewValue(event.currentTarget.value)} />
-        <button type="submit" className={buttonClass} disabled={readOnly || !newValue.trim()}>{studioName('add')}</button>
+        <TextField aria-label={studioAccessibleName('newValue', label)} autoFocus value={newValue} onValueChange={setNewValue} />
+        <Button type="submit" disabled={readOnly || !newValue.trim()}>{studioName('add')}</Button>
       </form>}
-      {!adding && field.can_change_axis && !rowSelection && <button type="button" className={`${buttonClass} justify-self-start`}
-        disabled={readOnly} onClick={() => setAdding(true)}>{studioName('addValue')}</button>}
+      {!adding && field.can_change_axis && !rowSelection && <Button variant="ghost" className="justify-self-start"
+        disabled={readOnly} onClick={() => setAdding(true)}>{studioName('addValue')}</Button>}
     </div>}
     {range && <div className="grid gap-1 border-l border-shell-divider pl-2">
       {([['start', 'first'], ['stop', 'last'], ['count', 'count']] as const).map(([key, name]) =>
-        <label key={key} className="grid grid-cols-[auto_1fr] gap-2">{studioName(name)}
-          <input type="text" className={inputClass} key={range[key]} defaultValue={range[key]} readOnly={ruleReadOnly}
+        <label key={key} className="grid grid-cols-[auto_1fr] items-center gap-2">{studioName(name)}
+          <TextField type="text" key={range[key]} defaultValue={range[key]} readOnly={ruleReadOnly}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !ruleReadOnly) { event.preventDefault(); updateRange(key, event.currentTarget.value); }
               if (event.key === 'Escape') event.currentTarget.value = String(range[key]);
             }} />
         </label>)}
-      <label className="grid grid-cols-[auto_1fr] gap-2">{studioName('spacing')}
-        <select className={inputClass} value={range.scale ?? 'linear'} disabled={ruleReadOnly}
-          onChange={(event) => updateRange('scale', event.currentTarget.value)}>
-          <option value="linear">{studioName('linear')}</option><option value="log">{studioName('logarithmic')}</option>
-        </select>
-      </label>
+      <div className="grid grid-cols-[auto_1fr] items-center gap-2">{studioName('spacing')}
+        <Select aria-label={studioName('spacing')} value={range.scale ?? 'linear'} disabled={ruleReadOnly}
+          items={[{ value: 'linear', label: studioName('linear') }, { value: 'log', label: studioName('logarithmic') }]}
+          onValueChange={(scale) => updateRange('scale', scale)} />
+      </div>
     </div>}
     {sampler && typeof sampler.distribution !== 'string' && <div className="grid gap-1 border-l border-shell-divider pl-2">
-      <label className="grid grid-cols-[auto_1fr] gap-2">{studioName('count')}
-        <input className={inputClass} key={sampler.count} defaultValue={sampler.count} readOnly={ruleReadOnly}
+      <label className="grid grid-cols-[auto_1fr] items-center gap-2">{studioName('count')}
+        <TextField key={sampler.count} defaultValue={sampler.count} readOnly={ruleReadOnly}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !ruleReadOnly) {
               const text = field.text.replace(/\d+\)$/, `${event.currentTarget.value})`);
@@ -209,8 +192,8 @@ export function StudioFieldControl({ field, commit, source, planSources, selecte
             }
           }} />
       </label>
-      <label className="grid grid-cols-[auto_1fr] gap-2">{studioName('seed')}
-        <input className={inputClass} key={sampler.seed} type="number" min={0} max={2 ** 32 - 1} step={1}
+      <label className="grid grid-cols-[auto_1fr] items-center gap-2">{studioName('seed')}
+        <TextField key={sampler.seed} type="number" min={0} max={2 ** 32 - 1} step={1}
           defaultValue={sampler.seed} readOnly={ruleReadOnly} onKeyDown={(event) => {
             if (event.key === 'Enter' && !ruleReadOnly && event.currentTarget.validity.valid) {
               void submit({ kind: 'text', text: field.text, seed: event.currentTarget.valueAsNumber });
@@ -218,18 +201,16 @@ export function StudioFieldControl({ field, commit, source, planSources, selecte
           }} />
       </label>
     </div>}
-    {sweep && sweep.kind !== 'list' && sweep.can_list && !rowSelection && <button type="button"
-      className={`${buttonClass} justify-self-start`} disabled={readOnly}
-      onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</button>}
+    {sweep && sweep.kind !== 'list' && sweep.can_list && !rowSelection && <Button variant="ghost"
+      className="justify-self-start" disabled={readOnly}
+      onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
     {keep !== undefined && choices.length > 0 && <form className="grid grid-cols-[1fr_auto] gap-1" onSubmit={(event) => {
       event.preventDefault();
       void submit({ kind: 'to_value', value_id: keep });
     }}>
-      <select aria-label={studioAccessibleName('keepValue', label)} className={inputClass} value={keep}
-        onChange={(event) => setKeep(event.currentTarget.value)}>
-        {choices.map(({ id, value }) => <option key={id} value={id}>{value}</option>)}
-      </select>
-      <button className={buttonClass} type="submit" disabled={readOnly}>{studioName('keepValue')}</button>
+      <Select aria-label={studioAccessibleName('keepValue', label)} value={keep} onValueChange={setKeep}
+        items={choices.map(({ id, value }) => ({ value: id, label: String(value) }))} />
+      <Button type="submit" disabled={readOnly}>{studioName('keepValue')}</Button>
     </form>}
   </section>;
 }
