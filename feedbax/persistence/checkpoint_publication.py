@@ -29,8 +29,7 @@ def read_retained_checkpoint(
         or (launch.request_id, binding.request, binding.documents)
         != (producer.id, producer.object, producer.documents)
         or launch.spec != spec
-        or (identity.request_id, identity.method_key, identity.method_revision)
-        != (request.id, spec.method, spec.method_revision)
+        or (identity.request_id, identity.method_key) != (request.id, spec.method)
     ):
         raise ValueError("Checkpoint publication differs from its authenticated Train definition")
     return manifest, spec

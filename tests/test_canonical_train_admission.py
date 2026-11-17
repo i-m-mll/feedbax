@@ -195,7 +195,12 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
         def interrupted():
             if marker.exists():
                 return True
-            row = job_row(host, attempt)
+            try:
+                row = job_row(host, attempt)
+            except HostError as error:
+                if error.code != "disconnected":
+                    raise
+                return marker.exists()
             if row and row["state"] in {"failed", "blocked", "stopped"}:
                 pytest.fail(str(row["outcome"]))
             return False

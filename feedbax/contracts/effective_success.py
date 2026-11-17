@@ -397,9 +397,7 @@ def select_bound_product(
         return product, occurrence.provenance
     if occurrence.clock.completed_updates != policy.source_completed_updates:
         raise ValueError("Selected checkpoint differs from the authored continuation boundary")
-    if policy.state == "preserve" and (
-        occurrence.state.method_key, occurrence.state.method_revision,
-    ) != (spec.method, spec.method_revision):
-        raise ValueError("Carrying training state requires the same method and revision")
+    if policy.state == "preserve" and occurrence.state.method_key != spec.method:
+        raise ValueError("Carrying training state requires the same method")
     encoding = occurrence.project(SemanticModelEncoding.model_validate(product.descriptor), policy)
     return product.model_copy(update={"descriptor": encoding.model_dump(mode="json")}), occurrence.provenance

@@ -150,7 +150,7 @@ def bind_canonical_train(
     request, checkpoint = _decode_train(request_id, data, read_document)
     spec, _, _ = normalize_train_method(request, registries.training_methods)
     if spec != request:
-        raise ValueError("Train request must carry the resolved method key, revision and normalized settings.")
+        raise ValueError("Train request must carry the resolved method key and normalized settings.")
     _resolve_trial(spec, registries)
     refs = tuple(
         store.store_rooted_object(raw, namespace="studio-train-document")
@@ -216,5 +216,5 @@ def resolve_training_request_binding(
     if canonical_json_bytes(expected.model_dump(mode="json")) != canonical_json_bytes(
         launch.spec.model_dump(mode="json")
     ):
-        raise ValueError("Installed Train method key, revision or settings differ from the bound request.")
+        raise ValueError("Installed Train method key or settings differ from the bound request.")
     return VerifiedTrainBinding(files, _resolve_trial(expected, registries), method, settings)
