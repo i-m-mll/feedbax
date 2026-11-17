@@ -2,61 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import replace
 from functools import partial
-from importlib import import_module
 import inspect
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from feedbax.contracts.portable import ComponentOwner, GraphTemplate
-
-
-@dataclass(frozen=True)
-class ComponentPack:
-    """Owners and their history in one stable portable namespace."""
-
-    namespace: str
-    modules: tuple[str | ModuleType, ...] = ()
-    histories: Mapping[type, Any] = field(default_factory=dict)
-    presentation: Mapping[type, Any] = field(default_factory=dict)
-    components: tuple[type[ComponentOwner], ...] = ()
-    sources: tuple[Path, ...] = ()
-
-    def __post_init__(self):
-        if not self.namespace or self.namespace.startswith(".") or self.namespace.endswith("."):
-            raise ValueError("Component pack requires a stable namespace")
-        frame = inspect.currentframe().f_back
-        while frame is not None and (
-            frame.f_code.co_filename.startswith("<")
-            or frame.f_code.co_filename == dataclasses.__file__
-        ):
-            frame = frame.f_back
-        if frame is not None:
-            source = Path(frame.f_code.co_filename).resolve()
-            object.__setattr__(self, "sources", tuple(dict.fromkeys((*self.sources, source))))
-
-
-def discover_modules(*modules: str | ModuleType, namespace: str, histories=None) -> ComponentPack:
-    loaded = [import_module(module) if isinstance(module, str) else module for module in modules]
-    classes = {
-        value
-        for module in loaded
-        for value in vars(module).values()
-        if isinstance(value, type)
-        and value.__module__ == module.__name__
-        and issubclass(value, ComponentOwner)
-        and value not in (ComponentOwner, GraphTemplate)
-        and not inspect.isabstract(value)
-    }
-    return ComponentPack(
-        namespace=namespace,
-        histories=histories or {},
-        components=tuple(sorted(classes, key=lambda cls: (cls.__module__, cls.__qualname__))),
-    )
+from feedbax.plugins.declarations import DistributionSource
 
 
 def source_path(obj: Any) -> Path | None:
@@ -72,7 +25,13 @@ def source_path(obj: Any) -> Path | None:
     return Path(path).resolve()
 
 
-def compile_owner(cls, *, namespace, history=None, registry=None):
+def compile_owner(
+    cls: type[ComponentOwner],
+    *,
+    key: str,
+    source: DistributionSource,
+    registry,
+):
     from feedbax.contracts.portable import ComponentOwner, GraphTemplate
     from feedbax.contracts.portable import (
         ComponentOptions,
@@ -87,10 +46,9 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
         or inspect.isabstract(cls)
     ):
         raise TypeError(f"{cls!r} must be a concrete portable ComponentOwner")
-    if not namespace or namespace.startswith(".") or namespace.endswith("."):
-        raise ValueError("Component pack requires a stable namespace")
+    namespace, _, local_name = key.rpartition(".")
     options = (cls.component_options or ComponentOptions()).as_kwargs()
-    history = history or History()
+    history = cls.component_history or History()
     configuration_paths(cls)
     model = configuration_model(cls)
     ports = cls.port_contract(registry=registry)
@@ -140,8 +98,9 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
         ComponentTrainingFacet,
         DeclaredComponent,
     )
+    from feedbax.contracts.component import ComponentIdentity
 
-    name = f"{namespace}.{cls.__name__}"
+    name = key
     explicit_context = frozenset(options.pop("build_context_fields"))
     prototype_bindings = options.pop("build_output_prototypes") or {}
     if explicit_context & set(model.model_fields):
@@ -166,23 +125,16 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
     training = ComponentTrainingFacet(options.pop("trainable_by_default"))
     if options["is_composite"] and options["interior_domain"] is None:
         options["interior_domain"] = options["domain"]
-    group = next(
-        (
-            group
-            for prefix, group in (
-                ("feedbax.tasks.", "Tasks"),
-                ("feedbax.control.", "Control"),
-                ("feedbax.acausal.", "Acausal"),
-                ("feedbax.compiler.", "Templates"),
-                ("feedbax.components.equinox", "Equinox"),
-                ("feedbax.mechanics.", "Mechanics"),
-                ("feedbax.models.", "Models"),
-                ("feedbax.runtime.", "Runtime"),
-            )
-            if cls.__module__.startswith(prefix)
-        ),
-        namespace,
-    )
+    group = namespace
+    if cls.__module__.startswith("feedbax.builtins."):
+        group = cls.__module__.split(".")[2].capitalize()
+        if ".equinox" in cls.__module__:
+            group = "Equinox"
+    studio = ComponentStudioFacet(group, (inspect.getdoc(cls) or "").split("\n\n", 1)[0])
+    if presentation := cls.component_presentation:
+        studio = replace(studio, **presentation.as_kwargs())
+    core = source.distribution == "feedbax"
+    provenance = "feedbax" if core else f"package:{source.distribution}"
     meta = DeclaredComponent(
         declaration=ComponentDeclaration(
             type_id=name,
@@ -203,12 +155,19 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
         serialization=ComponentSerializationFacet(history.revision),
         runtime=ComponentRuntimeFacet(contract.build),
         authoring=authoring,
-        studio=ComponentStudioFacet(group, (inspect.getdoc(cls) or "").split("\n\n", 1)[0]),
+        studio=studio,
         training=training,
+        provenance=provenance,
+        identity=ComponentIdentity(
+            type_id=name, owner=namespace, provenance=provenance,
+            provenance_kind="feedbax" if core else "package", package=source.package,
+            import_path=f"{cls.__module__}.{cls.__qualname__}", stable=True,
+        ),
         owner_class=cls,
     )
     sources = (
         source_path(cls),
+        *cls.component_sources,
         source_path(configuration_model),
         *((source_path(cls.config),) if cls.config else ()),
         *(
@@ -217,5 +176,6 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
             if binding.group is not None
         ),
         *((history.source,) if history.source is not None else ()),
+        *((studio.source,) if studio.source is not None else ()),
     )
-    return (meta,), sources, history.compile(namespace, cls.__name__)
+    return meta, sources, history.compile(namespace, local_name)

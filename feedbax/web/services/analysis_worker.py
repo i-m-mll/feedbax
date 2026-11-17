@@ -26,7 +26,7 @@ async def _execute(path: Path) -> dict:
     from feedbax.web.api.analysis import _run_analysis_sync, _run_figure_sync
 
     payload = json.loads(path.read_bytes())
-    bootstrap = await compose_application(modules=tuple(payload["bootstrap_modules"]))
+    bootstrap = await compose_application()
     operation = payload["operation"]
     if operation["kind"] == "figure":
         result = _run_figure_sync(FigureSpec.model_validate(operation["spec"]), bootstrap.bundle)

@@ -9,10 +9,9 @@ from feedbax.contracts.expression_values import (
     LENGTH, CallValue, Level, LiteralValue, NameValue, ScopedValue, Site, ValueBase, ValueRecord, ValueType,
 )
 from feedbax.contracts.task_document import Cell, Epoch, PythonTaskSelection, Signal, TaskDocument, Variable
-from feedbax.tasks.registry import PythonTaskDefinition, PythonTaskRegistry, PythonTaskTemplate
+from feedbax.tasks.registry import PythonTask, PythonTaskTemplate
 
 
-REACHING_TASK = "feedbax.task.reaching.v1"
 _POINT = ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)
 
 _TARGET_SIGNALS = {
@@ -58,26 +57,27 @@ def reaching_document(params: ReachingParameters) -> TaskDocument:
     )
 
 
-def reaching_template(params: ReachingParameters) -> PythonTaskTemplate:
-    document = reaching_document(params)
-    def prepare(model, functions):
-        from feedbax.tasks.document import compile_task
+class Reaching(PythonTask[ReachingParameters]):
+    label = "Reaching"
+    settings_model = ReachingParameters
+    parameter_sites = {
+        "n_steps": Site(expected=ValueType(base=ValueBase.INTEGER), finest=Level.RUN, structural=True),
+        "x": Site(expected=ValueType(base=ValueBase.REAL, dimensions=LENGTH), finest=Level.RUN),
+        "y": Site(expected=ValueType(base=ValueBase.REAL, dimensions=LENGTH), finest=Level.RUN),
+    }
 
-        return compile_task(document, functions, model=replace(model, inputs=()))
+    @staticmethod
+    def template(settings: ReachingParameters) -> PythonTaskTemplate:
+        document = reaching_document(settings)
 
-    return PythonTaskTemplate(
-        signals={signal.name: signal.type for signal in document.signals}, prepare=prepare,
-    )
+        def prepare(model, functions):
+            from feedbax.tasks.document import compile_task
+
+            return compile_task(document, functions, model=replace(model, inputs=()))
+
+        return PythonTaskTemplate(
+            signals={signal.name: signal.type for signal in document.signals}, prepare=prepare,
+        )
 
 
-def builtin_python_tasks() -> PythonTaskRegistry:
-    registry = PythonTaskRegistry()
-    registry.register(PythonTaskDefinition(
-        REACHING_TASK, "Reaching", ReachingParameters, reaching_template,
-        {
-            "n_steps": Site(expected=ValueType(base=ValueBase.INTEGER), finest=Level.RUN, structural=True),
-            "x": Site(expected=ValueType(base=ValueBase.REAL, dimensions=LENGTH), finest=Level.RUN),
-            "y": Site(expected=ValueType(base=ValueBase.REAL, dimensions=LENGTH), finest=Level.RUN),
-        },
-    ))
-    return registry
+REACHING_TASK = f"{__package__.partition(".")[0]}.{Reaching.__name__}"

@@ -20,7 +20,7 @@ from feedbax.jobs import JobService, PlanJobReader
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import CannotRun, RAW_STATES_SCHEMA, decode_rollout_request
-from feedbax.tasks.reaching import REACHING_TASK
+from feedbax.builtins.reaching import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
