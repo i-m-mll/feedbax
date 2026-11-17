@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hashlib import file_digest, sha256
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -65,9 +65,8 @@ def _file(root: Path, path: Path, digest: str, size: int) -> dict:
     return {"path": path.relative_to(root).as_posix(), "sha256": digest, "size_bytes": size}
 
 
-def training_metric_file(
-    root: Path, attempt: str, manifest: TrainingRunManifest, *, verify: bool,
-) -> dict | None:
+def training_metric_file(root: Path, attempt: str, manifest: TrainingRunManifest) -> dict | None:
+    """Read the declared metrics member; the Store verifies its bytes at ingress."""
     records = [artifact for artifact in manifest.artifacts if artifact.role == "training_metrics"]
     if not records:
         return None
@@ -80,10 +79,6 @@ def training_metric_file(
         or artifact.sha256 is None or artifact.size_bytes is None or artifact.media_type != "application/x-ndjson"
     ):
         raise CompletionFileError("Train receipt metric history is outside this attempt.")
-    if verify:
-        with completion_file(root, artifact.uri) as (stream, size):
-            if size != artifact.size_bytes or file_digest(stream, "sha256").hexdigest() != artifact.sha256:
-                raise CompletionFileError("Train metric history differs from its receipt.")
     return _file(root, history, artifact.sha256, artifact.size_bytes)
 
 
@@ -201,7 +196,7 @@ def verify_training_completion(
             *(_file(root, path, ref.sha256, ref.size_bytes) for path, ref in request_files),
             *_checkpoint_files(root, checkpoint, scope),
         ]
-        metrics = training_metric_file(root, producer_job_id, manifest, verify=scope == "full")
+        metrics = training_metric_file(root, producer_job_id, manifest)
         method = dict(provenance["method"])
         if method.pop("key") != launch.spec.method:
             raise CompletionFileError("Train receipt names a different method.")

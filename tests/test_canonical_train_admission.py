@@ -248,7 +248,12 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
         reviewed.store_path / file["path"] for file in completion["files"] if "/blobs/" in file["path"]
     ]
     latest = binding.with_name("latest.json")
+    metric_log = reviewed.store_path / completion["metrics"]["path"]
+    held_metric_log = metric_log.with_suffix(".held")
     with ExitStack() as held:
+        metric_log.rename(held_metric_log)
+        held.callback(held_metric_log.rename, metric_log)
+        verify_bound_training_completion(completion)
         for source in (extra, latest):
             temporary = source.with_suffix(".held")
             source.rename(temporary)

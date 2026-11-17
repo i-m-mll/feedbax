@@ -399,7 +399,7 @@ class Store:
             or manifest.status != "cancelled" or manifest.completed_batches != stopped.completed_updates
         ):
             raise ValueError("Stop receipt differs from its accepted Train boundary")
-        metric_file = training_metric_file(root, row["id"], manifest, verify=False)
+        metric_file = training_metric_file(root, row["id"], manifest)
         with view.store._exclusive_lock():
             metrics = None if metric_file is None else view.store._store_file(
                 root / metric_file["path"], sha256=metric_file["sha256"], size_bytes=metric_file["size_bytes"],
