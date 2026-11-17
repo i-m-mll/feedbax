@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.effective_success import Bindings
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.plugins.declarations import ResolvedDeclaration
 
 
 def verify_dataset(dataset: Dataset, port: DatasetPort, parameters: BaseModel | None = None) -> None:
@@ -41,7 +42,7 @@ def uses_replicate_axis(port: DatasetPort) -> bool:
 
 
 def run_operation(
-    operation: RegisteredOperation,
+    operation: ResolvedDeclaration[RegisteredOperation],
     parameters: BaseModel,
     bindings: Bindings,
     datasets: Mapping[str, Dataset],
@@ -49,7 +50,7 @@ def run_operation(
     registry: ApplicationRegistryBundle,
     artifacts: ImmutableArtifactBlobProvider,
 ) -> Dataset:
-    definition = operation.definition
+    definition = operation.value.definition
     if numerical := definition.numerical:
         import jax
 
@@ -75,7 +76,7 @@ def run_operation(
                 task = resolve_python_task_instance(task_source, registry.python_tasks)
                 if isinstance(task, tuple):
                     raise ValueError(task[0].reason)
-                if task.definition.parameters is not operation.task_parameters:
+                if task.definition.parameters is not operation.value.task_parameters:
                     raise ValueError(f"Operation {definition.key!r} declares the wrong settings for {port.task_key!r}")
                 arguments[role] = task
             else:
@@ -120,7 +121,9 @@ def run_operation(
     (output,) = definition.outputs.values()
 
     def execute(inputs) -> Dataset:
-        result = operation.function(params=parameters, **inputs)
+        result = operation.defining_object(params=parameters, **inputs)
+        if not isinstance(result, Dataset):
+            raise TypeError(f"Operation {definition.key!r} returned a value that is not a Dataset")
         verify_dataset(result, output)
         return result
 

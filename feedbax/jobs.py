@@ -683,7 +683,6 @@ class JobService(PlanJobReader):
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
     ) -> AdmissionItem:
         from feedbax.light_jobs import LightDelivery, validate_light_request
-        from feedbax.contracts.request_specs import AnalysisRequestSpec
         from feedbax.persistence.effective_success import store_document_inputs, store_request
 
         if isinstance(row, (PlannedRun, PlannedAnalyzeRun)) and row.requires:
@@ -729,14 +728,12 @@ class JobService(PlanJobReader):
         store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
         payload = LightDelivery(
             project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded),
-            provider=operation.source if operation is not None else None,
         )
         profile = self._light_worker
         slot = "light"
-        if isinstance(decoded.spec, AnalysisRequestSpec) and (computation := decoded.spec.computation) is not None:
-            if numerical := computation.numerical:
-                profile = replace(profile, env=numerical.environment(), preload=("jax",))
-                slot = "compute"
+        if operation is not None and (numerical := operation.value.definition.numerical) is not None:
+            profile = replace(profile, env=numerical.environment(), preload=("jax",))
+            slot = "compute"
         launch = replace(profile, payload=payload.model_dump(mode="json"))
         return AdmissionItem(run_key=name, job=Job(
             id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot=slot,

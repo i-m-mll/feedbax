@@ -66,12 +66,12 @@ def test_registered_operations_publish_typed_products_from_saved_states(tmp_path
         store.open_owned_object(states_ref.object_ref) as path,
         open_dataset(path, expected_descriptor_sha256=states_ref.descriptor_sha256) as saved,
     ):
-        velocity = run.function(saved, run.parameter_model.model_validate(_PARAMETERS.model_dump()))
+        velocity = run.defining_object(saved, run.value.parameter_model.model_validate(_PARAMETERS.model_dump()))
     np.testing.assert_allclose(velocity.data("parallel_velocity"), parallel, atol=1e-6)
     np.testing.assert_allclose(velocity.data("lateral_velocity"), lateral, atol=1e-6)
     run = operations.resolve("feedbax.summarize_velocity")
     for ddof, scale in ((0, 0.5), (1, 2.0)):
-        product = run.function(velocity, run.parameter_model.model_validate({"ddof": ddof, "bounds_scale": scale}))
+        product = run.defining_object(velocity, run.value.parameter_model.model_validate({"ddof": ddof, "bounds_scale": scale}))
         result_ref = publish_dataset(store, product)
         with (
             store.open_owned_object(result_ref.object_ref) as path,

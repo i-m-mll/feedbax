@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from copy import copy
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
+from feedbax.registry_errors import RegistryCollisionError
 
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ParamSchema
@@ -17,6 +19,74 @@ class DistributionSource:
     package: str
     distribution: str
     version: str
+
+
+@dataclass(frozen=True)
+class ResolvedDeclaration[T]:
+    key: str
+    source: DistributionSource
+    defining_object: Callable[..., object]
+    value: T
+
+
+class DeclarationRegistry[T]:
+    """Store declaration authority and mediate every executable lookup."""
+
+    def __init__(self, kind: str) -> None:
+        self._kind = kind
+        self._entries: dict[str, ResolvedDeclaration[T]] = {}
+        self._renames: dict[str, str] = {}
+        self._sealed = False
+
+    def add(
+        self, key: str, source: DistributionSource, defining_object: Callable[..., object], value: T,
+        *, renamed_from: tuple[str, ...] = (),
+    ) -> None:
+        self.require_mutable()
+        names = (key, *renamed_from)
+        if len(set(names)) != len(names):
+            raise RegistryCollisionError(f"{self._kind} {key!r} repeats a key in its rename history")
+        for name in names:
+            validate_declaration_key(name)
+            if name in self._entries or name in self._renames:
+                raise RegistryCollisionError(f"{self._kind} {name!r} is already registered")
+        self._entries[key] = ResolvedDeclaration(key, source, defining_object, value)
+        self._renames.update(dict.fromkeys(renamed_from, key))
+
+    def resolve(self, key: str) -> ResolvedDeclaration[T]:
+        declaration = self._entries.get(self._renames.get(key, key))
+        if declaration is None:
+            raise KeyError(missing_declaration(self._kind, key))
+        return declaration
+
+    def keys(self) -> tuple[str, ...]:
+        return tuple(sorted(self._entries))
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._entries
+
+    def values(self) -> Iterator[T]:
+        return (record.value for record in self._entries.values())
+
+    def items(self) -> Iterator[tuple[str, T]]:
+        return ((key, record.value) for key, record in self._entries.items())
+
+    def copy(self) -> DeclarationRegistry[T]:
+        registry = copy(self)
+        registry._entries = self._entries.copy()
+        registry._renames = self._renames.copy()
+        return registry
+
+    def replace_value(self, key: str, value: T) -> None:
+        self.require_mutable()
+        self._entries[key] = replace(self._entries[key], value=value)
+
+    def require_mutable(self) -> None:
+        if self._sealed:
+            raise RuntimeError(f"{self._kind} registry is sealed")
+
+    def seal(self) -> None:
+        self._sealed = True
 
 
 @dataclass(frozen=True, kw_only=True)

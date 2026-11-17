@@ -48,18 +48,12 @@ class JaxOperation(StrictModel):
         }
 
 
-class OperationComputation(StrictModel):
-    revision: int = Field(ge=1)
-    numerical: JaxOperation | None = None
-
-
 class OperationDefinition(StrictModel):
     """Data needed to discover, wire, and author a registered operation."""
 
     key: str
     owner: str
     owner_version: str
-    revision: int = Field(ge=1)
     renamed_from: tuple[str, ...] = ()
     label: str
     description: str
@@ -69,10 +63,6 @@ class OperationDefinition(StrictModel):
     inputs: dict[str, OperationInputPort]
     outputs: dict[str, DatasetPort]
     numerical: JaxOperation | None = None
-
-    def computation(self) -> OperationComputation:
-        return OperationComputation(revision=self.revision, numerical=self.numerical)
-
 
 def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> None:
     if not set(actual.schema_ids) <= set(expected.schema_ids):

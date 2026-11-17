@@ -38,7 +38,6 @@ from feedbax.contracts.request_refs import InputMember, ProductRef
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     EvaluationRequestSpec,
-    NumericalSettings,
     RenderRequestSpec,
     RequestSpec,
 )
@@ -218,21 +217,21 @@ class _Lowerer:
     def operation(self, name: str, element: OperationElement) -> None:
         path = f"payload.operations.{name}"
         try:
-            operation = self.operations.resolve(element.operation)
+            registered = self.operations.resolve(element.operation)
         except KeyError:
             self.problem(
                 path + ".operation", missing_declaration("operation", element.operation), name
             )
             return
         try:
-            params = operation.parameter_model.model_validate(element.params)
+            params = registered.value.parameter_model.model_validate(element.params)
         except ValidationError as error:
             for item in error.errors(include_url=False, include_input=False):
                 location = ".".join(map(str, ("params", *item["loc"])))
                 self.problem(f"{path}.{location}", item["msg"], name)
             return
         try:
-            definition = operation.definition
+            definition = registered.value.definition
             self._check_roles(element.inputs, set(definition.inputs))
             inputs = {}
             for role, expected in definition.inputs.items():
@@ -253,17 +252,12 @@ class _Lowerer:
                             )
                 except ValueError as error:
                     raise _ElementIssue(wire_path, str(error)) from error
-            numerical = definition.numerical
             self._record(
                 name,
                 AnalysisRequestSpec(
-                    analysis_type=definition.key,
-                    computation=definition.computation(),
+                    analysis_type=registered.key,
                     params=params.model_dump(mode="json"),
                     evaluation_states_policy="require_durable",
-                    numerical_settings=NumericalSettings(
-                        floating_point_bits=numerical.floating_point_bits if numerical else None,
-                    ),
                 ),
                 inputs,
                 definition.outputs,
