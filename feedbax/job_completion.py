@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
+from hashlib import file_digest, sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -58,6 +58,28 @@ def _read_exact(root: Path, path: Path, digest: str) -> bytes:
 
 def _file(root: Path, path: Path, digest: str, size: int) -> dict:
     return {"path": path.relative_to(root).as_posix(), "sha256": digest, "size_bytes": size}
+
+
+def training_metric_file(
+    root: Path, attempt: str, manifest: TrainingRunManifest, *, verify: bool,
+) -> dict | None:
+    records = [artifact for artifact in manifest.artifacts if artifact.role == "training_metrics"]
+    if not records:
+        return None
+    if len(records) != 1:
+        raise CompletionFileError("Train receipt has repeated metric history.")
+    (artifact,) = records
+    history = training_binding_path(root, attempt).with_name("metrics.jsonl")
+    if (
+        artifact.uri != history.relative_to(root).as_posix()
+        or artifact.sha256 is None or artifact.size_bytes is None or artifact.media_type != "application/x-ndjson"
+    ):
+        raise CompletionFileError("Train receipt metric history is outside this attempt.")
+    if verify:
+        with completion_file(root, artifact.uri) as (stream, size):
+            if size != artifact.size_bytes or file_digest(stream, "sha256").hexdigest() != artifact.sha256:
+                raise CompletionFileError("Train metric history differs from its receipt.")
+    return _file(root, history, artifact.sha256, artifact.size_bytes)
 
 
 def _checkpoint_matches_request(identity: MethodCheckpointIdentity, launch: BoundStudioTrainingJobInput) -> bool:
@@ -184,25 +206,7 @@ def verify_training_completion(
             *(_file(root, path, ref.sha256, ref.size_bytes) for path, ref in request_files),
             *_checkpoint_files(root, checkpoint, scope),
         ]
-        metrics = None
-        records = [artifact for artifact in manifest.artifacts if artifact.role == "training_metrics"]
-        if len(records) > 1:
-            raise CompletionFileError("Train receipt has repeated metric history.")
-        if records:
-            (artifact,) = records
-            history = binding_path.with_name("metrics.jsonl")
-            if (
-                artifact.uri != history.relative_to(root).as_posix() or artifact.sha256 is None
-                or artifact.size_bytes is None or artifact.media_type != "application/x-ndjson"
-            ):
-                raise CompletionFileError("Train receipt metric history is outside this attempt.")
-            if scope == "full":
-                from hashlib import file_digest
-
-                with completion_file(root, artifact.uri) as (stream, size):
-                    if size != artifact.size_bytes or file_digest(stream, "sha256").hexdigest() != artifact.sha256:
-                        raise CompletionFileError("Train metric history differs from its receipt.")
-            metrics = _file(root, history, artifact.sha256, artifact.size_bytes)
+        metrics = training_metric_file(root, producer_job_id, manifest, verify=scope == "full")
         completion = {
             "producer_job_id": producer_job_id,
             "project_id": launch.project_id,
