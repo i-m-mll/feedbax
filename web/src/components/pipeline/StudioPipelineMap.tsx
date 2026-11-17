@@ -122,6 +122,30 @@ export interface MapStepRename {
   setEditing(editing: MapStepRename['editing']): void;
   /** Returns false to refuse the name and stay in editing. */
   commit(stepId: string, name: string): boolean;
+  /**
+   * A step name to take keyboard focus once it is drawn: after a rename ends, when focus was not moved
+   * elsewhere, or after history moves a rename (`force`).
+   */
+  readonly focus: { readonly stepId: string; readonly surface: MapRenameSurface; readonly force?: boolean } | null;
+  focused(): void;
+}
+
+const renameFocusTarget: Record<MapRenameSurface, (stepId: string) => string> = {
+  card: (stepId) => `[data-map-step="${stepId}"] button[data-canvas-focus]`,
+  drawer: (stepId) => `[data-map-row="${stepId}"]`,
+  line: (stepId) => `[data-map-line-step="${stepId}"]`,
+};
+
+/** Focus the step name `rename.focus` asks for when this region draws it. */
+function useRenameFocus(rename: MapStepRename | undefined, root: { readonly current: HTMLElement | null }) {
+  useLayoutEffect(() => {
+    const target = rename?.focus;
+    const element = target && root.current?.querySelector<HTMLElement>(renameFocusTarget[target.surface](target.stepId));
+    if (!element) return;
+    const active = document.activeElement;
+    if (target.force || !active || active === document.body) element.focus();
+    rename.focused();
+  });
 }
 
 function renamingStep(rename: MapStepRename | undefined, stepId: string, surface: MapRenameSurface) {
@@ -593,6 +617,7 @@ function StepRow({ step, selection, related, focusedStepId, chooseStep, applySel
       onClick={choose.onClick}
       name={renamingStep(rename, step.id, 'drawer') ? <StepNameEdit step={step} rename={rename!} />
         : <Button variant="bare" size="content" align="start" className="block w-full truncate"
+          data-map-row={step.id}
           aria-current={scope ? 'step' : undefined}
           aria-label={studioAccessibleName('select', stepLabel(step, summary))}
           aria-pressed={documentScope ? level === 'lit' : undefined}
@@ -617,6 +642,8 @@ function MapDrawer({ steps, newStep, framed = false, ...props }: DrawerProps & {
   newStep?: StudioCommand;
   framed?: boolean;
 }) {
+  const root = useRef<HTMLElement>(null);
+  useRenameFocus(props.rename, root);
   const groups = new Map<string | null, PlanStepView[]>();
   for (const step of steps) {
     const group = step.group ?? null;
@@ -625,7 +652,7 @@ function MapDrawer({ steps, newStep, framed = false, ...props }: DrawerProps & {
     else groups.set(group, [step]);
   }
   return (
-    <nav aria-label={studioName('steps')} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-chrome'}`}>
+    <nav ref={root} aria-label={studioName('steps')} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-chrome'}`}>
       {newStep && (
         <div className="shrink-0 px-2 pt-2">
           <ListRow role="button" tabIndex={0} glyph={<Plus aria-hidden="true" />} name={studioName('newStep')}
@@ -700,6 +727,7 @@ function MapLine({
               variant="bare"
               size="content"
               className={`studio-card studio-map-line-step px-2 py-1 text-sm ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
+              data-map-line-step={step.id}
               data-selected={stepSelection(selection, step.id)?.kind === 'steps' || undefined}
               aria-label={studioAccessibleName('select', stepLabel(step))}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
@@ -747,6 +775,8 @@ export function StudioPipelineMap({
     if (current.current.focus) onSelectionChange({ ...current.current, focus: null });
   }, [onSelectionChange]);
   const layout = useMemo(() => layoutPipelineMap(plan), [plan]);
+  const root = useRef<HTMLElement>(null);
+  useRenameFocus(rename, root);
   const selectedSteps = state.selection?.kind === 'steps' ? state.selection.stepIds
     : state.selection ? [state.selection.stepId] : [];
   const primaryStep = activeStepId ?? selectedSteps[0];
@@ -779,6 +809,7 @@ export function StudioPipelineMap({
   ).map(({ id }) => id));
   return (
     <section
+      ref={root}
       aria-label={studioName('pipelineMap')}
       className="relative flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-subtle"
       onKeyDown={(event) => {

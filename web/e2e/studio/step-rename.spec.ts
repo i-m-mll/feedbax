@@ -41,6 +41,11 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
     await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 30_000 });
   }
 
+  async function command(name: string) {
+    await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+    await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: new RegExp(`^${name}\\b`) }).click();
+  }
+
   await page.goto(`/?project=${encodeURIComponent(projectId)}`);
   await run('train');
   await run('baseline');
@@ -57,7 +62,7 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
   await name.fill('fit');
   await name.press('Enter');
 
-  await expect(mapStep(page, 'fit')).toBeVisible();
+  await expect(mapStep(page, 'fit')).toBeFocused();
   await expect.poll(async () => Object.keys((await saved()).project.steps ?? {}).sort()).toEqual(['baseline', 'fit']);
   const renamed = await saved();
   expect(renamed.file_revisions.filter(({ address }) => address.kind === 'step').map(({ address }) => address.id).sort())
@@ -74,19 +79,27 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
   await mapStep(page, 'baseline').click();
   await expect(runs(page).getByText('Done', { exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
-  await expect(mapStep(page, 'train')).toBeVisible();
+  await command('Undo');
+  await expect(mapStep(page, 'train')).toBeFocused();
   const restored = await saved();
   expect(restored.project).toEqual(before.project);
   expect(restored.presentation).toEqual(before.presentation);
   expect(await statuses()).toEqual({ train: 'succeeded', baseline: 'succeeded' });
 
   await mapStep(page, 'train').click();
-  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: 'Rename Step train' }).click();
+  await command('Rename Step train');
   const palette = page.locator('[data-map-step="train"]').getByRole('textbox', { name: 'Rename train', exact: true });
   await expect(palette).toBeFocused();
   await palette.press('Escape');
-  await expect(mapStep(page, 'train')).toBeVisible();
+  await expect(mapStep(page, 'train')).toBeFocused();
+
+  const row = page.locator('[data-map-row="train"]');
+  if (!await row.isVisible()) await command('Show Steps');
+  await row.click();
+  await row.press('Enter');
+  const drawer = page.getByRole('navigation', { name: 'Steps', exact: true }).getByRole('textbox', { name: 'Rename train', exact: true });
+  await expect(drawer).toBeFocused();
+  await drawer.press('Escape');
+  await expect(row).toBeFocused();
+  await expect.poll(async () => Object.keys((await saved()).project.steps ?? {}).sort()).toEqual(['baseline', 'train']);
 });
