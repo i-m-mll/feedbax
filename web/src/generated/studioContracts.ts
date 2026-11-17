@@ -2723,6 +2723,12 @@ export type DrawValue = {
   "per"?: "run" | "trial";
 };
 
+export type DuplicateDocument = {
+  "kind": "duplicate";
+  "document": string;
+  "name"?: string | null;
+};
+
 export type EnsureDocumentCollection = {
   "op": "ensure";
   "path": DocumentOverridePath;
@@ -3160,6 +3166,12 @@ export type RemoveValue = {
   "op": "remove";
 };
 
+export type RenameDocument = {
+  "kind": "rename";
+  "document": string;
+  "name": string;
+};
+
 export type ReplayDeclarationAddress = {
   "kind": "declaration";
   "id": "declaration";
@@ -3498,6 +3510,17 @@ export type StudioCheckpointRuleToSweep = {
   "kind": "to_sweep";
 };
 
+export type StudioDocumentCommand = {
+  "revision": Sha256;
+  "presentation_revision": Sha256;
+  "command": RenameDocument | DuplicateDocument;
+};
+
+export type StudioDocumentCommandResult = {
+  "document": string;
+  "snapshot": StudioProjectSnapshot;
+};
+
 export type StudioEvaluateStep = {
   "kind": "evaluate";
   "base": Base;
@@ -3589,6 +3612,7 @@ export type StudioProjectRename = {
 export type StudioProjectReplay = {
   "revision": Sha256;
   "files": Array<StudioReplayFile>;
+  "presentation"?: StudioReplayPresentation | null;
 };
 
 export type StudioProjectRevision = {
@@ -3722,6 +3746,11 @@ export type StudioReplayFile = {
   "after": string | null;
 };
 
+export type StudioReplayPresentation = {
+  "before": Sha256;
+  "after": PresentationDocument;
+};
+
 export type StudioReportStep = {
   "kind": "report";
   "base": Base;
@@ -3849,7 +3878,7 @@ export type StudioTrialAuthoring = {
 export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "change"?: StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectTask | StudioTrialExpressionEdit | null;
+  "change"?: StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | null;
   "scope"?: StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
 };
 
@@ -3898,8 +3927,9 @@ export type StudioTrialReset = {
   "variable": string | null;
 };
 
-export type StudioTrialSelectTask = {
-  "kind": "select_task";
+export type StudioTrialSelectDocument = {
+  "kind": "select_document";
+  "role": "model" | "task" | "objective";
   "document": string;
 };
 
@@ -8783,6 +8813,14 @@ export const DrawValueSchema: z.ZodType<DrawValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DrawValue>;
 
+export const DuplicateDocumentSchema: z.ZodType<DuplicateDocument> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("duplicate"),
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "name": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DuplicateDocument>;
+
 export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
   z.object({
     "op": z.literal("ensure"),
@@ -9376,6 +9414,14 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
 
+export const RenameDocumentSchema: z.ZodType<RenameDocument> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("rename"),
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<RenameDocument>;
+
 export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
   z.object({
     "kind": z.literal("declaration"),
@@ -9824,6 +9870,21 @@ export const StudioCheckpointRuleToSweepSchema: z.ZodType<StudioCheckpointRuleTo
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleToSweep>;
 
+export const StudioDocumentCommandSchema: z.ZodType<StudioDocumentCommand> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "presentation_revision": Sha256Schema,
+    "command": z.union([RenameDocumentSchema, DuplicateDocumentSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioDocumentCommand>;
+
+export const StudioDocumentCommandResultSchema: z.ZodType<StudioDocumentCommandResult> = z.lazy(() =>
+  z.object({
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "snapshot": StudioProjectSnapshotSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioDocumentCommandResult>;
+
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
@@ -9942,6 +10003,7 @@ export const StudioProjectReplaySchema: z.ZodType<StudioProjectReplay> = z.lazy(
   z.object({
     "revision": Sha256Schema,
     "files": z.array(StudioReplayFileSchema).min(1),
+    "presentation": z.union([StudioReplayPresentationSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectReplay>;
 
@@ -10104,6 +10166,13 @@ export const StudioReplayFileSchema: z.ZodType<StudioReplayFile> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioReplayFile>;
 
+export const StudioReplayPresentationSchema: z.ZodType<StudioReplayPresentation> = z.lazy(() =>
+  z.object({
+    "before": Sha256Schema,
+    "after": PresentationDocumentSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioReplayPresentation>;
+
 export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("report"),
@@ -10262,7 +10331,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialBindingEditSchema, StudioTrialSelectTaskSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
@@ -10326,12 +10395,13 @@ export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioTrialReset>;
 
-export const StudioTrialSelectTaskSchema: z.ZodType<StudioTrialSelectTask> = z.lazy(() =>
+export const StudioTrialSelectDocumentSchema: z.ZodType<StudioTrialSelectDocument> = z.lazy(() =>
   z.object({
-    "kind": z.literal("select_task"),
+    "kind": z.literal("select_document"),
+    "role": z.union([z.literal("model"), z.literal("task"), z.literal("objective")]),
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
-) as unknown as z.ZodType<StudioTrialSelectTask>;
+) as unknown as z.ZodType<StudioTrialSelectDocument>;
 
 export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.lazy(() =>
   z.object({
@@ -10631,6 +10701,8 @@ export const contractSchemas = {
   RemoveProjectValue: RemoveProjectValueSchema,
   SetProjectValue: SetProjectValueSchema,
   StudioAuthoredFileRevision: StudioAuthoredFileRevisionSchema,
+  StudioDocumentCommand: StudioDocumentCommandSchema,
+  StudioDocumentCommandResult: StudioDocumentCommandResultSchema,
   StudioPresentationWrite: StudioPresentationWriteSchema,
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
@@ -10779,6 +10851,8 @@ export interface ContractTypeMap {
   RemoveProjectValue: RemoveProjectValue;
   SetProjectValue: SetProjectValue;
   StudioAuthoredFileRevision: StudioAuthoredFileRevision;
+  StudioDocumentCommand: StudioDocumentCommand;
+  StudioDocumentCommandResult: StudioDocumentCommandResult;
   StudioPresentationWrite: StudioPresentationWrite;
   StudioProjectCreateFile: StudioProjectCreateFile;
   StudioProjectDocument: StudioProjectDocument;
