@@ -1,14 +1,13 @@
 """Plan the real saved Evaluate and typed velocity figure without result access."""
 
 from copy import deepcopy
-from dataclasses import replace
 import json
 from pathlib import Path
 
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.contracts.analysis_document import FigureElement
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.figure_document import ResolvedFigureTemplate
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Document, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
@@ -31,10 +30,8 @@ from feedbax.contracts.project_resolution import BaseReaders, ResolutionCode
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
-from feedbax.plot.templates import FigureTemplateDeclaration, FigureTemplateRegistry
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.plugins.declarations import DistributionSource, callable_declaration
-from tests.test_canonical_evaluate_admission import managed_evaluation_definition
+from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
 
 _KEY = RunKey("default", "analyze", "default")
@@ -42,8 +39,8 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "web/e2e/studio/fixtures"
 
 
 def _project() -> Project:
-    project = Project.model_validate(managed_evaluation_definition())
-    project.steps = {name: project.steps[name] for name in ("train", "baseline")}
+    project = managed_train_project()
+    project.steps["baseline"] = Step.model_validate(managed_evaluation_step("train"))
     project.documents["velocity-analysis"] = Document.model_validate(
         {
             "schema": "feedbax.analysis_document.v1",
@@ -66,6 +63,17 @@ def _project() -> Project:
         }
     )
     return project
+
+
+def _conditions() -> Step:
+    mass = ModelAddress.model_validate({
+        "document": "point-mass", "composites": [],
+        "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+    }).to_text()
+    return Step.model_validate(managed_evaluation_step("train") | {"sweep": {"axes": {"mass": {"values": {
+        name: {"value": value, "patches": {mass: {"value": value}}}
+        for name, value in (("nominal", 1), ("heavy", 2))
+    }}}}})
 
 
 def _operations():
@@ -273,56 +281,43 @@ def test_named_figure_matches_inline_and_variant_edit_reaches_both_views():
         assert (source.kind, source.name, source.path) == ("variant", "dark", "/documents/velocity-figure/payload/theme")
 
 
-def test_installed_figure_template_pins_defaults_and_revision_in_render_identity():
+def test_installed_figure_template_shares_identity_with_its_inline_figure():
     project = _project()
     authored = project.documents["velocity-figure"]
-    key = "feedbax.VelocitySummary"
-    authored.payload = {"template": key}
-    operations = _operations()
+    profile = project.documents["velocity-analysis"].payload["views"]["profile"]
+    saved_source = profile["figure"]
+    profile["figure"] = deepcopy(authored.payload)
+    bundle = new_application_registry_bundle()
+    bundle.seal()
     memo = ProjectPlanMemo()
-    declaration = callable_declaration(VelocitySummary)
-    assert isinstance(declaration, FigureTemplateDeclaration)
 
-    def templates(revision):
-        registry = FigureTemplateRegistry()
-        registry.register_declaration(
-            VelocitySummary, replace(declaration, revision=revision),
-            key=key, source=DistributionSource("feedbax.builtins", "feedbax", "1.0"),
-        )
-        registry.seal()
-        return registry
-
-    def plan(registry):
+    def plan():
         return compile_project(
-            project, operations=operations, figure_templates=registry, memo=memo,
+            project, operations=bundle.operations, figure_templates=bundle.figure_templates, memo=memo,
         )
 
-    first_registry = templates(1)
-    initial_plan = plan(first_registry)
-    initial = _decode(initial_plan, "profile")
-    assert initial.spec.template == ResolvedFigureTemplate(
-        key=key, settings={"checkpoint_index": 0}, revision=1,
-    )
-    assert initial.spec.document == VelocitySummary(VelocitySummarySettings())
+    inline = _decode(plan(), "profile")
+    profile["figure"] = saved_source
+    authored.payload = {"template": "feedbax.VelocitySummary"}
+    named = _decode(plan(), "profile")
+    assert named.id == inline.id
+    assert named.spec == inline.spec
 
     authored.payload["settings"] = {"checkpoint_index": 0}
-    assert _decode(plan(first_registry), "profile").id == initial.id
-
-    revised = _decode(plan(templates(2)), "profile")
-    assert revised.id != initial.id
-    assert revised.spec.document == initial.spec.document
+    assert _decode(plan(), "profile").id == inline.id
 
     authored.payload["settings"]["checkpoint_index"] = 1
-    changed_plan = plan(first_registry)
-    changed = _decode(changed_plan, "profile")
-    assert changed.id != initial.id
+    changed = _decode(plan(), "profile")
+    assert changed.id != inline.id
     assert changed.spec.document.layers[0].select["checkpoint"].index == 1
-    assert diff_analyze_elements(initial_plan, changed_plan)[ElementKey(_KEY, "profile")].path == (
-        "payload.views.profile.figure.settings.checkpoint_index"
-    )
+
+    authored.payload["settings"]["checkpoint_index"] = -1
+    invalid = plan()
+    (problem,) = invalid.diagnostics
+    assert problem.document_path == "payload.settings.checkpoint_index"
 
     authored.payload["template"] = "missing.Figure"
-    unresolved = plan(first_registry)
+    unresolved = plan()
     (problem,) = unresolved.diagnostics
     assert (problem.path, problem.document_path) == (
         "payload.views.profile.figure.template", "payload.template",
@@ -424,7 +419,7 @@ def test_figure_binding_fails_closed():
 
 def test_analyze_collects_static_rows_in_each_named_variant():
     project = _project()
-    project.steps["conditions"] = Project.model_validate(managed_evaluation_definition()).steps["conditions"]
+    project.steps["conditions"] = _conditions()
     project.sweep = Sweep.model_validate({"rows": {"base": {}, "compare": {"from": "base"}}})
     project.steps["analyze"] = Step.model_validate(
         {
@@ -455,7 +450,7 @@ def test_analyze_collects_static_rows_in_each_named_variant():
 def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
     project = _project()
     operations = _operations()
-    project.steps["conditions"] = Project.model_validate(managed_evaluation_definition()).steps["conditions"]
+    project.steps["conditions"] = _conditions()
     baseline = compile_project(project, operations=operations)
     conditions = {
         run.coordinates["mass"].value_id: run for run in baseline.runs if run.key.step == "conditions"

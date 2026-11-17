@@ -20,7 +20,7 @@ from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInpu
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
-from feedbax.contracts.intent_diff import first_request_change, layered_semantic_diff
+from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
@@ -104,7 +104,6 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.contracts.request_specs import (
     DocumentTrainingRequestSpec,
-    RenderRequestSpec,
     ReportRequestSpec,
 )
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
@@ -2982,19 +2981,8 @@ def _authored_request_change(
     relative = change.parts[1:]
     if relative == ("analysis_type",):
         relative = ("operation",)
-    elif isinstance(new.spec, RenderRequestSpec) and relative[:1] in {("document",), ("template",)}:
-        assert isinstance(old.spec, RenderRequestSpec)
-        before, after = old.spec.template, new.spec.template
-        if before is None and after is None:
-            relative = ("figure", *relative[1:])
-        elif before is None or after is None:
-            relative = ("figure",)
-        else:
-            changes = layered_semantic_diff(before.model_dump(mode="json"), after.model_dump(mode="json"))
-            if changes and changes[0].parts[0] == "settings":
-                relative = ("figure", *changes[0].parts)
-            else:
-                relative = ("figure", "template")
+    elif new.kind == "render" and relative[:1] == ("document",):
+        relative = ("figure", *relative[1:])
     elif new.kind == "report" and relative[:1] == ("document",):
         relative = relative[1:]
     parts = prefix + relative
