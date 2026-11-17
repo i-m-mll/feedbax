@@ -161,6 +161,7 @@ from feedbax.contracts.training import (
     OptimizerSpec,
 )
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
 from feedbax.contracts.jobs import (
     JobError,
     JobOutcome,
@@ -455,6 +456,9 @@ JOB_MODELS = (
 )
 
 AUTHORED_CONTRACT_MODELS = (
+    ReceiptValidity,
+    ValidityAction,
+    ValidityAcceptance,
     AnalysisDocument,
     TaskDocument,
     PythonTaskSelection,

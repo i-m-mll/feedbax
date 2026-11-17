@@ -14,6 +14,7 @@ import {
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
+import { RunContextMenu, type RunMenu } from "./RunContextMenu";
 
 const byteSize = new Intl.NumberFormat(undefined, { style: "unit", unit: "byte", unitDisplay: "narrow" });
 
@@ -64,9 +65,10 @@ interface TableProps extends RunSelectionProps {
   rows: readonly PlanRunView[];
   related: RunSetsByStep;
   fillSlot?: boolean;
+  runMenu?: RunMenu;
 }
 
-export function StudioRunTable({ step, state, onSelectionChange, rows, related, fillSlot }: TableProps) {
+export function StudioRunTable({ step, state, onSelectionChange, rows, related, fillSlot, runMenu }: TableProps) {
   const scroll = useRef<HTMLDivElement>(null);
   const mountedRows = useRef(new Map<string, HTMLTableRowElement>());
   const pendingKeyboardFocus = useRef<{ id: string; column: number } | null>(null);
@@ -147,11 +149,12 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {items.map((item) => {
             const run = rows[item.index];
             const lit = selected.has(run.id);
-            const summary = run.openingReason ?? (run.status === "stale" ? undefined : run.reason);
+            const summary = run.openingReason ?? (run.status === "stale" || run.results.some(({ validity }) => validity.reasons?.length)
+              ? undefined : run.reason);
             const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
-              <TableRow
-                key={run.id}
+              <RunContextMenu key={run.id} runs={[run]} menu={runMenu} trigger={<TableRow
+                data-result-run={run.id}
                 ref={(node) => {
                   virtual.measureElement(node);
                   if (!node) {
@@ -191,7 +194,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   </TableCell>
                 ))}
                 <TableCell tabIndex={-1} className={cellFocus}>
-                  <StudioRunStatus status={run.status} />
+                  <StudioRunStatus status={run.state} />
                   {summary && <div className="truncate text-xs text-shell-muted">{summary}</div>}
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>
@@ -199,7 +202,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   {run.status === "collecting" && <StudioCollectionProgress progress={run.collectionProgress} />}
                   {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
                 </TableCell>
-              </TableRow>
+              </TableRow>} />
             );
           })}
           {bottom > 0 && <tr aria-hidden="true"><td colSpan={width} style={{ height: bottom }} /></tr>}

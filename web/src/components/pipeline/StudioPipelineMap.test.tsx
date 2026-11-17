@@ -58,6 +58,8 @@ const train: PlanStepView = {
     label: `${r.label}/${s.label}`,
     values: { rate: r.id, seed: s.id },
     status: 'not_run',
+    state: 'not_run',
+    results: [],
   }))),
   inputs: [],
   statusCounts: { not_run: 6 },
@@ -188,7 +190,7 @@ it('automatically folds a large sweep into a group with explicit value IDs', () 
   const step: PlanStepView = {
     ...train,
     sweeps: [{ ...seed, values }],
-    runs: values.map(({ id, label }) => ({ id, label, values: { seed: id }, status: 'not_run' })),
+    runs: values.map(({ id, label }) => ({ id, label, values: { seed: id }, status: 'not_run', state: 'not_run', results: [] })),
     statusCounts: { not_run: values.length },
   };
   const { selectionChanged } = mapWithState({ steps: [step], edges: [] });
@@ -212,7 +214,7 @@ it('draws the input subset and follows only linked runs into the drawer and dire
     label: 'perturbations',
     kind: 'evaluate',
     sweeps: [],
-    runs: [{ id: 'eval-1', label: 'perturbation', values: {}, status: 'not_run' }],
+    runs: [{ id: 'eval-1', label: 'perturbation', values: {}, status: 'not_run', state: 'not_run', results: [] }],
     inputs: [{
       id: 'model',
       label: 'Trained model',
@@ -226,7 +228,7 @@ it('draws the input subset and follows only linked runs into the drawer and dire
     id: 'report',
     label: 'summary',
     kind: 'report',
-    runs: [{ id: 'report-1', label: 'summary', values: {}, status: 'not_run' }],
+    runs: [{ id: 'report-1', label: 'summary', values: {}, status: 'not_run', state: 'not_run', results: [] }],
     inputs: [{ id: 'results', label: 'Results', sourceStepId: evalStep.id }],
   };
   const unrelated: PlanStepView = { ...train, id: 'unrelated', label: 'baseline' };

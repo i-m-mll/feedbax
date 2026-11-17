@@ -8,6 +8,46 @@ export const appearanceChoices = {
   density: { initial: 'regular', commands: { compact: 'densityCompact', regular: 'densityRegular' } },
 } as const;
 
+/**
+ * The owner's design comparisons: root attributes switched from the command palette and overridable
+ * per window by a query parameter of the same name. They are not settings.
+ */
+export const comparisonChoices = {
+  unchecked: { initial: 'hollow', commands: { hollow: 'uncheckedHollow', badge: 'uncheckedBadge' } },
+} as const;
+
+type Comparisons = typeof comparisonChoices;
+type ComparisonChoice = keyof Comparisons;
+export type ComparisonCommandId = {
+  [Choice in ComparisonChoice]: Comparisons[Choice]['commands'][keyof Comparisons[Choice]['commands']]
+}[ComparisonChoice];
+const comparisonNames = Object.keys(comparisonChoices) as ComparisonChoice[];
+const comparisonKey = (choice: ComparisonChoice) => `feedbax.comparison.${choice}`;
+
+function resolveComparison(choice: ComparisonChoice, view: Window): string {
+  const commands = comparisonChoices[choice].commands;
+  const valid = (value: string | null): value is string => value !== null && Object.prototype.hasOwnProperty.call(commands, value);
+  const query = new URLSearchParams(view.location.search).get(choice);
+  if (valid(query)) return query;
+  const stored = view.localStorage.getItem(comparisonKey(choice));
+  return valid(stored) ? stored : comparisonChoices[choice].initial;
+}
+
+export function comparisonSettings() {
+  return comparisonNames.flatMap((choice) => Object.entries(comparisonChoices[choice].commands).map(([value, id]) => ({
+    id: id as ComparisonCommandId,
+    apply: (view: Window) => {
+      view.localStorage.setItem(comparisonKey(choice), value);
+      const url = new URL(view.location.href);
+      if (url.searchParams.has(choice)) {
+        url.searchParams.set(choice, value);
+        view.history.replaceState(view.history.state, '', url);
+      }
+      applyAppearance(view);
+    },
+  })));
+}
+
 type Choices = typeof appearanceChoices;
 export type AppearanceChoice = keyof Choices;
 export type AppearanceValue<Choice extends AppearanceChoice> = keyof Choices[Choice]['commands'] & string;
@@ -44,6 +84,7 @@ export function applyAppearance(view: Window) {
     root.setAttribute('data-theme', theme);
     root.style.colorScheme = theme;
   }
+  for (const choice of comparisonNames) root.setAttribute(`data-${choice}`, resolveComparison(choice, view));
 }
 
 export function installAppearance(view: Window) {

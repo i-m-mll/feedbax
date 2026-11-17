@@ -1,12 +1,12 @@
 import { memo, useMemo, type KeyboardEvent } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
-import { StudioRunMark } from '@/components/activity/StudioRunStatus';
+import { StatusMark } from '@/components/ui/StatusMark';
 import {
   studioAccessibleName,
   studioCountOf,
   studioName,
   studioRunStatus,
-  type StudioRunStatusId,
+  type StudioResultState,
 } from '@/components/activity/studioVocabulary';
 import type { PlanStepView, PlanSweepView } from '@/features/pipeline/planView';
 import {
@@ -18,6 +18,7 @@ import {
   type PipelineSelectionState,
 } from '@/features/pipeline/selection';
 import { mapRunCells, type RunMark } from './pipelineMapLayout';
+import { RunContextMenu, type RunMenu } from './RunContextMenu';
 import { Button } from '@/components/ui/Button';
 
 export type ApplyMapSelection = (change: (state: PipelineSelectionState) => PipelineSelectionState) => void;
@@ -55,7 +56,7 @@ export function MapSweepValue({
 interface MarkPresentation {
   mark: RunMark;
   label: string;
-  statuses: readonly [StudioRunStatusId, number][];
+  statuses: readonly [StudioResultState, number][];
 }
 
 function MarkButton({
@@ -66,6 +67,7 @@ function MarkButton({
   upstream,
   downstream,
   applySelection,
+  runMenu,
 }: {
   item: MarkPresentation;
   stepId: string;
@@ -74,6 +76,7 @@ function MarkButton({
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   applySelection: ApplyMapSelection;
+  runMenu?: RunMenu;
 }) {
   const { mark, label, statuses } = item;
   const runs = mark.kind === 'group' ? mark.runs : [mark.run];
@@ -95,16 +98,17 @@ function MarkButton({
     relatedCount && mark.kind === 'group' ? studioCountOf(relatedCount, runs.length) : '',
   ].filter(Boolean).join(' · ');
   const status = mark.kind === 'run'
-    ? studioRunStatus(mark.run.status)
+    ? studioRunStatus(mark.run.state)
     : statuses.map(([state, count]) => `${count} ${studioRunStatus(state)}`).join(' · ');
   const share = selectedCount && mark.kind === 'group'
     ? studioCountOf(selectedCount, runs.length)
     : null;
   const name = [label, status, share].filter(Boolean).join(' · ');
-  return (
+  return <RunContextMenu runs={runs} menu={runMenu} trigger={
     <Button
       variant="bare"
       size="content"
+      data-result-run={mark.kind === 'run' ? mark.run.id : undefined}
       aria-label={studioAccessibleName('select', name)}
       aria-pressed={!selectedCount ? false : selectedCount === runs.length ? true : 'mixed'}
       aria-description={lineageDescription || undefined}
@@ -118,7 +122,7 @@ function MarkButton({
         else applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));
       })}
     >
-      {statuses.map(([state, count]) => <StudioRunMark key={state} status={state} count={count} />)}
+      {statuses.map(([state, count]) => <StatusMark key={state} status={state} style={{ flexGrow: count }} />)}
       {selectedCount > 0 && mark.kind === 'group' && (
         <span
           aria-hidden="true"
@@ -132,7 +136,7 @@ function MarkButton({
           : 'absolute -inset-[2px] rounded-[3px] border border-dashed border-shell-foreground'}
         style={mark.kind === 'group' ? { width: `${100 * relatedCount / runs.length}%` } : undefined} />}
     </Button>
-  );
+  } />;
 }
 
 function navigateMarks(event: KeyboardEvent<HTMLDivElement>) {
@@ -172,6 +176,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   upstream,
   downstream,
   applySelection,
+  runMenu,
 }: {
   step: PlanStepView;
   sweeps: readonly PlanSweepView[];
@@ -181,6 +186,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   applySelection: ApplyMapSelection;
+  runMenu?: RunMenu;
 }) {
   const grid = useMemo(() => {
     const { rowSweep, columnSweep, cells } = mapRunCells(step.runs, sweeps, folded);
@@ -201,7 +207,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
             return value === undefined ? [] : [`${sweep.label} ${value}`];
           });
           const label = coordinates.join(' · ') || mark.run.label;
-          return { id, mark, label, statuses: [[mark.run.status, 1]] } satisfies MarkPresentation & { id: string };
+          return { id, mark, label, statuses: [[mark.run.state, 1]] } satisfies MarkPresentation & { id: string };
         }
         const scope = sweeps.flatMap((sweep) => {
           const term = mark.terms.find(({ sweepId }) => sweepId === sweep.id);
@@ -209,8 +215,8 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
           const values = term.valueIds.map((valueId) => valuesBySweep.get(sweep.id)?.get(valueId) ?? valueId);
           return [`${sweep.label} ${values.join(', ')}`];
         });
-        const counts = new Map<StudioRunStatusId, number>();
-        for (const run of mark.runs) counts.set(run.status, (counts.get(run.status) ?? 0) + 1);
+        const counts = new Map<StudioResultState, number>();
+        for (const run of mark.runs) counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
         const label = [...scope, `${mark.runs.length} ${studioName('runs')}`].join(' · ');
         return { id, mark, label, statuses: [...counts] };
       }),
@@ -291,7 +297,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
                   {cell.marks.map((item) => (
                     <MarkButton key={item.id} item={item} stepId={step.id} selected={selected}
                       selectionKind={selection?.kind} upstream={upstream} downstream={downstream}
-                      applySelection={applySelection} />
+                      applySelection={applySelection} runMenu={runMenu} />
                   ))}
                 </div>
               ))}

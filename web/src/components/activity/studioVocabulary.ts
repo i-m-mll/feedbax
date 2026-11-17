@@ -1,12 +1,18 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
-import type { FieldKind, StudioActivityJob, StudioEvaluateValueSource, StudioPlanReviewSource, StudioSavedEvaluationResult } from '@/generated/studioContracts';
+import type { StatusMarkStatus } from '@/components/ui/StatusMark';
+import type {
+  EnvironmentDifference, EnvironmentNotice, FieldKind, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
+  StudioPlanReviewSource, StudioSavedEvaluationResult, ValidityReason,
+} from '@/generated/studioContracts';
 import vocabulary from './vocabulary.json';
 
 export type StudioNameId = keyof typeof vocabulary.name;
 export type StudioReasonId = keyof typeof vocabulary.reason;
 export type StudioRunStatusId = StudioActivityJob['status'];
+/** A run's status with its result's validity folded in: what one mark draws. */
+export type StudioResultState = StatusMarkStatus;
 
-const runStatus = vocabulary.status.run satisfies Record<StudioRunStatusId, string>;
+const runStatus = vocabulary.status.run satisfies Record<StudioResultState, string>;
 const stepGlyphs = {
   flask: FlaskConical,
   play: PlayCircle,
@@ -86,8 +92,45 @@ export function studioCountOf(count: number, total: number) {
   return studioFormat('ofCount', { count: countFormat.format(count), total: countFormat.format(total) });
 }
 
-export function studioRunStatus(status: StudioRunStatusId) {
+export function studioRunStatus(status: StudioResultState) {
   return runStatus[status];
+}
+
+export function studioValidity(id: keyof typeof vocabulary.status.validity) {
+  return vocabulary.status.validity[id];
+}
+
+function binding({ family, key, version }: RegistryBinding) {
+  return `${family} ${key} ${version}`;
+}
+
+function environmentChange({ distribution, before, after }: EnvironmentDifference) {
+  return `${distribution} ${before} → ${after ?? studioValidity('removed')}`;
+}
+
+/**
+ * One reason a result is unchecked or out of date, as the parts of an inspector row. The wire omits
+ * defaulted `kind` fields, so reasons are told apart by their required fields.
+ */
+export function studioValidityReason(reason: ValidityReason): string[] {
+  if ('basis' in reason) {
+    return [studioValidity('code'), studioValidity(reason.basis), ...reason.differences.map((difference) =>
+      'path' in difference
+        ? [difference.path.path, studioValidity(difference.status), ...(difference.functions ?? [])].join(' ')
+        : `${binding(difference.before)} → ${difference.after ? binding(difference.after) : studioValidity('removed')}`),
+    reason.detail ?? ''].filter(Boolean);
+  }
+  if ('role' in reason) {
+    return [studioValidity('input'), `${reason.role} ${reason.member}`,
+      studioValidity(reason.after ? 'changed' : 'removed'), reason.detail ?? ''].filter(Boolean);
+  }
+  if ('path' in reason) return [studioValidity('file'), reason.path.path, studioValidity(reason.status ?? 'changed')];
+  return [studioValidity('environment'), ...reason.differences.map(environmentChange), reason.detail ?? ''].filter(Boolean);
+}
+
+export function studioEnvironmentNotice(notice: EnvironmentNotice): string[] {
+  return [studioValidity('environment'), studioValidity(notice.check), ...notice.differences.map(environmentChange),
+    notice.detail ?? ''].filter(Boolean);
 }
 
 export function studioMachineStatus(status: keyof typeof vocabulary.status.machine) {
