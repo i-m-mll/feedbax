@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import CodeTrace, ReceiptEvidence
-from feedbax.contracts.store_closure import StoreClosureRef
+from feedbax.contracts.store_closure import StoreClosureRef, read_store_closure_ref
 
 if TYPE_CHECKING:
     from feedbax.contracts.effective_success import Success
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+
+class StagedEvidenceMissing(ValueError):
+    """An exact execution scope no longer has provisional Store custody."""
 
 
 def read_execution_evidence(store: ImmutableArtifactBlobProvider, ref: ContentObjectRef) -> ReceiptEvidence:
@@ -60,9 +64,12 @@ def _staged_value(store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, e
 
 
 def stage_evidence(
-    store: ImmutableArtifactBlobProvider, evidence: ReceiptEvidence, *, scope: str | None = None,
+    store: ImmutableArtifactBlobProvider, evidence: ReceiptEvidence | Callable[[], ReceiptEvidence],
+    *, scope: str | None = None,
 ) -> ContentObjectRef:
     with store._exclusive_lock():
+        if callable(evidence):
+            evidence = evidence()
         ref = store.store_object(canonical_json_v2_bytes(evidence.model_dump(mode="json")))
         if not store.compare_and_swap_ref(_staged_ref(scope or evidence.attempt), expected=None,
                                           replacement=_staged_value(store, ref, evidence)):
@@ -73,16 +80,43 @@ def stage_evidence(
 def read_staged_evidence(
     store: ImmutableArtifactBlobProvider, attempt: str, ref: ContentObjectRef, *, scope: str | None = None,
 ) -> ReceiptEvidence:
-    evidence = read_execution_evidence(store, ref)
-    if evidence.attempt != attempt or store.read_ref(_staged_ref(scope or attempt)) != _staged_value(store, ref, evidence):
-        raise ValueError("Execution evidence differs from the recorded attempt and its Store root")
+    with store._exclusive_lock():
+        staged = store.read_ref(_staged_ref(scope or attempt))
+        if staged is None:
+            raise StagedEvidenceMissing("The execution has no staged evidence")
+        evidence = read_execution_evidence(store, ref)
+        if evidence.attempt != attempt or staged != _staged_value(store, ref, evidence):
+            raise ValueError("Execution evidence differs from the recorded attempt and its Store root")
     return evidence
 
 
 def release_staged_evidence(
     store: ImmutableArtifactBlobProvider, attempt: str, *, scope: str | None = None,
 ) -> None:
-    name = _staged_ref(scope or attempt)
+    _release_ref(store, _staged_ref(scope or attempt))
+
+
+def stage_checkpoint_evidence(
+    store: ImmutableArtifactBlobProvider, attempt: str, *roots: ContentObjectRef | ContentTreeRef,
+) -> None:
+    """Retain checkpoint evidence until an authenticated durable owner takes custody."""
+    name = f"execution/checkpoints/{attempt}"
+    with store._exclusive_lock():
+        expected = store.read_ref(name)
+        retained = list(read_store_closure_ref(expected).roots) if expected is not None else []
+        for root in roots:
+            if root not in retained:
+                retained.append(root)
+        replacement = StoreClosureRef(roots=tuple(retained)).model_dump(mode="json")
+        if not store.compare_and_swap_ref(name, expected=expected, replacement=replacement):
+            raise ValueError("Staged checkpoint evidence moved during publication")
+
+
+def release_checkpoint_evidence(store: ImmutableArtifactBlobProvider, attempt: str) -> None:
+    _release_ref(store, f"execution/checkpoints/{attempt}")
+
+
+def _release_ref(store: ImmutableArtifactBlobProvider, name: str) -> None:
     with store._exclusive_lock():
         expected = store.read_ref(name)
         if expected is not None and not store.compare_and_swap_ref(name, expected=expected, replacement=None):

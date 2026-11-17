@@ -482,6 +482,7 @@ class Host:
                 "argv": launch["argv"],
                 "store_root": json.loads(row["data"]).get("manifest_root"),
                 "project_root": launch.get("project_root"),
+                "environment_root": launch["cwd"] if self.session is not None else None,
                 "entrypoint": launch["warm_entrypoint"],
                 "completion_bindings_sha256": completion_bindings_sha256,
                 "live_evaluate_sha256": live_evaluate_sha256,

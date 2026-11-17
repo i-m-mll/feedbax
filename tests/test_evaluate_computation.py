@@ -2,7 +2,11 @@
 
 from contextlib import ExitStack
 from dataclasses import replace
+from datetime import UTC, datetime
 from hashlib import sha256
+from importlib.util import module_from_spec, spec_from_file_location
+import sys
+from time import time_ns
 
 import jax
 import numpy as np
@@ -13,15 +17,21 @@ from feedbax.contracts.code_validity import ComputationUnavailable
 from feedbax.contracts.computation_validity import ComputationDifferent, ComputationEqual, EvaluatePrefix
 from feedbax.contracts.live_evaluate import EVALUATE_DRIVER, ScoredEvaluationPoint, require_evaluation_coverage
 from feedbax.contracts.model_input import InitialModelSource, encode_document_input
+from feedbax.contracts.receipt_validity import CheckOutcome, CodeReason, ValidityAssessment, ValidityCheckEvidence
 from feedbax.contracts.rollout import ResolvedRolloutMember, RolloutParameters
 from feedbax.dataset import Dataset, Variable
+from feedbax.host.source_roster import SourceRoster
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
 from feedbax.plugins.composition import load_application
 from feedbax.runtime.trial_execution import TrialExecution
 from feedbax.training.evaluate_computation import EvaluationComputation, RolloutExecutables, drive_replicas
+from feedbax.training import evaluate_worker
 from feedbax.training.evaluate_worker import _lower_rollouts, _prepare_initial_rollout, _rollouts, _scored_product
+from feedbax.validity.admission import decide_validity, observe_differences
 from feedbax.validity.computation import compare_computation
+from feedbax.validity.recording import WorkerRecorder, numerical_work, record_computation
+from feedbax.validity.source import source_catalog
 from tests.test_document_train_pair import authored_documents
 
 
@@ -49,9 +59,10 @@ def test_evaluate_driver_transcript():
     assert int(sha256(transcript).hexdigest()[:13], 16) == EVALUATE_DRIVER.revision
 
 
-def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(tmp_path, monkeypatch):
+@pytest.fixture
+def initial_rollout(tmp_path):
     _, model, task, objective = authored_documents()
-    store = ImmutableArtifactBlobProvider(tmp_path)
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
     definition = {
         "subject": InitialModelSource(model_name="reach-model", document=model, seed=19),
         "task": task,
@@ -69,6 +80,11 @@ def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(
     def prepare():
         return _prepare_initial_rollout(refs, params, registry=load_application().bundle, store=store)
 
+    return store, params, prepare
+
+
+def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(initial_rollout, monkeypatch):
+    store, params, prepare = initial_rollout
     execution = EvaluationComputation(store)
     result = _rollouts(
         prepare(), params, lambda: False, update_axis=None, computation=execution, executables=RolloutExecutables(),
@@ -123,6 +139,78 @@ def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(
     assert isinstance(unavailable, ComputationUnavailable)
     assert unavailable.reason == "arguments"
     require_evaluation_coverage(unavailable, ("/initial/0",))
+
+
+def test_equal_rollout_check_preserves_protected_wrapper_staleness(tmp_path, initial_rollout, monkeypatch):
+    store, params, prepare = initial_rollout
+    project = tmp_path / "project"
+    project.mkdir()
+    score = project / "scope_score.py"
+    wrapper = project / "scope_product.py"
+    score.write_text("def run(*args, **kwargs):\n    return delegate(*args, **kwargs)\n")
+    wrapper.write_text("def run(*args):\n    return delegate(*args)\n")
+
+    def load(path, delegate):
+        spec = spec_from_file_location(path.stem, path)
+        module = module_from_spec(spec)
+        module.delegate = delegate
+        monkeypatch.setitem(sys.modules, spec.name, module)
+        spec.loader.exec_module(module)
+        return module.run
+
+    original_score = TrialExecution.evaluate
+    original_product = evaluate_worker._rollout_product
+    execution = EvaluationComputation(store)
+    with SourceRoster(3, "test Evaluate source") as roster:
+        roster.enable()
+        recorder = WorkerRecorder(roster.names, boot_ns=time_ns())
+        with recorder.monitor():
+            recorder.bind_project(project)
+            monkeypatch.setattr(TrialExecution, "evaluate", load(score, original_score))
+            monkeypatch.setattr(evaluate_worker, "_rollout_product", load(wrapper, original_product))
+            with recorder.delivery("evaluate", store.root, tmp_path / "scratch"):
+                with numerical_work():
+                    prepared = prepare()
+                result = _rollouts(
+                    prepared, params, lambda: False, update_axis=None,
+                    computation=execution, executables=RolloutExecutables(),
+                )
+                assert result is not None
+                record_computation(execution.snapshot)
+                recorded = recorder.snapshot(store)
+
+    receipt = store.store_object(b"Evaluate receipt identity for the validity decision")
+    trace = recorded.trace
+    registry = {(binding.family, binding.requested_key): binding for binding in trace.registry}
+    score.write_text("def run(*args, **kwargs):\n    scored = delegate(*args, **kwargs)\n    return scored\n")
+    monkeypatch.setattr(TrialExecution, "evaluate", load(score, original_score))
+
+    def compare():
+        conditions, files = observe_differences(
+            (trace,), catalog=source_catalog(project), registry=registry, environment=trace.environment,
+            read_object=store.get_object,
+        )
+        assert not files
+        replay = EvaluationComputation(store)
+        _lower_rollouts(prepare(), lambda: False, consume=lambda _, call: replay.observe(call))
+        former, current = trace.computation, replay.snapshot()
+        assert isinstance(compare_computation(former, current), ComputationEqual)
+        assessment = ValidityAssessment(
+            receipt=receipt, conditions=conditions,
+            evidence=ValidityCheckEvidence(code=CheckOutcome(outcome="equal")), assessed_at=datetime.now(UTC),
+        )
+        return decide_validity(receipt, conditions=conditions, records=(assessment,), code_checkable=True)
+
+    assert compare().state == "current"
+    wrapper.write_text(
+        "def run(*args):\n    dataset, total, member, objective = delegate(*args)\n"
+        "    return dataset, total + 1, member, objective\n"
+    )
+    checked = compare()
+    assert checked.state == "stale"
+    (reason,) = checked.reasons
+    assert isinstance(reason, CodeReason)
+    assert [change.path.path for change in reason.differences] == ["scope_product.py"]
 
 
 def test_live_checkpoint_preserves_the_replica_coordinate_and_mean(tmp_path):
