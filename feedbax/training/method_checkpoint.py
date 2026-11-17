@@ -51,7 +51,7 @@ from feedbax.training.model_checkpoint import SemanticModelSlot
 
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentBinding
+    from feedbax.contracts.artifact_custody import ContentBinding
     from feedbax.runtime.graph import Graph
     from feedbax.training.methods import TrainingState
     from feedbax.training.model_checkpoint import SemanticModelWriter
@@ -81,7 +81,7 @@ def _extra_layout(extra: PyTree, count: int):
     specs = jax.tree.unflatten(
         structure,
         [
-            jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, weak_type=leaf.weak_type)
+            jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, weak_type=getattr(leaf, "weak_type", False))
             for _, leaf in named
         ],
     )
@@ -190,7 +190,7 @@ def write_method_checkpoint(
     root: Path, *, run_id: str, identity: MethodCheckpointIdentity, clock: MethodCheckpointClock,
     state: TrainingState, model_writer: SemanticModelWriter,
     model_templates: Sequence[Graph], replica_ids: tuple[str, ...], final: bool = False,
-    content_provider: ArtifactBlobProvider | None = None,
+    content_provider: ImmutableArtifactBlobProvider | None = None,
 ) -> MethodCheckpointWrite:
     from feedbax.training.method_runtime import replica_value
 

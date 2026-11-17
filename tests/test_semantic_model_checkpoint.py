@@ -79,7 +79,12 @@ class _AdaptiveState(eqx.Module):
 
 
 def test_recover_replicated_method_state_and_read_model_without_extra(tmp_path):
-    graph = _thelen_graph({"n_muscles": 2})
+    graph = GraphSpec(nodes={
+        "linear": ComponentSpec(
+            type="feedbax.Linear", params={"input_size": 1, "output_size": 1},
+            input_ports=["input"], output_ports=["output"],
+        ),
+    })
     template = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
     extra = _AdaptiveState(
         b"adam", jnp.stack((jnp.asarray(3.5), jnp.asarray(-2.25))),
@@ -87,11 +92,8 @@ def test_recover_replicated_method_state_and_read_model_without_extra(tmp_path):
         jnp.array([[0.25, 0.75], [1.5, 2]], dtype=jnp.bfloat16),
     )
     replicas = tuple(
-        compile_graph(
-            GraphDocument(graph=_thelen_graph({"n_muscles": 2, "max_isometric_force": force})),
-            ComponentRegistry(),
-        ).graph
-        for force in (575.0, 732.0)
+        eqx.tree_at(lambda model: model.nodes["linear"].layer.weight, template, jnp.asarray([[weight]]))
+        for weight in (0.25, -0.75)
     )
     written = _publish(
         tmp_path / "attempt", graph, replicas, (template, template),
@@ -129,8 +131,8 @@ def test_recover_replicated_method_state_and_read_model_without_extra(tmp_path):
         selected = _open(materialized, written.latest_pointer)
         assert selected.model.replica_ids == ("left", "right")
         left, right = selected.model.restore_all((template, template))
-        assert left.nodes["muscle"].max_isometric_force == 575.0
-        assert right.nodes["muscle"].max_isometric_force == 732.0
+        np.testing.assert_array_equal(left.nodes["linear"].layer.weight, [[0.25]])
+        np.testing.assert_array_equal(right.nodes["linear"].layer.weight, [[-0.75]])
         with pytest.raises(CheckpointCustodyError):
             selected.restore_extra(fresh)
 

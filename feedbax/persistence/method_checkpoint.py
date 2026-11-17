@@ -146,19 +146,20 @@ def method_checkpoint_files(
 
 
 def bind_method_checkpoint_content(
-    root: Path, pointer: CheckpointLatestPointer, provider: ArtifactBlobProvider, *,
+    root: Path, pointer: CheckpointLatestPointer, provider: ImmutableArtifactBlobProvider, *,
     include_extra: bool = True,
 ) -> ContentBinding:
     files = method_checkpoint_files(root, pointer, include_extra=include_extra)
-    members = {
-        relative.as_posix(): provider.store_object(read_checkpoint_file(root / relative, ref), expected=ref)
-        for relative, ref in files.items()
-    }
-    members[LATEST_NAME] = provider.store_object(canonical_json_v2_bytes(pointer.model_dump(mode="json")))
     kind = _content_kind(include_extra)
-    tree, _ = provider.publish_rooted_tree(
-        members, root_id=f"{kind}:{pointer.transaction_id}", root_kind="logical-ref",
-    )
+    with provider._exclusive_lock():
+        members = {
+            relative.as_posix(): provider._store_file(root / relative, sha256=ref.sha256, size_bytes=ref.size_bytes)
+            for relative, ref in files.items()
+        }
+        members[LATEST_NAME] = provider.store_object(canonical_json_v2_bytes(pointer.model_dump(mode="json")))
+        tree, _ = provider.publish_rooted_tree(
+            members, root_id=f"{kind}:{pointer.transaction_id}", root_kind="logical-ref",
+        )
     return ContentBinding(binding_name=pointer.transaction_id, root_kind=kind, tree=tree)
 
 
