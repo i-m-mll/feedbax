@@ -217,6 +217,9 @@ export async function authorFirstTrain(
     await page.reload();
     await expect(page).toHaveURL(new RegExp(`[?&]project=${snapshot.project_id}(?:&|$)`));
     await activate(page, mapStep(page, 'train'));
+    // The window comes back as it was left, on Training.
+    await expect(page.getByRole('tabpanel', { name: 'Training', exact: true })).toBeVisible();
+    await page.keyboard.press('Meta+1');
     await expect(runs).toBeVisible();
   }
   await reopen();

@@ -5,7 +5,6 @@ import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonica
 test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
 
 test('Training and Runs edit the same saved values and project the selected source', async ({ page, request }) => {
-  test.fixme(true, 'Owned by V1 (feature/bf89b13-r2-v1): re-entering a list after a geomspace range saves stale value labels.');
   test.setTimeout(55_000);
   const files = await fixture('ordinary-files', '2');
   // Train offers the settings a project authors, so the project authors Grad Clip to edit it.
