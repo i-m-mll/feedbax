@@ -24,6 +24,7 @@ from feedbax.contracts.effective_success import (
     Success,
     SuccessIndex,
     decode_success_index,
+    exact_model_checkpoint_input,
     read_committed_success,
     read_effective_request,
     read_success_request,
@@ -46,6 +47,7 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.checkpoint_publication import checkpoint_model_objects
 from feedbax.persistence.receipt_content import continuation_objects, verify_success_content
 from feedbax.persistence.evaluation_subject import (
     evaluation_subject_objects,
@@ -164,7 +166,14 @@ class SuccessView:
         )
 
     def _verify_bound(self, decoded: DecodedRequest, member: InputMember, bound: BoundMember) -> None:
-        if bound.evaluation_subject is not None:
+        if bound.checkpoint_model is not None:
+            exact = exact_model_checkpoint_input(decoded)
+            if exact is None or exact[1] != member:
+                raise ValueError("Unexpected checkpoint model evidence")
+            for ref in checkpoint_model_objects(self.store, member, bound):
+                require_sound(self.store, ref)
+                self.store.verify_object(ref)
+        elif bound.evaluation_subject is not None:
             for ref in evaluation_subject_objects(self.store, decoded, member, bound):
                 require_sound(self.store, ref)
                 self.store.verify_object(ref)
@@ -175,8 +184,15 @@ class SuccessView:
 
     def bind(
         self, request: RequestObject, *, origins: Mapping[RequestId, ContentObjectRef] | None = None,
+        checkpoint_model: BoundMember | None = None,
     ) -> tuple[EffectiveBindingId, Bindings]:
         decoded = self.read_request(request)
+        checkpoint = exact_model_checkpoint_input(decoded)
+        if (checkpoint is None) != (checkpoint_model is None):
+            raise ValueError("Analyze requires the exact Host checkpoint binding")
+        model_member = checkpoint[1] if checkpoint is not None else None
+        if model_member is not None and checkpoint_model is not None:
+            self._verify_bound(decoded, model_member, checkpoint_model)
         if origins is None:
             origins = self._index.authored
         else:
@@ -184,13 +200,13 @@ class SuccessView:
                 member.reference.request_id
                 for members in decoded.inputs.values()
                 for member in members
-                if isinstance(member.reference, ProductRef)
+                if member != model_member and isinstance(member.reference, ProductRef)
             }
             if origins.keys() != expected:
                 raise ValueError("Explicit origins must cover the exact authored producer requests")
         inputs = {
             role: tuple(
-                self.resolve(
+                checkpoint_model if member == model_member and checkpoint_model is not None else self.resolve(
                     decoded, member,
                     origins.get(member.reference.request_id)
                     if isinstance(member.reference, ProductRef)

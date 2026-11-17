@@ -2,26 +2,23 @@
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTree, ContentTreeFile, ContentTreeRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.checkpoints import CheckpointTransactionManifest
 from feedbax.contracts.effective_success import (
-    EVALUATION_SUBJECT_MEDIA_TYPE, BoundMember, EvaluationCheckpointSource,
-    EvaluationSubjectValue, Product, RequestObject, Success, TerminalTrainSubject,
+    EVALUATION_SUBJECT_MEDIA_TYPE, BoundMember, CheckpointPublicationSource,
+    EvaluationSubjectValue, Success, TerminalTrainSubject,
     read_effective_request, read_success_object, read_success_request, select_success_product, success_content_ref,
 )
 from feedbax.contracts.base import ParentRef, Provenance
 from feedbax.contracts.manifest import TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
-from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
-from feedbax.contracts.spec_storage import canonical_training_run_spec_projection
-from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
-from feedbax.contracts.training import TrainingRunSpec
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.studio.canonical_evaluate import decode_evaluation_manifest, evaluation_manifest_id, states_product
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.checkpoint_publication import model_product, read_retained_checkpoint
+from feedbax.persistence.method_checkpoint import parse_method_checkpoint_manifest
 from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects, verify_success_content
 from feedbax.host.best_selection import rank_train_metric
 
@@ -36,7 +33,6 @@ def read_terminal_train_subject(
     checkpoint = success.continuation
     if (
         decoded.id != request_id or not isinstance(decoded.spec, DocumentTrainingRequestSpec)
-        or decoded.spec.method_ref != STUDIO_GRAPH_METHOD
         or checkpoint is None or checkpoint.clock.completed_batches <= 0
         or checkpoint.clock.barrier != "after_train_batch"
         or pin.model != select_success_product(ProductRef(
@@ -44,10 +40,7 @@ def read_terminal_train_subject(
         ), success)
     ):
         raise ValueError("Pinned subject differs from the exact terminal Train model")
-    raw_method = decoded.spec.method_payload.payload
-    if decoded.spec.seed is not None:
-        raw_method = raw_method | {"seed": decoded.spec.seed}
-    if StudioGraphMethodPayload.model_validate(raw_method).target_total != checkpoint.clock.completed_batches:
+    if decoded.spec.target_total != checkpoint.clock.completed_batches:
         raise ValueError("Terminal Train coordinate differs from its authored horizon")
     verify_success_content(store, pin.model)
     return success, decoded.spec
@@ -89,51 +82,8 @@ def terminal_train_provenance(
 
 
 
-def checkpoint_transaction(
-    store: ImmutableArtifactBlobProvider, source: EvaluationCheckpointSource,
-) -> CheckpointTransactionManifest:
-    manifest = CheckpointTransactionManifest.model_validate_json(store.get_object(source.transaction))
-    if (manifest.run_id, manifest.transaction_id) != (source.occurrence.run_id, source.occurrence.transaction_id):
-        raise ValueError("Evaluate checkpoint transaction has a different occurrence")
-    if manifest.barrier != "after_train_batch":
-        raise ValueError("Evaluate checkpoint transaction has a different barrier")
-    return manifest
-
-
-def _verify_train_contract(
-    store: ImmutableArtifactBlobProvider, checkpoint: EvaluationCheckpointSource,
-    manifest: CheckpointTransactionManifest, request: DecodedRequest, producer: RequestObject,
-) -> StudioGraphMethodPayload:
-    launch = BoundStudioTrainingJobInput.model_validate_json(store.get_object(checkpoint.train_binding))
-    binding = launch.canonical_request
-    spec = request.spec
-    authored_method = spec.method_payload.payload
-    if spec.seed is not None:
-        authored_method = authored_method | {"seed": spec.seed}
-    projection = manifest.run_contract_binding.canonical_projection
-    if (
-        binding is None or launch.request_id != producer.id
-        or (binding.request, binding.documents) != (producer.object, producer.documents)
-        or projection is None
-        or projection["training_run_spec"] != canonical_training_run_spec_projection(launch.spec)
-        or launch.spec.trial_documents != spec.trial_documents
-        or launch.spec.method_ref != spec.method_ref or launch.spec.method_payload.payload != authored_method
-    ):
-        raise ValueError("Evaluate checkpoint does not match its authenticated Train definition")
-    return StudioGraphMethodPayload.model_validate(launch.spec.method_payload.payload)
-
-
-def model_product(manifest: CheckpointTransactionManifest) -> Product:
-    (slot,) = (slot for slot in manifest.slots if slot.slot == "model" and slot.media_type == MODEL_TREE_MEDIA_TYPE)
-    return Product(
-        name="model", content=ContentRef(
-            sha256=slot.sha256, size=slot.size_bytes, media_type=slot.media_type, tree=True,
-        ), descriptor=slot.metadata["semantic_model"],
-    )
-
-
 def _verify_terminal(
-    store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, checkpoint: EvaluationCheckpointSource,
+    store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, checkpoint: CheckpointPublicationSource,
     completed_updates: int | None,
 ) -> None:
     receipt = load_manifest_bytes(store.get_object(ref))
@@ -199,22 +149,20 @@ def evaluation_subject_objects(
             scores.append(rank_train_metric(raw, JobReceipt(
                 manifest_id=training_run_manifest_id(claim.attempt), manifest_sha256=claim.receipt.sha256,
             ), claim.attempt, reference.metric))
-            producer_request = read_success_request(claim.producer, store.get_object)
-            transaction = checkpoint_transaction(store, checkpoint)
-            method = _verify_train_contract(store, checkpoint, transaction, producer_request, claim.producer)
-            _verify_terminal(store, claim.receipt, checkpoint, method.target_total)
+            transaction, spec = read_retained_checkpoint(store, checkpoint, claim.producer)
+            _verify_terminal(store, claim.receipt, checkpoint, spec.target_total)
             receipt = load_manifest_bytes(raw)
             launch = BoundStudioTrainingJobInput.model_validate_json(store.get_object(checkpoint.train_binding))
             if (
                 not isinstance(receipt, TrainingRunManifest) or receipt.training_spec is None
-                or TrainingRunSpec.model_validate(receipt.training_spec.inline) != launch.spec
-                or transaction.completed_training_batches != method.target_total
+                or DocumentTrainingRequestSpec.model_validate(receipt.training_spec.inline) != spec
+                or transaction.clock.completed_updates != spec.target_total
             ):
                 raise ValueError("Best score is detached from its admitted Train execution")
             if receipt.inherited_terminal_checkpoint is not None:
                 resume = launch.resume
                 if (
-                    resume is None or resume.completed_updates != method.target_total
+                    resume is None or resume.completed_updates != spec.target_total
                     or (resume.pointer.run_id, resume.pointer.transaction_id, resume.pointer.manifest_sha256)
                     != (checkpoint.occurrence.run_id, checkpoint.occurrence.transaction_id, checkpoint.occurrence.manifest_sha256)
                 ):
@@ -265,17 +213,16 @@ def evaluation_subject_objects(
                 visitors.object(ref)
             if source.closure.receipt is not None:
                 visitors.object(source.closure.receipt)
-        closure = checkpoint_transaction(store, source.closure.checkpoint)
-        method = _verify_train_contract(store, source.closure.checkpoint, closure, producer, source.producer)
+        closure, spec = read_retained_checkpoint(store, source.closure.checkpoint, source.producer)
         if source.closure.kind == "recovery" and any(
-            gap.update > closure.completed_training_batches for gap in value.gaps
+            gap.update > closure.clock.completed_updates for gap in value.gaps
         ):
             raise ValueError("Evaluate gaps extend beyond the recovery checkpoint")
         objects.extend((source.closure.checkpoint.transaction, source.closure.checkpoint.train_binding))
         if source.closure.receipt is not None:
-            if closure.completed_training_batches != method.target_total:
+            if closure.clock.completed_updates != spec.target_total:
                 raise ValueError("Evaluate coverage completion differs from its authored horizon")
-            _verify_terminal(store, source.closure.receipt, source.closure.checkpoint, closure.completed_training_batches)
+            _verify_terminal(store, source.closure.receipt, source.closure.checkpoint, closure.clock.completed_updates)
             objects.append(source.closure.receipt)
 
     models = []
@@ -309,13 +256,12 @@ def evaluation_subject_objects(
             visitors.object(checkpoint.train_binding)
             if source.terminal_receipt is not None:
                 visitors.object(source.terminal_receipt)
-        manifest = checkpoint_transaction(store, checkpoint)
-        method = _verify_train_contract(store, checkpoint, manifest, producer, source.producer)
+        manifest, spec = read_retained_checkpoint(store, checkpoint, source.producer)
         product = model_product(manifest)
-        if (manifest.completed_training_batches, product.content.sha256) != (item.coordinate, item.model_tree):
+        if (manifest.clock.completed_updates, product.content.sha256) != (item.coordinate, item.model_tree):
             raise ValueError("Evaluate checkpoint differs from its resolved model and coordinate")
         if source.terminal_receipt is not None:
-            if item.coordinate != method.target_total:
+            if item.coordinate != spec.target_total:
                 raise ValueError("Evaluate terminal checkpoint differs from its authored horizon")
             _verify_terminal(store, source.terminal_receipt, checkpoint, item.coordinate)
             objects.append(source.terminal_receipt)
@@ -401,10 +347,11 @@ def verify_evaluation_success_evidence(
         if visitors is not None:
             visitors.object(source.closure.checkpoint.transaction)
         settled = coverage["closure"]
-        transaction = checkpoint_transaction(store, source.closure.checkpoint)
+        publication = source.closure.checkpoint
+        transaction = parse_method_checkpoint_manifest(store.get_object(publication.transaction), publication.pointer)
         if (
             settled["kind"] != source.closure.kind
-            or settled["checkpoint"] != transaction.content_integrity_digest.transaction_root_sha256
+            or settled["checkpoint"] != transaction.state_sha256
             or (source.closure.kind == "recovery" and settled["attempt"] != transaction.run_id)
         ):
             raise ValueError("Accepted Evaluate manifest names different closure evidence")

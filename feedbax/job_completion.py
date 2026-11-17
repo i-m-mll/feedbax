@@ -22,6 +22,7 @@ from feedbax.contracts.training import TrainingRunSpec
 from feedbax.host.checkpoint_selection import selected_coordinates, verify_dependency_files
 from feedbax.host.completion import CompletionFileError, completion_file, read_completion_bindings
 from feedbax.persistence.array_container import open_array_container
+from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
     verify_training_request_binding,
@@ -30,7 +31,6 @@ from feedbax.training.checkpoint_custody import (
     CheckpointCustodyError,
     CheckpointReadScope,
     CheckpointWriteResult,
-    _checkpoint_latest_parent_ref,
     authenticate_checkpoint_custody_ref,
     checkpoint_slot_files,
     open_published_model_slot,
@@ -337,7 +337,7 @@ def load_bound_checkpoint_selection(
             checkpoint.pointer.run_id != attempt
             or checkpoint.completed_updates != update
             or checkpoint.checkpoint_root != root / "checkpoints" / attempt
-            or checkpoint.pointer.completed_training_batches != update
+            or checkpoint.pointer.completed_updates != update
         ):
             raise CompletionFileError("/inputs: selected checkpoint has a different attempt or batch")
         launch = read_training_binding(root, attempt, member["binding_sha256"])
@@ -349,23 +349,13 @@ def load_bound_checkpoint_selection(
         ):
             raise CompletionFileError("/inputs: selected checkpoint lacks its canonical Train binding")
         verify_training_request_binding(launch)
-        custody = authenticate_checkpoint_custody_ref(
-            _checkpoint_latest_parent_ref(checkpoint.pointer),
-            allowed_root=checkpoint.checkpoint_root,
-        )
-        manifest = custody.manifest
+        manifest = read_method_checkpoint_manifest(checkpoint.checkpoint_root, checkpoint.pointer)
+        identity = manifest.identity
         if (
-            manifest.completed_training_batches != update
-            or manifest.barrier != "after_train_batch"
-            or manifest.completed_coordinate != checkpoint.pointer.completed_coordinate
-            or manifest.content_integrity_digest.transaction_root_sha256
-            != checkpoint.pointer.transaction_root_sha256
+            manifest.clock.completed_updates != update
+            or (identity.request_id, identity.method_key, identity.method_revision)
+            != (producer_request, launch.spec.method, launch.spec.method_revision)
         ):
             raise CompletionFileError("/inputs: selected checkpoint differs from the verified transaction")
-        validate_checkpoint_run_contract(
-            manifest,
-            launch.spec,
-            launch.spec.worker_execution.effective_phase.phase_program,
-        )
         pinned.append((checkpoint, launch))
     return tuple(pinned)
