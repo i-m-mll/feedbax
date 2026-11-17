@@ -44,8 +44,6 @@ def read_terminal_train_subject(
         ), success)
     ):
         raise ValueError("Pinned subject differs from the exact terminal Train model")
-    if decoded.spec.target_total != checkpoint.clock.completed_batches:
-        raise ValueError("Terminal Train coordinate differs from its authored horizon")
     verify_success_content(store, pin.model)
     return success, decoded.spec
 
