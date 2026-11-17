@@ -10,6 +10,7 @@ from pathlib import Path
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.effective_success import Product, RequestObject
+from feedbax.contracts.report_document import ReportDocument, ReportText
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import (
     ContentRef,
@@ -33,6 +34,10 @@ class Witness:
     rule: RequestObject
     frozen: RequestObject
     original: PublishedSuccess
+
+
+def report_request(title: str) -> ReportRequestSpec:
+    return ReportRequestSpec(document=ReportDocument(title=title, blocks=(ReportText(markdown=title),)))
 
 
 def document_product(store: ImmutableArtifactBlobProvider, name: str, data: bytes) -> Product:
@@ -73,7 +78,7 @@ def prepare(store: ImmutableArtifactBlobProvider, supplier: bytes, analysis: byt
     producer = store_request(
         store,
         encode_request(
-            ReportRequestSpec(report_type="proof.retain-manifests"),
+            report_request("retain-manifests"),
             {
                 "imports": tuple(
                     InputMember(key=item.name, reference=item.content) for item in retained
@@ -82,7 +87,7 @@ def prepare(store: ImmutableArtifactBlobProvider, supplier: bytes, analysis: byt
         ),
     )
     SuccessView(store).publish(producer, attempt="retain-01", products={"manifests": retained})
-    synopsis = ReportRequestSpec(report_type="proof.ordered-manifest-synopsis")
+    synopsis = report_request("ordered-manifest-synopsis")
 
     def consumer(selected: LastMember | NamedMember) -> RequestObject:
         return store_request(

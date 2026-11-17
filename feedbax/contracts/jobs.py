@@ -10,8 +10,10 @@ from pydantic import ConfigDict, Field, FiniteFloat, JsonValue
 
 from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.code_validity import AttemptProvenance
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
@@ -135,6 +137,8 @@ class StudioSavedEvaluationResult(StrictModel):
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     size_bytes: int = Field(ge=0)
+    validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
+    provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_sources: list[StudioTrainCheckpointSource] | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_gaps: list[StudioEvaluationCheckpointGap] | None = Field(
         default=None, exclude_if=lambda value: value is None,
@@ -214,6 +218,8 @@ class StudioSavedTrainResult(StrictModel):
     job_id: str
     receipt: JobReceipt
     progress: JobProgress | None
+    validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
+    provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioSavedTrainChange(StrictModel):
@@ -246,6 +252,8 @@ class StudioSavedLightResult(StrictModel):
     request_id: str
     receipt: JobReceipt
     products: dict[str, str]
+    validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
+    provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioSavedLightHistory(StrictModel):

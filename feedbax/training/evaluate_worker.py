@@ -6,7 +6,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from functools import partial
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord, ContentTreeRef
 from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubject, read_success_request, success_content_ref
+from feedbax.contracts.code_validity import ComputationUnavailable
+from feedbax.contracts.effective_success import (
+    Product, RequestObject, Success, TerminalTrainSubject, read_effective_request, read_success_request,
+    success_content_ref,
+)
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.live_evaluate import BoundLiveEvaluationPoint, ScoredEvaluationPoint
 from feedbax.contracts.manifest import (
@@ -59,11 +63,14 @@ from feedbax.studio.canonical_evaluate import (
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training_host_worker import _Events, _Result, _error
 from feedbax.job_completion import read_host_completion_binding
+from feedbax.training.evaluate_computation import EvaluationComputation, RolloutExecutables, drive_replicas
+from feedbax.validity.recording import numerical_work, record_computation, set_execution_prefix
 
 
 if TYPE_CHECKING:
     from feedbax.compiler.trial_execution import PreparedTrialExecution
     from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.receipt_validity import ValidityCheckDelivery, ValidityCheckEvidence
     from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
     from feedbax.contracts.training import TrialDocuments
     from feedbax.dataset import Dataset
@@ -73,7 +80,7 @@ if TYPE_CHECKING:
     from feedbax.plugins.application import ApplicationRegistryBundle
     from feedbax.training.evaluation_variant import EvaluationVariant
     from feedbax.training.model_checkpoint import SemanticModelSlot
-    from feedbax.training.rollout_scoring import RolloutScorer
+    from feedbax.training.rollout_scoring import LoweredRollout, RolloutKernel, RolloutScorer
 
 
 @dataclass(frozen=True)
@@ -281,6 +288,21 @@ def _prepared_rollout(
     )
 
 
+def _prepare_stored_rollout(
+    store: ImmutableArtifactBlobProvider, model: Product, documents: TrialDocuments, params: RolloutParameters,
+    coordinate: int, *, registry: ApplicationRegistryBundle, seed: int,
+) -> PreparedRollout:
+    from feedbax.training.model_checkpoint import SemanticModelSlot
+
+    tree = success_content_ref(model.content)
+    if not isinstance(tree, ContentTreeRef):
+        raise ValueError("Evaluate checkpoint model requires a retained content tree")
+    slot = SemanticModelSlot.open_store(
+        store, tree, SemanticModelEncoding.model_validate(model.descriptor), components=registry.components,
+    )
+    return _prepare_model_rollout(documents, params, slot, coordinate, seed=seed, registry=registry)
+
+
 def rollout_dataset(
     prepared: PreparedRollout, evaluated: TrialEvaluation, params: RolloutParameters,
     *, update_axis: str | None = "checkpoint",
@@ -296,8 +318,8 @@ def rollout_dataset(
     paired, variant, graph = prepared.paired, prepared.variant, prepared.graph
     effective_graph = paired.executable.resolved.graph
     slot, layout = prepared.slot, prepared.layout
-    history = evaluated.history
-    assert history is not None
+    assert evaluated.history is not None
+    history = jax.tree.map(np.asarray, evaluated.history)
     n_trials = evaluated.trials.epochs.starts.shape[0]
     trials = [jax.tree.map(lambda value: value[i], history) for i in range(n_trials)]
     leading = ("condition",) if update_axis is None else (update_axis, "condition")
@@ -368,35 +390,59 @@ def rollout_dataset(
     )
 
 
-def _rollouts(prepared, params, stop, *, update_axis="checkpoint"):
-    if stop.exists():
-        return None
-    datasets = []
-    summaries = []
+def _lower_rollouts[T](
+    prepared: PreparedRollout, stopped: Callable[[], bool], *,
+    consume: Callable[[Graph, LoweredRollout], T], kernel: RolloutKernel | None = None,
+) -> tuple[T, ...] | None:
     replicas = prepared.replicas or (("0", prepared.graph),)
-    for _, graph in replicas:
-        evaluated = _execute_rollout(prepared, graph, update_axis)
-        if stop.exists():
+    if kernel is None:
+        with numerical_work():
+            kernel = prepared.scorer.kernel(capture_state=prepared.layout.capture)
+    coordinate = prepared.member.coordinate if isinstance(prepared.member, ResolvedRolloutMember) else None
+
+    def lower(slot, graph, seed):
+        with numerical_work():
+            lowered = kernel.lower(graph, slot=slot, seed=seed)
+        return consume(graph, lowered)
+
+    return drive_replicas(coordinate, replicas, seed=prepared.scorer.seed, call=lower, stopped=stopped)
+
+
+def _rollouts(
+    prepared: PreparedRollout, params: RolloutParameters, stopped: Callable[[], bool],
+    *, update_axis: str | None, computation: EvaluationComputation, executables: RolloutExecutables,
+    kernel: RolloutKernel | None = None,
+):
+    def run(graph: Graph, lowered: LoweredRollout):
+        with numerical_work():
+            evaluated = executables.run(lowered)
+        if stopped():
             return None
-        datasets.append(rollout_dataset(replace(prepared, graph=graph), evaluated, params, update_axis=update_axis))
-        if evaluated.objective is not None:
-            summaries.append(float(evaluated.objective.loss))
+        computation.observe(lowered)
+        computation.observe_output(lowered.slot, evaluated)
+        return _replica_product(prepared, graph, evaluated, params, update_axis)
+
+    results = _lower_rollouts(prepared, stopped, consume=run, kernel=kernel)
+    if results is None or any(result is None for result in results):
+        return None
+    return _rollout_product(prepared, results, update_axis)
+
+
+def _replica_product(prepared, graph, evaluated, params, update_axis):
+    dataset = rollout_dataset(replace(prepared, graph=graph), evaluated, params, update_axis=update_axis)
+    return dataset, None if evaluated.objective is None else float(evaluated.objective.loss)
+
+
+def _rollout_product(prepared, results, update_axis):
+    datasets, totals = zip(*results, strict=True)
     if len(datasets) > 1:
         from feedbax.dataset_replicates import stack_replicates
 
-        dataset = stack_replicates(tuple(replica for replica, _ in replicas), datasets, after=update_axis)
+        dataset = stack_replicates(tuple(replica for replica, _ in prepared.replicas), datasets, after=update_axis)
     else:
         (dataset,) = datasets
+    summaries = [total for total in totals if total is not None]
     return dataset, sum(summaries) / len(summaries) if summaries else None, prepared.member, prepared.objective
-
-
-def _execute_rollout(prepared, graph, update_axis):
-    if update_axis == "update":
-        import jax
-
-        compiled = prepared.scorer.lower(graph, capture_state=prepared.layout.capture).compile()
-        return jax.block_until_ready(compiled(graph))
-    return prepared.scorer.evaluate(graph, capture_state=prepared.layout.capture)
 
 
 def _checkpoint_dataset(datasets, *, axis="checkpoint"):
@@ -444,7 +490,10 @@ def _empty_update_dataset(params: RolloutParameters) -> Dataset:
     }, schema_id=params.states_schema)
 
 
-def _series_dataset(members, binding, params, stop, *, update_axis, job_id, store, opened: ExitStack):
+def _series_dataset(
+    members, binding, params, stop, *, update_axis, job_id, store, opened: ExitStack,
+    computation: EvaluationComputation,
+):
     points = {}
     if "live_evaluation_points" in binding:
         pinned = {
@@ -459,33 +508,33 @@ def _series_dataset(members, binding, params, stop, *, update_axis, job_id, stor
                 or point.checkpoint.completed_updates in points
             ):
                 raise ValueError("Live Evaluate point differs from its settled checkpoint binding.")
-            points[point.checkpoint.completed_updates] = point.result
+            points[point.checkpoint.completed_updates] = point
 
     datasets, summaries, resolved_members, objectives = [], [], [], set()
+    executables = RolloutExecutables()
     for coordinate, prepare in members:
         if stop.exists():
             return None
-        prepared = prepare()
-        point = points.get(coordinate)
-        if isinstance(point, ScoredEvaluationPoint):
+        with numerical_work():
+            prepared = prepare()
+        delivery = points.get(coordinate)
+        if delivery is not None and isinstance(point := delivery.result, ScoredEvaluationPoint):
+            from feedbax.persistence.live_evaluate import read_live_evaluation_evidence
+
             if point.member != prepared.member or point.objective != prepared.objective:
                 raise ValueError("Live Evaluate point differs from its resolved scientific binding.")
-            store.verify_object(point.states.object_ref)
-            dataset = opened.enter_context(open_stored_dataset(store, point.states))
-            if (
-                point.member.coordinate != coordinate
-                or point.member.trials != params.trials
-                or dataset.descriptor.schema_id != params.states_schema
-                or dataset.data("update").tolist() != [coordinate]
-                or dataset.data("trial").tolist() != list(params.trials)
-            ):
-                raise ValueError("Live Evaluate dataset differs from its resolved inputs.")
-            summary = float(dataset.data("objective/total").item())
-            if summary != point.total:
-                raise ValueError("Live Evaluate summary differs from its durable dataset.")
+            evidence = read_live_evaluation_evidence(store, delivery)
+            recorded = evidence.trace.computation or evidence.trace.computation_unavailable
+            assert recorded is not None
+            computation.inherit(recorded)
+            set_execution_prefix(point.evidence)
+            dataset, summary = _scored_product(opened, store, point, coordinate, params)
             member, objective = point.member, point.objective
         else:
-            result = _rollouts(prepared, params, stop, update_axis=update_axis)
+            result = _rollouts(
+                prepared, params, stop.exists, update_axis=update_axis,
+                computation=computation, executables=executables,
+            )
             if result is None:
                 return None
             dataset, summary, member, objective = result
@@ -496,6 +545,33 @@ def _series_dataset(members, binding, params, stop, *, update_axis, job_id, stor
         objectives.add(objective)
     if stop.exists():
         return None
+    return _series_product(datasets, summaries, resolved_members, objectives, params, update_axis)
+
+
+def _scored_product(opened, store, point, coordinate, params):
+    from feedbax.dataset_replicates import replicate_ids
+
+    store.verify_object(point.states.object_ref)
+    dataset = opened.enter_context(open_stored_dataset(store, point.states))
+    if (
+        point.member.coordinate != coordinate
+        or point.member.trials != params.trials
+        or dataset.descriptor.schema_id != params.states_schema
+        or dataset.data("update").tolist() != [coordinate]
+        or dataset.data("trial").tolist() != list(params.trials)
+        or (replicate_ids(dataset) or ()) != point.member.replica_ids
+    ):
+        raise ValueError("Live Evaluate dataset differs from its resolved inputs.")
+    totals = dataset.data("objective/total").reshape(-1).tolist()
+    if len(totals) != (len(point.member.replica_ids) or 1):
+        raise ValueError("Live Evaluate dataset differs from its expected replica count.")
+    summary = sum(totals) / len(totals)
+    if summary != point.total:
+        raise ValueError("Live Evaluate summary differs from its durable dataset.")
+    return dataset, summary
+
+
+def _series_product(datasets, summaries, resolved_members, objectives, params, update_axis):
     if len(objectives) > 1:
         raise CannotRun("/inputs/subject/checkpoint", "selected checkpoints have different Objectives")
     dataset = _checkpoint_dataset(datasets, axis=update_axis) if datasets else _empty_update_dataset(params)
@@ -505,6 +581,86 @@ def _series_dataset(members, binding, params, stop, *, update_axis, job_id, stor
         objective=objectives.pop(),
     ) if resolved_members else None
     return dataset, summary, effective
+
+
+def _replay_preparations(
+    receipt: Success, store: ImmutableArtifactBlobProvider,
+) -> Iterator[PreparedRollout]:
+    from feedbax.persistence.checkpoint_publication import model_product, read_retained_checkpoint
+    from feedbax.persistence.evaluation_subject import terminal_train_subject_at
+
+    decoded = read_effective_request(receipt, store.get_object)
+    _, params, subject = decode_rollout_request(decoded.id, store.get_object(receipt.request.object))
+    registry = load_application().bundle
+    if isinstance(subject, ContentRef):
+        refs = initial_evaluation_references(decoded)
+        yield _prepare_initial_rollout(refs, params, registry=registry, store=store)
+        return
+    (bound,) = receipt.inputs["subject"]
+    source = bound.evaluation_subject
+    if source is None:
+        raise ValueError("Evaluate receipt lacks its exact retained checkpoint subject")
+    if source.terminal_checkpoint is not None:
+        if source.terminal_receipt is None:
+            raise ValueError("Terminal Evaluate subject lacks its exact Train success")
+        pin = terminal_train_subject_at(store, source.terminal_receipt, source.producer.id)
+        train, spec = read_terminal_train_subject(store, pin, source.producer.id)
+        if train.continuation is None or train.continuation.provenance != source.terminal_checkpoint:
+            raise ValueError("Retained Train success names a different checkpoint")
+        yield _prepare_stored_rollout(
+            store, pin.model, spec.trial_documents, params, train.continuation.clock.completed_updates,
+            registry=registry, seed=spec.seed or 0,
+        )
+        return
+    for publication in source.checkpoints:
+        checkpoint, spec = read_retained_checkpoint(store, publication, source.producer)
+        yield _prepare_stored_rollout(
+            store, model_product(checkpoint), spec.trial_documents, params, checkpoint.clock.completed_updates,
+            registry=registry, seed=spec.seed or 0,
+        )
+
+
+def check_evaluate(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
+    """Re-lower the successful receipt's exact frozen rollout inputs."""
+    from feedbax.contracts.computation_validity import ComputationDifferent, ComputationUnconfirmable
+    from feedbax.contracts.receipt_validity import CheckOutcome, ValidityCheckEvidence
+    from feedbax.persistence.effective_success import SuccessView
+    from feedbax.validity.computation import UnrecordableArguments, compare_computation
+
+    code = None
+    if "code" in delivery.checks:
+        store = ImmutableArtifactBlobProvider(delivery.store_root)
+        receipt = SuccessView(store).read_owned_success(delivery.receipt).receipt
+        if receipt.request.id != delivery.request_id or not delivery.request_id.startswith("evaluate:"):
+            raise ValueError("Validity check names a different Evaluate receipt")
+        former = receipt.trace.computation if receipt.trace is not None else None
+        present = EvaluationComputation(store)
+        try:
+            for prepared in _replay_preparations(receipt, store):
+                _lower_rollouts(prepared, lambda: False, consume=lambda _, call: present.observe(call))
+        except CannotRun as error:
+            code = CheckOutcome(outcome="different", detail=str(error))
+        except UnrecordableArguments as error:
+            code = CheckOutcome(outcome="unavailable", detail=str(error))
+        else:
+            replayed = present.snapshot()
+            if isinstance(replayed, ComputationUnavailable):
+                code = CheckOutcome(outcome="unavailable", detail=replayed.detail)
+            elif former is None or replayed is None:
+                code = CheckOutcome(outcome="unavailable", detail="Evaluate has no comparable lowered execution")
+            else:
+                comparison = compare_computation(former, replayed, read_blob=store.get_object)
+                if isinstance(comparison, ComputationDifferent):
+                    code = CheckOutcome(outcome="different", detail=comparison.model_dump_json())
+                elif isinstance(comparison, ComputationUnconfirmable):
+                    code = CheckOutcome(outcome="unavailable", detail=comparison.model_dump_json())
+                else:
+                    code = CheckOutcome(outcome="equal")
+    environment = (
+        CheckOutcome(outcome="unavailable", detail="Evaluate has no qualified environment comparison profile")
+        if "environment" in delivery.checks else None
+    )
+    return ValidityCheckEvidence(code=code, environment=environment)
 
 
 def main(argv: Sequence[str]) -> int:
@@ -519,6 +675,8 @@ def main(argv: Sequence[str]) -> int:
             Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes()
         )
         store = ImmutableArtifactBlobProvider(request.manifest_root)
+        computation = EvaluationComputation(store)
+        record_computation(computation.snapshot)
         spec, params, subject = decode_rollout_request(
             request.request_id, store.get_object(request.canonical_request.request)
         )
@@ -541,17 +699,9 @@ def main(argv: Sequence[str]) -> int:
             source, authored = read_terminal_train_subject(store, pin, subject.request_id)
             occurrence = source.continuation
             assert occurrence is not None
-            model = pin.model
-            tree = success_content_ref(model.content)
-            assert isinstance(tree, ContentTreeRef)
-            from feedbax.training.model_checkpoint import SemanticModelSlot
-
-            slot = SemanticModelSlot.open_store(
-                store, tree, SemanticModelEncoding.model_validate(model.descriptor), components=registry.components,
-            )
             coordinate = occurrence.clock.completed_updates
             members = ((coordinate, partial(
-                _prepare_model_rollout, authored.trial_documents, params, slot, coordinate,
+                _prepare_stored_rollout, store, pin.model, authored.trial_documents, params, coordinate,
                 seed=authored.seed or 0, registry=registry,
             )),)
             train, provenance = terminal_train_provenance(pin, source)
@@ -568,7 +718,7 @@ def main(argv: Sequence[str]) -> int:
             result = _series_dataset(
                 members, binding, params, stop,
                 update_axis=None if isinstance(subject, ContentRef) else "update" if is_series else "checkpoint",
-                job_id=job_id, store=store, opened=opened,
+                job_id=job_id, store=store, opened=opened, computation=computation,
             )
             if result is None or stop.exists():
                 return events.result(_Result("stopped"))

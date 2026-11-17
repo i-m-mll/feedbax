@@ -21,7 +21,6 @@ from feedbax.contracts.descriptors import (
     descriptor_basis_from_descriptors,
     resolve_descriptor_view,
 )
-from feedbax.contracts.manifest import AnalysisDataProduct
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.value_schema import ValueSchema
 
@@ -338,23 +337,6 @@ def test_rlrmp_shaped_4d_and_6d_fixtures_are_external_payloads() -> None:
     assert len(basis_6d.components) == 6
     assert basis_4d.descriptor_basis_hash != basis_6d.descriptor_basis_hash
     assert basis_6d.components[-1].component_id == "force_filter_y"
-
-
-def test_descriptor_basis_hash_fills_data_product_contract_slot() -> None:
-    basis = _basis_4d()
-    product = AnalysisDataProduct.model_validate(
-        {
-            "product_schema_id": "rlrmp.controller_feedback_scales",
-            "product_schema_version": "rlrmp.controller_feedback_scales.v1",
-            "role": "controller_feedback_scales",
-            "logical_name": "controller_feedback_scales",
-            "producer_manifest_id": "analysis-run:selected",
-            "descriptor_basis_hash": basis.descriptor_basis_hash,
-        }
-    )
-
-    assert product.descriptor_basis_hash == basis.descriptor_basis_hash
-    assert product.product_identity_hash is not None
 
 
 def test_descriptor_families_have_explicit_version_policies() -> None:

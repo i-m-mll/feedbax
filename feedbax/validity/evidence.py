@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from feedbax.contracts.artifact_custody import ContentObjectRef, ContentRetentionTarget, ContentTreeRef
+from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import CodeTrace, ReceiptEvidence
 from feedbax.contracts.store_closure import StoreClosureRef, read_store_closure_ref
@@ -57,12 +57,6 @@ def _references(
         if unique.setdefault(item.sha256, item) != item:
             raise ValueError("Conflicting execution evidence content identities")
     return tuple(unique.values())
-
-
-def execution_evidence_targets(
-    store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, evidence: ReceiptEvidence,
-) -> tuple[ContentRetentionTarget, ...]:
-    return tuple(ContentRetentionTarget(ref_kind="object", object=item) for item in _references(store, ref, evidence))
 
 
 def _staged_value(store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, evidence: ReceiptEvidence) -> dict:

@@ -22,7 +22,6 @@ from feedbax.contracts.array_values import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes, validate_canonical_json_v2
 from feedbax.contracts.graph import (
-    AnalysisInputRequirement,
     ComponentSpec,
     GraphSpec,
     RetainedObservableSpec,
@@ -37,7 +36,7 @@ _WIRE_FIELDS = frozenset({"schema_id", "schema_version"})
 _FAMILY = "$family"
 _OPAQUE = "$json"
 _PRESENTATION = {(GraphSpec, "metadata"), (AcausalGraphSpec, "metadata"), (ObjectiveTerm, "name")}
-_REQUIRED_STORED = {(RetainedObservableSpec, "id"), (AnalysisInputRequirement, "id")}
+_REQUIRED_STORED = {(RetainedObservableSpec, "id")}
 
 
 def _annotation(annotation: Any) -> Any:

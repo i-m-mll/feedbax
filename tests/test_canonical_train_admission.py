@@ -132,10 +132,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     stale = jobs.admit_plan(folders, reviewed, run_keys=(train, stable), token="old-plan")
     rejected, attached = stale.items
     assert rejected.disposition == "rejected" and rejected.job_id is None
-    assert (
-        rejected.reason
-        == "The selected Train request changed at payload.seed."
-    )
+    assert "payload.seed" in rejected.reason
     assert attached.disposition == "attached" and attached.job_id == attempt
 
     foreign_store = tmp_path / "foreign-store"

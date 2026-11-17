@@ -139,10 +139,10 @@ def validate_light_request(
         definition = operation.value.definition
         roles = definition.inputs.keys()
         (output,) = definition.outputs
-    elif isinstance(spec, RenderRequestSpec) and spec.document is not None:
+    elif isinstance(spec, RenderRequestSpec):
         roles = spec.document.data
         output = PLOTLY_FIGURE_ROLE
-    elif isinstance(spec, ReportRequestSpec) and spec.document is not None:
+    elif isinstance(spec, ReportRequestSpec):
         roles = spec.document.figure_roles
         output = "report"
     else:
@@ -205,8 +205,6 @@ def report_artifacts(
     spec: ReportRequestSpec,
     bindings: Bindings,
 ) -> tuple[dict[str, bytes], dict[str, ContentObjectRef]]:
-    if spec.document is None:
-        raise ValueError("Managed Report requires a document")
     documents = {}
     script_digest = None
     if spec.document.figure_roles:

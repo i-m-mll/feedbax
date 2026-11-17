@@ -1,84 +1,13 @@
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax
 import pytest
 
-import feedbax.analysis.fps as fps_module
 from feedbax.analysis.fp_finder import (
     FixedPointFinder,
     exclude_points,
     fp_adam_optimizer,
 )
-from feedbax.analysis.fps import FixedPoints, FixedPointsPorts
-
-
-def test_fixed_points_reuses_trace_for_new_array_argument_values() -> None:
-    assert FixedPoints.Ports is FixedPointsPorts
-    analysis = FixedPoints(inputs=FixedPoints.Ports(fns="fns", candidates="candidates"))
-    assert isinstance(analysis.inputs, FixedPointsPorts)
-    assert analysis.inputs.fns == "fns"
-    assert analysis.inputs.candidates == "candidates"
-    candidates = jnp.array([[0.0], [2.0]])
-    traces = 0
-
-    def dynamics(params, state):
-        nonlocal traces
-        traces += 1
-        return params["gain"] * state + params["offset"]
-
-    def solve(offset):
-        return analysis.compute(
-            {},
-            fns=dynamics,
-            candidates=candidates,
-            fn_args=({"gain": float("0.5"), "offset": jnp.array(offset)},),
-        )
-
-    first = solve(0.0)
-    first.fps.block_until_ready()
-    initial_traces = traces
-    assert initial_traces > 0
-    second = solve(0.5)
-    second.fps.block_until_ready()
-
-    assert traces == initial_traces
-    assert first.fps[:, 0].tolist() == pytest.approx([0.0, 0.0], abs=1e-3)
-    assert second.fps[:, 0].tolist() == pytest.approx([1.0, 1.0], abs=1e-3)
-
-
-def test_fixed_points_can_run_eagerly_after_a_jitted_solve() -> None:
-    analysis = FixedPoints(
-        inputs=FixedPointsPorts(fns="fns", candidates="candidates"),
-        fp_optimizer=lambda: optax.sgd(jnp.array(0.2)),
-    )
-    candidates = jnp.array([[0.0], [2.0]])
-
-    def dynamics(target, state):
-        return 0.5 * (state + target)
-
-    def solve(target):
-        return analysis.compute({}, fns=dynamics, candidates=candidates, fn_args=(target,)).fps
-
-    target = jnp.array(1.0)
-    traced = jax.jit(solve)(target).block_until_ready()
-    eager = solve(target)
-
-    assert eager[:, 0].tolist() == pytest.approx([1.0, 1.0], abs=1e-3)
-    assert jnp.array_equal(traced, eager)
-
-
-def test_fixed_points_surface_does_not_export_simple_reach_helpers() -> None:
-    removed_names = {
-        "get_endpoint_positions",
-        "get_initial_network_inputs",
-        "get_simple_reach_endpoint_fps",
-        "get_fp_trajs",
-        "get_simple_reach_fps",
-        "get_simple_reach_first_fps",
-    }
-
-    assert removed_names.isdisjoint(vars(fps_module))
 
 
 def test_fixed_point_finder_converges_on_linear_fixed_point() -> None:

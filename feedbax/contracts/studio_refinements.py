@@ -422,18 +422,6 @@ CROSS_FIELD_REFINEMENTS.update(
                 "Object.values(value.params ?? {}).some(invalidTypedParamEnvelope)",
             ),
         ),
-        "AnalysisDataProductRequirement": (
-            _typescript_refinement(
-                "analysis-product.schema-id",
-                "unsupported AnalysisDataProductRequirement schema identity",
-                "value.schema_id !== 'feedbax.spec.analysis_data_product_requirement' || value.schema_version !== 'feedbax.spec.analysis_data_product_requirement.v1'",
-            ),
-            _typescript_refinement(
-                "analysis-product.required-names",
-                "AnalysisDataProductRequirement role and product_schema_id must not be empty",
-                "value.role.trim().length === 0 || value.product_schema_id.trim().length === 0",
-            ),
-        ),
         "DynamicPortPolicy": (
             _typescript_refinement(
                 "dynamic-port.named-layout",
@@ -620,7 +608,6 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
         {"validate_subgraph_family", "reject_component_param_array_values"}
     ),
     "AdditiveGraphChannelTargetSpec": frozenset({"validate_target"}),
-    "AnalysisDataProductRequirement": frozenset({"validate_schema_identity"}),
     "GraphSpec": frozenset({"validate_subgraph_schema_family", "_unique_wire_ids"}),
     "StudioValueEnumerableSpec": frozenset({"validate_form_payload"}),
     "StudioValueVariationSpec": frozenset({"validate_scope_payload"}),

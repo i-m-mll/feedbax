@@ -238,6 +238,7 @@ class SettledProjectPlan:
     store_path: Path
     plan: ProjectPlan
     readers: BaseReaders
+    project_root: Path
 
     @classmethod
     def from_text(
@@ -247,7 +248,7 @@ class SettledProjectPlan:
     ) -> SettledProjectPlan:
         return cls(
             location.project_id, text.revision, project_semantic_root(text.project),
-            text.configuration, text.store_path if store is None else store, plan, readers,
+            text.configuration, text.store_path if store is None else store, plan, readers, text.root,
         )
 
 
@@ -273,7 +274,7 @@ def compile_saved_project(
         python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods, readers=readers,
     )
     return SettledProjectPlan(
-        project_id, text.revision, project_semantic_root(text.project), text.configuration, store, plan, readers,
+        project_id, text.revision, project_semantic_root(text.project), text.configuration, store, plan, readers, text.root,
     )
 
 

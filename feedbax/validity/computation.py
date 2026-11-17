@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
-from enum import Enum
-from functools import partial
+from functools import cache, partial
 from hashlib import sha256
 from math import hypot, isfinite
 import struct
@@ -14,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import jax
 from jax._src.interpreters.mlir import make_ir_context
-from jaxlib import lapack
+from jaxlib import cpu_sparse, gpu_linalg, gpu_prng, gpu_solver, gpu_sparse, lapack
 from jaxlib.mlir import ir
 import numpy as np
 from pydantic import BaseModel, JsonValue
@@ -50,6 +49,10 @@ from feedbax.contracts.computation_validity import (
     UnidentifiedCall,
 )
 from feedbax.persistence.array_container import decode_array_container, encode_array_container
+from feedbax.persistence.semantic_fingerprint import (
+    UnsupportedSemanticValue,
+    fingerprint_semantic_values,
+)
 
 if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -60,14 +63,40 @@ type Operand = jax.Array | np.ndarray
 type ShapedOperand = Operand | jax.ShapeDtypeStruct
 type StoreBlob = Callable[[bytes], ContentObjectRef]
 type ReadBlob = Callable[[ContentObjectRef], bytes]
+type RetainProgram = Callable[[bytes], ContentObjectRef | None]
 
 _TRAIN_PREFIX_STEPS = 5
 _TRAIN_TOLERANCES = {"float32": (3e-5, 2e-4), "float64": (1e-12, 1e-12)}
 _PARAMETERS_METADATA = "train_environment_prefix"
+_PROGRAM_ARCHIVE_BUDGET = 256 * 1024
 
 
 class UnrecordableArguments(ValueError):
     """An operand signature has no portable encoding."""
+
+
+def bounded_program_archive(
+    store_blob: StoreBlob, *, byte_budget: int = _PROGRAM_ARCHIVE_BUDGET
+) -> RetainProgram:
+    """Share a byte allowance for optional program witnesses across one attempt."""
+    if byte_budget < 0:
+        raise ValueError("The lowered-program archive budget must be nonnegative")
+    available = byte_budget
+    stored: dict[str, ContentObjectRef] = {}
+
+    def retain(data: bytes) -> ContentObjectRef | None:
+        nonlocal available
+        digest = sha256(data).hexdigest()
+        if digest in stored:
+            return stored[digest]
+        if len(data) > available:
+            return None
+        reference = store_blob(data)
+        stored[digest] = reference
+        available -= len(data)
+        return reference
+
+    return retain
 
 
 def _type_name(cls: type) -> str:
@@ -88,66 +117,64 @@ def _array_bytes(value: Operand) -> memoryview:
     return memoryview(normalized.view(np.uint8))
 
 
-def _static_value(value: object) -> JsonValue:
-    if value is None or type(value) in (str, bool):
-        return value
-    if type(value) is int:
-        return ["int", str(value)]
-    if type(value) is float:
-        return ["float", struct.pack("<d", value).hex()]
-    if type(value) is complex:
-        return ["complex", struct.pack("<dd", value.real, value.imag).hex()]
-    if isinstance(value, bytes):
-        return ["bytes", value.hex()]
-    if isinstance(value, Enum):
-        return ["enum", _type_name(type(value)), _static_value(value.value)]
-    if isinstance(value, np.generic):
-        return ["scalar", str(value.dtype), _array_bytes(np.asarray(value)).hex()]
+def _project_argument_metadata(value: object) -> object:
+    if isinstance(value, jax.tree_util.GetAttrKey):
+        return value.name
+    if isinstance(value, jax.tree_util.SequenceKey):
+        return value.idx
+    if isinstance(value, (jax.tree_util.DictKey, jax.tree_util.FlattenedIndexKey)):
+        return value.key
     if isinstance(value, np.dtype):
-        return ["dtype", str(value)]
-    if isinstance(value, (jax.Array, np.ndarray)):
-        signature = _array_signature(value).model_dump(mode="json")
-        return ["array", signature, sha256(_array_bytes(_array_payload(value))).hexdigest()]
+        return str(value)
     if isinstance(value, type):
-        return ["type", _type_name(value)]
+        return _type_name(value)
     if isinstance(value, Mapping):
-        return [
-            "mapping", _type_name(type(value)),
-            [[_static_value(key), _static_value(item)] for key, item in value.items()],
-        ]
-    if isinstance(value, (tuple, list)):
-        return ["sequence", _type_name(type(value)), [_static_value(item) for item in value]]
+        return tuple(value.items())
     if isinstance(value, (set, frozenset)):
-        items = [_static_value(item) for item in value]
-        return ["set", _type_name(type(value)), sorted(items, key=canonical_json_v2_bytes)]
+        return tuple(sorted(map(_static_fingerprint, value)))
     if isinstance(value, slice):
-        return ["slice", *map(_static_value, (value.start, value.stop, value.step))]
+        return value.start, value.stop, value.step
     if isinstance(value, BaseModel):
-        return ["model", _type_name(type(value)), _static_value(value.model_dump())]
+        return value.model_dump()
     if is_dataclass(value):
-        return [
-            "dataclass", _type_name(type(value)),
-            [[field.name, _static_value(getattr(value, field.name))] for field in fields(value)],
-        ]
+        return tuple((field.name, getattr(value, field.name)) for field in fields(value))
     if isinstance(value, partial):
-        return ["partial", *map(_static_value, (value.func, value.args, value.keywords))]
+        return value.func, value.args, value.keywords
     if isinstance(value, MethodType):
-        return ["method", _static_value(value.__func__), _static_value(value.__self__)]
+        return value.__func__, value.__self__
     if isinstance(value, FunctionType):
-        closure = () if value.__closure__ is None else tuple(cell.cell_contents for cell in value.__closure__)
-        return [
-            "function", value.__module__, value.__qualname__,
-            *map(_static_value, (value.__defaults__, value.__kwdefaults__, closure)),
-        ]
+        closure = (
+            ()
+            if value.__closure__ is None
+            else tuple(cell.cell_contents for cell in value.__closure__)
+        )
+        return (
+            value.__module__,
+            value.__qualname__,
+            value.__defaults__,
+            value.__kwdefaults__,
+            closure,
+        )
     if isinstance(value, BuiltinFunctionType) and getattr(value, "__module__", None) is not None:
-        return ["builtin", value.__module__, value.__qualname__]
+        return value.__module__, value.__qualname__
     if isinstance(value, np.ufunc):
-        return ["numpy-ufunc", value.__name__]
+        return value.__name__
     if type(value).__module__.startswith(("jax.", "jaxlib.")) and callable(value):
         wrapped = getattr(value, "__wrapped__", None)
         if isinstance(wrapped, FunctionType):
-            return ["wrapped", _type_name(type(value)), _static_value(wrapped)]
-    raise UnrecordableArguments(f"Unsupported static value {_type_name(type(value))}")
+            return wrapped
+    raise UnsupportedSemanticValue(_type_name(type(value)))
+
+
+def _static_fingerprint(value: object) -> str:
+    try:
+        return fingerprint_semantic_values(
+            value,
+            header=("feedbax.computation-static.v1",),
+            project_leaf=_project_argument_metadata,
+        )
+    except UnsupportedSemanticValue as exc:
+        raise UnrecordableArguments(f"Unsupported static operand metadata: {exc}") from exc
 
 
 def pytree_operands(value: object) -> tuple[tuple[Operand, ...], JsonValue]:
@@ -156,21 +183,18 @@ def pytree_operands(value: object) -> tuple[tuple[Operand, ...], JsonValue]:
     cursor = iter(leaves)
     arrays = []
 
-    def encode_node(tree: jax.tree_util.PyTreeDef) -> JsonValue:
+    def encode_node(tree: jax.tree_util.PyTreeDef) -> object:
         node = tree.node_data()
         if node is None:
             leaf = next(cursor)
             if isinstance(leaf, (jax.Array, np.ndarray)):
                 arrays.append(leaf)
-                return ["operand"]
-            return ["static", _static_value(leaf)]
+                return ("operand",)
+            return ("static", leaf)
         cls, metadata = node
-        return ["node", _type_name(cls), _static_value(metadata), [encode_node(child) for child in tree.children()]]
+        return ("node", _type_name(cls), metadata, tuple(map(encode_node, tree.children())))
 
-    try:
-        static = encode_node(structure)
-    except RecursionError as exc:
-        raise UnrecordableArguments("Cyclic static operand metadata") from exc
+    static = _static_fingerprint(encode_node(structure))
     return tuple(arrays), static
 
 
@@ -180,15 +204,20 @@ def _placement(value: ShapedOperand) -> JsonValue:
     if sharding is None:
         return ["host"]
     if isinstance(sharding, jax.sharding.SingleDeviceSharding):
-        device, = sharding.device_set
+        (device,) = sharding.device_set
         return ["single", committed, sharding.memory_kind, device.process_index, device.id]
     if isinstance(sharding, jax.sharding.NamedSharding):
         mesh = sharding.mesh
         return [
-            "named", committed, sharding.memory_kind, list(mesh.axis_names), list(mesh.axis_sizes),
-            _static_value(getattr(mesh, "axis_types", ())), _static_value(tuple(sharding.spec)),
-            _static_value(getattr(sharding.spec, "reduced", ())),
-            _static_value(getattr(sharding.spec, "unreduced", ())),
+            "named",
+            committed,
+            sharding.memory_kind,
+            list(mesh.axis_names),
+            list(mesh.axis_sizes),
+            _static_fingerprint(getattr(mesh, "axis_types", ())),
+            _static_fingerprint(tuple(sharding.spec)),
+            _static_fingerprint(getattr(sharding.spec, "reduced", ())),
+            _static_fingerprint(getattr(sharding.spec, "unreduced", ())),
             [[device.process_index, device.id] for device in mesh.devices.flat],
         ]
     raise UnrecordableArguments(f"Unsupported sharding {_type_name(type(sharding))}")
@@ -203,15 +232,13 @@ def _array_signature(value: ShapedOperand) -> ArraySignature:
     )
 
 
-def argument_signature(operands: Sequence[ShapedOperand], *, static: object = None) -> ArgumentSignature:
+def argument_signature(
+    operands: Sequence[ShapedOperand], *, static: object = None
+) -> ArgumentSignature:
     """Describe a specialization without transferring dynamic array values."""
-    try:
-        encoded = canonical_json_v2_bytes(_static_value(static))
-    except RecursionError as exc:
-        raise UnrecordableArguments("Cyclic static operand metadata") from exc
     return ArgumentSignature(
         arrays=tuple(map(_array_signature, operands)),
-        static_sha256=sha256(encoded).hexdigest(),
+        static_sha256=_static_fingerprint(static),
     )
 
 
@@ -238,6 +265,12 @@ def _canonical_asm(module: ir.Operation) -> bytes:
     """Rename private definitions and every symbol use without rewriting any ops."""
     clone = module.clone().operation
     with clone.context:
+        tables = []
+        ir.SymbolTable.walk_symbol_tables(
+            clone, True, lambda operation, _: tables.append(operation)
+        )
+        if len(tables) != 1:
+            raise ValueError("StableHLO computation must have one symbol scope")
         functions = [
             item.operation
             for item in clone.regions[0].blocks[0].operations
@@ -247,48 +280,81 @@ def _canonical_asm(module: ir.Operation) -> bytes:
             and len(item.regions[0].blocks)
         ]
         names = [ir.StringAttr(item.attributes["sym_name"]).value for item in functions]
+        private = set(names)
         symbols = ir.SymbolTable(clone)
         final_prefix = "__feedbax_func_"
         while any(
-            f"{final_prefix}{i}" in symbols and f"{final_prefix}{i}" not in names
+            f"{final_prefix}{i}" in symbols and f"{final_prefix}{i}" not in private
             for i in range(len(names))
         ):
             final_prefix += "_"
         final_names = [f"{final_prefix}{i}" for i in range(len(names))]
-        if any(old != new and new in names for old, new in zip(names, final_names, strict=True)):
-            temporary_prefix = "__feedbax_temporary_"
-            while any(f"{temporary_prefix}{i}" in symbols for i in range(len(names))):
-                temporary_prefix += "_"
-            temporary_names = [f"{temporary_prefix}{i}" for i in range(len(names))]
-            _rename_symbols(clone, functions, names, temporary_names)
-            names = temporary_names
-        _rename_symbols(clone, functions, names, final_names)
+        replacements = {old: new for old, new in zip(names, final_names, strict=True) if old != new}
+        if replacements:
+
+            def rewrite(op):
+                attributes = op.attributes
+                updates = []
+                for named in attributes:
+                    original = named.attr
+                    updated = _replace_symbol_refs(original, replacements)
+                    if updated is not original:
+                        updates.append((named.name, updated))
+                for name, updated in updates:
+                    attributes[name] = updated
+                return ir.WalkResult.ADVANCE
+
+            clone.walk(rewrite)
+            for function, name in zip(functions, final_names, strict=True):
+                ir.SymbolTable.set_symbol_name(function, name)
         # The standalone module's display name has no linkage to a surrounding symbol table.
         if "sym_name" in clone.attributes:
             del clone.attributes["sym_name"]
+        if not clone.verify():
+            raise ValueError("Canonical StableHLO failed verification")
         return clone.get_asm(assume_verified=True).encode()
 
 
-def _rename_symbols(
-    module: ir.Operation, functions: Sequence[ir.Operation], names: Sequence[str], canonical: Sequence[str],
-) -> None:
-    for function, old, new in zip(functions, names, canonical, strict=True):
-        if old != new:
-            ir.SymbolTable.replace_all_symbol_uses(old, new, module)
-            ir.SymbolTable.set_symbol_name(function, new)
+def _replace_symbol_refs(attribute: ir.Attribute, names: Mapping[str, str]) -> ir.Attribute:
+    # In the JAX StableHLO module, function references are MLIR SymbolRefAttrs.
+    # Sharding's typed references can only address mesh symbols, which stay fixed.
+    if isinstance(attribute, ir.FlatSymbolRefAttr):
+        replacement = names.get(attribute.value)
+        return attribute if replacement is None else ir.FlatSymbolRefAttr.get(replacement)
+    if isinstance(attribute, ir.SymbolRefAttr):
+        root, *nested = attribute.value
+        replacement = names.get(root)
+        return attribute if replacement is None else ir.SymbolRefAttr.get([replacement, *nested])
+    if isinstance(attribute, ir.ArrayAttr):
+        pairs = [(value, _replace_symbol_refs(value, names)) for value in attribute]
+        if any(old is not new for old, new in pairs):
+            return ir.ArrayAttr.get([item for _, item in pairs])
+    if isinstance(attribute, ir.DictAttr):
+        entries = {}
+        changed = False
+        for named in attribute:
+            original = named.attr
+            updated = _replace_symbol_refs(original, names)
+            entries[named.name] = updated
+            changed |= updated is not original
+        if changed:
+            return ir.DictAttr.get(entries)
+    return attribute
 
 
 def _capture_lowering(
-    lowered: jax.stages.Lowered, platform: str, *,
-    adapter_calls: Mapping[int, AdapterCall], output_free_calls: frozenset[int],
-    retain_program: StoreBlob | None,
+    lowered: jax.stages.Lowered,
+    platform: str,
+    *,
+    adapter_calls: Mapping[int, AdapterCall],
+    output_free_calls: frozenset[int],
+    retain_program: RetainProgram | None,
 ) -> LoweredProgram:
     module = lowered.compiler_ir(dialect="stablehlo")
     if not isinstance(module, ir.Module):
         raise TypeError("A managed numerical call requires a StableHLO module")
     calls: list[ForeignCall] = []
-    environment_targets = lapack.registrations().get("cpu", ()) if platform == "cpu" else ()
-    environment_names = {name for name, *_ in environment_targets}
+    environment_names = _environment_targets(platform)
     for op in _walk_operations(module.operation):
         if op.name != "stablehlo.custom_call":
             continue
@@ -313,29 +379,55 @@ def _capture_lowering(
         platform=platform,
         sha256=sha256(_canonical_asm(module.operation)).hexdigest(),
         calls=tuple(calls),
-        raw_program=None if retain_program is None else retain_program(module.operation.get_asm().encode()),
+        raw_program=None
+        if retain_program is None
+        else retain_program(module.operation.get_asm().encode()),
+    )
+
+
+@cache
+def _environment_targets(platform: str) -> frozenset[str]:
+    """Own only exact targets registered by the installed numerical environment."""
+    return frozenset(
+        name
+        for library in (lapack, cpu_sparse, gpu_linalg, gpu_prng, gpu_solver, gpu_sparse)
+        for backend, registrations in library.registrations().items()
+        if backend.casefold() == platform
+        for name, *_ in registrations
     )
 
 
 def capture_program(
-    execution_lowered: jax.stages.Lowered, *, slot: str, specialization: ArgumentSignature,
-    execution_platform: str, reference_lowered: jax.stages.Lowered | None = None,
+    execution_lowered: jax.stages.Lowered,
+    *,
+    slot: str,
+    specialization: ArgumentSignature,
+    execution_platform: str,
+    reference_lowered: jax.stages.Lowered | None = None,
     adapter_calls: Mapping[int, AdapterCall] | None = None,
     output_free_calls: frozenset[int] = frozenset(),
-    retain_program: StoreBlob | None = None,
+    retain_program: RetainProgram | None = None,
 ) -> ProgramIdentity:
     """Record the executed specialization and its fixed CPU reference, when available."""
     execution = _capture_lowering(
-        execution_lowered, execution_platform,
-        adapter_calls=adapter_calls or {}, output_free_calls=output_free_calls, retain_program=retain_program,
+        execution_lowered,
+        execution_platform,
+        adapter_calls=adapter_calls or {},
+        output_free_calls=output_free_calls,
+        retain_program=retain_program,
     )
     reference = execution if execution_platform == REFERENCE_PLATFORM else None
     if reference is None and reference_lowered is not None:
         reference = _capture_lowering(
-            reference_lowered, REFERENCE_PLATFORM, adapter_calls={}, output_free_calls=frozenset(),
+            reference_lowered,
+            REFERENCE_PLATFORM,
+            adapter_calls={},
+            output_free_calls=frozenset(),
             retain_program=retain_program,
         )
-    return ProgramIdentity(slot=slot, specialization=specialization, reference=reference, execution=execution)
+    return ProgramIdentity(
+        slot=slot, specialization=specialization, reference=reference, execution=execution
+    )
 
 
 def _different_starts(previous: ComputationTrace, present: ComputationTrace) -> tuple[str, ...]:
@@ -353,7 +445,9 @@ def _read_object(reference: ContentObjectRef, read_blob: ReadBlob) -> bytes:
     return data
 
 
-def _program_digest(program: LoweredProgram, version: int, read_blob: ReadBlob | None) -> str | None:
+def _program_digest(
+    program: LoweredProgram, version: int, read_blob: ReadBlob | None
+) -> str | None:
     if version == NORMALIZATION_VERSION:
         return program.sha256
     if program.raw_program is None or read_blob is None:
@@ -367,17 +461,24 @@ def _program_digest(program: LoweredProgram, version: int, read_blob: ReadBlob |
 
 
 def compare_computation(
-    previous: ComputationTrace, present: ComputationTrace, *, read_blob: ReadBlob | None = None,
+    previous: ComputationTrace,
+    present: ComputationTrace,
+    *,
+    read_blob: ReadBlob | None = None,
 ) -> ComputationComparison:
     """Compare the driver's identity, starting operands and qualified exact lowerings."""
     changes: list[ComputationChange] = []
     if previous.driver != present.driver:
         changes.append(DriverChanged(previous=previous.driver, present=present.driver))
-    if (slots := _different_starts(previous, present)):
+    if slots := _different_starts(previous, present):
         changes.append(StartsChanged(slots=slots))
     if previous.completed_steps != present.completed_steps:
-        changes.append(StepCountChanged(previous=previous.completed_steps, present=present.completed_steps))
-    old_programs = {(program.slot, program.specialization): program for program in previous.programs}
+        changes.append(
+            StepCountChanged(previous=previous.completed_steps, present=present.completed_steps)
+        )
+    old_programs = {
+        (program.slot, program.specialization): program for program in previous.programs
+    }
     new_programs = {(program.slot, program.specialization): program for program in present.programs}
     if tuple(old_programs) != tuple(new_programs):
         slots = tuple(dict.fromkeys(slot for slot, _ in (*old_programs, *new_programs)))
@@ -395,10 +496,15 @@ def compare_computation(
         pairs = [(old.reference, new.reference)]
         if old.execution.platform != REFERENCE_PLATFORM:
             pairs.append((old.execution, new.execution))
-        unknown = tuple(dict.fromkeys(
-            call.target for pair in pairs for program in pair for call in program.calls
-            if isinstance(call, UnidentifiedCall)
-        ))
+        unknown = tuple(
+            dict.fromkeys(
+                call.target
+                for pair in pairs
+                for program in pair
+                for call in program.calls
+                if isinstance(call, UnidentifiedCall)
+            )
+        )
         if unknown:
             return ComputationUnconfirmable(reason="foreign_call", targets=unknown)
         for former, current in pairs:
@@ -409,25 +515,34 @@ def compare_computation(
             if old_digest != new_digest or former.calls != current.calls:
                 different.append(old.slot)
     if different:
-        return ComputationDifferent(changes=(ProgramsChanged(slots=tuple(dict.fromkeys(different))),))
+        return ComputationDifferent(
+            changes=(ProgramsChanged(slots=tuple(dict.fromkeys(different))),)
+        )
     return ComputationEqual()
 
 
 def capture_train_prefix(
-    losses: Sequence[float] | Operand, parameters: Mapping[str, Operand], *, store_blob: StoreBlob,
+    losses: Sequence[float] | Operand,
+    parameters: Mapping[str, Operand],
+    *,
+    store_blob: StoreBlob,
 ) -> TrainPrefix | None:
     """Retain the actual first updates and their final trainable parameters."""
     loss_values, arrays = jax.device_get((losses, parameters))
     values = np.asarray(loss_values)
     precision = values.dtype.name
     if (
-        precision not in _TRAIN_TOLERANCES or values.ndim != 1
-        or not 1 <= values.size <= _TRAIN_PREFIX_STEPS or not np.all(np.isfinite(values))
-        or not arrays or any(array.dtype.name not in _TRAIN_TOLERANCES for array in arrays.values())
+        precision not in _TRAIN_TOLERANCES
+        or values.ndim != 1
+        or not 1 <= values.size <= _TRAIN_PREFIX_STEPS
+        or not np.all(np.isfinite(values))
+        or not arrays
+        or any(array.dtype.name not in _TRAIN_TOLERANCES for array in arrays.values())
     ):
         return None
     payload = encode_array_container(
-        {name: np.asarray(array) for name, array in arrays.items()}, metadata=_PARAMETERS_METADATA,
+        {name: np.asarray(array) for name, array in arrays.items()},
+        metadata=_PARAMETERS_METADATA,
     )
     return TrainPrefix(
         precision=precision,
@@ -464,10 +579,13 @@ def _relative_loss(reference: Sequence[float], measured: Sequence[float]) -> flo
     return max(values)
 
 
-def _relative_l2(reference: Mapping[str, np.ndarray], measured: Mapping[str, np.ndarray]) -> float | None:
+def _relative_l2(
+    reference: Mapping[str, np.ndarray], measured: Mapping[str, np.ndarray]
+) -> float | None:
     scale = max(
         float(np.max(np.abs(array), initial=0))
-        for arrays in (reference, measured) for array in arrays.values()
+        for arrays in (reference, measured)
+        for array in arrays.values()
     )
     if scale == 0:
         return 0.0
@@ -484,7 +602,10 @@ def _relative_l2(reference: Mapping[str, np.ndarray], measured: Mapping[str, np.
 
 
 def compare_environment_prefix(
-    previous: ComputationTrace, present: ComputationTrace, *, read_blob: ReadBlob,
+    previous: ComputationTrace,
+    present: ComputationTrace,
+    *,
+    read_blob: ReadBlob,
 ) -> PrefixComparison:
     """Assess numerical drift for an environment change without accepting a code difference."""
     if _different_starts(previous, present):
@@ -502,20 +623,29 @@ def compare_environment_prefix(
         former, measured = _parameters(old, read_blob), _parameters(new, read_blob)
     except (OSError, ValueError):
         return PrefixUnavailable(reason="unreadable_witness")
-    if not former or former.keys() != measured.keys() or any(
-        (array.shape, array.dtype) != (measured[name].shape, measured[name].dtype)
-        or array.dtype.name not in _TRAIN_TOLERANCES for name, array in former.items()
+    if (
+        not former
+        or former.keys() != measured.keys()
+        or any(
+            (array.shape, array.dtype) != (measured[name].shape, measured[name].dtype)
+            or array.dtype.name not in _TRAIN_TOLERANCES
+            for name, array in former.items()
+        )
     ):
         return PrefixChanged(reason="output_shape_or_dtype")
-    if any(not np.all(np.isfinite(array)) for arrays in (former, measured) for array in arrays.values()):
+    if any(
+        not np.all(np.isfinite(array)) for arrays in (former, measured) for array in arrays.values()
+    ):
         return PrefixChanged(reason="nonfinite_outputs")
     loss_drift = _relative_loss(old.losses, new.losses)
     parameter_drift = _relative_l2(former, measured)
     drift = PrefixDrift(max_relative_loss=loss_drift, relative_parameter_l2=parameter_drift)
     loss_tolerance, parameter_tolerance = _TRAIN_TOLERANCES[old.precision]
     if (
-        loss_drift is None or parameter_drift is None
-        or loss_drift > loss_tolerance or parameter_drift > parameter_tolerance
+        loss_drift is None
+        or parameter_drift is None
+        or loss_drift > loss_tolerance
+        or parameter_drift > parameter_tolerance
     ):
         return PrefixChanged(reason="numerical_drift", drift=drift)
     return PrefixConfirmed(drift=drift)

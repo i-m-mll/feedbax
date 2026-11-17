@@ -1,57 +1,11 @@
-from concurrent.futures import ThreadPoolExecutor
 import errno
 import os
 from pathlib import Path
 import stat
-from threading import Barrier
 
 import pytest
 
 from feedbax import _atomic
-from feedbax.analysis import evaluation_compaction, evaluation_product_union
-
-
-@pytest.mark.parametrize(
-    "writer",
-    [
-        evaluation_compaction._atomic_write_json,
-        evaluation_product_union._atomic_write_json,
-    ],
-)
-def test_overlapping_evaluation_publishers_keep_complete_distinct_documents(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    writer,
-) -> None:
-    destination = tmp_path / "receipt.json"
-    destination.write_bytes(b"old\n")
-    expected = {
-        b'{\n  "author": "one",\n  "value": "\\u00e9"\n}\n',
-        b'{\n  "author": "two",\n  "value": "\\u00e9"\n}\n',
-    }
-    barrier = Barrier(2, timeout=5)
-    replace = os.replace
-    candidates = []
-
-    def overlap(source, target):
-        candidates.append(Path(source).read_bytes())
-        assert destination.read_bytes() == b"old\n"
-        barrier.wait()
-        replace(source, target)
-
-    monkeypatch.setattr(_atomic.os, "replace", overlap)
-    # Exercise the same overlap against the former Path.replace implementation.
-    monkeypatch.setattr(Path, "replace", overlap)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [
-            pool.submit(writer, destination, {"author": author, "value": "é"})
-            for author in ("one", "two")
-        ]
-        for future in futures:
-            future.result(timeout=10)
-    assert set(candidates) == expected
-    assert destination.read_bytes() in expected
-    assert list(tmp_path.iterdir()) == [destination]
 
 
 @pytest.mark.parametrize("boundary", ["fdopen", "file_sync", "replace", "directory_sync"])
