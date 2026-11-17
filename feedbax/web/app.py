@@ -53,7 +53,6 @@ async def _maintain_remote_runs(advance: Callable[[], None], failure: str) -> No
 
 def create_app(
     *,
-    bootstrap_modules: tuple[str, ...] = (),
     desktop_job_root: Path | None = None,
     desktop_release: Path | None = None,
     projects_dir: Path | None = None,
@@ -65,16 +64,16 @@ def create_app(
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
-        app.state.bootstrap_modules = bootstrap_modules
-        app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
+        app.state.bootstrap_state = await compose_application()
         app.state.project_folders = ProjectFolderService(
             project_root, operations=app.state.bootstrap_state.bundle.operations,
             components=app.state.bootstrap_state.bundle.components,
             functions=app.state.bootstrap_state.bundle.expression_functions,
             python_tasks=app.state.bootstrap_state.bundle.python_tasks,
+            figure_templates=app.state.bootstrap_state.bundle.figure_templates,
         )
         app.state.job_service = JobService(
-            HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,
+            HostClient(), app.state.bootstrap_state.bundle,
             targets=targets, submit_session=submit_session,
         )
         app.state.remote_runs = remote_runs

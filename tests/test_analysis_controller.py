@@ -6,18 +6,18 @@ import jax.numpy as jnp
 
 from feedbax.analysis import graph_controller
 from feedbax.component_registry import ComponentRegistry
-from feedbax.compiler.templates import (
+from feedbax.builtins.templates.templates import (
     recurrent_graph_input_initializer,
     recurrent_node_output_initializer,
 )
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.mechanics.force_fields import (
+from feedbax.builtins.mechanics.force_fields import (
     PlanarTargetRelativeSelector,
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
 from feedbax.models.cde import cde_controller
-from feedbax.runtime.components import Noise, Sum
+from feedbax.builtins.runtime.components import Noise, Sum
 from feedbax.runtime.graph import Component, Graph, GraphTraceRequest, Wire
 from feedbax.runtime.state import CartesianState
 from tests.support.graph_compiler_test_support import spec_to_graph

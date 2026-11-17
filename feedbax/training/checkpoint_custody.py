@@ -5319,9 +5319,9 @@ def _supported_slot_serializer(slot: CheckpointSlotBlobRef) -> str:
 
 
 def _checkpoint_components(components: ComponentRegistry | None) -> ComponentRegistry:
-    from feedbax.component_registry import ComponentRegistry
+    from feedbax.plugins.composition import load_application
 
-    return components if components is not None else ComponentRegistry()
+    return components if components is not None else load_application().bundle.components
 
 
 def _deserialize_checkpoint_slot(

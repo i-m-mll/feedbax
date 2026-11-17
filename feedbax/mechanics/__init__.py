@@ -1,11 +1,4 @@
 from .mechanics import Mechanics, MechanicsState
-from .linear_state_space import (
-    LinearStateSpace,
-    LinearStateSpaceState,
-    StructuralLinearDynamicsPerturbation,
-    StructuralLinearStateSpace,
-    structural_linear_transition,
-)
 
 # Physics backend abstraction
 from .backend import PhysicsBackend, PhysicsState, DiffraxBackend, MJXBackend
@@ -43,9 +36,6 @@ from .musculoskeletal import (
     RigidTendonMusculoskeletalArm,
     CompliantTendonMusculoskeletalArm,
 )
-
-# Standalone muscle Components
-from .muscles import ReluMuscle, RigidTendonHillMuscleThelen
 
 # Analytical musculoskeletal plant (pure JAX, no MuJoCo)
 from .analytical_plant import AnalyticalMusculoskeletalPlant, AnalyticalMuscleState

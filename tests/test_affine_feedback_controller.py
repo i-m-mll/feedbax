@@ -8,7 +8,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.control.affine import AffineFeedbackController
+from feedbax.builtins.control.affine import AffineFeedbackController
 from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from tests.support.graph_compiler_test_support import spec_to_graph

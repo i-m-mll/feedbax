@@ -35,7 +35,7 @@ from feedbax.component_registry import ComponentRegistry, required_interior_doma
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
-from feedbax.compiler.templates import network_template_graph
+from feedbax.builtins.templates.templates import network_template_graph
 from feedbax.runtime.graph import Graph
 # Outcomes that count as "the build refused to guess". A fix for any of the
 # xfailed invariants may legitimately take the form of a loud rejection, so the
@@ -190,15 +190,15 @@ def test_acausal_composite_uses_interior_solver_not_outer_dt() -> None:
     interior = AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
-            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 1.0}),
+            "spring": ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": 10.0}),
             "act": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "u", "source_kind": "force"},
             ),
             "sense": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "output", "quantity": "position"},
             ),
         },
