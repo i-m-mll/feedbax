@@ -13,8 +13,8 @@ import pytest
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
-from feedbax.runtime.components import GRU, RateLimiter
-from feedbax.runtime.filters import LowPassFilter
+from feedbax.builtins.runtime.components import GRU, RateLimiter
+from feedbax.builtins.runtime.filters import LowPassFilter
 from feedbax.runtime.graph import Graph
 from feedbax.compiler.trainability import model_trainability
 from feedbax.tasks.document import TaskParameters
@@ -160,7 +160,7 @@ def test_gradient_update_trains_weights_and_keeps_reset_template_fixed():
 
 
 def test_preparation_keeps_task_parameter_and_latch_slots_independent():
-    from feedbax.mechanics.force_fields import StateSelector, ThresholdLatchedForce, ThresholdLatchedForceParams
+    from feedbax.builtins.mechanics.force_fields import StateSelector, ThresholdLatchedForce, ThresholdLatchedForceParams
 
     def build():
         return ThresholdLatchedForce(

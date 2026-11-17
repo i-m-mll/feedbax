@@ -12,7 +12,6 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
     ACAUSAL_GRAPH_SCHEMA_VERSION,
-    ACAUSAL_GRAPH_SCHEMA_VERSION_V1,
     AcausalConnectionSpec,
     AcausalGraphSpec,
 )
@@ -200,10 +199,9 @@ def test_acausal_graph_spec_rejects_unknown_extra_fields() -> None:
 
 
 
-@pytest.mark.parametrize("historical", [False, True])
-def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_path, historical):
-    from feedbax.component_registry import ComponentPack
-    from feedbax.component_registry.history import Change, History, LegacyEndpoint
+def test_nested_acausal_reader_preserves_component_revisions_through_containers(tmp_path):
+    from feedbax.component_registry.history import Change, History
+    from tests.support.component_owners import register_owners
     from feedbax.contracts.portable import Ports
     from feedbax.runtime.graph import Component
 
@@ -214,40 +212,19 @@ def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_p
         def __call__(self, inputs, state, *, key):
             return {}, state
 
-    from feedbax.acausal.translational import Mass
+    from feedbax.builtins.acausal.translational import Mass
 
     class ReaderMass(Mass):
         def __init__(self, name: str, value: int = 0):
             super().__init__(name=name)
             self.value = value
 
+    history = History(Change(2, migrate=lambda params: {"value": params["value"] + 1}))
+    ReaderOwner.component_history = ReaderMass.component_history = history
     registry = ComponentRegistry()
-    registry.ingest(
-        ComponentPack(
-            namespace="reader",
-            components=(
-                ReaderOwner,
-                ReaderMass,
-            ),
-            histories={
-                owner: History(
-                    Change(2, migrate=lambda params: {"value": params["value"] + 1}),
-                    legacy=(
-                        LegacyEndpoint(
-                            f"reader.{owner.__name__}",
-                            "1",
-                            1,
-                            matches_unversioned=lambda params: True,
-                        ),
-                    ),
-                )
-                for owner in (ReaderOwner, ReaderMass)
-            },
-        )
-    )
-    source_version = ACAUSAL_GRAPH_SCHEMA_VERSION_V1 if historical else ACAUSAL_GRAPH_SCHEMA_VERSION
-    node = {"type": "reader.ReaderOwner", "params": {"value": 0}}
-    physical_node = {"type": "reader.ReaderMass", "params": {"value": 0}}
+    register_owners(registry, "reader", ReaderOwner, ReaderMass)
+    node = {"type": "reader.ReaderOwner", "params": {"value": 0}, "revision": 1}
+    physical_node = {"type": "reader.ReaderMass", "params": {"value": 0}, "revision": 1}
     inner = {
         "schema_id": ACAUSAL_GRAPH_SCHEMA_ID,
         "physical_domain": "translational",
@@ -256,7 +233,7 @@ def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_p
     }
     acausal = {
         **inner,
-        "schema_version": source_version,
+        "schema_version": ACAUSAL_GRAPH_SCHEMA_VERSION,
         "nodes": {"owner": physical_node, "child": {"type": "feedbax.AcausalSystem"}},
         "subgraphs": {"child": inner},
     }
@@ -265,7 +242,7 @@ def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_p
     )
     causal = {
         "schema_id": GRAPH_SPEC_SCHEMA_ID,
-        "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V5 if historical else GRAPH_SPEC_SCHEMA_VERSION,
+        "schema_version": GRAPH_SPEC_SCHEMA_VERSION,
         "nodes": {
             "owner": node,
             "plant": {"type": "feedbax.AcausalSystem"},
@@ -290,14 +267,7 @@ def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_p
         assert nested["schema_version"] == ACAUSAL_GRAPH_SCHEMA_VERSION
         assert {key: nested["nodes"]["owner"][key] for key in expected} == expected
     assert loaded_manifest.payload["nodes"]["owner"]["params"] == {"value": 1}
-    assert node == {"type": "reader.ReaderOwner", "params": {"value": 0}}
-    if not historical:
-        authoring = migrate_structured_spec_payload(
-            "AcausalGraphSpec", acausal, component_registry=registry, assume_current=True
-        )
-        authored = AcausalGraphSpec.model_validate(authoring.payload)
-        assert authored.nodes["owner"].params == {"value": 0}
-        assert authored.nodes["owner"].revision == 2
+    assert node == {"type": "reader.ReaderOwner", "params": {"value": 0}, "revision": 1}
 
 
 def test_unknown_acausal_graph_version_rejects_through_graph_migration() -> None:

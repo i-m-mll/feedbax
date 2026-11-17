@@ -9,6 +9,7 @@ from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.contracts.effective_success import TerminalTrainSubject
+from feedbax.contracts.model_input import document_input_object
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
 from feedbax.contracts.project_io import TextProject
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
@@ -39,15 +40,10 @@ from feedbax.persistence.reachability import (
     object_target,
     superseded_days,
 )
-from feedbax.studio.canonical_evaluate import BoundEvaluationJobInput
+from feedbax.studio.canonical_evaluate import BoundEvaluationJobInput, initial_evaluation_references
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-from feedbax.training.checkpoint_custody import (
-    CHECKPOINT_SET_NAME,
-    CheckpointCustodyError,
-    _bound_checkpoint_manifest,
-    checkpoint_slot_files,
-    load_checkpoint_set,
-)
+from feedbax.persistence.method_checkpoint import method_checkpoint_files
+from feedbax.training.checkpoint_errors import CheckpointCustodyError
 
 
 @dataclass(frozen=True)
@@ -108,10 +104,10 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
             decoded = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
             assert isinstance(decoded.spec, DocumentTrainingRequestSpec)
             from feedbax.compiler.model_document import lower_model_document
-            from feedbax.component_registry import ComponentRegistry
+            from feedbax.plugins.composition import load_application
 
             documents = decoded.spec.trial_documents
-            graph = lower_model_document(documents.model_name, documents.model, ComponentRegistry()).graph
+            graph = lower_model_document(documents.model_name, documents.model, load_application().bundle.components).graph
             assets = tuple(ref for _, ref in model_asset_refs(graph))
             if assets:
                 key = run.key
@@ -127,34 +123,15 @@ def _checkpoint_files(root: Path, checkpoint: PublishedTrainingCheckpoint) -> di
     if checkpoint.checkpoint_root != expected:
         raise ValueError("checkpoint root differs from the exact published attempt")
 
-    def read_metadata(path: Path) -> bytes:
-        if not path.is_relative_to(expected):
-            raise ValueError("checkpoint metadata is outside the exact published attempt")
-        with completion_file(root, path.relative_to(root).as_posix()) as (stream, _):
-            return stream.read()
-
-    manifest_path, manifest = _bound_checkpoint_manifest(
-        expected, pointer, read_bytes=read_metadata
-    )
-    if manifest.completed_training_batches != checkpoint.completed_updates:
+    if pointer.completed_updates != checkpoint.completed_updates:
         raise ValueError("checkpoint coordinate differs from the retained job")
-    checkpoint_set = load_checkpoint_set(expected, pointer.transaction_id, read_bytes=read_metadata)
-    if checkpoint_set.transaction.bytes.digest != pointer.manifest_sha256:
-        raise ValueError("checkpoint set differs from the retained publication")
     sizes = {}
-    for path in (manifest_path, manifest_path.parent / CHECKPOINT_SET_NAME):
+    for relative, ref in method_checkpoint_files(expected, pointer, include_extra=True).items():
+        path = expected / relative
         with completion_file(root, path.relative_to(root).as_posix()) as (_, size):
+            if size != ref.size_bytes:
+                raise ValueError(f"checkpoint file size differs: {path.relative_to(root)}")
             sizes[path] = size
-    for slot in manifest.slots:
-        for path, (_, pinned_size) in checkpoint_slot_files(
-            manifest_path.parent,
-            slot,
-            read_bytes=read_metadata,
-        ).items():
-            with completion_file(root, path.relative_to(root).as_posix()) as (_, size):
-                if size != pinned_size:
-                    raise ValueError(f"checkpoint file size differs: {path.relative_to(root)}")
-                sizes[path] = size
     return sizes
 
 
@@ -214,13 +191,12 @@ def _job_roots(
             raise ValueError("Train launch differs from the scoped job")
         assert binding.canonical_request is not None
         refs.extend((binding.canonical_request.request, *binding.canonical_request.documents))
-        if binding.spec.graph.inline is not None:
-            refs.extend(
-                ref
-                for _, ref in model_asset_refs(GraphSpec.model_validate(binding.spec.graph.inline))
-            )
-        else:
-            gaps.append(f"{name}: bound model assets require an external graph authority")
+        from feedbax.compiler.model_document import lower_model_document
+        from feedbax.plugins.composition import load_application
+
+        documents = binding.spec.trial_documents
+        graph = lower_model_document(documents.model_name, documents.model, load_application().bundle.components).graph
+        refs.extend(ref for _, ref in model_asset_refs(graph))
         if binding.resume is not None:
             pointers.append(binding.resume)
         if binding.checkpoint_input is not None:
@@ -235,6 +211,10 @@ def _job_roots(
             raise ValueError("Evaluate launch differs from the scoped job")
         refs.append(binding.canonical_request.request)
         terminal = binding.canonical_request.terminal
+        if binding.canonical_request.initial_model is not None:
+            store = ImmutableArtifactBlobProvider(root)
+            decoded = decode_request(store.get_object(binding.canonical_request.request), store.get_object)
+            refs.extend(document_input_object(content) for content in initial_evaluation_references(decoded).values())
     else:
         gaps.append(f"{name}: no typed canonical launch binding")
 

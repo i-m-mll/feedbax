@@ -2738,7 +2738,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             "PopulationStructureSpec",
             "feedbax.spec.population_structure",
             "feedbax.spec.population_structure.v1",
-            owner_module="feedbax.models.networks",
+            owner_module="feedbax.builtins.models.networks",
             emitted_by=("PopulationStructure.to_spec", "GraphSpec node params"),
             consumed_by=("population_structure_from_spec", "serialization_builders"),
             description="Reusable nested spec for hidden-unit population assignments.",

@@ -11,11 +11,11 @@ import pytest
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
 from feedbax.contracts.migrations import UnsupportedSpecVersion
-from feedbax.compiler.templates import (
+from feedbax.builtins.templates.templates import (
     network_template_graph,
     recurrent_controller_template_graph,
 )
-from feedbax.models.networks import (
+from feedbax.builtins.models.networks import (
     LeakyRNNCell,
     POPULATION_STRUCTURE_SCHEMA_ID,
     POPULATION_STRUCTURE_SCHEMA_VERSION,
@@ -26,7 +26,7 @@ from feedbax.models.networks import (
     population_readout_kernel_mask,
     population_structure_from_spec,
 )
-from feedbax.runtime.components import Linear
+from feedbax.builtins.runtime.components import Linear
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.compiler.serialization import graph_to_spec

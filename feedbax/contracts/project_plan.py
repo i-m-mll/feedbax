@@ -11,11 +11,12 @@ from threading import Lock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_core import to_json
 
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
+from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
@@ -44,6 +45,7 @@ from feedbax.contracts.project_inputs import (
     NamedSubset,
     OmittedReference,
     ObjectiveDocumentReference,
+    ProjectName,
     RunReference,
     SelectedRow,
     StepReference,
@@ -104,14 +106,15 @@ from feedbax.contracts.request_specs import (
     DocumentTrainingRequestSpec,
     ReportRequestSpec,
 )
-from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.train_settings import normalize_train_method
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.contracts.effective_success import TerminalTrainSubject
     from feedbax.contracts.request_specs import TrialDocuments
     from feedbax.tasks.registry import PythonTaskRegistry
+    from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.expression_registry import FunctionRegistry
 
@@ -190,8 +193,9 @@ class PlannedInput:
 
 def plan_document_input(
     reference: DocumentInputReference, document: Document, objects: MutableMapping[str, bytes],
+    *, python_tasks: PythonTaskRegistry | None = None,
 ) -> PlannedInput:
-    content, raw = encode_document_input(authored_document_input(reference, document))
+    content, raw = encode_document_input(authored_document_input(reference, document, python_tasks=python_tasks))
     objects[content.sha256] = raw
     return PlannedInput(None, InputMember(key=reference.source.document, reference=content))
 
@@ -267,7 +271,7 @@ def planned_input_groups(
 class PlannedAnalyzeRun(PlannedRow):
     elements: Mapping[str, PlannedElement]
     requires: tuple[str, ...]
-    states: tuple[PlannedInput, ...]
+    inputs: Mapping[str, tuple[PlannedInput, ...]]
     figures: Mapping[str, FigureDocument]
 
 
@@ -455,14 +459,13 @@ class _Role:
     required: bool
     producer_kind: StepKind
     product_role: str
-    accepts_many: bool = False
 
 
 _ROLES = {
     "train": _Role("checkpoint", False, "train", "checkpoint"),
     "evaluate": _Role("subject", True, "train", "checkpoint"),
-    "analyze": _Role("states", True, "evaluate", "states", accepts_many=True),
 }
+_ANALYZE_INPUTS = TypeAdapter(dict[ProjectName, AnalyzeInput])
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
 type _Members = tuple[tuple[PlannedInput, _CompiledRun | None], ...]
@@ -495,9 +498,7 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
 def _train_checkpoint_horizon(train: object) -> int | None:
     if not isinstance(train, DocumentTrainingRequestSpec):
         return None
-    if train.method_ref == STUDIO_GRAPH_METHOD:
-        return StudioGraphMethodPayload.model_validate(train.method_payload.payload).target_total
-    return train.training_config.n_batches
+    return train.target_total
 
 
 def _paired_checkpoint_step(step: Step, reference: InputBinding | None) -> str | None:
@@ -732,16 +733,26 @@ def _integer_model_site(
     )
 
 
-def _integer_train_site(path: str, payload: Payload, python_tasks: PythonTaskRegistry | None) -> bool:
-    from feedbax.tasks.reaching import builtin_python_tasks
+def _integer_train_site(
+    path: str, payload: Payload, python_tasks: PythonTaskRegistry | None,
+    training_methods: TrainingMethodRegistry | None,
+) -> bool:
+    from feedbax.tasks.registry import application_python_tasks
     from feedbax.tasks.registry import python_task_parameter_site
 
     documents = payload.get("trial_documents")
-    site = python_task_parameter_site(path, documents, python_tasks or builtin_python_tasks())
+    site = python_task_parameter_site(path, documents, python_tasks or application_python_tasks())
     if site is not None:
         return site.expected.base is ValueBase.INTEGER and not site.expected.shape
+    segments = path.split(".")
     annotation = DocumentTrainingRequestSpec
-    for segment in path.split("."):
+    if segments[0] == "settings" and training_methods is not None and isinstance(payload.get("method"), str):
+        try:
+            annotation = training_methods.resolve(payload["method"]).settings_model
+        except KeyError:
+            return False
+        segments = segments[1:]
+    for segment in segments:
         fields = getattr(annotation, "model_fields", {})
         if segment not in fields:
             return False
@@ -807,6 +818,7 @@ def _encode_row(
     model_source: _ModelSource | None = None,
     prepared_train: _PreparedTrainRow | None = None,
     remember_train: Callable[[_PreparedTrainRow], None] | None = None,
+    training_methods: TrainingMethodRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
     condition_ids = None
@@ -816,24 +828,20 @@ def _encode_row(
         condition_ids = prepared_train.preparation.condition_ids
         model_source = prepared_train.model
     elif kind == "train":
-        from feedbax.compiler.trial_execution import validate_python_task
-        from feedbax.tasks.reaching import builtin_python_tasks
+        from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
         from feedbax.contracts.request_specs import TrialDocuments
 
         try:
             authored = TrialDocuments.model_validate(payload.get("trial_documents"))
             if authored.python_task is not None:
-                resolved = validate_python_task(authored.python_task, python_tasks or builtin_python_tasks())
-                if isinstance(resolved[0], Problem):
+                resolved = resolve_python_task_instance(authored.python_task, python_tasks or application_python_tasks())
+                if isinstance(resolved, tuple):
                     return _LoweredRow(None, tuple(ProjectDiagnostic(
                         ResolutionCode.INVALID_PAYLOAD,
                         ".".join(("payload.trial_documents", *map(str, problem.path))),
                         problem.reason, key.step, row=key.row, variant=key.variant,
                     ) for problem in resolved), encoding_stamp)
-                _, params = resolved
-                authored = authored.model_copy(update={"python_task": authored.python_task.model_copy(
-                    update={"params": params.model_dump(mode="json")},
-                )})
+                authored = authored.model_copy(update={"python_task": resolved.selection()})
                 payload = payload | {"trial_documents": authored.model_dump(mode="json")}
             preparation = prepare_trial(authored)
         except ValueError as error:
@@ -877,6 +885,12 @@ def _encode_row(
             spec = ReportRequestSpec(report_type=None, document=document)
         else:
             spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
+        if isinstance(spec, DocumentTrainingRequestSpec):
+            if (spec.checkpoint_initialization is None) != ("checkpoint" not in inputs):
+                raise ValueError("/inputs/checkpoint: a predecessor and initialization policy must be declared together")
+            if training_methods is None:
+                raise ValueError("Train requires the installed method catalog.")
+            spec, _, _ = normalize_train_method(spec, training_methods)
         encoded = request_identity.encode_request(
             spec,
             {role: (binding.member,) for role, binding in inputs.items()},
@@ -967,10 +981,11 @@ class ProjectPlanMemo:
 def _compiler_authority(
     components: ComponentRegistry | None, operations: OperationRegistry | None,
     functions: FunctionRegistry | None, python_tasks: PythonTaskRegistry | None,
+    training_methods: TrainingMethodRegistry | None,
 ) -> tuple[object, ...]:
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
-        request_identity.request_codec_authority(), components, operations, functions, python_tasks,
+        request_identity.request_codec_authority(), components, operations, functions, python_tasks, training_methods,
     )
 
 
@@ -986,6 +1001,7 @@ class _Compiler:
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
         *,
+        training_methods: TrainingMethodRegistry | None = None,
         capture_sources: bool = False,
     ):
         self.project = project
@@ -995,6 +1011,7 @@ class _Compiler:
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
+        self.training_methods = training_methods
         self.source_sweeps: dict[tuple[str, str], SourceSweep] | None = {} if capture_sources else None
         self.variant_sites: dict[str, bool] = {}
         self.source_variants: frozenset[str] = frozenset()
@@ -1060,7 +1077,7 @@ class _Compiler:
             if len(parts) == 5 and parts[0] == "steps" and parts[2:4] == ["base", "inline"]:
                 step = self.project.steps.get(parts[1])
                 if step is not None and step.kind == "train" and isinstance(step.base, InlineBase):
-                    return _integer_train_site(parts[4], step.base.inline, self.python_tasks)
+                    return _integer_train_site(parts[4], step.base.inline, self.python_tasks, self.training_methods)
             return False
 
         def capture_site(path: str) -> bool:
@@ -1300,7 +1317,7 @@ class _Compiler:
                         return False
                     resolved = train_payload()
                     return isinstance(resolved, ResolvedStep) and _integer_train_site(
-                        path, resolved.payload, self.python_tasks,
+                        path, resolved.payload, self.python_tasks, self.training_methods,
                     )
                 if target.step is not None:
                     raise ValueError("A step-scoped Model target belongs in the project sweep")
@@ -1561,6 +1578,7 @@ class _Compiler:
                 self.work.request_documents, self.prepare_train_trial,
                 self.python_tasks, model_source=authored_model,
                 prepared_train=prepared_train, remember_train=remember_train,
+                training_methods=self.training_methods,
             )
             return replace(
                 lowered,
@@ -1683,9 +1701,9 @@ class _Compiler:
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
         from feedbax.compiler.model_attachment import resolve_effective_model
-        from feedbax.compiler.trial_execution import pair_trial_source, validate_python_task
+        from feedbax.compiler.trial_execution import pair_trial_source
         from feedbax.studio.canonical_evaluate import CannotRun
-        from feedbax.tasks.reaching import builtin_python_tasks
+        from feedbax.tasks.registry import application_python_tasks
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         resolved = self.resolve_row(template, key, row, None)
@@ -1702,7 +1720,7 @@ class _Compiler:
             payload, differences = _model_differences(resolved.payload)
             components = self.components or _builtin_model_registry()
             functions = self.functions or _builtin_expression_registry()
-            tasks = self.python_tasks or builtin_python_tasks()
+            tasks = self.python_tasks or application_python_tasks()
             if differences:
                 edited = resolve_effective_model(
                     source.model_name, source.document, components, differences, functions=functions,
@@ -1712,14 +1730,8 @@ class _Compiler:
             task_ref = template.inputs.get("task")
             if not isinstance(task_ref, TaskDocumentReference):
                 raise ValueError("Declare the Task document for the initial Model rollout")
-            task = authored_document_input(task_ref, resolved.input_documents["task"])
+            task = authored_document_input(task_ref, resolved.input_documents["task"], python_tasks=tasks)
             assert isinstance(task, (TaskDocument, PythonTaskSelection))
-            if isinstance(task, PythonTaskSelection):
-                validated = validate_python_task(task, tasks)
-                if isinstance(validated[0], Problem):
-                    raise ValueError(validated[0].reason)
-                definition, params = validated
-                task = PythonTaskSelection(type=definition.key, params=params.model_dump(mode="json"))
             sources = {"subject": (subject_ref, source), "task": (task_ref, task)}
             if (objective_ref := template.inputs.get("objective")) is not None:
                 path = "inputs.objective"
@@ -1741,7 +1753,7 @@ class _Compiler:
             )
             if isinstance(paired, tuple) or paired.problems:
                 raise ValueError((paired if isinstance(paired, tuple) else paired.problems)[0].reason)
-            variant = resolve_evaluation_variant(paired.lowered.graph, task, settings.variation)
+            variant = resolve_evaluation_variant(paired.lowered.graph, task, settings.variation, components=components)
             if variant.task != task:
                 paired = pair_trial_source(
                     source.model_name, source.document, variant.task, components, functions,
@@ -1940,7 +1952,7 @@ class _Compiler:
         self.steps[variant, name] = step
         wanted = self.wanted_sources.get((variant, name), set())
         role = _ROLES.get(kind)
-        if (role is None and kind != "report") or (kind == "analyze" and self.operations is None):
+        if (role is None and kind not in ("analyze", "report")) or (kind == "analyze" and self.operations is None):
             self.diagnostics.append(
                 ProjectDiagnostic(
                     ResolutionCode.UNSUPPORTED_PLAN,
@@ -1965,6 +1977,8 @@ class _Compiler:
                 self.swept_step_axes[variant, name] = axes
         if kind == "report":
             return self.compile_report_step(variant, name, template, active)
+        if kind == "analyze":
+            return self.compile_analyze_step(variant, name, template, active)
         assert role is not None
         initial = kind == "evaluate" and isinstance(template.inputs.get("subject"), InitialModelReference)
         roles = {"subject", "task", "objective"} if initial else {role.name}
@@ -2001,7 +2015,6 @@ class _Compiler:
 
         basis = template.row_basis if self.previous is not None else None
         train_rows = _TrainRows() if kind == "train" and not wanted and len(rows) > 1 else None
-        gathered = tuple(binding for binding, _ in members) if role.accepts_many else ()
         result = []
         tracked_template = template if wanted else None
         for row in rows:
@@ -2039,14 +2052,6 @@ class _Compiler:
                 if (run := self.record_run(run_key, lowered, inputs, {}, template.requires)) is not None:
                     result.append(run)
                 continue
-            if kind == "analyze":
-                states = (chosen,) if chosen is not None else gathered
-                if states:
-                    definition = self.select_definition(template, run_key, row, {"states": states})
-                    analyze = self.lower_analyze_row(template, run_key, row, states, definition)
-                    if analyze is not None:
-                        result.append(analyze)
-                    continue
             if chosen is None and (paired_step is not None or len(members) > 1):
                 candidates = ", ".join(by_key) or "none"
                 detail = f"role requires one row; candidates are {candidates}"
@@ -2235,29 +2240,120 @@ class _Compiler:
                     runs.append(run)
         return tuple(runs)
 
+    def compile_analyze_step(
+        self, variant: str, name: str, template: StepComposition, active: tuple[tuple[str, str], ...],
+    ) -> tuple[PlannedAnalyzeRun, ...]:
+        def problem(path: str, detail: str, row: str | None = None) -> None:
+            self.diagnostics.append(ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, path, detail, name, variant=variant, row=row,
+            ))
+
+        try:
+            authored = template.bind(self.variants[variant]).authored_payload()
+            declarations = _ANALYZE_INPUTS.validate_python(authored.get("inputs", {}))
+        except ValueError as error:
+            problem("payload.inputs", str(error))
+            return ()
+        if unknown := template.inputs.keys() - declarations.keys():
+            problem(f"inputs.{min(unknown)}", "The Analyze document does not declare this role.")
+            return ()
+        selected = {}
+        document_refs = {}
+        for name_of_role, declaration in declarations.items():
+            reference = template.inputs.get(name_of_role)
+            if reference is None or isinstance(reference, OmittedReference):
+                continue
+            path = f"inputs.{name_of_role}"
+            if isinstance(reference, (InitialModelReference, TaskDocumentReference)):
+                expected = AnalyzeModelInput if isinstance(reference, InitialModelReference) else AnalyzeTaskInput
+                if not isinstance(declaration, expected):
+                    problem(path, f"A document reference cannot supply a {declaration.kind} role of this kind.")
+                    return ()
+                document_refs[name_of_role] = reference
+                continue
+            if isinstance(declaration, AnalyzeTaskInput):
+                problem(path, "A Task role requires a Task document reference.")
+                return ()
+            if isinstance(declaration, AnalyzeModelInput):
+                if not isinstance(reference, StepReference) or (
+                    reference.checkpoint not in (None, "last") and not isinstance(reference.checkpoint, BatchCheckpoint)
+                ):
+                    problem(path, "Select an initial Model document or a Train row's terminal or exact-update checkpoint.")
+                    return ()
+                role = _Role(name_of_role, True, "train", "checkpoint")
+            else:
+                role = _Role(name_of_role, True, "evaluate", "states")
+            resolved = self.select_input(variant, name, template, role, active)
+            if isinstance(resolved, ProjectDiagnostic):
+                self.diagnostics.append(replace(resolved, variant=variant))
+                return ()
+            members, _, subset = resolved
+            if isinstance(declaration, AnalyzeModelInput) and reference.checkpoint is None:
+                members = tuple((replace(binding, member=binding.member.model_copy(update={
+                    "reference": binding.member.reference.model_copy(update={"select": LastMember()}),
+                })), run) for binding, run in members)
+            selected[name_of_role] = members
+            if subset is not None:
+                self.subsets[variant, name, name_of_role] = subset
+        rows = self.expand_rows(variant, name, template, selected)
+        if isinstance(rows, ProjectDiagnostic):
+            self.diagnostics.append(rows)
+            return ()
+        runs = []
+        for row in rows:
+            key = RunKey(variant, name, row.id)
+            coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
+            self.rows[key] = PlannedRow(key, "analyze", row.label, coordinates)
+            inputs = {}
+            for role, members in selected.items():
+                chosen = row.input_keys.get(role)
+                if chosen is not None:
+                    inputs[role] = tuple(binding for binding, _ in members if binding.member.key == chosen)
+                elif isinstance(declaration := declarations[role], AnalyzeDatasetInput) and declaration.cardinality == "many":
+                    inputs[role] = tuple(binding for binding, _ in members)
+                elif len(members) == 1:
+                    inputs[role] = (members[0][0],)
+                else:
+                    candidates = ", ".join(binding.member.key for binding, _ in members)
+                    problem(f"inputs.{role}", f"Select one member from {candidates}.", row.id)
+                    break
+            else:
+                definition = self.select_definition(template, key, row, inputs)
+                resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
+                if isinstance(resolved, ProjectDiagnostic):
+                    self.diagnostics.append(replace(resolved, variant=variant))
+                    continue
+                for role, reference in document_refs.items():
+                    try:
+                        binding = plan_document_input(
+                            reference, resolved.input_documents[role], self.documents, python_tasks=self.python_tasks,
+                        )
+                    except (KeyError, ValueError) as error:
+                        problem(f"inputs.{role}", str(error), row.id)
+                        break
+                    inputs[role] = (binding,)
+                else:
+                    runs.append(self.lower_analyze_row(template, key, inputs, resolved))
+        return tuple(runs)
+
     def lower_analyze_row(
         self,
         template: StepComposition,
         key: RunKey,
-        row: ExpandedRow,
-        sources: tuple[PlannedInput, ...],
-        definition: SelectedRunDefinition | None,
-    ) -> PlannedAnalyzeRun | None:
+        inputs: Mapping[str, tuple[PlannedInput, ...]],
+        resolved: SelectedRunDefinition | ResolvedStep,
+    ) -> PlannedAnalyzeRun:
         from feedbax.contracts.project_analyze import lower_analyze
 
         assert self.operations is not None
-        resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
-        if isinstance(resolved, ProjectDiagnostic):
-            self.diagnostics.append(replace(resolved, variant=key.variant))
-            return None
-        evaluations = []
-        for source in sources:
-            producer = source.member.reference
-            assert isinstance(producer, ProductRef)
-            evaluation = request_identity.decode_request(
+        evaluations = {
+            producer.request_id: request_identity.decode_request(
                 self.requests[producer.request_id], self.documents.__getitem__,
-            )
-            evaluations.append(evaluation.spec)
+            ).spec
+            for sources in inputs.values() for source in sources
+            if isinstance(producer := source.member.reference, ProductRef)
+            and producer.request_id.startswith("evaluate:")
+        }
         elements, encoded, problems, figures = lower_analyze(
             key,
             resolved.payload,
@@ -2265,8 +2361,8 @@ class _Compiler:
             resolved.document_pointers,
             self.variants[key.variant].documents,
             tuple(replace(problem, row=key.row, variant=key.variant) for problem in resolved.document_problems),
-            sources,
-            tuple(evaluations),
+            inputs,
+            evaluations,
             self.operations,
         )
         self.diagnostics.extend(problems)
@@ -2276,7 +2372,7 @@ class _Compiler:
         original = self.rows[key]
         run = PlannedAnalyzeRun(
             key, original.kind, original.label, original.coordinates,
-            MappingProxyType(elements), template.requires, sources, MappingProxyType(figures),
+            MappingProxyType(elements), template.requires, MappingProxyType(dict(inputs)), MappingProxyType(figures),
             document_ids=MappingProxyType(dict(resolved.document_ids)),
             document_uses=resolved.document_uses,
         )
@@ -2675,9 +2771,14 @@ def compile_project(
     components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None,
     python_tasks: PythonTaskRegistry | None = None,
+    training_methods: TrainingMethodRegistry | None = None,
     capture_sources: bool = False,
 ) -> ProjectPlan:
     """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
+    if training_methods is None and any(step.kind == "train" for step in project.steps.values()):
+        from feedbax.plugins.composition import load_application
+
+        training_methods = load_application().bundle.training_methods
     readers = replace(
         readers,
         external=cache(readers.external) if readers.external is not None else None,
@@ -2689,13 +2790,16 @@ def compile_project(
     ):
         return _Compiler(
             project, readers, source_runs, operations=operations, components=components,
-            functions=functions, python_tasks=python_tasks, capture_sources=capture_sources,
+            functions=functions, python_tasks=python_tasks, training_methods=training_methods, capture_sources=capture_sources,
         ).plan()
-    authority = _compiler_authority(components, operations, functions, python_tasks)
+    authority = _compiler_authority(components, operations, functions, python_tasks, training_methods)
     ticket, previous = memo._begin(authority)
-    compiler = _Compiler(project, readers, source_runs, previous, operations, components, functions, python_tasks)
+    compiler = _Compiler(
+        project, readers, source_runs, previous, operations, components, functions, python_tasks,
+        training_methods=training_methods,
+    )
     plan = compiler.plan()
-    if authority == _compiler_authority(components, operations, functions, python_tasks):
+    if authority == _compiler_authority(components, operations, functions, python_tasks, training_methods):
         memo._publish(ticket, authority, compiler.work)
     return plan
 

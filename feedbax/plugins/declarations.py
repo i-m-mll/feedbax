@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +45,16 @@ def validate_declaration_key(key: str) -> str:
     return key
 
 
+def declaration_key(name: str, key: str | None, source: DistributionSource) -> str:
+    return validate_declaration_key(
+        f"{source.package.partition('.')[0]}.{name}" if key is None else key
+    )
+
+
+def missing_declaration(kind: str, key: str) -> str:
+    return f"Unknown {kind} {key!r}. No installed package provides it (package {key.split('.', 1)[0]!r})."
+
+
 def mark_callable[F: Callable[..., Any]](function: F, declaration: CallableDeclaration) -> F:
     if callable_declaration(function) is not None:
         raise ValueError(f"{function.__qualname__} already has a Feedbax declaration")
@@ -67,14 +77,19 @@ class SettingsSchema:
 def settings_schema(model: type[BaseModel]) -> SettingsSchema:
     from feedbax.component_registry.declarations import parameter_schema_from_model
 
-    schema = model.model_json_schema()
+    field_schema = model.model_json_schema(by_alias=False)
+    fields = field_schema.get("properties", {})
+    schema = (
+        model.model_json_schema()
+        if any(field.validation_alias is not None for field in model.model_fields.values())
+        else field_schema
+    )
     return SettingsSchema(
-        param_schema=parameter_schema_from_model(model),
+        param_schema=parameter_schema_from_model(model, properties=fields),
         parameter_json_schema=schema,
         static_parameters=tuple(
             name
-            for name, field in model.model_fields.items()
-            if isinstance(field.json_schema_extra, Mapping)
-            and field.json_schema_extra.get("feedbax", {}).get("static") is True
+            for name in model.model_fields
+            if fields.get(name, {}).get("feedbax", {}).get("static") is True
         ),
     )

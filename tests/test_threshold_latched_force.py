@@ -17,13 +17,12 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.migrations import UnsupportedComponentMigration
-from feedbax.mechanics.force_fields import (
+from feedbax.builtins.mechanics.force_fields import (
     PlanarTargetRelativeSelector,
     StateSelector,
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
-from feedbax.component_migrations.mechanics import THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1
 from feedbax.runtime.state import CartesianState
 
 
@@ -433,8 +432,8 @@ def test_native_graph_materialization_runs_runtime_state_trigger() -> None:
     )
 
 
-def test_v1_fixed_selector_migrates_to_v2() -> None:
-    spec = _graph_spec()
+def test_revision_one_fixed_selector_migrates_to_current() -> None:
+    spec = _graph_spec(revision=1)
     node = spec.nodes["load"]
     node.params["label"] = "historical label"
     node.params.pop("lateral_force")
@@ -444,12 +443,6 @@ def test_v1_fixed_selector_migrates_to_v2() -> None:
     del spec.input_bindings["target"]
 
     registry = ComponentRegistry()
-    resolved = registry.resolve_component_spec(
-        "ThresholdLatchedForce",
-        node.params,
-        legacy_token=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
-    )
-    node.type, node.params, node.revision = resolved.type_id, resolved.params, resolved.revision
     graph = spec_to_graph(spec, registry)
 
     assert graph.nodes["load"].state_selector == StateSelector(("pos", 0))
@@ -484,7 +477,7 @@ def test_python_and_registry_share_positive_finite_timestep(dt) -> None:
 
 
 def test_portable_defaults_reset_edits_and_legacy_evidence_share_contract() -> None:
-    from feedbax.mechanics.force_fields import CurlField
+    from feedbax.builtins.mechanics.force_fields import CurlField
 
     registry = ComponentRegistry()
     direct = ThresholdLatchedForce().prepare()

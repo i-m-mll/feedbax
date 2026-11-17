@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 from base64 import b64decode
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -38,7 +37,7 @@ from feedbax.orchestration.session import Nonempty, SessionError, SessionModel
 from feedbax.orchestration.session_jobs import Delegation, admit_saved_delegation
 from feedbax.persistence.ssh_store import RemoteStore, SSHStoreConnection
 from feedbax.plugins.application import ApplicationRegistryBundle
-from feedbax.plugins.composition import compose_application
+from feedbax.plugins.composition import load_application
 from feedbax.project_folder import ProjectFolderLocation, SettledProjectPlan, _folder_lock, compile_saved_project
 
 
@@ -63,7 +62,6 @@ class VenueJobs:
     host_root: str | PurePosixPath = field(kw_only=True)
     projects_root: str | PurePosixPath = field(kw_only=True)
     stores_root: str | PurePosixPath = field(kw_only=True)
-    bootstrap_modules: tuple[str, ...] = ()
     worker_environment: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
@@ -89,8 +87,6 @@ class VenueJobs:
             str(self.python), "-m", "feedbax.orchestration.venue_jobs", str(self.cwd),
             str(self.host_root), str(self.projects_root), str(self.stores_root),
         ]
-        for module in self.bootstrap_modules:
-            argv.extend(("--bootstrap", module))
         call = _Admission(delegation=request, token=token, access=access, placement=placement)
         reply = json.loads(self.connection.run(argv, call.model_dump_json().encode()))
         if "error" in reply:
@@ -162,6 +158,7 @@ class _DelegatedProjectPlans:
                 text, project_id=self.request.project, store=self.store, readers=BaseReaders(figure_external=read_pin),
                 operations=self.bundle.operations, components=self.bundle.components,
                 functions=self.bundle.expression_functions, python_tasks=self.bundle.python_tasks,
+                training_methods=self.bundle.training_methods,
             )
 
     def read_plan(self, project_id: str, *, revision: str | None) -> SettledProjectPlan:
@@ -183,14 +180,13 @@ def _serve(args: argparse.Namespace, call: _Admission) -> StudioJobSubmission:
     state = host.session_status()
     if state["expired"] or state["closing"]:
         raise SessionError("The venue session cannot accept a saved delegation.")
-    bootstrap = tuple(args.bootstrap)
-    bundle = asyncio.run(compose_application(modules=bootstrap)).bundle
+    bundle = load_application().bundle
     location = _stage_snapshot(args.projects_root, call.delegation)
     folders = _DelegatedProjectPlans(
         call.delegation, location, private_directory(args.stores_root) / call.delegation.project, bundle,
     )
     return admit_saved_delegation(
-        JobService(host, bundle, bootstrap_modules=bootstrap), folders, call.delegation, token=call.token,
+        JobService(host, bundle), folders, call.delegation, token=call.token,
         placement=call.placement,
     )
 
@@ -199,7 +195,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("cwd", "host_root", "projects_root", "stores_root"):
         parser.add_argument(name, type=Path)
-    parser.add_argument("--bootstrap", action="append", default=[])
     args = parser.parse_args()
     try:
         call = _Admission.model_validate_json(sys.stdin.buffer.read())

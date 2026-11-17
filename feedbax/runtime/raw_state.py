@@ -84,7 +84,8 @@ class RawStateLayout:
                     labels = ["x", "y"] if axis == "xy" else np.arange(size)
                     coordinates[axis] = Variable(np.asarray(labels), (axis,))
             variables[value.key] = Variable(
-                samples[None, None], dims, units=value.units, frame=value.frame,
+                samples.reshape((1,) * (len(axes) - 1) + samples.shape),
+                dims, units=value.units, frame=value.frame,
             )
         return variables, coordinates
 

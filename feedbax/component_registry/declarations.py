@@ -96,18 +96,27 @@ class ComponentParamValidation:
         return self.value is not None
 
 
-def parameter_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema, ...]:
+def parameter_schema_from_model(
+    model: ComponentParamModel, *, properties: Mapping[str, Any] | None = None,
+) -> tuple[ParamSchema, ...]:
     """Project authored model fields into the shared authoring controls."""
+    if properties is None:
+        properties = model.model_json_schema(by_alias=False).get("properties", {})
     schemas: list[ParamSchema] = []
     for name, model_field in model.model_fields.items():
-        extra = (model_field.json_schema_extra or {}).get("feedbax", {})
+        field_schema = properties.get(name, {})
+        extra = field_schema.get("feedbax", {})
         annotation = model_field.annotation
         origin = get_origin(annotation)
         args = tuple(arg for arg in get_args(annotation) if arg is not type(None))
         base = args[0] if origin in (Union, UnionType) and len(args) == 1 else annotation
+        options = get_args(base) if get_origin(base) is Literal else ()
+        text_options = options if all(isinstance(option, str) for option in options) else ()
+        if options and not text_options:
+            base = type(options[0]) if len({type(item) for item in options}) == 1 else object
         if extra.get("type"):
             field_type = extra["type"]
-        elif get_origin(base) is Literal:
+        elif text_options:
             field_type = "enum"
         elif base is bool:
             field_type = "bool"
@@ -123,7 +132,7 @@ def parameter_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema
             field_type = "object"
         else:
             field_type = "object"
-        default = None if model_field.is_required() else model_field.default
+        default = field_schema.get("default")
         schemas.append(
             ParamSchema(
                 name=name,
@@ -140,8 +149,7 @@ def parameter_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema
                     None,
                 ),
                 step=extra.get("step"),
-                options=extra.get("options")
-                or (list(get_args(base)) if get_origin(base) is Literal else None),
+                options=extra.get("options") or (list(text_options) if text_options else None),
                 option_descriptions=extra.get("option_descriptions"),
                 nested_schema=extra.get("nested_schema"),
             )

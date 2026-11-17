@@ -7,12 +7,12 @@ import jax.random as jr
 import numpy as np
 import pytest
 
-from feedbax.runtime.signal_transforms import (
+from feedbax.builtins.runtime.signal_transforms import (
     AddNoise,
     AddNoiseParams,
 )
 from feedbax.models.feedback_impulse import feedback_impulse
-from feedbax.mechanics.force_fields import DynamicsMatrixPerturb, DynamicsMatrixPerturbParams
+from feedbax.builtins.mechanics.force_fields import DynamicsMatrixPerturb, DynamicsMatrixPerturbParams
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.runtime.state import CartesianState

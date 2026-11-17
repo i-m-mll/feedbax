@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from functools import lru_cache
+from functools import cache
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter, field_validator
 
-from feedbax.analysis.operations import OperationRegistry, RegisteredOperation
+from feedbax.analysis.operations import RegisteredOperation
+from feedbax.analysis.operation_runtime import uses_replicate_axis, verify_dataset
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, render as render_report
 from feedbax.contracts.artifact_custody import (
     ContentObjectRef,
@@ -28,25 +30,33 @@ from feedbax.contracts.effective_success import (
 )
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigureProduct
-from feedbax.contracts.operation import DatasetPort, require_dataset_fields
+from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE
+from feedbax.contracts.operation import DatasetPort, ModelPort, TaskPort
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import ContentRef, ProductRef, RequestId
+from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
+    NumericalSettings,
     RenderRequestSpec,
     ReportRequestSpec,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.dataset_replicates import replicate_ids, select_replicate
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.content_retention import read_active_roots
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
+from feedbax.plugins.declarations import DistributionSource, missing_declaration
+
+if TYPE_CHECKING:
+    from feedbax.plugins.application import ApplicationRegistryBundle
 
 
 class LightDelivery(StrictModel):
     project_id: str
     manifest_root: Path
     request: RequestObject
+    provider: DistributionSource | None = None
 
     @field_validator("manifest_root")
     @classmethod
@@ -57,7 +67,7 @@ class LightDelivery(StrictModel):
 
 
 class LightCompletionBindings(StrictModel):
-    bindings: tuple[()]
+    bindings: tuple[dict, ...]
     origins: dict[RequestId, ContentObjectRef]
 
 
@@ -65,31 +75,66 @@ _PRODUCTS = TypeAdapter(Products)
 _ORIGINS = TypeAdapter(dict[RequestId, ContentObjectRef])
 
 
-@lru_cache(maxsize=1)
-def _operations() -> OperationRegistry:
-    from feedbax.analysis.builtin_operations import register_builtin_operations
+@cache
+def operation_application() -> ApplicationRegistryBundle:
+    from feedbax.plugins.composition import load_application
 
-    registry = OperationRegistry()
-    register_builtin_operations(registry)
-    registry.seal()
-    return registry
+    return load_application().bundle
 
 
-def light_operation(key: str) -> RegisteredOperation:
+def resolve_analysis_operation(
+    spec: AnalysisRequestSpec, registry: ApplicationRegistryBundle,
+) -> RegisteredOperation:
     try:
-        return _operations().resolve(key)
+        operation = registry.operations.resolve(spec.analysis_type)
     except KeyError as error:
-        raise ValueError(f"Unknown managed Analysis operation {key!r}") from error
+        raise ValueError(missing_declaration("operation", spec.analysis_type)) from error
+    definition = operation.definition
+    if spec.computation != definition.computation():
+        raise ValueError(f"Operation {definition.key!r} differs from the authored computation revision")
+    numerical = definition.numerical
+    if spec.numerical_settings != NumericalSettings(floating_point_bits=numerical.floating_point_bits if numerical else None):
+        raise ValueError(f"Operation {definition.key!r} differs from the authored numerical settings")
+    for port in definition.inputs.values():
+        if isinstance(port, TaskPort) and port.task_key is not None:
+            task = registry.python_tasks.resolve(port.task_key)
+            if task is None or task.parameters is not operation.task_parameters:
+                raise ValueError(f"Operation {definition.key!r} requires the declared settings for {port.task_key!r}")
+    operation.parameter_model.model_validate(spec.params)
+    return operation
 
 
-def validate_light_request(request: DecodedRequest) -> str:
-    """Check managed execution support and return the declared output role."""
+def _typed_operation_input(port, members) -> bool:
+    if isinstance(port, ModelPort):
+        if len(members) != 1:
+            return False
+        reference = members[0].reference
+        return (
+            isinstance(reference, ProductRef) and reference.request_id.startswith("train:")
+            and reference.role == "checkpoint" and isinstance(reference.select, (LastMember, BatchMember))
+        ) or (isinstance(reference, ContentRef) and not reference.tree and reference.media_type == INITIAL_MODEL_MEDIA_TYPE)
+    if isinstance(port, TaskPort):
+        if len(members) != 1:
+            return False
+        reference = members[0].reference
+        return isinstance(reference, ContentRef) and not reference.tree and reference.media_type == TASK_INPUT_MEDIA_TYPE
+    return all(
+        isinstance(member.reference, ProductRef) and (
+            member.reference.request_id.startswith("analyze:")
+            or member.reference.request_id.startswith("evaluate:") and member.reference.role == "states"
+        )
+        for member in members
+    )
+
+
+def validate_light_request(
+    request: DecodedRequest, *, registry: ApplicationRegistryBundle | None = None,
+) -> tuple[str, RegisteredOperation | None]:
+    """Check managed dataset delivery support and return its declared output role."""
     spec = request.spec
-    if spec.numerical_settings.model_dump(exclude_none=True):
-        raise ValueError("Managed light requests require the default numerical settings")
+    operation = None
     if isinstance(spec, AnalysisRequestSpec):
-        operation = light_operation(spec.analysis_type)
-        operation.parameter_model.model_validate(spec.params)
+        operation = resolve_analysis_operation(spec, registry or operation_application())
         roles = operation.definition.inputs.keys()
         (output,) = operation.definition.outputs
     elif isinstance(spec, RenderRequestSpec) and spec.document is not None:
@@ -99,13 +144,17 @@ def validate_light_request(request: DecodedRequest) -> str:
         roles = spec.document.figure_roles
         output = "report"
     else:
-        raise ValueError("Expected a built-in Analysis, dataset Figure, or Report document")
+        raise ValueError("Expected a registered operation, dataset Figure, or Report document")
+    if not isinstance(spec, AnalysisRequestSpec) and spec.numerical_settings != NumericalSettings():
+        raise ValueError("Figure and Report jobs require default numerical settings")
 
     if request.inputs.keys() != set(roles):
         raise ValueError("Managed light inputs must match the declared roles")
     for role, members in request.inputs.items():
         if not members:
             raise ValueError(f"Managed light input {role!r} requires a member")
+        if operation is not None and not _typed_operation_input(operation.definition.inputs[role], members):
+            raise ValueError(f"Operation input {role!r} differs from its declared {operation.definition.inputs[role].kind} port")
         if len(members) > 1 and (
             isinstance(spec, ReportRequestSpec) or not all(
                 isinstance(member.reference, ProductRef)
@@ -119,11 +168,19 @@ def validate_light_request(request: DecodedRequest) -> str:
             reference = member.reference
             if isinstance(reference, ProductRef):
                 continue
+            if isinstance(spec, AnalysisRequestSpec) and isinstance(reference, ContentRef):
+                continue
             if isinstance(spec, ReportRequestSpec) and isinstance(reference, ContentRef):
                 PlotlyFigureProduct(content=reference)
                 continue
             raise ValueError(f"Input {member.key!r} requires a typed producer product")
-    return output
+    return output, operation
+
+
+def verify_delivery_provider(delivery: LightDelivery, operation: RegisteredOperation | None) -> None:
+    expected = operation.source if operation is not None else None
+    if delivery.provider != expected:
+        raise ValueError("Managed delivery provider differs from the admitted installed declaration")
 
 
 def dataset_member(member: BoundMember | Product) -> DatasetProductRef:
@@ -182,13 +239,9 @@ def _verify_dataset_output(
     store: ImmutableArtifactBlobProvider, product: Product, port: DatasetPort
 ) -> None:
     with open_stored_dataset(store, dataset_member(product)) as dataset:
-        descriptor = dataset.descriptor
-        if descriptor.schema_id not in port.schema_ids:
-            raise ValueError(
-                f"Managed Analysis output requires one of the schemas {port.schema_ids}"
-            )
-        require_dataset_fields(descriptor.variables, port.variables)
-        require_dataset_fields(descriptor.coords, port.coordinates)
+        if not uses_replicate_axis(port) and replicate_ids(dataset) is not None:
+            dataset = select_replicate(dataset, 0)
+        verify_dataset(dataset, port)
 
 
 def _verify_staged_product(
@@ -196,13 +249,12 @@ def _verify_staged_product(
     request: DecodedRequest,
     bindings: Bindings,
     product: Product,
+    operation: RegisteredOperation | None,
 ) -> None:
     spec = request.spec
     ref = success_content_ref(product.content)
-    if isinstance(spec, AnalysisRequestSpec):
-        _verify_dataset_output(
-            store, product, light_operation(spec.analysis_type).definition.outputs[product.name]
-        )
+    if operation is not None:
+        _verify_dataset_output(store, product, operation.definition.outputs[product.name])
         return
     if product.descriptor is not None:
         raise ValueError(
@@ -242,9 +294,12 @@ def publish_light_success(
     origins: Mapping[str, object],
     products: object,
     *,
+    checkpoint_bindings: tuple[dict, ...] = (),
     target: AttemptTarget = LOCAL_TARGET,
 ) -> dict:
     """Bind the same exact inputs independently and commit the Host-accepted attempt."""
+    from feedbax.host.model_checkpoint_input import bind_managed_inputs
+
     delivery = LightDelivery.model_validate(payload)
     if delivery.request.id != request_id:
         raise ValueError("Light delivery differs from the Host request ID")
@@ -255,18 +310,22 @@ def publish_light_success(
     with store._exclusive_lock():
         view = SuccessView(store)
         request = view.read_request(delivery.request)
-        role = validate_light_request(request)
+        role, operation = validate_light_request(request)
+        verify_delivery_provider(delivery, operation)
         if set(result) != {role} or len(result[role]) != 1 or result[role][0].name != role:
             raise ValueError(f"Managed {request.kind} success requires one {role!r} product")
         (product,) = result[role]
-        _, bindings = view.bind(delivery.request, origins=exact_origins)
-        if view.attempt_ref(job_id) is None:
-            (root,) = read_active_roots(store, (root_id,))
-            if root.targets != (light_staging_target(success_content_ref(product.content)),):
-                raise ValueError("Light product differs from the exact staged attempt output")
-            _verify_staged_product(store, request, bindings, product)
-        success = view.publish_bound(
-            delivery.request, attempt=job_id, products=result, bindings=bindings, target=target,
-        )
+        with bind_managed_inputs(
+            view, delivery.request, origins=exact_origins, checkpoint_bindings=checkpoint_bindings, project=delivery.project_id,
+        ) as (_, bindings):
+            if view.attempt_ref(job_id) is None:
+                (root,) = read_active_roots(store, (root_id,))
+                if root.targets != (light_staging_target(success_content_ref(product.content)),):
+                    raise ValueError("Managed product differs from the exact staged attempt output")
+                _verify_staged_product(store, request, bindings, product, operation)
+            success = view.publish_bound(
+                delivery.request, attempt=job_id, products=result, bindings=bindings,
+                provider=delivery.provider, target=target,
+            )
         store.release_root(root_id)
     return success.ref.model_dump(mode="json")

@@ -4,7 +4,7 @@ import pytest
 from equinox.nn import StateIndex
 
 from feedbax.contracts.graph import StudioTaskBindingSpec
-from feedbax.runtime.components import Constant, Gain
+from feedbax.builtins.runtime.components import Constant, Gain
 from feedbax.runtime.graph import Component, Graph, Wire
 from feedbax.runtime.task_bindings import expose_task_inputs
 

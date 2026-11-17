@@ -4,7 +4,8 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from feedbax.runtime import Channel, Graph, toggle_channel_noise
+from feedbax.builtins.runtime.channel import Channel, toggle_channel_noise
+from feedbax.runtime import Graph
 from feedbax.runtime.noise import Normal
 
 

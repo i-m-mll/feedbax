@@ -4,20 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import plotly.io as pio
 import pytest
 
-from feedbax.plugins import (
-    ANALYSIS_RECIPES,
-    BootstrapError,
-    BootstrapState,
-    FamilyRequirement,
-    PluginDeclaration,
-    PluginRegistration,
-)
-from feedbax.plugins import bootstrap as plugin_bootstrap
+from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
 )
@@ -124,86 +115,6 @@ def test_run_subcommand_executes_json_spec_file(tmp_path: Path, capsys, toy_anal
     assert result["artifacts"] == [
         artifact.model_dump(mode="json", exclude_none=True) for artifact in manifest.artifacts
     ]
-
-
-def test_run_subcommand_loads_installed_plugin_before_recipe_execution(
-    tmp_path: Path,
-    capsys,
-    monkeypatch,
-) -> None:
-    analysis_type = "feedbax.test.installed_direct_plugin"
-    calls: list[str] = []
-
-    def recipe(spec, _root, _inputs, _execution_context):
-        calls.append(spec.analysis_type)
-        return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
-            data=build_toy_analysis_data(value=2),
-        )
-
-    registration = PluginRegistration(
-        PluginDeclaration(
-            "tests.installed_direct_plugin",
-            "1",
-            2,
-            families=(FamilyRequirement(ANALYSIS_RECIPES.family),),
-        ),
-        lambda context: context.registry(ANALYSIS_RECIPES).register(analysis_type, recipe),
-    )
-    entry_point = SimpleNamespace(
-        name="downstream-analysis",
-        value="downstream.analysis:PLUGIN_REGISTRATION",
-        dist=None,
-        load=lambda: registration,
-    )
-    monkeypatch.setattr(
-        plugin_bootstrap.importlib.metadata,
-        "entry_points",
-        lambda **_kwargs: [entry_point],
-    )
-    spec_path = tmp_path / "plugin-analysis.json"
-    spec_path.write_text(
-        AnalysisRunSpec(
-            analysis_type=analysis_type,
-            params={"requested_outputs": ["toy"]},
-        ).model_dump_json(indent=2),
-        encoding="utf-8",
-    )
-
-    analysis_cli.main(["run", str(spec_path), "--root", str(tmp_path / "output")])
-
-    assert json.loads(capsys.readouterr().out)["status"] == "completed"
-    assert calls == [analysis_type]
-
-
-def test_run_subcommand_fails_before_spec_when_plugin_registration_fails(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    def fail_registration(_context) -> None:
-        raise RuntimeError("plugin registration exploded")
-
-    registration = PluginRegistration(
-        PluginDeclaration("tests.broken_analysis", "1", 2),
-        fail_registration,
-    )
-    entry_point = SimpleNamespace(
-        name="broken-analysis",
-        value="downstream.broken:PLUGIN_REGISTRATION",
-        dist=None,
-        load=lambda: registration,
-    )
-    monkeypatch.setattr(
-        plugin_bootstrap.importlib.metadata,
-        "entry_points",
-        lambda **_kwargs: [entry_point],
-    )
-
-    with pytest.raises(
-        BootstrapError,
-        match="tests.broken_analysis.*plugin registration exploded",
-    ):
-        analysis_cli.main(["run", str(tmp_path / "missing-spec.json")])
 
 
 def test_run_subcommand_executes_yaml_spec_file(tmp_path: Path, capsys, toy_analysis_recipe):

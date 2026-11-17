@@ -19,11 +19,10 @@ from equinox.nn import State, StateIndex
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
-from pydantic import BaseModel, ConfigDict
 
 from feedbax.contracts.array_values import ArrayValueSpec
 from feedbax.contracts.model_values import ModelFacts
-from feedbax.contracts.portable import ComponentOptions, ComponentOwner, GraphTemplate
+from feedbax.contracts.portable import ComponentOwner
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.runtime._graph import instant_execution_order
@@ -1928,20 +1927,3 @@ class _InterleavedGraph(Graph):
     @property
     def _scoped_schedule(self) -> SignalSchedule:
         return self.schedule
-
-
-class _SubgraphConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-
-class Subgraph(GraphTemplate):
-    """Editable nested graph container."""
-
-    config = _SubgraphConfig
-    component_options = ComponentOptions(is_composite=True)
-
-    @classmethod
-    def expand(cls, config):
-        from feedbax.contracts.graph import GraphSpec
-
-        return GraphSpec()

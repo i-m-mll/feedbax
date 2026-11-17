@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from collections import Counter
@@ -65,8 +64,8 @@ from feedbax.contracts.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.effective_success import TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.checkpoint_selection import is_checkpoint_producer
@@ -79,7 +78,6 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.studio.canonical_evaluate import ROLLOUT_JAX_BACKEND, ROLLOUT_JAX_ENABLE_X64
-from feedbax.training_host_worker import BOOTSTRAP_ENV
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
     CanonicalTrainRequestBinding,
@@ -195,7 +193,7 @@ class PlanJobReader:
 
     def evaluation_parameters(
         self, plan: ProjectPlan, run: PlannedRun,
-    ) -> tuple[RolloutParameters, ProductRef | BestRank]:
+    ) -> tuple[RolloutParameters, ProductRef | BestRank | ContentRef]:
         """Resolve the saved request capability shared by Plan and admission."""
         from feedbax.studio.canonical_evaluate import CannotRun, decode_rollout_request
 
@@ -359,14 +357,12 @@ class JobService(PlanJobReader):
         host: HostClient,
         registries: ApplicationRegistryBundle,
         *,
-        bootstrap_modules: tuple[str, ...] = (),
         live_validation_qualifications: Sequence[ValidationQualification] = (),
         targets: TargetRegistry | None = None,
         submit_session: SessionSubmission | None = None,
     ) -> None:
         super().__init__(host, components=registries.components)
         self.registries = registries
-        self.bootstrap_modules = bootstrap_modules
         self.targets = targets if targets is not None else TargetRegistry()
         self._submit_session = submit_session
         self._live_validation_qualifications = {
@@ -380,11 +376,10 @@ class JobService(PlanJobReader):
                 if key in os.environ
             },
             cwd=str(Path.cwd()),
-            preload=("jax", "feedbax.training.managed_studio"),
+            preload=("jax",),
         )
         self._training_worker = replace(
             base_worker,
-            env=base_worker.env | {BOOTSTRAP_ENV: json.dumps(bootstrap_modules, separators=(",", ":"))},
             warm_entrypoint="feedbax.training_host_worker:main",
             preload=(*base_worker.preload, "feedbax.training.host_prewarm"),
         )
@@ -520,12 +515,12 @@ class JobService(PlanJobReader):
                             raise ValueError("/inputs/subject: the reviewed terminal Train receipt changed")
                         item = self._evaluation_item(
                             project, run.request_id, current.plan.requests[run.request_id], data, store,
-                            checkpoint, params, terminal=terminal,
+                            checkpoint, params, terminal=terminal, documents=current.plan.documents,
                         )
                     except (ValueError, KeyError, OSError) as error:
                         items[name] = _rejected(name, f"cannot_run {error}")
                         continue
-                    if terminal is None:
+                    if terminal is None and not isinstance(checkpoint, ContentRef):
                         checkpoints[name] = (
                             tuple(
                                 (key, candidate.reference.request_id)
@@ -557,7 +552,6 @@ class JobService(PlanJobReader):
                         run.request_id,
                         current.plan.requests[run.request_id],
                         current.plan.documents,
-                        self.registries.training_programs,
                         store, registries=self.registries,
                     )
                 except (ValueError, KeyError) as error:
@@ -689,7 +683,8 @@ class JobService(PlanJobReader):
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
     ) -> AdmissionItem:
         from feedbax.light_jobs import LightDelivery, validate_light_request
-        from feedbax.persistence.effective_success import store_request
+        from feedbax.contracts.request_specs import AnalysisRequestSpec
+        from feedbax.persistence.effective_success import store_document_inputs, store_request
 
         if isinstance(row, (PlannedRun, PlannedAnalyzeRun)) and row.requires:
             raise ValueError("/requires: unresolved capabilities.")
@@ -697,7 +692,7 @@ class JobService(PlanJobReader):
             raise ValueError(f"{problem.path}: {problem.detail}")
         raw = plan.requests[node.request_id]
         decoded = decode_request(raw, plan.documents.__getitem__)
-        validate_light_request(decoded)
+        _, operation = validate_light_request(decoded, registry=self.registries)
         encoded = encode_request(decoded.spec, decoded.inputs)
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")
@@ -709,7 +704,10 @@ class JobService(PlanJobReader):
                     continue
                 source = binding.element or binding.producer
                 candidate = items.get(plan_attempt_key(source)) if source is not None else None
-                if candidate is None:
+                exact_checkpoint = reference.role == "checkpoint" and isinstance(reference.select, BatchMember)
+                if candidate is None and exact_checkpoint:
+                    anchor = self._checkpoint_producer(project, store.root, reference.request_id)
+                elif candidate is None:
                     anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
                     anchor = next((job["id"] for job in reversed(anchors) if (
                         job["data"].get("manifest_root") == str(store.root)
@@ -722,45 +720,59 @@ class JobService(PlanJobReader):
                     )
                 if anchor is None:
                     raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
-                parents.setdefault(reference.request_id, anchor)
+                parents.setdefault(reference.request_id, Edge(anchor, authenticated_completion=exact_checkpoint))
 
         name = plan_attempt_key(node.key)
         data = _plan_run_data(name, row)
         if isinstance(node, PlannedElement):
             data["label"] = f"{data['label']} · {node.key.name}"
-        payload = LightDelivery(project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded))
-        launch = replace(self._light_worker, payload=payload.model_dump(mode="json"))
+        store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
+        payload = LightDelivery(
+            project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded),
+            provider=operation.source if operation is not None else None,
+        )
+        profile = self._light_worker
+        slot = "light"
+        if isinstance(decoded.spec, AnalysisRequestSpec) and (computation := decoded.spec.computation) is not None:
+            if numerical := computation.numerical:
+                profile = replace(profile, env=numerical.environment(), preload=("jax",))
+                slot = "compute"
+        launch = replace(profile, payload=payload.model_dump(mode="json"))
         return AdmissionItem(run_key=name, job=Job(
-            id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot="light",
-            edges=tuple(Edge(anchor) for anchor in parents.values()),
+            id=uuid4().hex, project=project, request=node.request_id, launch=launch, slot=slot,
+            edges=tuple(parents.values()),
             data=data | {"manifest_root": str(store.root), "runtime": launch.argv[0]},
         ))
 
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
-        store: ImmutableArtifactBlobProvider, checkpoint: ProductRef | BestRank, params: RolloutParameters,
-        *, terminal: TerminalTrainSubject | None,
+        store: ImmutableArtifactBlobProvider, subject: ProductRef | BestRank | ContentRef, params: RolloutParameters,
+        *, terminal: TerminalTrainSubject | None, documents: Mapping[str, bytes],
     ) -> AdmissionItem:
         from feedbax.studio.canonical_evaluate import (
             BoundEvaluationJobInput,
             EvaluationRequestBinding,
         )
+        from feedbax.persistence.effective_success import store_document_inputs
 
         root = store.root
+        if isinstance(subject, ContentRef):
+            decoded = decode_request(raw, documents.__getitem__)
+            store_document_inputs(store, decoded.inputs, documents.__getitem__)
         payload = BoundEvaluationJobInput(
             project_id=project,
             request_id=request_id,
             manifest_root=root,
             canonical_request=EvaluationRequestBinding(
                 request=store.store_rooted_object(raw, namespace="studio-evaluate-request"),
-                checkpoint=checkpoint,
+                checkpoint=subject if not isinstance(subject, ContentRef) else None,
+                initial_model=subject if isinstance(subject, ContentRef) else None,
                 terminal=terminal,
-                bootstrap_modules=self.bootstrap_modules,
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
-        if isinstance(checkpoint, ProductRef) and isinstance(checkpoint.select, UpdateSeriesMember) and not params.variation:
-            qualification = self._live_validation_qualifications.get((checkpoint.request_id, request_id))
+        if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember) and not params.variation:
+            qualification = self._live_validation_qualifications.get((subject.request_id, request_id))
             if qualification is not None:
                 data = data | {"validation_qualification": qualification.model_dump(mode="json")}
         return AdmissionItem(
@@ -825,11 +837,11 @@ class JobService(PlanJobReader):
         self,
         project: str,
         request_id: str,
-        spec: TrainingRunSpec,
+        spec: DocumentTrainingRequestSpec,
         data: dict[str, Any],
         root: Path,
         *,
-        canonical_request: CanonicalTrainRequestBinding | None = None,
+        canonical_request: CanonicalTrainRequestBinding,
         checkpoint_catalog: tuple[int, ...] = (),
     ) -> AdmissionItem:
         payload = BoundStudioTrainingJobInput(
@@ -837,7 +849,6 @@ class JobService(PlanJobReader):
             project_id=project,
             request_id=request_id,
             manifest_root=root,
-            bootstrap_modules=self.bootstrap_modules,
             canonical_request=canonical_request,
             checkpoint_catalog=checkpoint_catalog,
         ).model_dump(mode="json", exclude_none=True)
@@ -1196,7 +1207,11 @@ class JobService(PlanJobReader):
         _, _, subject = decode_rollout_request(request_id, destination.get_object(success.request.object))
         payload = BoundEvaluationJobInput(
             project_id=project, request_id=request_id, manifest_root=Path(destination.root),
-            canonical_request=EvaluationRequestBinding(request=success.request.object, checkpoint=subject),
+            canonical_request=EvaluationRequestBinding(
+                request=success.request.object,
+                checkpoint=subject if not isinstance(subject, ContentRef) else None,
+                initial_model=subject if isinstance(subject, ContentRef) else None,
+            ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
         data = attempt["data"]
@@ -1253,7 +1268,7 @@ class JobService(PlanJobReader):
         spec, binding = bind_canonical_train(
             request_id, destination.get_object(request.object),
             {ref.sha256: destination.get_object(ref) for ref in request.documents},
-            self.registries.training_programs, destination, registries=self.registries,
+            destination, registries=self.registries,
         )
         item = self._training_item(
             project, request_id, spec,
@@ -1664,6 +1679,15 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
         if planned is not None and isinstance(ref := planned.member.reference, ProductRef):
             if isinstance(ref.select, BatchSetMember):
                 catalogs.setdefault(ref.request_id, set()).update(ref.select.batches)
+    for element in plan.elements.values():
+        for bindings in element.inputs.values():
+            for binding in bindings:
+                reference = binding.member.reference
+                if (
+                    isinstance(reference, ProductRef) and reference.role == "checkpoint"
+                    and isinstance(reference.select, BatchMember)
+                ):
+                    catalogs.setdefault(reference.request_id, set()).add(reference.select.batch)
     return catalogs
 
 
@@ -1724,7 +1748,7 @@ def _collected_train_checkpoint_source(view: SuccessView, result: Success) -> St
             return None
         return StudioTrainCheckpointSource(
             job_id=source.attempt, request_id=source.request.id,
-            completed_updates=source.continuation.clock.completed_batches,
+            completed_updates=source.continuation.clock.completed_updates,
         )
     except (OSError, TypeError, ValueError, KeyError):
         return None
@@ -1757,7 +1781,7 @@ def _verified_evaluation_result(
         if terminal_receipt is not None and (subject is None or subject.terminal_receipt != terminal_receipt):
             return None
         terminal = subject is not None and subject.terminal_checkpoint is not None
-        if job["data"].get("collected_evaluate") is True or terminal:
+        if job["data"].get("collected_evaluate") is True or terminal or subject is None:
             return _verify_stored_evaluation(view.store, success, receipt, manifest_object)
 
         binding, = _pinned_dependencies(job)
@@ -1795,6 +1819,8 @@ def _verify_stored_evaluation(
     manifest, subject = decode_evaluation_manifest(
         store, store.get_object(manifest_object), manifest_object, success.attempt, success.request.id, receipt,
     )
+    if isinstance(subject, ContentRef):
+        return _VerifiedEvaluation(receipt, states_ref(manifest).content.size, None, "ordinary", manifest_object)
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject
     assert source is not None

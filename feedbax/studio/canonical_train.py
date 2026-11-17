@@ -1,10 +1,9 @@
-"""Realize the supported Studio Train request as the existing native worker input."""
+"""Authenticate the canonical Train request and resolve its numerical declaration."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,25 +18,16 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.studio_training import (
-    STUDIO_GRAPH_METHOD,
-    PublishedTrainingCheckpoint,
-    StudioGraphMethodPayload,
-    StudioTrainingJobInput,
-)
-from feedbax.contracts.training import (
-    RiskAggregationSpec,
-    TrainingConfig,
-    TrainingProgramRegistry,
-    TrainingRunSpec,
-    WorkerExecutionSpec,
-)
+from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 if TYPE_CHECKING:
     from feedbax.compiler.trial_execution import ResolvedTrialExecution
     from feedbax.persistence.train_job import TrainJobEntry
     from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.training.methods import RegisteredTrainingMethod
+    from pydantic import BaseModel
 
 
 class CanonicalTrainRequestBinding(StrictModel):
@@ -52,9 +42,14 @@ class PinnedTrainCheckpoint(StrictModel):
     checkpoint: PublishedTrainingCheckpoint
 
 
-class BoundStudioTrainingJobInput(StudioTrainingJobInput):
+class BoundStudioTrainingJobInput(StrictModel):
     """Internal Host payload and attempt sidecar, with canonical custody when admitted by Plan."""
 
+    spec: DocumentTrainingRequestSpec
+    project_id: str
+    request_id: str
+    manifest_root: Path
+    resume: PublishedTrainingCheckpoint | None = None
     canonical_request: CanonicalTrainRequestBinding
     checkpoint_input: PinnedTrainCheckpoint | None = None
     checkpoint_catalog: tuple[int, ...] = Field(default=(), exclude_if=lambda value: not value)
@@ -110,59 +105,21 @@ def _decode_train(
         ):
             raise ValueError("/inputs/checkpoint: expected the last checkpoint of a Train request")
         checkpoint = reference
-    policy = decoded.spec.method_payload.payload.get("checkpoint_initialization")
-    if checkpoint is None and policy is not None:
-        raise ValueError("/inputs/checkpoint: initialization requires a predecessor checkpoint")
-    if checkpoint is not None and policy != "initialize_from" and (
-        not isinstance(policy, dict) or policy.get("mode") != "continue_from"
-    ):
-        raise ValueError(
-            "/method_payload/payload/checkpoint_initialization: declare initialize_from or an explicit continue_from policy"
-        )
+    if (checkpoint is None) != (decoded.spec.checkpoint_initialization is None):
+        raise ValueError("/inputs/checkpoint: a predecessor and a checkpoint initialization policy must be declared together")
     return decoded.spec, checkpoint
 
 
-def lower_canonical_train(
-    request: DocumentTrainingRequestSpec,
-    execution: TrainingProgramRegistry | WorkerExecutionSpec,
-    *,
-    registries=None,
-) -> TrainingRunSpec:
-    """Project one authored request, using registered or already bound worker declarations."""
-    from feedbax.persistence.model_assets import model_artifact_provider
-
-    spec, trial = _project_canonical_train(request, execution, registries=registries)
-    prepared = trial.realize(artifact_provider=model_artifact_provider(trial.graph.graph))
-    if isinstance(prepared, tuple):
-        problem = prepared[0]
-        raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
-    return spec
-
-
-def _project_canonical_train(
-    request: DocumentTrainingRequestSpec,
-    execution: TrainingProgramRegistry | WorkerExecutionSpec,
-    *,
-    registries: ApplicationRegistryBundle | None,
-) -> tuple[TrainingRunSpec, ResolvedTrialExecution]:
-    if request.method_ref != STUDIO_GRAPH_METHOD:
-        raise ValueError(
-            "/method_ref: canonical admission currently supports the Studio graph method"
-        )
-    if request.numerical_settings.model_dump(exclude_none=True):
-        raise ValueError("/numerical_settings: overrides are unavailable for Studio graph Train")
-    if request.risk_aggregation != RiskAggregationSpec():
-        raise ValueError(
-            "/risk_aggregation: Studio graph Train uses its ordinary objective reduction"
-        )
-    documents = request.trial_documents
+def _resolve_trial(
+    request: DocumentTrainingRequestSpec, registries: ApplicationRegistryBundle,
+) -> ResolvedTrialExecution:
     from feedbax.compiler.trial_execution import resolve_trial_execution
-    from feedbax.plugins.application import new_application_registry_bundle
 
-    registries = registries or new_application_registry_bundle()
+    documents = request.trial_documents
     paired = resolve_trial_execution(
         documents.model_name, documents.model, documents.task_source,
-        registries.components, registries.expression_functions, python_tasks=registries.python_tasks, objective=documents.objective,
+        registries.components, registries.expression_functions,
+        python_tasks=registries.python_tasks, objective=documents.objective,
         input_overrides=documents.input_overrides,
     )
     if isinstance(paired, tuple):
@@ -172,65 +129,16 @@ def _project_canonical_train(
         address = paired.lowered.source_address(pointer(problem.path))
         path = ("trial_documents", "model", *address.stored_path()) if address is not None else problem.path
         raise ValueError(f"{pointer(path)}: {problem.reason}")
-    raw = request.method_payload.payload
-    if request.seed is not None and "seed" in raw and request.seed != raw["seed"]:
-        raise ValueError("/seed: top-level and method seeds disagree")
-    payload = request.method_payload
-    if request.seed is not None:
-        payload = payload.model_copy(update={"payload": raw | {"seed": request.seed}})
-    method = StudioGraphMethodPayload.model_validate(payload.payload)
-    method.require_supported_launch(resume=False)
-    authored_config = request.training_config
-    continuation = method.continuation.progress if method.continuation is not None else None
-    batches = continuation.additional_batches if continuation is not None else method.target_total
-    if authored_config.n_batches != batches:
-        raise ValueError("/training_config/n_batches: does not match the method target")
-    if authored_config.batch_size <= 0 or authored_config.snapshot_interval <= 0:
-        raise ValueError("/training_config: batch size and snapshot interval must be positive")
-    schedule = method.optimizer.lr_schedule
-    rate = schedule.learning_rate_0 if schedule is not None else method.optimizer.params.get("learning_rate")
-    if type(rate) not in (float, int) or not isfinite(rate) or rate <= 0:
-        path = "lr_schedule/learning_rate_0" if schedule is not None else "params/learning_rate"
-        raise ValueError(f"/method_payload/payload/optimizer/{path}: requires a finite positive rate")
-    if schedule is not None and "learning_rate" in method.optimizer.params:
-        raise ValueError(
-            "/method_payload/payload/optimizer/params/learning_rate: the schedule owns the rate"
-        )
-    config = TrainingConfig(
-        **authored_config.model_dump(exclude={"n_reach_steps"}),
-        learning_rate=rate,
-        n_reach_steps=paired.execution.task.n_steps,
-    )
-    if isinstance(execution, TrainingProgramRegistry):
-        resolved = execution.resolve_execution(request.method_ref, payload)
-        contract, phase = resolved.contract, resolved.effective_phase
-    else:
-        contract, phase = execution.method_contract, execution.effective_phase
-    return TrainingRunSpec(
-        graph={"inline": paired.graph.graph.model_dump(mode="json", exclude_none=True)},
-        trial_documents=documents,
-        training_config=config,
-        risk_aggregation=request.risk_aggregation,
-        method_ref=request.method_ref,
-        method_payload=payload,
-        on_nan=request.on_nan,
-        worker_execution=WorkerExecutionSpec(method_contract=contract, effective_phase=phase),
-        checkpoint_progress={
-            "checkpoint_interval": config.snapshot_interval,
-            "progress_interval": 1,
-            **({"continuation": continuation} if continuation is not None else {}),
-        },
-    ), paired
+    return paired
 
 
 def bind_canonical_train(
     request_id: str,
     data: bytes,
     documents: Mapping[str, bytes],
-    registry: TrainingProgramRegistry,
     store: ImmutableArtifactBlobProvider,
-    *, registries=None,
-) -> tuple[TrainingRunSpec, CanonicalTrainRequestBinding]:
+    *, registries: ApplicationRegistryBundle,
+) -> tuple[DocumentTrainingRequestSpec, CanonicalTrainRequestBinding]:
     """Validate a compiler request and retain its exact factored objects in the project store."""
     closure: dict[str, bytes] = {}
 
@@ -240,7 +148,10 @@ def bind_canonical_train(
         return raw
 
     request, checkpoint = _decode_train(request_id, data, read_document)
-    spec = lower_canonical_train(request, registry, registries=registries)
+    spec, _, _ = normalize_train_method(request, registries.training_methods)
+    if spec != request:
+        raise ValueError("Train request must carry the resolved method key, revision and normalized settings.")
+    _resolve_trial(spec, registries)
     refs = tuple(
         store.store_rooted_object(raw, namespace="studio-train-document")
         for _, raw in sorted(closure.items())
@@ -256,12 +167,14 @@ def bind_canonical_train(
 class VerifiedTrainBinding:
     files: tuple[tuple[Path, ContentObjectRef], ...]
     trial: ResolvedTrialExecution
+    method: RegisteredTrainingMethod
+    settings: BaseModel
 
 
-def resolve_training_request_binding(
-    launch: BoundStudioTrainingJobInput, *, registries: ApplicationRegistryBundle,
-) -> VerifiedTrainBinding:
-    """Authenticate the request and the exact executable payload pinned by the launch."""
+def verify_training_request_binding(
+    launch: BoundStudioTrainingJobInput,
+) -> tuple[tuple[Path, ContentObjectRef], ...]:
+    """Verify the exact request and document closure independently of numerical code."""
     binding = launch.canonical_request
     store = ImmutableArtifactBlobProvider(launch.manifest_root)
     documents = {ref.sha256: ref for ref in binding.documents}
@@ -290,23 +203,18 @@ def resolve_training_request_binding(
         raise ValueError("Canonical Train binding does not match its checkpoint input.")
     if used != documents.keys():
         raise ValueError("Canonical Train binding does not name its exact document closure.")
-    expected, trial = _project_canonical_train(request, launch.spec.worker_execution, registries=registries)
+    if request != launch.spec:
+        raise ValueError("Canonical Train request does not match its admitted execution settings.")
+    return tuple((store.object_path(ref), ref) for ref in (binding.request, *binding.documents))
+
+
+def resolve_training_request_binding(
+    launch: BoundStudioTrainingJobInput, *, registries: ApplicationRegistryBundle,
+) -> VerifiedTrainBinding:
+    files = verify_training_request_binding(launch)
+    expected, method, settings = normalize_train_method(launch.spec, registries.training_methods)
     if canonical_json_bytes(expected.model_dump(mode="json")) != canonical_json_bytes(
         launch.spec.model_dump(mode="json")
     ):
-        raise ValueError("Canonical Train request does not match its bound execution payload.")
-    return VerifiedTrainBinding(
-        tuple((store.object_path(ref), ref) for ref in (binding.request, *binding.documents)), trial,
-    )
-
-
-def verify_training_request_binding(
-    launch: BoundStudioTrainingJobInput,
-) -> tuple[tuple[Path, ContentObjectRef], ...]:
-    """Authenticate a bound request for completion and receipt readers."""
-    import asyncio
-
-    from feedbax.plugins.composition import compose_application
-
-    registries = asyncio.run(compose_application(modules=launch.bootstrap_modules)).bundle
-    return resolve_training_request_binding(launch, registries=registries).files
+        raise ValueError("Installed Train method key, revision or settings differ from the bound request.")
+    return VerifiedTrainBinding(files, _resolve_trial(expected, registries), method, settings)
