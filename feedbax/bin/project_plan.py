@@ -293,6 +293,7 @@ def _status_cell(text: str) -> str:
 def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.host import HostClient, HostError
     from feedbax.jobs import PlanJobReader
+    from feedbax.plugins.composition import load_application
     from feedbax.project_folder import ProjectFolderInvalid, SettledProjectPlan
     from feedbax.web.services.project_plan import read_settled_project_plan
 
@@ -304,7 +305,7 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
         settled = SettledProjectPlan.from_text(location, text, plan)
         view = read_settled_project_plan(
             settled,
-            PlanJobReader(HostClient()),
+            PlanJobReader(HostClient(), registries=load_application().bundle),
         )
     except HostError as error:
         output.failure(

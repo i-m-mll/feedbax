@@ -1024,6 +1024,7 @@ class Store:
         self._require_admission_current(row, cursor)
 
     def _recheck_terminal_reuse(self, row: sqlite3.Row, root: str, expected: dict) -> None:
+        from feedbax.contracts.effective_success import EvaluationSubjectValue
         from feedbax.persistence.effective_success import terminal_train_subject
 
         try:
@@ -1034,8 +1035,8 @@ class Store:
             (bound,) = attempt.receipt.inputs["subject"]
             source = bound.evaluation_subject
             receipt = ContentObjectRef.model_validate(expected["receipt"])
-            if source is None or source.terminal_receipt != receipt:
-                raise ValueError("The reused Evaluate names a different Train receipt.")
+            if source is None or source.terminal_receipt is None:
+                raise ValueError("The reused Evaluate does not bind a terminal Train product.")
             if (anchor := expected["anchor"]) is None:
                 pin = terminal_train_subject(view.store, source.producer.id)
             else:
@@ -1049,6 +1050,8 @@ class Store:
                 pin = self._terminal_train_for_anchor(anchor)
             if pin is None or pin.receipt != receipt:
                 raise ValueError("The terminal Train receipt changed during admission.")
+            if not EvaluationSubjectValue.model_validate(bound.descriptor).matches_terminal_model(pin.model.content):
+                raise ValueError("The reused Evaluate binds a different Train model.")
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise HostError("admission_changed", str(error)) from error
 

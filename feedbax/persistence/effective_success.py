@@ -275,8 +275,11 @@ class SuccessView:
         return None
 
 
+    def authored_ref(self, request_id: RequestId) -> ContentObjectRef | None:
+        return self._index.authored.get(request_id)
+
     def authored(self, request_id: RequestId) -> PublishedSuccess | None:
-        ref = self._index.authored.get(request_id)
+        ref = self.authored_ref(request_id)
         if ref is None:
             return None
         result = self.read_success(ref)
@@ -385,8 +388,9 @@ class SuccessView:
     ) -> None:
         receipt = _receipt_root(selection).receipt
         expected = self._check_run_predecessor(request_id, receipt, previous)
-        # An identical receipt already admitted by this Store keeps its authority.
-        if importing and expected is not None:
+        if expected is not None and (
+            importing or _receipt_root(read_store_closure_ref(expected)).receipt == receipt
+        ):
             return
         if not self.store.compare_and_swap_ref(
             run_ref_name(request_id), expected=expected, replacement=selection.model_dump(mode="json"),

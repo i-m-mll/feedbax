@@ -19,7 +19,7 @@ from feedbax.contracts.execution_target import AttemptTarget
 from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE
-from feedbax.contracts.rollout import ResolvedRolloutBinding
+from feedbax.contracts.rollout import ResolvedRolloutBinding, ResolvedRolloutMember
 from feedbax.contracts.request_identity import DecodedRequest, decode_request, effective_binding_id
 from feedbax.contracts.request_refs import (
     BatchMember,
@@ -85,6 +85,14 @@ class EvaluationSubjectValue(ReferenceValue):
     requested: Annotated[tuple[int, ...], Field(min_length=1)]
     gaps: tuple[EvaluationGap, ...]
     resolved: ResolvedRolloutBinding | None
+
+    def matches_terminal_model(self, content: ContentRef) -> bool:
+        members = self.resolved.members if self.resolved is not None else ()
+        return (
+            len(members) == 1
+            and isinstance(members[0], ResolvedRolloutMember)
+            and members[0].model_tree == content.sha256
+        )
 
     @model_validator(mode="after")
     def _ordered_coverage(self) -> EvaluationSubjectValue:
