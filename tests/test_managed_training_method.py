@@ -12,7 +12,6 @@ import numpy as np
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.effective_success import success_content_ref
-from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.host import HostClient
@@ -21,6 +20,7 @@ from feedbax.persistence.array_container import decode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
+from feedbax.persistence.train_job import read_train_job
 from feedbax.plugins.composition import load_application
 from feedbax.project_folder import ProjectFolder
 from tests.support import external_method_witness
@@ -133,13 +133,6 @@ def _retained_metrics(store, success):
     return store.get_object(success_content_ref(product.content))
 
 
-def _stopped_metrics(store, row):
-    receipt = row["outcome"]["receipt"]
-    manifest = load_manifest(canonical_manifest_path("TrainingRunManifest", receipt["manifest_id"], root=store.root))
-    (metrics,) = (artifact for artifact in manifest.artifacts if artifact.role == "training_metrics")
-    return (Path(store.root) / metrics.uri).read_bytes()
-
-
 def _await_stop_gate(venue, job_id, gate):
     def read():
         row = job_row(venue, job_id)
@@ -187,24 +180,29 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
             os.kill(venue.ping()["pid"], signal.SIGTERM)
             wait_until(lambda: not venue.address.exists())
 
+    control = _checkpoint(uninterrupted)
+    uninterrupted_metrics = _retained_metrics(source, _success(source, uninterrupted))
     local_plan = _write_project(folders, project, tmp_path / "local-results")
     destination = ImmutableArtifactBlobProvider(local_plan.store_path)
     local_jobs = JobService(local, registries)
     collected = local_jobs.collect_train_attempt(source, stopped, project=plan.project_id, store=destination.root)
     assert collected.can_resume and collected.job_id == stopped_id
+    stopped_entry = read_train_job(destination, stopped_id)
+    assert stopped_entry.metrics is not None
+    prefix_metrics = destination.get_object(stopped_entry.metrics)
+    shutil.rmtree(source.root)
     attempt = local_jobs.resume(stopped_id, "resume-collected")
     assert attempt.continues == stopped_id and attempt.job_id != stopped_id
     resumed = _terminal(local, attempt.job_id, "succeeded")
     assert resumed["request"] == uninterrupted["request"]
-    control, restored = _checkpoint(uninterrupted), _checkpoint(resumed)
+    restored = _checkpoint(resumed)
     assert restored.clock == control.clock and restored.clock.completed_updates == _TOTAL
     assert restored.model.tree == control.model.tree
     assert restored.extra.object == control.extra.object
 
     resumed_success = _success(destination, resumed)
     assert resumed_success.receipt.recovery.run_id == stopped_id
-    uninterrupted_metrics = _retained_metrics(source, _success(source, uninterrupted))
-    assert uninterrupted_metrics == _stopped_metrics(source, stopped) + _retained_metrics(destination, resumed_success)
+    assert uninterrupted_metrics == prefix_metrics + _retained_metrics(destination, resumed_success)
     history = [json.loads(line) for line in uninterrupted_metrics.splitlines()]
     assert [row["update"] for row in history] == list(range(1, _TOTAL + 1))
     initial_prices = np.asarray(history[0]["metrics"]["price"])
