@@ -86,7 +86,7 @@ class VenueJobs:
     ) -> StudioJobSubmission:
         argv = [
             "env", *(f"{key}={value}" for key, value in (self.worker_environment or {}).items()),
-            str(self.python), "-m", "feedbax.orchestration.venue_jobs", str(self.cwd),
+            str(self.python), "-B", "-m", "feedbax.orchestration.venue_jobs", str(self.cwd),
             str(self.host_root), str(self.projects_root), str(self.stores_root),
         ]
         call = _Admission(delegation=request, token=token, access=access, placement=placement)

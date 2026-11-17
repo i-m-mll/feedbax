@@ -28,6 +28,7 @@ from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.host.protocol import HostError
 from feedbax.jobs import JobService
 from feedbax.orchestration.repo_snapshot import seal_repo_snapshot
+from feedbax.orchestration.repo_tree import snapshot_tree_identity
 from feedbax.orchestration.runpod import SubprocessRunPodTransport
 from feedbax.orchestration.runpod_cutoff import NativeRunPodCutoff
 from feedbax.orchestration.runpod_session import RunPodEnvironment, RunPodSessionProvider
@@ -77,6 +78,7 @@ if "-m" in forwarded and "feedbax.host" in forwarded and "attach" in forwarded:
 os.chdir({str(login)!r})
 os.environ["UV_OFFLINE"] = "true"
 os.environ.pop("PYTHONPATH", None)
+os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
 if "feedbax.orchestration.venue_jobs" in forwarded and Path({str(lost_reply)!r}).exists():
     result = subprocess.run(forwarded, input=sys.stdin.buffer.read(), capture_output=True, check=True)
     assert b'"value"' in result.stdout
@@ -279,6 +281,8 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     assert opened.realization.probe["probe_result"] == 5
     assert opened.realization.probe["python"] == str(venue / "venv" / "bin" / "python")
     assert not provider.supports_suspension
+    seal = run.environment.snapshot
+    assert snapshot_tree_identity(venue / "repo") == (seal.content_sha256, seal.file_count)
     session = provider.jobs(driver, request.id)
 
     def submit_to_venue(selected, folders, reviewed, *, run_keys, token, reuse_completed):
@@ -347,6 +351,7 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     assert reconnected.collect_project(local_jobs, approved) == copied
     assert not reconnected.host.session_status()["pending"]
     assert "rsync" in trace.read_text().splitlines()
+    assert snapshot_tree_identity(venue / "repo") == (seal.content_sha256, seal.file_count)
 
     adopted = SessionDriver(controller / "adopted", provider, verify_authorization=verifier)
     assert adopted.adopt(request, authorization, adoption_token=adoption).epoch == 1
