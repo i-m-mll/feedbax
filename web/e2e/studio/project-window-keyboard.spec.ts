@@ -3,8 +3,9 @@ import { type APIRequestContext, type Locator, type Page } from '@playwright/tes
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
-import { activate, activateMenuItem, chooseStepKind, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
+import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
 import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
+import { outlineRow } from './fixtures/controls';
 
 test.use({
   trace: 'off',
@@ -498,13 +499,7 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(region(page, 'drawer')).toHaveCount(0);
   await palette(page, 'showDrawer', 'Show Drawer');
   await expect(region(page, 'drawer')).toBeFocused();
-  await tabTo(page, region(page, 'drawer').getByRole('button', { name: 'Library', exact: true }));
-  await page.keyboard.press('ArrowRight');
-  await page.keyboard.press('Enter');
-  await expect(region(page, 'drawer').getByRole('button', { name: 'Outline', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  const plant = region(page, 'drawer').getByRole('button', { name: 'Point mass', exact: true });
-  await activate(page, plant);
-  await expect(plant).toHaveAttribute('aria-pressed', 'true');
+  await chooseOutlineRow(page, outlineRow(page, 'Point mass'), 'Point mass');
   await expect(region(page, 'inspector').getByRole('textbox', { name: 'Mass', exact: true })).toHaveValue('1');
   await page.keyboard.press('Alt+Meta+0');
   await expect(region(page, 'inspector')).toHaveCount(0);

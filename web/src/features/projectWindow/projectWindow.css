@@ -404,3 +404,8 @@
   max-width: 24ch;
   field-sizing: content;
 }
+
+.studio-window-side__contents[data-populated]:has(> .studio-window-region-content > [data-drawer-sections]) {
+  padding: 0;
+  overflow: hidden;
+}

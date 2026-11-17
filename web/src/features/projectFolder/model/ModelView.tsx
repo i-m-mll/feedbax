@@ -7,13 +7,14 @@ import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, re
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
-import { ChevronRight, Crosshair, House, Search, X } from 'lucide-react';
+import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
+import clsx from 'clsx';
 import { Button, IconButton } from '@/components/ui/Button';
+import { focusRing } from '@/components/ui/styles';
 import { Dialog } from '@/components/ui/Dialog';
 import { Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem } from '@/components/ui/Menu';
 import { Inspector, InspectorAddRow } from '@/components/ui/Inspector';
-import { Tree, type TreeNode } from '@/components/ui/Tree';
-import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { ValueField } from '@/components/values/ValueField';
@@ -31,10 +32,13 @@ import type { ProjectEditController } from '../projectEditController';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import { attachmentFields, componentFields, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
 import {
-  accepts, addressKey, at, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
-  modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Component, type Port,
+  accepts, addressKey, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
+  holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Component, type Port,
 } from './modelGraph';
 import { selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
+import { modelOutline } from './modelOutline';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
 type Operation = ModelEditCommand['operation'];
@@ -58,8 +62,12 @@ type Props = {
   projectionRun?: StudioSavedTrainKey;
   path: readonly string[];
   setPath(path: string[]): void;
+  sections: DrawerSections;
+  /** Opens Problems showing only those inside the element. */
+  openProblems?: (element: ModelAddress, opener: HTMLElement) => void;
 };
 const sourceAttachment = '@source';
+const componentDragType = 'application/x-feedbax-component';
 const emptyPath: string[] = [];
 const inputCard = '@inputs';
 const outputCard = '@outputs';
@@ -85,11 +93,6 @@ function positionsOf(saved: StudioProjectSnapshot, document: string) {
 
 function positionAt(index: number): ModelPosition {
   return { x: 245 + 235 * (index % 4), y: 38 + 160 * Math.floor(index / 4) };
-}
-
-function attachmentAddress(owner: ModelAddress, id: string): ModelAddress {
-  if (owner.element.kind !== 'wire' && owner.element.kind !== 'port') throw new Error('Expected an attachment owner');
-  return at(owner, { kind: 'attachment', parent: owner.element, id });
 }
 
 function linkedAddress(value: string) {
@@ -125,9 +128,8 @@ function signalFits(source: Port, target: Port) {
     typeof axis !== 'number' || typeof shape[index] !== 'number' || axis === shape[index]));
 }
 
-function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: {
-  definitions: readonly ComponentDefinition[]; query: string; choose(definition: ComponentDefinition): void;
-  disabled: boolean; browse?: boolean; inspect?: (definition: ComponentDefinition) => void;
+function LeafChoices({ definitions, query, choose, disabled }: {
+  definitions: readonly ComponentDefinition[]; query: string; choose(definition: ComponentDefinition): void; disabled: boolean;
 }) {
   const categoryId = useId();
   const groups = new Map<string, ComponentDefinition[]>();
@@ -140,18 +142,12 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   return <>{[...groups].map(([category, items], index) => <section key={category} aria-labelledby={`${categoryId}-${index}`} className="space-y-0.5">
     <h3 id={`${categoryId}-${index}`} className="px-2 pt-1 text-xs text-shell-muted">{category}</h3>
     {items.map((definition) => <Button key={definition.name} variant="ghost" align="start" className="w-full"
-      aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled && !browse}
-      draggable={browse && !disabled} onDragStart={(event) => {
-        event.dataTransfer.setData('application/x-feedbax-component', definition.name);
-      }} onClick={() => browse ? inspect?.(definition) : choose(definition)}
-      onDoubleClick={() => { if (browse && !disabled) choose(definition); }}
-      onKeyDown={(event) => {
-        if (browse && !disabled && event.key === 'Enter') { event.preventDefault(); choose(definition); }
-      }}>{shortName(definition.name)}</Button>)}
+      aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled}
+      onClick={() => choose(definition)}>{shortName(definition.name)}</Button>)}
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems }: Props) {
   const selected = useModelSelection(state);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -164,8 +160,6 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const requestBusy = useRef(false);
   const [busy, setBusy] = useState(false);
   const [issue, setIssue] = useState<{ address?: ModelAddress; reason: string }>();
-  const [drawer, setDrawer] = useState<'library' | 'outline'>('library');
-  const [query, setQuery] = useState('');
   const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
   const [search, setSearch] = useState<ModelPosition>();
   const [searchSource, setSearchSource] = useState<Port>();
@@ -317,6 +311,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return map;
   }, [owner, interior, registry, graph, projectedPorts, markedPorts, currentPath.length, projection.data]);
   const definitions = useMemo(() => (registryQuery.data ?? []).filter((definition) => accepts(definition, physical)), [registryQuery.data, physical]);
+  const libraryItems = useMemo(() => definitions.map((definition): LibraryItem => ({
+    id: definition.name, name: shortName(definition.name), group: definition.category, glyph: <Box />,
+  })), [definitions]);
   const persisted = model && positionsOf(saved, model.id);
   const presentation = model && saved.presentation?.documents?.[model.id];
   const collapsed = presentation?.collapsed;
@@ -564,11 +561,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   for (const [id, wire] of Object.entries(effectiveInterior?.wires ?? {})) {
     effective.set(addressKey(at(graph, { kind: 'wire', id })), wire.attachments ?? []);
   }
-  const portOwners = new Map<string, ModelAddress>();
   for (const ports of portMap.values()) for (const port of ports) {
     if (port.direction === 'physical' || port.taskSignal || port.growing) continue;
     const address = at(graph, { kind: 'port', end: port.end });
-    portOwners.set(addressKey(address), address);
     const end = port.end;
     const store = end.owner === 'component' ? effectiveInterior?.components?.[end.component]?.attachments : effectiveInterior?.attachments;
     effective.set(addressKey(address), (port.direction === 'output' ? store?.sources : store?.sinks)?.[end.port] ?? []);
@@ -745,17 +740,6 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       addressKey(at(graph, { kind: 'port', end: item.end })) === addressKey(address));
     return [end.owner === 'component' ? interior?.components?.[end.component]?.name : end.owner, candidate?.name].filter(Boolean).join('.');
   }
-  const shownAttachments = (address: ModelAddress, list: readonly Attachment[]) => <ul>
-    {list.map((item) => {
-      const itemAddress = attachmentAddress(address, item.id);
-      return <li key={item.id} className="flex gap-1">
-        <Button variant="ghost" pressed={selectedIds.has(addressKey(itemAddress))}
-          onClick={() => select(itemAddress)}>
-          {stepCount(item, model?.value.step_seconds ?? 0.01)} · {attachmentName(item)}{isAuthored(itemAddress) ? ' ◇' : ''}
-        </Button>
-      </li>;
-    })}
-  </ul>;
   function attachmentCommands(address: ModelAddress) {
     const wire = address.element.kind === 'wire';
     const source = address.element.kind === 'port' &&
@@ -995,31 +979,39 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           }, false))?.reason : undefined))}
     </Inspector>;
 
-  const outline = <ul className="space-y-0.5">
-    {objects.map(([id, component]) => {
-      const address = at(graph, { kind: 'component', id });
-      const enter = component.kind === 'composite' ? enterComposite(id, component.name) : undefined;
-      return <li key={id} className="flex">
-        {enter && <IconButton label={enter.label} icon={<ChevronRight />}
-          {...commandAttributes(enter)} onClick={enter.invoke} />}
-        <Button variant="ghost" align="start" className="min-w-0 flex-1" pressed={selectedIds.has(addressKey(address))}
-          onClick={(event) => select(address, event.shiftKey)}>{component.name}</Button>
-      </li>;
-    })}
-    {wires.map(([id, wire]) => {
-      const address = at(graph, { kind: 'wire', id });
-      const title = [wire.source, wire.target].map((end) =>
-        `${end.owner === 'component' ? interior?.components?.[end.component]?.name ?? end.component : end.owner}.${end.port}`).join(' → ');
-      return <li key={id}>
-        <Button variant="ghost" align="start" className="w-full" pressed={selectedIds.has(addressKey(address))} onClick={() => select(address)}>{title}</Button>
-        {shownAttachments(address, effective.get(addressKey(address)) ?? [])}
-      </li>;
-    })}
-    {[...portOwners].map(([key, address]) => {
-      const items = effective.get(key);
-      return items?.length ? <li key={key}>{shownAttachments(address, items)}</li> : null;
-    })}
-  </ul>;
+  const outlineTree = useRef<TreeHandle>(null);
+  const problemCount = (address: ModelAddress) => (problems ?? []).filter((item) => holds(address, item.address)).length;
+  const outline = shownModel && model && modelOutline({
+    document: model.id, model: shownModel, effective: effectiveModel, registry,
+    attachmentName: (item, address) => attachmentName(item) + (isAuthored(address) ? ' ◇' : ''),
+    trailing: (address) => {
+      const count = problemCount(address);
+      return count > 0 && <button type="button" className={clsx('flex items-center gap-0.5 rounded-sm text-shell-status-failure', focusRing)}
+        aria-label={studioAccessibleName('problems', count)} onClick={(event) => {
+          event.stopPropagation();
+          openProblems?.(address, event.currentTarget);
+        }}><TriangleAlert aria-hidden /><span className="tabular-nums">{count}</span></button>;
+    },
+  });
+  const outlineRow = (address: ModelAddress): string | undefined => {
+    const key = addressKey(address);
+    if (outline?.addresses.has(key)) return key;
+    const element = address.element;
+    if (element.kind === 'field' || element.kind === 'attachment') return outlineRow(at(address, element.parent));
+    if (element.kind === 'port' && element.end.owner === 'component') return outlineRow(at(address, { kind: 'component', id: element.end.component }));
+    const parent = address.composites.at(-1);
+    return parent ? outlineRow({ ...address, composites: address.composites.slice(0, -1), element: { kind: 'component', id: parent } }) : undefined;
+  };
+  const pathKey = currentPath.join('\u0000');
+  useEffect(() => {
+    const id = currentPath.at(-1);
+    if (id) outlineTree.current?.open(addressKey({ ...graph, composites: currentPath.slice(0, -1), element: { kind: 'component', id } }));
+  }, [pathKey, !!outline]);
+  const outlineCommands = (address: ModelAddress) => [
+    ...commands.filter((command) => command.id.startsWith('model')).map((command) => command.id === 'modelRename'
+      ? { ...command, invoke: () => outlineTree.current?.rename(addressKey(address)) } : command),
+    ...topologyCommands(address), ...attachmentCommands(address),
+  ].filter((command) => command.enabled);
 
   return {
     documentId: model?.id,
@@ -1085,18 +1077,47 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           }} />
       </div>
     </div> : null,
-    drawer: model && <section className="space-y-2 p-1 text-sm">
-      <SegmentedControl<typeof drawer> aria-label={studioName('modelDrawer')} value={drawer} onValueChange={setDrawer}
-        items={[{ value: 'library', label: studioName('library') }, { value: 'outline', label: studioName('outline') }]} />
-      {drawer === 'library' ? <>
-        <TextField aria-label={studioName('searchLibrary')} leading={<Search />} value={query} onValueChange={setQuery} />
+    drawer: model && <Drawer>
+      <DrawerSection sections={sections} id="model.library" name={studioName('library')}>
         <StudioRegion state={studioReadState(
           'library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); },
         )}>
-          <LeafChoices definitions={definitions} query={query} choose={add} inspect={setLibraryItem} disabled={!editTopology} browse />
+          <LibraryList sections={sections} section="model.library" searchLabel={studioName('searchLibrary')}
+            items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
+            onInspect={(name) => setLibraryItem(registry.get(name))}
+            onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
         </StudioRegion>
-      </> : outline}
-    </section>,
+      </DrawerSection>
+      <DrawerSection sections={sections} id="model.outline" name={studioName('outline')}>
+        {outline && <Tree ref={outlineTree} aria-label={studioName('outline')} nodes={outline.nodes}
+          selected={selected.flatMap((address) => outlineRow(address) ?? [])}
+          onSelectedChange={(ids) => {
+            const chosen = ids.flatMap((id) => outline.addresses.get(id) ?? []);
+            const last = chosen.at(-1);
+            if (!last) return;
+            setLibraryItem(undefined);
+            if (last.composites.join('\u0000') !== currentPath.join('\u0000')) go(last.composites);
+            state.setState({ selection: chosen });
+          }}
+          onActivate={(id) => {
+            const address = outline.addresses.get(id);
+            const element = address?.element;
+            if (address && element?.kind === 'component' && modelPath(shownModel!, [...address.composites, element.id]).entries.length > address.composites.length) {
+              go([...address.composites, element.id]);
+            }
+          }}
+          onRename={editTopology ? (id, name) => {
+            const address = outline.addresses.get(id);
+            if (!address || !name.trim()) return false;
+            void apply(studioName('rename'), { op: 'rename', address, name: name.trim() });
+          } : undefined}
+          menu={(node) => {
+            const address = outline.addresses.get(node.id);
+            return address && outlineCommands(address).map((command) =>
+              <MenuItem key={command.id} {...commandAttributes(command)} onClick={command.invoke}>{command.label}</MenuItem>);
+          }} />}
+      </DrawerSection>
+    </Drawer>,
     inspector,
     commands,
     overlay: search ? <Dialog ariaLabel={studioName('addComponent')} onClose={() => setSearch(undefined)} manageFocus

@@ -118,3 +118,11 @@ export async function readSaved(request: APIRequestContext, projectPath: string)
   expect(response.ok(), await response.text()).toBe(true);
   return await response.json() as StudioProjectSnapshot;
 }
+
+/** Selects a row of the Model drawer's Outline by keyboard: Tab into the tree, then type the row's first word. */
+export async function chooseOutlineRow(page: Page, row: Locator, name: string) {
+  const tree = page.getByRole('complementary', { name: 'Details Drawer', exact: true }).getByRole('tree', { name: 'Outline', exact: true });
+  await tabTo(page, tree.locator('[role="treeitem"][tabindex="0"]'));
+  await page.keyboard.type(name.split(' ')[0]);
+  await expect(row).toHaveAttribute('aria-selected', 'true');
+}
