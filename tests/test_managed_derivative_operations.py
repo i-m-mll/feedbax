@@ -26,7 +26,7 @@ from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import host as host_fixture, restart, wait_until
 
 host = host_fixture
-_CAPTURE = Path(__file__).with_name("fixtures") / "derivative_fixed_points.json"
+_CAPTURE = Path(__file__).parent / "fixtures" / "derivative_fixed_points.json"
 _REFERENCE_PROFILE = "FEEDBAX_VERIFY_FIXED_POINT_REFERENCE"
 
 
