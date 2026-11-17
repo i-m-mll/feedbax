@@ -592,9 +592,10 @@ def project_training_numeric_fields(
     if body.field not in targets:
         raise ValueError("Choose a supported numeric Train field.")
     field, numeric, axis = targets[body.field]
-    result = prepare_numeric_field(
+    prepared = prepare_numeric_field(
         numeric, axis, body.edit, functions, rows=tuple(body.rows), keep_value=field.write,
     )
+    result = prepared.result
     if isinstance(result, tuple):
         return TrainFieldResponse(problems=list(result))
     if isinstance(result, list):
@@ -609,6 +610,7 @@ def project_training_numeric_fields(
     return TrainFieldResponse(
         files=[StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=patches)] if patches else [],
         dependencies=list(field.documents),
+        removed_values=prepared.removed,
     )
 
 

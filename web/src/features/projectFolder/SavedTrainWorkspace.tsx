@@ -50,6 +50,7 @@ import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal 
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { CheckpointRuleEditor, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
 import { StudioEvaluationAttemptDetails, StudioEvaluationResults } from './StudioEvaluationResults';
+import { RunRemovalContext, useRunRemovalDialog } from './runRemoval';
 import { StudioTrainAuthoringForm } from './StudioTrainAuthoringForm';
 import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, TrialTaskPicker, useTrialAuthoring } from './StudioTrialAuthoring';
 import { useManagedAnalyze } from './useManagedAnalyze';
@@ -250,6 +251,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const primaryVariant = variant !== null && variant === variants[0];
   const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant),
     [saved.project, projection.data, variant]);
+  const runRemoval = useRunRemovalDialog(data);
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = data ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);
@@ -468,7 +470,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
-    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues,
+    namedRun, documentScopes, modelWindow, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
     fieldAxes: state.selection?.kind === 'values' ? Object.fromEntries(
       state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
@@ -981,254 +983,257 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   ].filter((command): command is StudioCommand => !!command);
 
   return (
-    <ProjectWindow
-      state={windowState} onStateChange={setWindowState} projectName={configuration.project}
-      saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
-      availableViews={availableViews}
-      commands={commands} mapCommands={canvasViewportCommands(() => mapViewport.current, !!data && plan.steps.length > 0)}
-      focusRequest={focusRequest}
-      onBack={selection.back} onForward={selection.forward}
-      map={renderMap(<StudioPipelineMap {...mapProps}
-        activeStepId={selection.stepId} viewportRef={mapViewport} fitReady={!!data}
-        presentation={presentation} onPresentationChange={changePresentation} />)}
-      mapDrawer={renderMap(<StudioPipelineMapDrawer {...mapProps} />)}
-      compactMap={renderMap(<StudioPipelineMap {...mapProps} mode="line" />)}
-      variant={(variants.length > 1 || missingVariant) && <Select aria-label={studioName('variant')}
-        value={variant} disabled={!data} onValueChange={selection.setVariant}
-        items={[
-          ...(missingVariant && variant ? [{ value: variant, label: variant, disabled: true }] : []),
-          ...variants.map((id) => ({ value: id, label: id })),
-        ]} />}
-      overlay={<>
-        {rename && <Dialog ariaLabel={studioName('rename')} manageFocus
-          onClose={() => { if (!busy) setRename(undefined); }}
-          panelClassName="w-[min(22rem,90vw)]">
-          <form className="grid gap-2" onSubmit={(event) => {
-            event.preventDefault();
-            void perform(async () => {
-              await editor.rename(rename.name, rename.revision);
-              setRename(undefined);
-            });
-          }}>
-            <label className="grid gap-1">
-              {studioName('name')}
-              <TextField data-dialog-autofocus value={rename.name} disabled={busy} required
-                onValueChange={(name) => setRename({ ...rename, name })} />
-            </label>
-            {rename.revision !== saved.revision || outside
-              ? <div role="alert">{studioReason('nameChangedDuringEdit', studioName('project'))}</div>
-              : commandError && <div role="alert">{commandError}</div>}
-            <Button type="submit" className="justify-self-end" disabled={busy || !!outside || rename.revision !== saved.revision}>
-              {studioName('rename')}
-            </Button>
-          </form>
-        </Dialog>}
-        {focusedModel?.overlay}
-        {analyze.overlay}
-        {report.overlay}
-        {machineQuote && <StudioMachineApproval quote={machineQuote} busy={busy} error={commandError}
-          onApprove={approveMachine} onCancel={() => {
-            setMachineQuote(undefined);
-            setCommandError(undefined);
-          }} />}
-        {primaryVariant && reportChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('report')} manageFocus
-          onClose={() => setReportChoices(undefined)}
-          panelClassName="grid w-[min(24rem,90vw)] gap-px p-1">
-          {reportChoices.figures.map((figure) => <Button variant="ghost" align="start"
-            key={JSON.stringify([figure.key, figure.name])}
-            onClick={() => chooseReportFigure(reportChoices.revision, figure)}>
-            {figure.name}{figure.key.row !== 'default' && ' · ' + figure.key.row}
-          </Button>)}
-        </Dialog>}
-        {insertMenu.menu}
-        {sweepStep && <Dialog ariaLabel={studioName('newSweep')} onClose={() => setSweepStep(undefined)} manageFocus
-          panelClassName="grid max-h-[75dvh] w-[min(24rem,90vw)] gap-2 overflow-auto">
-          <IconButton className="justify-self-end" label={studioName('close')} icon={<X aria-hidden="true" />}
-            data-dialog-autofocus onClick={() => setSweepStep(undefined)} />
-          <StudioTrainAuthoringForm editor={editor} stepId={sweepStep} picker={() => {
-            const current = latestState.current;
-            if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
-              selection.select(selectStep(current, sweepStep));
+    <RunRemovalContext.Provider value={runRemoval.confirm}>
+      <ProjectWindow
+        state={windowState} onStateChange={setWindowState} projectName={configuration.project}
+        saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
+        availableViews={availableViews}
+        commands={commands} mapCommands={canvasViewportCommands(() => mapViewport.current, !!data && plan.steps.length > 0)}
+        focusRequest={focusRequest}
+        onBack={selection.back} onForward={selection.forward}
+        map={renderMap(<StudioPipelineMap {...mapProps}
+          activeStepId={selection.stepId} viewportRef={mapViewport} fitReady={!!data}
+          presentation={presentation} onPresentationChange={changePresentation} />)}
+        mapDrawer={renderMap(<StudioPipelineMapDrawer {...mapProps} />)}
+        compactMap={renderMap(<StudioPipelineMap {...mapProps} mode="line" />)}
+        variant={(variants.length > 1 || missingVariant) && <Select aria-label={studioName('variant')}
+          value={variant} disabled={!data} onValueChange={selection.setVariant}
+          items={[
+            ...(missingVariant && variant ? [{ value: variant, label: variant, disabled: true }] : []),
+            ...variants.map((id) => ({ value: id, label: id })),
+          ]} />}
+        overlay={<>
+          {rename && <Dialog ariaLabel={studioName('rename')} manageFocus
+            onClose={() => { if (!busy) setRename(undefined); }}
+            panelClassName="w-[min(22rem,90vw)]">
+            <form className="grid gap-2" onSubmit={(event) => {
+              event.preventDefault();
+              void perform(async () => {
+                await editor.rename(rename.name, rename.revision);
+                setRename(undefined);
+              });
+            }}>
+              <label className="grid gap-1">
+                {studioName('name')}
+                <TextField data-dialog-autofocus value={rename.name} disabled={busy} required
+                  onValueChange={(name) => setRename({ ...rename, name })} />
+              </label>
+              {rename.revision !== saved.revision || outside
+                ? <div role="alert">{studioReason('nameChangedDuringEdit', studioName('project'))}</div>
+                : commandError && <div role="alert">{commandError}</div>}
+              <Button type="submit" className="justify-self-end" disabled={busy || !!outside || rename.revision !== saved.revision}>
+                {studioName('rename')}
+              </Button>
+            </form>
+          </Dialog>}
+          {focusedModel?.overlay}
+          {analyze.overlay}
+          {report.overlay}
+          {machineQuote && <StudioMachineApproval quote={machineQuote} busy={busy} error={commandError}
+            onApprove={approveMachine} onCancel={() => {
+              setMachineQuote(undefined);
+              setCommandError(undefined);
+            }} />}
+          {primaryVariant && reportChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('report')} manageFocus
+            onClose={() => setReportChoices(undefined)}
+            panelClassName="grid w-[min(24rem,90vw)] gap-px p-1">
+            {reportChoices.figures.map((figure) => <Button variant="ghost" align="start"
+              key={JSON.stringify([figure.key, figure.name])}
+              onClick={() => chooseReportFigure(reportChoices.revision, figure)}>
+              {figure.name}{figure.key.row !== 'default' && ' · ' + figure.key.row}
+            </Button>)}
+          </Dialog>}
+          {insertMenu.menu}
+          {sweepStep && <Dialog ariaLabel={studioName('newSweep')} onClose={() => setSweepStep(undefined)} manageFocus
+            panelClassName="grid max-h-[75dvh] w-[min(24rem,90vw)] gap-2 overflow-auto">
+            <IconButton className="justify-self-end" label={studioName('close')} icon={<X aria-hidden="true" />}
+              data-dialog-autofocus onClick={() => setSweepStep(undefined)} />
+            <StudioTrainAuthoringForm editor={editor} stepId={sweepStep} picker={() => {
+              const current = latestState.current;
+              if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
+                selection.select(selectStep(current, sweepStep));
+              }
+              setSweepStep(undefined);
+            }} />
+          </Dialog>}
+        </>}
+        clock={evaluationReplay.clock}
+        failure={failure && <div role="alert" className="flex min-w-0 items-center gap-1">
+          <span className="min-w-0 break-words">{failure}</span>
+          <Button {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</Button>
+        </div>}
+        problems={<StudioProblems command={problemCommand} count={problems.length} open={!!problemPanel}
+          opener={problemPanel?.opener ?? null} onClose={() => setPanel(null)}
+          onOpen={(opener) => {
+            if (problemPanel && !problemPanel.scope) {
+              setPanel(null);
+              opener.focus();
+            } else {
+              openProjectProblems(opener);
             }
-            setSweepStep(undefined);
-          }} />
-        </Dialog>}
-      </>}
-      clock={evaluationReplay.clock}
-      failure={failure && <div role="alert" className="flex min-w-0 items-center gap-1">
-        <span className="min-w-0 break-words">{failure}</span>
-        <Button {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</Button>
-      </div>}
-      problems={<StudioProblems command={problemCommand} count={problems.length} open={!!problemPanel}
-        opener={problemPanel?.opener ?? null} onClose={() => setPanel(null)}
-        onOpen={(opener) => {
-          if (problemPanel && !problemPanel.scope) {
-            setPanel(null);
-            opener.focus();
-          } else {
-            openProjectProblems(opener);
+          }}>
+          <ProblemList problems={shownProblems} canReveal={(problem) => !!addressedStep(problem)}
+            onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} />
+        </StudioProblems>}
+        activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
+          onToggle={activity.invoke}
+          onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} />}
+        serviceFailure={serviceIssue && { kind: 'failed', issue: serviceIssue, retry: connection.refetch }}
+        renderView={(view, slot) => {
+          const details = slot === 'primary' ? primary : secondary;
+          const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot
+            ? <ProblemDestination reveal={revealed} action={graphRepair && <Button
+              disabled={!ready || snapshot.saving || busy} onClick={removeRefusedVariation}>
+              {studioName('removeVariation')}
+            </Button>}>{body}</ProblemDestination> : body;
+          if (view === 'analysis' || view === 'figures') {
+            const detail = analyze[view];
+            return { ...detail, body: withProblem(detail.body) };
           }
-        }}>
-        <ProblemList problems={shownProblems} canReveal={(problem) => !!addressedStep(problem)}
-          onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} />
-      </StudioProblems>}
-      activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
-        onToggle={activity.invoke}
-        onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} />}
-      serviceFailure={serviceIssue && { kind: 'failed', issue: serviceIssue, retry: connection.refetch }}
-      renderView={(view, slot) => {
-        const details = slot === 'primary' ? primary : secondary;
-        const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot
-          ? <ProblemDestination reveal={revealed} action={graphRepair && <Button
-            disabled={!ready || snapshot.saving || busy} onClick={removeRefusedVariation}>
-            {studioName('removeVariation')}
-          </Button>}>{body}</ProblemDestination> : body;
-        if (view === 'analysis' || view === 'figures') {
-          const detail = analyze[view];
-          return { ...detail, body: withProblem(detail.body) };
-        }
-        if ((view === 'task' || view === 'objective') && trialStep) {
-          if (!namedRun) return { body: noView };
-          if (trial.error || !trial.view) return { body: withProblem(
-            <StudioRegion state={trial.error
-              ? { kind: 'failed', issue: studioRegionIssue(view, trial.error), retry: trial.retry }
-              : { kind: 'loading' }} />,
-          ) };
-          const value = trial.view;
-          const commit = trial.commit;
-          if (view === 'task') return {
-            header: <TrialTaskPicker view={value} commit={commit} />,
-            body: withProblem(<TrialTaskForm view={value} commit={commit} />),
-          };
-          const selected = selectedTerm?.step === step?.id ? selectedTerm?.term : undefined;
-          const choose = (term: string) => { if (step) setSelectedTerm({ step: step.id, term }); };
-          return {
-            header: value.objective_document,
-            body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose} />),
-            inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
-          };
-        }
-        if (view === 'model' || view === 'task' || view === 'scene') {
-          const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
-          return { ...details[view], header: <>
-            {details[view].header}
-            {details[view].path}
-            {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
-              {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
-            </span>}
-          </>, body: withProblem(details[view].body) };
-        }
-        if (!step) return { body: null };
-        if (view === 'document') return { body: withProblem(report.body ?? noView) };
-        if (view === 'runs') {
-          const runSelection = { step, state, onSelectionChange: mapProps.onSelectionChange };
-          const pivot = pivotCommand(slot);
-          const pivotActive = pivotSlots[slot] === step.id;
-          const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
-          const exceptions = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step.id && id === variant)
-            ?.exceptions?.map(({ id, count, rule }) => ({
-              id, count,
-              terms: [
-                ...Object.entries(rule.where?.axes ?? {}).map(([axis, values]) => {
-                  const options = step.sweeps.find(({ id }) => id === axis)?.values;
-                  return `${axis} ${values.map((value) => options?.find(({ id }) => id === value)?.label ?? value).join(', ')}`;
+          if ((view === 'task' || view === 'objective') && trialStep) {
+            if (!namedRun) return { body: noView };
+            if (trial.error || !trial.view) return { body: withProblem(
+              <StudioRegion state={trial.error
+                ? { kind: 'failed', issue: studioRegionIssue(view, trial.error), retry: trial.retry }
+                : { kind: 'loading' }} />,
+            ) };
+            const value = trial.view;
+            const commit = trial.commit;
+            if (view === 'task') return {
+              header: <TrialTaskPicker view={value} commit={commit} />,
+              body: withProblem(<TrialTaskForm view={value} commit={commit} />),
+            };
+            const selected = selectedTerm?.step === step?.id ? selectedTerm?.term : undefined;
+            const choose = (term: string) => { if (step) setSelectedTerm({ step: step.id, term }); };
+            return {
+              header: value.objective_document,
+              body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose} />),
+              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
+            };
+          }
+          if (view === 'model' || view === 'task' || view === 'scene') {
+            const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
+            return { ...details[view], header: <>
+              {details[view].header}
+              {details[view].path}
+              {scope && scope.users.size > 1 && <span className="whitespace-nowrap text-sm text-shell-muted" role="status">
+                {' · '}{studioCountOf(scope.lit.size, scope.users.size)}
+              </span>}
+            </>, body: withProblem(details[view].body) };
+          }
+          if (!step) return { body: null };
+          if (view === 'document') return { body: withProblem(report.body ?? noView) };
+          if (view === 'runs') {
+            const runSelection = { step, state, onSelectionChange: mapProps.onSelectionChange };
+            const pivot = pivotCommand(slot);
+            const pivotActive = pivotSlots[slot] === step.id;
+            const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
+            const exceptions = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step.id && id === variant)
+              ?.exceptions?.map(({ id, count, rule }) => ({
+                id, count,
+                terms: [
+                  ...Object.entries(rule.where?.axes ?? {}).map(([axis, values]) => {
+                    const options = step.sweeps.find(({ id }) => id === axis)?.values;
+                    return `${axis} ${values.map((value) => options?.find(({ id }) => id === value)?.label ?? value).join(', ')}`;
+                  }),
+                  ...(rule.where?.rows ?? []),
+                ],
+                changes: Object.entries(rule.patches ?? {}).flatMap(([path, patch]) => {
+                  if (!patch) return [];
+                  return [{ id: path, label: exceptionFieldLabel(path),
+                    value: 'value' in patch ? JSON.stringify(patch.value) : studioName('remove') }];
                 }),
-                ...(rule.where?.rows ?? []),
-              ],
-              changes: Object.entries(rule.patches ?? {}).flatMap(([path, patch]) => {
-                if (!patch) return [];
-                return [{ id: path, label: exceptionFieldLabel(path),
-                  value: 'value' in patch ? JSON.stringify(patch.value) : studioName('remove') }];
-              }),
-              removable: Boolean(!saved.project.sweep && authored?.sweep?.exceptions?.[id]),
-            })) ?? [];
-          return {
-            header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
-              ? runCommands : undefined}
-              machine={<StudioRunMachine catalog={machineCatalog.data} value={requestedMachine}
-                disabled={busy || machineCatalog.isPending}
-                onChange={(value) => setMachines((current) => ({ ...current, [step.id]: value }))} />}
-              pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
-            drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0) ? <div className="space-y-3 text-sm">
-              {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
-                  focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
-                  onDetachedEditError={setCommandError}
-                  onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
-              {exceptions.length > 0 && <StudioSweepOverview axes={[]} exceptions={exceptions}
-                onRemoveException={ready && !busy ? removeSweepException : undefined} />}
-              {step.inputs.length > 0 && <section aria-label={studioName('inputs')} className="space-y-1">
-                <h3 className="font-semibold">{studioName('inputs')}</h3>
-                <dl>{step.inputs.map(({ id, label, sourceStepId, subset }) => <div key={id} className="border-t border-shell-divider py-1">
-                  <dt>{label}</dt>
-                  <dd className="text-shell-muted">{plan.steps.find((item) => item.id === sourceStepId)?.label}</dd>
-                  {id === 'subject' && subjectCheckpoint !== undefined &&
-                    <dd className="text-shell-muted">{checkpointLabel(subjectCheckpoint)}</dd>}
-                  {subset && <dd className="text-shell-muted">
-                    {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
-                    {subset.memberGroups?.map(({ label, members }) => <div key={members[0]?.id} className="mt-1">
-                      {label && <div className="font-medium">{label}</div>}
-                      <ol aria-label={label ? studioAccessibleName('members', label) : studioName('members')}
-                        className="list-decimal space-y-0.5 ps-5">
-                        {members.map(({ id, label }) => <li key={id}>{label}</li>)}
-                      </ol>
-                    </div>)}
-                  </dd>}
-                </div>)}</dl>
-              </section>}
-              {evaluationCheckpointRule &&
-                <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, saved.revision, checkpointScope])}
-                  initial={evaluationCheckpointRule}
-                  disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
-                  onSave={editEvaluationCheckpoint}
-                  onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
-              {evaluationEditor && data && variant && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
-                authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
-                source={evaluationEditor.source} sourceRows={stepSourceRows(data, evaluationEditor.source.id, variant)}
-                domain={evaluationEditor.domain}
-                editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
-                disabled={!ready || busy} focusTrialSet={focusCreatedStep === step.id && focusSlot === slot}
-                onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation}
-                onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
-            </div> : undefined,
-            inspector: selectedRuns(step, state.selection).length > 0
-              ? <StudioRunDetails step={step} state={state}
-                detail={selectedEvaluation?.checkpoint_series
-                  ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation} /> : undefined} /> : undefined,
-            body: withProblem(<StudioRuns plan={plan} {...runSelection}
-              region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
-                ? { kind: 'result', missing: [] } : { kind: 'empty' })}
-              pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} />),
+                removable: Boolean(!saved.project.sweep && authored?.sweep?.exceptions?.[id]),
+              })) ?? [];
+            return {
+              header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
+                ? runCommands : undefined}
+                machine={<StudioRunMachine catalog={machineCatalog.data} value={requestedMachine}
+                  disabled={busy || machineCatalog.isPending}
+                  onChange={(value) => setMachines((current) => ({ ...current, [step.id]: value }))} />}
+                pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
+              drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0) ? <div className="space-y-3 text-sm">
+                {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
+                    focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
+                    onDetachedEditError={setCommandError}
+                    onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
+                {exceptions.length > 0 && <StudioSweepOverview axes={[]} exceptions={exceptions}
+                  onRemoveException={ready && !busy ? removeSweepException : undefined} />}
+                {step.inputs.length > 0 && <section aria-label={studioName('inputs')} className="space-y-1">
+                  <h3 className="font-semibold">{studioName('inputs')}</h3>
+                  <dl>{step.inputs.map(({ id, label, sourceStepId, subset }) => <div key={id} className="border-t border-shell-divider py-1">
+                    <dt>{label}</dt>
+                    <dd className="text-shell-muted">{plan.steps.find((item) => item.id === sourceStepId)?.label}</dd>
+                    {id === 'subject' && subjectCheckpoint !== undefined &&
+                      <dd className="text-shell-muted">{checkpointLabel(subjectCheckpoint)}</dd>}
+                    {subset && <dd className="text-shell-muted">
+                      {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
+                      {subset.memberGroups?.map(({ label, members }) => <div key={members[0]?.id} className="mt-1">
+                        {label && <div className="font-medium">{label}</div>}
+                        <ol aria-label={label ? studioAccessibleName('members', label) : studioName('members')}
+                          className="list-decimal space-y-0.5 ps-5">
+                          {members.map(({ id, label }) => <li key={id}>{label}</li>)}
+                        </ol>
+                      </div>)}
+                    </dd>}
+                  </div>)}</dl>
+                </section>}
+                {evaluationCheckpointRule &&
+                  <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, saved.revision, checkpointScope])}
+                    initial={evaluationCheckpointRule}
+                    disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
+                    onSave={editEvaluationCheckpoint}
+                    onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
+                {evaluationEditor && data && variant && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
+                  authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
+                  source={evaluationEditor.source} sourceRows={stepSourceRows(data, evaluationEditor.source.id, variant)}
+                  domain={evaluationEditor.domain}
+                  editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
+                  disabled={!ready || busy} focusTrialSet={focusCreatedStep === step.id && focusSlot === slot}
+                  onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation}
+                  onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
+              </div> : undefined,
+              inspector: selectedRuns(step, state.selection).length > 0
+                ? <StudioRunDetails step={step} state={state}
+                  detail={selectedEvaluation?.checkpoint_series
+                    ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation} /> : undefined} /> : undefined,
+              body: withProblem(<StudioRuns plan={plan} {...runSelection}
+                region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
+                  ? { kind: 'result', missing: [] } : { kind: 'empty' })}
+                pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} />),
+            };
+          }
+          if (view === 'training' && authoring) {
+            return { body: withProblem(<StudioTrainAuthoringForm {...authoring} view={view} run={namedRun}
+              fieldRows={detailInputs.fieldRows} />) };
+          }
+          const resultsUnavailable = view === 'results' && (planError('results') ?? planUnavailable);
+          if (resultsUnavailable) return {
+            body: <StudioRegion state={resultsUnavailable} />,
           };
-        }
-        if (view === 'training' && authoring) {
-          return { body: withProblem(<StudioTrainAuthoringForm {...authoring} view={view} run={namedRun}
-            fieldRows={detailInputs.fieldRows} />) };
-        }
-        const resultsUnavailable = view === 'results' && (planError('results') ?? planUnavailable);
-        if (resultsUnavailable) return {
-          body: <StudioRegion state={resultsUnavailable} />,
-        };
-        if (view === 'results' && selectedEvaluation?.checkpoint_series && ready) return {
-          body: <StudioEvaluationResults evaluation={selectedEvaluation} onReplay={(update) => {
-            evaluationReplay.chooseCheckpoint(update);
-            setWindowState((current) => showProjectWindowView(current, 'scene', slot));
-            requestSlotFocus((count) => count + 1);
-          }} />,
-        };
-        if (view === 'results' && row && ready) return { body: <div className="p-3">
-          {stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}
-            className="flex items-center gap-2">
-            <h3 id={stoppedCheckpointId} className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
-            <Button {...commandAttributes(stoppedNewStep)}
-              disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</Button>
-          </section>}
-          <TrainResults key={savedRunId(row.key)} project={saved.project_id} revision={saved.revision}
-            evaluations={data?.window_map?.evaluations ?? []} mapRows={data?.window_map?.rows ?? []}
-            rows={data!.rows} row={row} attempt={attempt} />
-        </div> };
-        return { body: withProblem(noView) };
-      }}
-    />
+          if (view === 'results' && selectedEvaluation?.checkpoint_series && ready) return {
+            body: <StudioEvaluationResults evaluation={selectedEvaluation} onReplay={(update) => {
+              evaluationReplay.chooseCheckpoint(update);
+              setWindowState((current) => showProjectWindowView(current, 'scene', slot));
+              requestSlotFocus((count) => count + 1);
+            }} />,
+          };
+          if (view === 'results' && row && ready) return { body: <div className="p-3">
+            {stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}
+              className="flex items-center gap-2">
+              <h3 id={stoppedCheckpointId} className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
+              <Button {...commandAttributes(stoppedNewStep)}
+                disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</Button>
+            </section>}
+            <TrainResults key={savedRunId(row.key)} project={saved.project_id} revision={saved.revision}
+              evaluations={data?.window_map?.evaluations ?? []} mapRows={data?.window_map?.rows ?? []}
+              rows={data!.rows} row={row} attempt={attempt} />
+          </div> };
+          return { body: withProblem(noView) };
+        }}
+      />
+      {runRemoval.dialog}
+    </RunRemovalContext.Provider>
   );
 }
 

@@ -87,11 +87,9 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
         value === 'sweep' && !sweep && !field.can_sweep ||
         value === 'value' && !!sweep && (!choices.length || !field.can_change_axis)),
     })),
-    keep: sweep ? choices.map(({ id, value }) => ({ id, text: String(value), selected: id === field.selected_value })) : undefined,
+    keeps: sweep ? field.selected_value ?? choices[0]?.id : undefined,
     members: list && {
-      values: list.values.map(({ id, label: name, value }) => ({ id, label: name, text: String(value), selected: picked.has(id) })),
-      editable: list.editable,
-      extendable: !!field.can_change_axis && !rowSelection,
+      values: list.values.map(({ id, value }) => ({ id, text: String(value), selected: picked.has(id) })),
       choose: options.chooseMember,
     },
     parts,

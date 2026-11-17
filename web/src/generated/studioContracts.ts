@@ -1023,6 +1023,7 @@ export interface ModelFieldResponse {
   fields?: ModelFieldView[];
   files?: StudioProjectFilePatch[];
   problems?: Problem[];
+  removed_values?: Record<string, string[]>;
   command?: ModelEditCommand | null;
 }
 
@@ -1126,6 +1127,7 @@ export interface TrainFieldResponse {
   files?: StudioProjectFilePatch[];
   dependencies?: string[];
   problems?: Problem[];
+  removed_values?: Record<string, string[]>;
 }
 
 export interface SparseCooEntrySpec {
@@ -5875,6 +5877,7 @@ export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(()
       "fields": z.array(ModelFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "problems": z.array(ProblemSchema).optional(),
+      "removed_values": z.record(z.string(), z.array(z.string())).optional(),
       "command": ModelEditCommandSchema.nullable().optional(),
     })
     .strict()
@@ -6026,6 +6029,7 @@ export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(()
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "dependencies": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "problems": z.array(ProblemSchema).optional(),
+      "removed_values": z.record(z.string(), z.array(z.string())).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainFieldResponse>;

@@ -145,7 +145,7 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
       .getByRole('button', { name: producer.label, exact: true }));
     return authorEvaluateConditions({
       page, request, projectPath: path, train: producer.key, field: 'Mass',
-      conditions: [{ label: 'Nominal', value: 1 }, { label: 'Heavy', value: 2 }],
+      conditions: [1, 2],
       selectComponent: () => selectModelComponent(page, first.plantId),
     });
   }) : undefined;

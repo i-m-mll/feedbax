@@ -23,19 +23,16 @@ export interface FieldKindOffer {
   readonly enabled: boolean;
 }
 
+/** One value of a swept field. Its text is the value; a member is never drawn by its id. */
 export interface FieldMember {
   readonly id: string;
-  readonly label: string | null;
   readonly text: string;
   readonly selected: boolean;
 }
 
 export interface FieldMembers {
   readonly values: readonly FieldMember[];
-  /** Members may be edited and named. */
-  readonly editable: boolean;
-  /** Members may be added. */
-  readonly extendable: boolean;
+  /** Selects the member's group of runs; `extend` adds it to the selection. */
   readonly choose?: (id: string, extend: boolean) => void;
 }
 
@@ -54,8 +51,8 @@ export interface FieldModel {
   /** The kinds the site offers. One offer of Value means the field has no mark and no menu. */
   readonly kinds: readonly FieldKindOffer[];
   readonly members?: FieldMembers;
-  /** The values a sweep can be reduced to, for choosing Value. */
-  readonly keep?: readonly { readonly id: string; readonly text: string; readonly selected: boolean }[];
+  /** The member a sweep keeps when Value is chosen from its kind menu. */
+  readonly keeps?: string;
   /** The value's parts: a vector's components side by side; otherwise indented rows under the field (a group's members, a rule's first, last and count). */
   readonly parts?: readonly FieldModel[];
   /** The sweep may be turned into its listed values. */

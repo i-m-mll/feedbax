@@ -22,6 +22,7 @@ import type {
 import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { supervisedTrainMethod } from './createFirstTrain';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
+import { sweepValueRuns, useRunRemoval } from './runRemoval';
 
 interface Props {
   readonly editor: ProjectEditController;
@@ -157,11 +158,12 @@ export function StudioTrainAuthoringForm(props: Props) {
     placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
   });
 
+  const confirmRemoval = useRunRemoval();
   async function editNumeric(field: string, edit: NonNullable<TrainFieldRequest['edit']>) {
     try {
       const recipe = await projectTrainFields(projectId, stepId, { ...numericBody, field, edit, rows: [...props.fieldRows ?? []] }, editor.signal);
       if (recipe.problems.length) return recipe.problems[0].reason;
-      if (recipe.files.length) {
+      if (recipe.files.length && await confirmRemoval(sweepValueRuns(recipe.removed_values))) {
         editor.editFiles('Set Field', recipe.files, {
           reviewedRevision: revision,
           dependencies: recipe.dependencies.map((id) => ({ kind: 'document', id })),

@@ -31,6 +31,7 @@ import {
   modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Port,
 } from './modelGraph';
 import { selectModel, type ModelSelectionStore } from './modelSelection';
+import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
 type Operation = ModelEditCommand['operation'];
 type Difference = EvaluateAttachmentRequest['difference'];
@@ -46,6 +47,7 @@ type Props = {
   fieldRows?: readonly string[];
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
+  confirmRunRemoval: ConfirmRunRemoval;
   evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
@@ -135,7 +137,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
+export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
   const selected = useStore(state, (current) => current.selection);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -228,7 +230,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         const applied = await editor.editModel('Set Value', address.document, result.command, saved);
         return applied.status === 'refused' ? applied.problem.detail : undefined;
       }
-      if (result.files.length) {
+      if (result.files.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
         const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
         const dependencies = variant ? saved.file_revisions.map(({ address: file }) => file).filter((file) =>
           (file.kind === 'document' && file.id === address.document) ||

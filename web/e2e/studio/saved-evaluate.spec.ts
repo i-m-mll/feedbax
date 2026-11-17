@@ -48,7 +48,7 @@ async function chooseStep(page: Page, step: string) {
   await tab(page, 'Runs').click();
 }
 
-test('authors named Evaluate conditions from one authenticated Train checkpoint', async ({ page, request }, info) => {
+test('authors Evaluate conditions from one authenticated Train checkpoint', async ({ page, request }, info) => {
   test.setTimeout(60_000);
   const project: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.evaluate_authoring', String(info.config.metadata.home), 'authored-evaluate-conditions',
@@ -81,7 +81,7 @@ test('authors named Evaluate conditions from one authenticated Train checkpoint'
   expect(trained.result?.job_id).toBe(admitted.job_id);
   await plans(page).getByRole('button', { name: trained.label, exact: true }).click();
 
-  const conditions = [{ label: 'Nominal', value: 1.25 }, { label: 'Heavy', value: 2 }];
+  const conditions = [1.25, 2];
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   const { stepId, step, revision, rows } = await authorEvaluateConditions({
     page, request, projectPath, train: trained.key, field: 'Mass', conditions,
@@ -91,8 +91,8 @@ test('authors named Evaluate conditions from one authenticated Train checkpoint'
   expect(step.inputs?.subject).toMatchObject({ step: trained.key.step, checkpoint: 'last' });
   const axis = Object.values(step.sweep?.axes ?? {}).find((axis) => axis && 'values' in axis);
   expect(axis).toBeDefined();
-  expect(rows.map(({ coordinates }) => Object.values(coordinates).find(({ label }) =>
-    conditions.some((condition) => condition.label === label)))).toMatchObject(conditions);
+  expect(rows.map(({ coordinates }) => Object.values(coordinates).find(({ value }) =>
+    conditions.includes(value as number))?.value)).toEqual(conditions);
   const saved = await snapshot();
   expect(saved.project.documents).toEqual(initial.project.documents);
   expect(saved.project.steps[trained.key.step]).toEqual(initial.project.steps[trained.key.step]);
@@ -143,7 +143,7 @@ test('authors named Evaluate conditions from one authenticated Train checkpoint'
     await tab(page, 'Model').click();
     await model.locator('[data-id="plant"] header').click();
     const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
-    await expect(mass).toHaveValue(String(condition.value));
+    await expect(mass).toHaveValue(String(condition));
     await expect(mass).toHaveAccessibleDescription('Changed by ' + stepId);
     await expect(mass).not.toBeEditable();
   }

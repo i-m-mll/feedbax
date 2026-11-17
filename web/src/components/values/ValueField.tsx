@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import type { FieldKind } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
 import {
-  studioAccessibleName, studioFieldKindLabel, studioFieldLabel, studioFieldValueLabel, studioName,
+  studioAccessibleName, studioFieldKindLabel, studioFieldLabel, studioName,
 } from '@/components/activity/studioVocabulary';
 import { selectionButton } from '@/features/pipeline/selection';
 import { Button, IconButton } from '@/components/ui/Button';
@@ -51,7 +51,6 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
   const reasonId = useId();
   const originId = useId();
   const { busy, reason, setReason, submit } = useSubmit(model);
-  const [keep, setKeep] = useState<string>();
   const readOnly = !model.commit || busy;
   const describedBy = [model.origin && originId, (reason ?? model.reason) && reasonId].filter(Boolean).join(' ') || undefined;
   const below = <>
@@ -61,11 +60,8 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
 
   function chooseKind(kind: FieldKind, focusText: () => void) {
     if (kind === 'sweep' && model.kind !== 'sweep') void submit({ kind: 'to_sweep' });
-    else if (kind === 'value' && model.kind === 'sweep') {
-      const values = model.keep ?? [];
-      if (values.length === 1) void submit({ kind: 'to_value', value_id: values[0].id });
-      else if (values.length) setKeep(values.find(({ selected }) => selected)?.id ?? values[0].id);
-    } else focusText();
+    else if (kind === 'value' && model.kind === 'sweep' && model.keeps) void submit({ kind: 'to_value', value_id: model.keeps });
+    else focusText();
   }
 
   const widget = (() => {
@@ -88,8 +84,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
         return null;
       default:
         return <ValueText model={model} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
-          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
-          onEscape={() => setKeep(undefined)} />;
+          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} />;
     }
   })();
 
@@ -109,27 +104,19 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
       below={model.origin || reason || model.reason ? below : undefined}>
       {widget}
     </FieldRow>
-    {(indented || model.members || model.canList || keep !== undefined) && <div className="value-field-parts grid gap-1">
+    {(indented || model.members || model.canList) && <div className="value-field-parts grid gap-1">
       {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
-      {model.members && <Members model={model} readOnly={readOnly} submit={submit} clearReason={() => setReason(undefined)} />}
+      {model.members && <Members model={model} />}
       {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
         onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
-      {keep !== undefined && !!model.keep?.length && <form className="grid grid-cols-[1fr_auto] gap-1" onSubmit={(event) => {
-        event.preventDefault();
-        void submit({ kind: 'to_value', value_id: keep }).then((done) => { if (done) setKeep(undefined); });
-      }}>
-        <Select aria-label={studioAccessibleName('keepValue', label)} value={keep} onValueChange={setKeep}
-          items={model.keep.map(({ id: value, text }) => ({ value, label: text }))} />
-        <Button type="submit" disabled={readOnly}>{studioName('keepValue')}</Button>
-      </form>}
     </div>}
   </section>;
 }
 
-function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, onEscape }: {
+function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
-  chooseKind(kind: FieldKind, focusText: () => void): void; onEscape(): void;
+  chooseKind(kind: FieldKind, focusText: () => void): void;
 }) {
   const { label, kind } = model;
   const input = useRef<HTMLInputElement>(null);
@@ -179,7 +166,6 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
       setDraft(undefined);
       clearReason();
       setMenu(false);
-      onEscape();
     }
     if (event.key === 'Enter' && draft !== undefined) {
       event.preventDefault();
@@ -237,50 +223,14 @@ function CompletionList({ id, anchor, items, highlight, onChoose }: {
   </div>, layer);
 }
 
-function Members({ model, readOnly, submit, clearReason }: {
-  model: FieldModel; readOnly: boolean; submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
-}) {
+function Members({ model }: { model: FieldModel }) {
   const { label } = model;
-  const members = model.members!;
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [adding, setAdding] = useState(false);
-  const [newValue, setNewValue] = useState('');
-  const settle = (done: boolean) => { if (done) { setDrafts({}); setAdding(false); setNewValue(''); } };
-  return <>
-    {members.values.map(({ id, label: name, text, selected }, index) =>
-      <div key={id} className="grid grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)] items-center gap-1">
-        {members.choose ? <IconButton pressed={selected}
-          label={studioAccessibleName('select', `${label} ${name ?? text}`)}
-          {...selectionButton((extend) => members.choose!(id, extend))}
-          icon={selected ? '◆' : '·'} /> : <span aria-hidden="true" className={selected ? 'font-bold' : 'text-shell-muted'}>{selected ? '◆' : '·'}</span>}
-        <TextField type="text" aria-label={name ? studioAccessibleName('value', name) : studioFieldValueLabel(label, index + 1)}
-          value={drafts[id] ?? text} readOnly={readOnly || !members.editable}
-          onValueChange={(next) => { setDrafts({ ...drafts, [id]: next }); clearReason(); }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && drafts[id] !== undefined) {
-              event.preventDefault();
-              void submit({ kind: 'text', text: drafts[id], value_id: id }).then(settle);
-            }
-            if (event.key === 'Escape') { setDrafts({}); clearReason(); }
-          }} />
-        {members.editable && <TextField type="text" readOnly={readOnly}
-          aria-label={studioFieldValueLabel(label, index + 1, true)} placeholder={studioName('name')} key={name ?? ''}
-          defaultValue={name ?? ''} onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault();
-              void submit({ kind: 'name_value', value_id: id, label: event.currentTarget.value });
-            }
-            if (event.key === 'Escape') event.currentTarget.value = name ?? '';
-          }} />}
-      </div>)}
-    {adding && <form className="grid grid-cols-[1fr_auto] gap-1" onSubmit={(event) => {
-      event.preventDefault();
-      void submit({ kind: 'text', text: `${(model.text ?? '').replace(/,$/, '')}, ${newValue}` }).then(settle);
-    }}>
-      <TextField aria-label={studioAccessibleName('newValue', label)} autoFocus value={newValue} onValueChange={setNewValue} />
-      <Button type="submit" disabled={readOnly || !newValue.trim()}>{studioName('add')}</Button>
-    </form>}
-    {!adding && members.extendable && <Button variant="ghost" className="justify-self-start"
-      disabled={readOnly} onClick={() => setAdding(true)}>{studioName('addValue')}</Button>}
-  </>;
+  const { values, choose } = model.members!;
+  return <div className="flex flex-wrap gap-1">
+    {values.map(({ id, text, selected }) => choose
+      ? <Button key={id} variant="ghost" size="mark" pressed={selected}
+        aria-label={studioAccessibleName('select', `${label} ${text}`)}
+        {...selectionButton((extend) => choose(id, extend))}>{text}</Button>
+      : <span key={id} className={clsx('px-1 text-xs', selected ? 'font-medium' : 'text-shell-muted')}>{text}</span>)}
+  </div>;
 }

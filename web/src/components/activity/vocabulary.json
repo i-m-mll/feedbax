@@ -136,6 +136,7 @@
     "reachGoal": "Reach Goal",
     "remaining": "Remaining",
     "remove": "Remove",
+    "removalThreshold": "Removal Threshold",
     "rename": "Rename",
     "report": "Report",
     "rerun": "Rerun",
@@ -355,9 +356,7 @@
     "shape": "Shape",
     "selectedRuns": "Selected Runs",
     "selectedValue": "Selected Value",
-    "newValue": "New Value",
     "spacing": "Spacing",
-    "keepValue": "Keep Value",
     "reload": "Reload",
     "mixed": "Mixed",
     "completions": "Completions",
@@ -482,8 +481,11 @@
     "fieldLabel": "{label} {name}",
     "fieldKind": "{label} {name}: {value}",
     "runAnnouncement": "{run}: {status}",
-    "fieldValue": "{label} {name} {index}",
-    "fieldValueName": "{label} {name} {index} {nameField}"
+    "removeTrainingRun": "Remove {count} training run?",
+    "removeTrainingRuns": "Remove {count} training runs?",
+    "removeRun": "Remove {count} run?",
+    "removeRuns": "Remove {count} runs?",
+    "removedResultsRemain": "Existing results remain on disk but disappear from the project."
   },
   "step": {
     "train": { "glyph": "flask" },
