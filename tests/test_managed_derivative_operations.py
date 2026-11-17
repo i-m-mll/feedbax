@@ -27,7 +27,6 @@ from tests.test_local_job_host import host as host_fixture, restart, wait_until
 
 host = host_fixture
 _CAPTURE = Path(__file__).parent / "fixtures" / "derivative_fixed_points.json"
-_REFERENCE_PROFILE = "FEEDBAX_VERIFY_FIXED_POINT_REFERENCE"
 
 
 def _port(name, width):
@@ -291,8 +290,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
         np.testing.assert_array_equal(accepted.sum(axis=-1), [[1, 1, 1]])
         assert np.all(roots.data("losses")[accepted] < 1e-6)
         assert np.all(roots.data("spectrum.magnitude")[accepted] < 1.0)
-        if os.environ.get(_REFERENCE_PROFILE) == "1":
-            _assert_fixed_point_products(roots)
+        _assert_fixed_point_products(roots)
     with results(linearise, "jacobians") as jacobians:
         np.testing.assert_allclose(jacobians.data("feedback").ravel(), [0.0, 2.0])
         np.testing.assert_allclose(jacobians.data("actuation").ravel(), [1.0, 1.0])
