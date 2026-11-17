@@ -236,3 +236,5 @@ def test_live_checkpoint_preserves_the_replica_coordinate_and_mean(tmp_path):
         retained, mean = _scored_product(opened, store, point, 4, params)
         assert retained.data("replicate").tolist() == ["A", "B"]
         assert mean == 2.0
+        with pytest.raises(ValueError, match="summary differs"):
+            _scored_product(opened, store, point.model_copy(update={"total": 3.0}), 4, params)
