@@ -117,7 +117,7 @@ def _resolve_trial(
 
     documents = request.trial_documents
     paired = resolve_trial_execution(
-        documents.model_name, documents.model, documents.task_source,
+        documents.model, documents.task_source,
         registries.components, registries.expression_functions,
         python_tasks=registries.python_tasks, objective=documents.objective,
         input_overrides=documents.input_overrides,

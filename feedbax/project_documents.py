@@ -6,32 +6,18 @@ from typing import Any
 
 from pydantic import JsonValue
 
-from feedbax.contracts.model_address import ModelAddress
-
 type _Json = Any
 
 _DOCUMENT_KEYED_STEP_FIELDS = ("document_overrides", "model_attachments")
-_NAME_MEMBERS = ("document", "model_name")
+_NAME_MEMBERS = ("document",)
 
 
 def _renamed_target(text: str, old: str, new: str) -> str:
-    """Rewrite a target or name that addresses the document by its name."""
+    """Rewrite a target that addresses the document by its name, `documents.<name>...`."""
     prefix = f"documents.{old}"
     if text == prefix or text.startswith(prefix + "."):
         return f"documents.{new}" + text.removeprefix(prefix)
-    scope, address = "", text
-    if text.startswith("steps.") and ".{" in text:
-        scope, _, address = text.partition(".{")
-        scope, address = scope + ".", "{" + address
-    if not address.startswith("{"):
-        return text
-    try:
-        parsed = ModelAddress.from_text(address)
-    except ValueError:
-        return text
-    if parsed.document != old:
-        return text
-    return scope + parsed.model_copy(update={"document": new}).to_text()
+    return text
 
 
 def _renamed(value: _Json, old: str, new: str) -> _Json:
@@ -58,10 +44,9 @@ def rename_document(
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     """Return the project and presentation with the document and its references renamed.
 
-    References are document members (`{"document": name, ...}`, which covers document
-    references and Model addresses), a Train's `model_name`, Model addresses written as
-    text (sweep targets and names in expressions), `documents.<name>...` targets, and the
-    maps keyed by document name.
+    References are document members (`{"document": name, ...}`), `documents.<name>...`
+    targets, and the maps keyed by document name. Model addresses are relative to their
+    document and carry no name.
     """
     renamed = _renamed(project, old, new)
     renamed["documents"] = _rekey(renamed["documents"], old, new)

@@ -112,7 +112,7 @@ def prepare_project_scene(
         if document is None or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
             raise ValueError(f"{document_id!r} must name an authored Model document.")
         model = ModelDocument.model_validate(document.payload)
-        graph = lower_planar_scene_interior(document_id, model, tuple(node_path), registry)
+        graph = lower_planar_scene_interior(model, tuple(node_path), registry)
         report = compile_acausal_authoring_report(
             graph,
             node_path=list(node_path),

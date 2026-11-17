@@ -183,7 +183,7 @@ class ModelResetPlan:
 
 
 def resolve_model_reset(
-    document: str, resolution: GraphParameterResolution, components: ComponentRegistry,
+    resolution: GraphParameterResolution, components: ComponentRegistry,
 ) -> ModelResetPlan:
     """Project owner declarations against the resolved occurrences and prototypes."""
     bindings = []
@@ -209,7 +209,7 @@ def resolve_model_reset(
                 if override_port is not None and ScopedPort((*scope, name), override_port) in driven:
                     return
                 address = ModelAddress(
-                    document=document, composites=scope,
+                    composites=scope,
                     element=FieldElement(kind="field", parent=ComponentElement(kind="component", id=name), path=path),
                 )
                 base = _base(dtype)

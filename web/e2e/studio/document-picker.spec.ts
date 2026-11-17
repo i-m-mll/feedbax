@@ -139,7 +139,7 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-test('a Train step keeps a new or duplicated Model with its Problems, and one Undo restores it', async ({ page, request }) => {
+test('a Train step keeps a new Model with its Problems and a duplicated Model without any, and one Undo restores each', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
@@ -196,10 +196,15 @@ test('a Train step keeps a new or duplicated Model with its Problems, and one Un
     await expect(picker('Model')).toHaveText(created);
     await expect.poll(model).toBe(created);
     const { status, details } = await trainProblems();
-    expect(status).toBe('cannot_run');
-    expect(details.length).toBeGreaterThan(0);
-    for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here/);
-    await expect(page.getByRole('button', { name: /^Problems \d+$/ })).toBeVisible();
+    if (choice === 'New') {
+      expect(status).toBe('cannot_run');
+      expect(details.length).toBeGreaterThan(0);
+      for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here/);
+      await expect(page.getByRole('button', { name: /^Problems \d+$/ })).toBeVisible();
+    } else {
+      // Model addresses are relative to their document, so a copy's links and measures resolve as the original's.
+      expect(details).toEqual([]);
+    }
     await stillAuthored();
 
     await command('Undo');

@@ -77,7 +77,7 @@ test('selecting a body in the Scene selects its card in the Model', async ({ pag
   await runProjectFixture('tests.fixtures.scene_geometry', 'seed', folder);
   await mkdir(join(folder, 'steps'), { recursive: true });
   await writeFile(join(folder, 'steps', 'train.json'), JSON.stringify({
-    kind: 'train', base: { inline: { trial_documents: { model_name: 'chain', model: { document: 'chain' } } } },
+    kind: 'train', base: { inline: { trial_documents: { model: { document: 'chain' } } } },
   }));
   await page.goto(`/?project=${id}`);
   await mapStep(page, 'train').press('Enter');

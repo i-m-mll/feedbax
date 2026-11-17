@@ -503,7 +503,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await expect.poll(async () => (await plan()).window_map?.problems.find(({ step, row }) =>
     step === selectedKey.step && row === selectedKey.row)).toMatchObject({
     path: '/step_seconds', detail: 'This Model field changes the trained graph interface or clock',
-    model_address: { document: 'point-mass', element: { kind: 'field', path: ['step_seconds'] } },
+    document: 'point-mass', model_address: { element: { kind: 'field', path: ['step_seconds'] } },
   });
   await tab(page, 'Runs').click();
   await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();

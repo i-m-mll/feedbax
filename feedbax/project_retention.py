@@ -107,7 +107,7 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
             from feedbax.plugins.composition import load_application
 
             documents = decoded.spec.trial_documents
-            graph = lower_model_document(documents.model_name, documents.model, load_application().bundle.components).graph
+            graph = lower_model_document(documents.model, load_application().bundle.components).graph
             assets = tuple(ref for _, ref in model_asset_refs(graph))
             if assets:
                 key = run.key
@@ -195,7 +195,7 @@ def _job_roots(
         from feedbax.plugins.composition import load_application
 
         documents = binding.spec.trial_documents
-        graph = lower_model_document(documents.model_name, documents.model, load_application().bundle.components).graph
+        graph = lower_model_document(documents.model, load_application().bundle.components).graph
         refs.extend(ref for _, ref in model_asset_refs(graph))
         if binding.resume is not None:
             pointers.append(binding.resume)

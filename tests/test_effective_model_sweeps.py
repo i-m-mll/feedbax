@@ -60,7 +60,7 @@ def test_saved_managed_train_clock_range_preserves_equal_request_identity(tmp_pa
     assert original.admission_problem is None
     assert _decode(baseline, original.key).trial_documents.model.step_seconds == 0.02
 
-    clock = _field({"document": "reach-model", "composites": [], "element": {"kind": "graph"}}, "step_seconds")
+    clock = _field({"composites": [], "element": {"kind": "graph"}}, "step_seconds")
     train["sweep"] = {"axes": {"clock": {
         "path": clock.to_text(), "range": {"start": 0.01, "stop": 0.03, "count": 3},
     }}}
@@ -128,7 +128,16 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     raw = _managed_project(authored)
     target = _wire_field("train-added", "fields", "factor").to_text()
     variant_target = "steps.train." + target
-    raw["sweep"] = {"axes": {"condition": {"path": variant_target, "values": [0.6, 0.9]}}}
+    raw["documents"]["alternate"] = deepcopy(raw["documents"]["reach-model"])
+    other = deepcopy(raw["steps"]["train"])
+    other["base"]["inline"]["trial_documents"]["model"] = {"document": "alternate"}
+    raw["steps"]["other"] = other
+    mass = _field({"composites": [], "element": {"kind": "component", "id": "plant"}}, "fields", "mass").to_text()
+    raw["sweep"] = {"axes": {
+        "condition": {"path": variant_target, "values": [0.6, 0.9]},
+        "step-mass": {"path": f"steps.train.{mass}", "values": [2]},
+        "base-mass": {"path": f"documents.alternate.{mass}", "values": [4]},
+    }}
     raw["steps"]["baseline"]["sweep"] = {
         "axes": {"trained": {"input": "subject"}, "factor": {
             "path": target,
@@ -141,11 +150,15 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     def requests():
         plan = compile_project(Project.model_validate(raw), memo=memo)
         assert not plan.diagnostics
-        trains = [run for run in plan.runs if run.kind == "train"]
+        trains = [run for run in plan.runs if run.key.step == "train"]
         assert {
             _controller(_decode(plan, run.key).trial_documents.model).wires["read"].attachments[0].fields["factor"]
             for run in trains
         } == {0.6, 0.9}
+        assert {
+            (run.key.step, _decode(plan, run.key).trial_documents.model.interior.components["plant"].fields["mass"])
+            for run in plan.runs if run.kind == "train"
+        } == {("train", 2), ("other", 4)}
         return [(run.key, run.coordinates, run.request_id) for run in plan.runs]
 
     before = requests()
@@ -167,7 +180,7 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     train_problems = [problem for problem in plan.diagnostics if problem.step == "train"]
     assert len(train_problems) == 2
     assert all(problem.model_address.to_text() == target for problem in train_problems)
-    assert not plan.runs
+    assert {run.key.step for run in plan.runs} == {"other"}
 
 
 def test_named_draw_part_does_not_reset_attachment_anchors(authored):
@@ -187,7 +200,7 @@ def test_named_draw_part_does_not_reset_attachment_anchors(authored):
         _add_attachment(owner, "third", "first"),
     ]
     differences = tuple(MODEL_DIFFERENCE_BATCHES.validate_python({"batch": records})["batch"])
-    effective = resolve_effective_model("reach-model", model, ComponentRegistry(), differences)
+    effective = resolve_effective_model(model, ComponentRegistry(), differences)
     chain = _controller(effective).wires["read"].attachments
     assert [attachment.id for attachment in chain] == ["first", "second", "third"]
     assert chain[0].fields["factor"]["args"][0] == {"kind": "literal", "value": 0.2, "unit": "m"}
@@ -203,13 +216,13 @@ def test_named_draw_part_does_not_reset_attachment_anchors(authored):
 
 def test_document_variant_only_changes_the_addressed_base_model(authored):
     raw = document_project(authored, evaluation=False)
-    target = _wire_field("base", "fields", "factor")
+    address = _wire_field("base", "fields", "factor").to_text()
     _model_controller(raw)["wires"]["read"]["attachments"] = [
         _add_attachment(_attachment_owner("read"), "base", None, 0.9)["attachment"],
     ]
     raw["sweep"] = {"rows": {
         "original": {},
-        "variant": {"patches": {target.to_text(): {"value": 0.6}}},
+        "variant": {"patches": {f"documents.reach-model.{address}": {"value": 0.6}}},
     }}
     keys = tuple(RunKey(variant, "train", "default") for variant in ("original", "variant"))
     plan = compile_project(Project.model_validate(raw), source_runs=keys)
@@ -257,7 +270,7 @@ def test_integer_range_uses_the_site_and_preserves_whole_request_ids(tmp_path, a
         16, 32, 64, 128, 256,
     ]
     address = _field({
-        "document": "reach-model", "composites": [], "element": {"kind": "component", "id": "wrapper"},
+        "composites": [], "element": {"kind": "component", "id": "wrapper"},
     }, "substeps")
     raw["steps"]["train"]["sweep"]["axes"]["batches"] = {
         "path": address.to_text(), "range": {"start": 1, "stop": 2, "count": 4},

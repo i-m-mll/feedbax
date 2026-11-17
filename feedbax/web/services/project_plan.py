@@ -380,7 +380,7 @@ class ProjectPlanRead:
                 *(StudioProjectWindowMapProblem(
                     code="cannot_run", path=problem.path, detail=problem.detail,
                     variant=run.key.variant, step=run.key.step, row=run.key.row,
-                    document=problem.model_address.document if problem.model_address else run.document_ids.get("payload.graph"),
+                    document=run.document_ids.get("payload.trial_documents.model") or run.document_ids.get("payload.graph"),
                     model_address=problem.model_address,
                 ) for run in plan.runs
                   if includes(run.key.variant) and (problem := run.admission_problem) is not None),

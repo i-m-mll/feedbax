@@ -62,7 +62,8 @@ def test_rename_rewrites_every_reference_and_replays_back(studio):
     client, folders = studio
     before = _snapshot(client)
     files = _files(folders)
-    assert _requests(folders, before["revision"]).keys() == set(STEPS)
+    requests = _requests(folders, before["revision"])
+    assert requests.keys() == set(STEPS)
 
     result = _command(client, before, {"kind": "rename", "document": "reach-model", "name": "arm"})
     after = result["snapshot"]
@@ -70,9 +71,10 @@ def test_rename_rewrites_every_reference_and_replays_back(studio):
     assert "reach-model" not in after["project"]["documents"]
     for step in STEPS:
         trial = after["project"]["steps"][step]["base"]["inline"]["trial_documents"]
-        assert trial["model"] == {"document": "arm"} and trial["model_name"] == "arm"
+        assert trial["model"] == {"document": "arm"} and "model_name" not in trial
     assert set(after["presentation"]["documents"]) == {"arm"}
-    assert _requests(folders, after["revision"]).keys() == set(STEPS)
+    # A document's name is outside request identity, so both Train steps keep their results.
+    assert _requests(folders, after["revision"]) == requests
 
     # A client's Undo replays the prior bytes of every changed file and the presentation.
     prior = {(item["address"]["kind"], item["address"]["id"]): item for item in before["file_revisions"]}
@@ -136,7 +138,7 @@ def test_a_step_using_a_duplicate_diverges_alone(studio):
     assert edited["train-b"] == original["train-b"]
 
 
-def test_a_step_uses_a_duplicated_model_and_reports_what_does_not_resolve(studio):
+def test_a_step_uses_a_duplicated_model_whose_links_and_measures_resolve(studio):
     client, folders = studio
     result = _command(client, _snapshot(client), {"kind": "duplicate", "document": "reach-model", "name": "arm"})
     assert result["snapshot"]["presentation"]["documents"]["arm"] == result["snapshot"]["presentation"]["documents"]["reach-model"]
@@ -151,17 +153,16 @@ def test_a_step_uses_a_duplicated_model_and_reports_what_does_not_resolve(studio
     assert response.status_code == 200, response.text
     revision = response.json()["revision"]
     trial = response.json()["project"]["steps"]["train-b"]["base"]["inline"]["trial_documents"]
-    assert trial["model"] == {"document": "arm"} and trial["model_name"] == "arm"
+    assert trial["model"] == {"document": "arm"} and "model_name" not in trial
     plan = folders.read_plan(PROJECT, revision=revision).plan
-    assert {run.key.step for run in plan.runs} == {"train"}
-    assert {diagnostic.step for diagnostic in plan.diagnostics} == {"train-b"}
+    # Model addresses are relative to their document, so the copy's links and measures resolve as the original's.
+    assert {run.key.step for run in plan.runs} == {"train", "train-b"}
+    assert not plan.diagnostics, plan.diagnostics
 
     response = client.post(f"{URL}/authoring/trials", json={"revision": revision, "run": run})
     assert response.status_code == 200, response.text
     authored = response.json()
-    assert authored["model"] == "arm" and authored["problems"]
-    measures = {field["path"] for field in authored["fields"] if field["path"].startswith("/objective/")}
-    assert measures, "the Objective stays authorable while its pairing has Problems"
+    assert authored["model"] == "arm" and not authored["problems"]
 
 
 def test_choosing_a_document_of_another_role_is_refused(studio):

@@ -46,7 +46,7 @@ class _Field:
 
 def _address(owner: ModelAddress, *path: str) -> ModelAddress:
     return ModelAddress(
-        document=owner.document, composites=owner.composites,
+        composites=owner.composites,
         element=FieldElement(kind="field", parent=owner.element, path=path),
     )
 
@@ -207,7 +207,7 @@ def model_fields(
 ) -> ModelFieldResponse:
     snapshot = folders.read(project_id, revision=body.revision)
     project = snapshot.project
-    document = project.documents.get(body.owner.document)
+    document = project.documents.get(body.document)
     if document is None or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
         raise ProjectFolderInvalid("The Model document does not exist.")
     model = ModelDocument.model_validate(document.payload)
@@ -220,7 +220,7 @@ def model_fields(
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
         effective_model = read_evaluate_attachments(
-            folders, project_id, evaluate, components, selected=plan,
+            folders, project_id, evaluate, components, selected=plan, model_document=body.document,
         ).resolved_model
         candidate = project.steps[key.step]
         if (isinstance(evaluate.scope, EvaluateAttachmentStep) and plan.variants[:1] == (key.variant,)
@@ -234,7 +234,7 @@ def model_fields(
         definitions = tuple(plan.selected_definitions[item] for item in (scoped or (key,))
                             if item in plan.selected_definitions)
         definition = plan.selected_definitions.get(key)
-        if definition is not None and (model_payload := selected_model(definition, body.owner.document)) is not None:
+        if definition is not None and (model_payload := selected_model(definition, body.document)) is not None:
             effective_model = ModelDocument.model_validate(model_payload)
             selected = next((row for row in plan.rows if row.key == key), None)
             if plan.steps[(key.variant, key.step)].kind == "train":
@@ -277,7 +277,7 @@ def model_fields(
     ):
         raise ProjectFolderInvalid("Choose a supported field of the selected Model.")
     field, axis = targets[body.address.to_text()]
-    owner_name = body.owner.document
+    owner_name = body.document
 
     step_address = AuthoredFileAddress(kind="step", id=body.run.step)
 
@@ -337,14 +337,15 @@ def model_fields(
         assert sweep is not None
         if any(row is not None and row.source == variant for row in sweep.rows.values()):
             raise ProjectFolderInvalid("This variant supplies inherited patches to another variant.")
-        path = difference.address.to_text()
+        field_key = difference.address.to_text()
+        path = f"documents.{owner_name}.{field_key}"
         expanded = authored_row(sweep, variant)
         if expanded is None or any(
             _paths_overlap(other, path) and (other != path or origin[0] != "row")
             for other, origin in expanded.patch_origins.items()
         ):
             raise ProjectFolderInvalid("The Model field has no local variant write destination.")
-        if path not in authored_fields or isinstance(difference.address.element.parent, AttachmentElement):
+        if field_key not in authored_fields or isinstance(difference.address.element.parent, AttachmentElement):
             raise ProjectFolderInvalid("This Model field is not part of the named document.")
         keys = [row.key for row in plan.rows if row.key.variant == variant and owner_name in row.document_uses]
         if key not in keys:

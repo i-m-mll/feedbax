@@ -11,9 +11,9 @@ from feedbax.studio.schema import _enumerate_graph_ports
 from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
 
 
-def _port(document, composites, component, direction, port):
+def _port(composites, component, direction, port):
     return ModelAddress(
-        document=document, composites=composites, element=PortElement(
+        composites=composites, element=PortElement(
             kind="port", end=ComponentPortAddress(owner="component", component=component, direction=direction, port=port),
         ),
     )
@@ -26,7 +26,7 @@ def model_projection(folders, project_id, body, components):
     supplied = {port.name for port in model.ports.inputs if overrides.get(port.name, port.name) in names}
     try:
         lowered = lower_model_document(
-            body.document, model, components, supplied_inputs=frozenset(supplied),
+            model, components, supplied_inputs=frozenset(supplied),
         )
     except ValueError:
         # The selected Plan carries the addressed failure. Exposed task signals
@@ -34,7 +34,7 @@ def model_projection(folders, project_id, body, components):
         return ModelProjection(task_signals=task_signals, resolved_model=model)
     task_inputs = tuple(
         ModelAddress.model_validate({
-            "document": body.document, "composites": [],
+            "composites": [],
             "element": {"kind": "port", "end": {"owner": "inputs", "port": port.id}},
         }) for port in model.ports.inputs if port.name in supplied
     )
@@ -54,12 +54,12 @@ def model_projection(folders, project_id, body, components):
                 if item is None:
                     continue
                 address = ModelAddress.model_validate({
-                    "document": body.document, "composites": composites,
+                    "composites": composites,
                     "element": {"kind": "port", "end": {"owner": port.direction + "s", "port": item.id}},
                 })
                 unit = item.type.unit
             elif port.node_id in owner.interior.components:
-                address = _port(body.document, composites, port.node_id, port.direction, port.port)
+                address = _port(composites, port.node_id, port.direction, port.port)
                 unit = value.units
             else:
                 continue
@@ -80,7 +80,7 @@ def model_projection(folders, project_id, body, components):
                     address = ModelAddress.from_text(reference)
                 except ValueError:
                     continue
-                if address.document == body.document and isinstance(address.element, PortElement):
+                if isinstance(address.element, PortElement):
                     objective_ports[reference] = address
     return ModelProjection(
         ports=tuple(ports), task_signals=task_signals, task_inputs=task_inputs,

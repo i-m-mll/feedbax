@@ -287,7 +287,7 @@ def _prepare_train(
         model_source = CheckpointModelSource(
             tree=restored.model.tree,
             encoding=restored.model.encoding,
-            initial=InitialModelSource(model_name=documents.model_name, document=documents.model, seed=source_spec.seed),
+            initial=InitialModelSource(document=documents.model, seed=source_spec.seed),
         )
         with numerical_work():
             reconstructed = reconstruct_model(

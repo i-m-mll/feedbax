@@ -99,7 +99,7 @@ def _project(
     def pair(task):
         sites = {}
         paired = pair_trial_source(
-            documents.model_name, documents.model, task, bundle.components, bundle.expression_functions,
+            documents.model, task, bundle.components, bundle.expression_functions,
             python_tasks=bundle.python_tasks, input_overrides=documents.input_overrides,
             task_sites=sites, graph_override=graph_override,
         )
@@ -134,9 +134,9 @@ def _project(
     return _Projection(paired, variables, signals, epochs, fields, problems)
 
 
-def _input_address(model: str, port: str) -> ModelAddress:
+def _input_address(port: str) -> ModelAddress:
     return ModelAddress.model_validate({
-        "document": model, "composites": [],
+        "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": port}},
     })
 
@@ -152,7 +152,7 @@ def _input_rows(documents, projection) -> list[StudioTrialInput]:
             explicit=port.name in documents.input_overrides,
         )
         for port in documents.model.ports.inputs
-        for address in (_input_address(documents.model_name, port.id),)
+        for address in (_input_address(port.id),)
     ]
 
 
@@ -321,12 +321,8 @@ def _train_writes(change, project, definition, documents, projection):
     raw = definition.payload["trial_documents"]
     if isinstance(change, StudioTrialSelectDocument) and change.role != "task":
         _chosen_document(project, change.document, change.role)
-        writes = [_override(f"trial_documents.{change.role}", "replace" if change.role in raw else "add",
-                            {"document": change.document})]
-        if change.role == "model":
-            writes.append(_override("trial_documents.model_name", "replace" if "model_name" in raw else "add",
-                                    change.document))
-        return writes
+        return [_override(f"trial_documents.{change.role}", "replace" if change.role in raw else "add",
+                          {"document": change.document})]
     if isinstance(change, StudioTrialSelectDocument):
         task = _chosen_task(project, change.document)
         field = _task_field(task)
@@ -711,9 +707,13 @@ def trial_authoring(
     task = documents.task_source
     task_path = (f"payload.trial_documents.{_task_field(task)}" if step.kind == "train"
                  else _evaluation_task_path(definition))
+    model_document = definition.document_ids.get("payload.trial_documents.model")
     task_source = None
     task_field_sources = {}
     if step.kind == "evaluate" and (upstream := evaluate_subject(definition)):
+        producer = next((row for row in plan.rows if row.key == upstream[0]), None)
+        if producer is not None:
+            model_document = producer.document_ids.get("payload.trial_documents.model")
         task_source = evaluate_value_source(upstream[1])
         for target, origin_path in projected.task_origins.items():
             if target[0] != "task":
@@ -733,7 +733,7 @@ def trial_authoring(
         for term in documents.objective.terms for field in ("measure", "weight")
     } if step.kind == "train" else {}
     return StudioTrialAuthoring(
-        revision=snapshot.revision, run=body.run, model=documents.model_name,
+        revision=snapshot.revision, run=body.run, model=model_document,
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=definition.document_ids.get("payload.trial_documents.objective"),
         task=task, objective=documents.objective if step.kind == "train" else None,

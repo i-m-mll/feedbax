@@ -18,6 +18,7 @@ _RETIREMENTS = frozenset({
     "m2-train-v1-retirement",
     "declared-train-methods-retirement",
     "managed-analysis-retirement",
+    "relative-model-addresses",
 })
 
 

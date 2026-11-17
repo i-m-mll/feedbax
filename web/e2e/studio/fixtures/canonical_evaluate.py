@@ -26,7 +26,7 @@ from tests.test_document_train_pair import authored_documents, document_project
 
 
 _MASS = ModelAddress.model_validate({
-    "document": "reach-model", "composites": [],
+    "composites": [],
     "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
 }).to_text()
 

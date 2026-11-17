@@ -108,7 +108,9 @@ type _Resource = Literal["project", "presentation"]
 _MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
 
 
-def _document_sweep_paths(project: Project, document: str) -> set[tuple[str, ...] | ModelAddress]:
+def _document_sweep_paths(
+    project: Project, document: str, read_plan: Callable[[], ProjectPlan],
+) -> set[tuple[str, ...] | ModelAddress]:
     prefix = f"documents.{document}.payload."
 
     def paths(sweep: Sweep):
@@ -123,7 +125,9 @@ def _document_sweep_paths(project: Project, document: str) -> set[tuple[str, ...
             if entry is not None:
                 yield from entry.patches
 
-    targets = set()
+    targets: set[tuple[str, ...] | ModelAddress] = set()
+    scoped: dict[str, set[ModelAddress]] = {}
+    has_step_targets = False
     for sweep in (project.sweep, *(step.sweep for step in project.steps.values())):
         if sweep is None:
             continue
@@ -135,8 +139,39 @@ def _document_sweep_paths(project: Project, document: str) -> set[tuple[str, ...
                 target = model_field_target(path)
             except ValueError:
                 continue  # The Plan reports malformed authored targets.
-            if target is not None and target.address.document == document:
+            if target is None:
+                continue
+            if target.document == document:
                 targets.add(target.address)
+            elif target.step is not None:
+                scoped.setdefault(target.step, set()).add(target.address)
+            elif target.document is None:
+                has_step_targets = True
+    if not scoped and not has_step_targets:
+        return targets
+
+    plan = read_plan()
+    rows = {row.key: row for row in plan.rows}
+
+    def uses_model(row) -> bool:
+        ids = row.document_ids
+        return document in (ids.get("payload.trial_documents.model"), ids.get("payload.graph"), ids.get("inputs.subject"))
+
+    steps = {(key.variant, key.step) for key, row in rows.items() if uses_model(row)}
+    for run in plan.runs:
+        subject = run.inputs.get("subject") if run.kind == "evaluate" else None
+        if subject is not None and any(key in rows and uses_model(rows[key]) for key in subject.sources):
+            steps.add((run.key.variant, run.key.step))
+    for variant, name in steps:
+        targets.update(scoped.get(name, ()))
+        if sweep := plan.steps[variant, name].sweep:
+            for path in paths(sweep):
+                try:
+                    target = model_field_target(path)
+                except ValueError:
+                    continue  # The Plan reports malformed authored targets.
+                if target is not None and target.step is None and target.document is None:
+                    targets.add(target.address)
     return targets
 
 
@@ -160,9 +195,8 @@ def _loses_model_target(payload, next_payload, targets, state, result, authority
     addresses = [address for address in targets if isinstance(address, ModelAddress)]
     if not addresses:
         return False
-    document = addresses[0].document
-    before = ModelEditDraft(document, state, authority.port, authority.accepts)
-    after = ModelEditDraft(document, result, authority.port, authority.accepts)
+    before = ModelEditDraft(state, authority.port, authority.accepts)
+    after = ModelEditDraft(result, authority.port, authority.accepts)
     return any(
         before.has_field(address, functions=functions) and not after.has_field(address, functions=functions)
         for address in addresses
@@ -1182,7 +1216,7 @@ class ProjectFolder:
         })
         authority = ModelRegistryPorts(components)
         result = apply_model_edit(
-            body.document, state, body.command, ports=authority.port, accepts=authority.accepts,
+            state, body.command, ports=authority.port, accepts=authority.accepts,
             next_input=authority.next_input, functions=self.functions,
             task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
                 revision=body.revision, run=command.run, document=body.document,
@@ -1193,7 +1227,9 @@ class ProjectFolder:
         change = None
         if result.state != state:
             next_payload = result.state.document.model_dump(mode="json") if result.state.document != state.document else payload
-            targets = _document_sweep_paths(snapshot.project, body.document) if next_payload is not payload else ()
+            targets = _document_sweep_paths(
+                snapshot.project, body.document, lambda: self.read_plan(project_id, revision=body.revision).plan,
+            ) if next_payload is not payload else ()
             if targets and _loses_model_target(payload, next_payload, targets, state, result.state, authority, self.functions):
                 return ModelEditProblem(
                     address=result.changed[0], detail="Convert the affected sweep to a Value before moving or removing its field.",

@@ -36,6 +36,7 @@ class FieldNameEdit(StrictModel):
 
 class ModelFieldRequest(StrictModel):
     revision: Sha256
+    document: ProjectName
     owner: ModelAddress
     run: StudioSavedTrainKey | None = None
     evaluate_scope: EvaluateAttachmentScope | None = None

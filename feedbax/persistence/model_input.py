@@ -44,6 +44,6 @@ def _model_source(
     return CheckpointModelSource(
         tree=tree, encoding=encoding,
         initial=InitialModelSource(
-            model_name=documents.model_name, document=documents.model, seed=spec.seed or 0,
+            document=documents.model, seed=spec.seed or 0,
         ),
     )

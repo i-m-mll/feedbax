@@ -18,6 +18,7 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { Card as SurfaceCard, CardHead } from '@/components/ui/Card';
 import { TextField } from '@/components/ui/TextField';
 import { portId, portTypeLabel, type Port } from './modelGraph';
+import type { ModelLocation } from '@/features/projectWindow/elementSelection';
 import './modelCanvas.css';
 
 export type ModelCardData = {
@@ -51,7 +52,7 @@ export type ModelEdgeData = {
   address: ModelAddress;
   selected?: boolean;
   waypoints?: readonly ModelPosition[];
-  attachments?: readonly { id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelAddress }[];
+  attachments?: readonly { id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelLocation }[];
   self?: number;
   bundleCount?: number;
   moveWaypoint?: (index: number, point: ModelPosition) => void;

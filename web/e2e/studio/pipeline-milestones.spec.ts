@@ -647,7 +647,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   expect(newRows.map(({ status }) => status)).toEqual(['not_run', 'not_run', 'not_run']);
   const sourceFor = async (row: StudioSavedTrainKey) => {
     const result = await request.post(projectPath + '/model/fields', { data: {
-      revision: widened.revision, run: row, owner: { document: 'reach-model', composites: [], element: { kind: 'component', id: 'plant' } },
+      revision: widened.revision, run: row, document: 'reach-model', owner: { composites: [], element: { kind: 'component', id: 'plant' } },
     } });
     expect(result.ok(), await result.text()).toBe(true);
     return (await result.json()).fields.find(({ label }) => label === 'Mass').sources;

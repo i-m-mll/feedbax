@@ -10,16 +10,28 @@ export interface NamedElementAddress {
   readonly element: { readonly kind: 'named'; readonly id: string };
 }
 
-/** What the window's selection holds: the address of an element of a document. */
-export type ElementAddress = ModelAddress | NamedElementAddress;
+/** A Model element in the document that holds it; a Model address is relative to its document. */
+export interface ModelLocation {
+  readonly document: string;
+  readonly address: ModelAddress;
+}
 
-type Pick = { accepts(address: ModelAddress, port: Port): boolean; choose(address: ModelAddress): void };
+/** The Model elements one edit changed, in the document it changed. */
+export interface ModelChange {
+  readonly document: string;
+  readonly addresses: readonly ModelAddress[];
+}
+
+/** What the window's selection holds: an element of a document. */
+export type ElementAddress = ModelLocation | NamedElementAddress;
+
+type Pick = { document: string; accepts(address: ModelAddress, port: Port): boolean; choose(address: ModelAddress): void };
 type State = {
   selection: readonly ElementAddress[];
   /** A reference field's crosshair: the next element clicked fills it instead of being selected. */
   pick: Pick | null;
-  /** A Model address the slot showing its document moves to. */
-  reveal: ModelAddress | null;
+  /** A Model element the slot showing its document moves to. */
+  reveal: ModelLocation | null;
 };
 
 export type ElementSelectionStore = ReturnType<typeof useElementSelectionStore>;
@@ -30,8 +42,8 @@ export function useElementSelectionStore() {
   return store;
 }
 
-export function isModelAddress(address: ElementAddress): address is ModelAddress {
-  return address.element.kind !== 'named';
+export function isModelAddress(address: ElementAddress): address is ModelLocation {
+  return 'address' in address;
 }
 
 /** The element a selected address stands for: a field is shown as the element that holds it. */
@@ -40,13 +52,14 @@ export function selectedElement(address: ModelAddress): ModelAddress {
 }
 
 export function elementKey(address: ElementAddress) {
-  return isModelAddress(address) ? addressKey(address) : JSON.stringify([address.document, address.element.id]);
+  return JSON.stringify([address.document, isModelAddress(address) ? addressKey(address.address) : address.element.id]);
 }
 
 function sameGroup(left: ElementAddress, right: ElementAddress) {
-  if (left.document !== right.document || left.element.kind !== right.element.kind) return false;
-  return !isModelAddress(left) || !isModelAddress(right) ||
-    JSON.stringify(left.composites) === JSON.stringify(right.composites);
+  if (left.document !== right.document) return false;
+  if (!isModelAddress(left) || !isModelAddress(right)) return isModelAddress(left) === isModelAddress(right);
+  return left.address.element.kind === right.address.element.kind &&
+    JSON.stringify(left.address.composites) === JSON.stringify(right.address.composites);
 }
 
 /** Selects one element, or with `extend` toggles it among the selected elements of its graph and kind. */
@@ -65,10 +78,11 @@ export function clearSelection(store: ElementSelectionStore) {
   store.setState({ selection: [] });
 }
 
-/** The selected Model elements, fields resolved to the element that holds them. */
-export function useModelSelection(store: ElementSelectionStore) {
+/** The selected elements of one Model document, fields resolved to the element that holds them. */
+export function useModelSelection(store: ElementSelectionStore, document: string | undefined) {
   const selection = useStore(store, (state) => state.selection);
-  return useMemo(() => selection.filter(isModelAddress).map(selectedElement), [selection]);
+  return useMemo(() => selection.flatMap((item) => isModelAddress(item) && item.document === document
+    ? [selectedElement(item.address)] : []), [document, selection]);
 }
 
 /**

@@ -7,7 +7,7 @@ from feedbax.examples import load_shipped_projects
 
 
 COMMAND_ADDRESS = ModelAddress.model_validate({
-    "document": "point-mass", "composites": [], "element": {
+    "composites": [], "element": {
         "kind": "port", "end": {"owner": "outputs", "port": "command"},
     },
 }).to_text()

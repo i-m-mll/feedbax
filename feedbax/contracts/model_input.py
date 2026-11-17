@@ -12,7 +12,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument, restore_model_display_names
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
-from feedbax.contracts.project_inputs import DocumentInputReference, InitialModelReference, ObjectiveDocumentReference, ProjectName
+from feedbax.contracts.project_inputs import DocumentInputReference, InitialModelReference, ObjectiveDocumentReference
 from feedbax.contracts.request_refs import ContentRef, ReferenceValue
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument
@@ -31,7 +31,6 @@ MODEL_INITIALIZATION_POLICY = "feedbax.model.initialization.v1"
 class InitialModelSource(ReferenceValue):
     kind: Literal["initial"] = "initial"
     initialization_policy: Literal[MODEL_INITIALIZATION_POLICY] = MODEL_INITIALIZATION_POLICY
-    model_name: ProjectName
     document: ModelDocument
     seed: int = Field(default=0, ge=0, lt=2**32, strict=True)
 
@@ -77,8 +76,7 @@ def authored_document_input(
         if document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
             raise ValueError("Initial model input requires a Model document")
         return InitialModelSource(
-            model_name=reference.source.document, seed=reference.seed,
-            document=ModelDocument.model_validate(document.payload),
+            document=ModelDocument.model_validate(document.payload), seed=reference.seed,
         )
     if isinstance(reference, ObjectiveDocumentReference):
         if document.schema_id != OBJECTIVE_DOCUMENT_SCHEMA_ID:

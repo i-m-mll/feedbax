@@ -150,20 +150,14 @@ def test_inline_trial_memo_keeps_canonical_error_precedence_and_paths():
         encode_request(spec, inputs, document_memo=memo, capture_train_task=True)
     assert raised.value.path == "/inputs/checkpoint/0/reference/size"
 
-    for name, path in (
-        ("model_name", "/spec/trial_documents/model_name"),
-        ("input_overrides", "/target"),
-    ):
-        malformed = spec.model_copy(update={"trial_documents": spec.trial_documents.model_copy(
-            update={name: "\ud800" if name == "model_name" else {"target": "\ud800"}},
-        )})
-        errors = []
-        for document_memo in (None, memo):
-            with pytest.raises(CanonicalJsonError) as raised:
-                encode_request(malformed, inputs, document_memo=document_memo, capture_train_task=True)
-            errors.append(raised.value)
-        assert errors[0].path == errors[1].path == path
-        assert errors[0].code == errors[1].code == CanonicalJsonErrorCode.LONE_SURROGATE
+    malformed = spec.model_copy(update={"trial_documents": spec.trial_documents.model_copy(
+        update={"input_overrides": {"target": "\ud800"}},
+    )})
+    for document_memo in (None, memo):
+        with pytest.raises(CanonicalJsonError) as raised:
+            encode_request(malformed, inputs, document_memo=document_memo, capture_train_task=True)
+        assert raised.value.path == "/target"
+        assert raised.value.code == CanonicalJsonErrorCode.LONE_SURROGATE
     assert encode_request(spec, {}, document_memo=memo, capture_train_task=True) == first
 
     spec.trial_documents.input_overrides["1"] = "target"

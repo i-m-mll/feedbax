@@ -719,9 +719,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   async function moveHistory(action: 'undo' | 'redo') {
     try {
       const changed = await editor[action]();
-      if (changed?.length) {
-        const address = changed[0];
-        elements.setState({ reveal: address, selection: changed });
+      if (changed?.addresses.length) {
+        const address = changed.addresses[0];
+        elements.setState({
+          reveal: { document: changed.document, address },
+          selection: changed.addresses.map((item) => ({ document: changed.document, address: item })),
+        });
         if (focusView !== 'model') setWindowState((current) => showProjectWindowView(current, 'model', focusSlot));
       }
       await editor.flush();

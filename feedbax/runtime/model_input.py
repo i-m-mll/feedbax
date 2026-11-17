@@ -76,7 +76,7 @@ def reconstruct_model(
     try:
         if isinstance(source, InitialModelSource):
             if template is None:
-                lowered = lower_model_document(source.model_name, source.document, registry.components)
+                lowered = lower_model_document(source.document, registry.components)
                 prototypes = declared_model_input_prototypes(source.document)
                 template = resolve_graph(
                     GraphDocument(graph=lowered.graph), registry.components,
@@ -152,7 +152,7 @@ def prepare_model_task(
     """Pair a source with task-derived prototypes and its optional objective."""
     definition = source.initial if isinstance(source, CheckpointModelSource) else source
     resolved = resolve_trial_execution(
-        definition.model_name, definition.document, task, registry.components, registry.expression_functions,
+        definition.document, task, registry.components, registry.expression_functions,
         python_tasks=registry.python_tasks, objective=objective, objective_use=objective_use,
         input_overrides=input_overrides, graph_override=graph_override,
     )
