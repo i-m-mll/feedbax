@@ -203,14 +203,14 @@ class _Lowerer:
             )
             return
         try:
-            params = operation.parameter_model.model_validate(element.params)
+            params = operation.value.parameter_model.model_validate(element.params)
         except ValidationError as error:
             for item in error.errors(include_url=False, include_input=False):
                 location = ".".join(map(str, ("params", *item["loc"])))
                 self.problem(f"{path}.{location}", item["msg"], name)
             return
         try:
-            definition = operation.definition
+            definition = operation.value.definition
             inputs, schemas = self._inputs(element.inputs, set(definition.inputs))
             for role, expected in definition.inputs.items():
                 actual = schemas[role]
@@ -228,7 +228,7 @@ class _Lowerer:
             self._record(
                 name,
                 AnalysisRequestSpec(
-                    analysis_type=element.operation,
+                    analysis_type=operation.key,
                     params=params.model_dump(mode="json"),
                     evaluation_states_policy="require_durable",
                 ),

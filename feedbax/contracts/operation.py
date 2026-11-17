@@ -47,7 +47,6 @@ class OperationDefinition(StrictModel):
     key: str
     owner: str
     owner_version: str
-    revision: int = Field(ge=1)
     renamed_from: tuple[str, ...] = ()
     label: str
     description: str

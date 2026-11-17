@@ -19,7 +19,6 @@ from feedbax.contracts.studio_project import ProjectValueEdit
 class StudioAuthoringDeclaration(StrictModel):
     key: str
     label: str
-    revision: int
     renamed_from: tuple[str, ...]
     settings_schema: dict[str, JsonValue]
 

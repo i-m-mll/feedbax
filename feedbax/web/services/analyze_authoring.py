@@ -43,7 +43,7 @@ def _port(
         return states
     try:
         operation = analysis.operations[source.element].operation
-        return registry.resolve(operation).definition.outputs[source.product]
+        return registry.resolve(operation).value.definition.outputs[source.product]
     except KeyError as error:
         raise ValueError(f"Unknown dataset output {source.element}.{source.product}.") from error
 
@@ -64,7 +64,7 @@ def review_wire(
     source = _port(wire.source, analysis, registry, states)
     if family == "operations":
         operation = analysis.operations[wire.element]
-        expected = registry.resolve(operation.operation).definition.inputs.get(wire.role)
+        expected = registry.resolve(operation.operation).value.definition.inputs.get(wire.role)
         if expected is None:
             raise ValueError(f"Unknown operation input {wire.role!r}.")
         require_dataset_port(source, expected)

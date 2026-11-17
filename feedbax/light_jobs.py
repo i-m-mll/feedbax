@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from pydantic import TypeAdapter, field_validator
 
 from feedbax.analysis.operations import RegisteredOperation
+from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, render as render_report
 from feedbax.contracts.artifact_custody import (
     ContentObjectRef,
@@ -64,7 +65,7 @@ _PRODUCTS = TypeAdapter(Products)
 _ORIGINS = TypeAdapter(dict[RequestId, ContentObjectRef])
 
 
-def light_operation(key: str) -> RegisteredOperation:
+def light_operation(key: str) -> ResolvedDeclaration[RegisteredOperation]:
     from feedbax.plugins.composition import load_application
     from feedbax.plugins.declarations import missing_declaration
 
@@ -80,7 +81,7 @@ def validate_light_request(request: DecodedRequest) -> str:
     if spec.numerical_settings.model_dump(exclude_none=True):
         raise ValueError("Managed light requests require the default numerical settings")
     if isinstance(spec, AnalysisRequestSpec):
-        operation = light_operation(spec.analysis_type)
+        operation = light_operation(spec.analysis_type).value
         operation.parameter_model.model_validate(spec.params)
         roles = operation.definition.inputs.keys()
         (output,) = operation.definition.outputs
@@ -193,7 +194,7 @@ def _verify_staged_product(
     ref = success_content_ref(product.content)
     if isinstance(spec, AnalysisRequestSpec):
         _verify_dataset_output(
-            store, product, light_operation(spec.analysis_type).definition.outputs[product.name]
+            store, product, light_operation(spec.analysis_type).value.definition.outputs[product.name]
         )
         return
     if product.descriptor is not None:

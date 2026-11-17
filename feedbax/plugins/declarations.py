@@ -94,14 +94,11 @@ class CallableDeclaration:
     settings_model: type[BaseModel]
     key: str | None = None
     label: str | None = None
-    revision: int = 1
     renamed_from: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.settings_model, type) or not issubclass(self.settings_model, BaseModel):
             raise TypeError("Feedbax settings must be a Pydantic model")
-        if type(self.revision) is not int or self.revision < 1:
-            raise ValueError("A computation revision must be a positive integer")
         for key in (self.key, *self.renamed_from):
             if key is not None:
                 validate_declaration_key(key)
