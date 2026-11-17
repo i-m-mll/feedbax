@@ -774,7 +774,7 @@ class Store:
                     try:
                         launch = BoundEvaluationJobInput.model_validate(payload)
                         if (
-                            not allow_completion or job["continues"] is not None or job["edges"]
+                            job["continues"] is not None or job["edges"]
                             or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
                         ):
                             raise ValueError("Initial Evaluate requires a standalone rollout launch.")

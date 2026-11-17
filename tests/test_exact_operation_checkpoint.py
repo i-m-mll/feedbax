@@ -14,7 +14,7 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.composition import load_application
 from feedbax.project_folder import ProjectFolder
 from tests.support.managed_train_fixture import managed_train_project
-from tests.test_local_job_host import job_row, wait_until
+from tests.test_local_job_host import host, job_row, wait_until  # noqa: F401 -- pytest fixture
 
 
 def test_exact_model_operation_uses_earlier_publication_and_refuses_missing(request, tmp_path, monkeypatch):
