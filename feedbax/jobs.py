@@ -1357,6 +1357,7 @@ class JobService(PlanJobReader):
 
     def collect_session_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
+        project_root: Path | None = None,
         progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> CollectedSessionAttempt:
         """Collect one terminal Jobs snapshot attempt and identify the verified custody for acknowledgement."""
@@ -1406,7 +1407,9 @@ class JobService(PlanJobReader):
                     raise JobConflict("The local Train entry differs from the observed Stop checkpoint.")
             activity = self._activity_rows(existing)[attempt_id]
         elif kind == "train":
-            activity = self.collect_train_attempt(source, attempt, project=project, store=store, progress=progress)
+            activity = self.collect_train_attempt(
+                source, attempt, project=project, store=store, project_root=project_root, progress=progress,
+            )
         else:
             activity = self._collect_evaluate_attempt(source, attempt, project=project, store=store, ref=ref, progress=progress)
         if activity.status != JobStatus(state):
@@ -1467,6 +1470,7 @@ class JobService(PlanJobReader):
 
     def collect_train_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
+        project_root: Path | None = None,
         progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> StudioActivityJob:
         """Collect an observed terminal Train and durably mirror its original attempt."""
@@ -1514,6 +1518,8 @@ class JobService(PlanJobReader):
             canonical_request=binding,
             checkpoint_catalog=tuple(attempt["launch"]["payload"].get("checkpoint_catalog", ())),
         )
+        if project_root is not None:
+            item = _with_project_root(item, project_root)
         assert item.job is not None
         job = replace(item.job, id=attempt_id, continues=attempt["continues"])
         self.host.mirror_collected_train(

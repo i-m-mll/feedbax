@@ -117,6 +117,25 @@ def test_judgement_records_survive_republication_and_are_bound_to_latest_success
         record_validity(store, case.rule.id, records[0])
 
 
+def test_a_missing_original_observation_cannot_appear_current(tmp_path):
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    source = SourcePath(scope="project", path="interrupted-import.py")
+    data = SourcePath(scope="project", path="interrupted-read.csv")
+    trace = CodeTrace(
+        sources=(), registry=(), files=(), environment={}, indeterminate=(source,), indeterminate_files=(data,),
+    )
+    conditions, files = observe_differences(
+        (trace,), catalog=SourceCatalog({"project": tmp_path}), registry={},
+        environment={}, read_object=store.get_object,
+    )
+    result = decide_validity(store.store_object(b"receipt"), conditions=conditions, file_differences=files)
+    assert result.state == "stale"
+    assert result.reasons[0].path == data
+    assert result.reasons[0].status == "indeterminate"
+    assert result.reasons[1].differences[0].path == source
+    assert not result.checks
+
+
 def test_quick_replay_tolerates_float_rounding_but_preserves_labels_and_zero(tmp_path):
     store = ImmutableArtifactBlobProvider(tmp_path / "store")
 
