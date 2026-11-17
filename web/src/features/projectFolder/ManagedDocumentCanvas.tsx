@@ -1,8 +1,8 @@
 import dagre from '@dagrejs/dagre';
 import { ReactFlowProvider, useReactFlow, type Edge, type Node } from '@xyflow/react';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
-import { StudioCanvas } from '@/components/canvas/StudioCanvas';
+import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import type { PresentationPosition } from '@/generated/studioContracts';
 
 export function useElementSelection(scope: string, reveal?: object, revealedId?: string) {
@@ -33,13 +33,14 @@ type CanvasProps = ReturnType<typeof useElementSelection> & {
   openAt?: (point: PresentationPosition) => void;
   rememberPoint?: (point: PresentationPosition | null) => void;
   placing?: boolean;
+  viewportRef?: Ref<CanvasViewport>;
 };
 
 export function ManagedDocumentCanvas(props: CanvasProps) {
   return <ReactFlowProvider><Canvas {...props} /></ReactFlowProvider>;
 }
 
-function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing }: CanvasProps) {
+function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing, viewportRef }: CanvasProps) {
   const { screenToFlowPosition } = useReactFlow();
   const { nodes, edges } = useMemo(() => {
     const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR' }).setDefaultEdgeLabel(() => ({}));
@@ -72,7 +73,7 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
         openAt(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
       }
     }}>
-    <StudioCanvas nodes={shownNodes} edges={shownEdges} fitNewContent lockAutoFit={placing}
+    <StudioCanvas nodes={shownNodes} edges={shownEdges} fitNewContent lockAutoFit={placing} viewportRef={viewportRef}
       zoomOnDoubleClick={!openAt}
       onNodesChange={(changes) => {
         const change = changes.find((item) => item.type === 'select' && item.selected);

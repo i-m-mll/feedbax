@@ -485,8 +485,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
   const secondary = useManagedProjectDetails({ ...detailInputs, activeView: windowState.mode === 'map' ? 'hidden' : secondaryView ?? 'hidden',
     problemReveal: focusSlot === 'secondary' ? revealed : undefined, modelPath: windowState.modelPaths?.secondary,
     setModelPath: (document, path) => setModelPath('secondary', document, path) });
-  const focusedModel = windowState.mode !== 'map' && focusView === 'model'
-    ? (focusSlot === 'primary' ? primary : secondary).model : undefined;
+  const focusedDetail = windowState.mode !== 'map' && (focusView === 'model' || focusView === 'scene')
+    ? (focusSlot === 'primary' ? primary : secondary)[focusView] : undefined;
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition,
@@ -962,7 +962,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     }),
     ...runCommands.filter(({ id }) => id !== 'newStep'),
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep ? stoppedNewStep : nextStep,
-    ...(focusedModel?.commands ?? []),
+    ...(focusedDetail?.commands ?? []),
     ...analyze.commands,
     ...report.commands,
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
@@ -1023,7 +1023,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             </Button>
           </form>
         </Dialog>}
-        {focusedModel?.overlay}
+        {focusedDetail?.overlay}
         {analyze.overlay}
         {report.overlay}
         {machineQuote && <StudioMachineApproval quote={machineQuote} busy={busy} error={commandError}

@@ -226,17 +226,6 @@
   flex: 1 1 auto;
 }
 
-.studio-window-slot__controls .studio-scene-controls {
-  flex-wrap: nowrap;
-  gap: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.studio-window-slot__controls .studio-scene-controls > * {
-  flex: none;
-}
-
 .studio-window-slot__controls :where(fieldset, select) {
   min-width: 0;
   max-width: 100%;

@@ -4,10 +4,12 @@ import { fetchSavedEvaluationReplay } from '@/api/jobs';
 import { studioRegionIssue } from '@/components/activity/StudioRegion';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
-import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneHeaderControls } from '@/components/scene/SceneRegion';
+import { CanvasStrip } from '@/components/canvas/CanvasStrip';
+import { canvasViewportCommands } from '@/components/canvas/StudioCanvas';
+import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneLayers } from '@/components/scene/SceneRegion';
 import { SceneClockControls } from '@/components/scene/SceneClockControls';
 import type { PlanarScenePose } from '@/components/scene/planarModel';
-import { fittedCamera, sceneGeometry, sceneTimeline, type SceneCamera, type SceneDrawing, type SceneOverlay, type SceneView } from '@/components/scene/sceneView';
+import { fittedCamera, sceneGeometry, sceneTimeline, zoomScene, type SceneCamera, type SceneDrawing, type SceneOverlay, type SceneView } from '@/components/scene/sceneView';
 import { useProjectPlanarScene } from '@/components/scene/useProjectPlanarScene';
 import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
@@ -202,29 +204,33 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
   const onCameraChange = (value: SceneCamera) => setCamera({ scope: sceneScope, value });
   const hiddenOverlays = overlayState?.scope === sceneScope ? overlayState.value : shownOverlays;
   const scene = view.kind === 'geometry' || view.kind === 'replay' ? sceneGeometry(view, time) : null;
+  const layers = sceneLayers(view);
+  const viewport = canvasViewportCommands(() => ({
+    fitView: () => onCameraChange(fittedCamera),
+    zoomIn: () => onCameraChange(zoomScene(camera, 1.2)),
+    zoomOut: () => onCameraChange(zoomScene(camera, 1 / 1.2)),
+  }), layers.navigable);
   const omission = model ? <DetailReason reason="planarSceneUnavailable" name="model" />
     : <DetailReason reason="definitionUnavailable" name="scene" />;
   return {
     documentId: model?.id,
-    header: <>
-      {model?.id}
-      {interiors.length > 1 && path && <Select aria-label={studioName('interior')} value={JSON.stringify(path)}
-        items={interiors.map((candidate) => ({ value: JSON.stringify(candidate), label: candidate.join(' / ') }))}
-        onValueChange={interior.onSelect} />}
-      <SceneHeaderControls view={view} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays}
-        onToggleOverlay={(overlay) => {
-          const next = new Set(hiddenOverlays);
-          if (next.has(overlay)) next.delete(overlay);
-          else next.add(overlay);
-          setOverlays({ scope: sceneScope, value: next });
-        }} />
-    </>,
-    body: source || trials ? <div className="flex h-full min-h-0 flex-col">
+    header: model?.id,
+    path: interiors.length > 1 && path && <Select aria-label={studioName('interior')} value={JSON.stringify(path)}
+      items={interiors.map((candidate) => ({ value: JSON.stringify(candidate), label: candidate.join(' / ') }))}
+      onValueChange={interior.onSelect} />,
+    commands: viewport,
+    body: source || trials ? <CanvasStrip viewport={viewport} tools={<SceneLayers overlays={layers.overlays}
+      hiddenOverlays={hiddenOverlays} onToggleOverlay={(overlay) => {
+        const next = new Set(hiddenOverlays);
+        if (next.has(overlay)) next.delete(overlay);
+        else next.add(overlay);
+        setOverlays({ scope: sceneScope, value: next });
+      }} />}>
       <div className="min-h-0 flex-1">
         <SceneCanvas view={view} time={time} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} fitToSlot {...selection} />
       </div>
       {!evaluating && focus && scene && <DetailReason reason="scenePlaybackUnavailable" name="playback" />}
-    </div> : evaluating
+    </CanvasStrip> : evaluating
       ? evaluation?.reason ? <p role="status">{studioReason('observed', evaluation.reason)}</p>
         : <DetailReason reason="scenePlaybackUnavailable" name="playback" />
       : omission,
