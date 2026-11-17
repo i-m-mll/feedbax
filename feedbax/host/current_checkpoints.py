@@ -176,7 +176,7 @@ class CurrentCheckpoints:
         if producer.anchor is not None:
             raise _SelectionUnavailable("the current Train lineage has not authenticated the requested checkpoints")
 
-        portable = self._portable_models(producer, bound)
+        portable = self._portable_models(request, producer, selection, bound)
         if all(update in portable for update in selection.coordinates):
             return tuple((update, portable[update]) for update in selection.coordinates)
         subject = bound.evaluation_subject
@@ -189,18 +189,28 @@ class CurrentCheckpoints:
                     return tuple((update, portable[update]) for update in selection.coordinates if update in portable)
         raise _SelectionUnavailable("the collected Train result lacks the requested checkpoint evidence")
 
-    def _portable_models(self, producer: _Producer, bound: BoundMember) -> dict[int, Product]:
+    def _portable_models(
+        self, request: RequestId, producer: _Producer, selection: CheckpointSelection, bound: BoundMember,
+    ) -> dict[int, Product]:
         models = {}
         if producer.success is not None and producer.success.continuation is not None:
             (terminal,) = producer.success.products["checkpoint"]
             verify_success_content(self.view.store, terminal)
             models[producer.success.continuation.clock.completed_updates] = terminal
-        elif producer.success is None:
-            recovery = read_train_job(self.view.store, producer.attempt).recovery
-            manifest = verify_method_checkpoint_content(
-                self.view.store, recovery.pointer, recovery.content,
-            )
-            models[manifest.clock.completed_updates] = model_product(manifest)
+        requested = set(selection.coordinates)
+        for attempt in producer.path:
+            row = self.host.get(attempt)
+            if row is None or row["state"] != "stopped" or not json.loads(row["data"]).get("collected_train"):
+                continue
+            retained = read_train_job(self.view.store, attempt)
+            if retained.request.id != request:
+                raise _SelectionUnavailable("collected Train custody names a different request")
+            for checkpoint in retained.checkpoints:
+                coordinate = checkpoint.pointer.completed_updates
+                if coordinate not in requested or coordinate in models:
+                    continue
+                manifest = verify_method_checkpoint_content(self.view.store, checkpoint.pointer, checkpoint.content)
+                models[coordinate] = model_product(manifest)
 
         if (evidence := bound.checkpoint_model) is not None:
             candidates = ((evidence.producer, evidence.publication),)

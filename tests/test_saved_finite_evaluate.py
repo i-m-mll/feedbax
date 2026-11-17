@@ -51,7 +51,7 @@ def _fixture(*, late=False):
         "ordered": evaluate({"batches": [4, 2]}),
         "cadence": evaluate({"every_k": 2, "through": 4}),
         "ascending": evaluate({"batches": [2, 4]}),
-        "missing": evaluate({"batches": [1, 2]}, source="short"),
+        "short-selection": evaluate({"batches": [1, 2]}, source="short"),
     }
     if late:
         steps["late"] = evaluate({"batches": [2, 6]})
@@ -63,7 +63,7 @@ def _fixture(*, late=False):
     {"every_k": 2}, {"every_k": 2, "through": 1}, {"every_k": 1, "through": 65},
 ])
 def test_invalid_finite_rule_is_rejected_during_project_validation(rule):
-    definition = _fixture().model_dump(mode="json", exclude_unset=True)
+    definition = _fixture().model_dump(mode="json", by_alias=True, exclude_unset=True)
     definition["steps"]["ordered"]["inputs"]["subject"]["checkpoint"] = rule
     with pytest.raises(ValidationError):
         Project.model_validate(definition)
@@ -243,15 +243,11 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
         }))
 
     (short,) = launch("short-producer", "short").items
-    (missing,) = launch("missing-consumer", "missing").items
-    assert missing.disposition == "admitted"
+    (short_evaluation,) = launch("short-consumer", "short-selection").items
+    assert short_evaluation.disposition == "admitted"
     terminal(short.job_id, "succeeded")
-    refused = terminal(missing.job_id, "blocked")
-    assert refused["delivery"] == 0 and not refused["edges"][0]["satisfied"]
-    assert refused["outcome"]["error"] == {
-        "code": "input_unavailable", "path": "/inputs/subject/checkpoint",
-        "message": "Producer closed without checkpoint coordinates [1].",
-    }
+    short_binding = terminal(short_evaluation.job_id, "succeeded")["edges"][0]["binding"]["checkpoint_selection"]
+    assert [member["checkpoint"]["completed_updates"] for member in short_binding["members"]] == [1, 2]
 
     _save_project(folders, project, _fixture(late=True))
     edited = folders.read_plan(project, revision=None)

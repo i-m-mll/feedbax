@@ -380,10 +380,11 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
         for reason in changed_assemble.validity.reasons if reason.kind == "code"
         for difference in reason.differences
     )
-    upstream_only = _project().model_dump(mode="json", exclude_unset=True)
+    upstream_only = _project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     del upstream_only["documents"]["gain-analysis"]["payload"]["operations"]["gain"]
     _save_project(folders, project, Project.model_validate(upstream_only))
     upstream_plan = folders.read_plan(project, revision=None)
+    assert not upstream_plan.plan.diagnostics, upstream_plan.plan.diagnostics
     assert identify("assemble", selected[2]) == upstream_plan.plan.elements[ElementKey(selected[2], "assemble")].request_id
     upstream_run = jobs.admit_plan(
         folders, upstream_plan, run_keys=(selected[2],), token="refresh-assemble", reuse_completed=True,
@@ -404,6 +405,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
 
     _save_project(folders, project, _project())
     downstream_plan = folders.read_plan(project, revision=None)
+    assert not downstream_plan.plan.diagnostics, downstream_plan.plan.diagnostics
     still_current = light_result(downstream_plan, "gain")
     assert still_current.validity.state == "current"
     assert still_current.receipt == initial.result.receipt
