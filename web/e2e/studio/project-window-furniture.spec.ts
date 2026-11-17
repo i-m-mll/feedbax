@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -53,8 +54,8 @@ test('an empty project draws only the bar, the map with its drawer, the rail and
   for (const name of ['Fit View', 'Zoom In', 'Zoom Out']) {
     await expect(rail(page).getByRole('button', { name, exact: true })).toHaveAttribute('aria-disabled', 'true');
   }
-  await expect(page.locator('[data-empty-map-card]')).toBeHidden();
 
+  await expect(add).toBeEnabled();
   await add.press('Enter');
   await expectMenuBeside(page, (await add.boundingBox())!);
   await expect(menu(page).getByRole('menuitem', { name: 'Train' })).not.toHaveAttribute('aria-disabled', 'true');
@@ -66,17 +67,9 @@ test('an empty project draws only the bar, the map with its drawer, the rail and
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-test('the outlined empty-map card opens the same menu', async ({ page, request }) => {
-  const { snapshot } = await seedManagedProject(request, []);
-  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}&empty-map=card`);
-  const card = page.locator('[data-empty-map-card]');
-  await card.click();
-  await expectMenuBeside(page, (await card.boundingBox())!);
-});
-
-test('the rail separator follows the divider and every view keeps its place', async ({ page, request }, info) => {
+test('the rail separator follows the divider and every view keeps its place', async ({ page, request, studio }, info) => {
   const project: string = JSON.parse(await runProjectFixture(
-    'web.e2e.studio.fixtures.managed_report', 'seed', String(info.config.metadata.home), 'furniture-kinds',
+    'web.e2e.studio.fixtures.managed_report', 'seed', studio.home, 'furniture-kinds',
   ));
   const response = await request.get(`/api/projects/${project}`);
   const steps = Object.entries((await response.json() as StudioProjectSnapshot).project.steps ?? {});

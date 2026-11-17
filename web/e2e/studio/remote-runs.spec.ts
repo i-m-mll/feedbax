@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import { readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
@@ -7,11 +7,11 @@ import type {
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
-test.skip(process.env.FEEDBAX_STUDIO_E2E_REMOTE_FIXTURE !== '1', 'Requires the disposable machine provider');
+test.use({ studioBackend: 'remote' });
 
-test('Machine approval reviews the saved selection and collects the remote result', async ({ page, request }, info) => {
+test('Machine approval reviews the saved selection and collects the remote result', async ({ page, request, studio }, info) => {
   test.setTimeout(50_000);
-  const fixtureRoot = join(String(info.config.metadata.home), 'state', 'studio-e2e-remote');
+  const fixtureRoot = join(studio.home, 'state', 'studio-e2e-remote');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const path = `${projectPath}/train-runs`;
   const key = { variant: 'default', step: 'train', row: 'default' };
@@ -136,7 +136,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
     .toBeAttached();
 });
 
-test('A set of six remote rows keeps its Jobs states and commands across reloads', async ({ page, request }, info) => {
+test('A set of six remote rows keeps its Jobs states and commands across reloads', async ({ page, request, studio }, info) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture(
     'ordinary-files', '20000', '0.001', '0.0011', '0.0012', '0.0013', '0.0014', '0.0015',
@@ -217,7 +217,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   await reopen();
   expect(await job(force.job_id)).toMatchObject({ status: expect.stringMatching(/^(stopped|interrupted)$/) });
 
-  await runProjectFixture({ module: 'web.e2e.studio.fixtures.remote_run_process', home: String(info.config.metadata.home) },
+  await runProjectFixture({ module: 'web.e2e.studio.fixtures.remote_run_process', home: studio.home },
     session, interrupt.job_id);
   await expect(row(interrupt).getByText('Interrupted', { exact: true })).toBeVisible({ timeout: 9_000 });
   await reopen();
@@ -241,8 +241,8 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   expect(closed.status(), closed.statusText()).toBe(204);
 });
 
-test('Opening refusal survives reload on the exact approved row', async ({ page, request }, info) => {
-  const refusal = join(String(info.config.metadata.home), 'state', 'studio-e2e-remote', 'opening-refusal');
+test('Opening refusal survives reload on the exact approved row', async ({ page, request, studio }, info) => {
+  const refusal = join(studio.home, 'state', 'studio-e2e-remote', 'opening-refusal');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const path = `${projectPath}/train-runs`;
   const runs = page.getByRole('table', { name: 'Runs', exact: true });
@@ -274,8 +274,8 @@ test('Opening refusal survives reload on the exact approved row', async ({ page,
   }
 });
 
-test('The Machine picker follows provider failure and recovery without reload', async ({ page, request }, info) => {
-  const outage = join(String(info.config.metadata.home), 'state', 'studio-e2e-remote', 'provider-unreachable');
+test('The Machine picker follows provider failure and recovery without reload', async ({ page, request, studio }, info) => {
+  const outage = join(studio.home, 'state', 'studio-e2e-remote', 'provider-unreachable');
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();

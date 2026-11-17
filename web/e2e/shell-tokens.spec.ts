@@ -20,8 +20,8 @@ test('uses the pinned shell surfaces, Studio’s accent and the shell’s title 
 
   const frame = page.locator('.shell-frame.studio-project-window');
   const header = frame.locator('[data-studio-focus-region="top"]');
-  const logo = header.locator('.shell-titlebar__logo > img');
-  const firstState = header.locator('.shell-titlebar__leading > button').first();
+  const logo = header.locator('.shell-titlebar__logo > svg');
+  const firstControl = header.locator('.shell-titlebar__leading > :nth-child(2)');
   const status = frame.locator('[data-studio-focus-region="bottom"]');
   const accent = () => header.evaluate((element) =>
     getComputedStyle(element).getPropertyValue('--studio-shell-accent').trim());
@@ -30,10 +30,10 @@ test('uses the pinned shell surfaces, Studio’s accent and the shell’s title 
     const rail = Number.parseFloat(style.gridTemplateColumns);
     const header = root.querySelector('[data-studio-focus-region="top"]')!.getBoundingClientRect();
     const box = root.querySelector('.shell-titlebar__logo')!.getBoundingClientRect();
-    const logo = root.querySelector('.shell-titlebar__logo > img')!.getBoundingClientRect();
+    const logo = root.querySelector('.shell-titlebar__logo > svg')!.getBoundingClientRect();
     const leading = root.querySelector('.shell-titlebar__leading')!;
-    const first = leading.querySelector('button')!.getBoundingClientRect();
-    const leftmost = Math.min(...Array.from(root.querySelectorAll('[data-studio-focus-region="top"] :is(button, img, h1)'))
+    const first = leading.children[1].getBoundingClientRect();
+    const leftmost = Math.min(...Array.from(root.querySelectorAll('[data-studio-focus-region="top"] :is(button, svg, h1)'))
       .map((element) => element.getBoundingClientRect()).filter((rect) => rect.width > 0).map((rect) => rect.left));
     return {
       headerHeight: header.height, railCentre: rail / 2, logoLeft: logo.left, logoCentre: logo.left + logo.width / 2,
@@ -45,7 +45,7 @@ test('uses the pinned shell surfaces, Studio’s accent and the shell’s title 
   await expect(frame).toHaveCSS('background-color', 'rgb(242, 242, 242)');
   await expect(status).toBeVisible();
   await expect(logo).toBeVisible();
-  await expect(firstState).toBeVisible();
+  await expect(firstControl).toBeVisible();
   expect(await accent()).toBe('#5d4b87');
 
   const browser = await geometry();

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type { ModelFieldResponse, StudioProjectDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
@@ -37,6 +37,8 @@ test('reopens a Model duration range and an integer sample in their saved forms'
     sampler: { count: 4, distribution: { family: 'choice' } },
   });
   await page.reload();
+  await mapStep(page, 'train').click();
+  await expect(model).toBeVisible();
   await model.locator('.react-flow__node').filter({ hasText: 'VanillaRNN' }).locator('header').click();
   await expect(tauText).toHaveValue('linspace(0.02 s, 0.04 s, 4)');
   await expect(hidden).toHaveValue(/sample\(choice\(8, 12, per=run\), 4\)/);
@@ -97,6 +99,8 @@ test('edits and reopens a stored Model field sweep through project history', asy
   await expect.poll(async () => Object.keys((axis(await saved()) as { values?: object })?.values ?? {})).toEqual(ids);
 
   await page.reload();
+  await mapStep(page, 'train').click();
+  await expect(model).toBeVisible();
   await model.locator('.react-flow__node').filter({ hasText: 'GRU' }).locator('header').click();
   await expect(hidden).toHaveValue('64, 100, 128');
   const invalid = page.waitForResponse((response) => response.url().endsWith('/model/fields') &&

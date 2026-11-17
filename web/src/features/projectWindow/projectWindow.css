@@ -126,6 +126,7 @@
 }
 
 .studio-project-window :where([data-model-port], svg [role='button']):focus-visible {
+  outline: 2px solid var(--shell-focus-color);
   outline-offset: 2px;
 }
 

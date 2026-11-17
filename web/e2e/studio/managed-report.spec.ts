@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type {
   ReportDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
@@ -12,8 +12,8 @@ test.use({
   viewport: { width: 1440, height: 900 },
 });
 
-test('authors an ordered shared Report from a planned Analyze figure', async ({ page, request }, info) => {
-  const home = String(info.config.metadata.home);
+test('authors an ordered shared Report from a planned Analyze figure', async ({ page, request, studio }, info) => {
+  const home = studio.home;
   const module = 'web.e2e.studio.fixtures.managed_report';
   const project = JSON.parse(await runProjectFixture(module, 'seed', home, 'managed-report'));
   const path = '/api/projects/' + project;

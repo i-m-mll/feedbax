@@ -1,4 +1,5 @@
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -162,9 +163,13 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
+  // The inspector first projects the authored fields, then the selected run's; only the latter can sweep.
+  const runFields = page.waitForResponse((response) => response.url().endsWith('/model/fields')
+    && 'run' in JSON.parse(response.request().postData() ?? '{}'));
   await page.getByRole('tabpanel', { name: 'Model', exact: true })
     .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
   const field = page.getByRole('region', { name: 'Mass field', exact: true });
+  await runFields;
   await field.getByRole('button', { name: 'Mass kind: Value', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   await enter(field.getByRole('textbox', { name: 'Mass', exact: true }), '1, 2');

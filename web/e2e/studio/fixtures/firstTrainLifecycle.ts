@@ -3,9 +3,10 @@ import type { StudioActivityJob, StudioJobSnapshot, StudioJobSubmission } from '
 import { mapStep, runProjectFixture } from './canonicalTrain';
 import { authorFirstTrain } from './firstTrainAuthoring';
 import { activate, palette, post, tabTo } from './studioKeyboard';
-import { hostPid, processExists, type RecoveryStudio } from './studioRecovery';
+import { hostPid, processExists } from './studioRecovery';
+import type { Studio } from './studio';
 
-export async function authorAndRecoverTrain(page: Page, request: APIRequestContext, info: TestInfo, studio: RecoveryStudio) {
+export async function authorAndRecoverTrain(page: Page, request: APIRequestContext, info: TestInfo, studio: Studio) {
   const totalUpdates = 6000;
   const { home } = studio;
   // Softmax keeps the total force at one along the diagonal reach, regardless of training.

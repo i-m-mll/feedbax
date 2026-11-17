@@ -22,7 +22,7 @@ def _train_definition():
     trial["python_task"] = task
     documents[task["document"]] = {
         "schema": "feedbax.spec.python_task",
-        "payload": {"type": "feedbax.task.reaching.v1", "params": {"n_steps": 12, "x": 0.15, "y": 0.05}},
+        "payload": {"type": "feedbax.Reaching", "params": {"n_steps": 12, "x": 0.15, "y": 0.05}},
     }
     model = documents[trial["model"]["document"]]["payload"]
     model["ports"]["inputs"][0]["name"] = "reach_target"
@@ -30,7 +30,7 @@ def _train_definition():
         trial["model"]["document"]: {"/interior/components/plant/fields/mass": 1.25},
         task["document"]: {"/params/x": 0.18},
     }
-    inline["training_config"].update(n_reach_steps=12, snapshot_interval=1)
+    inline["training_config"]["snapshot_interval"] = 1
     return project
 
 

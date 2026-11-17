@@ -28,5 +28,5 @@ if __name__ == "__main__":
         seed(args.root)
     else:
         reopened = load_text_project(args.root)
-        model = reopened.project.documents["point-mass"].payload
-        print(json.dumps({"revision": reopened.revision, "mass": model["interior"]["components"]["plant"]["fields"]["mass"]}))
+        train = reopened.project.steps["train"].base.inline
+        print(json.dumps({"revision": reopened.revision, "batch": train["training_config"]["batch_size"]}))

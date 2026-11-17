@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
@@ -180,11 +181,11 @@ test('authors and reopens an addressed Model through the project history', async
   expect(initial.project.documents?.model.schema).toBe('feedbax.spec.model');
 });
 
-test('edits and reopens an authored Evaluate attachment without changing the Model document', async ({ page, request }, info) => {
+test('edits and reopens an authored Evaluate attachment without changing the Model document', async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const seeded = await seedManagedProject(request, []);
   const { projectPath } = seeded;
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, seeded.configuration.project, 'sweep');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, seeded.configuration.project, 'sweep');
   const opened = await request.get(`${projectPath}/open`);
   expect(opened.ok(), await opened.text()).toBe(true);
   const { snapshot } = await opened.json() as StudioProjectDocument;
@@ -212,6 +213,9 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   expect(saved.project.steps?.baseline).toMatchObject({ model_attachments: expect.any(Object) });
   await page.reload();
   await mapStep(page, 'baseline').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await model.locator('[data-id="wrapper"] header').dblclick();
+  await model.locator('[data-id="controller"] header').dblclick();
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
@@ -229,9 +233,9 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toHaveCount(2);
 });
 
-test('persists an attachment in the selected project variant', async ({ page, request }, info) => {
+test('persists an attachment in the selected project variant', async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'variant');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'variant');
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'treated');
   await mapStep(page, 'baseline').click();

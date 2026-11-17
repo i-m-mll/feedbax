@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
@@ -14,9 +15,9 @@ test.use({
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('authors a managed Analyze graph from one saved Evaluate run', async ({ page, request }, info) => {
+test('authors a managed Analyze graph from one saved Evaluate run', async ({ page, request, studio }, info) => {
   test.setTimeout(70_000);
-  const home = String(info.config.metadata.home);
+  const home = studio.home;
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', home, 'managed-analyze'));
   const path = '/api/projects/' + project;
   const runPath = path + '/train-runs';
