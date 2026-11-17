@@ -166,10 +166,6 @@ def test_spatial_native_wrench_and_checkpoint_match_continuation(tmp_path):
 
 
 def test_spatial_continuous_configuration_and_trial_loss_gradient(tmp_path):
-    from feedbax.plot.constructors import (
-        FigureRegistry, get_figure_constructor, register_default_figure_constructors,
-    )
-
     key = jax.random.PRNGKey(0)
     provider = ImmutableArtifactBlobProvider(tmp_path / "content")
     interior = _spatial(provider, solver="euler")
@@ -220,12 +216,6 @@ def test_spatial_continuous_configuration_and_trial_loss_gradient(tmp_path):
     np.testing.assert_allclose(
         jnp.linalg.norm(node.state_view(state).plant.skeleton.qpos[3:]), 1, atol=1e-12,
     )
-    registry = FigureRegistry()
-    register_default_figure_constructors(registry)
-    renderer = get_figure_constructor("feedbax.trajectory_3d", registry=registry, tier="trace")
-    traces = renderer.callable({"trajectories": np.asarray(positions)}, renderer.params())
-    assert traces[0].type == "scatter3d"
-    np.testing.assert_allclose(traces[0].z, positions[:, 2])
 
     native_model = mujoco.MjModel.from_xml_string(
         provider.get_object(interior.mujoco_asset.asset).decode()

@@ -24,10 +24,9 @@ from feedbax.contracts.figure_document import (
     layer_encodings,
     validate_figure_bindings,
 )
-from feedbax.contracts.figure_layout import ComparisonGridParams, FigureView
 from feedbax.dataset import Dataset
 from feedbax.plot.colors import color_add_alpha
-from feedbax.plot.constructors import GridFigureParams, PanelContent, _comparison_grid, _grid_figure
+from feedbax.plot.figure_grid import assemble_figure_grid
 
 
 type Label = str | int | float | bool | None
@@ -231,16 +230,4 @@ def render(
         if len(traces[layer.panel]) == before:
             raise ValueError(f"Layer {layer.name!r} has no plotted groups.")
 
-    panels = []
-    for panel in figure.layout:
-        values = panel.model_dump(exclude_none=True)
-        labels = inferred_labels.get(panel.name, {}) | values.pop("axes_labels", {})
-        panels.append(PanelContent(**values, axes_labels=labels, traces=tuple(traces[panel.name])))
-    view = figure.view
-    grid = ComparisonGridParams.model_validate(
-        view.model_dump(include=set(ComparisonGridParams.model_fields))
-    )
-    presentation = GridFigureParams.model_validate(
-        view.model_dump(include=set(FigureView.model_fields))
-    )
-    return _grid_figure(_comparison_grid(panels, grid, figure=canvas), panels, presentation)
+    return assemble_figure_grid(canvas, figure.layout, figure.view, traces, inferred_labels)
