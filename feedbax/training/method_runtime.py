@@ -155,7 +155,7 @@ class TrainingContext[S: BaseModel]:
         return build_step_optimizer(spec, gradient_clip=gradient_clip)
 
     def optimizer_step[AuxT](
-        self, optimizer: optax.GradientTransformationExtraArgs, model: Graph, state: optax.OptState,
+        self, optimizer: optax.GradientTransformation, model: Graph, state: optax.OptState,
         loss_fn: Callable[[Graph], tuple[jax.Array, AuxT]],
     ) -> OptimizerStep[AuxT]:
         """Differentiate the loss on learned graph parameters, then project constraints."""
@@ -168,7 +168,8 @@ class TrainingContext[S: BaseModel]:
             return loss_fn(eqx.combine(values, frozen))
 
         (loss, aux), grads = eqx.filter_value_and_grad(loss_and_aux, has_aux=True)(trainable)
-        updates, state = optimizer.update(grads, state, trainable, schedule_step=self.step - self.start_step)
+        update = optax.with_extra_args_support(optimizer).update
+        updates, state = update(grads, state, trainable, schedule_step=self.step - self.start_step)
         model = apply_parameter_constraints(eqx.combine(eqx.apply_updates(trainable, updates), frozen))
         return OptimizerStep(model, state, loss, aux, optax.global_norm(grads))
 
@@ -219,8 +220,9 @@ class TrainingLoop:
                     raise ValueError("Training update changed the fixed structure or metadata of method state")
                 return dynamic, jax.tree.map(_metric_array, dict(metrics))
 
+            @jax.jit
             def propose(current, step):
-                return single_update(current, step_keys, run_keys, jnp.broadcast_to(step, (self._replica_count,)))
+                return single_update(current, step_keys, run_keys, jnp.broadcast_to(step, (len(replica_ids),)))
 
             _, metrics_shape = jax.eval_shape(propose, arrays, completed)
             # Rejected and unattempted metric rows are sliced away at the host boundary.
