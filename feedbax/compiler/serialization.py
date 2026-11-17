@@ -552,7 +552,7 @@ def _split_lowering_metadata(
     """Separate graph-level controls from the component's own parameters."""
     params = dict(node_spec.params)
     lowering_metadata = {}
-    if node_spec.type in ("Sum", "feedbax.Sum") and "channel_adapter" in params:
+    if node_spec.type == "feedbax.Sum" and "channel_adapter" in params:
         lowering_metadata["channel_adapter"] = params.pop("channel_adapter")
     if isinstance(params.get("trainable"), bool):
         declaration = component_registry.get(node_spec.type)

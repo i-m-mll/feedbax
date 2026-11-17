@@ -23,11 +23,11 @@ from feedbax.contracts.migrations import (
 )
 from feedbax.contracts.representation import validate_representation_against_component
 from feedbax.registry_errors import RegistryCollisionError
-from feedbax.plugins.declarations import DistributionSource, declaration_key, missing_declaration
+from feedbax.plugins.declarations import DistributionSource, missing_declaration
 
 from .migration_routes import migration_route, source_endpoint, validate_migration_routes
 from .declarations import DeclaredComponent
-from .discovery import compile_owner, source_path
+from .discovery import compile_owner, component_declaration_key, source_path
 from .history import History
 
 
@@ -88,9 +88,9 @@ class ComponentRegistry:
         reserved_names = dict(self._history_names)
         edges = []
         for owner, source in sorted(declarations, key=lambda item: issubclass(item[0], GraphTemplate)):
-            key = declaration_key(owner.__name__, owner.component_key, source)
+            key = component_declaration_key(owner, source)
             namespace, _, local_name = key.rpartition(".")
-            history = owner.component_history or History()
+            history = vars(owner).get("component_history") or History()
             identities = {identity for identity, _ in history.endpoints(namespace, local_name).values()}
             for identity in sorted(identities):
                 if identity in reserved_names:
@@ -105,7 +105,7 @@ class ComponentRegistry:
                 **{(edge.source_type, edge.source_param_schema_version): edge for edge in edges},
             }
             meta, definition_sources, owner_edges = compile_owner(
-                owner, key=key, source=source, registry=compilation,
+                owner, key=key, source=source, history=history, registry=compilation,
             )
             edges.extend(owner_edges)
             runtime_type = meta.params.runtime_type

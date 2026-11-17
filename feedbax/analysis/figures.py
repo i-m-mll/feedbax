@@ -107,7 +107,6 @@ from feedbax.plot.constructors import (
     PanelContent,
     get_figure_constructor,
     get_figure_piece,
-    get_figure_template,
 )
 from feedbax.plot.io import save_figure_with_spec
 from feedbax.persistence.artifact_custody import (
@@ -287,9 +286,7 @@ def resolve_figure_spec(
     value: FigureSpecInput,
     *,
     repo_root: Path | str | None = None,
-    registry: FigureRegistry | None = None,
     project_figure_policy: ContentPinnedJsonBase | None = None,
-    figure_templates: Sequence[FigureTemplate] = (),
     recorded_project_figure_policy: ProjectFigurePolicyProvenance | None = None,
 ) -> ResolvedFigureSpec:
     """Resolve direct or composed authoring to one ordinary current FigureSpec.
@@ -303,29 +300,21 @@ def resolve_figure_spec(
         resolved_payload = value.figure_spec.model_dump(mode="json", exclude_none=True)
         if sha256_bytes(canonical_json_bytes(resolved_payload)) != value.resolved_identity_sha256:
             raise ValueError("ResolvedFigureSpec resolved identity disagrees with FigureSpec")
-        _validate_resolved_template(value.figure_spec, registry)
         return value
     authored = _figure_authored_mapping(value)
     authored_schema_id = str(authored.get("schema_id", FIGURE_SPEC_SCHEMA_ID))
     if authored_schema_id != FIGURE_COMPOSITION_SPEC_SCHEMA_ID:
         figure_spec = _current_figure_spec(authored)
         authored_identity = sha256_bytes(canonical_json_bytes(authored))
-        templates = tuple(figure_templates) or (
-            registry.templates()
-            if registry is not None and project_figure_policy is not None
-            else ()
-        )
         figure_spec, policy_provenance = apply_project_figure_policy(
             figure_spec,
             policy_source=project_figure_policy,
             repo_root=repo_root,
-            figure_templates=templates,
             recorded=recorded_project_figure_policy,
         )
         resolved_identity = sha256_bytes(
             canonical_json_bytes(figure_spec.model_dump(mode="json", exclude_none=True))
         )
-        _validate_resolved_template(figure_spec, registry)
         return ResolvedFigureSpec(
             authored=authored,
             authored_schema_id=authored_schema_id,
@@ -504,20 +493,15 @@ def resolve_figure_spec(
         resolved_figure_spec_sha256=authored_resolved_identity,
         source_inheritance=source_inheritance,
     )
-    templates = tuple(figure_templates) or (
-        registry.templates() if registry is not None and project_figure_policy is not None else ()
-    )
     figure_spec, policy_provenance = apply_project_figure_policy(
         figure_spec,
         policy_source=project_figure_policy,
         repo_root=repo_root,
-        figure_templates=templates,
         recorded=recorded_project_figure_policy,
     )
     resolved_identity = sha256_bytes(
         canonical_json_bytes(figure_spec.model_dump(mode="json", exclude_none=True))
     )
-    _validate_resolved_template(figure_spec, registry)
     return ResolvedFigureSpec(
         authored=authored,
         authored_schema_id=authored_schema_id,
@@ -586,30 +570,16 @@ def _figure_structural_identities(
     return identities
 
 
-def _validate_resolved_template(
-    spec: FigureSpec,
-    registry: FigureRegistry | None,
-) -> None:
-    if spec.template is None or isinstance(spec.template, FigureTemplate) or registry is None:
-        return
-    try:
-        get_figure_template(spec.template, registry=registry)
-    except (KeyError, ValueError) as exc:
-        raise ValueError(f"resolved FigureSpec names unknown template {spec.template!r}") from exc
-
-
 def coerce_figure_spec(
     value: FigureSpecInput,
     *,
     repo_root: Path | str | None = None,
-    registry: FigureRegistry | None = None,
     project_figure_policy: ContentPinnedJsonBase | None = None,
 ) -> FigureSpec:
     """Resolve any supported authoring root to one ordinary current FigureSpec."""
     return resolve_figure_spec(
         value,
         repo_root=repo_root,
-        registry=registry,
         project_figure_policy=project_figure_policy,
     ).figure_spec
 
@@ -843,7 +813,6 @@ def plan_figure_execution(
     resolution = resolve_figure_spec(
         spec,
         repo_root=repo_root,
-        registry=registry,
         project_figure_policy=project_figure_policy,
         recorded_project_figure_policy=recorded_project_figure_policy,
     )
@@ -1218,22 +1187,16 @@ def _declares_data_derived_axis_range(spec: FigureSpec) -> bool:
     )
 
 
-def _figure_template_and_assembler(
-    spec: FigureSpec, registry: FigureRegistry
-) -> tuple[FigureTemplate | None, str]:
-    template = (
-        spec.template
-        if isinstance(spec.template, FigureTemplate)
-        else get_figure_template(spec.template, registry=registry)
-        if spec.template
-        else None
-    )
-    return template, spec.assembler or template.assembler
+def _figure_assembler(spec: FigureSpec) -> str:
+    if spec.assembler is not None:
+        return spec.assembler
+    assert spec.template is not None
+    return spec.template.assembler
 
 
 def figure_piece_inputs(spec: FigureSpec, *, registry: FigureRegistry) -> tuple[ArtifactRef, ...]:
     """Return the JSON artifact inputs declared by the built-in trace binding path."""
-    template, assembler_key = _figure_template_and_assembler(spec, registry)
+    template, assembler_key = spec.template, _figure_assembler(spec)
     if get_figure_constructor(assembler_key, registry=registry).tier == "custom_figure":
         return ()
     artifacts: list[ArtifactRef] = []
@@ -1252,13 +1215,9 @@ def _build_figures(
     root: Path,
     registry: FigureRegistry,
 ) -> list[RenderedFigure]:
-    template, assembler_key = _figure_template_and_assembler(spec, registry)
+    template, assembler_key = spec.template, _figure_assembler(spec)
     assembler_params = {
-        **(
-            getattr(template, "assembler_params", {})
-            if template is not None and not isinstance(spec.template, FigureTemplate)
-            else {}
-        ),
+        **(template.assembler_params if template is not None else {}),
         **spec.assembler_params,
     }
     if "colorbar" in assembler_params:
@@ -2349,11 +2308,7 @@ def _build_figure_manifest(
         resolved_inputs=[item.ref for item in resolved_inputs if item.manifest is not None],
         resolved_pieces=list(execution_trace.resolved_pieces),
         constructor_versions=dict(execution_trace.constructor_versions),
-        template_name=(
-            resolved_spec.template.name
-            if isinstance(resolved_spec.template, FigureTemplate)
-            else resolved_spec.template
-        ),
+        template_name=resolved_spec.template.name if resolved_spec.template is not None else None,
         binding_records=list(execution_trace.binding_records),
         expression_results_digest=sha256_bytes(canonical_json_bytes(binding_payload)),
         provenance=provenance,

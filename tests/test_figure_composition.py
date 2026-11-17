@@ -203,7 +203,7 @@ def test_one_project_policy_applies_bounded_precedence_to_unrelated_figures(
     )
     first = _base_spec(name="first").model_copy(
         update={
-            "template": "probe.shared",
+            "template": template,
             "assembler": None,
             "assembler_params": {"margin": {"l": 40}},
         }
@@ -214,7 +214,6 @@ def test_one_project_policy_applies_bounded_precedence_to_unrelated_figures(
         first,
         repo_root=tmp_path,
         project_figure_policy=policy,
-        figure_templates=[template],
     )
     resolved_second = resolve_figure_spec(
         second,
@@ -307,7 +306,7 @@ def test_project_policy_rejects_scientific_or_constructor_fields(tmp_path: Path)
         resolve_figure_spec(_base_spec(), repo_root=tmp_path, project_figure_policy=policy)
 
 
-def test_recorded_project_policy_replays_without_live_policy_or_template_lookup(
+def test_recorded_project_policy_replays_without_live_policy(
     tmp_path: Path,
 ) -> None:
     original = {
@@ -321,12 +320,11 @@ def test_recorded_project_policy_replays_without_live_policy_or_template_lookup(
         assembler="feedbax.grid_figure",
         assembler_params={"width": 700},
     )
-    authored = _base_spec().model_copy(update={"template": "probe.shared", "assembler": None})
+    authored = _base_spec().model_copy(update={"template": template, "assembler": None})
     initial = resolve_figure_spec(
         authored,
         repo_root=tmp_path,
         project_figure_policy=old_pin,
-        figure_templates=[template],
     )
     assert initial.project_figure_policy is not None
 
@@ -343,7 +341,6 @@ def test_recorded_project_policy_replays_without_live_policy_or_template_lookup(
         authored,
         repo_root=tmp_path,
         project_figure_policy=new_pin,
-        figure_templates=[template],
     )
 
     assert replay.resolved_identity_sha256 == initial.resolved_identity_sha256
@@ -913,12 +910,6 @@ def test_real_hop_cycle_unknown_parent_and_unknown_template_fail_with_paths(
             repo_root=tmp_path,
         )
 
-    with pytest.raises(ValueError, match="unknown template 'missing-template'"):
-        resolve_figure_spec(
-            FigureSpec(name="unknown", template="missing-template"),
-            registry=FigureRegistry(),
-        )
-
 
 def test_real_loader_failures_and_explicit_durable_identity(tmp_path: Path) -> None:
     valid = _base_spec().model_dump(mode="json", exclude_none=True)
@@ -1021,7 +1012,6 @@ def test_execution_manifest_uses_the_same_resolved_semantics_as_display(
     displayed = resolve_figure_spec(
         composed,
         repo_root=tmp_path,
-        registry=application_registry_bundle.figures,
     )
 
     manifest, _ = execute_figure_spec(

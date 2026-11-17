@@ -18,7 +18,8 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
-from feedbax.component_registry import ComponentPack, ComponentRegistry
+from feedbax.component_registry import ComponentRegistry
+from tests.support.component_owners import register_owners
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
 from feedbax.contracts.project import Project
@@ -485,7 +486,7 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     assert not first.runs
     assert any("unknown leaf type 'test.CustomRelay'" in problem.detail for problem in first.diagnostics)
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="test", components=(CustomRelay,)))
+    register_owners(registry, "test", CustomRelay)
     registry.seal()
     registered = compile_project(project, memo=memo, components=registry)
     (train,) = registered.runs
@@ -1148,7 +1149,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     checkpoint = PublishedTrainingCheckpoint.model_validate(trained["outcome"]["completion"]["checkpoint"])
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     assert slot is not None
-    restored = slot.restore()
+    restored = slot.restore(slot.template(ComponentRegistry()))
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")

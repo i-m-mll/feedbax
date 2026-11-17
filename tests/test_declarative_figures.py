@@ -65,7 +65,6 @@ from feedbax.plot.constructors import (
     get_figure_constructor,
     register_figure_piece,
     register_figure_constructor,
-    register_figure_template,
     registered_figure_constructors,
     register_default_figure_constructors,
     _lower_semantic_axis_ranges,
@@ -1155,25 +1154,22 @@ def test_grid_template_and_gutters_render_populated_delivery_widths(
         }
     }
     template_name = f"feedbax.native_grid_layout_{width}"
-    register_figure_template(
-        FigureTemplate(
-            name=template_name,
-            description="Reusable native Plotly appearance and explicit grid gutters.",
-            assembler="feedbax.grid_figure",
-            assembler_params={
-                "width": width,
-                "height": 520,
-                "margin": {"l": 80, "r": 140, "t": 60, "b": 60},
-                "template": plotly_template,
-                "row_label_gutter": 28,
-                "legend_gutter": 32,
-            },
-        ),
-        registry=figure_registry,
+    template = FigureTemplate(
+        name=template_name,
+        description="Reusable native Plotly appearance and explicit grid gutters.",
+        assembler="feedbax.grid_figure",
+        assembler_params={
+            "width": width,
+            "height": 520,
+            "margin": {"l": 80, "r": 140, "t": 60, "b": 60},
+            "template": plotly_template,
+            "row_label_gutter": 28,
+            "legend_gutter": 32,
+        },
     )
     spec = FigureSpec(
         name=f"layout-defaults-{width}",
-        template=template_name,
+        template=template,
         assembler_params={"shared_yaxes": False},
         panels=[
             {
@@ -1562,19 +1558,16 @@ def test_registered_figure_resolves_panel_constructor(
         description="Whole-figure constructor with a registered panel default.",
         registry=figure_registry,
     )
-    register_figure_template(
-        FigureTemplate(
-            name="reviewer.template",
-            description="Template with its own panel selection.",
-            assembler="reviewer.figure",
-            assembler_params={"panel_constructor": "feedbax.comparison_grid"},
-        ),
-        registry=figure_registry,
+    template = FigureTemplate(
+        name="reviewer.template",
+        description="Template with its own panel selection.",
+        assembler="reviewer.figure",
+        assembler_params={"panel_constructor": "feedbax.comparison_grid"},
     )
     spec = FigureSpec(
         name="registered-panel-selection",
         assembler=None if use_template else "reviewer.figure",
-        template="reviewer.template" if use_template else None,
+        template=template if use_template else None,
         assembler_params={"panel_constructor": authored_panel} if authored_panel else {},
         panels=[{"name": "main"}],
     )
@@ -1757,26 +1750,23 @@ def test_execute_figure_spec_fans_per_facet_binding_out_to_panels(
     tmp_path: Path, figure_registry
 ) -> None:
     manifest = _analysis_manifest(tmp_path)
-    register_figure_template(
-        FigureTemplate(
-            name="feedbax.test_faceted_panels",
-            description="Test per-facet panel fan-out.",
-            assembler="feedbax.grid_figure",
-            slots=[
-                SlotSpec(
-                    name="profiles",
-                    constructor="feedbax.profile_band",
-                    multiplicity="per_facet",
-                )
-            ],
-            facet_by=["condition"],
-            facet_target="panels",
-        ),
-        registry=figure_registry,
+    template = FigureTemplate(
+        name="feedbax.test_faceted_panels",
+        description="Test per-facet panel fan-out.",
+        assembler="feedbax.grid_figure",
+        slots=[
+            SlotSpec(
+                name="profiles",
+                constructor="feedbax.profile_band",
+                multiplicity="per_facet",
+            )
+        ],
+        facet_by=["condition"],
+        facet_target="panels",
     )
     spec = FigureSpec(
         name="faceted-panels",
-        template="feedbax.test_faceted_panels",
+        template=template,
         inputs=[_contained_analysis_ref(manifest)],
         panels=[
             {
@@ -1830,26 +1820,23 @@ def test_execute_figure_spec_fans_facets_out_to_separate_renders(
     tmp_path: Path, figure_registry
 ) -> None:
     manifest = _analysis_manifest(tmp_path)
-    register_figure_template(
-        FigureTemplate(
-            name="feedbax.test_faceted_figures",
-            description="Test separate-figure facet fan-out.",
-            assembler="feedbax.grid_figure",
-            slots=[
-                SlotSpec(
-                    name="profiles",
-                    constructor="feedbax.profile_band",
-                    multiplicity="per_facet",
-                )
-            ],
-            facet_by=["condition"],
-            facet_target="figures",
-        ),
-        registry=figure_registry,
+    template = FigureTemplate(
+        name="feedbax.test_faceted_figures",
+        description="Test separate-figure facet fan-out.",
+        assembler="feedbax.grid_figure",
+        slots=[
+            SlotSpec(
+                name="profiles",
+                constructor="feedbax.profile_band",
+                multiplicity="per_facet",
+            )
+        ],
+        facet_by=["condition"],
+        facet_target="figures",
     )
     spec = FigureSpec(
         name="faceted-figures",
-        template="feedbax.test_faceted_figures",
+        template=template,
         inputs=[_contained_analysis_ref(manifest)],
         slot_bindings={
             "profiles": TraceBinding(

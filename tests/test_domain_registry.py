@@ -125,25 +125,6 @@ def test_subgraph_missing_interior_behavior_remains_unchanged() -> None:
         spec_to_graph(graph, ComponentRegistry())
 
 
-def test_legacy_network_missing_interior_behavior_remains_unchanged() -> None:
-    graph = GraphSpec(
-        nodes={
-            "network": ComponentSpec(
-                type="Network",
-                params={},
-                input_ports=[],
-                output_ports=[],
-            )
-        }
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="Subgraph node 'network' requires a subgraph",
-    ):
-        spec_to_graph(graph, ComponentRegistry())
-
-
 def test_domain_payload_schema_rejects_unknown_old_version() -> None:
     family = default_spec_registry.resolve("DomainRegistryPayload")
     assert family.schema_id == DOMAIN_REGISTRY_PAYLOAD_SCHEMA_ID

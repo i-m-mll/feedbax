@@ -4,6 +4,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -25,15 +26,19 @@ from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.web.api.projects import router
 from feedbax.plugins.composition import load_application
-from tests.support.installed_package import install_test_package
+from tests.support.installed_package import install_discovery_fixture
 
-_FIXTURE = Path(__file__).parent / "fixtures" / "downstream" / "discovery_provider"
 _ANALYSIS = "entry_point_provider.shift_series"
 
 
 @pytest.fixture(scope="module")
 def installed_site(tmp_path_factory):
-    return install_test_package(_FIXTURE, tmp_path_factory.mktemp("installed-declarations"))
+    return install_discovery_fixture(tmp_path_factory.mktemp("installed-declarations"))
+
+
+def _child_environment(installed_site: Path) -> dict[str, str]:
+    paths = os.environ.get("PYTHONPATH", "").split(os.pathsep)
+    return os.environ | {"PYTHONPATH": os.pathsep.join((str(installed_site), *filter(None, paths)))}
 
 
 def test_installed_package_appears_in_cli_and_studio_catalogs(installed_site, monkeypatch, capsys):
@@ -97,18 +102,18 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
     bindings.write_bytes(raw_bindings)
     log = tmp_path / "events.jsonl"
     log.touch()
-    subprocess.run(
+    worker = subprocess.run(
         [sys.executable, "-c", "from feedbax.light_host_worker import main; raise SystemExit(main([]))"],
-        env=os.environ | {
-            "PYTHONPATH": os.pathsep.join((str(installed_site), *filter(None, os.environ.get("PYTHONPATH", "").split(os.pathsep)))),
+        env=_child_environment(installed_site) | {
             "FEEDBAX_HOST_JOB_ID": "test-attempt",
             "FEEDBAX_HOST_EVENT_LOG": str(log),
             "FEEDBAX_HOST_INPUT": str(payload),
             "FEEDBAX_HOST_COMPLETION_BINDINGS": str(bindings),
             "FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256": sha256(raw_bindings).hexdigest(),
         },
-        check=True, timeout=45, text=True, capture_output=True,
+        timeout=45, text=True, capture_output=True,
     )
+    assert worker.returncode == 0, worker.stderr
     result = json.loads(log.read_text())["data"]
     assert result["outcome"] == "succeeded"
     publish_light_success(delivery.model_dump(mode="json"), "test-attempt", request.id, origins, result["products"])
@@ -117,3 +122,19 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
         content=shifted.content, descriptor_sha256=shifted.descriptor["descriptor_sha256"],
     )) as data:
         np.testing.assert_array_equal(data.data("value"), [7, 9])
+
+
+def test_describe_fails_if_an_installed_package_cannot_import(installed_site, tmp_path):
+    broken_site = shutil.copytree(installed_site, tmp_path / "broken-site")
+    (broken_site / "entry_point_provider" / "declarations" / "broken.py").write_text(
+        "raise ImportError('fixture import failed')\n",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "feedbax", "describe"],
+        env=_child_environment(broken_site),
+        timeout=45, text=True, capture_output=True,
+    )
+    assert result.returncode == 2, result.stderr
+    assert not result.stdout
+    assert "entry_point_provider.declarations.broken" in result.stderr
+    assert "feedbax-discovery-fixture" in result.stderr

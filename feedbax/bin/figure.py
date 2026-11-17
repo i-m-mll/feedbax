@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import asdict
 import json
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,6 @@ from feedbax.plugins.composition import compose_application
 from feedbax.plot.constructors import (
     constructor_catalog,
     registered_figure_pieces,
-    registered_figure_templates,
 )
 
 
@@ -52,12 +52,12 @@ def main(argv: list[str] | None = None) -> int:
     list_parser.add_argument("kind", choices=("constructors", "templates", "pieces"))
 
     args = parser.parse_args(argv)
-    registry = asyncio.run(compose_application()).bundle.figures
+    bundle = asyncio.run(compose_application()).bundle
+    registry = bundle.figures
     if args.command == "resolve":
         resolved = resolve_figure_spec(
             _load_spec(args.spec),
             repo_root=args.repo_root,
-            registry=registry,
         )
         if args.with_lineage:
             _print_json(resolved.model_dump(mode="json", exclude_none=True))
@@ -88,8 +88,16 @@ def main(argv: list[str] | None = None) -> int:
     elif args.kind == "templates":
         _print_json(
             [
-                item.model_dump(mode="json", exclude_none=True)
-                for item in registered_figure_templates(registry=registry)
+                {
+                    "key": item.key,
+                    "label": item.label,
+                    "description": item.description,
+                    "revision": item.revision,
+                    "settings_schema": item.settings_model.model_json_schema(),
+                    "source": asdict(item.source),
+                }
+                for key in bundle.figure_templates.keys()
+                for item in (bundle.figure_templates.resolve(key),)
             ]
         )
     else:

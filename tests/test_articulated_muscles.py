@@ -8,7 +8,7 @@ import pytest
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
-from feedbax.component_registry.discovery import ComponentPack
+from tests.support.component_owners import register_owners
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.component import PortType
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
@@ -108,7 +108,7 @@ def test_authored_laws_roundtrip_and_couple_at_the_same_stage(tmp_path):
       </mujoco>
     """)
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="test", components=(InstantTension,)))
+    register_owners(registry, "test", InstantTension)
     document = _document(asset)
     key = jax.random.PRNGKey(0)
     excitation = jnp.array([0.3, 0.5, 0.5])
