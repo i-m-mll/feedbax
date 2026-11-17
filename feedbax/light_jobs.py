@@ -97,9 +97,6 @@ def resolve_analysis_operation(
             task = registry.python_tasks.resolve(port.task_key)
             if task is None or task.parameters is not operation.value.task_parameters:
                 raise ValueError(f"Operation {definition.key!r} requires the declared settings for {port.task_key!r}")
-    settings = operation.value.parameter_model.model_validate(spec.params)
-    if settings.model_dump(mode="json") != spec.params:
-        raise ValueError(f"Operation {operation.key!r} settings differ from their validated values")
     return operation
 
 
@@ -130,7 +127,7 @@ def validate_light_request(
     request: DecodedRequest, *, registry: ApplicationRegistryBundle | None = None,
     read_document: Callable[[ContentRef], DocumentInput] | None = None,
 ) -> tuple[str, ResolvedDeclaration[RegisteredOperation] | None]:
-    """Check managed dataset delivery support and return its declared output role."""
+    """Check declaration and binding metadata before managed dataset delivery."""
     spec = request.spec
     operation = None
     if isinstance(spec, AnalysisRequestSpec):

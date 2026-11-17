@@ -409,9 +409,16 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     still_current = light_result(downstream_plan, "gain")
     assert still_current.validity.state == "current"
     assert still_current.receipt == initial.result.receipt
-    downstream_run = jobs.admit_plan(
-        folders, downstream_plan, run_keys=(selected[2],), token="reuse-gain", reuse_completed=True,
-    )
+    settings = registry.operations.resolve(f"{witness.PACKAGE}.power_iteration").value.parameter_model
+
+    def unexpected_settings_validation(*args, **kwargs):
+        pytest.fail("Unchanged Run executed the plugin's settings validation.")
+
+    with monkeypatch.context() as unchanged:
+        unchanged.setattr(settings, "model_validate", unexpected_settings_validation)
+        downstream_run = jobs.admit_plan(
+            folders, downstream_plan, run_keys=(selected[2],), token="reuse-gain", reuse_completed=True,
+        )
     assert {item.disposition for item in downstream_run.items} == {"reused"}
 
     data_file.write_text("second calibration")
