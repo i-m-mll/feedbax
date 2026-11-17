@@ -7,8 +7,9 @@ import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
-import { activate, chooseOption, number, openView, palette, typeValue } from './fixtures/studioKeyboard';
+import { activate, chooseOption, chooseStepKind, number, openView, palette, typeValue } from './fixtures/studioKeyboard';
 import { recoveryTest, type RecoveryStudio } from './fixtures/studioRecovery';
+import { pick } from './fixtures/controls';
 
 test.use({
   trace: 'off',
@@ -183,7 +184,8 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   const sourceLabels = pairedInput?.rows.map(({ label }) => label) ?? [sources[0].key.row];
   await activate(page, table.getByRole('button', { name: sourceLabels[0], exact: true }));
   if (paired) await activate(page, table.getByRole('button', { name: sourceLabels[1], exact: true }), 'Shift+Enter');
-  await palette(page, 'newStep', 'Analyze');
+  await palette(page, 'newStep', 'New Step');
+  await chooseStepKind(page, 'Analyze', true);
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
@@ -269,7 +271,8 @@ async function exerciseSavedResults({ page, request }: WalkthroughContext, info:
   expectAnalyzeSources(original);
   await openView(page, 'figures');
   await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
-  await palette(page, 'newStep', 'Report');
+  await palette(page, 'newStep', 'New Step');
+  await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('textbox', { name: 'Report Title', exact: true })).toBeVisible();
   await palette(page, 'addText', 'Add Text');
   const addText = page.getByRole('dialog', { name: 'Add Text', exact: true });
@@ -534,7 +537,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     await expect(nominal).toHaveAttribute('aria-pressed', 'true');
     await expect(heavy).toHaveAttribute('aria-pressed', 'true');
     await page.keyboard.press('Meta+K');
-    await palette.getByRole('combobox').fill('Analyze');
+    await palette.getByRole('combobox').fill('New Step');
   }
   async function successor(kind: 'Train' | 'Evaluate', id: string) {
     await openRuns('train');
@@ -542,8 +545,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
       && new URL(response.url()).pathname === path + '/files'
       && response.request().postDataJSON().file.id === id);
     await train.getByRole('button', { name: 'New Step train', exact: true }).click();
-    await page.getByRole('dialog', { name: 'New Step', exact: true })
-      .getByRole('button', { name: kind, exact: true }).click();
+    await chooseStepKind(page, kind);
     const created = await creation;
     expect(created.status(), await created.text()).toBe(201);
     await expect(mapStep(page, id)).toHaveAttribute('aria-pressed', 'true');
@@ -551,7 +553,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   }
 
   await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded', timeout: 10_000 });
-  await expect(variants).toHaveValue('base');
+  await expect(variants).toHaveText('base');
   const initial = await snapshot();
   await runStep('train', 1);
   await runStep('conditions', 2);
@@ -568,19 +570,20 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(first.trials.length).toBeGreaterThan(0);
   expect(second.trials).toEqual(first.trials);
 
-  await variants.selectOption('compare');
+  await pick(page, variants, 'compare');
   await selectPair();
-  await expect(palette.getByRole('option', { name: 'Analyze', exact: true })).toHaveCount(0);
+  await expect(palette.getByRole('option', { name: 'New Step', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await openRuns('train');
   await expect(train.getByRole('button', { name: 'New Step train', exact: true })).toHaveCount(0);
 
-  await variants.selectOption('base');
+  await pick(page, variants, 'base');
   await selectPair();
   const creating = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === path + '/files'
     && response.request().postDataJSON().file.kind === 'step');
-  await palette.getByRole('option', { name: 'Analyze', exact: true }).press('Enter');
+  await palette.getByRole('option', { name: 'New Step', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Analyze', true);
   const created = await creating;
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: paired } = await created.json() as StudioProjectDocument;

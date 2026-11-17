@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { StudioProjectDocument } from '../../../src/generated/studioContracts';
-import { activate, activateMenuItem, number } from './studioKeyboard';
+import { activate, activateMenuItem, chooseStepKind, number } from './studioKeyboard';
 
 const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 const run = promisify(execFile);
@@ -54,7 +54,7 @@ export function mapStep(page: Page, stepId: string) {
 }
 
 export async function chooseTrainSuccessor(page: Page) {
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Train');
 }
 
 export async function captureStudioWindow(page: Page, info: TestInfo, name: string) {

@@ -7,6 +7,7 @@ import {
   appendManagedFiles, authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot,
   runProjectFixture, seedManagedProject,
 } from './fixtures/canonicalTrain';
+import { chooseStepKind } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
 const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
@@ -212,7 +213,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const train = page.getByRole('article', { name: 'Train train', exact: true });
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  await chooseStepKind(page, 'Evaluate');
   expect((await created).status()).toBe(201);
   const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
   const metric = subset.getByRole('textbox', { name: 'Metric', exact: true });
@@ -412,7 +413,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(train).toContainText('2 of 3');
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  await chooseStepKind(page, 'Evaluate');
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
   const authored = (await response.json() as StudioProjectDocument).snapshot.project.steps.evaluate;
@@ -504,7 +505,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await slow.click({ modifiers: ['Shift'] });
   const second = responseFor(page, projectPath + '/files');
   await primary(page).getByRole('button', { name: 'New Step', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  await chooseStepKind(page, 'Evaluate');
   const secondCreated = await second;
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);
   const { snapshot: withSecond } = await secondCreated.json() as StudioProjectDocument;

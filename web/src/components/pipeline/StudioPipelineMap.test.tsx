@@ -12,7 +12,7 @@ import {
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { emptyPipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
-import { StudioPipelineMap, type StudioPipelineMapProps } from './StudioPipelineMap';
+import { StudioPipelineMap, StudioPipelineMapDrawer, type StudioPipelineMapProps } from './StudioPipelineMap';
 import { fullMapFits, type PipelineCardPresentation } from './pipelineMapLayout';
 
 beforeEach(() => {
@@ -280,11 +280,11 @@ it('uses the region at natural scale to decide when full cards fit', () => {
   expect(fullMapFits(columns.map((column) => column.slice(0, 2)), 580, 900, new Map())).toBe(false);
 });
 
-it('uses one creation position on an empty map', () => {
+it('ends the drawer of an empty project with its add row', () => {
   const onNewStep = vi.fn();
-  mapWithState({ steps: [], edges: [] }, { drawerOpen: true, newStepCommand: () => bindStudioCommand('newStep', onNewStep) });
-  const [create] = screen.getAllByRole('button');
-  expect(screen.queryByRole('navigation')).toBeNull();
-  fireEvent.click(create);
+  render(<StudioPipelineMapDrawer plan={{ steps: [], edges: [] }} state={emptyPipelineSelection} onSelectionChange={vi.fn()}
+    newStepCommand={() => bindStudioCommand('newStep', onNewStep)} />);
+  const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
+  fireEvent.keyDown(drawer.getByRole('button', { name: studioName('newStep') }), { key: 'Enter' });
   expect(onNewStep).toHaveBeenCalledWith();
 });

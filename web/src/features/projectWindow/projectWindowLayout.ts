@@ -20,12 +20,12 @@ export type PreferredWindowSize =
 
 export type ProjectWindowSizePreview = Partial<Record<PreferredWindowSize, number>>;
 
+/** `state` says which regions are drawn: callers release a region the focused view supplies nothing for. */
 export function fitProjectWindow(
   width: number,
   height: number,
   state: ProjectWindowState,
   preview: ProjectWindowSizePreview = {},
-  sideContent = { drawer: true, inspector: true },
 ) {
   const size = (key: PreferredWindowSize) => preview[key] ?? state[key];
   const map = fitPanes(width, minSlotWidth, [{
@@ -42,11 +42,8 @@ export function fitProjectWindow(
 
   const detailsDrawerWidth = size('detailsDrawerWidth');
   const inspectorWidth = size('inspectorWidth');
-  const sideWidth = (state.detailsDrawerOpen ? Math.max(minDetailsDrawerWidth, detailsDrawerWidth) : 0)
-    + (state.inspectorOpen ? Math.max(minInspectorWidth, inspectorWidth) : 0);
-  const compact = width < (state.secondaryView === null ? minSlotWidth : 2 * minSlotWidth) + sideWidth;
-  const drawerOpen = state.detailsDrawerOpen && (!compact || sideContent.drawer);
-  const inspectorOpen = state.inspectorOpen && (!compact || sideContent.inspector);
+  const drawerOpen = state.detailsDrawerOpen;
+  const inspectorOpen = state.inspectorOpen;
   const splitMinimum = 2 * minSlotWidth
     + (drawerOpen ? Math.max(minDetailsDrawerWidth, detailsDrawerWidth) : 0)
     + (inspectorOpen ? minInspectorWidth : 0);

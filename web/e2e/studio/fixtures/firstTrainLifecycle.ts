@@ -17,7 +17,7 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
     JSON.parse(await runProjectFixture(witness, action, home, project, ...args));
   const declared = await observe('declare-variants', saved.revision);
   await page.reload();
-  await expect(page.getByRole('combobox', { name: 'Variant', exact: true })).toHaveValue('base');
+  await expect(page.getByRole('combobox', { name: 'Variant', exact: true })).toHaveText('base');
   const current = await savedProject();
   expect(current.revision).toBe(declared.revision);
   expect(current.project.documents).toEqual(saved.project.documents);

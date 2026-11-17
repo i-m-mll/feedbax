@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { ModelFieldResponse, StudioProjectDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseStepKind } from './fixtures/studioKeyboard';
 
 test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
 
@@ -8,7 +9,7 @@ test('reopens a Model duration range and an integer sample in their saved forms'
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Train');
   await mapStep(page, 'train').click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
@@ -46,7 +47,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Train');
   await mapStep(page, 'train').click();
 
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });

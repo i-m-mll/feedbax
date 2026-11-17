@@ -1,6 +1,8 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseStepKind } from './fixtures/studioKeyboard';
+import { pick } from './fixtures/controls';
 
 test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
 
@@ -43,7 +45,7 @@ test('authors and reopens an addressed Model through the project history', async
   const card = (id: string) => model.locator(`.react-flow__node[data-id="${id}"]`);
   await page.goto(url);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Train');
   await expect(model.locator('[data-boundary="true"]')).toHaveCount(2);
   await mapStep(page, 'train').click();
   await expect(inspector.getByRole('textbox', { name: 'Step', exact: true })).toBeEnabled();
@@ -231,7 +233,7 @@ test('persists an attachment in the selected project variant', async ({ page, re
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'variant');
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
-  await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('treated');
+  await pick(page, page.getByRole('combobox', { name: 'Variant', exact: true }), 'treated');
   await mapStep(page, 'baseline').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });

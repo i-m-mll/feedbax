@@ -81,10 +81,8 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await mark(excluded).press('Escape');
   await expect(mark(excluded)).toHaveAttribute('aria-pressed', 'true');
 
-  const fitMap = async () => {
-    await mapStep(page, 'train').press('Shift+F10');
-    await page.getByRole('menuitem', { name: 'Fit View', exact: true }).press('Enter');
-  };
+  const rail = page.getByRole('navigation', { name: 'Details', exact: true });
+  const fitMap = () => rail.getByRole('button', { name: 'Fit View', exact: true }).click();
   const paneControl = canvas.locator('.react-flow__pane');
   const motion = [];
   for (const reducedMotion of ['no-preference', 'reduce'] as const) {
@@ -121,9 +119,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await info.attach('pipeline-zoom-motion', { body: JSON.stringify(motion), contentType: 'application/json' });
 
   const initial = await camera();
-  await mapStep(page, 'train').press('Shift+F10');
-  const menu = page.getByRole('menu', { name: 'Pipeline Map' });
-  await menu.getByRole('menuitem', { name: 'Zoom In', exact: true }).press('Enter');
+  await rail.getByRole('button', { name: 'Zoom In', exact: true }).click();
   await expect.poll(async () => (await camera()).zoom).toBeGreaterThan(initial.zoom);
   const zoomed = await camera();
   const pane = await canvas.locator('.react-flow__pane').boundingBox();

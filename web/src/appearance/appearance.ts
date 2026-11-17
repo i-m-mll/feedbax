@@ -6,6 +6,7 @@ export const appearanceChoices = {
   },
   size: { initial: '13', commands: { 12: 'size12', 13: 'size13', 14: 'size14' } },
   density: { initial: 'regular', commands: { compact: 'densityCompact', regular: 'densityRegular' } },
+  'empty-map': { initial: 'blank', commands: { blank: 'emptyMapBlank', card: 'emptyMapCard' } },
 } as const;
 
 type Choices = typeof appearanceChoices;
