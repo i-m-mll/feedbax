@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, FiniteFloat, NonNegativeInt, PositiveInt, model_validator
 
-from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.request_refs import Name, ReferenceValue, Sha256
 
 
@@ -40,6 +40,7 @@ class ComputationStart(ReferenceValue):
     slot: Name
     arguments: ArgumentIdentity
     binding: ContentObjectRef | None = None
+    binding_inputs: tuple[ContentObjectRef | ContentTreeRef, ...] = ()
 
 
 class EnvironmentCall(ReferenceValue):
@@ -97,8 +98,23 @@ class ProgramIdentity(ReferenceValue):
 class TrainPrefix(ReferenceValue):
     kind: Literal["train"] = "train"
     precision: Literal["float32", "float64"]
-    losses: tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
+    losses: tuple[FiniteFloat, ...] = Field(min_length=1, max_length=5)
     parameters: ContentObjectRef
+    parameters_descriptor_sha256: Sha256
+
+
+class EvaluateOutput(ReferenceValue):
+    slot: Name
+    values: ContentObjectRef
+    descriptor_sha256: Sha256
+
+
+class EvaluatePrefix(ReferenceValue):
+    kind: Literal["evaluate"] = "evaluate"
+    outputs: tuple[EvaluateOutput, ...] = Field(min_length=1, max_length=5)
+
+
+type ComputationPrefix = Annotated[TrainPrefix | EvaluatePrefix, Field(discriminator="kind")]
 
 
 class ComputationTrace(ReferenceValue):
@@ -108,7 +124,7 @@ class ComputationTrace(ReferenceValue):
     starts: tuple[ComputationStart, ...] = Field(min_length=1)
     programs: tuple[ProgramIdentity, ...] = Field(min_length=1)
     completed_steps: PositiveInt
-    prefix: TrainPrefix | None = None
+    prefix: ComputationPrefix | None = None
 
     @model_validator(mode="after")
     def _coverage(self) -> ComputationTrace:
@@ -118,9 +134,29 @@ class ComputationTrace(ReferenceValue):
             raise ValueError("Each computation slot must have one exact start and at least one program")
         if len(set(signatures)) != len(signatures):
             raise ValueError("Each computation specialization must occur once per slot")
-        if self.prefix is not None and self.completed_steps < len(self.prefix.losses):
+        if isinstance(self.prefix, TrainPrefix) and self.completed_steps < len(self.prefix.losses):
             raise ValueError("The training prefix must consist of completed updates")
+        if isinstance(self.prefix, EvaluatePrefix) and (
+            [output.slot for output in self.prefix.outputs] != slots[:len(self.prefix.outputs)]
+            or self.completed_steps < len(self.prefix.outputs)
+        ):
+            raise ValueError("The evaluation prefix must name the first completed slots")
         return self
+
+    def content_references(self) -> tuple[ContentObjectRef | ContentTreeRef, ...]:
+        """Return the custody edges needed to read and repeat the computation."""
+        refs = [reference for start in self.starts for reference in start.binding_inputs]
+        refs.extend(start.binding for start in self.starts if start.binding is not None)
+        refs.extend(
+            lowering.raw_program for program in self.programs
+            for lowering in (program.reference, program.execution)
+            if lowering is not None and lowering.raw_program is not None
+        )
+        if isinstance(self.prefix, TrainPrefix):
+            refs.append(self.prefix.parameters)
+        elif isinstance(self.prefix, EvaluatePrefix):
+            refs.extend(output.values for output in self.prefix.outputs)
+        return tuple(refs)
 
 
 class DriverChanged(ReferenceValue):
@@ -190,7 +226,7 @@ class PrefixChanged(ReferenceValue):
 
 class PrefixUnavailable(ReferenceValue):
     status: Literal["unavailable"] = "unavailable"
-    reason: Literal["profile", "output_unavailable", "unreadable_witness", "foreign_call"]
+    reason: Literal["profile", "output_unavailable", "unreadable_witness"]
 
 
 type PrefixComparison = Annotated[

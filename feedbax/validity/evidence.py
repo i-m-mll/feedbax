@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from feedbax.contracts.artifact_custody import ContentObjectRef, ContentRetentionTarget, ContentRootRecord
+from feedbax.contracts.artifact_custody import ContentObjectRef, ContentRetentionTarget, ContentRootRecord, ContentTreeRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import CodeTrace, ReceiptEvidence
 from feedbax.persistence.content_retention import read_active_roots
@@ -21,19 +21,19 @@ def read_execution_evidence(store: ImmutableArtifactBlobProvider, ref: ContentOb
 
 
 def evidence_objects(store: ImmutableArtifactBlobProvider, trace: CodeTrace) -> Iterator[ContentObjectRef]:
+    from feedbax.persistence.receipt_content import tree_objects
+
     pending = [trace]
     seen_prefixes: set[str] = set()
     while pending:
         segment = pending.pop()
         yield from (source.content for source in segment.sources)
         if (computation := segment.computation) is not None:
-            yield from (start.binding for start in computation.starts if start.binding is not None)
-            for program in computation.programs:
-                for lowered in (program.reference, program.execution):
-                    if lowered is not None and lowered.raw_program is not None:
-                        yield lowered.raw_program
-            if computation.prefix is not None:
-                yield computation.prefix.parameters
+            for reference in computation.content_references():
+                if isinstance(reference, ContentTreeRef):
+                    yield from tree_objects(store, reference)
+                else:
+                    yield reference
         for prefix in segment.prefixes:
             if prefix.sha256 not in seen_prefixes:
                 seen_prefixes.add(prefix.sha256)
