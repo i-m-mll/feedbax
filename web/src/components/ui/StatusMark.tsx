@@ -75,3 +75,15 @@ export function StatusMark({ status, label, className, ...props }: StatusMarkPro
     </span>
   );
 }
+
+/** Statuses from the one that most needs attention to the one that needs none. */
+const severity: readonly StatusMarkStatus[] = [
+  'failed', 'corrupt', 'cannot_run', 'blocked', 'interrupted', 'awaiting_authorization', 'stale', 'environment',
+  'stopping', 'running', 'collecting', 'starting', 'checking', 'queued', 'unchecked', 'stopped', 'not_run', 'succeeded',
+];
+
+/** The status of a set that most needs attention, with how many members have it. */
+export function worstStatus(counts: Readonly<Partial<Record<StatusMarkStatus, number>>>) {
+  const status = severity.find((candidate) => (counts[candidate] ?? 0) > 0);
+  return status && { status, count: counts[status]! };
+}

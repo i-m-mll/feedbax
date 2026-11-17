@@ -20,6 +20,7 @@ import {
 import { mapRunCells, type RunMark } from './pipelineMapLayout';
 import { RunContextMenu, type RunMenu } from './RunContextMenu';
 import { Button } from '@/components/ui/Button';
+import { ScrollFade } from '@/components/ui/ScrollFade';
 
 export type ApplyMapSelection = (change: (state: PipelineSelectionState) => PipelineSelectionState) => void;
 
@@ -57,6 +58,13 @@ interface MarkPresentation {
   mark: RunMark;
   label: string;
   statuses: readonly [StudioResultState, number][];
+}
+
+interface ProjectedCell {
+  key: string;
+  row: number;
+  column: number;
+  marks: (MarkPresentation & { id: string })[];
 }
 
 function MarkButton({
@@ -139,14 +147,17 @@ function MarkButton({
   } />;
 }
 
+const bandKeys: Record<string, string> = { ArrowLeft: 'ArrowUp', ArrowRight: 'ArrowDown', ArrowUp: 'ArrowLeft', ArrowDown: 'ArrowRight' };
+
 function navigateMarks(event: KeyboardEvent<HTMLDivElement>) {
   const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
   if (event.defaultPrevented || !keys.includes(event.key) || !(event.target instanceof HTMLElement)) return;
+  const key = event.currentTarget.dataset.orientation === 'band' ? bandKeys[event.key] : event.key;
   const cell = event.target.closest<HTMLElement>('[aria-colindex]');
   const row = cell?.closest<HTMLElement>('[aria-rowindex]');
   if (!cell || !row) return;
-  const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
-  const direction = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+  const horizontal = key === 'ArrowLeft' || key === 'ArrowRight';
+  const direction = key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 1;
   const buttons = [...cell.querySelectorAll<HTMLButtonElement>('button')];
   const adjacent = horizontal ? buttons[buttons.indexOf(event.target as HTMLButtonElement) + direction] : undefined;
   const selector = '[aria-colindex]';
@@ -196,7 +207,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
     const positions = (sweep?: PlanSweepView) => new Map(sweep?.values.map(({ id }, index) => [id, index]));
     const rows = positions(rowSweep);
     const columns = positions(columnSweep);
-    const projectedCells = [...cells].map(([key, cell]) => ({
+    const projectedCells = [...cells].map(([key, cell]): ProjectedCell => ({
       key,
       row: (rows.get(cell.row) ?? rows.size) + (columnSweep ? 2 : 1),
       column: (columns.get(cell.column) ?? columns.size) + (rowSweep ? 2 : 1),
@@ -221,7 +232,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
         return { id, mark, label, statuses: [...counts] };
       }),
     }));
-    const cellsByRow = new Map<number, typeof projectedCells>();
+    const cellsByRow = new Map<number, ProjectedCell[]>();
     for (const cell of projectedCells) {
       const row = cellsByRow.get(cell.row);
       if (row) row.push(cell);
@@ -244,8 +255,50 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   const boxRows = terms.length === 1 && chosenRows !== undefined;
   const boxColumns = terms.length === 1 && chosenColumns !== undefined;
   const boxIntersections = terms.length === 2 && chosenRows !== undefined && chosenColumns !== undefined;
+  const marksOf = (cell: ProjectedCell, heading?: PlanSweepView['values'][number]) => (
+    <div role="gridcell" aria-colindex={cell.column} key={cell.key}
+      data-map-group-cell={boxIntersections && heading && chosenRows.includes(heading.id)
+        && chosenColumns.includes(grid.columnSweep?.values[cell.column - 2]?.id ?? '') ? '' : undefined}
+      className="relative flex flex-wrap items-center justify-center gap-1"
+      style={grid.columnSweep ? { gridColumn: cell.column, gridRow: cell.row, maxWidth: 192 } : { maxWidth: 192 }}>
+      {cell.marks.map((item) => (
+        <MarkButton key={item.id} item={item} stepId={step.id} selected={selected}
+          selectionKind={selection?.kind} upstream={upstream} downstream={downstream}
+          applySelection={applySelection} runMenu={runMenu} />
+      ))}
+    </div>
+  );
+  if (grid.rowSweep && !grid.columnSweep) {
+    const sweep = grid.rowSweep;
+    return (
+      <ScrollFade axis="y" className="nowheel max-h-56 p-1">
+        <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount} aria-colcount={2}
+          data-orientation="band" onKeyDown={navigateMarks}
+          data-separate-labels={terms.length > 0 && !boxRows ? '' : undefined}
+          className="studio-map-run-grid flex flex-wrap items-start gap-x-1.5 gap-y-1">
+          {Array.from({ length: grid.rowCount }, (_, index) => {
+            const row = index + 1;
+            const heading = sweep.values[index];
+            return (
+              <div role="row" aria-rowindex={row} key={row} className="relative inline-flex flex-col items-center gap-1">
+                {boxRows && heading && chosenRows.includes(heading.id) &&
+                  <span aria-hidden="true" className="studio-map-group-box" />}
+                {heading && (
+                  <div role="rowheader" aria-colindex={1}>
+                    <MapSweepValue sweep={sweep} value={heading} stepId={step.id}
+                      selection={selection} applySelection={applySelection} />
+                  </div>
+                )}
+                {grid.cellsByRow.get(row)?.map((cell) => marksOf(cell, heading))}
+              </div>
+            );
+          })}
+        </div>
+      </ScrollFade>
+    );
+  }
   return (
-    <div className="nowheel max-h-56 overflow-auto p-1">
+    <ScrollFade axis="both" className="nowheel max-h-56 p-1">
       <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount}
         aria-colcount={grid.columnCount + Number(!!grid.rowSweep)} onKeyDown={navigateMarks}
         data-separate-labels={terms.length > 0 && !boxRows && !boxColumns ? '' : undefined}
@@ -288,23 +341,11 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
                     selection={selection} applySelection={applySelection} />
                 </div>
               )}
-              {grid.cellsByRow.get(row)?.map((cell) => (
-                <div role="gridcell" aria-colindex={cell.column} key={cell.key}
-                  data-map-group-cell={boxIntersections && heading && chosenRows.includes(heading.id)
-                    && chosenColumns.includes(grid.columnSweep?.values[cell.column - 2]?.id ?? '') ? '' : undefined}
-                  className="relative flex flex-wrap items-center justify-center gap-1"
-                  style={{ gridColumn: cell.column, gridRow: row, maxWidth: 192 }}>
-                  {cell.marks.map((item) => (
-                    <MarkButton key={item.id} item={item} stepId={step.id} selected={selected}
-                      selectionKind={selection?.kind} upstream={upstream} downstream={downstream}
-                      applySelection={applySelection} runMenu={runMenu} />
-                  ))}
-                </div>
-              ))}
+              {grid.cellsByRow.get(row)?.map((cell) => marksOf(cell, heading))}
             </div>
           );
         })}
       </div>
-    </div>
+    </ScrollFade>
   );
 });

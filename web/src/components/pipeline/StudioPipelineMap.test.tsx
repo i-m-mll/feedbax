@@ -106,8 +106,8 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
   });
   const card = within(screen.getByRole('article'));
   const header = card.getByRole('button', { name: 'Select reach Train' });
-  const first = card.getByRole('button', { name: mark('rate 0.003 · seed 1') });
-  const second = card.getByRole('button', { name: mark('rate 0.003 · seed 2') });
+  const first = card.getByRole('button', { name: mark('seed 1 · rate 0.003') });
+  const second = card.getByRole('button', { name: mark('seed 2 · rate 0.003') });
 
   fireEvent.click(header);
   expect(header.getAttribute('aria-pressed')).toBe('true');
@@ -115,8 +115,7 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
 
   fireEvent.click(card.getByRole('button', { name: select('rate 0.003') }));
   expect(header.getAttribute('aria-pressed')).toBe('false');
-  expect(card.getByText('rate 0.003')).toBeTruthy();
-  expect(card.getByText(studioCountOf(2, 6))).toBeTruthy();
+  expect(card.queryByText(studioCountOf(2, 6))).toBeNull();
   expect(first.getAttribute('aria-pressed')).toBe('true');
   expect(second.getAttribute('aria-pressed')).toBe('true');
 
@@ -160,7 +159,7 @@ it('shows partial folded marks and preserves group selection when sweeps move', 
   const aggregate = (coordinates: string) => select(
     `${coordinates} · 2 ${studioName('runs')} · 2 ${studioRunStatus('not_run')} · ${studioCountOf(1, 2)}`,
   );
-  const foldedMark = card.getByRole('button', { name: aggregate('rate 0.003 · seed 1') });
+  const foldedMark = card.getByRole('button', { name: aggregate('seed 1 · rate 0.003') });
   expect(foldedMark.getAttribute('aria-pressed')).toBe('mixed');
 
   const dataTransfer = { effectAllowed: 'none', setData: vi.fn() };
@@ -168,17 +167,17 @@ it('shows partial folded marks and preserves group selection when sweeps move', 
   fireEvent.drop(card.getByRole('button', { name: 'Sweep rate 3' }), { dataTransfer });
   expect(presentationChanged).toHaveBeenLastCalledWith(train.id, {
     foldedSweepId: curl.id,
-    sweepOrder: [seed.id, rate.id, curl.id],
+    sweepOrder: [rate.id, seed.id, curl.id],
   });
-  const movedMark = card.getByRole('button', { name: aggregate('seed 1 · rate 0.003') });
+  const movedMark = card.getByRole('button', { name: aggregate('rate 0.003 · seed 1') });
   fireEvent.click(movedMark);
   expect(selectionChanged).toHaveBeenLastCalledWith({
     selection: {
       kind: 'values',
       stepId: train.id,
       terms: [
-        { sweepId: seed.id, valueIds: ['first'] },
         { sweepId: rate.id, valueIds: ['mid'] },
+        { sweepId: seed.id, valueIds: ['first'] },
       ],
     },
     focus: null,
@@ -246,17 +245,16 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   expect(evaluation.getByText(studioCountOf(2, 6))).toBeTruthy();
   expect(view.container.querySelectorAll('path[data-map-edge]')).toHaveLength(2);
   const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
-  const evalRow = within(drawer.getByRole('button', { name: /^Select perturbations Evaluate\b/ }));
-  const reportRow = within(drawer.getByRole('button', { name: /^Select summary Report\b/ }));
-  fireEvent.click(card.getByRole('button', { name: mark('rate 0.003 · seed 1') }));
+  const row = (label: string, count: number) => drawer.getByRole('button', { name: select(`${label} ${studioCountOf(count, 1)}`) });
+  fireEvent.click(card.getByRole('button', { name: mark('seed 1 · rate 0.003') }));
   expect(evaluation.getByRole('button', { name: mark('perturbation') }).getAttribute('data-map-focus')).toBe('downstream');
   expect(view.container.querySelectorAll('[data-map-emphasis="strong"]')).toHaveLength(2);
-  expect(evalRow.getByText(studioCountOf(1, 1))).toBeTruthy();
-  expect(reportRow.getByText(studioCountOf(1, 1))).toBeTruthy();
-  fireEvent.click(card.getByRole('button', { name: mark('rate 0.001 · seed 1') }));
+  expect(row('perturbations Evaluate', 1)).toBeTruthy();
+  expect(row('summary Report', 1)).toBeTruthy();
+  fireEvent.click(card.getByRole('button', { name: mark('seed 1 · rate 0.001') }));
   expect(view.container.querySelectorAll('[data-map-focus], [data-map-emphasis="strong"]')).toHaveLength(0);
-  expect(evalRow.getByText(studioCountOf(0, 1))).toBeTruthy();
-  expect(reportRow.getByText(studioCountOf(0, 1))).toBeTruthy();
+  expect(row('perturbations Evaluate', 0)).toBeTruthy();
+  expect(row('summary Report', 0)).toBeTruthy();
   view.unmount();
 
   const onSelectionChange = vi.fn();
@@ -289,4 +287,17 @@ it('ends the drawer of an empty project with its add row', () => {
   const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
   fireEvent.keyDown(drawer.getByRole('button', { name: studioName('newStep') }), { key: 'Enter' });
   expect(onNewStep).toHaveBeenCalledWith();
+});
+
+it('marks a drawer row with its worst state, and choosing the mark selects those runs', () => {
+  const runs = train.runs.map((run, index): PlanRunView => index < 2 ? { ...run, status: 'failed', state: 'failed' } : run);
+  const step = { ...train, runs, statusCounts: { failed: 2, not_run: 4 } };
+  const onSelectionChange = vi.fn();
+  render(<StudioPipelineMapDrawer plan={{ steps: [step], edges: [] }} state={emptyPipelineSelection} onSelectionChange={onSelectionChange} />);
+  const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
+  fireEvent.click(drawer.getByRole('button', { name: select(`2 ${studioRunStatus('failed')}`) }));
+  expect(onSelectionChange).toHaveBeenCalledTimes(1);
+  expect(onSelectionChange).toHaveBeenCalledWith({
+    selection: { kind: 'rows', stepId: train.id, runIds: [runs[0].id, runs[1].id] }, focus: null,
+  });
 });

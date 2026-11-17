@@ -6,6 +6,10 @@ export const settingChoices = {
   },
   size: { initial: '13', commands: { 12: 'size12', 13: 'size13', 14: 'size14' } },
   density: { initial: 'regular', commands: { compact: 'densityCompact', regular: 'densityRegular' } },
+  card: {
+    initial: 'ring',
+    commands: { flow: 'cardFlow', 'flow-ui': 'cardFlowUi', turbo: 'cardTurbo', quiet: 'cardQuiet', ring: 'cardRing' },
+  },
 } as const;
 
 /** Design comparisons for the owner, switched from the command palette and overridable per window by query parameter. */

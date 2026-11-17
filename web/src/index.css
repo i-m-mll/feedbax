@@ -51,10 +51,6 @@
   --studio-shadow-lift: 0 18px 40px rgba(15, 23, 42, 0.12);
 }
 
-:root[data-card='ring'] {
-  --card-selected-head-fill: transparent;
-  --card-selected-outset: 4px;
-}
 
 :root[data-theme='dark'] {
   --studio-shell-accent: #c1aedf;
@@ -174,6 +170,139 @@
 
 .studio-card[data-selected] > .studio-card__head {
   background: var(--card-selected-head-fill);
+}
+
+.studio-card__glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* A control attached to a card's edge sits wholly outside its border and selection ring. */
+.studio-card__attached {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + var(--card-selected-outset) + var(--card-selected-width) + 4px);
+  transform: translateY(-50%);
+}
+
+/* Card styles: one root attribute (`data-card`, an appearance setting) over the shared Card. */
+[data-card='ring'] {
+  --card-selected-head-fill: transparent;
+  --card-selected-outset: 4px;
+}
+
+[data-card='flow'] {
+  --card-surface: var(--surface-header);
+  --card-border: var(--studio-control-border);
+  --card-border-hover: var(--text-muted);
+  --card-radius: 3px;
+  --card-selected-head-fill: transparent;
+  --card-selected-width: 1px;
+}
+
+[data-card='flow'] .studio-card__title {
+  justify-content: center;
+}
+
+[data-card='flow-ui'] {
+  --card-border-hover: var(--app-divider);
+  --card-selected-head-fill: transparent;
+  --card-selected-width: 0px;
+  --card-selected-outset: 3px;
+}
+
+[data-card='flow-ui'] .studio-card {
+  transition: box-shadow 120ms, border-color 120ms;
+}
+
+[data-card='flow-ui'] .studio-card:hover {
+  box-shadow: 0 0 0 1px var(--neutral-alpha-15);
+}
+
+[data-card='flow-ui'] .studio-card[data-selected] {
+  border-color: var(--text-muted);
+  box-shadow: var(--studio-shadow-lift);
+}
+
+[data-card='flow-ui'] .studio-card > .studio-card__head:not(:last-child) {
+  border-bottom: 1px solid var(--app-divider);
+  margin-bottom: var(--space-2);
+}
+
+@property --card-status-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+[data-card='flow-ui'] .studio-card[data-status]::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  padding: 2px;
+  border-radius: calc(var(--card-radius) + 2px);
+  background: var(--card-status-paint);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+
+[data-card='flow-ui'] .studio-card[data-status='success'] { --card-status-paint: var(--studio-status-success); }
+[data-card='flow-ui'] .studio-card[data-status='failure'] { --card-status-paint: var(--studio-status-failure); }
+
+[data-card='flow-ui'] .studio-card[data-status='busy'] {
+  --card-status-paint: conic-gradient(from var(--card-status-angle), transparent 0 55%, var(--studio-status-running));
+}
+
+[data-card='flow-ui'] .studio-card[data-status='busy']::before {
+  animation: studio-card-status 2s linear infinite;
+}
+
+@keyframes studio-card-status {
+  to { --card-status-angle: 360deg; }
+}
+
+[data-card='turbo'] {
+  --card-radius: 10px;
+  --card-selected-head-fill: transparent;
+  --card-selected-width: 0px;
+  --card-selected-outset: 2px;
+  --turbo-start: var(--studio-status-failure);
+  --turbo-middle: var(--studio-shell-accent);
+  --turbo-end: var(--studio-status-running);
+  --turbo-gradient: linear-gradient(90deg, var(--turbo-start), var(--turbo-middle), var(--turbo-end));
+}
+
+[data-card='turbo'] .studio-card {
+  border: 2px solid transparent;
+  background: linear-gradient(var(--surface-header), var(--surface-header)) padding-box, var(--turbo-gradient) border-box;
+  transition: box-shadow 200ms;
+}
+
+[data-card='turbo'] .studio-card:hover {
+  border-color: transparent;
+  box-shadow: -6px 0 16px -8px var(--turbo-start), 6px 0 16px -8px var(--turbo-end);
+}
+
+[data-card='turbo'] .studio-card[data-selected] {
+  box-shadow: -10px 0 24px -6px var(--turbo-start), 10px 0 24px -6px var(--turbo-end);
+}
+
+[data-card='turbo'] .studio-card__head .studio-card__glyph {
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--neutral-alpha-08);
+}
+
+[data-card='turbo'] .studio-map-edge {
+  stroke: url(#studio-map-turbo-edge);
+  stroke-width: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-card='flow-ui'] .studio-card[data-status='busy']::before { animation: none; }
 }
 
 .studio-running-progress {
