@@ -437,6 +437,7 @@ class Store:
             state not in {"succeeded", "stopped"} or not TRAIN_REQUEST_ID.fullmatch(job["request"])
             or type(delivery) is not int or delivery < 1 or job["edges"] or job["slot"] != "compute"
             or job["launch"]["warm_entrypoint"] != "feedbax.training_host_worker:main"
+            or job["launch"].get("project_root") is None
             or (payload["project_id"], payload["request_id"], root)
             != (job["project"], job["request"], data.get("manifest_root"))
             or data.get("collected_train") is not True

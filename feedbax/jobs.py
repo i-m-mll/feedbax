@@ -1383,7 +1383,7 @@ class JobService(PlanJobReader):
 
     def collect_session_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
-        project_root: Path | None = None,
+        project_root: Path,
         progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> CollectedSessionAttempt:
         """Collect one terminal Jobs snapshot attempt and identify the verified custody for acknowledgement."""
@@ -1408,7 +1408,7 @@ class JobService(PlanJobReader):
             raise JobConflict("Only successful Train or Evaluate and checkpoint-stopped Train can be collected.")
         ref = ContentObjectRef.model_validate(outcome.get(evidence_key))
         attempt_id = attempt["id"]
-        existing = self.host.jobs(job_id=attempt_id)
+        existing = self.host.jobs(job_id=attempt_id, include_launch=kind == "train")
         if existing:
             (local,) = existing
             local_data = local["data"]
@@ -1418,6 +1418,7 @@ class JobService(PlanJobReader):
                 != (project, attempt["request"], state, attempt["continues"], attempt["delivery"])
                 or not isinstance(local_data, dict) or local_data.get("manifest_root") != str(store)
                 or local_data.get(f"collected_{kind}") is not True
+                or (kind == "train" and local["launch"].get("project_root") != str(project_root))
                 or attempt_target(local_data.get("target")) != attempt_target(attempt["data"].get("target"))
                 or not isinstance(local_outcome, dict) or local_outcome.get(evidence_key) != ref.model_dump(mode="json")
                 or (kind == "evaluate" and local_outcome.get("receipt") != outcome.get("receipt"))
@@ -1496,7 +1497,7 @@ class JobService(PlanJobReader):
 
     def collect_train_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
-        project_root: Path | None = None,
+        project_root: Path,
         progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> StudioActivityJob:
         """Collect an observed terminal Train and durably mirror its original attempt."""
@@ -1544,8 +1545,7 @@ class JobService(PlanJobReader):
             canonical_request=binding,
             checkpoint_catalog=tuple(attempt["launch"]["payload"].get("checkpoint_catalog", ())),
         )
-        if project_root is not None:
-            item = _with_project_root(item, project_root)
+        item = _with_project_root(item, project_root)
         assert item.job is not None
         job = replace(item.job, id=attempt_id, continues=attempt["continues"])
         self.host.mirror_collected_train(
