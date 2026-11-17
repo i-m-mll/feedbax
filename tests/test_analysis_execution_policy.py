@@ -1,13 +1,11 @@
-"""Fresh execution must bypass cached computations throughout the analysis graph."""
+"""Fresh execution recomputes the selected analysis and its dependencies."""
 
 from pathlib import Path
-from typing import ClassVar
 
 import equinox as eqx
 import pytest
 
 from feedbax.analysis.analysis import AbstractAnalysis, AnalysisRef
-from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.specs import (
     AnalysisRecipeRegistry,
     AnalysisRecipeResult,
@@ -24,14 +22,12 @@ def cached_graph():
     computation = {"value": 3}
 
     class Source(AbstractAnalysis):
-        computation_revision: ClassVar[str] = "1"
 
         def compute(self, data, **kwargs):
             calls["source"] += 1
             return computation["value"]
 
     class Selected(ToyAnalysis):
-        computation_revision: ClassVar[str] = "1"
 
         def compute(self, data, source, **kwargs):
             calls["selected"] += 1
@@ -42,67 +38,54 @@ def cached_graph():
 
     selected = eqx.tree_at(
         lambda analysis: analysis._extra_inputs,
-        Selected(variant="toy", cache_result=True),
+        Selected(variant="toy"),
         {"source": AnalysisRef("source")},
     )
 
     def recipe(*_args):
         return AnalysisRecipeResult(
             analyses={"selected": selected},
-            custom_dependencies={"source": Source(variant="toy", cache_result=True)},
+            custom_dependencies={"source": Source(variant="toy")},
             data=build_toy_analysis_data(),
         )
 
     spec = AnalysisRunSpec(analysis_type="test.cached_graph")
     registry = AnalysisRecipeRegistry()
-    registry.register(spec.analysis_type, recipe, computation_revision="1")
-    return spec, registry, calls, computation, recipe
+    registry.register(spec.analysis_type, recipe)
+    return spec, registry, calls, computation
 
 
 @pytest.mark.parametrize("fresh", [{"use_cache": False}, {"force": True}])
-def test_fresh_execution_bypasses_selected_and_transitive_result_caches(
+def test_fresh_execution_bypasses_receipt_reuse(
     tmp_path: Path, application_registry_bundle, cached_graph, fresh
 ) -> None:
-    spec, registry, calls, computation, _recipe = cached_graph
+    spec, registry, calls, computation = cached_graph
 
-    def execute(root=tmp_path, **kwargs):
+    def execute(**kwargs):
         return execute_analysis_run_spec(
             spec,
             registry=registry,
             evaluation_registry=application_registry_bundle.evaluation_recipes,
             experiment_registry=application_registry_bundle.experiment_packages,
-            root=root,
+            root=tmp_path,
             fig_dump_formats=("json",),
             **kwargs,
         )
 
-    _manifest, path = execute()
+    first, path = execute()
     assert calls == {"source": 1, "selected": 1}
-    cache_dir = AnalysisRunContext(
-        spec=spec, root=tmp_path, computation=registry.computation(spec.analysis_type)
-    ).results_cache_dir
-    def cache_snapshot():
-        return {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in cache_dir.glob("*.pkl")}
 
-    cached_bytes = cache_snapshot()
-    assert len(cached_bytes) == 2
-
-    execute()
+    reused, _ = execute()
+    assert reused == first
     assert calls == {"source": 1, "selected": 1}
+
     path.unlink()
-    execute()
-    assert calls == {"source": 1, "selected": 1}
-
-    execute(**fresh)
+    executed, _ = execute()
+    assert executed.id == first.id
     assert calls == {"source": 2, "selected": 2}
-    assert cache_snapshot() == cached_bytes
 
     computation["value"] = 9
-    changed, _path = execute(**fresh)
+    changed, _ = execute(**fresh)
+    assert changed.id == first.id
     assert calls == {"source": 3, "selected": 3}
-    assert changed.artifacts[0].sha256 != _manifest.artifacts[0].sha256
-    assert cache_snapshot() == cached_bytes
-
-    uncached_root = tmp_path / "uncached"
-    execute(root=uncached_root, **fresh)
-    assert not (uncached_root / "cache" / "analysis_results").exists()
+    assert changed.artifacts[0].sha256 != first.artifacts[0].sha256

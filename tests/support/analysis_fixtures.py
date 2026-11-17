@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import ClassVar
 
 import equinox as eqx
 import numpy as np
@@ -31,7 +30,6 @@ ARTIFACT_PRODUCER_CALLS = {"count": 0}
 class ToyAnalysis(AbstractAnalysis):
     """Tiny reusable analysis for manifest-canonical execution tests."""
 
-    computation_revision: ClassVar[str] = "1"
 
     def compute(self, data: AnalysisInputData, **kwargs):
         return {"value": data.states["value"] + 1}
@@ -48,7 +46,6 @@ class ToyAnalysis(AbstractAnalysis):
 class ToyArtifactProducer(AbstractAnalysis):
     """Toy analysis that emits a logical JSON+NPZ artifact group."""
 
-    computation_revision: ClassVar[str] = "1"
 
     def compute(self, data: AnalysisInputData, **kwargs):
         ARTIFACT_PRODUCER_CALLS["count"] += 1
@@ -67,7 +64,7 @@ class ToyArtifactProducer(AbstractAnalysis):
         **kwargs,
     ):
         group_id = f"{context.manifest_id}:toy-artifact-group"
-        artifact_dir = context.results_cache_dir / "toy_artifacts"
+        artifact_dir = context.artifacts_dir / "toy_artifacts"
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
         summary_path = artifact_dir / "toy-summary.json"
@@ -151,7 +148,7 @@ def build_toy_artifact_analyses() -> dict[str, AbstractAnalysis]:
         {"produced": AnalysisRef("artifact_producer")},
     )
     return {
-        "artifact_producer": ToyArtifactProducer(variant="toy", cache_result=True),
+        "artifact_producer": ToyArtifactProducer(variant="toy"),
         "artifact_consumer": consumer,
     }
 

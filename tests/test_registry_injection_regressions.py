@@ -35,7 +35,7 @@ def test_analysis_recompute_uses_injected_evaluation_registry(tmp_path: Path) ->
     def analyze(_spec, _root, inputs, _execution_context):
         value = int(inputs[0].states["value"])
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="injected", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="injected")},
             data=build_toy_analysis_data(value=value),
         )
 

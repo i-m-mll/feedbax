@@ -27,7 +27,6 @@ from feedbax.contracts.base import (
     ParentRef,
 )
 from feedbax.contracts.manifest import (
-    AnalysisComputation,
     AnalysisRunSpec,
     analysis_run_manifest_id,
     figure_manifest_id,
@@ -104,7 +103,6 @@ def _spec_for_analysis_request(
             "requested_outputs": [payload.node_id],
             "studio": {
                 "node_id": payload.node_id,
-                "force_rerun": payload.force_rerun,
             },
         },
     )
@@ -148,7 +146,7 @@ def _run_analysis_sync(
     spec: AnalysisRunSpec,
     registries: ApplicationRegistryBundle,
     *,
-    computation: AnalysisComputation,
+    force: bool = False,
 ) -> AnalysisJobResult:
     """Run the executable analysis spec synchronously inside the executor."""
     from feedbax.analysis.specs import execute_analysis_run_spec
@@ -156,10 +154,10 @@ def _run_analysis_sync(
     manifest, path = execute_analysis_run_spec(
         spec,
         registry=registries.analysis_recipes,
-        computation=computation,
         evaluation_registry=registries.evaluation_recipes,
         experiment_registry=registries.experiment_packages,
         fig_dump_formats=("json",),
+        force=force,
     )
     return AnalysisJobResult(
         manifest_id=manifest.id,
@@ -219,19 +217,22 @@ async def generate_figure(
     if payload.job_kind == "figure":
         figure_spec = _figure_spec_for_request(payload)
         manifest_id = figure_manifest_id(figure_spec)
-        kind, spec = "figure", figure_spec
+        operation = {"kind": "figure", "spec": figure_spec.model_dump(mode="json")}
         work = partial(_run_figure_sync, figure_spec, registries)
     else:
         analysis_spec = _spec_for_analysis_request(payload)
-        computation = registries.analysis_recipes.new_computation(analysis_spec.analysis_type)
-        manifest_id = analysis_run_manifest_id(analysis_spec, computation=computation)
-        kind, spec = "analysis", analysis_spec
-        work = partial(_run_analysis_sync, analysis_spec, registries, computation=computation)
+        manifest_id = analysis_run_manifest_id(analysis_spec)
+        operation = {
+            "kind": "analysis",
+            "spec": analysis_spec.model_dump(mode="json"),
+            "force": payload.force_rerun,
+        }
+        work = partial(_run_analysis_sync, analysis_spec, registries, force=payload.force_rerun)
     try:
         if jobs.owns_processes:
             request_id = jobs.submit_operation(
                 manifest_id,
-                operation={"kind": kind, "spec": spec.model_dump(mode="json")},
+                operation=operation,
             )
         else:
             request_id = jobs.submit(manifest_id, work)

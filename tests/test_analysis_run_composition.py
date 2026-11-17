@@ -53,7 +53,7 @@ def _register_toy_velocity_recipe(registry) -> None:
 
     def recipe(_spec, _root, _inputs, _execution_context) -> AnalysisRecipeResult:
         return AnalysisRecipeResult(
-            analyses={"velocity": ToyAnalysis(variant="velocity", cache_result=True)},
+            analyses={"velocity": ToyAnalysis(variant="velocity")},
             data=build_toy_analysis_data(value=0),
         )
 

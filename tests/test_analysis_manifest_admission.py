@@ -40,7 +40,6 @@ from feedbax.contracts.base import (
     Provenance,
 )
 from feedbax.contracts.manifest import (
-    AnalysisComputation,
     AnalysisRunManifest,
     AnalysisRunSpec,
     EvaluationRunManifest,
@@ -51,6 +50,7 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
+from tests.support.store_damage import writable_store_object
 from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
@@ -73,7 +73,7 @@ def _register_recipes(application_registry_bundle, calls: list[int] | None = Non
         if calls is not None:
             calls.append(value)
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=value),
         )
 
@@ -81,7 +81,7 @@ def _register_recipes(application_registry_bundle, calls: list[int] | None = Non
         ADMISSION_EVALUATION_TYPE, evaluation_recipe
     )
     application_registry_bundle.analysis_recipes.register(
-        ADMISSION_ANALYSIS_TYPE, analysis_recipe, computation_revision="admission-v1"
+        ADMISSION_ANALYSIS_TYPE, analysis_recipe
     )
 
 
@@ -207,7 +207,8 @@ def test_cached_analysis_manifest_with_corrupt_artifact_bytes_is_refused(
     assert manifest.artifacts, "this run must produce at least one artifact to corrupt"
     artifact_path = artifact_bytes_path(manifest.artifacts[0], root=tmp_path)
     assert artifact_path is not None
-    artifact_path.write_bytes(artifact_path.read_bytes() + b" ")
+    with writable_store_object(artifact_path):
+        artifact_path.write_bytes(artifact_path.read_bytes() + b" ")
 
     with pytest.raises(FulfillmentAdmissionError) as excinfo:
         _run_analysis(spec, tmp_path, application_registry_bundle=application_registry_bundle)
@@ -244,10 +245,8 @@ def _provider_backed_receipt(tmp_path: Path):
         inputs=[],
         params={"requested_outputs": ["toy"]},
     )
-    computation = AnalysisComputation(engine_revision="test-engine", recipe_revision="test-recipe")
     manifest = AnalysisRunManifest(
-        id=analysis_run_manifest_id(spec, computation=computation),
-        computation=computation,
+        id=analysis_run_manifest_id(spec),
         status="completed",
         analysis_spec=spec_payload(
             "AnalysisRunSpec", spec.model_dump(mode="json", exclude_none=True)
@@ -263,14 +262,14 @@ def _provider_backed_receipt(tmp_path: Path):
         checkpoint_custody_roots={},
         parent_execution_locations=(),
     )
-    return provider, spec, manifest, computation, root, path, context
+    return provider, spec, manifest, root, path, context
 
 
 def test_provider_held_artifacts_are_admitted_against_the_provider(tmp_path: Path) -> None:
-    _provider, spec, manifest, computation, root, path, context = _provider_backed_receipt(tmp_path)
+    _provider, spec, manifest, root, path, context = _provider_backed_receipt(tmp_path)
 
     outcome = _admit_cached_analysis_manifest(
-        spec, manifest, computation=computation, root=root, path=path, execution_context=context
+        spec, manifest, root=root, path=path, execution_context=context
     )
 
     assert outcome.admitted, outcome.describe()
@@ -278,12 +277,11 @@ def test_provider_held_artifacts_are_admitted_against_the_provider(tmp_path: Pat
 
 def test_provider_held_artifacts_are_refused_without_the_binding(tmp_path: Path) -> None:
     """The root cannot resolve these bytes, and 'unresolvable' is not 'fine'."""
-    _provider, spec, manifest, computation, root, path, _context = _provider_backed_receipt(tmp_path)
+    _provider, spec, manifest, root, path, _context = _provider_backed_receipt(tmp_path)
 
     outcome = _admit_cached_analysis_manifest(
         spec,
         manifest,
-        computation=computation,
         root=root,
         path=path,
         execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
@@ -294,14 +292,15 @@ def test_provider_held_artifacts_are_refused_without_the_binding(tmp_path: Path)
 
 
 def test_provider_held_artifacts_with_corrupt_bytes_are_refused(tmp_path: Path) -> None:
-    provider, spec, manifest, computation, root, path, context = _provider_backed_receipt(tmp_path)
+    provider, spec, manifest, root, path, context = _provider_backed_receipt(tmp_path)
     digest = manifest.artifacts[0].sha256
     assert digest is not None
     blob = provider.root / "artifacts" / "sha256" / digest[:2] / digest
-    blob.write_bytes(b'{"values": [9, 9, 9]}')
+    with writable_store_object(blob):
+        blob.write_bytes(b'{"values": [9, 9, 9]}')
 
     outcome = _admit_cached_analysis_manifest(
-        spec, manifest, computation=computation, root=root, path=path, execution_context=context
+        spec, manifest, root=root, path=path, execution_context=context
     )
 
     assert not outcome.admitted
@@ -485,12 +484,7 @@ def test_written_analysis_manifest_identity_is_settled_from_the_returned_bytes(
 
     written = canonical_manifest_path(
         "AnalysisRunManifest",
-        analysis_run_manifest_id(
-            spec,
-            computation=application_registry_bundle.analysis_recipes.computation(
-                spec.analysis_type
-            ),
-        ),
+        analysis_run_manifest_id(spec),
         root=tmp_path,
     )
     assert json.loads(written.read_text(encoding="utf-8"))["id"] == substitute.id

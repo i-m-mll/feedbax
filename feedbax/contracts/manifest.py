@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.artifact_store import (
@@ -49,7 +49,6 @@ from feedbax.contracts.base import (
     authenticated_manifest_ref_metadata as authenticated_manifest_ref_metadata,
 )
 from feedbax.contracts.graph import AnalysisInputRequirement
-from feedbax.contracts.computation_revision import validate_computation_revision
 from feedbax.contracts.schema_namespace import validate_schema_identity
 from feedbax.contracts.strict_json import strict_json_loads
 
@@ -1198,32 +1197,10 @@ class AnalysisEvaluationStateResolutionDiagnostic(StrictModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class AnalysisComputation(StrictModel):
-    """Authority for an analysis receipt at a resolved execution identity."""
-
-    model_config = ConfigDict(frozen=True)
-
-    engine_revision: str
-    recipe_revision: str | None = None
-    execution_nonce: uuid.UUID | None = None
-
-    @field_validator("engine_revision", "recipe_revision")
-    @classmethod
-    def _validate_revision(cls, revision: str | None) -> str | None:
-        return validate_computation_revision(revision)
-
-    @model_validator(mode="after")
-    def _validate_authority(self) -> AnalysisComputation:
-        if (self.recipe_revision is None) == (self.execution_nonce is None):
-            raise ValueError("analysis computation requires exactly one recipe revision or nonce")
-        return self
-
-
 class AnalysisRunManifest(BaseManifest):
     kind: Literal["AnalysisRunManifest"] = "AnalysisRunManifest"
     schema_version: str = ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
     analysis_spec: SpecPayload
-    computation: AnalysisComputation | None = None
     inputs: list[ParentRef] = Field(default_factory=list)
     evaluation_state_sources: list[AnalysisEvaluationStateSource] = Field(default_factory=list)
     evaluation_state_resolution_diagnostics: list[AnalysisEvaluationStateResolutionDiagnostic] = (
@@ -1967,20 +1944,9 @@ def planned_training_run_manifest_id(
 
 
 
-def analysis_run_manifest_id(
-    spec: AnalysisRunSpec, *, computation: AnalysisComputation | None = None
-) -> str:
-    """Return a resolved run ID, or the historical spec-only ID without computation."""
-    preimage = (
-        spec
-        if computation is None
-        else {
-            "schema_version": "feedbax.identity.analysis_run.v2",
-            "spec": spec.model_dump(mode="json", exclude_none=True),
-            "computation": computation.model_dump(mode="json", exclude_none=True),
-        }
-    )
-    digest = sha256_bytes(canonical_json_bytes(preimage))
+def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
+    """Return the analysis run ID for the authored specification."""
+    digest = sha256_bytes(canonical_json_bytes(spec))
     return f"feedbax-analysis-run:{digest[:32]}"
 
 
@@ -2012,14 +1978,14 @@ def evaluation_states_cache_path(
     return root_path / "cache" / "states" / f"{safe_manifest_key(manifest_id)}.pkl"
 
 
-def analysis_results_cache_dir(
+def analysis_artifacts_dir(
     manifest_id: str,
     *,
     root: Path | str | None = None,
 ) -> Path:
-    """Return the manifest-root cache directory for computed analysis results."""
+    """Return the run-specific directory for analysis artifacts."""
     root_path = Path(root) if root is not None else default_manifest_root()
-    return root_path / "cache" / "analysis_results" / safe_manifest_key(manifest_id)
+    return root_path / "artifacts" / "analysis" / safe_manifest_key(manifest_id)
 
 
 def write_manifest(
@@ -2040,14 +2006,7 @@ def write_manifest(
         and manifest.schema_version == EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
         else manifest.model_dump_json(indent=2, exclude_none=True)
     )
-    one_execution = (
-        isinstance(manifest, AnalysisRunManifest)
-        and manifest.computation is not None
-        and manifest.computation.execution_nonce is not None
-    )
-    write_bytes_atomic(
-        path, (serialized + "\n").encode("utf-8"), mode=0o666, replace=not one_execution
-    )
+    write_bytes_atomic(path, (serialized + "\n").encode("utf-8"), mode=0o666)
     if index:
         from feedbax.persistence.manifest_index import index_manifest_file
 

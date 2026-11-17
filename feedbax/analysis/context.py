@@ -25,7 +25,6 @@ from feedbax.contracts.artifact_store import (
     store_artifact,
 )
 from feedbax.contracts.manifest import (
-    AnalysisComputation,
     AnalysisOutputDescriptor,
     AnalysisDataProduct,
     AnalysisEvaluationStateResolutionDiagnostic,
@@ -37,7 +36,7 @@ from feedbax.contracts.manifest import (
     RegenerationSpec,
     RegenerationSpecBuilder,
     SpecPayload,
-    analysis_results_cache_dir,
+    analysis_artifacts_dir,
     analysis_run_manifest_id,
     safe_manifest_key,
     spec_payload,
@@ -82,11 +81,6 @@ class AnalysisArtifactFile:
 class AnalysisRunContext:
     """Execution context for writing analysis outputs without requiring Studio DB state.
 
-    ``use_result_cache`` controls result-cache reads and writes throughout the
-    computation graph. It does not affect authenticated input resolution.
-    Registered recipe execution supplies its resolved computation identity.
-    Standalone materializers can use the spec-only address when their own spec
-    already binds computation authority.
     A regeneration builder receives the full artifact list before a completed
     receipt is published.
     """
@@ -100,8 +94,6 @@ class AnalysisRunContext:
     metadata: dict[str, Any] | None = None
     experiment_registry: ExperimentRegistry | None = None
     index_manifest: bool = True
-    use_result_cache: bool = True
-    computation: AnalysisComputation | None = None
     build_regeneration_spec: RegenerationSpecBuilder | None = None
     _artifacts: list[ArtifactRef] = field(default_factory=list, init=False)
     _regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
@@ -126,16 +118,16 @@ class AnalysisRunContext:
     @property
     def manifest_id(self) -> str:
         """Return the resolved analysis-run manifest identifier."""
-        return analysis_run_manifest_id(self.spec, computation=self.computation)
+        return analysis_run_manifest_id(self.spec)
 
     @property
     def root_path(self) -> Path:
         return Path(self.root)
 
     @property
-    def results_cache_dir(self) -> Path:
-        """Return this run's manifest-root result-cache directory."""
-        return analysis_results_cache_dir(self.manifest_id, root=self.root_path)
+    def artifacts_dir(self) -> Path:
+        """Return this run's artifact directory."""
+        return analysis_artifacts_dir(self.manifest_id, root=self.root_path)
 
     @property
     def manifest_path(self) -> Path | None:
@@ -509,7 +501,6 @@ class AnalysisRunContext:
                 "AnalysisRunSpec",
                 self.spec.model_dump(mode="json", exclude_none=True),
             ),
-            computation=self.computation,
             inputs=list(self.spec.inputs),
             evaluation_state_sources=list(self._evaluation_state_sources),
             evaluation_state_resolution_diagnostics=list(
