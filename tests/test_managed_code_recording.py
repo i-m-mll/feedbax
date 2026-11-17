@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import time
+from types import ModuleType
 
 import pytest
 
@@ -22,7 +23,7 @@ from feedbax.plugins.declarations import DeclarationRegistry, DistributionSource
 from feedbax.validity.environment import EnvironmentMismatch, read_environment
 from feedbax.validity.evidence import stage_evidence
 from feedbax.validity.recording import WorkerRecorder, host_product, snapshot_execution
-from feedbax.validity.source import SourceCatalog
+from feedbax.validity.source import SourceCatalog, source_catalog
 
 
 def test_source_comparison_counts_new_names_and_only_observed_function_bodies(tmp_path):
@@ -50,6 +51,22 @@ def test_source_comparison_counts_new_names_and_only_observed_function_bodies(tm
     source.write_text("def used():\n    return 5\n\ndef skipped():\n    return 1\n")
     change = compare()
     assert change is not None and change.functions == ("used",)
+
+
+def test_dotted_plugin_declaration_tracks_helpers_elsewhere_in_its_package(tmp_path, monkeypatch):
+    package = tmp_path / "installed" / "example"
+    declarations = package / "declarations"
+    declarations.mkdir(parents=True)
+    helper = package / "numerics.py"
+    helper.write_text("def run(): return 1\n")
+    module = ModuleType("example.declarations")
+    module.__file__ = str(declarations / "__init__.py")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr("feedbax.validity.source.plugin_packages", lambda: {module.__name__: "example"})
+    catalog = source_catalog(tmp_path / "project")
+    path = catalog.locate(helper)
+    assert path == SourcePath(scope="plugin:example", path="numerics.py")
+    assert catalog.read(path) is not None
 
 
 def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, monkeypatch):
@@ -145,8 +162,10 @@ def test_warm_worker_retires_when_a_dependency_and_lock_upgrade_together(tmp_pat
     monkeypatch.setattr("feedbax.validity.recording.installed_versions", lambda: installed.copy())
     lock = tmp_path / "uv.lock"
     lock.write_text('version = 1\n[[package]]\nname = "example-lib"\nversion = "1"\n')
+    authored = tmp_path / "staged-project"
+    authored.mkdir()
     recorder = WorkerRecorder({}, boot_ns=time.time_ns())
-    recorder.bind_project(tmp_path)
+    recorder.bind_project(authored, environment_root=tmp_path)
     assert not recorder.changed()
 
     with recorder.delivery("first", tmp_path / "store", tmp_path / "scratch"):
