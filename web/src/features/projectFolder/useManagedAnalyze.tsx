@@ -3,6 +3,8 @@ import { useRef, useState, useSyncExternalStore } from 'react';
 import { apiErrorMessage } from '@/api/request';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { CanvasStrip } from '@/components/canvas/CanvasStrip';
+import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { StudioDefinitionForm, type StudioFieldControl } from '@/components/pipeline/StudioDefinitionForm';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
@@ -195,6 +197,8 @@ export function useManagedAnalyze({
       problem: diagnostics.find((item) => item.element === name)?.detail,
     })),
   ];
+  const canvas = useRef<CanvasViewport>(null);
+  const viewport = canvasViewportCommands(() => canvas.current, !!document);
   const connections = [...Object.entries(operations), ...Object.entries(figures)].flatMap(([target, value]) =>
     Object.entries(value.inputs).map(([role, source]) => ({
       id: JSON.stringify([target, role]), source: 'input' in source ? source.input : source.element, target,
@@ -257,19 +261,20 @@ export function useManagedAnalyze({
   return {
     selectedFigure: figure ? selected : undefined,
     analysis: {
-      body: <div className="flex h-full min-h-0 flex-col">{alert}<div className="min-h-0 flex-1">
-        <ManagedDocumentCanvas key={scope} {...element} items={items} connections={connections}
+      body: <CanvasStrip viewport={viewport}>{alert}<div className="min-h-0 flex-1">
+        <ManagedDocumentCanvas key={scope} {...element} items={items} connections={connections} viewportRef={canvas}
           positions={document ? saved.presentation?.documents?.[document]?.positions : undefined}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
           rememberPoint={(point) => { cursor.current = point ? { scope, point } : undefined; }} />
-      </div></div>,
+      </div></CanvasStrip>,
       drawer, inspector,
     },
     figures: { body: <>{alert}{figureList}
       {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
         history={selectedPlan} name={selected} />}
     </>, drawer, inspector: figure ? inspector : undefined },
-    commands: document && (focusedView === 'analysis' || focusedView === 'figures') ? [addCommand, connect] : [],
+    commands: document && focusedView === 'analysis' ? [addCommand, connect, ...viewport]
+      : document && focusedView === 'figures' ? [addCommand, connect] : [],
     overlay: opened && <Dialog ariaLabel={studioName(opened.mode === 'add' ? 'addOperation' : 'connectPorts')}
       manageFocus panelClassName="grid w-[min(26rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
       {issue && <p role="alert">{issue}</p>}

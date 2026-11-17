@@ -1,6 +1,7 @@
 import { ContextMenu as BaseContextMenu } from '@base-ui/react/context-menu';
 import { Menu as BaseMenu } from '@base-ui/react/menu';
 import clsx from 'clsx';
+import { Check } from 'lucide-react';
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import { popupItem, popupSurface } from './styles';
 import { usePopupLayer } from './popupLayer';
@@ -59,6 +60,25 @@ export function MenuItem({ glyph, shortcut, children, className, ...props }: Men
       <span className="flex-1 truncate">{children}</span>
       {shortcut ? <span className="pl-4 text-shell-muted">{shortcut}</span> : null}
     </BaseMenu.Item>
+  );
+}
+
+export interface MenuCheckboxItemProps {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+  children: ReactNode;
+}
+
+export function MenuCheckboxItem({ checked, onCheckedChange, disabled, children }: MenuCheckboxItemProps) {
+  return (
+    <BaseMenu.CheckboxItem className={popupItem} checked={checked} disabled={disabled} closeOnClick={false}
+      onCheckedChange={(next) => onCheckedChange(next)}>
+      <span className="flex size-[1em] shrink-0 items-center justify-center">
+        <BaseMenu.CheckboxItemIndicator keepMounted={false}><Check /></BaseMenu.CheckboxItemIndicator>
+      </span>
+      <span className="flex-1 truncate">{children}</span>
+    </BaseMenu.CheckboxItem>
   );
 }
 

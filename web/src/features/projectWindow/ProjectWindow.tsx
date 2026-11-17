@@ -1,7 +1,7 @@
 import {
   ArrowLeft, ArrowRight, BarChart3, Columns2, Command, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Scan, Settings2, Target, Workflow, X,
-  ZoomIn, ZoomOut, type LucideIcon,
+  Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Settings2, Target, Workflow, X,
+  type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
 import {
@@ -9,6 +9,8 @@ import {
   type CSSProperties, type Dispatch, type ReactNode, type SetStateAction,
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
+import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
+import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { Button, IconButton } from '@/components/ui/Button';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
@@ -50,7 +52,7 @@ export interface ProjectWindowProps {
   onBack?: () => void;
   onForward?: () => void;
   commands: readonly StudioCommand[];
-  mapCommands?: readonly StudioCommand[];
+  mapCommands?: readonly CanvasViewportCommand[];
   focusRequest?: number;
   variant?: ReactNode;
   overlay?: ReactNode;
@@ -73,8 +75,6 @@ const views = {
   figures: Image,
   document: FileText,
 } satisfies Record<ProjectWindowView, LucideIcon>;
-
-const viewportIcons: Partial<Record<StudioCommand['id'], LucideIcon>> = { fitView: Scan, zoomIn: ZoomIn, zoomOut: ZoomOut };
 
 const modes = [
   { mode: 'map', id: 'showMap', icon: PanelTop },
@@ -284,7 +284,7 @@ export function ProjectWindow({
     setPaletteScope((open) => open ? null : scope);
   });
   const settings = bindStudioCommand('settings', () => setSettingsOpen((open) => !open), { name: 'openSettings' });
-  const viewportIds = new Set(mapCommands?.map(({ id }) => id));
+  const viewportIds = new Set<StudioCommand['id']>(mapCommands?.map(({ id }) => id));
   const separator = mode === 'map' ? '100%' : `${mode === 'both' ? fit.mapHeight.size : compactMapHeight}px`;
   const viewportCommands = fullMapVisible && (mapHasFocus || !commands.some(({ id }) => viewportIds.has(id)))
     ? mapCommands ?? [] : [];
@@ -411,7 +411,7 @@ export function ProjectWindow({
           {fullMapVisible && mapCommands && (
             <div role="toolbar" aria-label={studioName('pipelineMap')} aria-orientation="vertical" className="studio-window-rail__map">
               {mapCommands.map((command) => (
-                <WindowButton key={command.id} command={command} icon={viewportIcons[command.id] ?? Scan} placement="right" />
+                <WindowButton key={command.id} command={command} icon={canvasViewportIcons[command.id]} placement="right" />
               ))}
             </div>
           )}

@@ -11,7 +11,7 @@ import { Combobox } from '@/components/ui/Combobox';
 import { Dialog } from '@/components/ui/Dialog';
 import { ListRow } from '@/components/ui/ListRow';
 import {
-  ContextMenu, ContextMenuContent, ContextMenuTrigger, Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem,
+  ContextMenu, ContextMenuContent, ContextMenuTrigger, Menu, MenuCheckboxItem, MenuContent, MenuGroup, MenuGroupLabel, MenuItem,
   MenuSeparator, MenuTrigger,
 } from '@/components/ui/Menu';
 import { NumberField } from '@/components/ui/NumberField';
@@ -157,6 +157,10 @@ export function Gallery() {
                   <MenuGroupLabel>Map</MenuGroupLabel>
                   <MenuItem shortcut="⇧1" onClick={() => setChosen('Fit')}>Fit</MenuItem>
                 </MenuGroup>
+                <MenuSeparator />
+                <MenuCheckboxItem checked={chosen !== 'Hide grid'} onCheckedChange={(shown) => setChosen(shown ? '' : 'Hide grid')}>
+                  Grid
+                </MenuCheckboxItem>
               </MenuContent>
             </Menu>
           </State>

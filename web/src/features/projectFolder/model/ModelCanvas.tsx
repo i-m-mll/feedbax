@@ -7,9 +7,10 @@ import {
   createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useRef, useState,
   type MouseEvent as ReactMouseEvent, type ReactNode, type Ref,
 } from 'react';
-import { Scan, Lock, Minus, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
+import { Lock, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
+import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
@@ -298,8 +299,6 @@ export function ModelCanvas(props: Props) {
   return <ReactFlowProvider><ModelHandleUpdates><Canvas {...props} /></ModelHandleUpdates></ReactFlowProvider>;
 }
 
-const viewportIcons = { fitView: Scan, zoomIn: Plus, zoomOut: Minus };
-
 function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, lock, collapse, viewportCommands, onCanvasPoint,
   onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd,
   onLibraryDrop, onAttachmentDrop }: Props) {
@@ -328,19 +327,12 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
     });
   }, [nodes, setNodes, getInternalNode]);
   useEffect(() => { setEdges(edges); }, [edges, setEdges]);
-  return <div className="studio-model-canvas">
-    <div className="studio-model-strip">
-      <IconButton label={collapse.label} icon={<ChevronsDownUp />} {...commandAttributes(collapse, 'right')} pressed={collapsed}
-        disabled={!collapse.enabled} onClick={collapse.invoke} />
-      <IconButton label={lock.label} icon={locked ? <Lock /> : <Unlock />} {...commandAttributes(lock, 'right')} pressed={locked}
-        disabled={!lock.enabled} onClick={lock.invoke} />
-      <div />
-      {viewportCommands.map((command) => {
-        const Icon = viewportIcons[command.id];
-        return <IconButton key={command.id} label={command.label} icon={<Icon />} {...commandAttributes(command, 'right')}
-          disabled={!command.enabled} onClick={command.invoke} />;
-      })}
-    </div>
+  return <CanvasStrip viewport={viewportCommands} tools={<>
+    <IconButton label={collapse.label} icon={<ChevronsDownUp />} {...commandAttributes(collapse, 'right')} pressed={collapsed}
+      disabled={!collapse.enabled} onClick={collapse.invoke} />
+    <IconButton label={lock.label} icon={locked ? <Lock /> : <Unlock />} {...commandAttributes(lock, 'right')} pressed={locked}
+      disabled={!lock.enabled} onClick={lock.invoke} />
+  </>}>
     <div className="studio-model-surface" onPointerMove={(event) => onCanvasPoint(point(event))}
       onPointerLeave={() => onCanvasPoint(undefined)}
       onDoubleClick={(event) => {
@@ -386,5 +378,5 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
         {physical && <Background gap={16} size={1} />}
       </StudioCanvas>
     </div>
-  </div>;
+  </CanvasStrip>;
 }
