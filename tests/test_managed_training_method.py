@@ -202,6 +202,9 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
 
     resumed_success = _success(destination, resumed)
     assert resumed_success.receipt.recovery.run_id == stopped_id
+    provider = resumed_success.receipt.provider
+    assert provider is not None
+    assert (provider.distribution, provider.version) == ("managed-method-probe", "0.1")
     assert uninterrupted_metrics == prefix_metrics + _retained_metrics(destination, resumed_success)
     history = [json.loads(line) for line in uninterrupted_metrics.splitlines()]
     assert [row["update"] for row in history] == list(range(1, _TOTAL + 1))
