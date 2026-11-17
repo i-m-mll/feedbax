@@ -134,7 +134,6 @@ export function StudioTrainAuthoringForm(props: Props) {
   const definition = useQuery({
     queryKey: ['train-authoring', projectId, stepId, revision],
     queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision }, signal),
-    retry: false,
     placeholderData: (previous) => previous?.project_id === projectId && previous.step_id === stepId ? previous : undefined,
   });
   const [editError, setEditError] = useState<string | null>(null);
@@ -152,7 +151,6 @@ export function StudioTrainAuthoringForm(props: Props) {
     queryKey: ['train-fields', projectId, stepId, numericBody],
     queryFn: ({ signal }) => projectTrainFields(projectId, stepId, numericBody, signal),
     enabled: showNumeric,
-    retry: false,
     placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
   });
 

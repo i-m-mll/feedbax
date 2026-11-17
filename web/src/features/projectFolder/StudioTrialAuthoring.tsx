@@ -38,7 +38,7 @@ export function useTrialAuthoring(
   const query = useQuery({
     queryKey: ['trial-authoring', project, revision, run],
     queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
-    enabled: enabled && !!run, retry: false,
+    enabled: enabled && !!run,
   });
   const commit: Commit | undefined = editable && !busy && run && query.data ? async (name, change) => {
     if (writing.current) return studioReason('saving', studioName('project'));

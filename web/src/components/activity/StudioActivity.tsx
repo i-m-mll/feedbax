@@ -2,7 +2,7 @@ import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/featur
 import { useState } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
-import { StudioJobsProvider, useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
+import { StudioJobsProvider, useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
@@ -238,7 +238,6 @@ export function StudioActivityPane(props: StudioActivityPaneProps) {
 function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: StudioActivityPaneProps) {
   const snapshot = useStudioJobs();
   const actions = useStudioJobActions();
-  const connection = useStudioJobConnection();
   const [selection, setSelection] = useState<string | null>(null);
   const jobs = snapshot.data?.jobs ?? [];
   const selected = jobs.find((job) => job.job_id === selection);
@@ -256,12 +255,8 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
       <dd className="text-shell-muted">{studioMachineStatus(machine.state)}</dd>
     </dl>
   );
-  const state: StudioRegionState = connection === 'disconnected' || snapshot.isError
-    ? {
-        kind: 'failed',
-        issue: studioRegionIssue('activity', snapshot.error, connection === 'disconnected'),
-        retry: actions.refresh,
-      }
+  const state: StudioRegionState = snapshot.isError
+    ? { kind: 'failed', issue: studioRegionIssue('activity', snapshot.error), retry: actions.refresh }
     : snapshot.isPending
       ? { kind: 'loading' }
       : visible.length > 0
@@ -308,6 +303,5 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
 
 export function useStudioActivityCount() {
   const snapshot = useStudioJobs();
-  const connection = useStudioJobConnection();
-  return connection === 'connected' ? snapshot.data?.jobs.filter(isLive).length ?? 0 : 0;
+  return snapshot.data?.jobs.filter(isLive).length ?? 0;
 }

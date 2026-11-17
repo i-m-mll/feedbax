@@ -1,3 +1,5 @@
+import { serviceDidNotRespond, serviceResponded } from './connection';
+
 export type ApiRequestErrorKind = 'network' | 'http' | 'contract';
 
 export class ApiRequestError extends Error {
@@ -50,6 +52,8 @@ export async function requestResponse(path: string, options?: RequestInit): Prom
       headers,
     });
   } catch (error) {
+    if (options?.signal?.aborted) throw error;
+    serviceDidNotRespond();
     throw new ApiRequestError(
       'network',
       path,
@@ -57,6 +61,7 @@ export async function requestResponse(path: string, options?: RequestInit): Prom
       { cause: error },
     );
   }
+  serviceResponded();
 
   if (!response.ok) {
     const detail = await parseErrorBody(response);
@@ -79,6 +84,11 @@ export async function requestJson(path: string, options?: RequestInit): Promise<
 export function asApiRequestError(error: unknown, path: string, context: string): ApiRequestError {
   if (error instanceof ApiRequestError) return error;
   return new ApiRequestError('contract', path, context, { cause: error });
+}
+
+/** The request got no response: the window's connection reports it, not the region that asked. */
+export function isUnanswered(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.kind === 'network';
 }
 
 export function isHttpConflict(error: unknown): error is ApiRequestError {

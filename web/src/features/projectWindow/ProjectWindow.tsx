@@ -12,17 +12,18 @@ import { appTip, installTooltips } from '@window-shell/browser/tooltip';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { Button, IconButton } from '@/components/ui/Button';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
-import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from '@/components/activity/StudioRegion';
+import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { useElementSize } from '@/hooks/useElementSize';
 import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
 import {
-  projectWindowSlotView, projectWindowViews, showProjectWindowView,
+  defaultProjectWindowState, projectWindowSlotView, projectWindowViews, showProjectWindowView,
   type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
 import { StudioCommandPalette } from './StudioCommandPalette';
+import { StudioConnectionStatus } from './StudioConnectionStatus';
 import { StudioSettings } from './StudioSettings';
 import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
@@ -56,7 +57,6 @@ export interface ProjectWindowProps {
   overlay?: ReactNode;
   clock?: ReactNode;
   failure?: ReactNode;
-  serviceFailure?: Extract<StudioRegionState, { kind: 'failed' }>;
   problems?: ReactNode;
   activity?: ReactNode;
 }
@@ -115,7 +115,7 @@ function focusRegion(root: HTMLElement | null, region: WindowRegion) {
 
 export function ProjectWindow({
   state, onStateChange, projectName, saveStatus, availableViews, renderView, map, mapDrawer, compactMap,
-  onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, failure, serviceFailure, problems, activity,
+  onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, failure, problems, activity,
 }: ProjectWindowProps) {
   const id = useId();
   const ids = {
@@ -335,15 +335,11 @@ export function ProjectWindow({
     onPreview: (size: number | null) => previewSize(key, size),
     onResize: (size: number) => resize(key, size),
   });
-  const offline = serviceFailure && <StudioRegion state={serviceFailure} />;
   const focusedOwner = `${focusedSlot}:${shownViews[focusedSlot]}`;
-  const regionBody = (name: StudioCommand['name'], body: ReactNode, dataBacked = true, owner?: string) => (
-    <>
-      <div className="studio-window-region-content" hidden={!!offline && dataBacked}>
-        <StudioRegionBoundary key={owner} name={name}>{body}</StudioRegionBoundary>
-      </div>
-      {dataBacked && offline}
-    </>
+  const regionBody = (name: StudioCommand['name'], body: ReactNode, owner?: string) => (
+    <div className="studio-window-region-content">
+      <StudioRegionBoundary key={owner} name={name}>{body}</StudioRegionBoundary>
+    </div>
   );
 
   return (
@@ -450,7 +446,7 @@ export function ProjectWindow({
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
-              {regionBody('detailsDrawer', focusedRegion?.drawer, Boolean(focusedRegion?.drawer), focusedOwner)}
+              {regionBody('detailsDrawer', focusedRegion?.drawer, focusedOwner)}
             </div>
             {detailsDrawerVisible && (
               <ResizeSeparator label={studioName('detailsDrawer')} controls={ids.detailsDrawer} axis="x" direction={1}
@@ -489,7 +485,7 @@ export function ProjectWindow({
                   }}>
                   <header className="studio-window-slot__header">
                     <h2 className="studio-window-slot__name">{studioName(view)}</h2>
-                    <div className="studio-window-slot__controls" hidden={!!offline && view !== 'runs'}>
+                    <div className="studio-window-slot__controls">
                       <StudioRegionBoundary key={view} name={view}>{region.header}</StudioRegionBoundary>
                     </div>
                     {slot === 'primary' && !split && (
@@ -513,7 +509,7 @@ export function ProjectWindow({
           <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>
-              {regionBody('windowInspector', focusedRegion?.inspector, Boolean(focusedRegion?.inspector), focusedOwner)}
+              {regionBody('windowInspector', focusedRegion?.inspector, focusedOwner)}
             </div>
             {inspectorVisible && (
               <ResizeSeparator label={studioName('windowInspector')} controls={ids.inspector} axis="x" direction={-1}
@@ -527,8 +523,9 @@ export function ProjectWindow({
           <div className="studio-window-bottom__left">
             <WindowButton command={drawer} icon={PanelLeft} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
           </div>
-          <div className="studio-window-bottom__clock" hidden={!!offline}>{clock}</div>
+          <div className="studio-window-bottom__clock">{clock}</div>
           <div className="studio-window-bottom__right">
+            <StudioConnectionStatus />
             {failure}
             {problems}
             {activity}
@@ -537,5 +534,17 @@ export function ProjectWindow({
         </StudioRegionBoundary>
       </footer>
     </div>
+  );
+}
+
+const loadingRegion = <StudioRegion state={{ kind: 'loading' }} />;
+
+/** The window before its project has loaded: its regions loading, its bottom bar reporting the connection. */
+export function PendingProjectWindow() {
+  const [state, setState] = useState<ProjectWindowState>(defaultProjectWindowState);
+  return (
+    <ProjectWindow state={state} onStateChange={setState} projectName="" availableViews={[]}
+      renderView={() => ({ body: loadingRegion })} map={loadingRegion} mapDrawer={loadingRegion}
+      compactMap={loadingRegion} commands={[]} />
   );
 }

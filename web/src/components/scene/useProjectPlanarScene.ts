@@ -12,7 +12,6 @@ export function useProjectPlanarSceneQuery(projectId: string, source: StudioPlan
     queryKey: ['project-planar-scene', projectId, source],
     queryFn: source ? ({ signal }) => fetchProjectPlanarScene(projectId, source, signal) : skipToken,
     refetchOnWindowFocus: false,
-    retry: false,
     placeholderData: (previous) => source && previous?.project_id === projectId && previous.document_id === source.document_id &&
       JSON.stringify(previous.node_path) === JSON.stringify(source.node_path) ? previous : undefined,
   });
