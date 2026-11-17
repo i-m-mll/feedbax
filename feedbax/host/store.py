@@ -387,9 +387,27 @@ class Store:
             inputs = original.inputs
         else:
             inputs = bind_train_inputs(view, request, self._train_predecessor(row, payload))
-        return publish_train_job(view.store, TrainJobEntry(
-            attempt=row["id"], request=request, inputs=inputs, checkpoints=checkpoints,
-        ))
+        from feedbax.contracts.manifest import TrainingRunManifest, canonical_manifest_path, load_manifest_bytes
+        from feedbax.job_completion import _read_exact, training_metric_file
+
+        receipt = outcome["receipt"]
+        root = Path(payload["manifest_root"])
+        receipt_path = canonical_manifest_path("TrainingRunManifest", receipt["manifest_id"], root=root)
+        manifest = load_manifest_bytes(_read_exact(root, receipt_path, receipt["manifest_sha256"]))
+        if (
+            not isinstance(manifest, TrainingRunManifest) or manifest.job_id != row["id"]
+            or manifest.status != "cancelled" or manifest.completed_batches != stopped.completed_updates
+        ):
+            raise ValueError("Stop receipt differs from its accepted Train boundary")
+        metric_file = training_metric_file(root, row["id"], manifest)
+        with view.store._exclusive_lock():
+            metrics = None if metric_file is None else view.store._store_file(
+                root / metric_file["path"], sha256=metric_file["sha256"], size_bytes=metric_file["size_bytes"],
+            )
+            return publish_train_job(view.store, TrainJobEntry(
+                attempt=row["id"], request=request, inputs=inputs, checkpoints=checkpoints, metrics=metrics,
+            ))
+
 
     def mirror_collected_train(
         self, job: dict, state: str, receipt: dict | None, progress: dict | None, delivery: int,

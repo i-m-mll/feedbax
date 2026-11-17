@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from feedbax.builtins.training import StandardTrainingSettings, _init_supervised
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.component_registry import ComponentRegistry
@@ -24,6 +25,7 @@ from feedbax.contracts.method_checkpoint import (
     MethodCheckpointIdentity,
     method_checkpoint_extra_path,
 )
+from feedbax.contracts.training import OptimizerSpec
 from feedbax.dataset import Dataset, Variable
 from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.persistence.array_container import ArrayContainerReader
@@ -57,7 +59,6 @@ def _publish(root, graph, models, templates, *, extra=(), assets=None, replica_i
         run_id="selected-model",
         identity=MethodCheckpointIdentity(
             request_id="train:" + "1" * 64, method_key="external.Adversary",
-            method_revision=1, distribution="external-method", distribution_version="1.0",
         ),
         clock=MethodCheckpointClock(completed_updates=2, segment_start=0, schedule_origin=0, seed=81),
         state=TrainingState(stack_replicas(models), extra),
@@ -79,7 +80,12 @@ class _AdaptiveState(eqx.Module):
 
 
 def test_recover_replicated_method_state_and_read_model_without_extra(tmp_path):
-    graph = _thelen_graph({"n_muscles": 2})
+    graph = GraphSpec(nodes={
+        "linear": ComponentSpec(
+            type="feedbax.Linear", params={"input_size": 1, "output_size": 1},
+            input_ports=["input"], output_ports=["output"],
+        ),
+    })
     template = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
     extra = _AdaptiveState(
         b"adam", jnp.stack((jnp.asarray(3.5), jnp.asarray(-2.25))),
@@ -87,11 +93,8 @@ def test_recover_replicated_method_state_and_read_model_without_extra(tmp_path):
         jnp.array([[0.25, 0.75], [1.5, 2]], dtype=jnp.bfloat16),
     )
     replicas = tuple(
-        compile_graph(
-            GraphDocument(graph=_thelen_graph({"n_muscles": 2, "max_isometric_force": force})),
-            ComponentRegistry(),
-        ).graph
-        for force in (575.0, 732.0)
+        eqx.tree_at(lambda model: model.nodes["linear"].layer.weight, template, jnp.asarray([[weight]]))
+        for weight in (0.25, -0.75)
     )
     written = _publish(
         tmp_path / "attempt", graph, replicas, (template, template),
@@ -129,10 +132,33 @@ def test_recover_replicated_method_state_and_read_model_without_extra(tmp_path):
         selected = _open(materialized, written.latest_pointer)
         assert selected.model.replica_ids == ("left", "right")
         left, right = selected.model.restore_all((template, template))
-        assert left.nodes["muscle"].max_isometric_force == 575.0
-        assert right.nodes["muscle"].max_isometric_force == 732.0
+        np.testing.assert_array_equal(left.nodes["linear"].layer.weight, [[0.25]])
+        np.testing.assert_array_equal(right.nodes["linear"].layer.weight, [[-0.75]])
         with pytest.raises(CheckpointCustodyError):
             selected.restore_extra(fresh)
+
+
+def test_stateful_graph_adam_checkpoint_preserves_the_optimizer_abi(tmp_path):
+    graph = GraphSpec(nodes={
+        "cell": ComponentSpec(
+            type="feedbax.GRU",
+            input_ports=["input", "hidden"], output_ports=["output", "hidden"],
+        ),
+    })
+    model = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
+
+    def optimizer_state(**params):
+        settings = StandardTrainingSettings(
+            optimizer=OptimizerSpec(type="adam", params={"learning_rate": 0.001, **params}),
+        )
+        return stack_replicas((_init_supervised(settings, model, jax.random.key(0)).extra,))
+
+    source = optimizer_state()
+    written = _publish(tmp_path / "adam", graph, (model,), (model,), extra=source)
+    selected = _open(written.root, written.latest_pointer)
+    assert eqx.tree_equal(selected.restore_extra(optimizer_state(learning_rate=0.01)), source)
+    with pytest.raises(CheckpointCustodyError):
+        selected.restore_extra(optimizer_state(b1=0.8))
 
 
 def _thelen_graph(params):
@@ -165,6 +191,16 @@ def test_thelen_model_slot_rebuilds_owner_from_restored_source_values(tmp_path, 
         GraphDocument(graph=_thelen_graph(structural | final_values)), ComponentRegistry(),
     ).graph
     template = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
+    inconsistent = eqx.tree_at(
+        lambda model: model.nodes["muscle"].state_index.init,
+        source,
+        replace_fn=lambda leaf: jnp.full_like(leaf, 0.75),
+    )
+    rejected_root = tmp_path / "unreconstructible"
+    with pytest.raises(ModelCheckpointError):
+        _publish(rejected_root, graph, (inconsistent,), (template,))
+    assert not (rejected_root / "latest.json").exists()
+
     written = _publish(tmp_path / "thelen", graph, (source,), (template,))
     selected = _open(written.root, written.latest_pointer).model
     restored = selected.restore(template)

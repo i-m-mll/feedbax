@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
+from inspect import getattr_static
 import os
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
+from types import BuiltinFunctionType, FunctionType
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -51,7 +54,7 @@ from feedbax.training.model_checkpoint import SemanticModelSlot
 
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentBinding
+    from feedbax.contracts.artifact_custody import ContentBinding
     from feedbax.runtime.graph import Graph
     from feedbax.training.methods import TrainingState
     from feedbax.training.model_checkpoint import SemanticModelWriter
@@ -81,25 +84,43 @@ def _extra_layout(extra: PyTree, count: int):
     specs = jax.tree.unflatten(
         structure,
         [
-            jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, weak_type=leaf.weak_type)
+            jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, weak_type=getattr(leaf, "weak_type", False))
             for _, leaf in named
         ],
     )
     try:
         fingerprint = fingerprint_semantic_values(
-            specs, header=(_EXTRA_SCHEMA,),
-            project_leaf=lambda leaf: (
-                (leaf.shape, str(leaf.dtype), leaf.weak_type)
-                if isinstance(leaf, jax.ShapeDtypeStruct)
-                else _unsupported_metadata(leaf)
-            ),
+            specs, header=(_EXTRA_SCHEMA,), project_leaf=_checkpoint_metadata,
         )
     except UnsupportedSemanticValue as error:
         raise CheckpointCustodyError(f"Method extra state structure has no durable identity: {error}") from error
     return named, structure, {"schema": _EXTRA_SCHEMA, "structure_sha256": fingerprint}
 
 
-def _unsupported_metadata(value):
+def _checkpoint_metadata(value):
+    if isinstance(value, jax.ShapeDtypeStruct):
+        return value.shape, str(value.dtype), value.weak_type
+    if isinstance(value, type) and "<locals>" not in value.__qualname__:
+        return value.__module__, value.__qualname__
+    if isinstance(value, (FunctionType, BuiltinFunctionType)):
+        module = value.__module__
+        path = value.__qualname__.split(".")
+        bound = sys.modules.get(module)
+        if bound is not None and all(part.isidentifier() for part in path):
+            for part in path:
+                bound = getattr_static(bound, part, None)
+            if isinstance(bound, staticmethod):
+                bound = bound.__func__
+            if bound is value:
+                return module, value.__qualname__
+    if isinstance(value, jax.tree_util.GetAttrKey):
+        return value.name
+    if isinstance(value, jax.tree_util.SequenceKey):
+        return value.idx
+    if isinstance(value, (jax.tree_util.DictKey, jax.tree_util.FlattenedIndexKey)):
+        return value.key
+    if is_dataclass(value) and not isinstance(value, type):
+        return tuple((field.name, getattr(value, field.name)) for field in fields(value) if field.compare)
     raise UnsupportedSemanticValue(f"{type(value).__module__}.{type(value).__qualname__}")
 
 
@@ -190,7 +211,7 @@ def write_method_checkpoint(
     root: Path, *, run_id: str, identity: MethodCheckpointIdentity, clock: MethodCheckpointClock,
     state: TrainingState, model_writer: SemanticModelWriter,
     model_templates: Sequence[Graph], replica_ids: tuple[str, ...], final: bool = False,
-    content_provider: ArtifactBlobProvider | None = None,
+    content_provider: ImmutableArtifactBlobProvider | None = None,
 ) -> MethodCheckpointWrite:
     from feedbax.training.method_runtime import replica_value
 

@@ -26,7 +26,7 @@ def update(state, ctx):
     return state, {}
 ```
 
-The resolved request contains the canonical method key, computation revision and validated settings with defaults. The attempt records the installed distribution and version separately. Change the declaration's revision when an implementation changes the computation. The settings model owns method-specific values such as optimizer configuration. Train owns its seed, batch size, replica count, update count and checkpoint interval.
+The resolved request contains the canonical method key and validated settings with defaults. The attempt records the installed distribution and version separately for provenance. The settings model owns method-specific values such as optimizer configuration. Train owns its seed, batch size, replica count, update count and checkpoint interval.
 
 `TrainingState.model` holds the graph. `TrainingState.extra` holds an arbitrary persistent array PyTree with fixed structure. It may hold an optimizer state, an adaptive price, an inner optimization variable or a running average. Array shapes, dtypes and static PyTree metadata stay fixed during execution. Feedbax validates that the state can be represented in a checkpoint.
 
@@ -44,7 +44,7 @@ The Host visits the run between blocks. It sends progress and retains each commi
 
 A fresh Train initializes the Model and calls the selected method's `init`. A Train with one predecessor checkpoint and `checkpoint_initialization: initialize_from` reads only the predecessor's semantic model product. It calls the target method's `init` with the restored model and begins a new update clock. This supports switching methods without needing the predecessor's method code or extra state.
 
-A Train with `checkpoint_initialization.mode: continue_from` starts at its authenticated predecessor's declared completed update. It selects whether to preserve or reset method state, whether to carry or reset the random seed, and whether to continue or restart the schedule origin. Preserving extra state requires the same method and computation revision and a compatible state layout. The effective input identity includes the model, completed clock and only the predecessor state, schedule origin and seed the policy consumes.
+A Train with `checkpoint_initialization.mode: continue_from` starts at its authenticated predecessor's declared completed update. It selects whether to preserve or reset method state, whether to carry or reset the random seed, and whether to continue or restart the schedule origin. Preserving extra state requires the same method and a compatible state layout. The effective input identity includes the model, completed clock and only the predecessor state, schedule origin and seed the policy consumes.
 
 Resume continues the same request from its own authenticated checkpoint. The original authored input binding stays intact. The recovery binding verifies the method and state ABI, restores the exact model and extra arrays, and restores the completed update, segment start, schedule origin and random seed. The numerical loop starts at the next update. A deterministic backend with the same declarations reproduces the committed state from an uninterrupted run.
 

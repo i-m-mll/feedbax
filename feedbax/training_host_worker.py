@@ -241,10 +241,7 @@ def _run(
     registries = _warm_registries
     trial_binding = resolve_training_request_binding(launch, registries=registries)
     trial, method, settings = trial_binding.trial, trial_binding.method, trial_binding.settings
-    identity = MethodCheckpointIdentity(
-        request_id=launch.request_id, method_key=method.key, method_revision=method.revision,
-        distribution=method.source.distribution, distribution_version=method.source.version,
-    )
+    identity = MethodCheckpointIdentity(request_id=launch.request_id, method_key=method.key)
     spec = launch.spec
     policy = spec.continuation
     config = spec.training_config
@@ -318,7 +315,7 @@ def _run(
     checkpoints = []
     latest_metrics = {}
     history = checkpoint_root / "metrics.jsonl"
-    method_provenance = asdict(method.source) | {"key": method.key, "revision": method.revision}
+    method_provenance = asdict(method.source) | {"key": method.key}
     provenance = {"method": method_provenance, "request_id": launch.request_id, "binding_sha256": binding_sha256}
     if launch.checkpoint_input is not None:
         provenance["checkpoint_initialization"] = checkpoint_reference(launch.checkpoint_input.checkpoint).model_dump(mode="json")
@@ -372,7 +369,7 @@ def _run(
             if restored.model.replica_ids != replica_ids:
                 raise ValueError("/training_config/replicates: checkpoint replica IDs differ from the target.")
             if resume is not None and restored.identity != identity:
-                raise ValueError("Resume requires the exact admitted method, revision and installed distribution.")
+                raise ValueError("Resume requires the exact admitted Train request and method.")
         completed = segment_start = schedule_origin = 0
         if resume is not None:
             completed = restored.clock.completed_updates
@@ -383,10 +380,8 @@ def _run(
             clock = restored.clock
             if clock.completed_updates != policy.source_completed_updates:
                 raise ValueError("/checkpoint_initialization/source_completed_updates: bound predecessor differs.")
-            if policy.state == "preserve" and (
-                restored.identity.method_key, restored.identity.method_revision, restored.identity.distribution,
-            ) != (identity.method_key, identity.method_revision, identity.distribution):
-                raise ValueError("/checkpoint_initialization/state: carrying state requires the same method and revision.")
+            if policy.state == "preserve" and restored.identity.method_key != identity.method_key:
+                raise ValueError("/checkpoint_initialization/state: carrying state requires the same method.")
             completed = segment_start = clock.completed_updates
             schedule_origin = clock.schedule_origin if policy.schedule == "continue" else completed
             seed = clock.seed if policy.rng == "carry" else seed
@@ -411,11 +406,12 @@ def _run(
             documents = source_spec.trial_documents
             source_graph = trial.graph
             variant = None
-            if documents != spec.trial_documents or source_spec.seed != spec.seed:
+            if documents != spec.trial_documents:
                 from feedbax.studio.canonical_train import _resolve_trial
 
                 source_graph = _resolve_trial(source_spec, registries).graph
-                variant = trial.graph
+                if source_graph.graph != trial.graph.graph:
+                    variant = trial.graph
             model_source = CheckpointModelSource(
                 tree=restored.model.tree,
                 encoding=restored.model.encoding,
@@ -423,7 +419,8 @@ def _run(
             )
             reconstructed = reconstruct_model(
                 model_source, registry=registries, artifacts=model_assets,
-                template=source_graph, variant=variant, variant_seed=spec.seed, slot=restored.model,
+                template=source_graph, variant=variant, variant_seed=spec.seed if variant is not None else None,
+                slot=restored.model,
             )
             if isinstance(reconstructed, tuple):
                 problem = reconstructed[0]

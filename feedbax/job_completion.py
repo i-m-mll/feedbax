@@ -6,6 +6,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from pydantic import TypeAdapter
+
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.method_checkpoint import MethodCheckpointIdentity
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
@@ -25,12 +27,15 @@ from feedbax.studio.canonical_train import (
     verify_training_request_binding,
 )
 from feedbax.persistence.method_checkpoint import method_checkpoint_files, read_method_checkpoint_manifest
+from feedbax.plugins.declarations import DistributionSource
 
 if TYPE_CHECKING:
     from feedbax.training.model_checkpoint import SemanticModelSlot
 
 
 type CheckpointReadScope = Literal["full", "model_only"]
+
+_PROVIDER = TypeAdapter(DistributionSource)
 
 
 class CompletionUnavailable(ValueError):
@@ -60,12 +65,25 @@ def _file(root: Path, path: Path, digest: str, size: int) -> dict:
     return {"path": path.relative_to(root).as_posix(), "sha256": digest, "size_bytes": size}
 
 
+def training_metric_file(root: Path, attempt: str, manifest: TrainingRunManifest) -> dict | None:
+    """Read the declared metrics member; the Store verifies its bytes at ingress."""
+    records = [artifact for artifact in manifest.artifacts if artifact.role == "training_metrics"]
+    if not records:
+        return None
+    if len(records) != 1:
+        raise CompletionFileError("Train receipt has repeated metric history.")
+    (artifact,) = records
+    history = training_binding_path(root, attempt).with_name("metrics.jsonl")
+    if (
+        artifact.uri != history.relative_to(root).as_posix()
+        or artifact.sha256 is None or artifact.size_bytes is None or artifact.media_type != "application/x-ndjson"
+    ):
+        raise CompletionFileError("Train receipt metric history is outside this attempt.")
+    return _file(root, history, artifact.sha256, artifact.size_bytes)
+
+
 def _checkpoint_matches_request(identity: MethodCheckpointIdentity, launch: BoundStudioTrainingJobInput) -> bool:
-    return (
-        identity.request_id, identity.method_key, identity.method_revision,
-    ) == (
-        launch.request_id, launch.spec.method, launch.spec.method_revision,
-    )
+    return (identity.request_id, identity.method_key) == (launch.request_id, launch.spec.method)
 
 def checkpoint_reference(checkpoint: PublishedTrainingCheckpoint) -> ParentRef:
     pointer = checkpoint.pointer
@@ -170,13 +188,7 @@ def verify_training_completion(
         ):
             raise CompletionFileError("Receipt, published pointer and authored completion disagree.")
         transaction = read_method_checkpoint_manifest(expected_root, pointer)
-        method = manifest.provenance.metadata["method"]
-        if (
-            not _checkpoint_matches_request(transaction.identity, launch)
-            or transaction.clock.completed_updates != target
-            or (transaction.identity.distribution, transaction.identity.distribution_version)
-            != (method["distribution"], method["version"])
-        ):
+        if not _checkpoint_matches_request(transaction.identity, launch) or transaction.clock.completed_updates != target:
             raise CompletionFileError("Authenticated checkpoint disagrees with its admitted method or request.")
         files = [
             _file(root, binding_path, binding_sha256, len(binding_raw)),
@@ -184,25 +196,11 @@ def verify_training_completion(
             *(_file(root, path, ref.sha256, ref.size_bytes) for path, ref in request_files),
             *_checkpoint_files(root, checkpoint, scope),
         ]
-        metrics = None
-        records = [artifact for artifact in manifest.artifacts if artifact.role == "training_metrics"]
-        if len(records) > 1:
-            raise CompletionFileError("Train receipt has repeated metric history.")
-        if records:
-            (artifact,) = records
-            history = binding_path.with_name("metrics.jsonl")
-            if (
-                artifact.uri != history.relative_to(root).as_posix() or artifact.sha256 is None
-                or artifact.size_bytes is None or artifact.media_type != "application/x-ndjson"
-            ):
-                raise CompletionFileError("Train receipt metric history is outside this attempt.")
-            if scope == "full":
-                from hashlib import file_digest
-
-                with completion_file(root, artifact.uri) as (stream, size):
-                    if size != artifact.size_bytes or file_digest(stream, "sha256").hexdigest() != artifact.sha256:
-                        raise CompletionFileError("Train metric history differs from its receipt.")
-            metrics = _file(root, history, artifact.sha256, artifact.size_bytes)
+        metrics = training_metric_file(root, producer_job_id, manifest)
+        method = dict(provenance["method"])
+        if method.pop("key") != launch.spec.method:
+            raise CompletionFileError("Train receipt names a different method.")
+        provider = _PROVIDER.validate_python(method)
         completion = {
             "producer_job_id": producer_job_id,
             "project_id": launch.project_id,
@@ -213,6 +211,7 @@ def verify_training_completion(
             "checkpoint": checkpoint.model_dump(mode="json"),
             "files": files,
             "metrics": metrics,
+            "provider": _PROVIDER.dump_python(provider, mode="json"),
         }
         verify_completion_files(completion, checkpoint_model=scope == "model_only")
         return completion

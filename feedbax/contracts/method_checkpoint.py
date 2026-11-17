@@ -17,9 +17,6 @@ TransactionId = Annotated[str, Field(pattern=r"^tx-[0-9a-f]{32}$")]
 class MethodCheckpointIdentity(ReferenceValue):
     request_id: RequestId
     method_key: Name
-    method_revision: int = Field(ge=1, strict=True)
-    distribution: Name
-    distribution_version: Name
 
     @model_validator(mode="after")
     def _train(self) -> "MethodCheckpointIdentity":
