@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 import fcntl
-from functools import lru_cache
+from functools import lru_cache, partial
 import os
 from pathlib import Path
 import re
@@ -58,6 +58,7 @@ from feedbax.contracts.project_io import (
 )
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.request_identity import request_codec_authority
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.contracts.strict_json import strict_json_loads
@@ -258,24 +259,92 @@ class SavedProjectPlans(Protocol):
     def admission_plan(self, project_id: str) -> AbstractContextManager[SettledProjectPlan]: ...
 
 
+@dataclass(frozen=True)
+class _SavedCompilation:
+    stamp: tuple[object, ...]
+    plan: SettledProjectPlan
+    observations: dict[str, dict[str, object]]
+
+
+class SavedPlanMemo(ProjectPlanMemo):
+    """Retain a reviewed compilation and the data its external reads observed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock = Lock()
+        self.saved: _SavedCompilation | None = None
+
+
+def _observe_plan_input[T](reader: Callable[[str], T], observations: dict[str, object], name: str) -> T:
+    try:
+        value = reader(name)
+    except (OSError, ValueError) as error:
+        observations[name] = (type(error), str(error))
+        raise
+    observations[name] = sha256_bytes(value) if isinstance(value, bytes) else value
+    return value
+
+
+def _same_plan_inputs(readers: BaseReaders, expected: dict[str, dict[str, object]]) -> bool:
+    for kind, observed in expected.items():
+        reader = getattr(readers, kind)
+        if reader is None:
+            return False
+        current: dict[str, object] = {}
+        for name in observed:
+            try:
+                _observe_plan_input(reader, current, name)
+            except (OSError, ValueError):
+                pass  # The failed read is also an observation.
+        if observed != current:
+            return False
+    return True
+
+
 def compile_saved_project(
     text: TextProject, *, project_id: str, store: Path, readers: BaseReaders,
     operations: OperationRegistry | None = None, components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None, python_tasks: PythonTaskRegistry | None = None,
     figure_templates: FigureTemplateRegistry | None = None,
-    source_runs: Iterable[RunKey] = (), memo: ProjectPlanMemo | None = None,
+    source_runs: Iterable[RunKey] = (), memo: SavedPlanMemo | None = None,
     training_methods: TrainingMethodRegistry | None = None,
 ) -> SettledProjectPlan:
-    """Compile a snapshot against the Store of its resolved local or delegated project."""
+    """Compile exact authored bytes and reuse them only with matching input authority."""
     readers = replace(readers, terminal_train=terminal_train_reader(store))
-    plan = compile_project(
-        text.project, source_runs=source_runs, memo=memo,
-        operations=operations, components=components, functions=functions,
-        python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods, readers=readers,
+    semantic_root = project_semantic_root(text.project)
+    source_runs = frozenset(source_runs)
+    stamp = (
+        project_id, text.revision, semantic_root, text.root, store, source_runs, request_codec_authority(),
+        operations, components, functions, python_tasks, figure_templates, training_methods,
+        readers.figure_external is not None,
     )
-    return SettledProjectPlan(
-        project_id, text.revision, project_semantic_root(text.project), text.configuration, store, plan, readers, text.root,
-    )
+    observations: dict[str, dict[str, object]] = {}
+    observed_readers = {}
+    for kind in ("terminal_train", "figure_external"):
+        if (reader := getattr(readers, kind)) is not None:
+            observations[kind] = {}
+            observed_readers[kind] = partial(_observe_plan_input, reader, observations[kind])
+    memo = memo if memo is not None else SavedPlanMemo()
+    reusable = readers.run is None and readers.row is None and readers.external is None
+    with memo.lock:
+        previous = memo.saved
+        if (
+            reusable and previous is not None and previous.stamp == stamp
+            and _same_plan_inputs(readers, previous.observations)
+        ):
+            return replace(previous.plan, readers=readers)
+        plan = compile_project(
+            text.project, source_runs=source_runs, memo=memo,
+            operations=operations, components=components, functions=functions, python_tasks=python_tasks,
+            figure_templates=figure_templates, training_methods=training_methods,
+            readers=replace(readers, **observed_readers),
+        )
+        settled = SettledProjectPlan(
+            project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
+        )
+        if reusable:
+            memo.saved = _SavedCompilation(stamp, settled, observations)
+        return settled
 
 
 def _may_read_figure_pin(project: Project) -> bool:
@@ -683,7 +752,7 @@ class ProjectFolder:
         self.functions = functions
         self.python_tasks = python_tasks
         self.training_methods = training_methods
-        self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
+        self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
         self._known_locations_lock = Lock()
 

@@ -416,8 +416,9 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
 
     with monkeypatch.context() as unchanged:
         unchanged.setattr(settings, "model_validate", unexpected_settings_validation)
+        acknowledged = folders.read_plan(project, revision=downstream_plan.revision)
         downstream_run = jobs.admit_plan(
-            folders, downstream_plan, run_keys=(selected[2],), token="reuse-gain", reuse_completed=True,
+            folders, acknowledged, run_keys=(selected[2],), token="reuse-gain", reuse_completed=True,
         )
     assert {item.disposition for item in downstream_run.items} == {"reused"}
 
