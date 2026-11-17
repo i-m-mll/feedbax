@@ -20,14 +20,18 @@ export const blankDocuments = {
       schema_version: 'feedbax.analysis_document.v1', inputs: { states: { kind: 'dataset' } }, operations: {}, views: {},
     },
   },
-} satisfies Partial<Record<DocumentRole, Document>>;
+  report: {
+    schema: 'feedbax.report_document.v1',
+    payload: { schema_version: 'feedbax.report_document.v1', title: 'Report', blocks: [] },
+  },
+} satisfies Record<DocumentRole, Document>;
 
 const schemas: Record<DocumentRole, readonly string[]> = {
   model: [blankDocuments.model.schema],
   task: [blankDocuments.task.schema, 'feedbax.spec.task_document'],
   objective: [blankDocuments.objective.schema],
   analysis: [blankDocuments.analysis.schema],
-  report: ['feedbax.report_document.v1'],
+  report: [blankDocuments.report.schema],
 };
 
 const labels: Record<DocumentRole, StudioNameId> = {
@@ -66,7 +70,6 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const result = await readStudioTrialAuthoring(projectId, {
       revision, run, scope, change: { kind: 'select_document', role, document },
     }, editor.signal);
-    if (!result.files.length && result.problems.length) throw new Error(result.problems[0].reason);
     return result.files;
   }
 
@@ -95,16 +98,15 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const all = saved.project.documents ?? {};
     const documents = Object.keys(all).filter((id) => schemas[role].includes(all[id].schema)).sort();
     const kind = studioName(role);
-    const blank = role === 'report' ? undefined : blankDocuments[role];
     const repoint = editable && !!stepId && selectable.has(role);
     return {
       label: labels[role], document, documents, count,
       choose: repoint ? (next) => { void attempt(() => point(studioAccessibleName('select', kind), role, next)); } : undefined,
-      create: repoint && blank ? () => attempt(async () => {
+      create: repoint ? () => attempt(async () => {
         const { saved } = editor.getSnapshot();
         const id = freeDocumentName(Object.keys(saved.project.documents ?? {}), role);
-        await editor.createFile({ kind: 'document', id, document: blank }, saved.revision);
-        await point(studioAccessibleName('select', kind), role, id);
+        await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document: blankDocuments[role] }],
+          saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;
       }) : undefined,
       duplicate: repoint ? () => attempt(async () => {

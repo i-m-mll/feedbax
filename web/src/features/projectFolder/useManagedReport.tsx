@@ -115,10 +115,10 @@ export function useManagedReport({
         delete nextInputs[block.figure];
       }
       if (setBlocks(studioName(id), remaining, nextInputs)) {
-        setSelection({ scope, index: Math.min(index, remaining.length - 1) });
+        setSelection(remaining.length ? { scope, index: Math.min(index, remaining.length - 1) } : undefined);
       }
     }, {
-      enabled: editable && !!block && (id === 'remove' ? blocks.length > 1 : target >= 0 && target < blocks.length),
+      enabled: editable && !!block && (id === 'remove' || target >= 0 && target < blocks.length),
       subject: block ? String(index + 1) : undefined,
     });
   }

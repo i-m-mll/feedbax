@@ -871,17 +871,21 @@ def _encode_row(
             document = ReportDocument.model_validate(payload)
             expected = set(document.figure_roles)
             invalid = [
-                (role, "required figure input is missing") for role in sorted(expected - inputs.keys())
+                (ResolutionCode.INVALID_PAYLOAD, "payload.blocks", "The report has no blocks."),
+            ] if not document.blocks else []
+            invalid += [
+                (ResolutionCode.BAD_REFERENCE, f"inputs.{role}", "required figure input is missing")
+                for role in sorted(expected - inputs.keys())
             ] + [
-                (role, "unknown Report figure role") for role in sorted(inputs.keys() - expected)
+                (ResolutionCode.BAD_REFERENCE, f"inputs.{role}", "unknown Report figure role")
+                for role in sorted(inputs.keys() - expected)
             ]
             if invalid:
                 return _LoweredRow(
                     None,
                     tuple(ProjectDiagnostic(
-                        ResolutionCode.BAD_REFERENCE, f"inputs.{role}", detail, key.step,
-                        row=key.row, variant=key.variant,
-                    ) for role, detail in invalid),
+                        code, path, detail, key.step, row=key.row, variant=key.variant,
+                    ) for code, path, detail in invalid),
                     encoding_stamp,
                 )
             spec = ReportRequestSpec(document=document)

@@ -175,8 +175,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         assert any("reach_target" in problem.reason for problem in choices["unbound-task"])
         incompatible = author(revision, {"kind": "select_document", "role": "task", "document": "unbound-task"},
                               selected=test_run, scope=scope)
-        assert not incompatible.files
-        assert any("reach_target" in problem.reason for problem in incompatible.problems)
+        assert incompatible.files
         revision = save(author(revision, {"kind": "select_document", "role": "task", "document": "test-task"},
                                selected=test_run, scope=scope))
         chosen = author(revision, selected=test_run)

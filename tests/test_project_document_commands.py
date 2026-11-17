@@ -136,26 +136,38 @@ def test_a_step_using_a_duplicate_diverges_alone(studio):
     assert edited["train-b"] == original["train-b"]
 
 
-def test_a_step_uses_a_duplicated_model(studio):
+def test_a_step_uses_a_duplicated_model_and_reports_what_does_not_resolve(studio):
     client, folders = studio
-    # Task links and Objective measures address the Model by document name, so pair a copy without them.
-    for document, path in (("task", "/payload/links"), ("objective", "/payload/terms")):
-        response = client.patch(URL, json={
-            "revision": _snapshot(client)["revision"], "address": {"kind": "document", "id": document},
-            "patches": [{"op": "replace", "path": path, "value": []}],
-        })
-        assert response.status_code == 200, response.text
     result = _command(client, _snapshot(client), {"kind": "duplicate", "document": "reach-model", "name": "arm"})
     assert result["snapshot"]["presentation"]["documents"]["arm"] == result["snapshot"]["presentation"]["documents"]["reach-model"]
+    run = {"variant": "default", "step": "train-b", "row": "default"}
     response = client.post(f"{URL}/authoring/trials", json={
-        "revision": result["snapshot"]["revision"], "run": {"variant": "default", "step": "train-b", "row": "default"},
+        "revision": result["snapshot"]["revision"], "run": run,
         "change": {"kind": "select_document", "role": "model", "document": "arm"},
     })
     assert response.status_code == 200, response.text
     view = response.json()
-    assert not view["problems"], view["problems"]
     response = client.patch(URL, json={"revision": view["revision"], "files": view["files"]})
     assert response.status_code == 200, response.text
+    revision = response.json()["revision"]
     trial = response.json()["project"]["steps"]["train-b"]["base"]["inline"]["trial_documents"]
     assert trial["model"] == {"document": "arm"} and trial["model_name"] == "arm"
-    assert _requests(folders, response.json()["revision"]).keys() == set(STEPS)
+    plan = folders.read_plan(PROJECT, revision=revision).plan
+    assert {run.key.step for run in plan.runs} == {"train"}
+    assert {diagnostic.step for diagnostic in plan.diagnostics} == {"train-b"}
+
+    response = client.post(f"{URL}/authoring/trials", json={"revision": revision, "run": run})
+    assert response.status_code == 200, response.text
+    authored = response.json()
+    assert authored["model"] == "arm" and authored["problems"]
+    measures = {field["path"] for field in authored["fields"] if field["path"].startswith("/objective/")}
+    assert measures, "the Objective stays authorable while its pairing has Problems"
+
+
+def test_choosing_a_document_of_another_role_is_refused(studio):
+    client, _ = studio
+    response = client.post(f"{URL}/authoring/trials", json={
+        "revision": _snapshot(client)["revision"], "run": {"variant": "default", "step": "train", "row": "default"},
+        "change": {"kind": "select_document", "role": "model", "document": "task"},
+    })
+    assert response.status_code == 422, response.text

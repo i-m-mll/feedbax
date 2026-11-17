@@ -27,6 +27,7 @@ from feedbax.contracts.expression_values import (
     children,
     scope_problems,
 )
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.expression_registry import (
     Function,
     FunctionClass,
@@ -181,7 +182,7 @@ def check(
                     if node.reference in RESERVED_NAMES
                     else ProblemCode.UNKNOWN_NAME
                 )
-                problem(node, code, f"{node.reference!r} is not in scope here.", at)
+                problem(node, code, f"{_reference_label(node.reference)!r} is not in scope here.", at)
                 return None
         else:
             key = node.function if isinstance(node, CallValue) else node.family
@@ -324,3 +325,8 @@ def check(
         return tuple(problems)
     assert root is not None
     return Checked(root, MappingProxyType(checked), MappingProxyType(calls))
+
+
+def _reference_label(reference: str) -> str:
+    """A reference is a plain name or the canonical text of a Model address."""
+    return ModelAddress.from_text(reference).label() if reference.startswith("{") else reference
