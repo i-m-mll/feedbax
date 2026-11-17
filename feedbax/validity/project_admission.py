@@ -90,26 +90,12 @@ class ProjectValidity:
         return source_catalog(self.root)
 
     @cached_property
-    def _inventory(self) -> InstalledInventory | None:
-        if isinstance(self.registries, AdmissionProjection):
-            return InstalledInventory([str(path) for path in self.registries.search_paths])
-        return None
-
-    @cached_property
-    def _installed(self) -> dict[str, str] | None:
-        return self._inventory.versions() if self._inventory is not None else None
-
-    def installation_current(self, traces: tuple[CodeTrace, ...]) -> bool:
-        names = {name for trace in traces for name in trace.environment}
-        if not names:
-            return True
-        assert self._inventory is not None and self._installed is not None
-        current = self._inventory.versions(fresh=True)
-        return all(self._installed.get(name) == current.get(name) for name in names)
-
-    @cached_property
     def _environment(self):
-        return read_environment(self.root, installed=self._installed).versions
+        installed = (
+            InstalledInventory([str(path) for path in self.registries.search_paths]).versions()
+            if isinstance(self.registries, AdmissionProjection) else None
+        )
+        return read_environment(self.root, installed=installed).versions
 
     def inspect(
         self, view: SuccessView, published: PublishedSuccess, *,

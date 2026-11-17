@@ -63,18 +63,6 @@ class AdmissionProjection(StrictModel):
             for distribution in distributions for file in self.declarations.get(distribution, ())
         )
 
-    def observe_files(self, root: Path, traces: tuple[CodeTrace, ...]) -> tuple[FileObservation, ...]:
-        paths = {root / "uv.lock"}
-        for trace in traces:
-            for location in (
-                *trace.indeterminate, *trace.indeterminate_files,
-                *(item.path for item in (*trace.sources, *trace.files)),
-            ):
-                if (source := self.roots.get(location.scope)) is not None:
-                    paths.add(source / location.path)
-        return tuple(FileObservation.read(path) for path in sorted(paths))
-
-
 def plugin_entrypoints(paths: tuple[Path, ...]) -> tuple[PluginEntrypoint, ...]:
     return tuple(sorted(
         (canonicalize_name(dist.name), dist.version, entry.name, entry.value)

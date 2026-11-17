@@ -18,7 +18,8 @@ from feedbax.contracts.request_refs import BestRank
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection
 from feedbax.host.live_evaluate import PLACEMENT_EVENT
 from feedbax.host.protocol import DeferredReuse, HostError, LIGHT_ENTRYPOINT, MANAGED_ENTRYPOINTS
-from feedbax.persistence.effective_success import PublishedSuccess, SuccessView, run_ref_name
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import PublishedSuccess, SuccessView
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.validity.admission_projection import AdmissionProjection
 from feedbax.validity.project_admission import (
@@ -40,8 +41,7 @@ CREATE TABLE IF NOT EXISTS deferred_reuses (
     receipt TEXT NOT NULL,
     policy TEXT NOT NULL CHECK (policy IN ('selected','automatic','prerequisite')),
     quick_seconds REAL NOT NULL CHECK (quick_seconds >= 0),
-    projection TEXT REFERENCES deferred_projections(id),
-    retries INTEGER NOT NULL DEFAULT 0
+    projection TEXT REFERENCES deferred_projections(id)
 );
 CREATE INDEX IF NOT EXISTS reuse_projection ON deferred_reuses(projection);
 """
@@ -165,7 +165,7 @@ class DeferredAdmissions:
         ).fetchall()
         for row in rows:
             launch = json.loads(row["launch"])
-            store = self.store._success_view(launch["payload"]["manifest_root"]).store
+            store = ImmutableArtifactBlobProvider(Path(launch["payload"]["manifest_root"]))
             with store._exclusive_lock(), self.db:
                 self._settle(row, launch, SuccessView(store))
 
@@ -197,25 +197,16 @@ class DeferredAdmissions:
         assert projection_json is not None
         projection = AdmissionProjection.model_validate_json(projection_json[0])
         root = Path(launch["project_root"])
-        name = run_ref_name(row["request"])
         try:
             traces = receipt_traces(view.store, published.receipt)
             if not projection.current(traces):
                 self._execute_or_block(row, pending, quick=pending["policy"] != "automatic" or quick())
                 return
-            files = projection.observe_files(root, traces)
-            records = view.store.read_ref(name)
             observer = ProjectValidity(root, projection, quick_duration=threshold)
             validity = observer.inspect(view, published, origins=origins).decision
             disposition = reuse_disposition(validity, pending["policy"], quick=quick)
-            if (
-                not all(file.current() for file in files) or not observer.installation_current(traces)
-                or not projection.current(traces) or view.store.read_ref(name) != records
-            ):
-                self._retry(row, pending)
-                return
-        except _UNAVAILABLE as error:
-            self._retry(row, pending, str(error))
+        except _UNAVAILABLE:
+            self._execute_or_block(row, pending, quick=pending["policy"] != "automatic" or quick())
             return
         match disposition:
             case "reuse":
@@ -235,12 +226,6 @@ class DeferredAdmissions:
                 self._block(row, "admission_changed", _RETRY_MESSAGE)
             case "explicit_run":
                 self._block(row, "explicit_run_required", "This request requires explicit Run.")
-
-    def _retry(self, row: sqlite3.Row, pending: sqlite3.Row, detail: str = "") -> None:
-        if pending["retries"] == 0:
-            self.db.execute("UPDATE deferred_reuses SET retries=1 WHERE job=?", (row["id"],))
-        else:
-            self._block(row, "admission_changed", f"{detail} {_RETRY_MESSAGE}".strip())
 
     def _input_authority(
         self, row: sqlite3.Row, launch: dict, view: SuccessView,
