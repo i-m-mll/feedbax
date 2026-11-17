@@ -100,7 +100,7 @@ const viewsByKind = {
   report: ['runs', 'document'],
 } as const satisfies Record<string, readonly ProjectWindowView[]>;
 const emptyViews: readonly ProjectWindowView[] = [];
-const noView = <p className="p-3 text-sm text-shell-muted" role="status">{studioName('unavailable')}</p>;
+const noView = <StudioRegion state={{ kind: 'empty' }} />;
 
 function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResult'; result: NonNullable<SavedRow['result']> }) {
   const [copyError, setCopyError] = useState(false);
@@ -1085,7 +1085,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           </Button>}>{body}</ProblemDestination> : body;
         if (view === 'analysis' || view === 'figures') {
           const detail = analyze[view];
-          return { ...detail, body: withProblem(detail.body) };
+          return { ...detail, body: withProblem(detail.body),
+            drawer: <StudioRegion state={analyze.catalog}>{detail.drawer}</StudioRegion> };
         }
         if ((view === 'task' || view === 'objective') && trialStep) {
           if (!namedRun) return { body: noView };
@@ -1118,7 +1119,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             </span>}
           </>, body: withProblem(details[view].body) };
         }
-        if (!step) return { body: null };
+        if (!step) return { body: noView };
         if (view === 'document') return { body: withProblem(report.body ?? noView) };
         if (view === 'runs') {
           const runSelection = { step, state, onSelectionChange: mapProps.onSelectionChange };

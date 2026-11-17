@@ -336,10 +336,11 @@ export function ProjectWindow({
     onResize: (size: number) => resize(key, size),
   });
   const offline = serviceFailure && <StudioRegion state={serviceFailure} />;
-  const regionBody = (name: StudioCommand['name'], body: ReactNode, dataBacked = true) => (
+  const focusedOwner = `${focusedSlot}:${shownViews[focusedSlot]}`;
+  const regionBody = (name: StudioCommand['name'], body: ReactNode, dataBacked = true, owner?: string) => (
     <>
       <div className="studio-window-region-content" hidden={!!offline && dataBacked}>
-        <StudioRegionBoundary name={name}>{body}</StudioRegionBoundary>
+        <StudioRegionBoundary key={owner} name={name}>{body}</StudioRegionBoundary>
       </div>
       {dataBacked && offline}
     </>
@@ -449,7 +450,7 @@ export function ProjectWindow({
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
-              {regionBody('detailsDrawer', focusedRegion?.drawer, Boolean(focusedRegion?.drawer))}
+              {regionBody('detailsDrawer', focusedRegion?.drawer, Boolean(focusedRegion?.drawer), focusedOwner)}
             </div>
             {detailsDrawerVisible && (
               <ResizeSeparator label={studioName('detailsDrawer')} controls={ids.detailsDrawer} axis="x" direction={1}
@@ -512,7 +513,7 @@ export function ProjectWindow({
           <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>
-              {regionBody('windowInspector', focusedRegion?.inspector, Boolean(focusedRegion?.inspector))}
+              {regionBody('windowInspector', focusedRegion?.inspector, Boolean(focusedRegion?.inspector), focusedOwner)}
             </div>
             {inspectorVisible && (
               <ResizeSeparator label={studioName('windowInspector')} controls={ids.inspector} axis="x" direction={-1}

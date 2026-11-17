@@ -50,7 +50,7 @@ export function StudioRegion({
     case 'loading':
       return <RegionLoading>{skeleton ?? studioRegionSkeleton}</RegionLoading>;
     case 'empty':
-      return <>{empty}</>;
+      return <>{empty === undefined ? studioRegionEmpty : empty}</>;
     case 'failed':
       return <RegionFailure issue={state.issue} retry={state.retry} />;
     case 'result':
@@ -70,6 +70,7 @@ export function StudioRegion({
 }
 
 const studioRegionSkeleton = <div className="h-20 rounded bg-shell-subtle motion-safe:animate-pulse" />;
+const studioRegionEmpty = <p className="p-3 text-sm text-shell-muted" role="status">{studioName('unavailable')}</p>;
 
 function RegionLoading({ children }: { children: ReactNode }) {
   const [showSkeleton, setShowSkeleton] = useState(false);
@@ -109,12 +110,16 @@ export class StudioRegionBoundary extends Component<
   { error: Error | null }
 > {
   state: { error: Error | null } = { error: null };
+  private reported = false;
 
   static getDerivedStateFromError(failure: unknown) {
     return { error: asRenderError(failure) };
   }
 
   componentDidCatch(failure: unknown, info: ErrorInfo) {
+    // Strict Mode's second effect pass throws again within the same failure; report the failure once.
+    if (this.reported) return;
+    this.reported = true;
     const { name } = this.props;
     const error = asRenderError(failure);
     void reportStudioRenderFailure(name, error, info.componentStack ?? '').catch((reportError: unknown) => {
@@ -130,7 +135,10 @@ export class StudioRegionBoundary extends Component<
           reason: studioReason('renderFailed', studioName(this.props.name)),
           detail: this.state.error.message,
         }}
-        retry={() => this.setState({ error: null })}
+        retry={() => {
+          this.reported = false;
+          this.setState({ error: null });
+        }}
         recoveryLabel={this.props.recoveryLabel}
       />
     );
