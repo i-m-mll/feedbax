@@ -1,6 +1,7 @@
 """Real saved checkpoint selection through Plan, Host, custody and datasets."""
 
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,7 +24,7 @@ from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
-from tests.support.finite_train import damaged_method_state, install_finite_gate
+from tests.support.finite_train import damaged_checkpoint_model, install_finite_gate
 
 host = host_fixture
 
@@ -375,7 +376,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
             row["edges"][0]["binding"] if (row := job_row(host, late.job_id, "queued")) else None
         ))
         assert pinned == binding
-        with damaged_method_state(checkpoint):
+        with damaged_checkpoint_model(checkpoint):
             assert host.stopped_checkpoint(producer.job_id, project=plan.project_id, manifest_root=str(plan.store_path)) is None
             # A fresh admission detects corruption at selection. The earlier pin also
             # detects the same damage before delivery.
@@ -433,3 +434,87 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         "code": "input_unavailable", "path": "/inputs/subject/checkpoint",
         "message": "Producer closed without checkpoint coordinates [3].",
     }
+
+
+def test_saved_fixed_evaluate_reuses_only_equal_current_train_model(host, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from feedbax.contracts.jobs import JobStatus
+
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    host.policy(compute=1)
+    jobs = JobService(host, new_application_registry_bundle())
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "fixed-current"
+    raw = document_project(authored_documents(), evaluation=True)
+    raw["steps"]["baseline"]["inputs"]["subject"]["checkpoint"] = {"at": 2}
+    _save_project(folders, project, Project.model_validate(raw))
+    saved = folders.read_plan(project, revision=None)
+    by_step = {run.key.step: run for run in saved.plan.runs}
+    train, evaluate = by_step["train"], by_step["baseline"]
+    service = ProjectPlanService(folders, jobs)
+
+    def submit(token, *runs, reuse=False):
+        return jobs.admit_plan(
+            folders, saved, run_keys=tuple(run.key for run in runs), token=token, reuse_completed=reuse,
+        ).items
+
+    def succeed(item):
+        assert item.disposition == "admitted", item
+        row = wait_until(lambda: (
+            row if (row := job_row(host, item.job_id)) and row["outcome"] is not None else None
+        ), timeout=22)
+        assert row["state"] == "succeeded", row.get("outcome")
+        return row
+
+    initial_train, initial_evaluation = submit("initial", train, evaluate)
+    succeed(initial_train)
+    succeed(initial_evaluation)
+    initial = service.read(project, revision=saved.revision).evaluations[evaluate.key]
+    assert initial.status is JobStatus.SUCCEEDED
+    assert initial.result.validity.state == "current"
+
+    (identical,) = submit("identical", train)
+    succeed(identical)
+    same = service.read(project, revision=saved.revision).evaluations[evaluate.key]
+    assert same.can_run and same.result.validity.state == "current"
+    assert same.result.receipt == initial.result.receipt
+    (reused,) = submit("reuse", evaluate, reuse=True)
+    assert reused.disposition == "reused"
+
+    (tmp_path / "changed_model.py").write_text("""
+import equinox as eqx
+import jax
+from feedbax.training.method_runtime import TrainingLoop
+
+run_block = TrainingLoop.run_block
+
+def revised(self, state, *, completed, count):
+    result = run_block(self, state, completed=completed, count=count)
+    model = jax.tree.map(
+        lambda value: value * 1.25 if eqx.is_inexact_array(value) else value,
+        result.state.model,
+    )
+    return result._replace(state=result.state._replace(model=model))
+
+TrainingLoop.run_block = revised
+""")
+    worker = jobs._training_worker
+    jobs._training_worker = replace(
+        worker, preload=(*worker.preload, "changed_model"),
+        env=worker.env | {"PYTHONPATH": f"{tmp_path}:{Path.cwd()}"},
+    )
+
+    (changed,) = submit("changed", train)
+    succeed(changed)
+    stale = service.read(project, revision=saved.revision).evaluations[evaluate.key]
+    assert stale.status is JobStatus.STALE and stale.can_run
+    assert stale.result.receipt == initial.result.receipt
+    assert {(reason.kind, reason.role) for reason in stale.result.validity.reasons} == {("input", "subject")}
+
+    (replacement,) = submit("refresh", evaluate, reuse=True)
+    rerun = succeed(replacement)
+    [edge] = rerun["edges"]
+    assert edge["binding"]["checkpoint_selection"]["members"][0]["producer_job_id"] == changed.job_id
+    assert service.read(project, revision=saved.revision).evaluations[evaluate.key].result.validity.state == "current"

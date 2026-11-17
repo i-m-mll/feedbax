@@ -6,10 +6,12 @@ import numpy as np
 import pytest
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.code_validity import AttemptProvenance, CodeTrace, ReceiptEvidence, SourcePath, SourceSnapshot
+from feedbax.contracts.code_validity import AttemptProvenance, CodeTrace, ReceiptEvidence, RegistryBinding, SourcePath, SourceSnapshot
 from feedbax.contracts.receipt_validity import (
+    CheckConditions,
     CheckOutcome,
     FileDifference,
+    RegistryDifference,
     ValidityAssessment,
     ValidityCheckEvidence,
     ValidityJudgement,
@@ -52,15 +54,29 @@ def test_environment_confirmation_never_accepts_code_and_joint_proof_expires(tmp
     conditions = _observe(tmp_path, store, trace, {"jax": "0.8.3"})
     before = decide_validity(receipt, conditions=conditions, code_checkable=True, environment_checkable=True)
     assert before.state == "unchecked"
-    assert before.checks == ("code", "environment")
+    assert set(before.checks) == {"code", "environment"}
 
     confirmation = ValidityAssessment(
         receipt=receipt, conditions=conditions, assessed_at=datetime.now(UTC),
         evidence=ValidityCheckEvidence(environment=CheckOutcome(outcome="equal")),
     )
     env_only = decide_validity(receipt, conditions=conditions, records=(confirmation,), code_checkable=True)
-    assert env_only.state == "unchecked" and env_only.checks == ("code",)
+    assert env_only.state == "unchecked" and set(env_only.checks) == {"code"}
     assert env_only.environment.check == "confirmed"
+
+    for outcome, basis in (("different", "computation"), ("unavailable", "source")):
+        assessed = confirmation.model_copy(update={
+            "evidence": ValidityCheckEvidence(
+                code=CheckOutcome(outcome=outcome, detail="Driver identity changed."),
+                environment=CheckOutcome(outcome="equal"),
+            ),
+        })
+        result = decide_validity(receipt, conditions=conditions, records=(assessed,), code_checkable=True)
+        assert result.state == "stale" and not result.checks
+        assert result.environment.check == "confirmed"
+        assert {(reason.kind, reason.basis, reason.detail) for reason in result.reasons} == {
+            ("code", basis, "Driver identity changed."),
+        }
 
     both = confirmation.model_copy(update={
         "evidence": ValidityCheckEvidence(
@@ -74,6 +90,41 @@ def test_environment_confirmation_never_accepts_code_and_joint_proof_expires(tmp
     assert stale.state == "stale"
     assert stale.reasons[0].differences[0].path.path == "first.py"
     assert stale.environment.check == "not_checked"
+
+
+def test_judgement_names_the_exact_registry_binding_and_driver_edit(tmp_path):
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    before = RegistryBinding(
+        family="operation", requested_key="example.analysis", key="example.analysis",
+        distribution="example", version="1", module="example.analysis", qualified_name="exact",
+    )
+    after = before.model_copy(update={"qualified_name": "revised"})
+    driver = SourcePath(scope="project", path="driver.py")
+    (tmp_path / "driver.py").write_text("def drive(): return 2\n")
+    archive = SourceSnapshot(
+        path=driver, content=store.store_object(b"def drive(): return 1\n"), entered=("drive",),
+    )
+    trace = CodeTrace(sources=(archive,), registry=(before,), files=(), environment={}, indeterminate=())
+    conditions, _ = observe_differences(
+        (trace,), catalog=SourceCatalog({"project": tmp_path}),
+        registry={(after.family, after.requested_key): after}, environment={}, read_object=store.get_object,
+    )
+    binding = RegistryDifference(before=before, after=after)
+    assert binding in conditions.code
+    receipt = store.store_object(b"receipt")
+    accept_registry = ValidityJudgement(
+        receipt=receipt, differences=(binding,), who="Scientist", when=datetime.now(UTC), why="Reviewed registry.",
+    )
+    outstanding = decide_validity(receipt, conditions=conditions, records=(accept_registry,))
+    assert outstanding.state == "stale"
+    remaining = {change for reason in outstanding.reasons for change in reason.differences}
+    assert {change.path for change in remaining} == {driver}
+    accept_driver = accept_registry.model_copy(update={"differences": tuple(remaining), "why": "Reviewed driver."})
+    assert decide_validity(receipt, conditions=conditions, records=(accept_registry, accept_driver)).state == "current"
+    newer = RegistryDifference(before=before, after=after.model_copy(update={"qualified_name": "newer"}))
+    edited = CheckConditions(code=(*remaining, newer), environment=())
+    rechecked = decide_validity(receipt, conditions=edited, records=(accept_registry, accept_driver))
+    assert {change for reason in rechecked.reasons for change in reason.differences} == {newer}
 
 
 def test_judgement_records_survive_republication_and_are_bound_to_latest_success(tmp_path):
@@ -132,9 +183,10 @@ def test_a_missing_original_observation_cannot_appear_current(tmp_path):
     )
     result = decide_validity(store.store_object(b"receipt"), conditions=conditions, file_differences=files)
     assert result.state == "stale"
-    assert result.reasons[0].path == data
-    assert result.reasons[0].status == "indeterminate"
-    assert result.reasons[1].differences[0].path == source
+    reason_by_kind = {reason.kind: reason for reason in result.reasons}
+    assert reason_by_kind["file"].path == data
+    assert reason_by_kind["file"].status == "indeterminate"
+    assert {difference.path for difference in reason_by_kind["code"].differences} == {source}
     assert not result.checks
 
 

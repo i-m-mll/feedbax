@@ -16,7 +16,7 @@ from feedbax.contracts.project_plan import ElementKey, RunKey
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.jobs import JobStatus
-from feedbax.jobs import JobService
+from feedbax.jobs import JobService, plan_attempt_key
 from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
@@ -359,3 +359,60 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     assert decided.state == "current" and decided.environment.check == "not_checked"
     assert "numpy" in decided.environment.detail
     assert set(row["id"] for row in host.jobs(project=review.project_id)) == job_ids | {check["id"]}
+
+    lock.unlink()
+    data_file = review.project_root / "assemble-calibration.txt"
+    data_file.write_text("first calibration")
+    marker = '    ((actuation,),) = task.parameters.disturbance_matrix'
+    source.write_text(original.replace(
+        marker, f'    with open({str(data_file)!r}) as calibration:\n        calibration.read()\n{marker}', 1,
+    ))
+    assert marker in original
+
+    def light_result(plan, name):
+        element = ElementKey(selected[2], name)
+        return read_settled_project_plan(plan, jobs).light[element].result
+
+    changed_assemble = light_result(review, "assemble")
+    assert changed_assemble.validity.state == "stale"
+    assert any(
+        "assemble" in difference.functions
+        for reason in changed_assemble.validity.reasons if reason.kind == "code"
+        for difference in reason.differences
+    )
+    upstream_only = _project().model_dump(mode="json", exclude_unset=True)
+    del upstream_only["documents"]["gain-analysis"]["payload"]["operations"]["gain"]
+    _save_project(folders, project, Project.model_validate(upstream_only))
+    upstream_plan = folders.read_plan(project, revision=None)
+    assert identify("assemble", selected[2]) == upstream_plan.plan.elements[ElementKey(selected[2], "assemble")].request_id
+    upstream_run = jobs.admit_plan(
+        folders, upstream_plan, run_keys=(selected[2],), token="refresh-assemble", reuse_completed=True,
+    )
+    by_address = {item.run_key: item for item in upstream_run.items}
+    rebuilt = by_address[plan_attempt_key(ElementKey(selected[2], "assemble"))]
+    assert rebuilt.disposition == "admitted"
+
+    def rebuilt_result():
+        return next((row for row in host.jobs(job_id=rebuilt.job_id) if row["outcome"] is not None), None)
+
+    completed = wait_until(rebuilt_result, timeout=16)
+    assert completed["state"] == "succeeded", completed["outcome"]
+    fresh_view = SuccessView(store)
+    old_product = view.authored(assemble).receipt.products["system"]
+    new_product = fresh_view.authored(assemble).receipt.products["system"]
+    assert new_product == old_product
+
+    _save_project(folders, project, _project())
+    downstream_plan = folders.read_plan(project, revision=None)
+    still_current = light_result(downstream_plan, "gain")
+    assert still_current.validity.state == "current"
+    assert still_current.receipt == initial.result.receipt
+    downstream_run = jobs.admit_plan(
+        folders, downstream_plan, run_keys=(selected[2],), token="reuse-gain", reuse_completed=True,
+    )
+    assert {item.disposition for item in downstream_run.items} == {"reused"}
+
+    data_file.write_text("second calibration")
+    file_change = light_result(downstream_plan, "assemble").validity
+    assert file_change.state == "stale"
+    assert {(reason.kind, reason.path.path) for reason in file_change.reasons} == {("file", data_file.name)}

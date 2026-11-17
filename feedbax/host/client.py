@@ -249,6 +249,7 @@ class HostClient:
         checkpoint_progress_root: str | None = None,
         checkpoint_objective_root: str | None = None,
         terminal_train: tuple[str, list[str]] | None = None,
+        checkpoint_admission: tuple[str, list[str]] | None = None,
     ) -> JobsSnapshot:
         return cast(
             JobsSnapshot,
@@ -262,6 +263,7 @@ class HostClient:
                 include_launch=include_launch,
                 **({"record_keys": list(record_keys)} if record_keys else {}),
                 **({"terminal_train": list(terminal_train)} if terminal_train is not None else {}),
+                **({"checkpoint_admission": list(checkpoint_admission)} if checkpoint_admission is not None else {}),
                 **({"checkpoint_progress_root": checkpoint_progress_root} if checkpoint_progress_root is not None else {}),
                 **(
                     {"checkpoint_objective_root": checkpoint_objective_root}
@@ -269,6 +271,12 @@ class HostClient:
                 ),
             ),
         )
+
+    def checkpoint_producer(self, *, project: str, manifest_root: str, request: str) -> str | None:
+        return cast(str | None, self._call(
+            "checkpoint_producer", project=project,
+            manifest_root=manifest_root, request=request,
+        ))
 
     def stopped_checkpoint(self, job_id: str, *, project: str, manifest_root: str) -> int | None:
         return cast(int | None, self._call(
