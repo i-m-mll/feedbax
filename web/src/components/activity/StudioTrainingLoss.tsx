@@ -50,8 +50,7 @@ export function studioRunHistory(
   const startByAttempt = new Map<string, number>();
   for (const event of events) {
     if (event.kind !== 'progress' || typeof event.data.completed_updates !== 'number') continue;
-    const metrics = event.data.metrics;
-    if (metrics && typeof metrics === 'object' && Object.keys(metrics).length === 0) {
+    if (!startByAttempt.has(event.job_id)) {
       startByAttempt.set(event.job_id, event.data.completed_updates);
     }
   }
@@ -85,7 +84,9 @@ export function studioRunHistory(
     if (cutoff === undefined) continue;
     if (event.kind === 'progress') {
       const completed = event.data.completed_updates;
-      if (typeof completed !== 'number' || completed > cutoff) continue;
+      if (typeof completed !== 'number' || completed === startByAttempt.get(event.job_id) || completed > cutoff) {
+        continue;
+      }
       const interval = lossIntervalSchema.safeParse(event.data.metric_interval);
       if (interval.success && interval.data.end_inclusive === completed) {
         const { start_exclusive: start, metrics: { train_loss: reduction } } = interval.data;
