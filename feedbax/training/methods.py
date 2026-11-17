@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from feedbax.plugins.declarations import (
     CallableDeclaration,
+    DeclarationRegistry,
     DistributionSource,
+    ResolvedDeclaration,
     mark_callable,
-    validate_declaration_key,
 )
 
 if TYPE_CHECKING:
@@ -44,12 +45,12 @@ class TrainingMethodDeclaration(CallableDeclaration):
 
 def training_method[S: BaseModel](
     *, settings: type[S], init: MethodInit[S], key: str | None = None,
-    label: str | None = None, revision: int = 1, renamed_from: tuple[str, ...] = (),
+    label: str | None = None, renamed_from: tuple[str, ...] = (),
 ) -> Callable[[MethodUpdate[S]], MethodUpdate[S]]:
     """Mark a scalar update for installation through a package entry point."""
     declaration = TrainingMethodDeclaration(
         settings_model=settings, init=init, key=key, label=label,
-        revision=revision, renamed_from=renamed_from,
+        renamed_from=renamed_from,
     )
     arguments = signature(init).parameters.values()
     parameter = next(iter(arguments), None)
@@ -68,44 +69,39 @@ def training_method[S: BaseModel](
 
 
 @dataclass(frozen=True, kw_only=True)
-class RegisteredTrainingMethod(TrainingMethodDeclaration):
+class RegisteredTrainingMethod:
     key: str
     source: DistributionSource
+    settings_model: type[BaseModel]
+    label: str | None
+    renamed_from: tuple[str, ...]
+    init: MethodInit[Any]
     update: MethodUpdate[Any]
 
 
 class TrainingMethodRegistry:
     def __init__(self) -> None:
-        self._entries: dict[str, RegisteredTrainingMethod] = {}
-        self._renames: dict[str, str] = {}
-        self._sealed = False
+        self._declarations = DeclarationRegistry[RegisteredTrainingMethod]("training method")
 
     def register_declaration(
         self, function: MethodUpdate[Any], declaration: TrainingMethodDeclaration,
         *, key: str, source: DistributionSource,
     ) -> None:
-        if self._sealed:
-            raise RuntimeError("Training method registry is sealed")
-        key = validate_declaration_key(key)
         entry = RegisteredTrainingMethod(
             key=key, source=source, update=function, init=declaration.init,
             settings_model=declaration.settings_model, label=declaration.label,
-            revision=declaration.revision, renamed_from=declaration.renamed_from,
+            renamed_from=declaration.renamed_from,
         )
-        for name in (key, *entry.renamed_from):
-            if name in self._entries or name in self._renames:
-                raise ValueError(f"Training method key {name!r} is already registered")
-        self._entries[key] = entry
-        self._renames.update(dict.fromkeys(entry.renamed_from, key))
+        self._declarations.add(key, source, function, entry, renamed_from=declaration.renamed_from)
 
     def keys(self) -> tuple[str, ...]:
-        return tuple(sorted(self._entries))
+        return self._declarations.keys()
+
+    def declaration_record(self, key: str) -> ResolvedDeclaration[RegisteredTrainingMethod]:
+        return self._declarations.resolve(key)
 
     def resolve(self, key: str) -> RegisteredTrainingMethod:
-        try:
-            return self._entries[self._renames.get(key, key)]
-        except KeyError:
-            raise KeyError(f"Training method {key!r} was not supplied by package {key.rpartition('.')[0]!r}") from None
+        return self.declaration_record(key).value
 
     def seal(self) -> None:
-        self._sealed = True
+        self._declarations.seal()

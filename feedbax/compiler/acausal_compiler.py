@@ -50,18 +50,18 @@ if TYPE_CHECKING:
     from feedbax.component_registry.declarations import DeclaredComponent
 
 _ACTUATION_ELEMENT_TYPES = {
-    FORCE_PAYLOAD: "ForceSource",
-    TORQUE_PAYLOAD: "TorqueSource",
-    PRESCRIBED_MOTION_PAYLOAD: "PrescribedMotion",
+    FORCE_PAYLOAD: "feedbax.ForceSource",
+    TORQUE_PAYLOAD: "feedbax.TorqueSource",
+    PRESCRIBED_MOTION_PAYLOAD: "feedbax.PrescribedMotion",
 }
 
 _SENSOR_ELEMENT_TYPES = {
-    "position": "PositionSensor",
-    "velocity": "VelocitySensor",
-    "force": "ForceSensor",
-    "angle": "AngleSensor",
-    "angular_velocity": "AngularVelocitySensor",
-    "torque": "TorqueSensor",
+    "position": "feedbax.PositionSensor",
+    "velocity": "feedbax.VelocitySensor",
+    "force": "feedbax.ForceSensor",
+    "angle": "feedbax.AngleSensor",
+    "angular_velocity": "feedbax.AngularVelocitySensor",
+    "torque": "feedbax.TorqueSensor",
 }
 
 Endpoint = tuple[str, str]

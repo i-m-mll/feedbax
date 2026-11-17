@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, InitialModelSource, read_document_input
+from feedbax.contracts.model_input import (
+    INITIAL_MODEL_MEDIA_TYPE, DocumentInput, InitialModelSource, TaskInputSource, read_document_input,
+)
 from feedbax.contracts.operation import DatasetPort, ModelPort, TaskPort, require_dataset_fields
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.dataset import Dataset
@@ -19,6 +21,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.effective_success import Bindings
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.plugins.declarations import ResolvedDeclaration
 
 
 def verify_dataset(dataset: Dataset, port: DatasetPort, parameters: BaseModel | None = None) -> None:
@@ -40,8 +43,16 @@ def uses_replicate_axis(port: DatasetPort) -> bool:
     )
 
 
+def require_task_source(role: str, task: DocumentInput, key: str | None) -> TaskInputSource:
+    if isinstance(task, TaskDocument) and key is None:
+        return task
+    if isinstance(task, PythonTaskSelection) and task.type == key:
+        return task
+    raise ValueError(f"Operation input {role!r} requires {key or 'a Task document'}")
+
+
 def run_operation(
-    operation: RegisteredOperation,
+    operation: ResolvedDeclaration[RegisteredOperation],
     parameters: BaseModel,
     bindings: Bindings,
     datasets: Mapping[str, Dataset],
@@ -49,7 +60,7 @@ def run_operation(
     registry: ApplicationRegistryBundle,
     artifacts: ImmutableArtifactBlobProvider,
 ) -> Dataset:
-    definition = operation.definition
+    definition = operation.value.definition
     if numerical := definition.numerical:
         import jax
 
@@ -68,18 +79,19 @@ def run_operation(
     for role, port in definition.inputs.items():
         if isinstance(port, TaskPort):
             (member,) = bindings[role]
-            task_source = read_document_input(member.content, artifacts)
-            if isinstance(task_source, TaskDocument) and port.task_key is None:
-                arguments[role] = task_source
-            elif isinstance(task_source, PythonTaskSelection) and task_source.type == port.task_key:
+            installed = registry.python_tasks.resolve(port.task_key) if port.task_key is not None else None
+            task_source = require_task_source(
+                role, read_document_input(member.content, artifacts), installed.key if installed else port.task_key,
+            )
+            if isinstance(task_source, PythonTaskSelection):
                 task = resolve_python_task_instance(task_source, registry.python_tasks)
                 if isinstance(task, tuple):
                     raise ValueError(task[0].reason)
-                if task.definition.parameters is not operation.task_parameters:
+                if task.definition.parameters is not operation.value.task_parameters:
                     raise ValueError(f"Operation {definition.key!r} declares the wrong settings for {port.task_key!r}")
                 arguments[role] = task
             else:
-                raise ValueError(f"Operation input {role!r} requires {port.task_key or 'a Task document'}")
+                arguments[role] = task_source
         elif isinstance(port, ModelPort):
             model_role = role
             (model_member,) = bindings[role]
@@ -120,7 +132,9 @@ def run_operation(
     (output,) = definition.outputs.values()
 
     def execute(inputs) -> Dataset:
-        result = operation.function(params=parameters, **inputs)
+        result = operation.defining_object(params=parameters, **inputs)
+        if not isinstance(result, Dataset):
+            raise TypeError(f"Operation {definition.key!r} returned a value that is not a Dataset")
         verify_dataset(result, output)
         return result
 

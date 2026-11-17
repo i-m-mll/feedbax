@@ -97,11 +97,11 @@ def bind_managed_inputs(
             key=member.key, content=product.content, descriptor=product.descriptor,
             checkpoint_model=CheckpointModelSourceEvidence(producer=producer, publication=evidence),
         )
-        refs = checkpoint_model_objects(store, member, checkpoint_model)
+        refs = {ref.sha256: ref for ref in checkpoint_model_objects(store, member, checkpoint_model)}
         lease = store.acquire_lease(ContentLeaseRecord(
             lease_id=f"checkpoint-model:{uuid4().hex}",
             owner=request.id,
-            targets=tuple(ContentRetentionTarget(ref_kind="object", object=ref) for ref in dict.fromkeys(refs)),
+            targets=tuple(ContentRetentionTarget(ref_kind="object", object=ref) for ref in refs.values()),
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ))
     try:

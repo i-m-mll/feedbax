@@ -582,6 +582,7 @@ class ProjectPlanService:
             preview_authored_files(project, [file]), readers=view.settled.readers,
             operations=self.folders.operations, components=self.folders.components,
             functions=self.folders.functions, python_tasks=self.folders.python_tasks,
+            figure_templates=self.folders.figure_templates,
         )
         selected = {
             run.key: run for run in after.runs

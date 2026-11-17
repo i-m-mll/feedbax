@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import to_json
 
+from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
@@ -117,6 +118,7 @@ if TYPE_CHECKING:
     from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.expression_registry import FunctionRegistry
+    from feedbax.plot.templates import FigureTemplateRegistry
 
 
 @cache
@@ -982,10 +984,12 @@ def _compiler_authority(
     components: ComponentRegistry | None, operations: OperationRegistry | None,
     functions: FunctionRegistry | None, python_tasks: PythonTaskRegistry | None,
     training_methods: TrainingMethodRegistry | None,
+    figure_templates: FigureTemplateRegistry | None,
 ) -> tuple[object, ...]:
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
         request_identity.request_codec_authority(), components, operations, functions, python_tasks, training_methods,
+        figure_templates,
     )
 
 
@@ -1002,12 +1006,14 @@ class _Compiler:
         python_tasks: PythonTaskRegistry | None = None,
         *,
         training_methods: TrainingMethodRegistry | None = None,
+        figure_templates: FigureTemplateRegistry | None = None,
         capture_sources: bool = False,
     ):
         self.project = project
         self.readers = readers
         self.previous = previous
         self.operations = operations
+        self.figure_templates = figure_templates
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
@@ -2280,6 +2286,11 @@ class _Compiler:
                 ):
                     problem(path, "Select an initial Model document or a Train row's terminal or exact-update checkpoint.")
                     return ()
+                if isinstance(reference.checkpoint, BatchCheckpoint) and not (
+                    0 < reference.checkpoint.at <= MAX_CHECKPOINT_COORDINATE
+                ):
+                    problem(f"{path}.checkpoint", "Select a positive completed Train update.")
+                    return ()
                 role = _Role(name_of_role, True, "train", "checkpoint")
             else:
                 role = _Role(name_of_role, True, "evaluate", "states")
@@ -2364,6 +2375,7 @@ class _Compiler:
             inputs,
             evaluations,
             self.operations,
+            figure_templates=self.figure_templates,
         )
         self.diagnostics.extend(problems)
         for request in encoded:
@@ -2772,9 +2784,10 @@ def compile_project(
     functions: FunctionRegistry | None = None,
     python_tasks: PythonTaskRegistry | None = None,
     training_methods: TrainingMethodRegistry | None = None,
+    figure_templates: FigureTemplateRegistry | None = None,
     capture_sources: bool = False,
 ) -> ProjectPlan:
-    """Plan static requests and value sources. Analyze lowering uses the supplied operations."""
+    """Plan static requests and value sources with the supplied declaration registries."""
     if training_methods is None and any(step.kind == "train" for step in project.steps.values()):
         from feedbax.plugins.composition import load_application
 
@@ -2790,16 +2803,17 @@ def compile_project(
     ):
         return _Compiler(
             project, readers, source_runs, operations=operations, components=components,
-            functions=functions, python_tasks=python_tasks, training_methods=training_methods, capture_sources=capture_sources,
+            functions=functions, python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
+            capture_sources=capture_sources,
         ).plan()
-    authority = _compiler_authority(components, operations, functions, python_tasks, training_methods)
+    authority = _compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates)
     ticket, previous = memo._begin(authority)
     compiler = _Compiler(
         project, readers, source_runs, previous, operations, components, functions, python_tasks,
-        training_methods=training_methods,
+        training_methods=training_methods, figure_templates=figure_templates,
     )
     plan = compiler.plan()
-    if authority == _compiler_authority(components, operations, functions, python_tasks, training_methods):
+    if authority == _compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates):
         memo._publish(ticket, authority, compiler.work)
     return plan
 

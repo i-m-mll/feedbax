@@ -588,7 +588,38 @@ def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:
     assert params["damping"] == 4.5
 
 
-def _point_mass_feedback_spec(**feedback_params: Any) -> GraphSpec:
+def _feedback_graph(paths: list[str], **channel_params: Any) -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "select": ComponentSpec(
+                type="feedbax.SelectState",
+                params={"paths": paths},
+                input_ports=["state"],
+                output_ports=["output"],
+            ),
+            "channel": ComponentSpec(
+                type="feedbax.Channel",
+                params=channel_params,
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="select",
+                source_port="output",
+                target_node="channel",
+                target_port="input",
+            ),
+        ],
+        input_ports=["mechanics"],
+        output_ports=["feedback"],
+        input_bindings={"mechanics": ("select", "state")},
+        output_bindings={"feedback": ("channel", "output")},
+    )
+
+
+def _point_mass_feedback_spec(paths: list[str], **channel_params: Any) -> GraphSpec:
     return GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
@@ -598,12 +629,12 @@ def _point_mass_feedback_spec(**feedback_params: Any) -> GraphSpec:
                 output_ports=["effector", "state"],
             ),
             "feedback": ComponentSpec(
-                type="FeedbackChannels",
-                params=feedback_params,
+                type="feedbax.Subgraph",
                 input_ports=["mechanics"],
                 output_ports=["feedback"],
             ),
         },
+        subgraphs={"feedback": _feedback_graph(paths, **channel_params)},
         wires=[
             WireSpec(
                 source_node="mechanics",
@@ -663,10 +694,9 @@ def test_disabled_channel_roundtrip_preserves_authored_noise(noise_model: str) -
         assert jnp.array_equal(enabled, rollout(authored_enabled))
 
 
-@pytest.mark.parametrize("selector", ["point_mass_pos_vel", "paths"])
-def test_feedback_channels_materialize_point_mass_selector(selector: str) -> None:
+def test_feedback_channels_materialize_point_mass_selector() -> None:
     spec = _point_mass_feedback_spec(
-        selector=selector,
+        ["plant.skeleton.pos", "plant.skeleton.vel"],
         delay=2,
         noise_std=0.05,
         add_noise=True,
@@ -713,20 +743,10 @@ def test_feedback_channels_materialize_point_mass_selector(selector: str) -> Non
 
 
 @pytest.mark.parametrize(
-    ("selector", "paths"),
-    [
-        ("plant_skeleton", None),
-        ("paths", ["plant.skeleton"]),
-        ("point_mass_pos_vel", None),
-    ],
+    "paths", [["plant.skeleton"], ["plant.skeleton.pos", "plant.skeleton.vel"]]
 )
-def test_point_mass_feedback_rollout_preserves_selected_state_and_delay(
-    selector: str, paths: list[str] | None
-) -> None:
-    params = {"paths": paths} if paths is not None else {}
-    spec = _point_mass_feedback_spec(
-        selector=selector, delay=2, input_shape=[[2], [2]], add_noise=False, **params
-    )
+def test_point_mass_feedback_rollout_preserves_selected_state_and_delay(paths: list[str]) -> None:
+    spec = _point_mass_feedback_spec(paths, delay=2, add_noise=False)
     graph = spec_to_graph(spec, component_registry=_components())
 
     outputs, _ = graph(
@@ -739,7 +759,7 @@ def test_point_mass_feedback_rollout_preserves_selected_state_and_delay(
     effector = outputs["effector"]
     feedback = outputs["feedback"]
     assert jnp.all(effector.vel[0] > 0)
-    if selector == "point_mass_pos_vel":
+    if len(paths) == 2:
         assert isinstance(feedback, tuple)
         expected = (effector.pos, effector.vel)
     else:
@@ -754,19 +774,14 @@ def test_point_mass_feedback_rollout_preserves_selected_state_and_delay(
 
 
 def test_point_mass_feedback_rejects_invalid_selector_path_at_compile_time() -> None:
-    spec = _point_mass_feedback_spec(selector="paths", paths=["plant.skeleton.missing"])
+    spec = _point_mass_feedback_spec(["plant.skeleton.missing"])
 
     with pytest.raises(GraphCompilationError, match=r"feedback.*plant\.skeleton\.missing"):
         spec_to_graph(spec, component_registry=_components())
 
 
 def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:
-    feedback = _single_node_spec(
-        "FeedbackChannels",
-        {"selector": "plant_skeleton", "delay": 1},
-        input_ports=["mechanics"],
-        output_ports=["feedback"],
-    )
+    feedback = _feedback_graph(["plant.skeleton"], delay=1, add_noise=False)
     spec = GraphSpec(
         nodes={
             "nested": ComponentSpec(

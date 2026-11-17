@@ -94,7 +94,7 @@ def _read_path(value, path):
 
 
 def _storage(component, state, path):
-    slot = getattr(component, path[0], None)
+    slot = getattr(component, path[0], None) if path else None
     if isinstance(slot, StateIndex):
         return _read_path(state.get(slot), path[1:])
     return _read_path(component.state_view(state), path)
