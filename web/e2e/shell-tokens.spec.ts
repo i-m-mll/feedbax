@@ -16,7 +16,6 @@ test('uses the pinned shell surfaces and keeps Studio’s accent and native inse
       project: {}, presentation: {}, file_revisions: [],
     },
   }}));
-  await page.route(/^https:\/\/fonts\./, (route) => route.abort());
   await page.goto('/?project=shell');
 
   const frame = page.locator('.shell-frame.studio-project-window');

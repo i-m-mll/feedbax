@@ -15,6 +15,7 @@ const groups = {
     'commandPalette', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer', 'showInspector',
     'splitDetails', 'switchSlot', ...projectWindowViews, 'back', 'forward', 'nextRegion', 'previousRegion',
     'clearFocus', 'collapseAll', 'lock', 'fitView', 'zoomIn', 'zoomOut', 'activity', 'problems', 'retry',
+    'themeSystem', 'themeLight', 'themeDark',
   ],
   Run: ['run', 'stop', 'resume', 'forceStop', 'openRun'],
   Plan: ['newStep', 'newSweep', 'pivot', 'fold'],

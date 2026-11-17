@@ -23,6 +23,7 @@ import { StudioCommandPalette } from './StudioCommandPalette';
 import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
 import { useStudioTitleBar } from './studioTitleBar';
+import { appearanceCommands } from '@/appearance/appearanceCommands';
 import './projectWindow.css';
 
 export interface ProjectWindowViewRegion {
@@ -283,6 +284,7 @@ export function ProjectWindow({
     back, forward, ...tabCommands,
     bindStudioCommand('nextRegion', () => cycleRegion(1)),
     bindStudioCommand('previousRegion', () => cycleRegion(-1)),
+    ...appearanceCommands(),
   ];
   const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
   shortcutCommands.current = { palette, paletteCommands, paletteScope };
