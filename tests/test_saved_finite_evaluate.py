@@ -13,7 +13,7 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request, effective_binding_id
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, CheckpointCadence
 from feedbax.contracts.rollout import ResolvedRolloutBinding
-from feedbax.host.protocol import Job, Launch
+from feedbax.host.protocol import AdmissionItem, Job, Launch
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -25,7 +25,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, wait_until
+from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
 from tests.support.finite_train import damaged_checkpoint_model, install_finite_gate
 
 host = host_fixture
@@ -442,7 +442,10 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         launch=Launch(**first_resume["launch"]), continues=producer.job_id,
         data={key: value for key, value in first_resume["data"].items() if key != "run_key"},
     )
-    admit(host, "resume-again", sibling)
+    host.admit(
+        "resume-again", [AdmissionItem("sibling", sibling)],
+        record={"project": sibling.project, "target": first_resume["data"]["target"]},
+    )
     terminal(sibling.id, "succeeded")
     future_run = by_step["future"]
     earlier = settled.evaluations[future_run.key].result

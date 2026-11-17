@@ -119,6 +119,8 @@ def _compute(
         assert isinstance(spec, AnalysisRequestSpec)
         registry = operation_application()
         parameters = operation.value.parameter_model.model_validate(spec.params)
+        if parameters.model_dump(mode="json") != spec.params:
+            raise ValueError(f"Operation {operation.key!r} settings differ from their validated values")
         dataset_bindings = {
             name: bindings[name]
             for name, port in operation.value.definition.inputs.items()
