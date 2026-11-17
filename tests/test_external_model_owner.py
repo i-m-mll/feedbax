@@ -1,21 +1,17 @@
 """A package-owned model component participates in managed Train and Evaluate."""
 
-from importlib.util import module_from_spec, spec_from_file_location
-import sys
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from feedbax.compiler.model_attachment import lower_evaluate_attachments
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
-from feedbax.component_registry.discovery import ComponentPack
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_attachment import MODEL_DIFFERENCE_BATCHES
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.worker import ProgressCoordinate
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.composition import load_application
 from feedbax.runtime.raw_state import bind_raw_state
 from feedbax.studio.canonical_train import lower_canonical_train
 from feedbax.training.checkpoint_custody import (
@@ -28,57 +24,18 @@ from feedbax.training.evaluation_variant import resolve_evaluation_variant, vali
 from feedbax.training.managed_studio import prepare_managed_training
 from feedbax.training.model_checkpoint import ModelRestoreTarget, SemanticModelWriter
 from feedbax.training.rollout_scoring import RolloutScorer
+from tests.support.installed_package import install_discovery_fixture
 from tests.support.managed_train_fixture import managed_train_payload
 
 
 def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(tmp_path, monkeypatch):
-    package = tmp_path / "example_owners"
-    package.mkdir()
-    source = package / "__init__.py"
-    source.write_text("""
-from dataclasses import replace
-
-from equinox.nn import StateIndex
-import jax.numpy as jnp
-
-from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
-from feedbax.runtime.components import Linear
-
-
-class ObservedReadout(Linear):
-    component_options = replace(Linear.component_options, instantaneous=False)
-    model_facts = ModelFacts(
-        values=(
-            ModelValue("transform", "layer.weight", "learned"),
-            ModelValue("offset", "layer.bias", "learned"),
-        ),
-        states=(StateValue("last", (), "1", "unit", reset=StateReset("output")),),
-    )
-
-    state_index: StateIndex
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.state_index = StateIndex(jnp.zeros(self.output_size, dtype=self.dtype))
-
-    def __call__(self, inputs, state, *, key):
-        outputs, state = super().__call__(inputs, state, key=key)
-        return outputs, state.set(self.state_index, outputs["output"])
-
-    def initial_outputs(self, value):
-        return {"output": value}
-""")
-    spec = spec_from_file_location(package.name, source)
-    external = module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, package.name, external)
-    spec.loader.exec_module(external)
-    registry = new_application_registry_bundle()
-    registry.components.ingest(ComponentPack(namespace="example_owners", modules=(external,)))
-    registry.seal()
+    installed_site = install_discovery_fixture(tmp_path / "installed")
+    monkeypatch.syspath_prepend(str(installed_site))
+    registry = load_application().bundle
 
     raw = managed_train_payload()
     component = raw["trial_documents"]["model"]["interior"]["components"]["readout"]
-    owner_type = "example_owners.ObservedReadout"
+    owner_type = "entry_point_provider.ObservedReadout"
     component.update(type=owner_type, revision=1)
     request = DocumentTrainingRequestSpec.model_validate(raw)
     training = lower_canonical_train(request, registry.training_programs, registries=registry)
