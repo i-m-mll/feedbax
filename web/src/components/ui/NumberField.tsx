@@ -1,8 +1,8 @@
 import { NumberField as BaseNumberField } from '@base-ui/react/number-field';
 import clsx from 'clsx';
-import { Minus, Plus } from 'lucide-react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { forwardRef } from 'react';
-import { fieldBox, fieldInput, glyph } from './styles';
+import { fieldBox, fieldInput } from './styles';
 
 export interface NumberFieldProps {
   value: number | null;
@@ -21,9 +21,9 @@ export interface NumberFieldProps {
 }
 
 const stepper = clsx(
-  'flex h-full w-control items-center justify-center text-shell-muted outline-none',
+  'flex min-h-0 flex-1 items-center justify-center text-shell-muted outline-none',
   'hover:[&:not([data-disabled])]:bg-shell-hover hover:text-shell-foreground data-[disabled]:opacity-45',
-  glyph,
+  '[&_svg]:size-3 [&_svg]:shrink-0',
 );
 
 export const NumberField = forwardRef<HTMLInputElement, NumberFieldProps>(function NumberField(
@@ -42,10 +42,12 @@ export const NumberField = forwardRef<HTMLInputElement, NumberFieldProps>(functi
           className={clsx(fieldInput, 'tabular-nums')}
           {...aria}
         />
-        {readOnly ? null : <>
-          <BaseNumberField.Decrement tabIndex={-1} className={clsx(stepper, 'border-l border-shell-divider')}><Minus /></BaseNumberField.Decrement>
-          <BaseNumberField.Increment tabIndex={-1} className={clsx(stepper, 'border-l border-shell-divider')}><Plus /></BaseNumberField.Increment>
-        </>}
+        {readOnly ? null : (
+          <span className="flex h-full w-4 shrink-0 flex-col border-l border-shell-divider">
+            <BaseNumberField.Increment tabIndex={-1} className={stepper}><ChevronUp /></BaseNumberField.Increment>
+            <BaseNumberField.Decrement tabIndex={-1} className={stepper}><ChevronDown /></BaseNumberField.Decrement>
+          </span>
+        )}
       </BaseNumberField.Group>
     </BaseNumberField.Root>
   );
