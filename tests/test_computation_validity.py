@@ -2,6 +2,7 @@
 
 from hashlib import sha256
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -163,6 +164,18 @@ def test_argument_identity_includes_values_tree_weak_type_and_placement():
     assert capture_arguments(arrays, static=static) != capture_arguments(
         other_arrays, static=other_static
     )
+    linear = eqx.nn.Linear(2, 1, key=key)
+    same = eqx.nn.Linear(2, 1, key=key)
+    selected = jax.tree_util.GetAttrKey("weight")
+    arrays, static = pytree_operands((linear, selected))
+    other_arrays, other_static = pytree_operands((same, selected))
+    assert capture_arguments(arrays, static=static) == capture_arguments(
+        other_arrays, static=other_static
+    )
+    _, other_static = pytree_operands((same, jax.tree_util.GetAttrKey("bias")))
+    assert argument_signature(arrays, static=static) != argument_signature(
+        arrays, static=other_static
+    )
 
 
 def test_old_normalization_requires_retained_program_for_exact_comparison():
@@ -180,6 +193,10 @@ def test_old_normalization_requires_retained_program_for_exact_comparison():
     )
     assert isinstance(
         compare_computation(archived, present, read_blob=objects.read), ComputationEqual
+    )
+    assert len(archived.content_references()) == 1
+    assert compare_computation(archived, present, read_blob=lambda _: b"wrong object") == (
+        ComputationUnconfirmable(reason="normalization", targets=("slot",))
     )
 
 
