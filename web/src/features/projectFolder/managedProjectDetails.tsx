@@ -201,15 +201,17 @@ function sceneAddress(id: string): ModelAddress | undefined {
 /**
  * The Scene draws the window's selection: an entity is the Model component it shows. An anchor that is not an element
  * of its own (a body's end, a muscle's path point) is selected as its entity, and the Scene keeps which anchor it was.
+ * An entity with no Model element (a replay's effector) is a named element of the Scene, `document`.
  */
-function useSceneSelection(elements: ElementSelectionStore, scene: ResolvedScene | null) {
+function useSceneSelection(elements: ElementSelectionStore, scene: ResolvedScene | null, document: string) {
   const selection = useStore(elements, (current) => current.selection);
   const [anchor, setAnchor] = useState<string>();
   const first = selection[0];
-  const selectedKey = first && isModelAddress(first) ? elementKey(first) : undefined;
   const owner = (id: string) => sceneAddress(id) ?? sceneAddress(scene?.anchors.find((item) => item.id === id)?.entity_id ?? '');
   const anchorAddress = anchor ? owner(anchor) : undefined;
-  const selectedId = !selectedKey || !scene ? null
+  const selectedKey = first && isModelAddress(first) ? elementKey(first) : undefined;
+  const selectedId = !first || !scene ? null
+    : !isModelAddress(first) ? first.document === document ? first.element.id : null
     : anchor && anchorAddress && elementKey(anchorAddress) === selectedKey ? anchor
     : [...scene.entities.map(({ id }) => id), ...scene.anchors.map(({ id }) => id)]
       .find((id) => { const address = sceneAddress(id); return address && elementKey(address) === selectedKey; }) ?? null;
@@ -218,7 +220,9 @@ function useSceneSelection(elements: ElementSelectionStore, scene: ResolvedScene
     onSelect: (id: string | null) => {
       const address = id === null ? undefined : owner(id);
       setAnchor(address && !sceneAddress(id!) ? id! : undefined);
-      elements.setState({ selection: address ? [address] : [] });
+      elements.setState({
+        selection: address ? [address] : id === null ? [] : [{ document, element: { kind: 'named', id } }],
+      });
     },
   };
 }
@@ -244,7 +248,7 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
   const onCameraChange = (value: SceneCamera) => setCamera({ scope: sceneScope, value });
   const hiddenOverlays = overlayState?.scope === sceneScope ? overlayState.value : shownOverlays;
   const scene = view.kind === 'geometry' || view.kind === 'replay' ? sceneGeometry(view, time) : null;
-  const selection = useSceneSelection(elements, scene);
+  const selection = useSceneSelection(elements, scene, sceneScope);
   const omission = model ? <DetailReason reason="planarSceneUnavailable" name="model" />
     : <DetailReason reason="definitionUnavailable" name="scene" />;
   return {
