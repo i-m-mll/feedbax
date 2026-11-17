@@ -6,8 +6,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-import jax
-
 from feedbax.compiler.graph import ExecutableGraph, GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution, declared_model_input_prototypes
@@ -15,7 +13,7 @@ from feedbax.contracts.expression_values import Problem, ProblemCode
 from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, ModelSource
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.objectives.document import ObjectiveUse
-from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget, SemanticModelSlot
 
 if TYPE_CHECKING:
@@ -32,11 +30,14 @@ if TYPE_CHECKING:
 class ReconstructedModel:
     executable: ExecutableGraph
     source: ModelSource
-    replicate_ids: tuple[str, ...] = ("0",)
+    replica_ids: tuple[str, ...]
+    graphs: tuple[Graph, ...]
 
     @property
     def graph(self) -> Graph:
-        return self.executable.graph
+        if len(self.graphs) != 1:
+            raise ValueError("Model contains several replicas")
+        return self.graphs[0]
 
     @property
     def resolved(self) -> ResolvedGraph:
@@ -47,11 +48,6 @@ class ReconstructedModel:
 class PreparedModelTask:
     model: ReconstructedModel
     paired: PreparedTrialExecution
-
-
-def model_initialization_key(seed: int) -> jax.Array:
-    """Use the named model stream shared with training."""
-    return derive_key(jax.random.PRNGKey(seed), "studio_training", "model")
 
 
 def reconstruct_model(
@@ -78,9 +74,10 @@ def reconstruct_model(
                     },
                     initialization_key=model_initialization_key(source.seed), artifact_provider=artifacts,
                 )
-            return ReconstructedModel(variant or template, source)
+            executable = variant or template
+            return ReconstructedModel(executable, source, ("0",), (executable.graph,))
 
-        slot = SemanticModelSlot.open_store(artifacts, source.tree, source.encoding)
+        slot = SemanticModelSlot.open_store(artifacts, source.tree, source.encoding, components=registry.components)
         if template is None:
             prototypes = {} if source.initial is None else declared_model_input_prototypes(source.initial.document)
             template = compile_graph(
@@ -95,8 +92,11 @@ def reconstruct_model(
         target = None if variant is None else ModelRestoreTarget(
             variant.resolved.graph, variant.graph, source_overrides or {},
         )
-        graph = slot.restore(template.graph, target=target)
-        return ReconstructedModel(replace(variant or template, graph=graph), source)
+        count = len(slot.replica_ids)
+        graphs = slot.restore_all((template.graph,) * count, targets=None if target is None else (target,) * count)
+        return ReconstructedModel(
+            replace(variant or template, graph=graphs[0]), source, slot.replica_ids, graphs,
+        )
     except ModelCompilationProblem as error:
         return (Problem(
             code=ProblemCode.STRUCTURE, path=("model", *error.address.stored_path()),
