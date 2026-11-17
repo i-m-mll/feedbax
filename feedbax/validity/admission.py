@@ -38,11 +38,10 @@ def observe_differences(
     registry: Mapping[tuple[str, str], RegistryBinding],
     environment: Mapping[str, str],
     read_object: Callable[[ContentObjectRef], bytes],
-    driver_differences: Iterable[CodeDifference] = (),
 ) -> tuple[CheckConditions, tuple[FileDifference, ...]]:
     """Read available source, file and metadata observations without imports or execution."""
     code = []
-    outside_computation = list(driver_differences)
+    outside_computation = []
     versions = []
     files = []
     for trace in traces:
@@ -111,6 +110,7 @@ def decide_validity(
     input_differences: Sequence[InputDifference] = (),
     file_differences: Sequence[FileDifference] = (),
     code_checkable: bool = False,
+    code_unavailable: str | None = None,
     environment_checkable: bool = False,
     has_trace: bool = True,
 ) -> ReceiptValidity:
@@ -139,7 +139,7 @@ def decide_validity(
     if code and not (assessed_code and assessed_code.outcome == "equal"):
         reason = CodeReason(
             basis="computation" if assessed_code and assessed_code.outcome == "different" else "source",
-            differences=code, detail=assessed_code.detail if assessed_code is not None else None,
+            differences=code, detail=assessed_code.detail if assessed_code is not None else code_unavailable,
         )
         if assess and code_checkable and assessed_code is None:
             checks.append("code")
@@ -211,5 +211,3 @@ def _code_name(difference: CodeDifference) -> str:
             return f"{location} ({', '.join(named)})" if named else location
         case RegistryDifference(before=binding):
             return f"{binding.family} {binding.requested_key}"
-        case _:
-            return f"{difference.name} ({difference.before} → {difference.after})"

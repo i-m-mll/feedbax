@@ -16,17 +16,7 @@ class RegistryDifference(ReferenceValue):
     after: RegistryBinding | None
 
 
-class DriverDifference(ReferenceValue):
-    kind: Literal["driver"] = "driver"
-    name: Name
-    before: Name
-    after: Name
-
-
-type CodeDifference = Annotated[
-    SourceDifference | RegistryDifference | DriverDifference, Field(discriminator="kind")
-]
-
+type CodeDifference = Annotated[SourceDifference | RegistryDifference, Field(discriminator="kind")]
 
 class EnvironmentDifference(ReferenceValue):
     distribution: Name
@@ -79,12 +69,9 @@ class ValidityCheckScope(ReferenceValue):
     conditions: CheckConditions
 
 
-class ValidityCheckDelivery(ReferenceValue):
+class ValidityCheckDelivery(ValidityCheckScope):
     project_root: Path
     store_root: Path
-    request_id: RequestId
-    receipt: ContentObjectRef
-    checks: Annotated[tuple[CheckDomain, ...], Field(min_length=1)]
     producer_launch: dict[str, JsonValue] | None = None
     completion_bindings: tuple[dict[str, JsonValue], ...] = ()
 
