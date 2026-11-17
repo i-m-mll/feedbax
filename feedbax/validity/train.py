@@ -187,7 +187,7 @@ class TrainCapture:
 
 
 def archive_checkpoint_validity(store: ImmutableArtifactBlobProvider) -> ContentTreeRef | None:
-    """Root the current immutable evidence before exposing a checkpoint pointing at it."""
+    """Encode current immutable evidence for the checkpoint's Store closure."""
     from feedbax.validity.evidence import evidence_objects
     from feedbax.validity.recording import snapshot_execution
 
@@ -196,18 +196,13 @@ def archive_checkpoint_validity(store: ImmutableArtifactBlobProvider) -> Content
         return None
     record = store.store_object(canonical_json_v2_bytes(evidence.model_dump(mode="json")))
     objects = {ref.sha256: ref for ref in evidence_objects(store, evidence.trace)}
-    tree = store.store_tree(ContentTree(
+    return store.store_tree(ContentTree(
         directories=("objects",) if objects else (),
         files=(
             *(ContentTreeFile(relative_path=f"objects/{key}", object=ref) for key, ref in sorted(objects.items())),
             ContentTreeFile(relative_path=_CHECKPOINT_EVIDENCE, object=record),
         ),
     ))
-    name = f"train-checkpoint-validity/{tree.descriptor.sha256}"
-    value = tree.model_dump(mode="json")
-    if not store.compare_and_swap_ref(name, expected=None, replacement=value) and store.read_ref(name) != value:
-        raise ValueError("Train checkpoint validity root names different evidence")
-    return tree
 
 
 def checkpoint_evidence(store: ImmutableArtifactBlobProvider, tree: ContentTreeRef) -> ContentObjectRef:

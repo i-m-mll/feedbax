@@ -744,16 +744,18 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
 
     from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
+    from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
     from feedbax.host.completion import read_completion_bindings
     from feedbax.job_completion import verify_bound_training_completion
     from feedbax.jobs import JobService
     from feedbax.plugins.application import new_application_registry_bundle
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import SuccessView
-    from feedbax.persistence.method_checkpoint import LATEST_NAME
+    from feedbax.persistence.method_checkpoint import LATEST_NAME, retain_checkpoint_evidence
+    from feedbax.training.checkpoint_errors import CheckpointCustodyError
     from feedbax.training.method_runtime import TrainingLoop
     from feedbax.training_host_worker import check_train
-    from feedbax.validity.evidence import read_execution_evidence
+    from feedbax.validity.evidence import read_execution_evidence, release_checkpoint_evidence, stage_checkpoint_evidence
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
     from feedbax.contracts.project import Project
@@ -763,6 +765,8 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     # Pause only the original attempt at its first committed update so the
     # actual host can deliver the checkpoint stop before the next update.
     stop_ready = tmp_path / "stop-ready"
+    folder = "document-resume"
+    project_root = tmp_path / "projects" / folder
     (tmp_path / "gated_training.py").write_text(f"""
 import os
 import time
@@ -793,9 +797,9 @@ TrainingLoop.run_block = pause_first_update
             service._training_worker,
             env=service._training_worker.env | {
                 "JAX_PLATFORMS": "cpu",
-                "PYTHONPATH": os.pathsep.join((str(tmp_path), str(Path(__file__).resolve().parents[1]))),
+                "PYTHONPATH": os.pathsep.join((str(project_root), str(tmp_path), str(Path(__file__).resolve().parents[1]))),
             },
-            preload=(*service._training_worker.preload, "gated_training"),
+            preload=(*service._training_worker.preload, "gated_training", "metric_wrapper"),
         ),
     )
     app = FastAPI()
@@ -805,10 +809,20 @@ TrainingLoop.run_block = pause_first_update
     app.state.remote_runs = None
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)
-    folder = "document-resume"
     raw = document_project(authored_documents())
     raw["steps"]["train"]["base"]["inline"]["training_config"]["snapshot_interval"] = 1
     _save_project(app.state.project_folders, folder, Project.model_validate(raw))
+    wrapper = project_root / "metric_wrapper.py"
+    wrapper_code = """from feedbax.persistence.train_metrics import MetricDelta
+
+original = MetricDelta.write
+
+def add_metric(self, update, metrics):
+    return original(self, update, {**metrics, "wrapper": 1})
+
+MetricDelta.write = add_metric
+"""
+    wrapper.write_text(wrapper_code)
     opened = app.state.project_folders.read_plan(folder, revision=None)
     project = opened.project_id
     revision = opened.revision
@@ -884,6 +898,22 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert stopped["outcome"]["store_job_entry"]
     checkpoint = stopped["checkpoint"]
     assert checkpoint["completed_updates"] == 1
+    producer_root = Path(checkpoint["checkpoint_root"])
+    provider = ImmutableArtifactBlobProvider(opened.store_path)
+    staged_name = f"execution/checkpoints/{producer}"
+    pointer = CheckpointLatestPointer.model_validate(checkpoint["pointer"])
+    durable = provider.read_ref(f"checkpoints/{producer}/{pointer.transaction_id}")
+    assert durable and provider.read_ref(staged_name) is None
+    rejected = provider.store_object(b"not the checkpoint's accepted evidence")
+    stage_checkpoint_evidence(provider, producer, rejected)
+    with pytest.raises(CheckpointCustodyError):
+        retain_checkpoint_evidence(provider, producer_root, pointer, evidence=(rejected,))
+    assert provider.read_ref(staged_name) is not None
+    release_checkpoint_evidence(provider, producer)
+    assert provider.read_ref(f"checkpoints/{producer}/{pointer.transaction_id}") == durable
+    # Recovery uses the checkpoint's immutable prefix even if the old local log has later bytes.
+    with (producer_root / "metrics.jsonl").open("a") as stream:
+        stream.write('{"update":2,"metrics":{"wrapper":999}}\n')
     assert job_row(host, consumer.id)["state"] == "queued"
     assert _bound_edge(host) is None
     cursor = host.jobs_snapshot()["cursor"]
@@ -913,7 +943,12 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert finished["outcome"]["store_success"]
     store = ImmutableArtifactBlobProvider(Path(resumed_launch["payload"]["manifest_root"]))
     reference = ContentObjectRef.model_validate(finished["outcome"]["store_success"])
-    trace = SuccessView(store).read_receipt(reference).trace
+    receipt = SuccessView(store).read_receipt(reference)
+    trace = receipt.trace
+    from feedbax.contracts.effective_success import success_content_ref
+
+    metric_rows = store.get_object(success_content_ref(receipt.products["metrics"][0].content)).splitlines()
+    assert [(row["update"], row["metrics"]["wrapper"]) for row in map(json.loads, metric_rows)] == [(1, 1), (2, 1)]
     (previous,) = trace.prefixes
     assert read_execution_evidence(store, previous).trace.computation.completed_steps == 1
     assert trace.computation.completed_steps == 1
@@ -928,6 +963,24 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
             receipt=reference, checks=("code",), conditions=CheckConditions(code=(), environment=()),
         ))
     assert evidence.code.outcome == "equal", evidence
+    from feedbax.validity.admission import decide_validity, observe_differences
+    from feedbax.validity.source import SourceCatalog
+
+    wrapper.write_text(wrapper_code.replace('"wrapper": 1', '"wrapper": 2'))
+    project_trace = trace.model_copy(update={
+        "sources": tuple(source for source in trace.sources if source.path.scope == "project"),
+        "indeterminate": tuple(path for path in trace.indeterminate if path.scope == "project"),
+    })
+    conditions, _ = observe_differences(
+        (project_trace,), catalog=SourceCatalog({"project": project_root}), read_object=store.get_object,
+        registry={(item.family, item.requested_key): item for item in trace.registry}, environment=trace.environment,
+    )
+    observed = decide_validity(reference, conditions=conditions, code_checkable=True)
+    assert observed.state == "stale" and "code" not in observed.checks
+    assert any(
+        change.path.path == wrapper.name and "add_metric" in change.functions
+        for change in conditions.outside_computation if getattr(change, "path", None) is not None
+    )
     pinned = wait_until(lambda: _bound_edge(host) or job_row(host, consumer.id, "blocked"))
     assert "completion" in pinned, (pinned, finished["outcome"])
     completion = pinned["completion"]

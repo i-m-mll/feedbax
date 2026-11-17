@@ -25,7 +25,7 @@ from feedbax.training.evaluate_worker import _prepare_model_rollout, _rollouts
 from feedbax.training_host_worker import _Events, _error
 from feedbax.validity.evidence import release_staged_evidence, stage_evidence
 from feedbax.validity.recording import (
-    execution_dependencies, inherit_execution_dependencies, nested_execution, record_computation,
+    execution_dependencies, inherit_execution_dependencies, nested_execution, numerical_work, record_computation,
     snapshot_execution,
 )
 
@@ -84,21 +84,22 @@ def live_evaluation_callback(
 
     def evaluate_point(checkpoint, models):
         nonlocal prepared, dependencies, kernel
-        slot = read_method_checkpoint(
-            checkpoint.checkpoint_root, checkpoint.pointer, components=registry.components,
-        ).model
+        with numerical_work():
+            slot = read_method_checkpoint(
+                checkpoint.checkpoint_root, checkpoint.pointer, components=registry.components,
+            ).model
         if prepared is None:
-            initial = _prepare_model_rollout(
-                launch.spec.trial_documents, params, slot, checkpoint.completed_updates,
-                seed=launch.spec.seed or 0, registry=registry,
-            )
-            captured = execution_dependencies()
-            scoring_kernel = initial.scorer.kernel(capture_state=initial.layout.capture)
+            with numerical_work():
+                initial = _prepare_model_rollout(
+                    launch.spec.trial_documents, params, slot, checkpoint.completed_updates,
+                    seed=launch.spec.seed or 0, registry=registry,
+                )
+                scoring_kernel = initial.scorer.kernel(capture_state=initial.layout.capture)
         else:
             if slot.graph != prepared.slot.graph or slot.replica_ids != prepared.slot.replica_ids:
                 raise ValueError("Live Evaluate model layout changed after preparation.")
             inherit_execution_dependencies(dependencies)
-            initial, captured, scoring_kernel = prepared, dependencies, kernel
+            initial, scoring_kernel = prepared, kernel
         member = initial.member.model_copy(update={
             "coordinate": checkpoint.completed_updates, "model_tree": slot.tree.descriptor.sha256,
         })
@@ -138,7 +139,7 @@ def live_evaluation_callback(
             except Exception:
                 release_staged_evidence(store, evaluation_job_id, scope=scope)
                 raise
-        prepared, dependencies, kernel = initial, captured, scoring_kernel
+        prepared, dependencies, kernel = initial, execution_dependencies(), scoring_kernel
         return point
 
     return score

@@ -4,12 +4,14 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.effective_success import (
     EVALUATION_SUBJECT_MEDIA_TYPE, BestCandidateEvidence, BoundMember, EvaluationClosure,
-    EvaluationSubjectSource, EvaluationSubjectValue, RequestObject, TerminalTrainSubject, success_content_ref,
+    EvaluationSubjectSource, EvaluationSubjectValue, RequestObject, Success, TerminalTrainSubject, success_content_ref,
 )
 from feedbax.contracts.dataset import DatasetDescriptor
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.jobs import JobReceipt
-from feedbax.contracts.live_evaluate import require_evaluation_coverage, rollout_slot
+from feedbax.contracts.live_evaluate import (
+    BoundLiveEvaluationPoint, ScoredEvaluationPoint, require_evaluation_coverage, rollout_slot,
+)
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.request_refs import ContentRef, ProductRef, UpdateSeriesMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -26,7 +28,7 @@ from feedbax.studio.canonical_evaluate import (
     exact_evaluation_subject, states_product, states_ref, verify_evaluation_receipt,
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-from feedbax.validity.evidence import read_execution_evidence, verify_execution_replay
+from feedbax.validity.evidence import read_execution_evidence, release_staged_evidence, verify_execution_replay
 
 
 def publish_evaluate_success(
@@ -74,6 +76,7 @@ def publish_evaluate_success(
                 raise ValueError("Published Evaluate attempt differs from its accepted result")
             verify_execution_replay(saved, execution_evidence)
             view.ensure_published_run_ref(existing.ref, existing.receipt)
+            _release_adopted_points(store, saved, binding)
             return existing.ref
         if execution_evidence is None:
             raise ValueError("Managed Evaluate success lacks its execution evidence")
@@ -209,7 +212,20 @@ def publish_evaluate_success(
             evaluation_manifest=manifest_object, target=target,
             execution_evidence=execution_evidence,
         )
+        _release_adopted_points(store, result.receipt, binding)
         return result.ref
+
+
+def _release_adopted_points(store: ImmutableArtifactBlobProvider, receipt: Success, binding: dict) -> None:
+    trace = receipt.trace
+    if trace is None or not trace.prefixes:
+        return
+    for raw in binding.get("live_evaluation_points", ()):
+        point = BoundLiveEvaluationPoint.model_validate(raw)
+        if point.evaluation_job_id == receipt.attempt and isinstance(point.result, ScoredEvaluationPoint) and (
+            point.result.evidence in trace.prefixes
+        ):
+            release_staged_evidence(store, receipt.attempt, scope=point.root_id)
 
 
 def _retain_train_receipt(store: ImmutableArtifactBlobProvider, publication: dict) -> ContentObjectRef:

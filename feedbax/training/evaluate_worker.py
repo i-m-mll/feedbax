@@ -64,7 +64,7 @@ from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training_host_worker import _Events, _Result, _error
 from feedbax.job_completion import read_host_completion_binding
 from feedbax.training.evaluate_computation import EvaluationComputation, RolloutExecutables, drive_replicas
-from feedbax.validity.recording import host_product, record_computation, set_execution_prefix
+from feedbax.validity.recording import numerical_work, record_computation, set_execution_prefix
 
 
 if TYPE_CHECKING:
@@ -396,11 +396,14 @@ def _lower_rollouts[T](
 ) -> tuple[T, ...] | None:
     replicas = prepared.replicas or (("0", prepared.graph),)
     if kernel is None:
-        kernel = prepared.scorer.kernel(capture_state=prepared.layout.capture)
+        with numerical_work():
+            kernel = prepared.scorer.kernel(capture_state=prepared.layout.capture)
     coordinate = prepared.member.coordinate if isinstance(prepared.member, ResolvedRolloutMember) else None
 
     def lower(slot, graph, seed):
-        return consume(graph, kernel.lower(graph, slot=slot, seed=seed))
+        with numerical_work():
+            lowered = kernel.lower(graph, slot=slot, seed=seed)
+        return consume(graph, lowered)
 
     return drive_replicas(coordinate, replicas, seed=prepared.scorer.seed, call=lower, stopped=stopped)
 
@@ -411,19 +414,18 @@ def _rollouts(
     kernel: RolloutKernel | None = None,
 ):
     def run(graph: Graph, lowered: LoweredRollout):
-        evaluated = executables.run(lowered)
+        with numerical_work():
+            evaluated = executables.run(lowered)
         if stopped():
             return None
         computation.observe(lowered)
         computation.observe_output(lowered.slot, evaluated)
-        with host_product():
-            return _replica_product(prepared, graph, evaluated, params, update_axis)
+        return _replica_product(prepared, graph, evaluated, params, update_axis)
 
     results = _lower_rollouts(prepared, stopped, consume=run, kernel=kernel)
     if results is None or any(result is None for result in results):
         return None
-    with host_product():
-        return _rollout_product(prepared, results, update_axis)
+    return _rollout_product(prepared, results, update_axis)
 
 
 def _replica_product(prepared, graph, evaluated, params, update_axis):
@@ -513,7 +515,8 @@ def _series_dataset(
     for coordinate, prepare in members:
         if stop.exists():
             return None
-        prepared = prepare()
+        with numerical_work():
+            prepared = prepare()
         delivery = points.get(coordinate)
         if delivery is not None and isinstance(point := delivery.result, ScoredEvaluationPoint):
             from feedbax.persistence.live_evaluate import read_live_evaluation_evidence
@@ -525,8 +528,7 @@ def _series_dataset(
             assert recorded is not None
             computation.inherit(recorded)
             set_execution_prefix(point.evidence)
-            with host_product():
-                dataset, summary = _scored_product(opened, store, point, coordinate, params)
+            dataset, summary = _scored_product(opened, store, point, coordinate, params)
             member, objective = point.member, point.objective
         else:
             result = _rollouts(
@@ -543,8 +545,7 @@ def _series_dataset(
         objectives.add(objective)
     if stop.exists():
         return None
-    with host_product():
-        return _series_product(datasets, summaries, resolved_members, objectives, params, update_axis)
+    return _series_product(datasets, summaries, resolved_members, objectives, params, update_axis)
 
 
 def _scored_product(opened, store, point, coordinate, params):
