@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import CodeTrace, ReceiptEvidence
@@ -17,12 +17,14 @@ from feedbax.contracts.receipt_validity import CheckConditions, InputDifference,
 from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
 from feedbax.persistence.receipt_validity import read_validity_records
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION, decide_validity, observe_differences
-from feedbax.validity.environment import read_environment
+from feedbax.validity.admission_projection import AdmissionProjection
+from feedbax.validity.environment import installed_versions, read_environment
 from feedbax.validity.evidence import read_execution_evidence
 from feedbax.validity.registry import snapshot_registry
-from feedbax.validity.source import source_catalog
+from feedbax.validity.source import SourceCatalog, source_catalog
 
 if TYPE_CHECKING:
+    from feedbax.host.protocol import ReusePolicy
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import PublishedSuccess, SuccessView
     from feedbax.plugins.application import ApplicationRegistryBundle
@@ -34,11 +36,28 @@ class ObservedReceiptValidity:
     conditions: CheckConditions
 
 
+def reuse_disposition(
+    validity: ReceiptValidity, policy: ReusePolicy, *, quick: Callable[[], bool],
+) -> Literal["reuse", "execute", "check", "explicit_run"]:
+    if validity.state == "current":
+        return "reuse"
+    if policy == "prerequisite" and all(reason.kind in ("code", "environment") for reason in validity.reasons) and (
+        validity.state == "unchecked" or not quick()
+    ):
+        return "reuse"
+    if policy != "automatic" and validity.state == "unchecked":
+        return "check"
+    if policy == "automatic" and not quick():
+        return "explicit_run"
+    return "execute"
+
+
 class ProjectValidity:
     """One lock and registry observation, shared across a saved Plan or admission."""
 
     def __init__(
-        self, root: Path, registries: ApplicationRegistryBundle, *, quick_duration: timedelta = QUICK_RECEIPT_DURATION,
+        self, root: Path, registries: ApplicationRegistryBundle | AdmissionProjection, *,
+        quick_duration: timedelta = QUICK_RECEIPT_DURATION,
     ):
         self.root = root
         self.registries = registries
@@ -48,19 +67,45 @@ class ProjectValidity:
         return ProjectValidity(self.root, self.registries, quick_duration=self.quick_duration)
 
     @cached_property
+    def projection(self) -> AdmissionProjection:
+        if isinstance(self.registries, AdmissionProjection):
+            return self.registries
+        return AdmissionProjection.capture(self._catalog.roots, tuple(self._registry.values()))
+
+    @cached_property
     def _registry(self):
+        entries = (
+            self.registries.registry if isinstance(self.registries, AdmissionProjection)
+            else snapshot_registry(self.registries, self._catalog)
+        )
         return {
             (binding.family, binding.requested_key): binding
-            for binding in snapshot_registry(self.registries, self._catalog)
+            for binding in entries
         }
 
     @cached_property
     def _catalog(self):
+        if isinstance(self.registries, AdmissionProjection):
+            return SourceCatalog(self.registries.roots)
         return source_catalog(self.root)
 
     @cached_property
+    def _installed(self) -> dict[str, str] | None:
+        if isinstance(self.registries, AdmissionProjection):
+            return installed_versions(paths=self.registries.search_paths)
+        return None
+
+    def installation_current(self, traces: tuple[CodeTrace, ...]) -> bool:
+        names = {name for trace in traces for name in trace.environment}
+        if not names:
+            return True
+        assert isinstance(self.registries, AdmissionProjection) and self._installed is not None
+        current = installed_versions(paths=self.registries.search_paths)
+        return all(self._installed.get(name) == current.get(name) for name in names)
+
+    @cached_property
     def _environment(self):
-        return read_environment(self.root).versions
+        return read_environment(self.root, installed=self._installed).versions
 
     def inspect(
         self, view: SuccessView, published: PublishedSuccess, *,
@@ -75,7 +120,7 @@ class ProjectValidity:
                 published.ref, conditions=conditions, has_trace=False, input_differences=inputs,
             ), conditions)
 
-        traces = [receipt.trace, *(evidence.trace for evidence in _prefixes(view.store, receipt.trace))]
+        traces = receipt_traces(view.store, receipt)
 
         conditions, files = observe_differences(
             traces, catalog=self._catalog, registry=self._registry, environment=self._environment,
@@ -115,6 +160,12 @@ def _unavailable_computation(computations: tuple[ComputationTrace | None, ...]) 
                 if computation.normalization_version != NORMALIZATION_VERSION and program.raw_program is None:
                     return "The retained program cannot be compared under the current normalization."
     return None
+
+
+def receipt_traces(store: ImmutableArtifactBlobProvider, receipt: Success) -> tuple[CodeTrace, ...]:
+    if receipt.trace is None:
+        return ()
+    return (receipt.trace, *(evidence.trace for evidence in _prefixes(store, receipt.trace)))
 
 
 def _prefixes(store: ImmutableArtifactBlobProvider, trace: CodeTrace) -> Iterator[ReceiptEvidence]:

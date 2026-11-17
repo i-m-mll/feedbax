@@ -18,8 +18,8 @@ from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.host import live_evaluate
-from feedbax.host.checkpoint_selection import requested_checkpoint_selection, verify_dependency_files
-from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
+from feedbax.host.checkpoint_selection import requested_checkpoint_selection
+from feedbax.host.completion import CompletionFileError
 from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
@@ -360,28 +360,7 @@ class Host:
         try:
             if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                 origins = self.store.light_origins(row)
-            train_slots = train_source_slots(launch)
-            payload = launch["payload"]
-            request = payload.get("canonical_request") or {}
-            terminal = request.get("terminal")
-            for binding in bindings if terminal is None else ({"terminal": terminal},):
-                if "terminal" in binding:
-                    from feedbax.contracts.effective_success import TerminalTrainSubject
-                    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-                    from feedbax.persistence.evaluation_subject import read_terminal_train_subject
-
-                    try:
-                        read_terminal_train_subject(
-                            ImmutableArtifactBlobProvider(Path(payload["manifest_root"])),
-                            TerminalTrainSubject.model_validate(binding["terminal"]),
-                            request["checkpoint"]["request_id"],
-                        )
-                    except (OSError, TypeError, ValueError, KeyError) as error:
-                        raise CompletionFileError(str(error)) from error
-                elif train_slots is None:
-                    verify_dependency_files(binding)
-                elif row["continues"] is None:
-                    verify_completion_files(binding["completion"], train_slots=train_slots)
+            self.store.verify_completion_bindings(row, launch, bindings)
         except CompletionFileError as error:
             with self.store.db:
                 self.store.finished(
@@ -754,6 +733,8 @@ class Host:
                     self._close_control(worker)
         self.store.resolve_completions()
         self.store.settle_blocked()
+        if self.session is None or self.session.accepts_work:
+            self.store.deferred.settle()
         for row in self.store.ready():
             self._assign(row)
         running = self.store.active()
@@ -856,7 +837,7 @@ class Host:
             "SELECT id FROM jobs WHERE state IN (?, ?, ?, ?) ORDER BY seq", LIVE_STATES,
         )]
         idle = self.store.db.execute(
-            "SELECT time FROM events WHERE kind IN ('terminal', 'blocked') ORDER BY cursor DESC LIMIT 1",
+            "SELECT time FROM events WHERE kind IN ('terminal', 'blocked', 'reused') ORDER BY cursor DESC LIMIT 1",
         ).fetchone() if not live else None
         return {
             "session_id": state.session_id, "stream_id": self.stream_id,

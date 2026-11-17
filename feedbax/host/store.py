@@ -21,8 +21,10 @@ from feedbax.host import live_evaluate
 from feedbax.host.best_selection import BestMetricUnavailable, completion_score, ranked_requests
 from feedbax.host.checkpoint_selection import (
     CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
+    verify_dependency_files,
 )
 from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
+from feedbax.host.deferred_reuse import DEFERRED_REUSE_SCHEMA, DeferredAdmissions
 from feedbax.host.plan_history import advance_plan, plan_ref_key
 from feedbax.host.protocol import LIGHT_ENTRYPOINT, LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
 from feedbax.persistence.store_damage import inspect_without_recording
@@ -109,7 +111,7 @@ INSERT OR IGNORE INTO policy VALUES ('compute', 4), ('light', 1);
 
 LIVE = "('queued','assigned','running','stopping')"
 ACTIVE = "('assigned','running','stopping')"
-TERMINAL = "('succeeded','stopped','failed','interrupted','blocked')"
+TERMINAL = "('succeeded','reused','stopped','failed','interrupted','blocked')"
 
 JOB_ID = re.compile(r"[a-zA-Z0-9_-]{1,128}")
 TRAIN_REQUEST_ID = re.compile(r"train:[0-9a-f]{64}")
@@ -198,7 +200,8 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.executescript(SCHEMA + live_evaluate.SCHEMA)
+        self.db.executescript(SCHEMA + live_evaluate.SCHEMA + DEFERRED_REUSE_SCHEMA)
+        self.deferred = DeferredAdmissions(self)
         if "authenticated_completion" not in {
             row["name"] for row in self.db.execute("PRAGMA table_info(edges)")
         }:
@@ -234,8 +237,11 @@ class Store:
         )
         if not updated.rowcount:
             return
-        self.append(row, "terminal", outcome)
-        if outcome["outcome"] == "succeeded":
+        reused = outcome["outcome"] == "reused"
+        if not reused:
+            self.deferred.discard(row["id"])
+        self.append(row, "reused" if reused else "terminal", outcome)
+        if outcome["outcome"] in {"succeeded", "reused"}:
             self.db.execute(
                 "UPDATE edges SET satisfied=1 WHERE parent=? AND publication='' AND NOT authenticated_completion",
                 (row["id"],),
@@ -588,10 +594,7 @@ class Store:
         return ContentObjectRef.model_validate(outcome["execution_evidence"])
 
     @staticmethod
-    def _light_requests(launch: dict, project: str, request_id: str, slot: str) -> frozenset[str]:
-        from feedbax.contracts.effective_success import exact_model_checkpoint_input
-        from feedbax.light_jobs import validate_light_request
-
+    def _light_request(launch: dict, project: str, request_id: str):
         payload = launch["payload"]
         root = Path(payload["manifest_root"])
         request = RequestObject.model_validate(payload["request"])
@@ -603,12 +606,12 @@ class Store:
         decoded = Store._success_view(root).read_request(request)
         if decoded.kind not in ("analyze", "render", "report"):
             raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
-        _, operation = validate_light_request(decoded)
-        numerical = operation.value.definition.numerical if operation is not None else None
-        if slot != ("compute" if numerical else "light") or (
-            numerical and any(launch["env"].get(key) != value for key, value in numerical.environment().items())
-        ):
-            raise ValueError("Managed delivery worker does not match the declared numerical requirements")
+        return decoded
+
+    @staticmethod
+    def _light_requests(decoded) -> frozenset[str]:
+        from feedbax.contracts.effective_success import exact_model_checkpoint_input
+
         inputs = [member.reference for members in decoded.inputs.values() for member in members]
         if any(not isinstance(ref, (ProductRef, ContentRef)) for ref in inputs):
             raise ValueError("Light jobs require exact Store inputs or terminal products.")
@@ -659,13 +662,16 @@ class Store:
         payload = launch["payload"]
         root = payload["manifest_root"]
         try:
-            expected = self._light_requests(launch, row["project"], row["request"], row["slot"])
+            expected = self._light_requests(self._light_request(launch, row["project"], row["request"]))
             parents = tuple(edge["parent"] for edge in self.db.execute(
                 "SELECT parent FROM edges WHERE job=? AND NOT authenticated_completion ORDER BY parent", (row["id"],)
             ))
             sources = self._light_parents(row["project"], root, expected, parents)
             view = self._success_view(root)
-            return {source["request"]: self._light_receipt(view, source) for source in sources}
+            return {
+                source["request"]: self._light_receipt(view, self.deferred.exact_source(source))
+                for source in sources
+            }
         except (ValueError, TypeError, KeyError, OSError) as error:
             raise CompletionFileError(str(error)) from error
 
@@ -704,6 +710,8 @@ class Store:
         session_id: str | None = None,
     ) -> dict:
         require_text(token, "submission token")
+        record = dict(record)
+        deferred_projection = record.pop("deferred_projection", None)
         submitted_target = record.get("target")
         try:
             target = attempt_target(submitted_target)
@@ -754,6 +762,10 @@ class Store:
                     )
                     continue
                 self._validate_job(job)
+                deferred_reuse = item.get("deferred_reuse")
+                force_execution = item.get("force_execution", False)
+                if type(force_execution) is not bool or (force_execution and deferred_reuse is not None):
+                    raise HostError("invalid_request", "Invalid deferred admission policy.")
                 if job["data"].get("target") != submitted_target:
                     raise HostError("invalid_request", "Job execution target differs from its submission.")
                 job["data"].pop("placement", None)
@@ -965,29 +977,21 @@ class Store:
                             "invalid_resume", "Another attempt of this request is already running."
                         )
                     job_id, disposition = live["id"], "attached"
+                    if force_execution:
+                        self.deferred.execute(self.get(job_id), occupied=live_drivers)
                 else:
                     self._require_admission_current(job, item["checked_through"])
                     placement = None
-                    if evaluate and selected is not None and selected.allows_gaps:
+                    if deferred_reuse is None and evaluate and selected is not None and selected.allows_gaps:
                         placement = self._place_evaluation(job, source, selected, live_drivers)
                         job["data"].update(placement=placement["location"], placement_detail=placement)
                     job_id, disposition = job["id"], "admitted"
-                    self.db.execute(
-                        "INSERT INTO jobs(id, project, request, launch, slot, data) VALUES (?,?,?,?,?,?)",
-                        (
-                            job_id,
-                            job["project"],
-                            job["request"],
-                            dump(job["launch"]),
-                            job["slot"],
-                            dump(job["data"]),
-                        ),
-                    )
-                    inserted.append(job)
+                    row = self.insert_queued(job)
+                    if deferred_reuse is not None:
+                        self.deferred.reserve(row, job, deferred_reuse, deferred_projection)
+                    inserted.append((job, item.get("light_definition")))
                     if light:
                         light_parents_by_job[job_id] = light_parents
-                    row = self.get(job_id)
-                    self.append(row, "queued", {})
                     if placement is not None:
                         self.append(row, live_evaluate.PLACEMENT_EVENT, placement)
                 aliases[job["id"]] = job_id
@@ -999,8 +1003,8 @@ class Store:
                         "reason": None,
                     }
                 )
-            for job in inserted:
-                self._bind_edges(job, aliases)
+            for job, definition in inserted:
+                self._bind_edges(job, aliases, definition)
             self._advance_authored_train_plan(record, results)
             response = {"id": uuid4().hex, "token": token, "record": record, "items": results}
             self.db.execute(
@@ -1011,6 +1015,16 @@ class Store:
                 ((response["id"], project) for project in projects),
             )
         return response
+
+    def insert_queued(self, job: dict) -> sqlite3.Row:
+        self.db.execute(
+            "INSERT INTO jobs(id, project, request, launch, slot, data) VALUES (?,?,?,?,?,?)",
+            (job["id"], job["project"], job["request"], dump(job["launch"]), job["slot"], dump(job["data"])),
+        )
+        row = self.get(job["id"])
+        assert row is not None
+        self.append(row, "queued", {})
+        return row
 
     def _recheck_reuse(self, item: dict, record: dict) -> None:
         cursor = item.get("checked_through")
@@ -1184,7 +1198,7 @@ class Store:
             roots.add(parent_id)
         return None if missing else frozenset(roots)
 
-    def _bind_edges(self, job: dict, aliases: dict[str, str]) -> None:
+    def _bind_edges(self, job: dict, aliases: dict[str, str], light_definition: dict | None = None) -> None:
         job_id, continues = job["id"], job["continues"]
         payload = job["launch"]["payload"]
         collected = payload.get("collected_resume")
@@ -1220,11 +1234,23 @@ class Store:
                     (job_id, continues),
                 )
         if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
+            from feedbax.contracts.operation import OperationDefinition
+            from feedbax.light_jobs import validate_light_requirements
+
             payload = job["launch"]["payload"]
             try:
-                expected = self._light_requests(job["launch"], job["project"], job["request"], job["slot"])
+                decoded = self._light_request(job["launch"], job["project"], job["request"])
+                definition = OperationDefinition.model_validate(light_definition) if light_definition is not None else None
+                validate_light_requirements(decoded, definition)
+                numerical = definition.numerical if definition is not None else None
+                if job["slot"] != ("compute" if numerical else "light") or (
+                    numerical and any(
+                        job["launch"]["env"].get(key) != value for key, value in numerical.environment().items()
+                    )
+                ):
+                    raise ValueError("Managed delivery worker does not match the declared numerical requirements")
                 self._light_parents(
-                    job["project"], payload["manifest_root"], expected,
+                    job["project"], payload["manifest_root"], self._light_requests(decoded),
                     tuple(
                         aliases.get(edge["job_id"], edge["job_id"])
                         for edge in job["edges"] if not edge.get("authenticated_completion")
@@ -1252,7 +1278,7 @@ class Store:
                     is not None
                 )
             else:
-                satisfied = source is not None and source["state"] == "succeeded"
+                satisfied = source is not None and source["state"] in ("succeeded", "reused")
             cycle = self.db.execute(
                 """WITH RECURSIVE ancestors(id) AS (
                        VALUES (?) UNION SELECT edges.parent FROM edges JOIN ancestors ON edges.job=ancestors.id
@@ -1614,7 +1640,6 @@ class Store:
     def stop(self, job_ids: list[str], mode: str, *, service: bool = False) -> list[dict]:
         if mode not in ("checkpoint", "force") and not (service and mode == "interrupt"):
             raise HostError("invalid_request", "Unknown stop mode.")
-        strength = {None: 0, "checkpoint": 1, "interrupt": 2, "force": 3}
         results = []
         with self.db:
             for job_id in job_ids:
@@ -1627,19 +1652,23 @@ class Store:
                         }
                     )
                     continue
-                state = row["state"]
-                if state in LIVE_STATES and strength[mode] > strength[row["stop_mode"]]:
-                    mode_for_job = "checkpoint" if state == "queued" and mode == "interrupt" else mode
-                    self.db.execute("UPDATE jobs SET stop_mode=? WHERE id=?", (mode_for_job, job_id))
-                    if state == "queued":
-                        self.finished(row, {"outcome": "stopped"})
-                        state = "stopped"
-                    else:
-                        self.db.execute("UPDATE jobs SET state='stopping' WHERE id=?", (job_id,))
-                        self.append(row, "stopping", {"mode": "force" if mode == "interrupt" else mode})
-                        state = "stopping"
+                state = self.request_stop(row, mode)
                 results.append({"job_id": job_id, "state": state})
         return results
+
+    def request_stop(self, row: sqlite3.Row, mode: str) -> str:
+        strength = {None: 0, "checkpoint": 1, "interrupt": 2, "force": 3}
+        state, job_id = row["state"], row["id"]
+        if state not in LIVE_STATES or strength[mode] <= strength[row["stop_mode"]]:
+            return state
+        mode_for_job = "checkpoint" if state == "queued" and mode == "interrupt" else mode
+        self.db.execute("UPDATE jobs SET stop_mode=? WHERE id=?", (mode_for_job, job_id))
+        if state == "queued":
+            self.finished(row, {"outcome": "stopped"})
+            return "stopped"
+        self.db.execute("UPDATE jobs SET state='stopping' WHERE id=?", (job_id,))
+        self.append(row, "stopping", {"mode": "force" if mode == "interrupt" else mode})
+        return "stopping"
 
     def _completed_product(
         self, attempt: sqlite3.Row, train_slots: frozenset[str] | None = None,
@@ -1785,11 +1814,18 @@ class Store:
 
         An earlier attempt can still produce another child whenever M1 permits its resume.
         """
-        if current and tip is None:
-            try:
+        try:
+            if (source := self.get(anchor)) is not None and source["state"] == "reused":
+                retained = self.deferred.exact_source(source)
+                tip = retained["id"]
+                while retained["continues"] is not None:
+                    retained = self.get(retained["continues"])
+                    assert retained is not None
+                anchor = retained["id"]
+            elif current and tip is None:
                 tip = self._current_completion_tip(anchor)
-            except (KeyError, OSError, ValueError) as error:
-                return _CompletionCandidate(None, {"code": "dependency_corrupt", "message": str(error)}, [])
+        except (KeyError, OSError, ValueError) as error:
+            return _CompletionCandidate(None, {"code": "dependency_corrupt", "message": str(error)}, [])
         attempts = self.db.execute(
             """WITH RECURSIVE lineage(id) AS (
                    VALUES (?) UNION ALL
@@ -2110,7 +2146,7 @@ class Store:
         self.db.execute(
             """UPDATE edges SET satisfied=1, binding=CASE WHEN parent=? THEN ? END
                WHERE job=? AND authenticated_completion""",
-            (winner["dependency_job_id"], dump(binding), job["id"]),
+            (roots[selected], dump(binding), job["id"]),
         )
         self.append(job, "dependency_bound", binding)
 
@@ -2195,6 +2231,27 @@ class Store:
             )
         ]
 
+    def verify_completion_bindings(self, row: sqlite3.Row, launch: dict, bindings: list[dict]) -> None:
+        train_slots = train_source_slots(launch)
+        payload = launch["payload"]
+        request = payload.get("canonical_request") or {}
+        terminal = request.get("terminal")
+        for binding in bindings if terminal is None else ({"terminal": terminal},):
+            if "terminal" in binding:
+                from feedbax.persistence.evaluation_subject import read_terminal_train_subject
+
+                try:
+                    read_terminal_train_subject(
+                        self._success_view(payload["manifest_root"]).store,
+                        TerminalTrainSubject.model_validate(binding["terminal"]), request["checkpoint"]["request_id"],
+                    )
+                except (OSError, TypeError, ValueError, KeyError) as error:
+                    raise CompletionFileError(str(error)) from error
+            elif train_slots is None:
+                verify_dependency_files(binding)
+            elif row["continues"] is None:
+                verify_completion_files(binding["completion"], train_slots=train_slots)
+
     def settle_blocked(self) -> None:
         with self.db:
             rows = self.db.execute(
@@ -2221,6 +2278,7 @@ class Store:
             f"""WITH ready AS (
                    SELECT jobs.*, row_number() OVER (PARTITION BY slot ORDER BY seq) AS position
                    FROM jobs WHERE state='queued'
+                   AND NOT EXISTS (SELECT 1 FROM deferred_reuses WHERE job=jobs.id)
                    AND NOT EXISTS (SELECT 1 FROM edges WHERE job=jobs.id AND NOT satisfied)
                )
                SELECT ready.* FROM ready JOIN policy USING (slot)

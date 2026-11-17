@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from hashlib import sha256
@@ -12,6 +13,8 @@ import tomllib
 
 from packaging.markers import Marker
 from packaging.utils import canonicalize_name
+
+from feedbax.validity.source import FileStamp, file_stamp
 
 
 @dataclass(frozen=True)
@@ -24,9 +27,10 @@ class EnvironmentMismatch(ValueError):
     """Installed distributions do not agree with the worker's governing lock."""
 
 
-def installed_versions() -> dict[str, str]:
+def installed_versions(*, paths: Sequence[Path] | None = None) -> dict[str, str]:
     versions = {}
-    for distribution in metadata.distributions():
+    distributions = metadata.distributions() if paths is None else metadata.distributions(path=paths)
+    for distribution in distributions:
         fields = distribution.metadata
         name, version = fields.get("Name"), fields.get("Version")
         if name and version:
@@ -35,10 +39,10 @@ def installed_versions() -> dict[str, str]:
 
 
 @lru_cache(maxsize=16)
-def _read_lock(path: Path, size: int, modified_ns: int) -> tuple[str, dict[str, frozenset[str]]]:
+def _read_lock(path: Path, identity: FileStamp) -> tuple[str, dict[str, frozenset[str]]]:
     data = path.read_bytes()
     current = path.stat()
-    if (current.st_size, current.st_mtime_ns) != (size, modified_ns):
+    if file_stamp(current) != identity:
         raise EnvironmentMismatch(f"Dependency lock changed while reading {path}")
     document = tomllib.loads(data.decode())
     candidates: dict[str, set[str]] = defaultdict(set)
@@ -59,7 +63,7 @@ def read_environment(
         info = path.stat()
     except FileNotFoundError:
         return EnvironmentSnapshot(installed, None)
-    digest, candidates = _read_lock(path, info.st_size, info.st_mtime_ns)
+    digest, candidates = _read_lock(path, file_stamp(info))
     chosen = {}
     for name, versions in candidates.items():
         if len(versions) == 1:

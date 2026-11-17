@@ -33,7 +33,7 @@ class SourceFile:
 type FileStamp = tuple[int, int, int, int, int]
 
 
-def _stamp(metadata: stat_result) -> FileStamp:
+def file_stamp(metadata: stat_result) -> FileStamp:
     return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns
 
 
@@ -86,12 +86,12 @@ class SourceCatalog:
             return None
         if not stat.S_ISREG(metadata.st_mode):
             return None
-        stamp = _stamp(metadata)
+        stamp = file_stamp(metadata)
         if (cached := self._digests.get(path)) is not None and cached[0] == stamp:
             return cached[1]
         with path.open("rb") as stream:
             digest = file_digest(stream, "sha256").hexdigest()
-        if _stamp(path.stat()) != stamp or self.resolve(source) != path:
+        if file_stamp(path.stat()) != stamp or self.resolve(source) != path:
             raise OSError(f"File changed while it was read: {source.scope}/{source.path}")
         self._digests[path] = stamp, digest
         return digest
@@ -106,14 +106,14 @@ class SourceCatalog:
             return None
         if not stat.S_ISREG(metadata.st_mode):
             return None
-        stamp = _stamp(metadata)
+        stamp = file_stamp(metadata)
         if (cached := self._files.get(named)) is not None and cached[0] == stamp:
             return cached[1]
         path = self.resolve(source)
         if path is None:
             return None
         data = path.read_bytes()
-        if _stamp(named.stat()) != stamp or self.resolve(source) != path:
+        if file_stamp(named.stat()) != stamp or self.resolve(source) != path:
             raise OSError(f"Source changed while it was read: {source.scope}/{source.path}")
         file = SourceFile(data, sha256(data).hexdigest(), metadata.st_mtime_ns)
         self._files[named] = stamp, file
