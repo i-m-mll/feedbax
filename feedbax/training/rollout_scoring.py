@@ -12,7 +12,9 @@ import jax
 from feedbax.contracts.computation_validity import ArgumentSignature, ComputationStart, ProgramIdentity
 from feedbax.contracts.rollout import trial_indices
 from feedbax.tasks.document import TaskParameters
-from feedbax.validity.computation import Operand, capture_arguments, capture_program, pytree_operands
+from feedbax.validity.computation import (
+    Operand, UnrecordableArguments, capture_arguments, capture_program, pytree_operands,
+)
 
 if TYPE_CHECKING:
     from feedbax.objectives.document import ObjectiveExecutor
@@ -44,8 +46,8 @@ class RolloutScorer:
 class LoweredRollout:
     lowered: jax.stages.Lowered
     operands: tuple[Operand, ...]
-    start: ComputationStart
-    program: ProgramIdentity
+    slot: str
+    evidence: tuple[ComputationStart, ProgramIdentity] | UnrecordableArguments
 
 
 class RolloutKernel:
@@ -61,23 +63,27 @@ class RolloutKernel:
         if (key := self._keys.get(seed)) is None:
             self._keys[seed] = key = jax.random.PRNGKey(seed)
         values = graph, self.scorer.objective, TaskParameters(), key
-        operands, metadata = pytree_operands(values)
-        arguments = capture_arguments(operands, static=(self.scorer.trials, metadata))
-        signature = arguments.signature
         dynamic, static = eqx.partition(values, eqx.is_array)
+        leaves, structure = jax.tree.flatten(dynamic)
+        operands = tuple(leaves)
+
+        def score(*leaves):
+            model, objective, parameters, key = eqx.combine(structure.unflatten(leaves), static)
+            return self.scorer.execution.evaluate(
+                model, objective, parameters,
+                key=key, trial_ids=self.scorer.trials, capture_state=self.capture_state,
+            )
+
+        try:
+            _, metadata = pytree_operands(values)
+            arguments = capture_arguments(operands, static=(self.scorer.trials, metadata))
+        except UnrecordableArguments as error:
+            return LoweredRollout(jax.jit(score).lower(*operands), operands, slot, error)
+
+        signature = arguments.signature
         cached = self._lowered.get(signature)
         if cached is None or not eqx.tree_equal(cached[0], static):
-            structure = jax.tree.structure(dynamic)
-
-            @jax.jit
-            def score(*leaves):
-                model, objective, parameters, key = eqx.combine(structure.unflatten(leaves), static)
-                return self.scorer.execution.evaluate(
-                    model, objective, parameters,
-                    key=key, trial_ids=self.scorer.trials, capture_state=self.capture_state,
-                )
-
-            lowered = score.lower(*operands)
+            lowered = jax.jit(score).lower(*operands)
             program = capture_program(
                 lowered, slot=slot, specialization=signature, execution_platform=jax.default_backend(),
             )
@@ -85,4 +91,6 @@ class RolloutKernel:
         else:
             _, lowered, cached_program = cached
             program = cached_program.model_copy(update={"slot": slot})
-        return LoweredRollout(lowered, operands, ComputationStart(slot=slot, arguments=arguments), program)
+        return LoweredRollout(
+            lowered, operands, slot, (ComputationStart(slot=slot, arguments=arguments), program),
+        )

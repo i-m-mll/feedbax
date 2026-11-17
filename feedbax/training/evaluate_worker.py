@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord, ContentTreeRef
 from feedbax.contracts.base import ArtifactRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.code_validity import ComputationUnavailable
 from feedbax.contracts.effective_success import (
     Product, RequestObject, Success, TerminalTrainSubject, read_effective_request, read_success_request,
     success_content_ref,
@@ -414,7 +415,7 @@ def _rollouts(
         if stopped():
             return None
         computation.observe(lowered)
-        computation.observe_output(lowered.start.slot, evaluated)
+        computation.observe_output(lowered.slot, evaluated)
         with host_product():
             return _replica_product(prepared, graph, evaluated, params, update_axis)
 
@@ -520,8 +521,9 @@ def _series_dataset(
             if point.member != prepared.member or point.objective != prepared.objective:
                 raise ValueError("Live Evaluate point differs from its resolved scientific binding.")
             evidence = read_live_evaluation_evidence(store, delivery)
-            assert evidence.trace.computation is not None
-            computation.inherit(evidence.trace.computation)
+            recorded = evidence.trace.computation or evidence.trace.computation_unavailable
+            assert recorded is not None
+            computation.inherit(recorded)
             set_execution_prefix(point.evidence)
             with host_product():
                 dataset, summary = _scored_product(opened, store, point, coordinate, params)
@@ -641,7 +643,9 @@ def check_evaluate(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
             code = CheckOutcome(outcome="unavailable", detail=str(error))
         else:
             replayed = present.snapshot()
-            if former is None or replayed is None:
+            if isinstance(replayed, ComputationUnavailable):
+                code = CheckOutcome(outcome="unavailable", detail=replayed.detail)
+            elif former is None or replayed is None:
                 code = CheckOutcome(outcome="unavailable", detail="Evaluate has no comparable lowered execution")
             else:
                 comparison = compare_computation(former, replayed, read_blob=store.get_object)

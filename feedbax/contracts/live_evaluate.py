@@ -6,6 +6,7 @@ from pydantic import Field
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.code_validity import ComputationUnavailable
 from feedbax.contracts.computation_validity import ComputationTrace, DriverIdentity, EvaluatePrefix
 from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.jobs import JobError, StudioEvaluationCheckpointGap
@@ -23,18 +24,29 @@ def rollout_slot(coordinate: int | None, replica: str) -> str:
     return pointer(("initial" if coordinate is None else str(coordinate), replica))
 
 
-def require_evaluation_coverage(computation: ComputationTrace | None, slots: tuple[str, ...]) -> None:
+def live_point_root_id(evaluation_job_id: str, transaction_id: str) -> str:
+    return f"evaluate-point:{evaluation_job_id}:{transaction_id}"
+
+
+def require_evaluation_coverage(
+    computation: ComputationTrace | ComputationUnavailable | None, slots: tuple[str, ...],
+) -> None:
     if not slots and computation is None:
         return
-    if (
-        computation is None or computation.driver.name != EVALUATE_DRIVER.name
-        or computation.completed_steps != len(slots)
-        or tuple(start.slot for start in computation.starts) != slots
-        or tuple(program.slot for program in computation.programs) != slots
-        or not isinstance(computation.prefix, EvaluatePrefix)
-        or len(computation.prefix.outputs) != min(EVALUATE_PREFIX_STEPS, len(slots))
+    if computation is not None and computation.driver.name == EVALUATE_DRIVER.name and (
+        computation.completed_steps == len(slots)
     ):
-        raise ValueError("Evaluate computation does not cover its exact checkpoint and replica slots")
+        if isinstance(computation, ComputationUnavailable):
+            if computation.slots == slots:
+                return
+        elif (
+            tuple(start.slot for start in computation.starts) == slots
+            and tuple(program.slot for program in computation.programs) == slots
+            and isinstance(computation.prefix, EvaluatePrefix)
+            and len(computation.prefix.outputs) == min(EVALUATE_PREFIX_STEPS, len(slots))
+        ):
+            return
+    raise ValueError("Evaluate computation does not cover its exact checkpoint and replica slots")
 
 
 class ScoredEvaluationPoint(StrictModel):
@@ -58,7 +70,7 @@ class LiveEvaluationPoint(StrictModel):
 
     @property
     def root_id(self) -> str:
-        return f"evaluate-point:{self.evaluation_job_id}:{self.checkpoint.pointer.transaction_id}"
+        return live_point_root_id(self.evaluation_job_id, self.checkpoint.pointer.transaction_id)
 
 
 

@@ -78,6 +78,9 @@ class WorkerRecorder:
         self.installed = installed_versions()
         self.entered = entered
         self.host = SourceRoster(4, "Feedbax host product source")
+        self._source_roots: dict[str, Path] = {}
+        self._source_names: dict[str, SourcePath | None] = {}
+        self._archived: dict[Path, tuple[int, ...]] = {}
         self.loaded: dict[SourcePath, SourceFile] = {}
         self.attempt: _Attempt | None = None
         self._audit = local()
@@ -120,6 +123,9 @@ class WorkerRecorder:
 
     def _source_paths(self) -> dict[SourcePath, tuple[set[str], set[str]]]:
         self.catalog = source_catalog(self.project)
+        if self._source_roots != self.catalog.roots:
+            self._source_roots = self.catalog.roots.copy()
+            self._source_names.clear()
         filenames = {
             name for module in tuple(sys.modules.values()) if isinstance(module, ModuleType)
             and isinstance(name := vars(module).get("__file__"), str)
@@ -129,10 +135,16 @@ class WorkerRecorder:
         for name in filenames:
             if not name.endswith(".py"):
                 continue
-            source = self.catalog.locate(Path(name))
+            if name not in self._source_names:
+                named = Path(name)
+                source = self.catalog.locate(named)
+                if source is not None and source.scope == "project" and any(
+                    named.resolve().is_relative_to(root) for root in self._interpreter_roots
+                ):
+                    source = None
+                self._source_names[name] = source
+            source = self._source_names[name]
             if source is None:
-                continue
-            if source.scope == "project" and any(Path(name).is_relative_to(root) for root in self._interpreter_roots):
                 continue
             names, host = result.setdefault(source, (set(), set()))
             names.update(self.entered.get(name, ()))
@@ -252,11 +264,7 @@ class WorkerRecorder:
                 object_id=CONTENT_OBJECT_REF_PREFIX + source.sha256,
                 sha256=source.sha256, size_bytes=len(source.data),
             )
-            try:
-                with store.open_owned_object(ref):
-                    pass
-            except FileNotFoundError:
-                store.store_object(source.data, expected=ref)
+            self._archive_source(store, ref, source.data)
             sources.append(SourceSnapshot(
                 path=path, content=ref, entered=tuple(sorted(entered)), host_product=tuple(sorted(host)),
             ))
@@ -285,6 +293,23 @@ class WorkerRecorder:
                 started_at=attempt.started, ended_at=datetime.now(UTC),
             ),
         )
+
+    def _archive_source(self, store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, data: bytes) -> None:
+        path = store.object_path(ref)
+
+        def occurrence() -> tuple[int, ...]:
+            info = path.lstat()
+            return info.st_dev, info.st_ino, info.st_size, info.st_mode, info.st_nlink, info.st_mtime_ns, info.st_ctime_ns
+
+        try:
+            current = occurrence()
+            if self._archived.get(path) == current:
+                return
+            with store.open_owned_object(ref):
+                self._archived[path] = occurrence()
+        except FileNotFoundError:
+            store.store_object(data, expected=ref)
+            self._archived[path] = occurrence()
 
     def _current_source(self, path: SourcePath) -> SourceFile | None:
         try:

@@ -1061,14 +1061,14 @@ class JobService(PlanJobReader):
                     ):
                         continue
                     if (result := authorized_success(request)) is not None:
-                        quick_run = allow_run and validity.state != "current" and is_quick(result.receipt, self._quick_duration)
+                        quick_run = allow_run and validity.state != "current" and is_quick(result.receipt, self._quick_duration, view.store)
                         if not quick_run:
                             self._submit_check(plan, result, observer.inspect(view, result))
                             available -= 1
             if allow_run and needed:
                 candidates = [authorized_success(request) for request in needed]
                 if all(
-                    candidate is not None and is_quick(candidate.receipt, self._quick_duration)
+                    candidate is not None and is_quick(candidate.receipt, self._quick_duration, view.store)
                     and attempts.by_request[request][-1] is results.get(request)
                     for request, candidate in zip(needed, candidates, strict=True)
                 ):
@@ -1159,7 +1159,7 @@ class JobService(PlanJobReader):
                     from feedbax.validity.project_admission import is_quick
 
                     latest = view.authored_ref(job.request)
-                    if latest is None or not is_quick(view.read_receipt(latest), self._quick_duration):
+                    if latest is None or not is_quick(view.read_receipt(latest), self._quick_duration, view.store):
                         chosen.append(_rejected(item.run_key, "This request requires explicit Run."))
                         continue
                 if reusable is not None:
@@ -1357,6 +1357,7 @@ class JobService(PlanJobReader):
 
     def collect_session_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
+        project_root: Path | None = None,
         progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> CollectedSessionAttempt:
         """Collect one terminal Jobs snapshot attempt and identify the verified custody for acknowledgement."""
@@ -1406,7 +1407,9 @@ class JobService(PlanJobReader):
                     raise JobConflict("The local Train entry differs from the observed Stop checkpoint.")
             activity = self._activity_rows(existing)[attempt_id]
         elif kind == "train":
-            activity = self.collect_train_attempt(source, attempt, project=project, store=store, progress=progress)
+            activity = self.collect_train_attempt(
+                source, attempt, project=project, store=store, project_root=project_root, progress=progress,
+            )
         else:
             activity = self._collect_evaluate_attempt(source, attempt, project=project, store=store, ref=ref, progress=progress)
         if activity.status != JobStatus(state):
@@ -1467,6 +1470,7 @@ class JobService(PlanJobReader):
 
     def collect_train_attempt(
         self, source: StoreEndpoint, attempt: Mapping[str, Any], *, project: str, store: Path,
+        project_root: Path | None = None,
         progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> StudioActivityJob:
         """Collect an observed terminal Train and durably mirror its original attempt."""
@@ -1514,6 +1518,8 @@ class JobService(PlanJobReader):
             canonical_request=binding,
             checkpoint_catalog=tuple(attempt["launch"]["payload"].get("checkpoint_catalog", ())),
         )
+        if project_root is not None:
+            item = _with_project_root(item, project_root)
         assert item.job is not None
         job = replace(item.job, id=attempt_id, continues=attempt["continues"])
         self.host.mirror_collected_train(
@@ -1734,7 +1740,7 @@ class JobService(PlanJobReader):
             if result.state == "current":
                 return job["id"]
             if upstream and all(reason.kind in ("code", "environment") for reason in result.reasons) and (
-                result.state == "unchecked" or not is_quick(retained, self._quick_duration)
+                result.state == "unchecked" or not is_quick(retained, self._quick_duration, view.store)
             ):
                 return job["id"]
             if result.state == "unchecked" and not automatic:

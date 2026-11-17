@@ -10,21 +10,20 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from feedbax.contracts.artifact_custody import ContentRootRecord
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
 from feedbax.contracts.live_evaluate import (
-    LIVE_EVALUATE_POINT, FailedEvaluationPoint, LiveEvaluationPoint, ScoredEvaluationPoint,
+    LIVE_EVALUATE_POINT, FailedEvaluationPoint, LiveEvaluationPoint, ScoredEvaluationPoint, live_point_root_id,
 )
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
-from feedbax.persistence.live_evaluate import live_evaluation_targets
 from feedbax.studio.canonical_evaluate import BoundEvaluationJobInput, decode_rollout_request
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training.method_checkpoint import read_method_checkpoint
 from feedbax.training.evaluate_computation import EvaluationComputation, RolloutExecutables
 from feedbax.training.evaluate_worker import _prepare_model_rollout, _rollouts
 from feedbax.training_host_worker import _Events, _error
+from feedbax.validity.evidence import release_staged_evidence, stage_evidence
 from feedbax.validity.recording import (
     execution_dependencies, inherit_execution_dependencies, nested_execution, record_computation,
     snapshot_execution,
@@ -57,6 +56,7 @@ def live_evaluation_callback(
     ):
         raise ValueError("Live Evaluate assignment differs from its admitted Train.")
     coordinates = frozenset(assignment["updates"])
+    evaluation_job_id = assignment["evaluation_job_id"]
     train_stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
     evaluation_stop = Path(assignment["stop_file"])
 
@@ -69,11 +69,11 @@ def live_evaluation_callback(
         if checkpoint.completed_updates not in coordinates or stopped():
             return
         try:
-            with nested_execution(assignment["evaluation_job_id"]):
+            with nested_execution(evaluation_job_id):
                 point = evaluate_point(checkpoint, models)
         except Exception as error:
             point = LiveEvaluationPoint(
-                evaluation_job_id=assignment["evaluation_job_id"], checkpoint=checkpoint,
+                evaluation_job_id=evaluation_job_id, checkpoint=checkpoint,
                 result=FailedEvaluationPoint(error=_error(error, "live_evaluate")),
             )
         if point is not None:
@@ -122,15 +122,22 @@ def live_evaluation_callback(
             evidence = snapshot_execution(store)
             if evidence is None:
                 raise ValueError("Live Evaluate completed outside managed execution.")
-            evidence_ref = store.store_object(canonical_json_v2_bytes(evidence.model_dump(mode="json")))
+            scope = live_point_root_id(evaluation_job_id, checkpoint.pointer.transaction_id)
+            evidence_ref = stage_evidence(store, evidence, scope=scope)
             point = LiveEvaluationPoint(
-                evaluation_job_id=assignment["evaluation_job_id"], checkpoint=checkpoint,
+                evaluation_job_id=evaluation_job_id, checkpoint=checkpoint,
                 result=ScoredEvaluationPoint(
                     states=states, member=member, objective=objective, total=total, evidence=evidence_ref,
                 ),
             )
-            _, targets = live_evaluation_targets(store, point)
-            store.register_root(ContentRootRecord(root_id=point.root_id, root_kind="run", targets=targets))
+            try:
+                store.register_root(ContentRootRecord(
+                    root_id=point.root_id, root_kind="run",
+                    targets=(ContentRetentionTarget(ref_kind="object", object=states.object_ref),),
+                ))
+            except Exception:
+                release_staged_evidence(store, evaluation_job_id, scope=scope)
+                raise
         prepared, dependencies, kernel = initial, captured, scoring_kernel
         return point
 

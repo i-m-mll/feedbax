@@ -1,6 +1,7 @@
 """Reconstructed graphs, rollout trajectories, and task inputs in saved Analyze jobs."""
 
 import asyncio
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.composition import compose_application
+from feedbax.validity.environment import installed_versions
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.support import derivative_witness as witness
@@ -29,7 +31,6 @@ from tests.test_local_job_host import host as host_fixture, restart, wait_until
 
 host = host_fixture
 _CAPTURE = Path(__file__).parent / "fixtures" / "derivative_fixed_points.json"
-_REFERENCE_PROFILE = "FEEDBAX_VERIFY_FIXED_POINT_REFERENCE"
 
 
 def _port(name, width):
@@ -249,7 +250,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     _save_project(folders, project, _project())
     review = folders.read_plan(project, revision=None)
     assert not review.plan.diagnostics, review.plan.diagnostics
-    jobs = JobService(host, registry)
+    jobs = JobService(host, registry, quick_duration=timedelta(seconds=60))
     selected = tuple(RunKey("default", step, "default") for step in ("rollout", "fixed", "gain"))
     launch = jobs.admit_plan(folders, review, run_keys=selected, token="derivative-witness")
     assert len(launch.items) == 5, launch
@@ -293,8 +294,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
         np.testing.assert_array_equal(accepted.sum(axis=-1), [[1, 1, 1]])
         assert np.all(roots.data("losses")[accepted] < 1e-6)
         assert np.all(roots.data("spectrum.magnitude")[accepted] < 1.0)
-        if os.environ.get(_REFERENCE_PROFILE) == "1":
-            _assert_fixed_point_products(roots)
+        _assert_fixed_point_products(roots)
     with results(linearise, "jacobians") as jacobians:
         np.testing.assert_allclose(jacobians.data("feedback").ravel(), [0.0, 2.0])
         np.testing.assert_allclose(jacobians.data("actuation").ravel(), [1.0, 1.0])
@@ -332,3 +332,28 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     source.write_text(original.replace(body, "    scale = 3\n" + body, 1))
     assert retained().status is JobStatus.STALE
     assert set(row["id"] for row in host.jobs(project=review.project_id)) == job_ids
+
+    source.write_text(original)
+    assert retained().status is JobStatus.SUCCEEDED
+    versions = installed_versions() | {"numpy": "0.0"}
+    lock = review.project_root / "uv.lock"
+    lock.write_text("".join(
+        f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+        for name, version in versions.items()
+    ))
+    observed = retained().result.validity
+    assert observed.state == "current"
+    assert observed.environment.check == "pending"
+    jobs.result_validity_action(review, gain, observed.receipt)
+
+    def completed_check():
+        return next((row for row in host.jobs(project=review.project_id) if (
+            row["request"].startswith("validity-check:") and row["outcome"] is not None
+        )), None)
+
+    check = wait_until(completed_check, timeout=15)
+    assert "store_success" not in check["outcome"]
+    decided = jobs.result_validity_action(review, gain, observed.receipt)
+    assert decided.state == "current" and decided.environment.check == "not_checked"
+    assert "numpy" in decided.environment.detail
+    assert set(row["id"] for row in host.jobs(project=review.project_id)) == job_ids | {check["id"]}
