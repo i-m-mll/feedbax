@@ -9459,7 +9459,7 @@ export const ReportDocumentSchema: z.ZodType<ReportDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.report_document.v1").optional(),
     "title": z.string().min(1),
-    "blocks": z.array(z.union([ReportTextSchema, ReportFigureSchema])).min(1),
+    "blocks": z.array(z.union([ReportTextSchema, ReportFigureSchema])),
     "completeness": z.union([z.literal("complete"), z.literal("allow_omissions")]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ReportDocument>;

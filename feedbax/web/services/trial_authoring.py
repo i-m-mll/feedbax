@@ -96,12 +96,24 @@ def _project(
                         for signal in task.signals)
         variables = ()
         epochs = task.epochs
-    task_sites = {}
-    paired = pair_trial_source(
-        documents.model_name, documents.model, task, bundle.components, bundle.expression_functions,
-        python_tasks=bundle.python_tasks, input_overrides=documents.input_overrides,
-        task_sites=task_sites, graph_override=graph_override,
-    )
+    def pair(task):
+        sites = {}
+        paired = pair_trial_source(
+            documents.model_name, documents.model, task, bundle.components, bundle.expression_functions,
+            python_tasks=bundle.python_tasks, input_overrides=documents.input_overrides,
+            task_sites=sites, graph_override=graph_override,
+        )
+        return paired, sites
+
+    paired, task_sites = pair(task)
+    if isinstance(paired, tuple) and isinstance(task, TaskDocument):
+        # The other documents stay authorable against the links that do resolve.
+        unresolved = {problem.path for problem in paired}
+        linked = tuple(link for link in task.links if ("links", link.model_field) not in unresolved)
+        if len(linked) < len(task.links):
+            partial, partial_sites = pair(task.model_copy(update={"links": linked}))
+            if not isinstance(partial, tuple):
+                paired, task_sites = replace(partial, problems=(*paired, *partial.problems)), partial_sites
     fields.update({("task", *path): site for path, site in task_sites.items()})
     if isinstance(paired, tuple):
         return _Projection(None, variables, signals, epochs, fields, paired)
@@ -362,14 +374,14 @@ _DOCUMENT_SCHEMAS = {"model": MODEL_DOCUMENT_SCHEMA_ID, "objective": OBJECTIVE_D
 def _chosen_document(project, document, role):
     entry = project.documents.get(document)
     if entry is None or entry.schema_id != _DOCUMENT_SCHEMAS[role]:
-        raise ProjectFolderInvalid(f"The selected document is not a{'n' if role == 'objective' else ''} {role.title()}.")
+        raise ProjectFolderInvalid(f"{document} is not a{'n' if role == 'objective' else ''} {role.title()} document.")
 
 
 def _chosen_task(project, document):
     entry = project.documents.get(document)
     task = _selected_task(entry) if entry is not None else None
     if task is None:
-        raise ProjectFolderInvalid("The selected document is not a Task.")
+        raise ProjectFolderInvalid(f"{document} is not a Task document.")
     return task
 
 
@@ -491,7 +503,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         lit = users
     if isinstance(scope, StudioTrialStepScope):
         if key.variant != plan.variants[0]:
-            raise ProjectFolderInvalid("Use a variant scope for this comparison variant.")
+            raise ProjectFolderInvalid("A step scope covers the primary variant only.")
         if lit and (key.step not in lit or not lit <= users):
             raise ProjectFolderInvalid("The lit steps no longer match this document.")
         lit = lit or {key.step}
@@ -554,6 +566,7 @@ def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, d
 
 def _validate_files(files, project, settled, selected, folders, bundle, change, expression, *, evaluate_field):
     plan = settled.plan
+    choosing = isinstance(change, StudioTrialSelectDocument)
     authored = preview_authored_files(project, files)
     compare_names = isinstance(change, StudioTrialDocumentEdit) and change.kind == "objective" and any(
         "name" in json_pointer_parts(edit.path) or len(json_pointer_parts(edit.path)) <= 2 for edit in change.edits
@@ -590,7 +603,7 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
             if int(index) >= len(old.objective.terms) or old.objective.terms[int(index)].id != expression.term:
                 raise ProjectFolderInvalid("The selected runs have different Objective term orders.")
         introduced = tuple(problem for problem in after.problems if problem not in before.problems)
-        if introduced and not evaluate_field:
+        if introduced and not evaluate_field and not choosing:
             return [], introduced
         if evaluate_field and introduced and key in current:
             return [], introduced
@@ -628,7 +641,7 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
                 expected[binding.name] = change.signal
             if expected != new.input_overrides:
                 raise ProjectFolderInvalid("A selected input is controlled by a different authored source.")
-        if not evaluate_field and key in previous and key not in current:
+        if not evaluate_field and not choosing and key in previous and key not in current:
             diagnostic = next((
                 item for item in candidate.diagnostics if item not in before_diagnostics
                 and item.step == key.step and item.variant == key.variant and item.row == key.row

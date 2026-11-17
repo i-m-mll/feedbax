@@ -40,6 +40,7 @@ export interface ProjectEditTransport {
 }
 
 type NamedFileCreation = StudioProjectCreateFile['file'];
+type FollowingEdits = (snapshot: StudioProjectSnapshot) => Promise<readonly StudioProjectFilePatch[]>;
 
 interface FileGesture {
   readonly name: string;
@@ -518,7 +519,10 @@ export class ProjectEditController {
     );
   }
 
-  createFiles(name: string, files: readonly NamedFileCreation[], reviewedRevision: string): Promise<void> {
+  /** Create files as one Undo entry, which the patches `use` computes against the created files join. */
+  createFiles(
+    name: string, files: readonly NamedFileCreation[], reviewedRevision: string, use?: FollowingEdits,
+  ): Promise<StudioProjectSnapshot> {
     const targets = files.map((file): ReplayContent => {
       const value = file.kind === 'document' ? file.document : file.step;
       const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2) + '\n');
@@ -532,10 +536,31 @@ export class ProjectEditController {
       const absent = targets.map(({ address }) => ({ address, data: null, revision: null }));
       const latest = await this.publishReplay(before, replayFiles(absent, targets, before), targets);
       if (!replayObserved(before, targets, latest.snapshot)) throw new ProjectEditConflictError();
-      const gesture = changedFiles(name, before, latest.snapshot);
-      if (!gesture) throw new ProjectEditConflictError();
-      this.adopt(latest, moveHistory(this.savedHistory, gesture, 'edit'));
+      return this.recordWithFollowing(name, before, latest.snapshot, use);
     });
+  }
+
+  private async recordWithFollowing(
+    name: string, before: StudioProjectSnapshot, done: StudioProjectSnapshot, use?: FollowingEdits,
+  ): Promise<StudioProjectSnapshot> {
+    const record = (latest: StudioProjectSnapshot) => {
+      const gesture = changedFiles(name, before, latest, true);
+      if (!gesture) throw new ProjectEditConflictError();
+      this.adopt({ ...this.document, snapshot: latest }, moveHistory(this.savedHistory, gesture, 'edit'));
+    };
+    let latest = done;
+    try {
+      const files = use ? await use(done) : [];
+      if (files.length) {
+        latest = await this.transport.write(before.project_id, { revision: latest.revision, files: [...files] }, this.signal);
+      }
+      this.signal.throwIfAborted();
+    } catch (error) {
+      record(done);
+      throw error;
+    }
+    record(latest);
+    return latest;
   }
 
   private async publishReplay(
@@ -574,24 +599,7 @@ export class ProjectEditController {
       const result = await run(before.project_id, {
         revision: before.revision, presentation_revision: before.presentation_revision, command,
       }, this.signal);
-      const record = (latest: StudioProjectSnapshot) => {
-        const gesture = changedFiles(name, before, latest, true);
-        if (!gesture) throw new ProjectEditConflictError();
-        this.adopt({ ...this.document, snapshot: latest }, moveHistory(this.savedHistory, gesture, 'edit'));
-      };
-      let latest = result.snapshot;
-      try {
-        const files = use ? await use(result) : [];
-        if (files.length) {
-          latest = await this.transport.write(before.project_id, { revision: latest.revision, files: [...files] }, this.signal);
-        }
-        this.signal.throwIfAborted();
-      } catch (error) {
-        record(result.snapshot);
-        throw error;
-      }
-      record(latest);
-      return { ...result, snapshot: latest };
+      return { ...result, snapshot: await this.recordWithFollowing(name, before, result.snapshot, use && (() => use(result))) };
     });
   }
 

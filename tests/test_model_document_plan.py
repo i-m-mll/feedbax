@@ -488,7 +488,7 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [item for item in refused.diagnostics if item.step == "train"]
-    assert problem.document == "reach-model" and "needs signal 'unknown'" in problem.detail
+    assert problem.document == "reach-model" and "reads signal 'unknown'" in problem.detail
     assert problem.model_address == ModelAddress.model_validate({
         "document": "reach-model", "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}},

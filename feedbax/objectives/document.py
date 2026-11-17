@@ -282,7 +282,7 @@ def compile_objective(
                 Problem(
                     code=ProblemCode.TYPE_MISMATCH,
                     path=(*path, "measure"),
-                    reason="An objective measure must be a real scalar.",
+                    reason="This measure is not a real scalar.",
                 )
             )
             continue

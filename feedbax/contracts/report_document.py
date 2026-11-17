@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, StrictStr, field_validator
+from pydantic import StrictStr, field_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
@@ -31,7 +31,7 @@ class ReportDocument(StrictModel):
 
     schema_version: Literal["feedbax.report_document.v1"] = "feedbax.report_document.v1"
     title: NonemptyText
-    blocks: tuple[ReportText | ReportFigure, ...] = Field(min_length=1)
+    blocks: tuple[ReportText | ReportFigure, ...]
     completeness: Literal["complete", "allow_omissions"] = "complete"
 
     @property

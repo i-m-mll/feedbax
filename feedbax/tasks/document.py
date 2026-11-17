@@ -337,20 +337,20 @@ def bind_task_inputs(
             if port.required or port.name in overrides:
                 problems.append(Problem(
                     code=ProblemCode.UNKNOWN_NAME,
-                    reason=f"Model input {port.name!r} needs signal {signal_name!r}.",
+                    reason=f"Model input {port.name!r} reads signal {signal_name!r}, which the Task does not declare.",
                     path=path, model_address=port.address,
                 ))
         elif not port.type.accepts(signal.type):
             problems.append(Problem(
                 code=ProblemCode.TYPE_MISMATCH,
-                reason=f"Signal {signal_name!r} has an incompatible sample type.",
+                reason=f"Signal {signal_name!r} does not fit model input {port.name!r}.",
                 path=path, model_address=port.address,
             ))
         else:
             bindings.append((port.name, signal.name))
     for port in sorted(overrides.keys() - {item.name for item in model.inputs}):
         problems.append(Problem(
-            code=ProblemCode.UNKNOWN_NAME, reason=f"Unknown model input {port!r}.",
+            code=ProblemCode.UNKNOWN_NAME, reason=f"{port!r} is not an input of the Model.",
             path=("model", "inputs", port),
         ))
 
@@ -557,16 +557,14 @@ def compile_task(
         target = writable.get(link.model_field)
         variable = scope.get(link.variable)
         path = ("links", link.model_field)
-        if target is None or variable is None:
-            problem(
-                ProblemCode.UNKNOWN_NAME,
-                "Link must resolve to a model field and a task variable.",
-                path,
-            )
+        if target is None:
+            problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is linked to a field the Model does not have.", path)
+        elif variable is None:
+            problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is not a variable of the Task.", path)
         elif variable.level > target.finest or not target.type.accepts(variable.type):
-            problem(ProblemCode.TYPE_MISMATCH, "Link needs a compatible run or trial value.", path)
+            problem(ProblemCode.TYPE_MISMATCH, f"{link.variable} does not fit its Model field.", path)
         elif link.model_field in links:
-            problem(ProblemCode.STRUCTURE, "A model field may be linked once.", path)
+            problem(ProblemCode.STRUCTURE, f"{link.variable} links a Model field that is already linked.", path)
         else:
             links[link.model_field] = link.variable
     rows = []
