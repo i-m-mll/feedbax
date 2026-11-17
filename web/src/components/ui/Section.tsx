@@ -27,12 +27,14 @@ export function Section({
   const [uncontrolled, setUncontrolled] = useState(defaultOpen);
   const open = controlled ?? uncontrolled;
   const body = useId();
+  const title = useId();
   const toggle = () => {
     if (controlled === undefined) setUncontrolled(!open);
     onOpenChange?.(!open);
   };
   return (
     <section
+      aria-labelledby={title}
       data-open={open || undefined}
       className={clsx(
         'flex min-h-[var(--row-height)] min-w-0 flex-col border-t border-shell-divider first:border-t-0',
@@ -52,7 +54,7 @@ export function Section({
           )}
         >
           <ChevronRight aria-hidden className={clsx('transition-transform', open && 'rotate-90')} />
-          <span className="min-w-0 truncate font-medium text-shell-foreground">{name}</span>
+          <span id={title} className="min-w-0 truncate font-medium text-shell-foreground">{name}</span>
           {count === undefined ? null : <span className="tabular-nums">{count}</span>}
         </button>
         {actions ? <div className="flex shrink-0 items-center gap-0.5">{actions}</div> : null}

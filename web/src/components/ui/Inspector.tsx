@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { Plus } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 import { ListRow } from './ListRow';
 import { Menu, MenuContent, MenuTrigger } from './Menu';
 
@@ -18,10 +18,11 @@ export interface InspectorProps {
 
 /** The one inspector layout: a title line, the fields as rows, a hairline, the attachments. */
 export function Inspector({ name, type, children, attachments, className }: InspectorProps) {
+  const title = useId();
   return (
-    <section className={clsx('grid min-w-0 content-start gap-2 p-2 text-sm', className)}>
+    <section aria-labelledby={title} className={clsx('grid min-w-0 content-start gap-2 p-2 text-sm', className)}>
       <header className="flex h-row min-w-0 items-baseline gap-2">
-        <span className="min-w-0 truncate font-medium">{name}</span>
+        <span id={title} className="min-w-0 truncate font-medium">{name}</span>
         {type ? <span className="min-w-0 truncate text-shell-muted">{type}</span> : null}
       </header>
       {children ? <div className="grid min-w-0 gap-1">{children}</div> : null}

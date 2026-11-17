@@ -17,6 +17,7 @@ import type { ActivityResultState } from '@/components/activity/StudioActivity';
 import { useResultValidity } from './useResultValidity';
 import { StudioMachineApproval, StudioRunMachine } from '@/components/pipeline/StudioRunMachine';
 import { SweepExceptions } from '@/components/pipeline/SweepExceptions';
+import { DrawerSection, DrawerSections, WindowSectionsProvider } from '@/features/projectWindow/DrawerSection';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
@@ -42,7 +43,7 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdits';
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
-import { isModelAddress, selectElement, useElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import { clearSelection, isModelAddress, selectElement, useElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
@@ -56,7 +57,9 @@ import { CheckpointRuleEditor, StudioEvaluateAuthoring } from './StudioEvaluateA
 import { StudioEvaluationAttemptDetails, StudioEvaluationResults } from './StudioEvaluationResults';
 import { RunRemovalContext, useRunRemovalDialog } from './runRemoval';
 import { StudioTrainAuthoringForm, SweepFieldItems } from './StudioTrainAuthoringForm';
-import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, useTrialAuthoring } from './StudioTrialAuthoring';
+import {
+  TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
+} from './StudioTrialAuthoring';
 import { useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
@@ -1033,6 +1036,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   return (
     <RunRemovalContext.Provider value={runRemoval.confirm}>
+      <WindowSectionsProvider state={windowState} onStateChange={setWindowState}>
       <ProjectWindow
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
         saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
@@ -1138,17 +1142,27 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             ) };
             const value = trial.view;
             const commit = trial.commit;
-            if (view === 'task') return {
-              picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
-              body: withProblem(<TrialTaskForm view={value} commit={commit} />),
-            };
-            const document = value.objective_document ?? step?.id ?? '';
             const first = selectedElements[0];
-            const selected = first && !isModelAddress(first) && first.document === document ? first.element.id : undefined;
-            const choose = (term: string) => selectElement(elements, { document, element: { kind: 'named', id: term } });
+            const named = (document: string) => first && !isModelAddress(first) && first.document === document ? first.element : undefined;
+            const choose = (document: string) => (id: string | null, field?: string) => id === null
+              ? clearSelection(elements) : selectElement(elements, { document, element: { kind: 'named', id, field } });
+            if (view === 'task') {
+              const document = value.task_document ?? step?.id ?? '';
+              const selected = named(document)?.id;
+              return {
+                picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
+                body: withProblem(<TrialTaskForm view={value} commit={commit} />),
+                drawer: <TrialTaskOutline view={value} selected={selected} select={choose(document)} />,
+                inspector: selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
+              };
+            }
+            const document = value.objective_document ?? step?.id ?? '';
+            const element = named(document);
+            const selected = element && { term: element.id, field: element.field };
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined),
-              body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose} />),
+              body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} />),
+              drawer: <TrialObjectiveOutline view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
               inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
             };
           }
@@ -1179,14 +1193,33 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   disabled={busy || machineCatalog.isPending}
                   onChange={(value) => setMachines((current) => ({ ...current, [step.id]: value }))} />}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
-              drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0) ? <div className="space-y-3 text-sm">
+              drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0 || evaluationCheckpointRule ||
+                evaluationEditor) ? <DrawerSections>
+                {(authoring || evaluationCheckpointRule || evaluationEditor) && <DrawerSection section="runs.definition"
+                  name={studioName(step.kind === 'train' ? 'training' : step.kind)} bodyClassName="grid content-start gap-3 p-1">
                 {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
                     focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
                     onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
-                {exceptions.length > 0 && <SweepExceptions exceptions={exceptions}
-                  onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />}
-                {step.inputs.length > 0 && <section aria-label={studioName('inputs')} className="space-y-1">
-                  <h3 className="font-semibold">{studioName('inputs')}</h3>
+                {evaluationCheckpointRule &&
+                  <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, saved.revision, checkpointScope])}
+                    initial={evaluationCheckpointRule}
+                    disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
+                    onSave={editEvaluationCheckpoint}
+                    onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
+                {evaluationEditor && data && variant && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
+                  authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
+                  source={evaluationEditor.source} sourceRows={stepSourceRows(data, evaluationEditor.source.id, variant)}
+                  domain={evaluationEditor.domain}
+                  editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
+                  disabled={!ready || busy} focusTrialSet={focusCreatedStep === step.id && focusSlot === slot}
+                  onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation}
+                  onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
+                </DrawerSection>}
+                {exceptions.length > 0 && <DrawerSection section="runs.exceptions" name={studioName('exceptions')} count={exceptions.length}>
+                  <SweepExceptions exceptions={exceptions}
+                    onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />
+                </DrawerSection>}
+                {step.inputs.length > 0 && <DrawerSection section="runs.inputs" name={studioName('inputs')} bodyClassName="px-1">
                   <dl>{step.inputs.map(({ id, label, sourceStepId, subset }) => <div key={id} className="border-t border-shell-divider py-1">
                     <dt>{label}</dt>
                     <dd className="text-shell-muted">{plan.steps.find((item) => item.id === sourceStepId)?.label}</dd>
@@ -1203,22 +1236,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                       </div>)}
                     </dd>}
                   </div>)}</dl>
-                </section>}
-                {evaluationCheckpointRule &&
-                  <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, saved.revision, checkpointScope])}
-                    initial={evaluationCheckpointRule}
-                    disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
-                    onSave={editEvaluationCheckpoint}
-                    onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
-                {evaluationEditor && data && variant && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
-                  authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
-                  source={evaluationEditor.source} sourceRows={stepSourceRows(data, evaluationEditor.source.id, variant)}
-                  domain={evaluationEditor.domain}
-                  editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
-                  disabled={!ready || busy} focusTrialSet={focusCreatedStep === step.id && focusSlot === slot}
-                  onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation}
-                  onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
-              </div> : undefined,
+                </DrawerSection>}
+              </DrawerSections> : undefined,
               inspector: selectedRuns(step, state.selection).length > 0
                 ? <StudioRunDetails step={step} state={state}
                   detail={selectedEvaluation?.checkpoint_series
@@ -1258,6 +1277,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           return { body: withProblem(noView) };
         }}
       />
+      </WindowSectionsProvider>
       {runRemoval.dialog}
     </RunRemovalContext.Provider>
   );

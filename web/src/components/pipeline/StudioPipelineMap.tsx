@@ -28,6 +28,7 @@ import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/feat
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button, IconButton } from '@/components/ui/Button';
 import { ListRow } from '@/components/ui/ListRow';
+import { Tree, type TreeNode } from '@/components/ui/Tree';
 import { Menu, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
@@ -541,62 +542,65 @@ interface DrawerProps {
   documentScope?: MapDocumentScope;
 }
 
-function StepRow({ step, selection, related, focusedStepId, chooseStep, applySelection, documentScope }: DrawerProps & {
-  step: PlanStepView;
-}) {
-  const scope = stepSelection(selection, step.id);
-  const count = related?.get(step.id)?.size ?? 0;
-  const summary = related && focusedStepId !== step.id ? studioCountOf(count, step.runs.length) : undefined;
-  const level = documentLevel(documentScope, step.id);
+function stepTrailing(step: PlanStepView, applySelection: ApplyMapSelection) {
   const worst = worstStatus(step.statusCounts);
-  const choose = selectionButton((extend) => chooseStep(step.id, extend));
-  const { Icon } = studioStep(step.kind);
-  const word = worst && studioRunStatus(worst.status);
-  const shown = worst && step.runs.length > 1 ? worst.count : undefined;
+  if (!worst) return undefined;
+  const word = studioRunStatus(worst.status);
+  const shown = step.runs.length > 1 ? worst.count : undefined;
   return (
-    <ListRow
-      selected={!!scope}
-      data-map-dimmed={Boolean(related && !count && focusedStepId !== step.id) || undefined}
-      data-document-scope={level}
-      className={`data-[document-scope=faint]:text-shell-muted data-[map-dimmed=true]:text-shell-muted ${!scope ? documentLitStyle : ''}`}
-      glyph={<Icon aria-hidden="true" />}
-      onClick={choose.onClick}
-      name={<Button variant="bare" size="content" align="start" className="block w-full truncate"
-        aria-current={scope ? 'step' : undefined}
-        aria-label={studioAccessibleName('select', stepLabel(step, summary))}
-        aria-pressed={documentScope ? level === 'lit' : undefined}
-        onKeyDown={choose.onKeyDown}>{step.label}</Button>}
-      trailing={worst && word && (
-        <Button variant="bare" size="content" className="inline-flex items-center gap-1 rounded-sm tabular-nums"
-          aria-label={studioAccessibleName('select', [shown, word].filter(Boolean).join(' '))} {...appTip(word)}
-          onClick={(event) => {
-            event.stopPropagation();
-            const runIds = step.runs.filter(({ state }) => state === worst.status).map(({ id }) => id);
-            applySelection(() => ({ selection: { kind: 'rows', stepId: step.id, runIds }, focus: null }));
-          }}>
-          <StatusMark status={worst.status} />{shown}
-        </Button>
-      )}
-    />
+    <Button variant="bare" size="content" className="inline-flex items-center gap-1 rounded-sm tabular-nums"
+      aria-label={studioAccessibleName('select', [shown, word].filter(Boolean).join(' '))} {...appTip(word)}
+      onClick={(event) => {
+        event.stopPropagation();
+        const runIds = step.runs.filter(({ state }) => state === worst.status).map(({ id }) => id);
+        applySelection(() => ({ selection: { kind: 'rows', stepId: step.id, runIds }, focus: null }));
+      }}>
+      <StatusMark status={worst.status} />{shown}
+    </Button>
   );
 }
 
-function MapDrawer({ steps, newStep, framed = false, ...props }: DrawerProps & {
+const groupId = (group: string) => '\u0000' + group;
+
+function MapDrawer({ steps, newStep, framed = false, selection, related, focusedStepId, chooseStep, applySelection, documentScope }: DrawerProps & {
   steps: readonly PlanStepView[];
   newStep?: StudioCommand;
   framed?: boolean;
 }) {
-  const groups = new Map<string | null, PlanStepView[]>();
+  const rows = (entries: readonly PlanStepView[]): TreeNode[] => entries.map((step) => {
+    const { Icon } = studioStep(step.kind);
+    const count = related?.get(step.id)?.size ?? 0;
+    const linked = related && focusedStepId !== step.id;
+    return {
+      id: step.id, name: step.label, glyph: <Icon aria-hidden="true" />,
+      description: linked ? studioCountOf(count, step.runs.length) : undefined,
+      muted: Boolean(linked && !count) || documentLevel(documentScope, step.id) === 'faint',
+      trailing: stepTrailing(step, applySelection),
+    };
+  });
+  const grouped = new Map<string | null, PlanStepView[]>();
   for (const step of steps) {
     const group = step.group ?? null;
-    const entries = groups.get(group);
+    const entries = grouped.get(group);
     if (entries) entries.push(step);
-    else groups.set(group, [step]);
+    else grouped.set(group, [step]);
   }
+  const nodes = [...grouped].flatMap(([group, entries]): TreeNode[] => group === null ? rows(entries)
+    : [{ id: groupId(group), name: group, disabled: true, children: rows(entries) }]);
+  const selected = steps.filter(({ id }) => stepSelection(selection, id)).map(({ id }) => id);
+  const choose = (ids: string[]) => {
+    const before = new Set(selected);
+    const after = new Set(ids);
+    const changed = [...ids.filter((id) => !before.has(id)), ...selected.filter((id) => !after.has(id))];
+    if (changed.length === 1 && before.size + after.size > 1) return chooseStep(changed[0], true);
+    if (ids.length === 1) return chooseStep(ids[0], false);
+    applySelection(() => ids.length
+      ? { selection: { kind: 'steps', stepIds: ids }, focus: null } : { selection: null, focus: null });
+  };
   return (
     <nav aria-label={studioName('steps')} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-chrome'}`}>
       {newStep && (
-        <div className="shrink-0 px-2 pt-2">
+        <div className="shrink-0 px-1 pt-1">
           <ListRow role="button" tabIndex={0} glyph={<Plus aria-hidden="true" />} name={studioName('newStep')}
             {...commandAttributes(newStep)} disabled={!newStep.enabled}
             onClick={newStep.invoke}
@@ -607,15 +611,9 @@ function MapDrawer({ steps, newStep, framed = false, ...props }: DrawerProps & {
             }} />
         </div>
       )}
-      <ScrollFade axis="y" className="min-h-0 flex-1 p-2">
-        <ul className="space-y-1">
-          {Array.from(groups).map(([group, entries]) => (
-            <li key={group ?? ''}>
-              {group && <h3 className="px-row-inline text-xs font-medium text-shell-muted">{group}</h3>}
-              <ul>{entries.map((step) => <li key={step.id}><StepRow step={step} {...props} /></li>)}</ul>
-            </li>
-          ))}
-        </ul>
+      <ScrollFade axis="y" className="min-h-0 flex-1">
+        <Tree aria-label={studioName('steps')} nodes={nodes} selected={selected} onSelectedChange={choose}
+          defaultExpanded={[...grouped.keys()].flatMap((group) => group === null ? [] : [groupId(group)])} />
       </ScrollFade>
     </nav>
   );

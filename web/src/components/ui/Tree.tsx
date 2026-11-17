@@ -14,6 +14,10 @@ export interface TreeNode {
   trailing?: ReactNode;
   children?: readonly TreeNode[];
   disabled?: boolean;
+  /** Drawn in the muted text colour: an element outside what the view is showing. */
+  muted?: boolean;
+  /** Read after the row's name by assistive technology: a fact the row draws by its tone, such as a count of related runs. */
+  description?: string;
 }
 
 export interface TreeHandle {
@@ -30,7 +34,10 @@ export interface TreeProps {
   onSelectedChange: (ids: string[]) => void;
   /** Return false to refuse the name and stay in editing. */
   onRename?: (id: string, name: string) => boolean | void;
+  /** Double-click, or Return in a tree without renaming: places or opens the row's element. */
   onActivate?: (id: string) => void;
+  /** What dragging the row carries, by media type; rows without it do not drag. */
+  dragData?: (node: TreeNode) => Readonly<Record<string, string>> | undefined;
   /** The row's commands, as menu items. */
   menu?: (node: TreeNode) => ReactNode;
   defaultExpanded?: Iterable<string>;
@@ -66,7 +73,7 @@ function descendants(node: TreeNode): string[] {
 }
 
 export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
-  { nodes, selected, onSelectedChange, onRename, onActivate, menu, defaultExpanded, renameLabel = 'Name', className, ...aria },
+  { nodes, selected, onSelectedChange, onRename, onActivate, dragData, menu, defaultExpanded, renameLabel = 'Name', className, ...aria },
   ref,
 ) {
   const entries = useMemo(() => index(nodes), [nodes]);
@@ -243,7 +250,9 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
         return move(visible[visible.length - 1].id);
       case 'Enter':
         handled();
-        if (onRename && !node.disabled) setEditing(node.id);
+        if (node.disabled) return;
+        if (onRename) setEditing(node.id);
+        else onActivate?.(node.id);
         return;
       case ' ':
         handled();
@@ -293,6 +302,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
         const { depth, parent } = entries.get(node.id)!;
         const level = siblings(node.id);
         const open = branch(node) ? expanded.has(node.id) : undefined;
+        const carried = node.disabled ? undefined : dragData?.(node);
         return (
           <ListRow
             key={node.id}
@@ -314,6 +324,8 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
             selected={selectedSet.has(node.id)}
             holdsSelection={open === false && holders.has(node.id)}
             disabled={node.disabled}
+            className={node.muted ? 'text-shell-muted' : undefined}
+            aria-description={node.description}
             name={onRename ? (
               <InlineEdit
                 value={node.name}
@@ -329,6 +341,10 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
             onClick={(event) => onRowClick(event, node)}
             onDoubleClick={() => { if (!node.disabled) onActivate?.(node.id); }}
             onContextMenu={() => onContextMenu(node)}
+            draggable={carried ? true : undefined}
+            onDragStart={carried && ((event) => {
+              for (const [type, data] of Object.entries(carried)) event.dataTransfer.setData(type, data);
+            })}
           />
         );
       })}

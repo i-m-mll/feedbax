@@ -81,10 +81,10 @@ test('the map drawer keeps New Step in view, aligned with its rows, while its li
   await list.evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await expect.poll(() => list.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
   expect(await box(newStep)).toEqual(before);
-  const row = drawer.getByRole('button', { name: /^Select train Train/ });
+  const row = drawer.getByRole('treeitem', { name: /^train\b/ });
   await row.scrollIntoViewIfNeeded();
   const glyph = (rowFrame: Locator) => rowFrame.locator(':scope > span').nth(1);
-  expect(Math.round((await box(glyph(row.locator('xpath=../..')))).x)).toBe(Math.round((await box(glyph(newStep))).x));
+  expect(Math.round((await box(glyph(row))).x)).toBe(Math.round((await box(glyph(newStep))).x));
   await expect(page.locator('[data-map-density="compact"] [id$="-status"]').first()).toBeVisible();
   await captureStudioWindow(page, info, 'drawer-compact');
 });

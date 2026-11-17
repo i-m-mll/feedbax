@@ -171,7 +171,8 @@ test('a Train step keeps a new or duplicated Model with its Problems, and one Un
   async function stillAuthored() {
     await page.getByRole('tab', { name: 'Task', exact: true }).click();
     await expect(picker('Task')).toBeEnabled();
-    await expect(primary.getByRole('region', { name: 'Signals' }).getByRole('listitem').first()).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true })
+      .getByRole('region', { name: 'Signals' }).getByRole('treeitem').first()).toBeVisible();
     await page.getByRole('tab', { name: 'Objective', exact: true }).click();
     await expect(picker('Objective')).toBeEnabled();
     await expect(primary.getByRole('textbox', { name: 'Weight', exact: true }).first()).toBeEditable();

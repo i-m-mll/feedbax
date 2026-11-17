@@ -21,6 +21,7 @@ beforeEach(() => {
     unobserve() {}
     disconnect() {}
   });
+  Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {
@@ -245,16 +246,17 @@ it('draws the input subset and follows only linked runs into the drawer and dire
   expect(evaluation.getByText(studioCountOf(2, 6))).toBeTruthy();
   expect(view.container.querySelectorAll('path[data-map-edge]')).toHaveLength(2);
   const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
-  const row = (label: string, count: number) => drawer.getByRole('button', { name: select(`${label} ${studioCountOf(count, 1)}`) });
+  const row = (label: string, count: number) => drawer.getByRole('treeitem', { name: new RegExp('^' + label) })
+    .getAttribute('aria-description') === studioCountOf(count, 1);
   fireEvent.click(card.getByRole('button', { name: mark('seed 1 · rate 0.003') }));
   expect(evaluation.getByRole('button', { name: mark('perturbation') }).getAttribute('data-map-focus')).toBe('downstream');
   expect(view.container.querySelectorAll('[data-map-emphasis="strong"]')).toHaveLength(2);
-  expect(row('perturbations Evaluate', 1)).toBeTruthy();
-  expect(row('summary Report', 1)).toBeTruthy();
+  expect(row('perturbations', 1)).toBe(true);
+  expect(row('summary', 1)).toBe(true);
   fireEvent.click(card.getByRole('button', { name: mark('seed 1 · rate 0.001') }));
   expect(view.container.querySelectorAll('[data-map-focus], [data-map-emphasis="strong"]')).toHaveLength(0);
-  expect(row('perturbations Evaluate', 0)).toBeTruthy();
-  expect(row('summary Report', 0)).toBeTruthy();
+  expect(row('perturbations', 0)).toBe(true);
+  expect(row('summary', 0)).toBe(true);
   view.unmount();
 
   const onSelectionChange = vi.fn();

@@ -1,6 +1,13 @@
-import { useId, useLayoutEffect, useMemo, useRef, type PointerEvent, type ReactNode, type SVGProps } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef, type PointerEvent, type SVGProps } from 'react';
 import { Layers } from 'lucide-react';
-import { Button, IconButton } from '@/components/ui/Button';
+import { IconButton } from '@/components/ui/Button';
+import { FieldRow } from '@/components/ui/FieldRow';
+import { Inspector } from '@/components/ui/Inspector';
+import { StatusMark } from '@/components/ui/StatusMark';
+import { Tree, type TreeNode } from '@/components/ui/Tree';
+import { ValueField } from '@/components/values/ValueField';
+import { rawField } from '@/components/values/adapters/raw';
+import { DrawerSection, DrawerSections } from '@/features/projectWindow/DrawerSection';
 import { Menu, MenuCheckboxItem, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
@@ -279,9 +286,8 @@ function isDrawerAnchor(scene: ResolvedScene, anchor: ResolvedScene['anchors'][n
   return isJoint(anchor) || scene.entities.some((entity) => entity.id === anchor.entity_id && entity.kind === 'task_object');
 }
 
-export function SceneDrawer({ scene, selectedId, onSelect, palette, trials, checkpoints }: SceneSelection & {
+export function SceneDrawer({ scene, selectedId, onSelect, trials, checkpoints }: SceneSelection & {
   scene: ResolvedScene;
-  palette?: ReactNode;
   trials?: {
     choices: readonly { id: string; label: string }[];
     selectedId: string | null;
@@ -293,16 +299,25 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials, chec
     onSelect: (checkpoint: number) => void;
   };
 }) {
+  const checkpointLabel = useId();
+  const trialLabel = useId();
   const muscleIds = new Set(scene.elements.filter((element) => element.archetype === 'muscle_path').map((element) => element.entity_id));
-  const issuesByEntity = new Map<string, ResolvedScene['validation']>();
+  const issueCounts = new Map<string, string[]>();
   for (const issue of scene.validation) {
-    if (issue.entity_id) issuesByEntity.set(issue.entity_id, [...(issuesByEntity.get(issue.entity_id) ?? []), issue]);
+    if (issue.entity_id) issueCounts.set(issue.entity_id, [...(issueCounts.get(issue.entity_id) ?? []), issue.message]);
   }
-  const groups = new Map<DrawerGroup, { id: string; label: string }[]>();
+  const groups = new Map<DrawerGroup, TreeNode[]>();
   function add(group: DrawerGroup, item: { id: string; label: string }) {
+    const messages = issueCounts.get(item.id);
+    const node: TreeNode = {
+      id: item.id, name: item.label,
+      trailing: messages && <span className="inline-flex items-center gap-1 tabular-nums">
+        <StatusMark status="cannot_run" label={studioName('problems')} />{messages.length > 1 ? messages.length : null}
+      </span>,
+    };
     const items = groups.get(group);
-    if (items) items.push(item);
-    else groups.set(group, [item]);
+    if (items) items.push(node);
+    else groups.set(group, [node]);
   }
   for (const entity of scene.entities) {
     const overlay = sceneEntityOverlay(entity);
@@ -313,44 +328,33 @@ export function SceneDrawer({ scene, selectedId, onSelect, palette, trials, chec
   for (const anchor of scene.anchors) {
     if (anchor.selectable && isDrawerAnchor(scene, anchor)) add(isJoint(anchor) ? 'joints' : 'task', anchor);
   }
+  const replay = checkpoints || (trials && trials.choices.length > 0);
   return (
-    <div className="space-y-3">
-      {checkpoints && (
-        <label className="grid gap-1 px-2">
-          {studioName('checkpoint')}
-          <Select aria-label={studioName('checkpoint')} value={String(checkpoints.selected)}
-            items={checkpoints.choices.map((coordinate) => ({ value: String(coordinate), label: String(coordinate) }))}
-            onValueChange={(value) => checkpoints.onSelect(Number(value))} />
-        </label>
-      )}
-      {trials && trials.choices.length > 0 && (
-        <label className="grid gap-1 px-2">
-          {studioName('trials')}
-          <Select aria-label={studioName('trials')} value={trials.selectedId} placeholder={studioName('choose')}
-            items={trials.choices.map(({ id, label }) => ({ value: id, label }))} onValueChange={trials.onSelect} />
-        </label>
+    <DrawerSections>
+      {replay && (
+        <DrawerSection section="scene.trials" name={studioName('trials')} bodyClassName="grid gap-1 p-1">
+          {checkpoints && <FieldRow label={studioName('checkpoint')} labelId={checkpointLabel}>
+            <Select aria-labelledby={checkpointLabel} value={String(checkpoints.selected)}
+              items={checkpoints.choices.map((coordinate) => ({ value: String(coordinate), label: String(coordinate) }))}
+              onValueChange={(value) => checkpoints.onSelect(Number(value))} />
+          </FieldRow>}
+          {trials && trials.choices.length > 0 && <FieldRow label={studioName('trials')} labelId={trialLabel}>
+            <Select aria-labelledby={trialLabel} value={trials.selectedId} placeholder={studioName('choose')}
+              items={trials.choices.map(({ id, label }) => ({ value: id, label }))} onValueChange={trials.onSelect} />
+          </FieldRow>}
+        </DrawerSection>
       )}
       {drawerGroups.map((group) => {
-        const items = groups.get(group);
-        if (!items) return null;
+        const nodes = groups.get(group);
+        if (!nodes) return null;
         return (
-          <section key={group} aria-label={studioName(group)}>
-            <h3 className="px-2 pb-1 text-xs font-medium text-shell-muted">{studioName(group)}</h3>
-            <ul>
-              {items.map((item) => (
-                <li key={item.id}>
-                  <Button variant="ghost" align="start" pressed={item.id === selectedId} onClick={() => onSelect(item.id)} className="w-full">
-                    <span className="truncate">{item.label}</span>
-                  </Button>
-                  <SceneIssues issues={issuesByEntity.get(item.id) ?? []} />
-                </li>
-              ))}
-            </ul>
-          </section>
+          <DrawerSection key={group} section={`scene.${group}`} name={studioName(group)} count={nodes.length}>
+            <Tree aria-label={studioName(group)} nodes={nodes} selected={selectedId && nodes.some(({ id }) => id === selectedId) ? [selectedId] : []}
+              onSelectedChange={(ids) => onSelect(ids.at(-1) ?? null)} />
+          </DrawerSection>
         );
       })}
-      {palette}
-    </div>
+    </DrawerSections>
   );
 }
 
@@ -367,20 +371,19 @@ export function SceneElementInspector({ scene, selectedId }: { scene: ResolvedSc
   const selected = entity ?? anchor;
   if (!selected) return null;
   const anchors = anchor ? [anchor] : scene.anchors.filter((item) => item.entity_id === entity?.id);
+  const issues = scene.validation.filter((issue) => issue.entity_id === (entity?.id ?? anchor?.entity_id));
   return (
-    <section aria-label={studioName('details')} className="space-y-2">
-      <h3 className="font-medium text-shell-foreground">{selected.label}</h3>
-      <dl className="grid gap-2">
-        {anchors.map((item) => {
-          const position = inspectorPosition(item);
-          return position && (
-            <div key={item.id} className="flex flex-wrap justify-between gap-2 text-sm">
-              <dt className="text-shell-muted">{item.label}</dt>
-              <dd className="tabular-nums">{position.map((coordinate) => coordinateFormat.format(coordinate)).join(', ')} {studioUnit('meter')}</dd>
-            </div>
-          );
-        })}
-      </dl>
-    </section>
+    <Inspector name={selected.label}>
+      {anchors.flatMap((item) => {
+        const position = inspectorPosition(item);
+        return position ? [<ValueField key={item.id} model={rawField({
+          id: item.id, label: item.label, type: { kind: 'readOnly' }, unit: studioUnit('meter'),
+          value: position.map((coordinate) => coordinateFormat.format(coordinate)).join(', '),
+        })} />] : [];
+      })}
+      {issues.map((issue) => <p key={JSON.stringify([issue.type, issue.message])} role="status" className="text-shell-status-failure">
+        {issue.message}
+      </p>)}
+    </Inspector>
   );
 }
