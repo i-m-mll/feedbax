@@ -184,7 +184,7 @@ def test_studio_analysis_jobs_bound_and_drain_per_app(
         first_app_ready = asyncio.Event()
         stop_first_app = asyncio.Event()
 
-        def run_analysis(spec, _registries):
+        def run_analysis(spec, _registries, *, force):
             loop.call_soon_threadsafe(analysis_started.set)
             assert release_analysis.wait(15), "test did not release running analysis"
             return result(analysis_run_manifest_id(spec))
@@ -277,7 +277,7 @@ def test_studio_analysis_job_thread_start_failure_closes_admission(
             raise RuntimeError("can't start new thread")
         start_thread(thread)
 
-    def run_analysis(_spec, _registries):
+    def run_analysis(_spec, _registries, *, force):
         worker_called.set()
         raise AssertionError("rejected work must not execute")
 
@@ -316,7 +316,6 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
             "requested_outputs": [TOY_JOB_ANALYSIS_TYPE],
             "studio": {
                 "node_id": TOY_JOB_ANALYSIS_TYPE,
-                "force_rerun": False,
             },
         },
     )
@@ -327,7 +326,7 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
             json={
                 "node_id": TOY_JOB_ANALYSIS_TYPE,
                 "eval_run_id": eval_manifest.id,
-                "force_rerun": False,
+                "force_rerun": True,
             },
         )
         assert response.status_code == 200
@@ -437,17 +436,19 @@ def test_run_analysis_sync_preserves_canonical_uri_and_legacy_path_shape(
         evaluation_registry,
         experiment_registry,
         fig_dump_formats,
+        force,
     ):
         assert registry is application_registry_bundle.analysis_recipes
         assert evaluation_registry is application_registry_bundle.evaluation_recipes
         assert experiment_registry is application_registry_bundle.experiment_packages
         assert fig_dump_formats == ("json",)
+        assert force is True
         return manifest, tmp_path / "manifest.json"
 
     monkeypatch.setattr(analysis_specs, "execute_analysis_run_spec", execute_stub)
 
     result = _run_analysis_sync(
-        spec, application_registry_bundle
+        spec, application_registry_bundle, force=True
     )
 
     assert canonical.uri == canonical.artifact_id

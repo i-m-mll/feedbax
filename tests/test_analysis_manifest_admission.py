@@ -50,6 +50,7 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
+from tests.support.store_damage import writable_store_object
 from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
@@ -206,7 +207,8 @@ def test_cached_analysis_manifest_with_corrupt_artifact_bytes_is_refused(
     assert manifest.artifacts, "this run must produce at least one artifact to corrupt"
     artifact_path = artifact_bytes_path(manifest.artifacts[0], root=tmp_path)
     assert artifact_path is not None
-    artifact_path.write_bytes(artifact_path.read_bytes() + b" ")
+    with writable_store_object(artifact_path):
+        artifact_path.write_bytes(artifact_path.read_bytes() + b" ")
 
     with pytest.raises(FulfillmentAdmissionError) as excinfo:
         _run_analysis(spec, tmp_path, application_registry_bundle=application_registry_bundle)
@@ -294,7 +296,8 @@ def test_provider_held_artifacts_with_corrupt_bytes_are_refused(tmp_path: Path) 
     digest = manifest.artifacts[0].sha256
     assert digest is not None
     blob = provider.root / "artifacts" / "sha256" / digest[:2] / digest
-    blob.write_bytes(b'{"values": [9, 9, 9]}')
+    with writable_store_object(blob):
+        blob.write_bytes(b'{"values": [9, 9, 9]}')
 
     outcome = _admit_cached_analysis_manifest(
         spec, manifest, root=root, path=path, execution_context=context

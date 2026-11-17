@@ -103,7 +103,6 @@ def _spec_for_analysis_request(
             "requested_outputs": [payload.node_id],
             "studio": {
                 "node_id": payload.node_id,
-                "force_rerun": payload.force_rerun,
             },
         },
     )
@@ -146,6 +145,8 @@ def _figure_spec_for_request(payload: GenerateAnalysisRequest) -> FigureSpec:
 def _run_analysis_sync(
     spec: AnalysisRunSpec,
     registries: ApplicationRegistryBundle,
+    *,
+    force: bool = False,
 ) -> AnalysisJobResult:
     """Run the executable analysis spec synchronously inside the executor."""
     from feedbax.analysis.specs import execute_analysis_run_spec
@@ -156,6 +157,7 @@ def _run_analysis_sync(
         evaluation_registry=registries.evaluation_recipes,
         experiment_registry=registries.experiment_packages,
         fig_dump_formats=("json",),
+        force=force,
     )
     return AnalysisJobResult(
         manifest_id=manifest.id,
@@ -215,18 +217,22 @@ async def generate_figure(
     if payload.job_kind == "figure":
         figure_spec = _figure_spec_for_request(payload)
         manifest_id = figure_manifest_id(figure_spec)
-        kind, spec = "figure", figure_spec
+        operation = {"kind": "figure", "spec": figure_spec.model_dump(mode="json")}
         work = partial(_run_figure_sync, figure_spec, registries)
     else:
         analysis_spec = _spec_for_analysis_request(payload)
         manifest_id = analysis_run_manifest_id(analysis_spec)
-        kind, spec = "analysis", analysis_spec
-        work = partial(_run_analysis_sync, analysis_spec, registries)
+        operation = {
+            "kind": "analysis",
+            "spec": analysis_spec.model_dump(mode="json"),
+            "force": payload.force_rerun,
+        }
+        work = partial(_run_analysis_sync, analysis_spec, registries, force=payload.force_rerun)
     try:
         if jobs.owns_processes:
             request_id = jobs.submit_operation(
                 manifest_id,
-                operation={"kind": kind, "spec": spec.model_dump(mode="json")},
+                operation=operation,
                 bootstrap_modules=request.app.state.bootstrap_modules,
             )
         else:

@@ -43,6 +43,7 @@ from feedbax.persistence.artifact_custody import (
     ArtifactBlobIntegrityError,
     ImmutableArtifactBlobProvider,
 )
+from tests.support.store_damage import writable_store_object
 from tests.support.analysis_fixtures import (
     ARTIFACT_PRODUCER_CALLS,
     ToyAnalysis,
@@ -649,7 +650,8 @@ def test_record_data_product_finalization_fails_closed_on_tampered_payload(
         logical_name="peak_velocity_scalar",
     )
     payload_path = tmp_path / product.artifacts[0].metadata["local_relative_path"]
-    payload_path.write_bytes(b'{"value": 9.5}\n')
+    with writable_store_object(payload_path):
+        payload_path.write_bytes(b'{"value": 9.5}\n')
 
     with pytest.raises(ArtifactBlobIntegrityError, match="artifact size mismatch|sha256 mismatch"):
         context.finalize()
