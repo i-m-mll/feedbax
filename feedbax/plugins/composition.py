@@ -7,6 +7,7 @@ from types import MappingProxyType
 
 from feedbax.analysis.operations import OperationDeclaration
 from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.discovery import component_declaration_key
 from feedbax.plot.templates import FigureTemplateDeclaration
 from feedbax.registry_errors import RegistryCollisionError
 from feedbax.training.methods import TrainingMethodDeclaration
@@ -47,11 +48,11 @@ def build_application(
         current = package.source.package
         try:
             for owner in package.components:
-                key = declaration_key(owner.__name__, owner.component_key, source)
+                key = component_declaration_key(owner, source)
                 families.setdefault(COMPONENTS.family, []).append(key)
             for task in package.tasks:
                 current = f"{task.__module__}.{task.__qualname__}"
-                key = declaration_key(task.__name__, task.key, source)
+                key = declaration_key(task.__name__, vars(task).get("key"), source)
                 bundle.python_tasks.register_declaration(task, key=key, source=source)
                 families.setdefault(PYTHON_TASKS.family, []).append(key)
             for function, declaration in package.functions:

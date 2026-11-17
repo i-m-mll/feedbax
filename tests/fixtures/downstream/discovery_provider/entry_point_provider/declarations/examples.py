@@ -2,19 +2,26 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field
 
-from feedbax import Gain
 from feedbax.analysis.operations import DatasetOutput, operation
+from feedbax.contracts.component import PortType
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import FigureDocument, FigurePanel, LineEncodings, LineLayer
 from feedbax.contracts.operation import DatasetPort
+from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.dataset import Dataset, Variable
 from feedbax.plot.templates import figure_template
+from feedbax.runtime.graph import Component
 from feedbax.tasks.registry import PythonTask, PythonTaskTemplate
 from feedbax.training.methods import TrainingState, training_method
 
 
-class ExternalGain(Gain):
-    pass
+class ExternalGain(Component):
+    ports = Ports({"input": PortType(dtype="any")}, {"output": PortType(dtype="any")})
+    component_options = ComponentOptions(instantaneous=True)
+    gain: float = 2.0
+
+    def __call__(self, inputs, state, *, key):
+        return {"output": self.gain * inputs["input"]}, state
 
 
 class Settings(BaseModel):

@@ -6,6 +6,7 @@ from contextlib import ExitStack
 from functools import lru_cache
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -36,13 +37,16 @@ from feedbax.light_jobs import (
     light_staging_target,
     report_artifacts,
     operation_application,
-    resolve_analysis_operation,
     validate_light_request,
+    verify_delivery_provider,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plot.dataset_figure import render as render_figure
+
+if TYPE_CHECKING:
+    from feedbax.analysis.operations import RegisteredOperation
 
 
 _MAX_CACHED_DATASET_BYTES = 4 * 1024 * 1024
@@ -107,11 +111,12 @@ def _compute(
     bindings: Bindings,
     attempt: str,
     role: str,
+    operation: RegisteredOperation | None,
 ) -> Product:
     spec = request.spec
-    if isinstance(spec, AnalysisRequestSpec):
+    if operation is not None:
+        assert isinstance(spec, AnalysisRequestSpec)
         registry = operation_application()
-        operation = resolve_analysis_operation(spec, registry)
         parameters = operation.parameter_model.model_validate(spec.params)
         dataset_bindings = {
             name: bindings[name]
@@ -168,11 +173,12 @@ def main(_argv: list[str]) -> int:
     store = ImmutableArtifactBlobProvider(delivery.manifest_root)
     view = SuccessView(store)
     request = view.read_request(delivery.request)
-    role = validate_light_request(request)
+    role, operation = validate_light_request(request)
+    verify_delivery_provider(delivery, operation)
     with bind_managed_inputs(
         view, delivery.request, origins=exact.origins, checkpoint_bindings=exact.bindings, project=delivery.project_id,
     ) as (_, bindings):
-        product = _compute(store, request, bindings, attempt, role)
+        product = _compute(store, request, bindings, attempt, role, operation)
     append(
         log,
         "result",

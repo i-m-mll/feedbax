@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from feedbax.component_registry import ComponentPack
+from tests.support.component_owners import register_owners
 
 import pytest
 import jax
@@ -17,11 +17,10 @@ from feedbax.compiler import (
 )
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
-from feedbax.component_registry.history import Change, History, LegacyEndpoint
+from feedbax.component_registry.history import Change, History
 from feedbax.contracts.component import PortType
 from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.runtime.graph import Component
-from types import ModuleType
 from typing import ClassVar
 from feedbax.contracts.graph import (
     ComponentSpec,
@@ -40,14 +39,9 @@ from feedbax.runtime.graph import init_state_from_component
 
 
 def _owner_registry(owner, history=None):
-    module = ModuleType("test_compiler_owners")
-    owner.__module__ = module.__name__
-    setattr(module, owner.__name__, owner)
+    owner.component_history = history
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(
-        namespace="example", modules=(module,),
-        histories={owner: history} if history is not None else {},
-    ))
+    register_owners(registry, "example", owner)
     return registry
 
 
@@ -327,7 +321,6 @@ def test_migrated_component_semantics_are_the_executed_graph(nested: bool) -> No
 
     registry = _owner_registry(ScaledGain, History(
         Change(2, renamed_from="LegacyGain", migrate=lambda params: {"gain": params["scale"]}),
-        legacy=(LegacyEndpoint("LegacyGain", "legacy-scale", 1),),
     ))
     child = GraphSpec(
         nodes={
@@ -362,14 +355,7 @@ def test_migrated_component_semantics_are_the_executed_graph(nested: bool) -> No
         if nested
         else child
     )
-    payload = spec.model_dump(mode="json")
-    payload["schema_version"] = "feedbax.spec.graph.v5"
-    persisted_child = payload["subgraphs"]["nested"] if nested else payload
-    persisted_child["schema_version"] = "feedbax.spec.graph.v5"
-    persisted_gain = persisted_child["nodes"]["gain"]
-    persisted_gain.pop("revision")
-    persisted_gain.update(type="LegacyGain", param_schema_version="legacy-scale")
-    compiled = compile_graph(GraphDocument(graph=payload), registry)
+    compiled = compile_graph(GraphDocument(graph=spec), registry)
     semantic = compiled.resolved.graph.subgraphs["nested"] if nested else compiled.resolved.graph
     runtime = compiled.graph.nodes["nested"] if nested else compiled.graph
     if nested:

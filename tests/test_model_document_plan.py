@@ -18,7 +18,8 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
 from feedbax.contracts.graph import GraphSpec, StudioTaskBindingSpec
-from feedbax.component_registry import ComponentPack, ComponentRegistry
+from feedbax.component_registry import ComponentRegistry
+from tests.support.component_owners import register_owners
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
 from feedbax.contracts.project import Project
@@ -485,7 +486,7 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     assert not first.runs
     assert any("unknown leaf type 'test.CustomRelay'" in problem.detail for problem in first.diagnostics)
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="test", components=(CustomRelay,)))
+    register_owners(registry, "test", CustomRelay)
     registry.seal()
     registered = compile_project(project, memo=memo, components=registry)
     (train,) = registered.runs

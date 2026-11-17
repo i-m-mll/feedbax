@@ -1337,12 +1337,10 @@
       }
     },
     "feedbax.contracts.operation.OperationComputation": {
-      "distribution": {},
       "numerical": {
         "absent": null
       },
-      "revision": {},
-      "version": {}
+      "revision": {}
     },
     "feedbax.contracts.report_document.ReportDocument": {
       "blocks": {

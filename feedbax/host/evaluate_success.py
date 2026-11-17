@@ -1,12 +1,9 @@
 """Publish the typed success for one accepted managed Evaluate delivery."""
 
-from pathlib import Path
-
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef
 from feedbax.contracts.effective_success import (
-    EVALUATION_SUBJECT_MEDIA_TYPE, BestCandidateEvidence, BoundMember, EvaluationCheckpointSource, EvaluationClosure,
+    EVALUATION_SUBJECT_MEDIA_TYPE, BestCandidateEvidence, BoundMember, EvaluationClosure,
     EvaluationSubjectSource, EvaluationSubjectValue, RequestObject, TerminalTrainSubject, success_content_ref,
 )
 from feedbax.contracts.dataset import DatasetDescriptor
@@ -16,36 +13,18 @@ from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.request_refs import ContentRef, ProductRef, UpdateSeriesMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.checkpoint_selection import verify_dependency_files
+from feedbax.host.model_checkpoint_input import checkpoint_producer, retain_checkpoint, retain_checkpoint_model
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.array_container import open_array_container
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.evaluation_subject import (
-    checkpoint_transaction, model_product, read_terminal_train_subject, subject_tree, verify_initial_evaluation_states,
+    read_terminal_train_subject, subject_tree, verify_initial_evaluation_states,
 )
-from feedbax.persistence.receipt_content import success_content_objects
 from feedbax.studio.canonical_evaluate import (
     BoundEvaluationJobInput, RolloutParameters, evaluation_checkpoint_coordinates,
     exact_evaluation_subject, states_product, states_ref, verify_evaluation_receipt,
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-
-
-def _retain_checkpoint(
-    store: ImmutableArtifactBlobProvider, checkpoint: PublishedTrainingCheckpoint, publication: dict,
-) -> EvaluationCheckpointSource:
-    evidence = _files(publication)
-    pointer = checkpoint.pointer
-    path = checkpoint.checkpoint_root / pointer.manifest_relative_path
-    digest, size = evidence[path.relative_to(store.root).as_posix()]
-    if digest != pointer.manifest_sha256:
-        raise ValueError("Checkpoint transaction is absent from the exact Host binding")
-    return EvaluationCheckpointSource(
-        occurrence=CheckpointOccurrenceRef(
-            run_id=pointer.run_id, transaction_id=pointer.transaction_id, manifest_sha256=digest,
-        ),
-        transaction=store._store_file(path, sha256=digest, size_bytes=size),
-        train_binding=_retain_train_binding(store, publication),
-    )
 
 
 def publish_evaluate_success(
@@ -129,7 +108,7 @@ def publish_evaluate_success(
                 data = settled["product"]
                 checkpoint = PublishedTrainingCheckpoint.model_validate(data["checkpoint"])
                 closure = EvaluationClosure(
-                    kind=settled["kind"], checkpoint=_retain_checkpoint(store, checkpoint, data),
+                    kind=settled["kind"], checkpoint=retain_checkpoint(store, checkpoint, data),
                     receipt=_retain_train_receipt(store, data) if settled["kind"] == "completion" else None,
                 )
         else:
@@ -168,29 +147,13 @@ def publish_evaluate_success(
 
         for publication in publications:
             checkpoint = PublishedTrainingCheckpoint.model_validate(publication["checkpoint"])
-            pinned = _retain_checkpoint(store, checkpoint, publication)
+            pinned = retain_checkpoint(store, checkpoint, publication)
             current = _producer(store, publication, pinned.train_binding)
             if producer is not None and current != producer:
                 raise ValueError("Evaluate series changes the exact Train definition")
             producer = current
-            files = _files(publication)
-            transaction = checkpoint_transaction(store, pinned)
-            if (
-                transaction.completed_training_batches != checkpoint.completed_updates
-                or transaction.content_integrity_digest.transaction_root_sha256 != checkpoint.pointer.transaction_root_sha256
-                or transaction.completed_coordinate != checkpoint.pointer.completed_coordinate
-            ):
-                raise ValueError("Evaluate checkpoint differs from its admitted occurrence")
-            model_slot = model_product(transaction)
+            model_slot = retain_checkpoint_model(store, checkpoint, publication, pinned, current)
             tree = success_content_ref(model_slot.content)
-            source = ImmutableArtifactBlobProvider(
-                checkpoint.checkpoint_root / Path(checkpoint.pointer.manifest_relative_path).parent / "semantic-model",
-            )
-            for ref in success_content_objects(source, model_slot):
-                path = source.object_path(ref)
-                if files.get(path.relative_to(root).as_posix()) != (ref.sha256, ref.size_bytes):
-                    raise ValueError("Evaluate model object is absent from its exact Host binding")
-                store._store_file(path, sha256=ref.sha256, size_bytes=ref.size_bytes)
             checkpoints.append(pinned)
             trees.append(tree)
         if closure is not None:
@@ -206,7 +169,7 @@ def publish_evaluate_success(
         for claim in binding.get("best_rank", {}).get("candidates", ()):
             completion = claim["completion"]
             checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])
-            source = _retain_checkpoint(store, checkpoint, completion)
+            source = retain_checkpoint(store, checkpoint, completion)
             ranked_candidates.append(BestCandidateEvidence(
                 attempt=completion["producer_job_id"],
                 producer=_producer(store, completion, source.train_binding),
@@ -245,14 +208,6 @@ def _files(publication: dict) -> dict[str, tuple[str, int]]:
     return {file["path"]: (file["sha256"], file["size_bytes"]) for file in publication["files"]}
 
 
-def _retain_train_binding(store: ImmutableArtifactBlobProvider, publication: dict) -> ContentObjectRef:
-    relative = f"checkpoints/{publication['producer_job_id']}/binding.json"
-    digest, size = _files(publication)[relative]
-    if digest != publication["binding_sha256"]:
-        raise ValueError("Train binding is absent from the exact Host evidence")
-    return store._store_file(store.root / relative, sha256=digest, size_bytes=size)
-
-
 def _producer(store: ImmutableArtifactBlobProvider, publication: dict, ref: ContentObjectRef) -> RequestObject:
     launch = BoundStudioTrainingJobInput.model_validate_json(store.get_object(ref))
     if (
@@ -260,5 +215,4 @@ def _producer(store: ImmutableArtifactBlobProvider, publication: dict, ref: Cont
         or launch.project_id != publication["project_id"] or launch.manifest_root != store.root
     ):
         raise ValueError("Checkpoint lacks its canonical Train request")
-    canonical = launch.canonical_request
-    return RequestObject(id=launch.request_id, object=canonical.request, documents=canonical.documents)
+    return checkpoint_producer(launch)

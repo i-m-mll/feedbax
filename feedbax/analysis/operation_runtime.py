@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from feedbax.contracts.model_input import InitialModelSource, read_document_input
+from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, InitialModelSource, read_document_input
 from feedbax.contracts.operation import DatasetPort, ModelPort, TaskPort, require_dataset_fields
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.dataset import Dataset
@@ -89,7 +89,7 @@ def run_operation(
         from feedbax.persistence.model_input import checkpoint_model_source
         from feedbax.runtime.model_input import prepare_model_task, reconstruct_model
 
-        if model_member.selection is None:
+        if model_member.content.media_type == INITIAL_MODEL_MEDIA_TYPE:
             source = read_document_input(model_member.content, artifacts)
             if not isinstance(source, InitialModelSource):
                 raise ValueError(f"Operation input {model_role!r} requires an initial Model document")

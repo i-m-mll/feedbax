@@ -3,12 +3,10 @@ from __future__ import annotations
 from collections import Counter
 import re
 
-from feedbax.component_registry import ComponentPack
+from tests.support.component_owners import register_owners
 from feedbax.contracts.representation import RepresentationSpec
 
 from feedbax.builtins.runtime.components import Gain
-from feedbax.runtime.graph import Component
-from feedbax.contracts.portable import Ports
 from feedbax.studio.component_presentation import PresentationOverride
 
 from dataclasses import replace
@@ -42,7 +40,6 @@ from feedbax.contracts.manifest import AnalysisRunSpec, load_manifest
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
-from feedbax.web.api import components as components_api
 from feedbax.web.api import figures as figures_api
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.registry import ExperimentRegistry
@@ -272,39 +269,32 @@ def test_component_api_serves_representation_contract() -> None:
         """API represented component fixture."""
 
     registry = ComponentRegistry()
-    registry.ingest(
-        ComponentPack(
-            namespace="example",
-            components=(ApiRepresentedGain,),
-            presentation={
-                ApiRepresentedGain: PresentationOverride(
-                    representation=RepresentationSpec.model_validate(
-                        {
-                            "anchors": [
-                                {
-                                    "id": "endpoint",
-                                    "semantic_role": "endpoint",
-                                    "interaction_roles": ["selectable"],
-                                    "binding": {"kind": "param_path", "path": "gain"},
-                                }
-                            ],
-                            "elements": [
-                                {
-                                    "id": "glyph",
-                                    "archetype": "marker",
-                                    "anchors": ["endpoint"],
-                                    "frame_provider": {
-                                        "kind": "from_input_port",
-                                        "input_port": "input",
-                                    },
-                                }
-                            ],
-                        }
-                    )
-                )
-            },
-        )
+    ApiRepresentedGain.component_presentation = PresentationOverride(
+        representation=RepresentationSpec.model_validate(
+        {
+            "anchors": [
+                {
+                    "id": "endpoint",
+                    "semantic_role": "endpoint",
+                    "interaction_roles": ["selectable"],
+                    "binding": {"kind": "param_path", "path": "gain"},
+                }
+            ],
+            "elements": [
+                {
+                    "id": "glyph",
+                    "archetype": "marker",
+                    "anchors": ["endpoint"],
+                    "frame_provider": {
+                        "kind": "from_input_port",
+                        "input_port": "input",
+                    },
+                }
+            ],
+        }
+        ),
     )
+    register_owners(registry, "example", ApiRepresentedGain)
     app = create_app()
     with TestClient(app) as client:
         registry.seal()
@@ -322,59 +312,6 @@ def test_component_api_serves_representation_contract() -> None:
     assert represented.representation is not None
     assert represented.representation.schema_version == REPRESENTATION_SCHEMA_VERSION
     assert represented.representation.elements[0].archetype == "marker"
-
-
-def test_component_refresh_atomically_swaps_whole_bootstrap_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = create_app()
-    with TestClient(app) as client:
-        original = app.state.bootstrap_state
-        replacement_registry = ComponentRegistry()
-
-        class RefreshOnlyComponent(Component):
-            ports = Ports({}, {})
-
-            def __call__(self, inputs, state, *, key):
-                return {}, state
-
-        replacement_registry.ingest(
-            ComponentPack(
-                namespace="example",
-                components=(RefreshOnlyComponent,),
-            )
-        )
-        replacement_registry.seal()
-        replacement = BootstrapState(
-            replace(original.bundle, components=replacement_registry), original.provenance
-        )
-
-        async def rebootstrap(**_kwargs):
-            return replacement
-
-        monkeypatch.setattr(components_api, "compose_application", rebootstrap)
-        response = client.post("/api/components/refresh")
-
-        assert response.status_code == 200
-        assert app.state.bootstrap_state is replacement
-        assert original.bundle.components.get("RefreshOnlyComponent") is None
-
-
-def test_component_refresh_failure_preserves_published_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = create_app()
-    with TestClient(app, raise_server_exceptions=False) as client:
-        original = app.state.bootstrap_state
-
-        async def fail_rebootstrap(**_kwargs):
-            raise RuntimeError("refresh failed")
-
-        monkeypatch.setattr(components_api, "compose_application", fail_rebootstrap)
-        response = client.post("/api/components/refresh")
-
-        assert response.status_code == 500
-        assert app.state.bootstrap_state is original
 
 
 def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() -> None:

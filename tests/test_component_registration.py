@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-from feedbax.component_registry import ComponentPack
+from tests.support.component_owners import register_owners
 from feedbax.contracts.representation import RepresentationSpec
 
-import asyncio
-import sys
-from pathlib import Path
-from types import ModuleType
 from typing import Annotated, Any
 
 import equinox as eqx
@@ -18,7 +14,6 @@ from pydantic import BaseModel, Field, ConfigDict
 from feedbax.component_registry import (
     ComponentRegistry,
 )
-from feedbax.component_registry.cde_templates import cde_template_pack
 from feedbax.builtins.runtime.channel import Channel
 from feedbax.builtins.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
@@ -31,13 +26,6 @@ from feedbax.contracts.component import PortType
 from feedbax.studio.component_presentation import PresentationOverride
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
-from feedbax.plugins.application import COMPONENTS, new_registration_context
-from feedbax.plugins.bootstrap import (
-    FamilyRequirement,
-    PluginDeclaration,
-    PluginRegistration,
-    bootstrap_application,
-)
 
 
 class _PrototypeSource(Component):
@@ -80,7 +68,7 @@ def test_programmatic_component_registration_materializes_via_spec_to_graph() ->
             super().__init__(gain=gain)
 
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="test", components=(TestProgrammaticGain,)))
+    register_owners(registry, "test", TestProgrammaticGain)
     meta = registry.get("test.TestProgrammaticGain")
     assert meta.default_params == {"gain": 3.0}
     graph = spec_to_graph(_single_node_spec("test.TestProgrammaticGain", {"gain": 4.0}), registry)
@@ -92,7 +80,7 @@ def test_programmatic_component_registration_materializes_via_spec_to_graph() ->
 
 def test_registered_component_output_prototype_feeds_stateful_materialization() -> None:
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="test", components=(_PrototypeSource,)))
+    register_owners(registry, "test", _PrototypeSource)
     spec = GraphSpec(
         nodes={
             "source": ComponentSpec(
@@ -139,16 +127,8 @@ def test_declared_component_is_immutable() -> None:
     assert meta.output_prototype_fn is original
 
 
-def test_builtin_registry_discovers_history_free_owners_with_consistent_contracts(
-    monkeypatch,
-) -> None:
-    from feedbax.component_registry import builtins
-
-    monkeypatch.setattr(builtins, "_PORTABLE_MODULES", (*builtins._PORTABLE_MODULES, __name__))
+def test_builtin_components_have_consistent_port_contracts() -> None:
     registry = ComponentRegistry()
-    owner = registry.get("feedbax._PluginGain")
-    assert owner.owner_class is _PluginGain
-    assert owner.revision == 1
 
     for name in registry.names():
         meta = registry.get(name)
@@ -182,74 +162,16 @@ class _UnmarkedPluginGain(_PluginGain):
     pass
 
 
-def test_entry_point_component_registration_records_package_provenance() -> None:
-    def registrar(context) -> None:
-        component_registry = context.registry(COMPONENTS)
-        reexport = ModuleType("feedbax_test_plugin.reexport")
-        reexport.PluginGain = _PluginGain
-        assert not component_registry.discover_modules(reexport, namespace="test").components
-        pack = component_registry.discover_modules(sys.modules[__name__], namespace="test")
-        component_registry.ingest(pack, provenance="package:feedbax-test-plugin")
-
-    class FakeDist:
-        metadata = {"Name": "feedbax-test-plugin"}
-
-    class FakeEntryPoint:
-        name = "feedbax_test_plugin"
-        dist = FakeDist()
-
-        value = "feedbax_test_plugin:PLUGIN_REGISTRATION"
-
-        def load(self) -> PluginRegistration:
-            return PluginRegistration(
-                PluginDeclaration(
-                    "feedbax.test.components",
-                    "1",
-                    2,
-                    families=(FamilyRequirement(COMPONENTS.family),),
-                ),
-                registrar,
-            )
-
-    state = asyncio.run(
-        bootstrap_application(new_registration_context(), entry_points=[FakeEntryPoint()])
-    )
-    registry = state.bundle.components
-
-    meta = registry.get("test._PluginGain")
-    assert meta is not None
-    assert meta.provenance == "package:feedbax-test-plugin"
-
-    definition = next(item for item in registry.list_all() if item.name == "test._PluginGain")
-    assert definition.default_params == {"gain": 2.0}
-    assert definition.input_ports == ["input"]
-    assert definition.output_ports == ["output"]
-    assert definition.provenance == "package:feedbax-test-plugin"
-
-    graph = spec_to_graph(_single_node_spec("test._PluginGain", {"gain": 5.0}), registry)
-    leaf = graph.nodes["component"]
-    assert leaf({"input": 3.0}, None, key=None)[0] == {"output": 15.0}
-    assert graph_to_spec(graph, registry).nodes["component"].params == {"gain": 5.0}
-    assert registry.serialize_component(_PluginGain())[0] == "test._PluginGain"
-    root = Path(__file__).resolve().parents[1]
-    assert (
-        "tests/test_component_registration.py"
-        in registry.component_source_paths(root)["test._PluginGain"]
-    )
-    with pytest.raises(ValueError, match="greater than 0"):
-        registry.resolve_component_spec("test._PluginGain", {"gain": 0.0})
-
-
 def test_component_pack_collision_leaves_no_partial_registration() -> None:
     class PluginGain(_PluginGain):
         pass
 
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="test", components=(PluginGain,)))
-    with pytest.raises(ValueError, match="already registered"):
-        registry.ingest(ComponentPack(namespace="test", components=(_PluginGain, PluginGain)))
+    register_owners(registry, "test", PluginGain)
+    with pytest.raises(ValueError, match="reserved"):
+        register_owners(registry, "test", _PluginGain, PluginGain)
     assert registry.get("test._PluginGain") is None
-    registry.ingest(ComponentPack(namespace="test", components=(_PluginGain,)))
+    register_owners(registry, "test", _PluginGain)
     assert registry.get("test._PluginGain") is not None
 
 
@@ -326,15 +248,8 @@ def test_cde_primitives_build_and_execute_with_expected_semantics() -> None:
     assert jnp.array_equal(outputs["output"], jnp.array([0.0, 0.5, 1.0]))
 
 
-def test_cde_templates_are_not_builtin_defaults() -> None:
+def test_builtin_cde_templates_are_executable_and_run_one_step() -> None:
     registry = ComponentRegistry()
-
-    assert registry.get("feedbax.CDEStandard") is None
-
-
-def test_caller_registered_cde_templates_are_executable_and_run_one_step() -> None:
-    registry = ComponentRegistry()
-    registry.ingest(cde_template_pack(), provenance="test-cde-pack")
 
     for template_name in (
         "feedbax.CDEStandard",
@@ -344,7 +259,7 @@ def test_caller_registered_cde_templates_are_executable_and_run_one_step() -> No
     ):
         meta = registry.get(template_name)
         assert meta is not None
-        assert meta.provenance == "test-cde-pack"
+        assert meta.provenance == "feedbax"
         assert meta.template_kind == "executable"
         assert meta.template_id is not None
         assert meta.template_id.startswith("feedbax.templates.cde_")
@@ -375,7 +290,6 @@ def test_executable_builtin_templates_have_complete_builders() -> None:
 
 def test_cde_standard_template_matches_recurrent_cde_first_step() -> None:
     registry = ComponentRegistry()
-    registry.ingest(cde_template_pack(), provenance="test-cde-pack")
     meta = registry.get("feedbax.CDEStandard")
     assert meta is not None
     graph = spec_to_graph(meta.template_graph, registry)
@@ -453,13 +367,8 @@ def test_component_registry_round_trips_representation_contract() -> None:
         }
     )
 
-    registry.ingest(
-        ComponentPack(
-            namespace="test",
-            components=(RepresentedGain,),
-            presentation={RepresentedGain: PresentationOverride(representation=representation)},
-        )
-    )
+    RepresentedGain.component_presentation = PresentationOverride(representation=representation)
+    register_owners(registry, "test", RepresentedGain)
 
     definition = next(item for item in registry.list_all() if item.name == "test.RepresentedGain")
     assert definition.representation is not None
@@ -591,30 +500,17 @@ def test_component_registry_rejects_representation_unknown_param_path() -> None:
 
     registry = ComponentRegistry()
 
+    BadRepresentation.component_presentation = PresentationOverride(
+        representation=RepresentationSpec.model_validate({
+            "elements": [{
+                "id": "bad",
+                "archetype": "vector",
+                "bindings": {"length": {"kind": "param_path", "path": "missing"}},
+            }]
+        }),
+    )
     with pytest.raises(ValueError, match="declared parameter"):
-        registry.ingest(
-            ComponentPack(
-                namespace="test",
-                components=(BadRepresentation,),
-                presentation={
-                    BadRepresentation: PresentationOverride(
-                        representation=RepresentationSpec.model_validate(
-                            {
-                                "elements": [
-                                    {
-                                        "id": "bad",
-                                        "archetype": "vector",
-                                        "bindings": {
-                                            "length": {"kind": "param_path", "path": "missing"}
-                                        },
-                                    }
-                                ]
-                            }
-                        )
-                    )
-                },
-            )
-        )
+        register_owners(registry, "test", BadRepresentation)
 
 
 def test_representation_contract_rejects_non_current_schema_version() -> None:
@@ -770,8 +666,7 @@ def test_absent_downstream_owner_fails_with_actionable_message() -> None:
         spec_to_graph(_single_node_spec("rlrmp.LegacyGain", {"gain": 1.0}), registry)
 
     message = str(exc_info.value)
-    assert "owner='rlrmp'" in message
-    assert "migration pack" in message
+    assert "package 'rlrmp'" in message
     assert "rlrmp.LegacyGain" in message
 
 
@@ -780,7 +675,7 @@ def test_loaded_owner_without_migration_edge_fails_with_version_context() -> Non
         pass
 
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="rlrmp", components=(CurrentGain,)))
+    register_owners(registry, "rlrmp", CurrentGain)
     with pytest.raises(ValueError) as exc_info:
         spec_to_graph(_single_node_spec("rlrmp.UnsupportedGain", {"gain": 1.0}), registry)
     message = str(exc_info.value)
@@ -793,10 +688,10 @@ def test_unsupported_component_parameter_schema_fails_with_current_version() -> 
     registry = ComponentRegistry()
 
     with pytest.raises(ValueError) as exc_info:
-        registry.resolve_component_spec("feedbax.Gain", {"scale": 1.0}, legacy_token="unsupported")
+        registry.resolve_component_spec("feedbax.Gain", {"scale": 1.0}, revision=999)
     message = str(exc_info.value)
     assert "No component migration registered" in message
-    assert "source_legacy_token='unsupported'" in message
+    assert "999" in message
     assert "current_revision=1" in message
 
 
@@ -825,7 +720,7 @@ class _TypedGain(Gain):
 
 def test_downstream_typed_model_is_the_only_schema_source() -> None:
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="downstream", components=(_TypedGain,)))
+    register_owners(registry, "downstream", _TypedGain)
     graph = spec_to_graph(_single_node_spec("downstream._TypedGain", {"gain": 4.5}), registry)
     serialized = graph_to_spec(graph, registry)
     assert serialized.nodes["component"].type == "downstream._TypedGain"
@@ -868,9 +763,9 @@ def test_effective_tuple_from_array_exports_without_authoring_normalizers():
 
 def test_component_pack_rejects_ambiguous_runtime_owner() -> None:
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="downstream", components=(_TypedGain,)))
+    register_owners(registry, "downstream", _TypedGain)
     with pytest.raises(ValueError, match="runtime type already registered"):
-        registry.ingest(ComponentPack(namespace="other", components=(_TypedGain,)))
+        register_owners(registry, "other", _TypedGain)
 
 
 def test_declared_parameter_model_owns_defaults_required_fields_and_constraints() -> None:

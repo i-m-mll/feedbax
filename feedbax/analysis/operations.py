@@ -54,6 +54,7 @@ class RegisteredOperation:
     function: Callable[..., Dataset]
     parameter_model: type[BaseModel]
     definition: OperationDefinition
+    source: DistributionSource
     task_parameters: type[BaseModel] | None
 
 
@@ -151,7 +152,7 @@ class OperationRegistry:
             numerical=declaration.numerical,
         )
         self._entries[key] = RegisteredOperation(
-            function, model, definition.model_copy(deep=True), task_parameters,
+            function, model, definition.model_copy(deep=True), source, task_parameters,
         )
 
     def keys(self) -> tuple[str, ...]:
@@ -160,7 +161,8 @@ class OperationRegistry:
     def resolve(self, key: str) -> RegisteredOperation:
         entry = self._entries[key]
         return RegisteredOperation(
-            entry.function, entry.parameter_model, entry.definition.model_copy(deep=True), entry.task_parameters,
+            entry.function, entry.parameter_model, entry.definition.model_copy(deep=True), entry.source,
+            entry.task_parameters,
         )
 
     def definitions(self) -> tuple[OperationDefinition, ...]:
