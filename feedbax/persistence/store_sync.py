@@ -21,9 +21,9 @@ from feedbax.contracts.artifact_custody import (
     StoreTransferProgress,
 )
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.effective_success import INDEX_REF, Success, decode_success_index
 from feedbax.contracts.execution_target import AttemptTarget
+from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.contracts.request_refs import RequestId
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.persistence.artifact_custody import (

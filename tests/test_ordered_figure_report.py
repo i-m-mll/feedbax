@@ -1386,7 +1386,10 @@ def test_ordered_figure_report_html_verifies_plotly_json_digest(
         for artifact in first_manifest.artifacts
         if artifact.metadata.get("format") == "plotly-json"
     )
-    Path(str(plotly_artifact.uri)).write_text("{}", encoding="utf-8")
+    artifact_path = Path(str(plotly_artifact.uri))
+    artifact_path.unlink()
+    artifact_path.write_text("{}", encoding="utf-8")
+    artifact_path.chmod(0o444)
     params = _params()
     params["output_name"] = "ordered-evidence.html"
 
