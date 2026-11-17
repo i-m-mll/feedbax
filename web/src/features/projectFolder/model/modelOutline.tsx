@@ -10,6 +10,8 @@ export interface ModelOutline {
   nodes: TreeNode[];
   /** Each row's element, by row id. */
   addresses: ReadonlyMap<string, ModelAddress>;
+  /** The rows with rows inside them. */
+  parents: ReadonlySet<string>;
 }
 
 export interface OutlineInput {
@@ -35,9 +37,11 @@ function endName(owner: GraphOwner, end: ModelWire['source'] | ModelWire['target
 
 export function modelOutline({ document, model, effective, registry, attachmentName, trailing }: OutlineInput): ModelOutline {
   const addresses = new Map<string, ModelAddress>();
+  const parents = new Set<string>();
   const row = (address: ModelAddress, name: string, glyph: ReactNode, children: TreeNode[] = [], renamable = false): TreeNode => {
     const id = addressKey(address);
     addresses.set(id, address);
+    if (children.length) parents.add(id);
     return { id, name, glyph, children: children.length ? children : undefined, renamable, trailing: trailing(address) };
   };
   const attached = (owner: ModelAddress, list: readonly Attachment[] | undefined) => (list ?? []).map((item) => {
@@ -70,5 +74,5 @@ export function modelOutline({ document, model, effective, registry, attachmentN
     return [...portRows(graph, boundaryPorts(owner.ports), applied.attachments), ...components, ...wires];
   };
 
-  return { nodes: graphRows([]), addresses };
+  return { nodes: graphRows([]), addresses, parents };
 }

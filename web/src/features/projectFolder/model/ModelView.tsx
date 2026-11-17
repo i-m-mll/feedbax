@@ -36,7 +36,7 @@ import {
   holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Component, type Port,
 } from './modelGraph';
 import { selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
-import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
 import { modelOutline } from './modelOutline';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
@@ -1102,8 +1102,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           onActivate={(id) => {
             const address = outline.addresses.get(id);
             const element = address?.element;
-            if (address && element?.kind === 'component' && modelPath(shownModel!, [...address.composites, element.id]).entries.length > address.composites.length) {
+            if (!address || !element) return;
+            if (element.kind === 'component' && modelPath(shownModel!, [...address.composites, element.id]).entries.length > address.composites.length) {
               go([...address.composites, element.id]);
+            } else if (!outline.parents.has(id)) {
+              focusInspectorField();
             }
           }}
           onRename={editTopology ? (id, name) => {
