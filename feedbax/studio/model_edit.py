@@ -44,9 +44,9 @@ class _Refusal(ValueError):
         self.address = address
 
 
-def _address(document: str, scope: tuple[str, ...], kind: str, **element: Any) -> ModelAddress:
+def _address(scope: tuple[str, ...], kind: str, **element: Any) -> ModelAddress:
     return ModelAddress.model_validate({
-        "document": document, "composites": scope, "element": {"kind": kind, **element},
+        "composites": scope, "element": {"kind": kind, **element},
     })
 
 
@@ -117,8 +117,7 @@ def _copy_endpoint(end: Record, ids: dict[str, str]) -> Record:
 
 
 class ModelEditDraft:
-    def __init__(self, name: str, state: edits.ModelEditState, ports: LeafPorts, accepts: AcceptComponent):
-        self.name = name
+    def __init__(self, state: edits.ModelEditState, ports: LeafPorts, accepts: AcceptComponent):
         self.document = state.document.model_dump(mode="json")
         self.positions = state.positions.copy()
         self.flipped = state.flipped.copy()
@@ -153,8 +152,6 @@ class ModelEditDraft:
                     del entries[key]
 
     def context(self, address: ModelAddress) -> tuple[Record, Record]:
-        if address.document != self.name:
-            raise _Refusal(address, "address names another model document")
         owner = self.document
         for component in address.composites:
             child = owner["interior"]["components"].get(component)
@@ -218,7 +215,7 @@ class ModelEditDraft:
         _, graph = self.context(first)
         ids = set()
         for address in selection:
-            if address.document != self.name or address.composites != first.composites:
+            if address.composites != first.composites:
                 raise _Refusal(address, "select elements of one graph")
             if address.element.kind != "component" or address.element.id not in graph["components"]:
                 raise _Refusal(address, "component does not exist")
@@ -237,7 +234,7 @@ class ModelEditDraft:
         attachments = [{"kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"},
                         "initial": 0}] if delayed else []
         graph["wires"][key] = _signal(source, target, attachments)
-        self.changed.append(_address(self.name, address.composites, "wire", id=key))
+        self.changed.append(_address(address.composites, "wire", id=key))
         return key
 
     def connection_reason(self, owner: Record, graph: Record, output: Port | None, target: Record) -> str | None:
@@ -300,7 +297,7 @@ class ModelEditDraft:
             raise _Refusal(address, "physical connection already exists")
         key = _id(graph)
         graph["connections"][key] = connection
-        self.changed.append(_address(self.name, address.composites, "physical_connection", id=key))
+        self.changed.append(_address(address.composites, "physical_connection", id=key))
 
     def remove(self, address: ModelAddress) -> None:
         _, graph = self.context(address)
@@ -366,7 +363,7 @@ class ModelEditDraft:
             if end.owner == "component":
                 self.remove_endpoints(graph, lambda item: item == _component(end.component, port_id))
             elif address.composites:
-                parent = _address(self.name, address.composites[:-1], "graph")
+                parent = _address(address.composites[:-1], "graph")
                 _, parent_graph = self.graph(parent)
                 self.remove_endpoints(parent_graph, lambda item: item == _component(address.composites[-1], port_id))
             for placement in (owner.get("attachments", {}), owner["interior"]["attachments"]):
@@ -434,7 +431,7 @@ class ModelEditDraft:
         element = address.element
         if element.kind != "attachment" or element.parent.kind != "wire" or destination.element.kind != "wire":
             raise _Refusal(address, "Choose two wires for the attachment")
-        if address.document != destination.document or address.composites != destination.composites:
+        if address.composites != destination.composites:
             raise _Refusal(address, "Move the attachment within one graph")
         source_chain = self.attachment_chain(address, element.parent.model_dump(mode="json"))
         item = next((item for item in source_chain if item["id"] == element.id), None)
@@ -453,7 +450,7 @@ class ModelEditDraft:
         if element.kind != "wire" or element.id not in graph["wires"]:
             raise _Refusal(address, "Wire does not exist")
         wire = graph["wires"][element.id]
-        graph_address = _address(self.name, address.composites, "graph")
+        graph_address = _address(address.composites, "graph")
         self.add_component(edits.AddComponent(
             op="add_component", graph=graph_address, component=command.component, position=command.position,
         ))
@@ -492,7 +489,7 @@ class ModelEditDraft:
             if item is not None and len(path) > 1 and path[0] == "fields" and path[1] not in item.get("fields", {}):
                 raise _Refusal(address, "the addressed attachment field no longer exists")
         elif parent.kind == "port":
-            port_address = _address(self.name, address.composites, "port", end=parent.end.model_dump(mode="json"))
+            port_address = _address(address.composites, "port", end=parent.end.model_dump(mode="json"))
             port_owner, _, direction, port = self.port_owner(port_address)
             item, allowed = _listed_port(port_owner, direction, port), {"type", "default"}
         elif parent.kind == "graph" and not address.composites:
@@ -531,7 +528,7 @@ class ModelEditDraft:
             raise _Refusal(command.graph, "the destination graph cannot hold this component")
         key = _id(graph)
         graph["components"][key] = component
-        address = _address(self.name, command.graph.composites, "component", id=key)
+        address = _address(command.graph.composites, "component", id=key)
         self.positions[address.to_text()] = command.position
         self.changed.append(address)
         if command.connect_from is not None and command.connect_to_port is not None:
@@ -552,7 +549,7 @@ class ModelEditDraft:
         _port_list(owner, command.direction).append(port.model_dump(mode="json"))
         boundary = {"input": "inputs", "output": "outputs", "physical": "boundary"}[command.direction]
         self.changed.append(_address(
-            self.name, command.graph.composites, "port", end=_card(boundary, port.id),
+            command.graph.composites, "port", end=_card(boundary, port.id),
         ))
 
     def bring_in(self, command: edits.BringSignalIn) -> None:
@@ -572,14 +569,14 @@ class ModelEditDraft:
             name = _port_name(owner, "input", source["port"])
         for index in range(len(prefix), len(destination)):
             scope = destination[:index]
-            current = _address(self.name, scope, "graph")
+            current = _address(scope, "graph")
             _, graph = self.graph(current)
             child_id = destination[index]
             child = graph["components"][child_id]
             added = _new_port(child, "input", name, port)
             self.connect(current, source, _component(child_id, added["id"]))
             source = _card("inputs", added["id"])
-            self.changed.append(_address(self.name, destination[:index + 1], "port", end=source))
+            self.changed.append(_address(destination[:index + 1], "port", end=source))
 
     def copy(self, selection: tuple[ModelAddress, ...]) -> edits.ModelClipboard:
         graph, ids = self.select(selection)
@@ -597,7 +594,7 @@ class ModelEditDraft:
                     address = ModelAddress.from_text(key)
                 except ValueError:
                     continue
-                if address.document != self.name or address.composites[:len(scope)] != scope:
+                if address.composites[:len(scope)] != scope:
                     continue
                 relative_path = address.composites[len(scope):]
                 element = address.element
@@ -632,7 +629,7 @@ class ModelEditDraft:
             key = _id(graph)
             graph["components"][key] = component
             ids[old] = key
-            self.changed.append(_address(self.name, address.composites, "component", id=key))
+            self.changed.append(_address(address.composites, "component", id=key))
         wire_ids: dict[str, str] = {}
         for collection, ends in (("wires", ("source", "target")), ("connections", ("a", "b"))):
             for old_id, edge in data[collection].items():
@@ -643,7 +640,7 @@ class ModelEditDraft:
                 if collection == "wires":
                     wire_ids[old_id] = key
                 self.changed.append(_address(
-                    self.name, address.composites, "wire" if collection == "wires" else "physical_connection",
+                    address.composites, "wire" if collection == "wires" else "physical_connection",
                     id=key,
                 ))
         for name, entries in self.layout().items():
@@ -651,11 +648,11 @@ class ModelEditDraft:
                 old = ModelAddress.from_text(key)
                 if old.composites and old.composites[0] in ids:
                     first, *rest = old.composites
-                    new = old.model_copy(update={"document": self.name, "composites": (*address.composites, ids[first], *rest)})
+                    new = old.model_copy(update={"composites": (*address.composites, ids[first], *rest)})
                 elif not old.composites and old.element.kind == "component" and old.element.id in ids:
-                    new = _address(self.name, address.composites, "component", id=ids[old.element.id])
+                    new = _address(address.composites, "component", id=ids[old.element.id])
                 elif not old.composites and old.element.kind == "wire" and old.element.id in wire_ids:
-                    new = _address(self.name, address.composites, "wire", id=wire_ids[old.element.id])
+                    new = _address(address.composites, "wire", id=wire_ids[old.element.id])
                 else:
                     raise _Refusal(address, "clipboard layout is outside the copied selection")
                 entries[new.to_text()] = value
@@ -669,15 +666,15 @@ class ModelEditDraft:
                     old = ModelAddress.from_text(key)
                 except ValueError:
                     continue
-                if old.document != self.name or old.composites[:len(source)] != source:
+                if old.composites[:len(source)] != source:
                     continue
                 rest = old.composites[len(source):]
                 if rest and rest[0] in ids:
                     new = old.model_copy(update={"composites": (*destination, ids[rest[0]], *rest[1:])})
                 elif not rest and old.element.kind == "component" and old.element.id in ids:
-                    new = _address(self.name, destination, "component", id=ids[old.element.id])
+                    new = _address(destination, "component", id=ids[old.element.id])
                 elif not rest and old.element.kind == "wire" and old.element.id in wires:
-                    new = _address(self.name, destination, "wire", id=wires[old.element.id])
+                    new = _address(destination, "wire", id=wires[old.element.id])
                 else:
                     continue
                 del entries[key]
@@ -734,7 +731,7 @@ class ModelEditDraft:
             key: key for key in interior["wires"] if key not in graph["wires"]
         })
         self.changed.extend(command.selection)
-        self.changed.append(_address(self.name, scope, "component", id=group_id))
+        self.changed.append(_address(scope, "component", id=group_id))
 
     def ungroup(self, address: ModelAddress) -> None:
         graph, component = self.component(address)
@@ -754,7 +751,7 @@ class ModelEditDraft:
                         else:
                             end = _card("inputs" if placement == "sources" else "outputs", port)
                         raise _Refusal(
-                            _address(self.name, location, "port", end=end),
+                            _address(location, "port", end=end),
                             "Ungroup would remove a port that has attachments",
                         )
         parent_wires, child_wires = graph["wires"], inner["wires"]
@@ -765,7 +762,7 @@ class ModelEditDraft:
         for port in _port_list(component, "input"):
             if port.get("default") is not None and port["id"] not in outside_inputs:
                 raise _Refusal(
-                    _address(self.name, scope, "port", end=_component(key, port["id"]) | {"direction": "input"}),
+                    _address(scope, "port", end=_component(key, port["id"]) | {"direction": "input"}),
                     "Ungroup would remove an unconnected defaulted input",
                 )
 
@@ -785,13 +782,13 @@ class ModelEditDraft:
             id_, feeder = feed
             path = (feed_scope, id_)
             if path in seen:
-                raise _Refusal(_address(self.name, feed_scope, "wire", id=id_), "boundary feeds itself")
+                raise _Refusal(_address(feed_scope, "wire", id=id_), "boundary feeds itself")
             source, chain = trace(feeder["source"], feed_scope, seen | {path})
             if feeder["attachments"] and source is not None:
                 consumed[path] = consumed.get(path, 0) + 1
                 if consumed[path] > 1:
                     raise _Refusal(
-                        _address(self.name, feed_scope, "wire", id=id_),
+                        _address(feed_scope, "wire", id=id_),
                         "Ungroup would copy an attachment onto multiple wires",
                     )
             return source, [*chain, *feeder["attachments"]]
@@ -829,7 +826,7 @@ class ModelEditDraft:
             moved_wires[id_] = assigned
         self.relocate_layout(inner_scope, scope, ids, moved_wires)
         self.changed.append(address)
-        self.changed.extend(_address(self.name, scope, "component", id=id_) for id_ in ids.values())
+        self.changed.extend(_address(scope, "component", id=id_) for id_ in ids.values())
 
     def validate(self, address: ModelAddress) -> None:
         def check(owner: Record, graph: Record, scope: tuple[str, ...]) -> None:
@@ -838,7 +835,7 @@ class ModelEditDraft:
                 source, target = wire["source"], wire["target"]
                 output = self.port(owner, graph, source, "output")
                 input_port = self.port(owner, graph, target, "input")
-                at = _address(self.name, scope, "wire", id=id_)
+                at = _address(scope, "wire", id=id_)
                 if output is None or input_port is None:
                     raise _Refusal(at, "wire does not name a local source and target port")
                 target_key = (target["owner"], target.get("component"), target["port"])
@@ -850,13 +847,13 @@ class ModelEditDraft:
                 left, right = (
                     self.port(owner, graph, connection[end], "physical") for end in ("a", "b")
                 )
-                at = _address(self.name, scope, "physical_connection", id=id_)
+                at = _address(scope, "physical_connection", id=id_)
                 if not left or not right or left.type != right.type or connection["a"] == connection["b"]:
                     raise _Refusal(at, "physical endpoints must be distinct local ports of the same type")
             for placement, ports in graph["attachments"].items():
                 for port, chain in ports.items():
                     end = _card("inputs" if placement == "sources" else "outputs", port)
-                    at = _address(self.name, scope, "port", end=end)
+                    at = _address(scope, "port", end=end)
                     direction: Direction = "output" if placement == "sources" else "input"
                     if self.port(owner, graph, end, direction) is None:
                         raise _Refusal(at, "attachment owner port does not exist")
@@ -866,7 +863,7 @@ class ModelEditDraft:
                     for port, chain in ports.items():
                         direction = "output" if placement == "sources" else "input"
                         end = _component(id_, port)
-                        at = _address(self.name, scope, "port", end=end | {"direction": direction})
+                        at = _address(scope, "port", end=end | {"direction": direction})
                         if self.port(owner, graph, end, direction) is None:
                             raise _Refusal(at, "attachment owner port does not exist")
                         self.validate_chain(at, chain)
@@ -926,7 +923,7 @@ def review_model_connections(
 ) -> edits.ModelConnectionReview:
     address = review.graph
     edit = ModelEditDraft(
-        address.document, edits.ModelEditState(document=document),
+        edits.ModelEditState(document=document),
         lambda component, direction, port: layout(component).get((direction, port)),
         lambda *_: False,
     )
@@ -974,7 +971,6 @@ def review_model_connections(
 
 
 def apply_model_edit(
-    document: str,
     state: edits.ModelEditState,
     command: edits.ModelEditCommand,
     *,
@@ -986,9 +982,9 @@ def apply_model_edit(
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
     """Apply one command to a private draft and return its complete transaction."""
     operation = command.operation
-    edit = ModelEditDraft(document, state, ports, accepts)
+    edit = ModelEditDraft(state, ports, accepts)
     clipboard = None
-    primary = _address(document, (), "graph")
+    primary = _address((), "graph")
     try:
         match operation:
             case edits.AddComponent(graph=primary):
@@ -1084,7 +1080,7 @@ def apply_model_edit(
                     edit.remove(address)
             case edits.DuplicateComponents(selection=selection):
                 primary = selection[0]
-                edit.paste(_address(document, primary.composites, "graph"), edit.copy(selection))
+                edit.paste(_address(primary.composites, "graph"), edit.copy(selection))
             case edits.PasteComponents(graph=primary, clipboard=payload):
                 edit.paste(primary, payload)
             case edits.GroupComponents(selection=selection):
@@ -1094,7 +1090,7 @@ def apply_model_edit(
                 edit.ungroup(primary)
         edit.prune_layout()
         result = ModelDocument.model_validate(edit.document)
-        edit.validate(_address(document, (), "graph"))
+        edit.validate(_address((), "graph"))
         return edits.ModelEditResult(
             state=edits.ModelEditState(document=result, **edit.layout()),
             changed=tuple(edit.changed), clipboard=clipboard,

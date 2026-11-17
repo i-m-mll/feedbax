@@ -52,18 +52,19 @@ const emptyPath: string[] = [];
 const inputCard = '@inputs';
 const outputCard = '@outputs';
 const emptyPorts: Port[] = [];
+const emptySelection: readonly ModelAddress[] = [];
 let clipboard: ModelClipboard | undefined;
 
 function idFor(end: { owner: string; component?: string }) {
   return end.owner === 'component' ? end.component! : end.owner === 'outputs' ? outputCard : inputCard;
 }
 
-function currentGraph(document: string, composites: string[]): ModelAddress {
-  return { document, composites, element: { kind: 'graph' } };
+function currentGraph(composites: string[]): ModelAddress {
+  return { composites, element: { kind: 'graph' } };
 }
 
 function inGraph(address: ModelAddress, graph: ModelAddress) {
-  return address.document === graph.document && address.composites.length === graph.composites.length &&
+  return address.composites.length === graph.composites.length &&
     address.composites.every((id, index) => id === graph.composites[index]);
 }
 
@@ -130,8 +131,9 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
 }
 
 export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
-  const selected = useStore(state, (current) => current.selection);
-  const pick = useStore(state, (current) => current.pick);
+  const storedSelection = useStore(state, (current) => current.selection);
+  const selected = storedSelection?.document === model?.id ? storedSelection?.addresses ?? emptySelection : emptySelection;
+  const pick = useStore(state, (current) => current.pick?.document === model?.id ? current.pick : null);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
   const cursor = useRef<ModelPosition>();
@@ -141,7 +143,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const libraryReview = useRef<Promise<ModelConnectionReview>>();
   const requestBusy = useRef(false);
   const [busy, setBusy] = useState(false);
-  const [issue, setIssue] = useState<{ address?: ModelAddress; reason: string }>();
+  const [modelIssue, setIssue] = useState<{ document: string; address?: ModelAddress; reason: string }>();
+  const issue = modelIssue?.document === model?.id ? modelIssue : undefined;
   const [drawer, setDrawer] = useState<'library' | 'outline'>('library');
   const [query, setQuery] = useState('');
   const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
@@ -180,7 +183,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const shownModel = evaluate ? effectiveModel : model?.value;
   const resolved = useMemo(() => shownModel && modelPath(shownModel, path), [shownModel, path]);
   const currentPath = useMemo(() => resolved?.entries.map(({ id }) => id) ?? emptyPath, [resolved]);
-  const graph = useMemo(() => currentGraph(model?.id ?? '', currentPath), [model?.id, currentPath]);
+  const graph = useMemo(() => currentGraph(currentPath), [currentPath]);
   const graphId = addressKey(graph);
   const owner = resolved?.owner;
   const interior = owner?.interior;
@@ -195,9 +198,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     attachments.data.revision === saved.revision);
   const canEditField = evaluate ? !busy && canEvaluate : fieldEditable;
   const fieldRun = evaluate?.run ?? projectionRun;
-  const fieldBody = shownModel && fieldOwner && !libraryItem
+  const fieldBody = model && shownModel && fieldOwner && !libraryItem
     ? {
-      owner: fieldOwner, revision: saved.revision, run: fieldRun, evaluate_scope: evaluate?.scope,
+      document: model.id, owner: fieldOwner, revision: saved.revision, run: fieldRun, evaluate_scope: evaluate?.scope,
       rows: evaluate ? undefined : [...fieldRows ?? []],
       axes: evaluate ? undefined : fieldAxes,
     } : undefined;
@@ -206,7 +209,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     queryFn: ({ signal }) => projectModelFields(saved.project_id, fieldBody!, signal),
     enabled: active && !!fieldBody, retry: false, placeholderData: (previous, query) => {
       const previousBody = query?.queryKey[2] as typeof fieldBody;
-      return previousBody && fieldBody && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
+      return previousBody && fieldBody && previousBody.document === fieldBody.document && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
         && JSON.stringify(previousBody.evaluate_scope) === JSON.stringify(fieldBody.evaluate_scope)
         && JSON.stringify(previousBody.rows) === JSON.stringify(fieldBody.rows) ? previous : undefined;
     },
@@ -219,16 +222,16 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       }, editor.signal);
       if (result.problems.length) return result.problems[0].reason;
       if (result.command) {
-        const applied = await editor.editModel('Set Value', address.document, result.command, saved);
+        const applied = await editor.editModel('Set Value', fieldBody.document, result.command, saved);
         return applied.status === 'refused' ? applied.problem.detail : undefined;
       }
       if (result.files.length) {
         const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
         const dependencies = variant ? saved.file_revisions.map(({ address: file }) => file).filter((file) =>
-          (file.kind === 'document' && file.id === address.document) ||
+          (file.kind === 'document' && file.id === fieldBody.document) ||
           (file.kind === 'step' && fieldLitSteps?.has(file.id)) ||
           (file.kind === 'variant' && file.id !== variant))
-          : [{ kind: 'document' as const, id: address.document },
+          : [{ kind: 'document' as const, id: fieldBody.document },
             ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
             ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
         editor.editFiles('Set Field', result.files, { reviewedRevision: fieldBody.revision, dependencies });
@@ -242,7 +245,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const projectedNames = new Set(projectedFields.flatMap(({ address }) =>
     address.element.kind === 'field' && typeof address.element.path.at(-1) === 'string' ? [String(address.element.path.at(-1))] : []));
   const fieldControls = projectedFields.map((field) => <StudioFieldControl
-    key={JSON.stringify([saved.project_id, fieldRun?.variant, fieldRun?.step, fieldRows, addressKey(field.address)])}
+    key={JSON.stringify([saved.project_id, model?.id, fieldRun?.variant, fieldRun?.step, fieldRows, addressKey(field.address)])}
     field={field}
     planSources={field.sources}
     source={attachments.data?.field_sources?.[addressKey(field.address)] ??
@@ -255,7 +258,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...(problems ?? []), { address: issue.address, reason: issue.reason }] : problems ?? []) {
     let address = item.address;
-    if (address.document !== graph.document || !currentPath.every((id, index) => address.composites[index] === id)) continue;
+    if (!currentPath.every((id, index) => address.composites[index] === id)) continue;
     const child = address.composites[currentPath.length];
     if (child) address = at(graph, { kind: 'component', id: child });
     else if (address.element.kind === 'field') address = at(address, address.element.parent);
@@ -291,14 +294,14 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const waypoints = presentation?.waypoints;
   const objects = Object.entries(interior?.components ?? {});
   const wires = Object.entries(interior?.wires ?? {});
-  const mountKey = `${saved.project_id}:${graphId}`;
-  const handledReveal = useRef<ModelAddress>();
+  const mountKey = JSON.stringify([saved.project_id, model?.id, graphId]);
+  const handledReveal = useRef<typeof reveal>();
   useEffect(() => {
     if (!model || !active || !reveal || reveal.document !== model.id || handledReveal.current === reveal) return;
     handledReveal.current = reveal;
     if (!state.getState().reveal) return;
     state.setState({ reveal: null });
-    setPath(reveal.composites);
+    setPath(reveal.address.composites);
   }, [active, model?.id, reveal, setPath, state]);
   useEffect(() => {
     if (resolved && active && path.length !== currentPath.length) setPath(currentPath);
@@ -308,16 +311,16 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     if (!model || !active || !problemAddress) return;
     const address = problemAddress.element.kind === 'field' ? at(problemAddress, problemAddress.element.parent) : problemAddress;
     setPath(address.composites);
-    selectModel(state, address);
+    selectModel(state, model.id, address);
   }, [model?.id, active, problemAddress, state]);
-  useEffect(() => () => connectionReview.current?.abort(), [graphId]);
+  useEffect(() => () => connectionReview.current?.abort(), [mountKey]);
   useEffect(() => {
     if (!active) return;
     return () => {
       keyboardReview.current?.abort();
       state.setState({ pick: null });
     };
-  }, [active, graphId, projectionRunId, saved.revision, state]);
+  }, [active, mountKey, projectionRunId, saved.revision, state]);
 
   async function apply(name: string, operation: Operation, choose = true) {
     if (!model || !editTopology || requestBusy.current) return false;
@@ -328,19 +331,20 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     try {
       const result = await editor.editModel(name, model.id, { operation }, reviewed);
       if (result.status === 'refused') {
-        setIssue({ address: result.problem.address, reason: result.problem.detail });
+        setIssue({ document: model.id, address: result.problem.address, reason: result.problem.detail });
         return false;
       }
       if (result.clipboard) clipboard = result.clipboard;
       if (choose && result.changed.length) {
         const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
           : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
-        state.setState({ selection });
+        state.setState({ selection: { document: model.id, addresses: selection } });
       }
       return true;
     } catch (error) {
       const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
-      setIssue(problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) });
+      setIssue(problem.success ? { document: model.id, address: problem.data.address, reason: problem.data.detail }
+        : { document: model.id, reason: apiErrorMessage(error) });
       return false;
     } finally {
       requestBusy.current = false;
@@ -349,7 +353,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   }
 
   async function applyEvaluate(name: string, difference: Difference) {
-    if (!readBody || !attachments.data || attachments.data.revision !== saved.revision || requestBusy.current) return;
+    if (!model || !readBody || !attachments.data || attachments.data.revision !== saved.revision || requestBusy.current) return;
     requestBusy.current = true;
     setBusy(true);
     setIssue(undefined);
@@ -358,14 +362,14 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
       editor.editFiles(name, [result.file], {
         reviewedRevision: saved.revision,
-        dependencies: model ? [{ kind: 'document', id: model.id }] : [],
+        dependencies: [{ kind: 'document', id: model.id }],
       });
       await editor.flush();
       if (difference.op !== 'set_field') {
-        selectModel(state, difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed);
+        selectModel(state, model.id, difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed);
       }
     } catch (error) {
-      setIssue({ reason: apiErrorMessage(error) });
+      setIssue({ document: model.id, reason: apiErrorMessage(error) });
     } finally {
       requestBusy.current = false;
       setBusy(false);
@@ -378,11 +382,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
 
   function select(address: ModelAddress, extend = false) {
     setLibraryItem(undefined);
-    selectModel(state, address, extend);
+    if (model) selectModel(state, model.id, address, extend);
   }
   function clear() {
-    const armed = state.getState().pick;
-    state.setState(armed ? { pick: null } : { selection: [] });
+    state.setState(pick ? { pick: null } : { selection: null });
     setLibraryItem(undefined);
   }
   function go(path: string[]) {
@@ -394,7 +397,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     return bindStudioCommand('enter', () => go([...currentPath, id]), { subject });
   }
   function keyboardConnect(port: Port) {
-    if (locked || !editTopology || port.direction !== 'output') return;
+    if (!model || locked || !editTopology || port.direction !== 'output') return;
     if (port.taskSignal && !projectionRun) return;
     const source = port.taskSignal && projectionRun
       ? { owner: 'task' as const, run: projectionRun, signal: port.taskSignal } : wireEnd(port);
@@ -402,10 +405,11 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     const request = new AbortController();
     keyboardReview.current?.abort();
     keyboardReview.current = request;
-    void reviewModelConnections(saved.project_id, { revision: saved.revision, graph, source }, request.signal).then(({ targets }) => {
+    void reviewModelConnections(saved.project_id, { revision: saved.revision, document: model.id, graph, source }, request.signal).then(({ targets }) => {
       if (request.signal.aborted) return;
       const verdicts = new Map(targets.map(({ target, reason }) => [endKey(target), reason]));
       state.setState({ pick: {
+        document: model.id,
         accepts: (address, candidate) => inGraph(address, graph) && candidate.direction === 'input' &&
           !(port.taskSignal && candidate.growing) &&
           verdicts.get(endKey(wireEnd(candidate))) === null,
@@ -417,17 +421,17 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           if (target) connect(idFor(port.end), portId(port), id, portId(target));
         },
       } });
-    }).catch((error) => { if (!request.signal.aborted) setIssue({ reason: apiErrorMessage(error) }); })
+    }).catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: apiErrorMessage(error) }); })
       .finally(() => { if (keyboardReview.current === request) keyboardReview.current = undefined; });
   }
   function openSearch(point = cursor.current ?? positionAt(objects.length), source?: Port) {
-    if (!editTopology) return;
+    if (!model || !editTopology) return;
     setSearchText('');
     setSearch(point);
     setSearchSource(source);
     setSearchLibrary(undefined);
     if (source) void libraryReview.current?.then((result) => setSearchLibrary(result.library)).catch((error) => {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) setIssue({ reason: apiErrorMessage(error) });
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setIssue({ document: model.id, reason: apiErrorMessage(error) });
     });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
@@ -463,14 +467,14 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   }
   function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
     const address = edge.data?.address;
-    if (address?.element.kind !== 'wire') return;
+    if (!model || address?.element.kind !== 'wire') return;
     const source = portAt(edge.source, edge.sourceHandle ?? null);
     const target = portAt(edge.target, edge.targetHandle ?? null);
     const candidate = componentPorts('new', leaf(definition), registry);
     const input = source && candidate.find((port) => port.direction === 'input' && matchesSource(definition, port.end.port, source));
     const output = target && candidate.find((port) => port.direction === 'output' && signalFits(port, target));
     if (!input || !output) {
-      setIssue({ address, reason: 'This component has no matching ports for the wire.' });
+      setIssue({ document: model.id, address, reason: 'This component has no matching ports for the wire.' });
       return;
     }
     void apply(studioName('insertComponent'), {
@@ -483,7 +487,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   }
 
   const connectStart: OnConnectStart = (_, { nodeId, handleId }) => {
-    if (!editTopology || locked || !nodeId) return;
+    if (!model || !editTopology || locked || !nodeId) return;
     const port = portAt(nodeId, handleId);
     dragSource.current = port;
     if (!port || port.direction !== 'output' || port.taskSignal) return;
@@ -492,13 +496,13 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     connectionReview.current?.abort();
     const request = new AbortController();
     connectionReview.current = request;
-    const reviewed = reviewModelConnections(saved.project_id, { revision: saved.revision, graph, source }, request.signal);
+    const reviewed = reviewModelConnections(saved.project_id, { revision: saved.revision, document: model.id, graph, source }, request.signal);
     libraryReview.current = reviewed;
     void reviewed
       .then(({ targets }) => {
         if (!request.signal.aborted) setVerdict(new Map(targets.map(({ target, reason }) => [endKey(target), reason])));
       })
-      .catch((error) => { if (!request.signal.aborted) setIssue({ reason: apiErrorMessage(error) }); });
+      .catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: apiErrorMessage(error) }); });
   };
   function connect(sourceNode: string, sourceHandle: string | null, targetNode: string, targetHandle: string | null) {
     const a = portAt(sourceNode, sourceHandle), b = portAt(targetNode, targetHandle);
@@ -573,7 +577,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         address, name, caption, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
         locked: locked || !editTopology, physicalConnections: !!physical, stacked: definition?.kind === 'composite',
         selected: !!definition && selectedIds.has(key),
-        holdsSelection: definition?.kind === 'composite' && selected.some((item) => item.document === graph.document &&
+        holdsSelection: definition?.kind === 'composite' && selected.some((item) =>
           currentPath.every((parent, offset) => item.composites[offset] === parent) && item.composites[currentPath.length] === id),
         problem,
         onPort: (port) => { if (!port.taskSignal && !port.growing) select(at(graph, { kind: 'port', end: port.end })); },
@@ -630,7 +634,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds ?? 0.01),
           description: item.kind === 'delay' ? `${item.delay.value} ${item.delay.unit} · ${wireLabel}` : wireLabel,
           delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
-          drag: editTopology && !locked ? attachmentAddress(address, item.id) : undefined,
+          drag: model && editTopology && !locked ? { document: model.id, address: attachmentAddress(address, item.id) } : undefined,
         })),
       },
     };
@@ -689,8 +693,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     else void apply(studioName('removeAttachment'), { op: 'delete', selection: [address] });
   }
   function armInitial(address: ModelAddress, item: Attachment) {
-    if (item.kind !== 'delay') return;
+    if (!model || item.kind !== 'delay') return;
     state.setState({ pick: {
+      document: model.id,
       accepts: (candidate, port) => {
         if (!inGraph(candidate, address) || port.direction !== 'output' || port.end.owner !== 'component') return false;
         const component = interior?.components?.[port.end.component];
@@ -900,7 +905,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         onClick={() => go(currentPath.slice(0, index + 1))}>› {name}</button>)}
     </nav>,
     body: model ? <div className="flex h-full min-h-0 flex-col" onKeyDown={(event) => {
-      if (event.key === 'Escape' && (state.getState().pick || keyboardReview.current && !keyboardReview.current.signal.aborted)) {
+      if (event.key === 'Escape' && (pick || keyboardReview.current && !keyboardReview.current.signal.aborted)) {
         event.stopPropagation();
         keyboardReview.current?.abort();
         clear();
@@ -922,9 +927,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           onSearch={openSearch} onNode={(node, extend) => {
             if (!pick && node.data.address.element.kind === 'component') select(node.data.address, extend);
           }} onEdge={(edge) => { if (!pick && edge.data) select(edge.data.address); }}
-          onClear={clear} onBox={(cards) => state.setState({
-            selection: cards.filter((node) => node.data.address.element.kind === 'component').map((node) => node.data.address),
-          })} onMove={move} onContext={contextual} onConnectStart={connectStart} onConnect={connect}
+          onClear={clear} onBox={(cards) => state.setState({ selection: {
+            document: model.id,
+            addresses: cards.filter((node) => node.data.address.element.kind === 'component').map((node) => node.data.address),
+          } })} onMove={move} onContext={contextual} onConnectStart={connectStart} onConnect={connect}
           onConnectEnd={(point, valid, empty) => {
             setVerdict(undefined);
             if (!valid && empty && dragSource.current?.direction === 'output' && !dragSource.current.taskSignal) openSearch(point, dragSource.current);
@@ -945,7 +951,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
               if (error instanceof SyntaxError) return;
               throw error;
             }
-            const parsed = ModelAddressSchema.safeParse(value);
+            if (typeof value !== 'object' || !value || !('document' in value) || value.document !== model.id || !('address' in value)) return;
+            const parsed = ModelAddressSchema.safeParse(value.address);
             if (!parsed.success || parsed.data.element.kind !== 'attachment' || !inGraph(parsed.data, graph)) return;
             const address = parsed.data;
             const id = parsed.data.element.id;
@@ -1000,7 +1007,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           const source = wireEnd(port);
           if (source.owner !== 'inputs' && source.owner !== 'component') return null;
           return <button key={`${depth}:${endKey(source)}`} className={button} type="button" onClick={() => {
-            void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(graph.document, outerPath),
+            void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(outerPath),
               source, destination: graph }, false).then((ok) => { if (ok) setAddPort(undefined); });
           }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</button>;
         });

@@ -131,7 +131,7 @@ class ProjectFolderService(ProjectFolder):
         from feedbax.studio.model_ports import ModelRegistryPorts
 
         snapshot = self.read(project_id, revision=body.revision)
-        payload, _ = model_edit_source(snapshot, body.graph.document)
+        payload, _ = model_edit_source(snapshot, body.document)
         try:
             authority = ModelRegistryPorts(components)
             task_signal = None
@@ -139,7 +139,7 @@ class ProjectFolderService(ProjectFolder):
                 if body.graph.composites:
                     raise ProjectFolderInvalid("A task signal connects at the Model root")
                 task_signal = selected_task_signal(self, project_id, ModelProjectionRequest(
-                    revision=body.revision, run=body.source.run, document=body.graph.document,
+                    revision=body.revision, run=body.source.run, document=body.document,
                 ), body.source.signal)
             library = tuple({
                 "kind": "leaf", "type": item.identity.type_id if item.identity else item.name,
