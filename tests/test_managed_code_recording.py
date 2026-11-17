@@ -68,6 +68,17 @@ def test_dotted_plugin_declaration_tracks_helpers_elsewhere_in_its_package(tmp_p
     assert path == SourcePath(scope="plugin:example", path="numerics.py")
     assert catalog.read(path) is not None
 
+    extra_package = tmp_path / "editable" / "example"
+    extra_declarations = extra_package / "declarations"
+    extra_declarations.mkdir(parents=True)
+    extra = extra_package / "numerics.py"
+    extra.write_text("def run(): return 2\n")
+    module.__file__ = None
+    module.__path__ = [str(declarations), str(extra_declarations)]
+    assert source_catalog(tmp_path / "project").locate(extra) == SourcePath(
+        scope="plugin:example:1", path="numerics.py",
+    )
+
 
 def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, monkeypatch):
     project = tmp_path / "project"

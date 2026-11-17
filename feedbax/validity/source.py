@@ -152,16 +152,15 @@ def loaded_source_roots() -> dict[str, Path]:
         if not isinstance(module, ModuleType):
             continue
         if isinstance(filename := vars(module).get("__file__"), str):
-            package_root = Path(filename).parent
+            package_roots = (Path(filename).parent,)
         else:
-            namespace = tuple(vars(module).get("__path__", ()))
-            if len(namespace) != 1:
-                continue
-            package_root = Path(namespace[0])
+            package_roots = tuple(Path(path) for path in vars(module).get("__path__", ()))
         depth = package.count(".")
-        if depth:
-            package_root = package_root.parents[depth - 1]
-        roots[f"plugin:{distribution}"] = package_root.resolve()
+        for index, package_root in enumerate(package_roots):
+            if depth:
+                package_root = package_root.parents[depth - 1]
+            suffix = f":{index}" if len(package_roots) > 1 else ""
+            roots[f"plugin:{distribution}{suffix}"] = package_root.resolve()
     return roots
 
 
