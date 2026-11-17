@@ -8,8 +8,8 @@ import type {
   ModelEditResponse,
   ModelUndoRequest,
   PresentationDocument,
-  StudioDocumentCommand,
-  StudioDocumentCommandResult,
+  StudioMemberCommand,
+  StudioMemberCommandResult,
   ProjectValueEdit,
   StudioProjectCreateFile,
   StudioProjectDocument,
@@ -34,7 +34,7 @@ export interface ProjectEditTransport {
   replay: (id: string, body: StudioProjectReplay, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
   rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   create: (id: string, body: StudioProjectCreateFile, signal?: AbortSignal) => Promise<StudioProjectDocument>;
-  documentCommand?: (id: string, body: StudioDocumentCommand, signal?: AbortSignal) => Promise<StudioDocumentCommandResult>;
+  memberCommand?: (id: string, body: StudioMemberCommand, signal?: AbortSignal) => Promise<StudioMemberCommandResult>;
   editModel?: (id: string, body: ModelEditRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
   undoModel?: (id: string, body: ModelUndoRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
 }
@@ -585,16 +585,16 @@ export class ProjectEditController {
   }
 
   /**
-   * Rename or duplicate a document on the server as one Undo entry. `use` may then
-   * return authored patches computed against the command's result, such as pointing
-   * a step at the duplicate, which join the same entry.
+   * Rename a document or step, or duplicate a document, on the server as one Undo entry.
+   * `use` may then return authored patches computed against the command's result, such
+   * as pointing a step at the duplicate, which join the same entry.
    */
-  documentCommand(
-    name: string, command: StudioDocumentCommand['command'], reviewed: StudioProjectRevision,
-    use?: (result: StudioDocumentCommandResult) => Promise<readonly StudioProjectFilePatch[]>,
-  ): Promise<StudioDocumentCommandResult> {
+  memberCommand(
+    name: string, command: StudioMemberCommand['command'], reviewed: StudioProjectRevision,
+    use?: (result: StudioMemberCommandResult) => Promise<readonly StudioProjectFilePatch[]>,
+  ): Promise<StudioMemberCommandResult> {
     return this.exclusiveTransaction(async (before) => {
-      const run = this.transport.documentCommand;
+      const run = this.transport.memberCommand;
       if (!run || !versionsMatch(before, reviewed)) throw new ProjectEditConflictError();
       const result = await run(before.project_id, {
         revision: before.revision, presentation_revision: before.presentation_revision, command,

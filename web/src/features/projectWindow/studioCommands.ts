@@ -63,13 +63,13 @@ export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | Appea
   'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
-  'fitView' | 'zoomIn' | 'zoomOut' | 'rename';
+  'fitView' | 'zoomIn' | 'zoomOut' | 'rename' | 'renameStep';
 
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
   'addComponent', 'connectPorts', 'exposeOutput', 'addText', 'addFigure', 'moveEarlier', 'moveLater', 'remove',
   'flip', 'enter', 'leave', 'collapseAll', 'lock', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
-  'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
+  'renameStep', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
   'modelCopy', 'modelCut', 'modelPaste',
 ]);
 

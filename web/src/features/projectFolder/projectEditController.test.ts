@@ -103,9 +103,9 @@ function fixture(settleMs = 400, start = initial) {
     return externalRename(body.name);
   });
   const create = vi.fn<ProjectEditTransport['create']>();
-  const documentCommand = vi.fn<NonNullable<ProjectEditTransport['documentCommand']>>(async (_id, body) => {
-    if (body.revision !== current.revision) throw new ApiRequestError('http', '/documents/command', 'Changed', { status: 409 });
-    const { document: from, kind } = body.command;
+  const memberCommand = vi.fn<NonNullable<ProjectEditTransport['memberCommand']>>(async (_id, body) => {
+    if (body.revision !== current.revision) throw new ApiRequestError('http', '/members/command', 'Changed', { status: 409 });
+    const { member: from, kind } = body.command;
     const to = body.command.name ?? `${from}-2`;
     const source = current.file_revisions.find(({ address }) => address.kind === 'document' && address.id === from)!;
     const { [from]: moved, ...others } = current.project.documents ?? {};
@@ -121,10 +121,10 @@ function fixture(settleMs = 400, start = initial) {
         { ...source, address: { kind: 'document', id: to } },
       ],
     };
-    return { document: to, snapshot: current };
+    return { member: to, snapshot: current };
   });
-  const editor = new ProjectEditController(document(), { read, write, replay, rename, create, documentCommand }, settleMs);
-  return { editor, write, replay, read, rename, create, documentCommand, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
+  const editor = new ProjectEditController(document(), { read, write, replay, rename, create, memberCommand }, settleMs);
+  return { editor, write, replay, read, rename, create, memberCommand, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -575,9 +575,9 @@ it('undoes a document command and the step use that joined it as one entry', asy
   const shown = { documents: { task: { positions: { a: { x: 1, y: 2 } } } } };
   const { editor, current, replay } = fixture(400, { ...initial, presentation: shown });
   const before = current();
-  const result = await editor.documentCommand('Duplicate Task', { kind: 'duplicate', document: 'task' }, before,
-    async ({ document }) => [{ address: model, patches: [{ op: 'replace', path: '/payload/value', value: document }] }]);
-  expect(result.document).toBe('task-2');
+  const result = await editor.memberCommand('Duplicate Task', { kind: 'duplicate', family: 'documents', member: 'task' }, before,
+    async ({ member }) => [{ address: model, patches: [{ op: 'replace', path: '/payload/value', value: member }] }]);
+  expect(result.member).toBe('task-2');
   expect(current().project.documents?.model?.payload).toEqual({ value: 'task-2' });
   expect(editor.getSnapshot().undoName).toBe('Duplicate Task');
 

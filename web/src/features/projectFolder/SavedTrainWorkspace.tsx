@@ -8,7 +8,10 @@ import { StudioTrainResults, type TrainLossResult } from '@/components/activity/
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioCountOf, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
-import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
+import {
+  bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type MapStepRename, type PipelineMapStepSource,
+} from '@/components/pipeline/StudioPipelineMap';
+import { isMemberName } from './projectMemberName';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/StepInsertMenu';
 import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
@@ -208,6 +211,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [machineQuote, setMachineQuote] = useState<StudioMachineQuote>();
   const [rename, setRename] = useState<{ name: string; revision: string }>();
   const [busy, setBusy] = useState(false);
+  const [renamingStep, setRenamingStep] = useState<MapStepRename['editing']>(null);
   const [panel, setPanel] = useState<WindowPanel | null>(null);
   useEffect(() => {
     const openActivity = () => {
@@ -956,8 +960,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }} />,
   } : undefined;
 
+  const stepNames = Object.keys(saved.project.steps ?? {});
+  const renameStep: MapStepRename | undefined = documentEditable ? {
+    editing: renamingStep,
+    setEditing: setRenamingStep,
+    commit: (from, name) => {
+      if (!isMemberName(name) || stepNames.includes(name)) return false;
+      void perform(async () => {
+        await editor.memberCommand(studioAccessibleName('renameStep', from),
+          { kind: 'rename', family: 'steps', member: from, name }, editor.getSnapshot().saved);
+        selection.renameStep(from, name);
+      });
+      return true;
+    },
+  } : undefined;
   const mapProps = {
-    plan, state, problemSteps,
+    plan, state, problemSteps, rename: renameStep,
     onSelectionChange: (value: PipelineSelectionState) => {
       setResultAttempt(undefined);
       setProblemReveal(undefined);
@@ -1013,6 +1031,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, {
       enabled: !busy && !outside,
     }),
+    step && bindStudioCommand('renameStep', () => setRenamingStep({
+      stepId: step.id, surface: windowState.mode === 'details' ? 'line' : 'card',
+    }), { subject: step.label, enabled: !!renameStep && !busy }),
     ...runCommands,
     ...(step ? validity.commands(selectedRuns(step, state.selection)) : []),
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep ? stoppedNewStep : nextStep,

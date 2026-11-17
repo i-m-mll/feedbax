@@ -62,7 +62,7 @@ from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.contracts.request_identity import request_codec_authority
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
-from feedbax.project_documents import references_document, rename_document
+from feedbax.project_members import references_member, rename_member
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
@@ -76,8 +76,8 @@ from feedbax.contracts.studio_project import (
     SetProjectValue,
     StudioAuthoredDeclaration,
     StudioAuthoredFileRevision,
-    StudioDocumentCommand,
-    StudioDocumentCommandResult,
+    StudioMemberCommand,
+    StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectDocument,
     StudioProjectCreateFile,
@@ -583,7 +583,7 @@ def _diagnostic_counts(diagnostics: Iterable[ProjectDiagnostic]) -> Counter:
 def _free_document_name(project: dict, document: str) -> str:
     stem = re.sub(r"-[0-9]+$", "", document)
     index = 2
-    while (name := f"{stem}-{index}") in project["documents"] or references_document(project, name):
+    while (name := f"{stem}-{index}") in project["documents"] or references_member(project, "documents", name):
         index += 1
     return name
 
@@ -1122,8 +1122,8 @@ class ProjectFolder:
                 text = self._load(root)
             return self._snapshot(folder.location, text)
 
-    def document_command(self, project_id: str, body: StudioDocumentCommand) -> StudioDocumentCommandResult:
-        """Rename or duplicate a document with its references and presentation in one write."""
+    def member_command(self, project_id: str, body: StudioMemberCommand) -> StudioMemberCommandResult:
+        """Rename a document or step, or duplicate a document, with its references and presentation in one write."""
         command = body.command
         with self._locked_folder(project_id) as folder:
             root = folder.path
@@ -1131,22 +1131,24 @@ class ProjectFolder:
             check_revision("project", body.revision, text.revision)
             presentation_data, presentation_revision = _read_presentation(root)
             check_revision("presentation", body.presentation_revision, presentation_revision)
-            if command.document not in text.project.documents:
-                raise ProjectFolderNotFound(command.document)
+            family, member = command.family, command.member
+            members = getattr(text.project, family)
+            if member not in members:
+                raise ProjectFolderNotFound(f"{family}/{member}.json")
             source = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             shown_before = _decode_presentation(presentation_data).model_dump(mode="json", exclude_unset=True)
             shown = dict(shown_before)
-            name = command.name or _free_document_name(source, command.document)
-            if name in text.project.documents:
-                raise ProjectFileExists(f"documents/{name}.json")
-            if references_document(source, name):
-                raise ProjectFolderInvalid(f"A reference already names {name}; rename it first.")
+            name = command.name or _free_document_name(source, member)
+            if name in members:
+                raise ProjectFileExists(f"{family}/{name}.json")
+            if references_member(source, family, name):
+                raise ProjectFolderInvalid(f"A reference already names {name}.")
             if command.kind == "rename":
-                project, shown = rename_document(source, shown, command.document, name)
+                project, shown = rename_member(source, shown, family, member, name)
             else:
-                project = {**source, "documents": {**source["documents"], name: source["documents"][command.document]}}
-                if command.document in shown.get("documents", {}):
-                    shown["documents"] = {**shown["documents"], name: shown["documents"][command.document]}
+                project = {**source, "documents": {**source["documents"], name: source["documents"][member]}}
+                if member in shown.get("documents", {}):
+                    shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
             try:
                 validated = Project.model_validate(project)
                 presentation = PresentationDocument.model_validate(shown)
@@ -1163,13 +1165,13 @@ class ProjectFolder:
                 )
                 if introduced:
                     raise ProjectFolderInvalid(
-                        f"Renaming {command.document} leaves a reference this rename does not rewrite.",
+                        f"Renaming {member} leaves a reference this rename does not rewrite.",
                     )
             original = dump_text_project(text.project, text.configuration)
             encoded = dump_text_project(validated, text.configuration)
-            copied = f"documents/{name}.json"
-            if encoded[copied] == original[f"documents/{command.document}.json"]:
-                encoded[copied] = text.files[f"documents/{command.document}.json"]
+            copied, source_file = f"{family}/{name}.json", f"{family}/{member}.json"
+            if encoded[copied] == original[source_file]:
+                encoded[copied] = text.files[source_file]
             pending = []
             for relative in sorted(original.keys() | encoded.keys()):
                 if original.get(relative) == encoded.get(relative):
@@ -1197,7 +1199,7 @@ class ProjectFolder:
                 check_revision("presentation", presentation_revision, _read_presentation(root)[1])
 
             _publish_patch(folder, pending, guard)
-            return StudioDocumentCommandResult(document=name, snapshot=self._snapshot(folder.location, self._load(root)))
+            return StudioMemberCommandResult(member=name, snapshot=self._snapshot(folder.location, self._load(root)))
 
     def apply_model_command(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,

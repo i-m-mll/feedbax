@@ -67,17 +67,34 @@ def _evaluation_project():
     return raw
 
 
-def seed(home: str, project_id: str):
+def _seed(home: str, project_id: str, raw: dict, presentation: dict | None = None):
     paths = AppPaths.resolve(instance_root=Path(home))
     folders = ProjectFolderService(paths.web / "projects")
-    project = Project.model_validate(_evaluation_project())
+    project = Project.model_validate(raw)
     for name, data in dump_text_project(
         project, ProjectConfiguration(project=project_id, store="results"),
     ).items():
         path = folders.root / project_id / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+    if presentation is not None:
+        (folders.root / project_id / "presentation.json").write_text(json.dumps(presentation) + "\n")
     return folders.open(project_id).snapshot.project_id
+
+
+def seed(home: str, project_id: str):
+    return _seed(home, project_id, _evaluation_project())
+
+
+def seed_step_rename(home: str, project_id: str):
+    """Train, an Evaluate reading it, a Train-scoped project sweep target, a group and a folded sweep."""
+    raw = _evaluation_project()
+    raw["steps"] = {name: raw["steps"][name] for name in ("train", "baseline")}
+    raw["steps"]["train"]["group"] = "fitting"
+    raw["sweep"] = {"axes": {"mass": {"values": {
+        "nominal": {"value": 1, "patches": {"steps.train." + _MASS: {"value": 1}}},
+    }}}}
+    return _seed(home, project_id, raw, {"steps": {"train": {"sweep_order": ["mass"], "folded_sweep_id": "mass"}}})
 
 
 def walkthrough_files(batches: str | None = None):
@@ -280,7 +297,7 @@ def observe(home: str, project: str, revision: str, trial_index: str):
 if __name__ == "__main__":
     action, *args = sys.argv[1:]
     print(json.dumps({
-        "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
+        "seed": seed, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
         "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,

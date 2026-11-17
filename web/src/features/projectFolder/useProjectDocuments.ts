@@ -110,14 +110,14 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
         return id;
       }) : undefined,
       duplicate: repoint ? () => attempt(async () => {
-        const result = await editor.documentCommand(studioAccessibleName('duplicate', kind),
-          { kind: 'duplicate', document }, editor.getSnapshot().saved,
-          (result) => use(role, result.document, result.snapshot.revision));
-        return result.document;
+        const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
+          { kind: 'duplicate', family: 'documents', member: document }, editor.getSnapshot().saved,
+          (result) => use(role, result.member, result.snapshot.revision));
+        return result.member;
       }) : undefined,
       rename: editable ? (name) => {
-        void attempt(() => editor.documentCommand(studioAccessibleName('rename', kind),
-          { kind: 'rename', document, name }, editor.getSnapshot().saved));
+        void attempt(() => editor.memberCommand(studioAccessibleName('rename', kind),
+          { kind: 'rename', family: 'documents', member: document, name }, editor.getSnapshot().saved));
       } : undefined,
     };
   };
