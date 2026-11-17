@@ -251,12 +251,13 @@ _Events.append = append
         point["result"]["evidence"] for point in points(evaluation)
     ]
     assert second.receipt.trace.prefixes == ()
-    from feedbax.contracts.receipt_validity import ValidityCheckDelivery
+    from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
     from feedbax.training.evaluate_worker import check_evaluate
 
     checked = check_evaluate(ValidityCheckDelivery(
         project_root=folders.root / project, store_root=plan.store_path,
         request_id=rows["baseline"].request_id, receipt=first.ref, checks=("code", "environment"),
+        conditions=CheckConditions(code=(), environment=()),
     ))
     assert checked.code is not None and checked.code.outcome == "equal"
     assert checked.environment is not None and checked.environment.outcome == "unavailable"
