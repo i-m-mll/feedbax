@@ -135,13 +135,11 @@ function StatusCounts({ id, counts, onProblems }: {
       {statuses.map(([status, count]) => {
         const problem = status === 'cannot_run' && onProblems;
         if (count <= 0 && !problem) return null;
-        const word = studioRunStatus(status);
-        const name = count > 0 ? `${count} ${word}` : word;
-        const mark = <><StatusMark status={status} />{count > 0 && count}</>;
+        const mark = <><StatusMark status={status} label={studioRunStatus(status)} />{count > 0 && <>{' '}{count}</>}</>;
         return problem
           ? <Button variant="bare" size="content" key={status} className={className} aria-haspopup="dialog"
-            aria-label={name} {...appTip(word)} onClick={(event) => problem(event.currentTarget)}>{mark}</Button>
-          : <span key={status} role="img" aria-label={name} className={className} {...appTip(word)}>{mark}</span>;
+            onClick={(event) => problem(event.currentTarget)}>{mark}</Button>
+          : <span key={status} className={className}>{mark}</span>;
       })}
     </span>
   );
@@ -152,10 +150,10 @@ function stepLabel(step: PlanStepView, count?: string | number) {
 }
 
 function StepName({ step }: { step: PlanStepView }) {
-  const { Icon, name } = studioStep(step.kind);
+  const { Icon } = studioStep(step.kind);
   return (
     <span className="studio-card__title flex min-w-0 items-center gap-1.5">
-      <span className="studio-card__glyph" {...appTip(name)}><Icon aria-hidden="true" className="size-4" /></span>
+      <span className="studio-card__glyph" {...appTip(studioName(step.kind))}><Icon aria-hidden="true" className="size-4" /></span>
       <span className="truncate font-medium">{step.label}</span>
     </span>
   );
@@ -534,7 +532,6 @@ function StepRow({ step, selection, related, focusedStepId, chooseStep, applySel
   const worst = worstStatus(step.statusCounts);
   const choose = selectionButton((extend) => chooseStep(step.id, extend));
   const { Icon } = studioStep(step.kind);
-  const word = worst && studioRunStatus(worst.status);
   const shown = worst && step.runs.length > 1 ? worst.count : undefined;
   return (
     <ListRow
@@ -549,15 +546,14 @@ function StepRow({ step, selection, related, focusedStepId, chooseStep, applySel
         aria-label={studioAccessibleName('select', stepLabel(step, summary))}
         aria-pressed={documentScope ? level === 'lit' : undefined}
         onKeyDown={choose.onKeyDown}>{step.label}</Button>}
-      trailing={worst && word && (
+      trailing={worst && (
         <Button variant="bare" size="content" className="inline-flex items-center gap-1 rounded-sm tabular-nums"
-          aria-label={studioAccessibleName('select', [shown, word].filter(Boolean).join(' '))} {...appTip(word)}
           onClick={(event) => {
             event.stopPropagation();
             const runIds = step.runs.filter(({ state }) => state === worst.status).map(({ id }) => id);
             applySelection(() => ({ selection: { kind: 'rows', stepId: step.id, runIds }, focus: null }));
           }}>
-          <StatusMark status={worst.status} />{shown}
+          <StatusMark status={worst.status} label={studioRunStatus(worst.status)} />{shown !== undefined && <>{' '}{shown}</>}
         </Button>
       )}
     />

@@ -64,7 +64,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
 
   await enter(rateText, '0.001, 0.00275, 0.003');
   await expect(table.getByText('Out of date', { exact: true })).toHaveCount(1);
-  await expect(card.getByText('1 Out of date')).toBeVisible();
+  await expect(card.locator('[data-status-mark="stale"]')).toHaveCount(1);
   await table.getByRole('row').filter({ hasText: 'Out of date' }).getByRole('button').click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByText('0.0025 → 0.00275', { exact: false })).toBeVisible();
@@ -153,7 +153,7 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
   const { plan } = await readPlan(request, projectPath);
   expect(plan.window_map!.rows.map(({ coordinates }) => coordinates.mass.value)).toEqual([1, 2]);
   expect(new Set(plan.rows.map(({ request_id }) => request_id)).size).toBe(2);
-  await expect(page.getByRole('article', { name: 'Train train' }).getByText('2 Not run')).toBeVisible();
+  await expect(page.getByRole('article', { name: 'Train train' }).locator('[data-status-mark="not_run"]')).toHaveCount(2);
 });
 
 
