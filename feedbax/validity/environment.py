@@ -55,8 +55,6 @@ class InstalledInventory:
             # The filesystem finder otherwise caches search-directory contents by mtime alone.
             metadata.MetadataPathFinder.invalidate_caches()
             self._entries = tuple(metadata.distributions(path=named))
-            if tuple((path, occurrence(path)) for path in named) != search_stamp:
-                raise EnvironmentMismatch("Distribution search paths changed during discovery")
             self._search_stamp = search_stamp
         versions = {}
         for entry in self._entries:
@@ -77,17 +75,13 @@ class InstalledInventory:
         if not fresh and (parsed := self._parsed.get(path)) is not None and parsed[0] == stamp:
             return parsed[1]
         pair = _distribution_version(entry)
-        if tuple(occurrence(item) for item in entries) != stamp:
-            raise EnvironmentMismatch(f"Distribution metadata changed while reading {path}")
         self._parsed[path] = stamp, pair
         return pair
 
 
 @lru_cache(maxsize=16)
-def _read_lock(path: Path, stamp: FileStamp) -> tuple[str, dict[str, frozenset[str]]]:
+def _read_lock(path: Path, _stamp: FileStamp) -> tuple[str, dict[str, frozenset[str]]]:
     data = path.read_bytes()
-    if occurrence(path) != stamp:
-        raise EnvironmentMismatch(f"Dependency lock changed while reading {path}")
     document = tomllib.loads(data.decode())
     candidates: dict[str, set[str]] = defaultdict(set)
     for package in document["package"]:

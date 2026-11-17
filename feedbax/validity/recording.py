@@ -13,6 +13,7 @@ from pathlib import Path
 import platform
 import sys
 from threading import local
+from time import time_ns
 from types import ModuleType
 from uuid import UUID
 
@@ -88,7 +89,8 @@ class WorkerRecorder:
         self.project: Path | None = None
         self._environment_root: Path | None = None
         self.catalog = source_catalog(None)
-        self.boot_ns = boot_ns
+        self._delivery_started_ns = boot_ns
+        self._source_witnesses: dict[SourcePath, int] = {}
         self.installation = InstalledInventory()
         self.installed = self.installation.versions(fresh=True)
         self.feedbax = resolve_feedbax_provenance()
@@ -171,9 +173,14 @@ class WorkerRecorder:
         return result
 
     def note_preloaded_sources(self) -> None:
-        for source in self._source_paths():
-            if source not in self.loaded and (present := self.catalog.read(source)) is not None:
-                self.loaded[source] = present
+        for path in self._source_paths():
+            if path not in self.loaded:
+                self._current_source(path)
+
+    def start_delivery(self) -> None:
+        started = time_ns()
+        self.note_preloaded_sources()
+        self._delivery_started_ns = started
 
     def bind_project(self, project: Path, *, environment_root: Path | None = None) -> None:
         root = project.resolve(strict=True)
@@ -334,10 +341,7 @@ class WorkerRecorder:
         for path in sorted(initial_roster.keys() | self.loaded.keys(), key=_source_key):
             source = self._current_source(path)
             if source is None:
-                self._indeterminate.add(path)
                 continue
-            if source.modified_ns > self.boot_ns:
-                self._indeterminate.add(path)
             previous = self._source_records.get(path)
             ref = previous.content if previous is not None else ContentObjectRef(
                 object_id=CONTENT_OBJECT_REF_PREFIX + source.sha256,
@@ -395,17 +399,19 @@ class WorkerRecorder:
             self._archived[path] = occurrence()
 
     def _current_source(self, path: SourcePath) -> SourceFile | None:
+        witness = self._source_witnesses.setdefault(path, self._delivery_started_ns)
         try:
             present = self.catalog.read(path)
         except OSError:
             present = None
-        if (captured := self.loaded.get(path)) is not None:
-            if present is None or present.sha256 != captured.sha256 or present.modified_ns > self.boot_ns:
-                self._indeterminate.add(path)
-            return captured
-        if present is not None:
+        captured = self.loaded.get(path)
+        if present is None or present.modified_ns > witness or (
+            captured is not None and present.sha256 != captured.sha256
+        ):
+            self._indeterminate.add(path)
+        if captured is None and present is not None:
             self.loaded[path] = present
-        return present
+        return captured if captured is not None else present
 
     def _verify_file_reads(self, attempt: _Attempt) -> None:
         for path, digest in attempt.files.items():
@@ -438,9 +444,7 @@ class WorkerRecorder:
         self._audit.reading = True
         try:
             for path in self._source_paths().keys() | self.loaded.keys():
-                source = self._current_source(path)
-                if source is None or source.modified_ns > self.boot_ns:
-                    self._indeterminate.add(path)
+                self._current_source(path)
             self._verify_file_reads(attempt)
             self._verify_environment(attempt)
         finally:
