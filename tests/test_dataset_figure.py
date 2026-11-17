@@ -13,6 +13,7 @@ from feedbax.analysis.builtin_operations import register_builtin_operations
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.analysis.report_document import render as render_report
+from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
 from feedbax.contracts.effective_success import BoundMember, success_content_ref
 from feedbax.contracts.figure_document import (
     FigureDocument,
@@ -103,7 +104,9 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
     )
     request = decode_request(encoded.data, encoded.documents.__getitem__)
     bindings = {"summary": (BoundMember(
-        key="summary", content=ref.content, descriptor={"descriptor_sha256": ref.descriptor_sha256},
+        key="summary",
+        content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
+        descriptor={"descriptor_sha256": ref.descriptor_sha256},
     ),)}
     saved = _compute(store, request, bindings, "render-attempt", validate_light_request(request))
     content = saved.content
