@@ -16,10 +16,6 @@ from feedbax.contracts.acausal import (
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION,
-    GRAPH_SPEC_SCHEMA_VERSION_V2,
-    GRAPH_SPEC_SCHEMA_VERSION_V4,
-    GRAPH_SPEC_SCHEMA_VERSION_V5,
-    LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     ComponentSpec,
     GraphMetadata,
     GraphSpec,
@@ -30,10 +26,7 @@ from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
 )
-from feedbax.contracts.base import (
-    ArtifactMigrationRecord,
-    ParentRef,
-)
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     GraphSpecManifest,
     ModelArtifactManifest,
@@ -54,38 +47,6 @@ pytestmark = [
     pytest.mark.graph_spec_contract,
     pytest.mark.migration_contract,
 ]
-
-GRAPH_V1_TO_V6_MIGRATIONS = [
-    "graph-spec-legacy-v1-to-v2",
-    "graph-spec-v2-to-v3-derived-dimensions",
-    "graph-spec-v3-to-v4-discriminated-subgraphs",
-    "graph-spec-v4-to-v5-component-param-array-values",
-    "graph-spec-v5-to-v6-component-revisions",
-]
-GRAPH_V2_TO_V6_MIGRATIONS = [
-    "graph-spec-v2-to-v3-derived-dimensions",
-    "graph-spec-v3-to-v4-discriminated-subgraphs",
-    "graph-spec-v4-to-v5-component-param-array-values",
-    "graph-spec-v5-to-v6-component-revisions",
-]
-
-
-def _legacy_metadata() -> dict[str, str]:
-    return {
-        "name": "legacy",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z",
-        "version": LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-    }
-
-
-def _legacy_graph_payload() -> dict[str, object]:
-    return {
-        "metadata": _legacy_metadata(),
-        "nodes": {},
-        "wires": [],
-    }
-
 
 def _current_graph_payload() -> dict[str, object]:
     return GraphSpec().model_dump(mode="json")
@@ -266,7 +227,8 @@ def test_nested_acausal_reader_preserves_component_revisions_through_containers(
     assert node == {"type": "reader.ReaderOwner", "params": {"value": 0}, "revision": 1}
 
 
-def test_unknown_acausal_graph_version_rejects_through_graph_migration() -> None:
+@pytest.mark.parametrize("version", ["feedbax.spec.acausal_graph.v0", "feedbax.spec.acausal_graph.v1"])
+def test_older_acausal_graph_versions_are_refused_in_nested_graphs(version) -> None:
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
         migrate_graph_spec(
             {
@@ -275,15 +237,14 @@ def test_unknown_acausal_graph_version_rejects_through_graph_migration() -> None
                 "nodes": {},
                 "wires": [],
                 "subgraphs": {
-                    "plant": _acausal_graph_payload(schema_version="feedbax.spec.acausal_graph.v0")
+                    "plant": _acausal_graph_payload(schema_version=version)
                 },
             }
         )
 
     message = str(excinfo.value)
     assert "family='AcausalGraphSpec'" in message
-    assert "source_version='feedbax.spec.acausal_graph.v0'" in message
-    assert "migration_intentionally_absent=yes" in message
+    assert f"source_version={version!r}" in message
 
 
 def test_nested_acausal_subgraphs_validate_recursively() -> None:
@@ -318,70 +279,6 @@ def test_graph_spec_migration_stamps_versionless_current_payload() -> None:
     assert result.migration_records == []
 
 
-def test_graph_spec_v2_migration_adds_derived_dimensions_field() -> None:
-    result = migrate_graph_spec(
-        {
-            "schema_id": GRAPH_SPEC_SCHEMA_ID,
-            "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V2,
-            "nodes": {},
-            "wires": [],
-        }
-    )
-
-    assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert result.payload["derived_dimensions"] == []
-    assert [record.migration_id for record in result.migration_records] == GRAPH_V2_TO_V6_MIGRATIONS
-
-
-def test_graph_spec_v4_migration_preserves_dense_and_unrelated_shape_entry_dicts() -> None:
-    dense = [[0.0, 0.25], [0.0, 0.0]]
-    unrelated = {"shape": [2, 2], "entries": [{"label": "not structural sparse"}]}
-    result = migrate_graph_spec(
-        {
-            "schema_id": GRAPH_SPEC_SCHEMA_ID,
-            "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V4,
-            "nodes": {
-                "plant": {
-                    "type": "StructuralLinearStateSpace",
-                    "params": {"delta_A": dense},
-                    "input_ports": [],
-                    "output_ports": [],
-                },
-                "other": {
-                    "type": "fixture.Component",
-                    "params": {"configuration": unrelated},
-                    "input_ports": [],
-                    "output_ports": [],
-                },
-            },
-            "wires": [],
-        },
-        target_version=GRAPH_SPEC_SCHEMA_VERSION_V5,
-    )
-
-    assert result.payload["nodes"]["plant"]["params"]["delta_A"] == dense
-    assert result.payload["nodes"]["other"]["params"]["configuration"] == unrelated
-
-
-def test_unknown_graph_spec_schema_version_reports_available_migrations() -> None:
-    with pytest.raises(UnsupportedSpecVersion) as excinfo:
-        migrate_graph_spec(
-            {
-                "schema_id": GRAPH_SPEC_SCHEMA_ID,
-                "schema_version": "feedbax.spec.graph.v99",
-            }
-        )
-
-    message = str(excinfo.value)
-    assert "source_version='feedbax.spec.graph.v99'" in message
-    assert f"current_version='{GRAPH_SPEC_SCHEMA_VERSION}'" in message
-    assert "available_migrations=[" in message
-    assert "graph-spec-legacy-v1-to-v2" in message
-    assert "graph-spec-v2-to-v3-derived-dimensions" in message
-    assert "graph-spec-v3-to-v4-discriminated-subgraphs" in message
-    assert "graph-spec-v4-to-v5-component-param-array-values" in message
-
-
 def test_acausal_interior_rejects_component_param_array_values_at_typed_boundary() -> None:
     payload = _acausal_graph_payload()
     payload["nodes"]["mass"]["params"]["matrix"] = {
@@ -398,61 +295,10 @@ def test_acausal_interior_rejects_component_param_array_values_at_typed_boundary
         AcausalGraphSpec.model_validate(payload)
 
 
-def test_graph_spec_manifest_load_attaches_feedbax_migration_records() -> None:
-    manifest = GraphSpecManifest(
-        id="feedbax-graph-spec:legacy",
-        graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
-    )
-
-    result = load_graph_spec_from_manifest(manifest)
-
-    loaded_manifest = result.manifest
-    assert isinstance(loaded_manifest, GraphSpecManifest)
-    assert result.custody_manifest_kind == "GraphSpecManifest"
-    assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert loaded_manifest.graph_spec.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert (
-        loaded_manifest.graph_spec.sha256
-        == spec_payload(
-            "GraphSpec",
-            result.payload,
-        ).sha256
-    )
-    assert [record.migration_id for record in result.applied_migration_records] == (
-        GRAPH_V1_TO_V6_MIGRATIONS
-    )
-    assert result.migration_records == loaded_manifest.migration_records
-
-
-def test_model_artifact_inline_graph_spec_preserves_downstream_migration_records() -> None:
-    downstream = ArtifactMigrationRecord(
-        migration_id="rlrmp-legacy-artifact-v0-to-v1",
-        source_schema_version="rlrmp.model_artifact.v0",
-        target_schema_version="rlrmp.model_artifact.v1",
-        tool="rlrmp",
-    )
-    manifest = ModelArtifactManifest(
-        id="feedbax-model-artifact:legacy-inline",
-        graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
-        migration_records=[downstream],
-    )
-
-    result = load_graph_spec_from_manifest(manifest)
-
-    loaded_manifest = result.manifest
-    assert isinstance(loaded_manifest, ModelArtifactManifest)
-    assert result.custody_manifest_kind == "ModelArtifactManifest"
-    assert result.downstream_migration_records == [downstream]
-    assert loaded_manifest.migration_records[0] == downstream
-    assert loaded_manifest.migration_records[1].tool == "feedbax"
-    assert not isinstance(loaded_manifest.graph_spec, ParentRef)
-    assert loaded_manifest.graph_spec.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-
-
 def test_model_artifact_parent_graph_spec_records_are_discoverable(tmp_path) -> None:
     graph_manifest = GraphSpecManifest(
         id="feedbax-graph-spec:referenced",
-        graph_spec=spec_payload("GraphSpec", _legacy_graph_payload()),
+        graph_spec=spec_payload("GraphSpec", _current_graph_payload()),
     )
     graph_manifest_path = write_manifest(graph_manifest, root=tmp_path, index=False)
     model_manifest = ModelArtifactManifest(

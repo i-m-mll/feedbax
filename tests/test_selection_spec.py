@@ -8,14 +8,11 @@ from pydantic import ValidationError
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.selection import (
-    SELECTION_SPEC_SCHEMA_VERSION,
-    SELECTION_SPEC_SCHEMA_VERSION_V1,
     ManifestPredicate,
     SelectionSpec,
     TopKByMetricPerGroup,
     freeze_selection_spec,
     manifest_index_rows_from_records,
-    migrate_selection_spec_payload,
     refresh_selection_spec,
     select_parent_refs,
 )
@@ -59,37 +56,11 @@ def _record(
     }
 
 
-def test_legacy_id_list_migrates_to_explicit_selection_spec_v2() -> None:
-    migrated = migrate_selection_spec_payload(
-        {"schema_version": SELECTION_SPEC_SCHEMA_VERSION_V1, "training_run_ids": ["a", "b"]}
-    )
-
-    assert migrated == {
-        "schema_id": "feedbax.spec.selection",
-        "schema_version": SELECTION_SPEC_SCHEMA_VERSION,
-        "mode": "explicit",
-        "manifest_kind": "TrainingRunManifest",
-        "ids": ["a", "b"],
-        "metadata": {},
-    }
-    assert SelectionSpec.model_validate(migrated).ids == ["a", "b"]
-
-
-def test_selection_spec_registry_migrates_v1_and_rejects_unknown_versions() -> None:
-    result = default_spec_registry.migrate(
-        "SelectionSpec",
-        {"schema_version": SELECTION_SPEC_SCHEMA_VERSION_V1, "eval_run_ids": ["eval-a"]},
-    )
-
-    assert result.migrated
-    assert result.payload["schema_version"] == SELECTION_SPEC_SCHEMA_VERSION
-    assert result.payload["manifest_kind"] == "EvaluationRunManifest"
-    assert result.payload["ids"] == ["eval-a"]
-
-    with pytest.raises(UnsupportedSpecVersion):
+def test_selection_spec_registry_refuses_the_retired_id_list() -> None:
+    with pytest.raises(UnsupportedSpecVersion, match=r"feedbax\.spec\.selection\.v1"):
         default_spec_registry.migrate(
             "SelectionSpec",
-            {"schema_version": "feedbax.spec.selection.v0", "training_run_ids": ["a"]},
+            {"schema_version": "feedbax.spec.selection.v1", "eval_run_ids": ["eval-a"]},
         )
 
 

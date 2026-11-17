@@ -69,9 +69,7 @@ class GraphParameterResolution:
         }
 
 
-def resolve_component_node(
-    node: ComponentSpec, registry: Any, *, historical_unversioned: bool = False
-) -> ComponentSpec:
+def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
     from feedbax.compiler.serialization import _split_lowering_metadata
 
     resolver = getattr(registry, "resolve_component_spec", None)
@@ -90,7 +88,6 @@ def resolve_component_node(
             params,
             revision=node.revision,
             complete_params=False,
-            historical_unversioned=historical_unversioned,
         )
         return node.model_copy(
             update={

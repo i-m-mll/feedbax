@@ -667,8 +667,7 @@ def test_scalar_implicit_rollout_respects_authored_root_budget(
 
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("explicit_order", [False, True])
-def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested, explicit_order):
-    from feedbax.contracts.migrations import migrate_acausal_graph_spec
+def test_persisted_gear_has_reduced_report_and_physical_bound_outputs(nested, explicit_order):
 
     spec = AcausalGraphSpec(
         schema_id="feedbax.spec.acausal_graph",
@@ -751,13 +750,7 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
                 "subgraphs": {"gear": inner},
             }
         )
-    import json
-
-    payload = json.loads(spec.model_dump_json())
-    payload["schema_version"] = "feedbax.spec.acausal_graph.v1"
-    for nested_payload in (payload.get("subgraphs") or {}).values():
-        nested_payload["schema_version"] = "feedbax.spec.acausal_graph.v1"
-    loaded = AcausalGraphSpec.model_validate(migrate_acausal_graph_spec(payload).payload)
+    loaded = AcausalGraphSpec.model_validate_json(spec.model_dump_json())
     report = compile_acausal_authoring_report(
         loaded, node_path=["plant"], component_registry=_registry()
     )

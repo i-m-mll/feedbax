@@ -210,17 +210,17 @@ def test_compile_failure_is_a_stable_source_mapped_phase_diagnostic() -> None:
     )
 
 
-def test_compile_graph_migrates_an_explicit_older_graph_schema() -> None:
+@pytest.mark.parametrize("version", ["1.0.0", "feedbax.spec.graph.v4"])
+def test_compile_graph_refuses_earlier_graph_schemas(version) -> None:
     payload = _document().graph.model_dump(mode="json", exclude_none=True)
-    payload["schema_version"] = "feedbax.spec.graph.v4"
+    payload["schema_version"] = version
 
-    compiled = compile_graph(
-        GraphDocument(graph=payload),
-        ComponentRegistry(),
-    )
+    with pytest.raises(GraphCompilationError) as caught:
+        compile_graph(GraphDocument(graph=payload), ComponentRegistry())
 
-    assert compiled.record.graph_schema_source_version == "feedbax.spec.graph.v4"
-    assert compiled.record.graph_schema_target_version == "feedbax.spec.graph.v6"
+    (diagnostic,) = caught.value.record.diagnostics
+    assert diagnostic.phase is CompilerPhase.STRUCTURAL_PARSING
+    assert version in diagnostic.observed_condition
 
 
 def test_compiler_generated_adapter_has_truthful_source_map_origin() -> None:

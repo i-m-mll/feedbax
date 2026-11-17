@@ -686,7 +686,7 @@ def migrate_spec_payload(
                 path=path,
                 registry=active_registry,
                 component_registry=component_registry,
-                historical_unversioned=not assume_current,
+                resolve_components=not assume_current or spec_payload_obj.kind == "AcausalGraphSpec",
             )
         else:
             result = active_registry.migrate(

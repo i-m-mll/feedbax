@@ -8,7 +8,6 @@ from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.builtins.runtime.signal_transforms import (
     ConstantInput,
     ConstantInputParams,
@@ -65,17 +64,6 @@ def _authored_spec(component_type, params):
     )
 
 
-def _legacy_spec(component_type, params, version):
-    payload = _authored_spec(component_type, params).model_dump(mode="json")
-    payload["schema_version"] = "feedbax.spec.graph.v5"
-    node = payload["nodes"]["intervention"]
-    node["type"] = component_type
-    node.pop("revision", None)
-    if version is not None:
-        node["param_schema_version"] = version
-    return GraphSpec.model_validate(migrate_graph_spec(payload).payload)
-
-
 @pytest.mark.parametrize(
     ("component_cls", "params_cls", "field", "values", "expected"),
     [
@@ -114,32 +102,6 @@ def test_intervention_payload_survives_public_graph_round_trip(
     )
     _assert_rollout(disabled.graph, [2.0, 3.0])
     assert graph_to_spec(disabled.graph, registry).nodes["intervention"].params[field] == values
-
-
-@pytest.mark.parametrize(
-    ("component_type", "field"),
-    [
-        ("NetworkClamp", "unit_spec"),
-        ("NetworkConstantInput", "unit_spec"),
-        ("ConstantInput", "arrays"),
-    ],
-)
-def test_legacy_intervention_requires_reauthoring_only_when_enabled(
-    registry, component_type, field
-):
-    for version in ("1", None):
-        disabled = _legacy_spec(component_type, {"scale": 2.0, "active": False}, version)
-        _assert_rollout(_compile(registry, disabled).graph, [2.0, 3.0])
-
-        with pytest.raises((GraphCompilationError, ValueError), match=field):
-            enabled = _legacy_spec(component_type, {"scale": 2.0, "active": True}, version)
-            _compile(registry, enabled)
-
-    if component_type == "NetworkClamp":
-        repaired = _authored_spec(component_type, {"active": True, field: [8.0, None]})
-        compiled = _compile(registry, repaired)
-        _assert_rollout(compiled.graph, [8.0, 3.0])
-        assert "scale" not in graph_to_spec(compiled.graph, registry).nodes["intervention"].params
 
 
 def test_intervention_payload_must_fit_the_signal(registry):

@@ -19,12 +19,7 @@ from feedbax.contracts.value_schema import ValueSchema
 
 
 GRAPH_SPEC_SCHEMA_ID = "feedbax.spec.graph"
-GRAPH_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.graph.v2"
-GRAPH_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.graph.v3"
-GRAPH_SPEC_SCHEMA_VERSION_V4 = "feedbax.spec.graph.v4"
-GRAPH_SPEC_SCHEMA_VERSION_V5 = "feedbax.spec.graph.v5"
 GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v6"
-LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
 
 
 STUDIO_VALUE_SPEC_SCHEMA_VERSION = "feedbax.spec.studio.value.v2"
@@ -588,9 +583,6 @@ WORKSPACE_DOCUMENT_SCHEMA_ID = "feedbax.workspace_document"
 WORKSPACE_DOCUMENT_SCHEMA_VERSION = "1"
 ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID = "feedbax.spec.studio.analysis_canvas_layout"
 ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION = "feedbax.spec.studio.analysis_canvas_layout.v1"
-LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
-STUDIO_SCENARIO_SCHEMA_VERSION_V1 = "feedbax.spec.studio.scenario.v1"
-STUDIO_SCENARIO_SCHEMA_VERSION_V2 = "feedbax.spec.studio.scenario.v2"
 STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.spec.studio.scenario.v3"
 STUDIO_STAGE_SCHEMA_ID = "feedbax.spec.studio.stage"
 STUDIO_STAGE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.stage.v1"

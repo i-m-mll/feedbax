@@ -23,15 +23,12 @@ for unsupported free massless coordinates.
 
 ## Saved graphs
 
-`feedbax.spec.acausal_graph.v1` remains readable through the v2 component-history reader. The correction implements the existing ideal-lossless gear intent and ratio convention; it changes incorrect numerical trajectories, not the authored type, ports, parameters, units, topology, or serialization. No legacy numerical execution mode is provided. Raw reduced state arrays from an older solver are not asserted to be compatible.
+Saved gear graphs use `feedbax.spec.acausal_graph.v2`. The correction implements the existing ideal-lossless gear intent and ratio convention and preserves the authored type, ports, parameters, units, topology, and serialization.
 
 The consumer audit examined rlrmp2 revision
 `7d60e2b36f5c163c2d5acdce9d5ac8788a61bd34`, 23,738 local rlrmp2 JSON/YAML/JSONL
 artifacts, 1,091 local Feedbax JSON/YAML candidates, and four Studio saves. No
-GearRatio or acausal graph payload was identified. The existing v1 migration and
-admission path is tested with direct and nested serialized gear graphs. Unknown
-schema versions retain their existing rejection behavior. No downstream artifact
-migration is needed for the inspected corpus; remote and unmounted custody were
-not audited.
+GearRatio or acausal graph payload was identified. Direct and nested serialized
+gear graphs exercise the current admission path. The audit covered local custody.
 
 Co-Authored-By: Codex (GPT) <codex@openai.com>

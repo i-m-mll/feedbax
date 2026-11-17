@@ -586,21 +586,14 @@ def resolve_graph(
         code="compiler.structural_parsing.invalid_graph_document",
         anchor=graph_anchor,
         document_sha256=document_sha256,
-        expected="graph payload satisfies a supported explicit GraphSpec schema",
-        action="correct the authored graph payload or migrate it through a registered schema",
+        expected="graph payload satisfies the current GraphSpec schema",
+        action="correct the authored payload to use the current graph schema",
         operation=parse_graph,
     )
     resolved_inputs = dict(input_prototypes or {})
-    historical_paths = {
-        record.metadata.get("graph_path") for record in migration.migration_records
-    }
     typed_graph = _map_component_nodes(
         authored_graph,
-        lambda graph_path, node: resolve_component_node(
-            node,
-            component_registry,
-            historical_unversioned=graph_path in historical_paths,
-        ),
+        lambda _path, node: resolve_component_node(node, component_registry),
         document_sha256=document_sha256,
     )
 
