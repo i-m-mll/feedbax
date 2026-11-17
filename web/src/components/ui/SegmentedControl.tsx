@@ -10,6 +10,7 @@ export interface Segment<Value extends string> {
   label: string;
   icon?: ReactNode;
   disabled?: boolean;
+  attributes?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface SegmentedControlProps<Value extends string> {
@@ -39,6 +40,7 @@ export function SegmentedControl<Value extends string>(
           disabled={item.disabled}
           aria-label={item.icon ? item.label : undefined}
           {...(item.icon ? appTip(item.label) : {})}
+          {...item.attributes}
           className={clsx(
             'inline-flex select-none items-center justify-center gap-1.5 rounded-row text-shell-muted',
             item.icon ? 'aspect-square' : 'px-control-inline',

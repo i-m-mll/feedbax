@@ -22,8 +22,9 @@ pub struct Snapshot {
     sections: Vec<Section>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 enum Group {
+    App,
     File,
     Edit,
     View,
@@ -34,6 +35,7 @@ enum Group {
 impl Group {
     fn title(self) -> &'static str {
         match self {
+            Self::App => "App",
             Self::File => "File",
             Self::Edit => "Edit",
             Self::View => "View",
@@ -215,12 +217,23 @@ fn build_menu(
                 .iter()
                 .find(|section| matches!(section.title, Group::Edit))
         });
-    let file_commands = snapshot.and_then(|snapshot| {
-        snapshot
-            .sections
-            .iter()
-            .find(|section| matches!(section.title, Group::File))
-    });
+    let section = |group: Group| {
+        snapshot.and_then(|snapshot| {
+            snapshot
+                .sections
+                .iter()
+                .find(|section| section.title == group)
+        })
+    };
+    let app_menu = Submenu::new(app, service.text()?, true)?;
+    if let Some(commands) = section(Group::App) {
+        append_commands(app, &app_menu, menu_number, commands)?;
+        app_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+    for item in service.items()? {
+        app_menu.append(&item)?;
+    }
+    let file_commands = section(Group::File);
     let file_menu = Submenu::new(app, Group::File.title(), true)?;
     for item in file.items()? {
         file_menu.append(&item)?;
@@ -230,13 +243,13 @@ fn build_menu(
     }
     let menu = Menu::with_items(
         app,
-        &[service, &file_menu, &edit_menu(app, menu_number, edit)?],
+        &[&app_menu, &file_menu, &edit_menu(app, menu_number, edit)?],
     )?;
     if let Some(snapshot) = snapshot {
         for section in snapshot
             .sections
             .iter()
-            .filter(|section| !matches!(section.title, Group::Edit | Group::File))
+            .filter(|section| !matches!(section.title, Group::App | Group::Edit | Group::File))
         {
             let submenu = Submenu::new(app, section.title.title(), true)?;
             append_commands(app, &submenu, menu_number, section)?;
@@ -592,6 +605,9 @@ mod tests {
             "scope": scope,
             "textEditing": false,
             "sections": [
+                { "title": "App", "items": [
+                    { "id": "settings", "label": "Settings…", "accelerator": "Cmd+,", "enabled": true },
+                ] },
                 { "title": "Run", "items": [
                     { "id": "run", "label": "Run", "accelerator": "Cmd+R", "enabled": true },
                     { "id": "stop", "label": "Stop", "accelerator": "Cmd+.", "enabled": false },
@@ -697,6 +713,12 @@ mod tests {
         assert_eq!(
             (origin, command.scope, command.id),
             ("http://127.0.0.1:41000", "first-project", "run")
+        );
+        assert_eq!(
+            routing
+                .destination("studio-one", "studio-command:2:settings")
+                .map(|(_, command)| command.id),
+            Some("settings")
         );
         assert!(routing
             .destination("studio-one", "studio-command:2:stop")

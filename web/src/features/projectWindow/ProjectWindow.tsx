@@ -11,6 +11,7 @@ import {
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { Button, IconButton } from '@/components/ui/Button';
+import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { useElementSize } from '@/hooks/useElementSize';
@@ -19,9 +20,10 @@ import {
 } from './projectWindowLayout';
 import {
   projectWindowSlotView, projectWindowViews, showProjectWindowView,
-  type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
+  type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
 import { StudioCommandPalette } from './StudioCommandPalette';
+import { StudioSettings } from './StudioSettings';
 import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
 import { useStudioTitleBar } from './studioTitleBar';
@@ -130,6 +132,7 @@ export function ProjectWindow({
   const [preview, setPreview] = useState<ProjectWindowSizePreview>({});
   const [requestedFocus, setRequestedFocus] = useState<{ region: WindowRegion }>();
   const [paletteScope, setPaletteScope] = useState<'project' | 'activity' | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [railFocus, setRailFocus] = useState<ProjectWindowView | null>(null);
   const [mapHasFocus, setMapHasFocus] = useState(false);
   const pointerTransition = useRef<{ slot: ProjectWindowSlot }>();
@@ -280,6 +283,7 @@ export function ProjectWindow({
     const scope = document.activeElement?.closest('[data-studio-activity-panel]') ? 'activity' : 'project';
     setPaletteScope((open) => open ? null : scope);
   });
+  const settings = bindStudioCommand('settings', () => setSettingsOpen((open) => !open), { name: 'openSettings' });
   const viewportIds = new Set(mapCommands?.map(({ id }) => id));
   const separator = mode === 'map' ? '100%' : `${mode === 'both' ? fit.mapHeight.size : compactMapHeight}px`;
   const viewportCommands = fullMapVisible && (mapHasFocus || !commands.some(({ id }) => viewportIds.has(id)))
@@ -290,7 +294,7 @@ export function ProjectWindow({
     back, forward, ...tabCommands,
     bindStudioCommand('nextRegion', () => cycleRegion(1)),
     bindStudioCommand('previousRegion', () => cycleRegion(-1)),
-    ...appearanceCommands(),
+    settings, ...appearanceCommands(),
   ];
   const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
   shortcutCommands.current = { palette, paletteCommands, paletteScope };
@@ -351,9 +355,12 @@ export function ProjectWindow({
       <header ref={bar} className="shell-frame__bar studio-window-bar" data-studio-focus-region="top" tabIndex={-1} data-shell-drag-region>
         <div className="shell-frame__cell shell-titlebar__leading studio-window-bar__controls">
           <span className="shell-titlebar__logo"><StudioLogo /></span>
-          {layoutModes.map(({ mode: target, icon, command }) => (
-            <WindowButton key={target} command={command} icon={icon} pressed={mode === target} />
-          ))}
+          <SegmentedControl<ProjectWindowMode> aria-label={studioName('layoutMode')} value={mode}
+            onValueChange={(target) => layoutModes.find((item) => item.mode === target)?.command.invoke()}
+            items={layoutModes.map(({ mode: target, icon: Icon, command }) => ({
+              value: target, label: command.label, icon: <Icon aria-hidden="true" />, disabled: !command.enabled,
+              attributes: commandAttributes(command),
+            }))} />
           <WindowButton command={back} icon={ArrowLeft} />
           <WindowButton command={forward} icon={ArrowRight} />
           <WindowButton command={steps} icon={PanelLeft} pressed={mapDrawerVisible} controls={ids.mapDrawer} />
@@ -368,6 +375,7 @@ export function ProjectWindow({
           {paletteScope && <StudioCommandPalette
             commands={paletteScope === 'activity' ? paletteCommands.filter((command) => !command.selectionScoped) : paletteCommands}
             close={() => setPaletteScope(null)} />}
+          {settingsOpen && <StudioSettings close={() => setSettingsOpen(false)} />}
           {overlay}
         </div>
       </header>
