@@ -4,6 +4,8 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 import re
 
+from pydantic import TypeAdapter
+
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.checkpoint_projection import CarriedMethodState, CheckpointOccurrenceRef, ContinuationOccurrence
 from feedbax.contracts.method_checkpoint import CheckpointLatestPointer, MethodCheckpointManifest, method_checkpoint_extra_path
@@ -20,6 +22,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_content import success_content_objects
 from feedbax.persistence.train_job import TrainJobEntry
+from feedbax.plugins.declarations import DistributionSource
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 
 
@@ -60,6 +63,7 @@ def publish_train_success(
         recovery = _occurrence(collected.recovery.pointer.model_dump(mode="json"))
     store = ImmutableArtifactBlobProvider(store_root)
     metrics = completion.get("metrics")
+    provider = TypeAdapter(DistributionSource).validate_python(completion["provider"])
     products = {"checkpoint": (product,)}
     if metrics is not None:
         products["metrics"] = (Product(name="updates", content=ContentRef(
@@ -71,7 +75,7 @@ def publish_train_success(
             committed = view.read_owned_success(existing).receipt
             if (
                 committed.attempt != attempt or committed.request != request or committed.target != target
-                or committed.products != products
+                or committed.products != products or committed.provider != provider
                 or committed.continuation is None
                 or committed.continuation.provenance != _occurrence(pointer)
                 or committed.recovery != recovery
@@ -121,7 +125,7 @@ def publish_train_success(
         )
         published = view.publish_bound(
             request, attempt=attempt, products=products, bindings=bindings,
-            continuation=continuation, recovery=recovery, target=target,
+            continuation=continuation, recovery=recovery, provider=provider, target=target,
         )
     return published.ref.model_dump(mode="json")
 

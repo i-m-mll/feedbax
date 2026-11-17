@@ -6,6 +6,8 @@ from hashlib import file_digest, sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from pydantic import TypeAdapter
+
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.method_checkpoint import MethodCheckpointIdentity
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
@@ -25,12 +27,15 @@ from feedbax.studio.canonical_train import (
     verify_training_request_binding,
 )
 from feedbax.persistence.method_checkpoint import method_checkpoint_files, read_method_checkpoint_manifest
+from feedbax.plugins.declarations import DistributionSource
 
 if TYPE_CHECKING:
     from feedbax.training.model_checkpoint import SemanticModelSlot
 
 
 type CheckpointReadScope = Literal["full", "model_only"]
+
+_PROVIDER = TypeAdapter(DistributionSource)
 
 
 class CompletionUnavailable(ValueError):
@@ -197,6 +202,10 @@ def verify_training_completion(
             *_checkpoint_files(root, checkpoint, scope),
         ]
         metrics = training_metric_file(root, producer_job_id, manifest, verify=scope == "full")
+        method = dict(provenance["method"])
+        if method.pop("key") != launch.spec.method:
+            raise CompletionFileError("Train receipt names a different method.")
+        provider = _PROVIDER.validate_python(method)
         completion = {
             "producer_job_id": producer_job_id,
             "project_id": launch.project_id,
@@ -207,6 +216,7 @@ def verify_training_completion(
             "checkpoint": checkpoint.model_dump(mode="json"),
             "files": files,
             "metrics": metrics,
+            "provider": _PROVIDER.dump_python(provider, mode="json"),
         }
         verify_completion_files(completion, checkpoint_model=scope == "model_only")
         return completion

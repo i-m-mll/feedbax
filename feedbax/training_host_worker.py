@@ -418,7 +418,8 @@ def _run(
             )
             reconstructed = reconstruct_model(
                 model_source, registry=registries, artifacts=model_assets,
-                template=source_graph, variant=variant, variant_seed=spec.seed, slot=restored.model,
+                template=source_graph, variant=variant, variant_seed=spec.seed if variant is not None else None,
+                slot=restored.model,
             )
             if isinstance(reconstructed, tuple):
                 problem = reconstructed[0]
