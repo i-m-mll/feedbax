@@ -27,7 +27,6 @@ from feedbax.contracts.manifest_packet import (
     ManifestPacketValidationError,
     export_manifest_packet,
     import_manifest_packet,
-    migrate_manifest_packet_v1,
 )
 from feedbax.contracts.artifact_custody import LegacyContentFormatError
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
@@ -693,15 +692,5 @@ def test_packet_v1_requires_explicit_offline_migration_and_resolves_without_sour
     }
     _write_packet_index(packet, index)
 
-    with pytest.raises(LegacyContentFormatError, match="migrate-content-store"):
+    with pytest.raises(LegacyContentFormatError, match="re-export it on the source revision"):
         import_manifest_packet(packet, root=tmp_path / "runtime")
-    receipt = migrate_manifest_packet_v1(packet, destination_root=tmp_path / "store")
-    shutil.rmtree(packet)
-    ref, resolved = ImmutableArtifactBlobProvider(tmp_path / "store").resolve_manifest(
-        "TrainingRunManifest", "feedbax-training-run:legacy-packet"
-    )
-    assert resolved == raw
-    assert {mapping.target_sha256 for mapping in receipt.mappings} == {
-        ref.object.sha256,
-        hashlib.sha256(artifact_bytes).hexdigest(),
-    }

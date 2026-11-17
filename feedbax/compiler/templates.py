@@ -8,7 +8,6 @@ separate backend-special model type.
 
 from __future__ import annotations
 
-from datetime import datetime
 from collections.abc import Mapping
 from typing import Any
 
@@ -27,6 +26,9 @@ from feedbax.runtime.feedback import (
     feedback_node_names,
     feedback_wires,
 )
+
+
+_TEMPLATE_TIMESTAMP = "1970-01-01T00:00:00Z"
 
 
 def recurrent_zero_initializer(
@@ -165,7 +167,6 @@ def recurrent_controller_template_graph(
                 cell_type=f"feedbax.{normalized_cell_type}",
             )
         )
-    now = datetime.now().isoformat()
     resolved_cell_params = {
         **dict(cell_params or {}),
         "input_size": hidden_input_size,
@@ -323,8 +324,8 @@ def recurrent_controller_template_graph(
         metadata=GraphMetadata(
             name=name,
             description=description,
-            created_at=now,
-            updated_at=now,
+            created_at=_TEMPLATE_TIMESTAMP,
+            updated_at=_TEMPLATE_TIMESTAMP,
             version="1.0.0",
         ),
     )

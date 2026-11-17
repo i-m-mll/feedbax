@@ -19,10 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.artifact_store import (
-    _retention_artifact_payload,
     _validate_retention_artifact_ref_metadata,
-    store_artifact,
-    store_json_artifact,
 )
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID as AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
@@ -36,7 +33,6 @@ from feedbax.contracts.base import (
     ArtifactMigrationRecord,
     ArtifactRef,
     ArtifactValidationRecord,
-    EntrypointRef,
     FileHashRef,
     ParentRef,
     Provenance,
@@ -44,7 +40,6 @@ from feedbax.contracts.base import (
     TreeHashRef,
     authenticated_manifest_ref_profile,
     canonical_json_bytes,
-    collect_git_provenance,
     default_manifest_root,
     feedbax_version,
     sha256_bytes,
@@ -55,15 +50,10 @@ from feedbax.contracts.base import (
 )
 from feedbax.contracts.graph import AnalysisInputRequirement
 from feedbax.contracts.computation_revision import validate_computation_revision
-from feedbax.contracts.retention_artifact_schema import (
-    retention_artifact_metadata,
-)
 from feedbax.contracts.schema_namespace import validate_schema_identity
 from feedbax.contracts.strict_json import strict_json_loads
 
 SCHEMA_VERSION = "feedbax.manifest.v1"
-TRAINING_RUN_SET_SCHEMA_VERSION_V1 = SCHEMA_VERSION
-TRAINING_RUN_SET_SCHEMA_VERSION = "feedbax.manifest.training_run_set.v2"
 PROVIDER_VERSION = "feedbax-provider.v1"
 REGENERATION_SPEC_SCHEMA_ID = "feedbax.spec.regeneration"
 REGENERATION_SPEC_SCHEMA_VERSION = "feedbax.spec.regeneration.v1"
@@ -494,15 +484,6 @@ class ModelArtifactManifest(BaseManifest):
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
-class TrainingRunSetManifest(BaseManifest):
-    kind: Literal["TrainingRunSetManifest"] = "TrainingRunSetManifest"
-    schema_version: str = TRAINING_RUN_SET_SCHEMA_VERSION
-    name: str
-    run_ids: list[str] = Field(default_factory=list)
-    graph_spec: Optional[ParentRef | SpecPayload] = None
-    axes: TrainingRunSetAxes = Field(default_factory=TrainingRunSetAxes)
-    tags: list[str] = Field(default_factory=list)
-    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
 class TrainingManifestMetadataProjectionCustody(StrictModel):
@@ -1331,7 +1312,6 @@ class FigureManifest(BaseManifest):
 AnyManifest = (
     GraphSpecManifest
     | ModelArtifactManifest
-    | TrainingRunSetManifest
     | TrainingRunManifest
     | EvaluationRunManifest
     | CheckpointSelectionManifest
@@ -1356,7 +1336,6 @@ class GraphSpecLoadResult(StrictModel):
 MANIFEST_MODELS: dict[str, type[BaseManifest]] = {
     "GraphSpecManifest": GraphSpecManifest,
     "ModelArtifactManifest": ModelArtifactManifest,
-    "TrainingRunSetManifest": TrainingRunSetManifest,
     "TrainingRunManifest": TrainingRunManifest,
     "EvaluationRunManifest": EvaluationRunManifest,
     "CheckpointSelectionManifest": CheckpointSelectionManifest,
@@ -1377,7 +1356,6 @@ def _manifest_model_for_kind(kind: str) -> type[BaseModel] | None:
 SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND: dict[str, tuple[str, ...]] = {
     "GraphSpecManifest": ("graph_spec",),
     "ModelArtifactManifest": ("graph_spec",),
-    "TrainingRunSetManifest": ("graph_spec",),
     "TrainingRunManifest": (
         "graph_spec",
         "training_spec",
@@ -1638,7 +1616,6 @@ def spec_payload(kind: str, inline: dict[str, Any], ref: Optional[str] = None) -
 MANIFEST_KIND_DIRECTORIES: dict[str, str] = {
     "GraphSpecManifest": "graph_specs",
     "ModelArtifactManifest": "model_artifacts",
-    "TrainingRunSetManifest": "training_run_sets",
     "TrainingRunManifest": "training_runs",
     "EvaluationRunManifest": "evaluation_runs",
     "CheckpointSelectionManifest": "checkpoint_selections",
@@ -1766,35 +1743,6 @@ def _normalize_manifest_data_spec_payloads(data: dict[str, Any], *, component_re
     return normalized
 
 
-def _normalize_training_run_set_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
-    if data.get("kind") != "TrainingRunSetManifest":
-        return data
-    schema_version = data.get("schema_version", TRAINING_RUN_SET_SCHEMA_VERSION_V1)
-    if schema_version == TRAINING_RUN_SET_SCHEMA_VERSION:
-        return data
-    if schema_version != TRAINING_RUN_SET_SCHEMA_VERSION_V1:
-        raise ValueError(
-            "Unsupported TrainingRunSetManifest schema_version: "
-            f"{schema_version!r}; expected {TRAINING_RUN_SET_SCHEMA_VERSION!r}"
-        )
-    migrated = dict(data)
-    migrated["schema_version"] = TRAINING_RUN_SET_SCHEMA_VERSION
-    migrated.setdefault("axes", {})
-    records = list(migrated.get("migration_records") or [])
-    records.append(
-        ArtifactMigrationRecord(
-            migration_id="training-run-set-manifest-v1-to-v2-axes",
-            source_schema_version=TRAINING_RUN_SET_SCHEMA_VERSION_V1,
-            target_schema_version=TRAINING_RUN_SET_SCHEMA_VERSION,
-            metadata={
-                "description": (
-                    "Add an empty run-set axes block for pre-sweep collection manifests."
-                )
-            },
-        ).model_dump(mode="json", exclude_none=True)
-    )
-    migrated["migration_records"] = records
-    return migrated
 
 
 def _normalize_report_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
@@ -2017,27 +1965,6 @@ def planned_training_run_manifest_id(
     return f"feedbax-training-run:{digest[:32]}"
 
 
-def planned_training_run_set_manifest_id(
-    *,
-    graph_spec: dict[str, Any],
-    base_training_spec: dict[str, Any],
-    task_spec: dict[str, Any],
-    task_binding_spec: dict[str, Any] | None = None,
-    axes: dict[str, Any] | None = None,
-) -> str:
-    """Return deterministic identity for a planned Studio training run set."""
-    digest = sha256_bytes(
-        canonical_json_bytes(
-            {
-                "graph_spec": graph_spec,
-                "base_training_spec": base_training_spec,
-                "task_spec": task_spec,
-                "task_binding_spec": task_binding_spec,
-                "axes": axes or {},
-            }
-        )
-    )
-    return f"feedbax-training-run-set:{digest[:32]}"
 
 
 def analysis_run_manifest_id(
@@ -2131,7 +2058,6 @@ def write_manifest(
 def load_manifest_bytes(raw: bytes, *, component_registry: Any | None = None) -> AnyManifest:
     """Parse one known Feedbax manifest from already-authenticated raw bytes."""
     data = strict_json_loads(raw, ref="manifest document")
-    data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_analysis_run_manifest_data(data)
     data = _normalize_evaluation_run_manifest_data(data)
     data = _normalize_report_manifest_data(data)
@@ -2306,113 +2232,3 @@ def _downstream_migration_records(
 def training_run_manifest_id(job_id: Optional[str] = None) -> str:
     key = job_id or str(uuid.uuid4())
     return f"feedbax-training-run:{key}"
-
-
-def write_training_run_manifest(
-    *,
-    job_id: Optional[str],
-    run_set_id: Optional[str] = None,
-    total_batches: int,
-    training_spec: Optional[dict[str, Any]] = None,
-    task_spec: Optional[dict[str, Any]] = None,
-    task_binding_spec: Optional[dict[str, Any]] = None,
-    graph_spec: Optional[dict[str, Any]] = None,
-    checkpoint_path: Optional[Path | str] = None,
-    history_events: Optional[list[dict[str, Any]]] = None,
-    retention_plan: Optional[dict[str, Any]] = None,
-    retained_observables: Optional[dict[str, Any] | list[dict[str, Any]]] = None,
-    status: ManifestStatus = "completed",
-    final_loss: Optional[float] = None,
-    root: Path | str | None = None,
-    provenance: Optional[Provenance] = None,
-    issues: Optional[list[str]] = None,
-) -> tuple[TrainingRunManifest, Path]:
-    """Build, store, and index a local training-run manifest."""
-    root_path = Path(root) if root is not None else default_manifest_root()
-    artifacts: list[ArtifactRef] = []
-    if checkpoint_path is not None and Path(checkpoint_path).exists():
-        artifacts.append(
-            store_artifact(
-                checkpoint_path,
-                root=root_path,
-                role="training_checkpoint",
-                logical_name=f"feedbax_checkpoint_{job_id}.eqx" if job_id else None,
-                media_type="application/x-equinox",
-            )
-        )
-    if history_events is not None:
-        artifacts.append(
-            store_json_artifact(
-                history_events,
-                root=root_path,
-                role="training_history",
-                logical_name=f"feedbax_training_history_{job_id}.json"
-                if job_id
-                else "feedbax_training_history.json",
-            )
-        )
-    if retention_plan is not None:
-        artifacts.append(
-            store_json_artifact(
-                _retention_artifact_payload(
-                    "retention_plan",
-                    retention_plan,
-                    path="retention_plan",
-                ),
-                root=root_path,
-                role="retention_plan",
-                logical_name=f"feedbax_retention_plan_{job_id}.json"
-                if job_id
-                else "feedbax_retention_plan.json",
-                metadata=retention_artifact_metadata("retention_plan"),
-            )
-        )
-    if retained_observables is not None:
-        artifacts.append(
-            store_json_artifact(
-                _retention_artifact_payload(
-                    "retained_observables",
-                    retained_observables,
-                    path="retained_observables",
-                ),
-                root=root_path,
-                role="retained_observables",
-                logical_name=f"feedbax_retained_observables_{job_id}.json"
-                if job_id
-                else "feedbax_retained_observables.json",
-                metadata=retention_artifact_metadata("retained_observables"),
-            )
-        )
-
-    prov = provenance or collect_git_provenance()
-    if issues:
-        prov.issues.extend(issue for issue in issues if issue not in prov.issues)
-    if prov.entrypoint is None:
-        prov.entrypoint = EntrypointRef(kind="feedbax-worker", name="training")
-
-    manifest = TrainingRunManifest(
-        id=training_run_manifest_id(job_id),
-        job_id=job_id,
-        run_set_id=run_set_id,
-        status=status,
-        completed_at=utc_now() if status in {"completed", "failed", "cancelled"} else None,
-        graph_spec=spec_payload("GraphSpec", graph_spec) if graph_spec is not None else None,
-        training_spec=spec_payload("TrainingSpec", training_spec)
-        if training_spec is not None
-        else None,
-        task_spec=spec_payload("TaskSpec", task_spec) if task_spec is not None else None,
-        task_binding_spec=spec_payload("StudioTaskBindingSpec", task_binding_spec)
-        if task_binding_spec is not None
-        else None,
-        summary_metrics={
-            key: value
-            for key, value in {
-                "final_loss": final_loss,
-                "total_batches": total_batches,
-            }.items()
-            if value is not None
-        },
-        provenance=prov,
-        artifacts=artifacts,
-    )
-    return manifest, write_manifest(manifest, root=root_path)

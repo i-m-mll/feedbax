@@ -1,0 +1,812 @@
+{
+  "schema": "feedbax.spec.task_document",
+  "payload": {
+    "id": "delayed-reaches",
+    "variables": [
+      {
+        "id": "start",
+        "name": "start",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1
+          }
+        },
+        "value": {
+          "kind": "call",
+          "function": "vector",
+          "args": [
+            {
+              "kind": "draw",
+              "family": "uniform",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": -0.4
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.5
+                }
+              ]
+            },
+            {
+              "kind": "draw",
+              "family": "uniform",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": -0.3
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.45
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "target",
+        "name": "target",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1
+          }
+        },
+        "value": {
+          "kind": "call",
+          "function": "vector",
+          "args": [
+            {
+              "kind": "draw",
+              "family": "uniform",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": -0.4
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.5
+                }
+              ]
+            },
+            {
+              "kind": "draw",
+              "family": "uniform",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": -0.3
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.45
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "catch",
+        "name": "catch",
+        "type": {
+          "base": "boolean"
+        },
+        "value": {
+          "kind": "draw",
+          "family": "bernoulli",
+          "args": [
+            {
+              "kind": "literal",
+              "value": 0.5
+            }
+          ]
+        }
+      }
+    ],
+    "epochs": [
+      {
+        "id": "hold",
+        "name": "hold",
+        "length": {
+          "kind": "draw",
+          "family": "uniform",
+          "args": [
+            {
+              "kind": "literal",
+              "value": 5,
+              "unit": "st"
+            },
+            {
+              "kind": "literal",
+              "value": 14,
+              "unit": "st"
+            }
+          ]
+        },
+        "max_steps": 14
+      },
+      {
+        "id": "cue",
+        "name": "cue",
+        "length": {
+          "kind": "draw",
+          "family": "uniform",
+          "args": [
+            {
+              "kind": "literal",
+              "value": 10,
+              "unit": "st"
+            },
+            {
+              "kind": "literal",
+              "value": 19,
+              "unit": "st"
+            }
+          ]
+        },
+        "max_steps": 19
+      },
+      {
+        "id": "move",
+        "name": "move"
+      }
+    ],
+    "signals": [
+      {
+        "id": "target_pos",
+        "name": "target_pos",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1
+          }
+        },
+        "cells": [
+          {
+            "first_epoch": "cue",
+            "last_epoch": "move",
+            "value": {
+              "kind": "name",
+              "reference": "target"
+            }
+          }
+        ]
+      },
+      {
+        "id": "target_vel",
+        "name": "target_vel",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1,
+            "time": -1
+          }
+        },
+        "cells": [
+          {
+            "first_epoch": "cue",
+            "last_epoch": "move",
+            "value": {
+              "kind": "call",
+              "function": "vector",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "goal",
+        "name": "goal",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1
+          }
+        },
+        "cells": [
+          {
+            "first_epoch": "hold",
+            "last_epoch": "cue",
+            "value": {
+              "kind": "name",
+              "reference": "start"
+            }
+          },
+          {
+            "first_epoch": "move",
+            "last_epoch": "move",
+            "value": {
+              "kind": "call",
+              "function": "where",
+              "args": [
+                {
+                  "kind": "name",
+                  "reference": "catch"
+                },
+                {
+                  "kind": "name",
+                  "reference": "start"
+                },
+                {
+                  "kind": "name",
+                  "reference": "target"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "fixation",
+        "name": "fixation",
+        "type": {
+          "base": "real"
+        },
+        "cells": [
+          {
+            "first_epoch": "hold",
+            "last_epoch": "cue",
+            "value": {
+              "kind": "literal",
+              "value": 1
+            }
+          },
+          {
+            "first_epoch": "move",
+            "last_epoch": "move",
+            "value": {
+              "kind": "call",
+              "function": "where",
+              "args": [
+                {
+                  "kind": "name",
+                  "reference": "catch"
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "target_on",
+        "name": "target_on",
+        "type": {
+          "base": "real"
+        },
+        "cells": [
+          {
+            "first_epoch": "cue",
+            "last_epoch": "move",
+            "value": {
+              "kind": "literal",
+              "value": 1
+            }
+          }
+        ]
+      }
+    ],
+    "links": [
+      {
+        "model_field": "{\"composites\":[],\"document\":\"point-mass\",\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"reset\",\"effector\",\"position\"]}}",
+        "variable": "start"
+      }
+    ],
+    "fixed_steps": 80,
+    "validation_trials": [
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.3999999761581421,
+            -0.050000011920928955
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 7,
+          "cue": 15
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.2117448770875089,
+            0.34091572931308595
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 12,
+          "cue": 11
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.21126049082001508,
+            0.43746394416998285
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 10,
+          "cue": 10
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.5504844577930674,
+            0.16694185763785016
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 10,
+          "cue": 13
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.5504844577930674,
+            -0.266941881479708
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 12,
+          "cue": 19
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.2112604908200152,
+            -0.5374639680118407
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 8,
+          "cue": 19
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.21174487708750878,
+            -0.4409157531549439
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 7,
+          "cue": 12
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.6999999582767487,
+            -0.050000011920928955
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 13,
+          "cue": 14
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.5117448592061155,
+            0.34091572931308595
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 13,
+          "cue": 15
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.08873949129859149,
+            0.43746394416998285
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 13,
+          "cue": 16
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.25048447567446086,
+            0.16694185763785016
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 7,
+          "cue": 15
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.2504844756744609,
+            -0.266941881479708
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 8,
+          "cue": 15
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.08873949129859136,
+            -0.5374639680118407
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 11,
+          "cue": 12
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.5117448592061153,
+            -0.4409157531549439
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 14,
+          "cue": 12
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            0.3999999761581421,
+            0.19999998807907104
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 6,
+          "cue": 16
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            0.2117448770875089,
+            0.590915729313086
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 7,
+          "cue": 12
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.21126049082001508,
+            0.6874639441699828
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 14,
+          "cue": 19
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.5504844577930674,
+            0.4169418576378502
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 7,
+          "cue": 19
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.5504844577930674,
+            -0.01694188147970796
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 11,
+          "cue": 19
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.2112604908200152,
+            -0.28746396801184076
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 5,
+          "cue": 14
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            0.21174487708750878,
+            -0.1909157531549439
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 6,
+          "cue": 14
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.6999999582767487,
+            0.19999998807907104
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 13,
+          "cue": 16
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.5117448592061155,
+            0.590915729313086
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 13,
+          "cue": 12
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.08873949129859149,
+            0.6874639441699828
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 7,
+          "cue": 19
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.25048447567446086,
+            0.4169418576378502
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 13,
+          "cue": 13
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.2504844756744609,
+            -0.01694188147970796
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 9,
+          "cue": 15
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.08873949129859136,
+            -0.28746396801184076
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 8,
+          "cue": 16
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.5117448592061153,
+            -0.1909157531549439
+          ],
+          "catch": false
+        },
+        "epoch_steps": {
+          "hold": 8,
+          "cue": 15
+        }
+      }
+    ]
+  }
+}

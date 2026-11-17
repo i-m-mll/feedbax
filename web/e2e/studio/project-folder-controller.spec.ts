@@ -1,0 +1,405 @@
+import { expect, test, type Page } from '@playwright/test';
+import { execFile } from 'node:child_process';
+import { readFile, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import type { openProjectEditor } from '../../src/features/projectFolder/openProjectEditor';
+import type { StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { fixture } from './fixtures/canonicalTrain';
+
+const repo = fileURLToPath(new URL('../../../', import.meta.url));
+const run = promisify(execFile);
+const massPath = '/payload/interior/components/plant/fields/mass';
+type Probe = {
+  folderEditor: Awaited<ReturnType<typeof openProjectEditor>>;
+  renameCommand?: ReturnType<Probe['folderEditor']['editor']['rename']>;
+  createCommand?: ReturnType<Probe['folderEditor']['editor']['createFile']>;
+};
+
+async function folderFixture(action: 'seed' | 'read', root: string) {
+  return run('uv', ['run', '--no-sync', 'python', '-B', 'web/e2e/studio/fixtures/folder_project.py', action, root],
+    { cwd: repo, timeout: 10_000 });
+}
+
+async function open(page: Page, id: string) {
+  await page.evaluate(async (projectId) => {
+    const entry = '/src/features/projectFolder/openProjectEditor.ts';
+    const folder = await import(entry) as { openProjectEditor: typeof openProjectEditor };
+    (window as unknown as Probe).folderEditor = await folder.openProjectEditor(projectId);
+  }, id);
+}
+
+async function state(page: Page) {
+  return page.evaluate(() => {
+    const editor = (window as unknown as Probe).folderEditor.editor;
+    const { saved, draft, outside, pending, configuration, undoName } = editor.getSnapshot();
+    const mass = (project: typeof draft) => {
+      const payload = project.documents?.['point-mass']?.payload as {
+        interior: { components: { plant: { fields: { mass: number } } } };
+      };
+      return payload.interior.components.plant.fields.mass;
+    };
+    return {
+      saved: mass(saved.project), draft: mass(draft), outside: outside ? mass(outside.project) : null,
+      pending, revision: saved.revision, id: saved.project_id, name: configuration.project, undoName,
+    };
+  });
+}
+
+async function outsideWrite(root: string, mass: number) {
+  const path = join(root, 'documents', 'point-mass.json');
+  const doc = JSON.parse(await readFile(path, 'utf-8'));
+  doc.payload.interior.components.plant.fields.mass = mass;
+  const replacement = `${path}.outside`;
+  await writeFile(replacement, JSON.stringify(doc));
+  await rename(replacement, path);
+}
+
+test('the focused File Rename command follows the declaration and refuses a stale dialog', async ({ page, request }, info) => {
+  const created = await request.post('/api/projects');
+  expect(created.status(), await created.text()).toBe(201);
+  const { snapshot, configuration } = await created.json();
+  const projectId = snapshot.project_id;
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', configuration.project);
+  const declaration = join(root, `${configuration.project}.feedbax`);
+  const bytes = await readFile(declaration);
+
+  await page.addInitScript(() => {
+    type Host = NonNullable<Window['__FEEDBAX_STUDIO_MENU__']>;
+    const probe = window as Window & { studioMenuSnapshot?: Parameters<Host['publish']>[0] };
+    const bridge: Host = { publish: async (snapshot) => { probe.studioMenuSnapshot = snapshot; } };
+    Object.defineProperty(window, '__FEEDBAX_STUDIO_MENU__', { value: bridge });
+  });
+  await page.goto(`/?project=${projectId}`);
+
+  async function chooseRename() {
+    await page.waitForFunction(() => {
+      type Host = NonNullable<Window['__FEEDBAX_STUDIO_MENU__']>;
+      const { studioMenuSnapshot: snapshot } = window as Window & {
+        studioMenuSnapshot?: Parameters<Host['publish']>[0];
+      };
+      if (!snapshot?.sections.find(({ title }) => title === 'File')?.items.find(({ id }) => id === 'rename')?.enabled) {
+        return false;
+      }
+      window.dispatchEvent(new CustomEvent('studio-native-command', { detail: { id: 'rename', scope: snapshot.scope } }));
+      return true;
+    });
+    await expect(dialog).toBeVisible();
+  }
+
+  const dialog = page.getByRole('dialog', { name: 'Rename', exact: true });
+  const name = dialog.getByRole('textbox', { name: 'Name' });
+  const submit = dialog.getByRole('button', { name: 'Rename', exact: true });
+  await chooseRename();
+  await expect(name).toHaveValue(configuration.project);
+  await name.fill('stale-draft');
+  const outside = join(root, 'outside.feedbax');
+  await rename(declaration, outside);
+  await expect(submit).toBeDisabled();
+  await expect(dialog.getByRole('alert')).toContainText('The project changed');
+  await expect(name).toHaveValue('stale-draft');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  await chooseRename();
+  await expect(name).toHaveValue('outside');
+  await name.fill('renamed');
+  await submit.click();
+  await expect(dialog).toBeHidden();
+  expect(await readFile(join(root, 'renamed.feedbax'))).toEqual(bytes);
+  await expect(readFile(outside)).rejects.toMatchObject({ code: 'ENOENT' });
+  await page.reload();
+  await chooseRename();
+  await expect(name).toHaveValue('renamed');
+});
+
+test('M2 folder controller settles, reopens, observes disk changes, and resolves a stale edit', async ({ page }, info) => {
+  const alias = 'controller-reach';
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', alias);
+  await folderFixture('seed', root);
+  await page.goto('/');
+  await open(page, alias);
+  const { id: projectId, saved } = await state(page);
+  expect(saved).toBe(1);
+  await page.evaluate(({ path }) => {
+    (window as unknown as Probe).folderEditor.editor.edit({ kind: 'document', id: 'point-mass' }, 'Mass', [{ op: 'replace', path, value: 3 }]);
+  }, { path: massPath });
+  await expect.poll(() => state(page)).toMatchObject({ saved: 3, draft: 3, pending: 0 });
+  await page.reload();
+  await open(page, projectId);
+  expect((await state(page)).saved).toBe(3);
+
+  await outsideWrite(root, 4);
+  await expect.poll(() => state(page)).toMatchObject({ saved: 4, draft: 4, outside: null, pending: 0 });
+
+  const routePath = `**/api/projects/${projectId}`;
+  let competed = false;
+  await page.route(routePath, async (route) => {
+    if (route.request().method() === 'PATCH' && !competed) {
+      competed = true;
+      await outsideWrite(root, 5);
+    }
+    await route.continue();
+  });
+  const refused = await page.evaluate(async ({ path }) => {
+    const editor = (window as unknown as Probe).folderEditor.editor;
+    editor.edit({ kind: 'document', id: 'point-mass' }, 'Mass', [{ op: 'replace', path, value: 6 }]);
+    try { await editor.flush(); } catch (error) { return (error as { status?: number }).status; }
+    return null;
+  }, { path: massPath });
+  expect(refused).toBe(409);
+  expect(competed).toBe(true);
+  expect(await state(page)).toMatchObject({ saved: 4, draft: 6, outside: 5, pending: 1 });
+  await page.unroute(routePath);
+
+  const revisions = await page.evaluate(async () => {
+    const editor = (window as unknown as Probe).folderEditor.editor;
+    await editor.keep('edits');
+    const saved = await editor.flush();
+    editor.undo();
+    const undone = await editor.flush();
+    return { saved, undone };
+  });
+  expect(revisions.undone).not.toBe(revisions.saved);
+  expect(await state(page)).toMatchObject({ saved: 5, draft: 5, outside: null, revision: revisions.undone });
+  const { stdout } = await folderFixture('read', root);
+  expect(JSON.parse(stdout)).toEqual({ mass: 5, revision: revisions.undone });
+  await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
+});
+
+test('M2 managed commands preserve edits, identity and names across Rename and reopen', async ({ page, request }, info) => {
+  const projects = join(String(info.config.metadata.home), 'state', 'web', 'projects');
+  const alias = 'commands-reach';
+  const root = join(projects, alias);
+  await folderFixture('seed', root);
+  await page.goto('/');
+
+  const blank = await page.evaluate(async () => {
+    const entry = '/src/features/projectFolder/openProjectEditor.ts';
+    const folder = await import(entry) as typeof import('../../src/features/projectFolder/openProjectEditor');
+    const session = await folder.newProjectEditor();
+    const original = session.editor.getSnapshot();
+    const renamed = await session.editor.rename('blank-name');
+    session.close();
+    const reopened = await folder.openProjectEditor(original.saved.project_id);
+    const after = reopened.editor.getSnapshot();
+    reopened.close();
+    return {
+      original: original.saved, initialName: original.configuration.project, renamed,
+      after: { configuration: after.configuration, snapshot: after.saved },
+    };
+  });
+  expect(blank.renamed.configuration.project).toBe('blank-name');
+  expect(blank.after).toEqual(blank.renamed);
+  expect(blank.renamed.snapshot).toMatchObject({
+    project_id: blank.original.project_id, file_revisions: [], semantic_root: blank.original.semantic_root,
+  });
+  expect(JSON.parse(await readFile(join(projects, blank.initialName, 'blank-name.feedbax'), 'utf8')))
+    .not.toHaveProperty('project');
+  expect(JSON.parse(await readFile(join(projects, blank.initialName, 'presentation.json'), 'utf8'))).toEqual({});
+
+  await open(page, alias);
+  const { id: projectId } = await state(page);
+  const renamePath = `**/api/projects/${projectId}/rename`;
+  const renameSeen = page.waitForRequest(renamePath);
+  let releaseRename!: () => void;
+  const renameGate = new Promise<void>((resolve) => { releaseRename = resolve; });
+  await page.route(renamePath, async (route) => { await renameGate; await route.continue(); });
+  try {
+    await page.evaluate((path) => {
+      const probe = window as unknown as Probe;
+      probe.folderEditor.editor.edit({ kind: 'document', id: 'point-mass' }, 'Before Rename', [{ op: 'replace', path, value: 3 }]);
+      probe.renameCommand = probe.folderEditor.editor.rename('renamed');
+    }, massPath);
+    const sent = await renameSeen;
+    const before = await state(page);
+    expect(before).toMatchObject({ saved: 3, pending: 0 });
+    expect(sent.postDataJSON()).toEqual({ name: 'renamed', revision: before.revision });
+    await page.evaluate((path) => {
+      (window as unknown as Probe).folderEditor.editor.edit(
+        { kind: 'document', id: 'point-mass' }, 'During Rename', [{ op: 'replace', path, value: 4 }],
+      );
+    }, massPath);
+  } finally {
+    releaseRename();
+  }
+  await page.evaluate(async () => {
+    const probe = window as unknown as Probe;
+    await probe.renameCommand;
+    await probe.folderEditor.editor.flush();
+  });
+  await page.unroute(renamePath);
+  expect(await state(page)).toMatchObject({ id: projectId, name: 'renamed', saved: 4, pending: 0, undoName: 'During Rename' });
+
+  await page.route(renamePath, async (route) => {
+    const { revision } = route.request().postDataJSON() as { revision: string };
+    const competing = await request.post(`/api/projects/${projectId}/rename`, {
+      data: { name: 'competing-name', revision },
+    });
+    expect(competing.ok()).toBe(true);
+    await route.continue();
+  });
+  const refused = await page.evaluate(async () => {
+    try { await (window as unknown as Probe).folderEditor.editor.rename('stale-name'); }
+    catch (error) { return (error as { status?: number }).status; }
+    return null;
+  });
+  expect(refused).toBe(409);
+  expect(await state(page)).toMatchObject({ name: 'competing-name', saved: 4, pending: 0, undoName: 'During Rename' });
+  await page.unroute(renamePath);
+
+  let requests = 0;
+  await page.route(renamePath, async (route) => {
+    requests++;
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    await route.abort('failed');
+  });
+  const recoveredName = await page.evaluate(async () => {
+    const result = await (window as unknown as Probe).folderEditor.editor.rename('ack-lost');
+    return result.configuration.project;
+  });
+  expect(recoveredName).toBe('ack-lost');
+  expect(requests).toBe(1);
+  await page.unroute(renamePath);
+
+  const openPath = `**/api/projects/${projectId}/open`;
+  let seenOpen!: () => void;
+  const openSeen = new Promise<void>((resolve) => { seenOpen = resolve; });
+  let releaseOpen!: () => void;
+  const openGate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+  let held = false;
+  await page.route(openPath, async (route) => {
+    const response = await route.fetch();
+    if (!held && (await response.json()).configuration.project === 'outside-name') {
+      held = true;
+      seenOpen();
+      await openGate;
+    }
+    await route.fulfill({ response });
+  });
+  try {
+    const outside = await request.post(`/api/projects/${projectId}/rename`, {
+      data: { name: 'outside-name', revision: (await state(page)).revision },
+    });
+    expect(outside.ok()).toBe(true);
+    await openSeen;
+    await page.evaluate((path) => {
+      (window as unknown as Probe).folderEditor.editor.edit(
+        { kind: 'document', id: 'point-mass' }, 'During Open', [{ op: 'replace', path, value: 5 }],
+      );
+    }, massPath);
+  } finally {
+    releaseOpen();
+  }
+  await page.evaluate(() => (window as unknown as Probe).folderEditor.editor.flush());
+  await page.unroute(openPath);
+  expect(await state(page)).toMatchObject({ name: 'outside-name', saved: 5, pending: 0, outside: null });
+
+  const revision = await page.evaluate(async () => {
+    const { editor, close } = (window as unknown as Probe).folderEditor;
+    editor.undo();
+    const revision = await editor.flush();
+    close();
+    return revision;
+  });
+  const { stdout } = await folderFixture('read', root);
+  expect(JSON.parse(stdout)).toEqual({ mass: 4, revision });
+  await page.reload();
+  await open(page, projectId);
+  expect(await state(page)).toMatchObject({ id: projectId, name: 'outside-name', saved: 4, revision });
+  await page.evaluate(() => (window as unknown as Probe).folderEditor.close());
+});
+
+test('M2 managed New authors a Train with named trial documents', async ({ page, request }, info) => {
+  const [model, task, objective, definedTrain] = await fixture('ordinary-files', '8');
+  const train = { ...definedTrain, step: { ...definedTrain.step, base: { inline: {} } } };
+  await page.goto('/');
+  const { id, folderName } = await page.evaluate(async (file) => {
+    const entry = '/src/features/projectFolder/openProjectEditor.ts';
+    const folder = await import(entry) as typeof import('../../src/features/projectFolder/openProjectEditor');
+    const session = await folder.newProjectEditor();
+    (window as unknown as Probe).folderEditor = session;
+    const result = await session.editor.createFile(file);
+    return { id: result.snapshot.project_id, folderName: result.configuration.project };
+  }, train);
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', folderName);
+  expect(JSON.parse(await readFile(join(root, 'steps', 'train.json'), 'utf8'))).toEqual(train.step);
+  const path = `/api/projects/${id}/files`;
+  const routePath = `**${path}`;
+  await page.route(routePath, async (route) => {
+    const { revision } = route.request().postDataJSON() as { revision: string };
+    const competing = await request.post(path, { data: { revision, file: task } });
+    expect(competing.status()).toBe(201);
+    await route.continue();
+  });
+  const refusal = await page.evaluate(async (file) => {
+    try { await (window as unknown as Probe).folderEditor.editor.createFile(file); }
+    catch (error) { return (error as { status?: number }).status; }
+    return null;
+  }, model);
+  expect(refusal).toBe(409);
+  expect(JSON.parse(await readFile(join(root, 'documents', `${task.id}.json`), 'utf8'))).toEqual(task.document);
+  await expect(readFile(join(root, 'documents', 'point-mass.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  await page.unroute(routePath);
+
+  let committed!: () => void;
+  const savedOnServer = new Promise<void>((resolve) => { committed = resolve; });
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  let requests = 0;
+  await page.route(routePath, async (route) => {
+    requests++;
+    const response = await route.fetch();
+    expect(response.status()).toBe(201);
+    committed();
+    await hold;
+    await route.abort('failed');
+  });
+  try {
+    await page.evaluate((file) => {
+      const probe = window as unknown as Probe;
+      probe.createCommand = probe.folderEditor.editor.createFile(file);
+    }, model);
+    await savedOnServer;
+    await page.evaluate((inline) => {
+      (window as unknown as Probe).folderEditor.editor.edit({ kind: 'step', id: 'train' }, 'Bind Trial Documents', [
+        { op: 'replace', path: '/base/inline', value: inline },
+      ]);
+    }, definedTrain.step.base.inline);
+  } finally {
+    release();
+  }
+  await page.evaluate(async () => { await (window as unknown as Probe).createCommand; });
+  await page.unroute(routePath);
+  const saved = await page.evaluate(async (file) => {
+    const probe = window as unknown as Probe;
+    const { editor } = probe.folderEditor;
+    await editor.flush();
+    await editor.createFile(file);
+    const result = editor.getSnapshot();
+    probe.folderEditor.close();
+    return result;
+  }, objective);
+  expect(requests).toBe(1);
+  expect(saved).toMatchObject({ outside: null, pending: 0, undoName: 'Bind Trial Documents' });
+  expect(saved.saved.project.documents).toEqual({
+    [model.id]: model.document, [task.id]: task.document, [objective.id]: objective.document,
+  });
+  expect(saved.saved.project.steps).toEqual({ train: definedTrain.step });
+  const response = await request.get(`/api/projects/${id}/train-runs?revision=${saved.saved.revision}&window_map=true`);
+  expect(response.ok(), await response.text()).toBe(true);
+  const plan = await response.json() as StudioSavedTrainRuns;
+  expect(plan.window_map?.problems).toEqual([]);
+  expect(plan.rows).toMatchObject([{ status: 'not_run', request_id: expect.any(String) }]);
+  await page.reload();
+  await open(page, id);
+  const reopened = await page.evaluate(() => {
+    const { editor, close } = (window as unknown as Probe).folderEditor;
+    const snapshot = editor.getSnapshot().saved;
+    close();
+    return snapshot;
+  });
+  expect(reopened).toEqual(saved.saved);
+});

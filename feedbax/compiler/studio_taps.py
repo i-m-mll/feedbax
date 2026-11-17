@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import math
+import re
 
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
     StudioInterventionTransformSpec,
     TapSpec,
+    WIRE_ID_PATTERN,
     WireSpec,
+    derived_wire_id,
 )
 
 
@@ -94,12 +97,14 @@ def _write_reset(wire: WireSpec, *, producer: bool) -> dict:
 
 def _split(wire: WireSpec, node: str, phase: str | None) -> tuple[WireSpec, WireSpec]:
     incoming = WireSpec(
+        id=wire.id if phase == "read" else derived_wire_id(wire.id, node, "incoming"),
         source_node=wire.source_node,
         source_port=wire.source_port,
         target_node=node,
         target_port="input",
     )
     outgoing = WireSpec(
+        id=wire.id if phase != "read" else derived_wire_id(wire.id, node, "outgoing"),
         source_node=node,
         source_port="output",
         target_node=wire.target_node,
@@ -231,18 +236,21 @@ def lower_studio_taps(
                 )
             elif selector.namespace in ("graph_edge", "recurrent_carry"):
                 recurrent = selector.namespace == "recurrent_carry"
+                target_id = selector.target_id
+                explicit_id = target_id if target_id and re.fullmatch(WIRE_ID_PATTERN, target_id) else None
                 matches = [
                     i
                     for i, wire in enumerate(graph.wires)
-                    if selector.compact
-                    in (
-                        _compact(wire),
-                        _compact(wire).replace("edge:", "recurrent_carry:", 1) if recurrent else "",
+                    if (
+                        wire.id == explicit_id if explicit_id is not None else selector.compact in (
+                            _compact(wire),
+                            _compact(wire).replace("edge:", "recurrent_carry:", 1) if recurrent else "",
+                        )
                     )
                     and (wire.temporality == "recurrent") == recurrent
                 ]
                 if len(matches) != 1:
-                    raise ValueError(f"expected one matching wire for {selector.compact!r}")
+                    raise ValueError(f"expected one matching wire for {explicit_id or selector.compact!r}")
                 i = matches[0]
                 if i in claimed_wires:
                     raise ValueError("multiple intervention taps target the same graph connection")

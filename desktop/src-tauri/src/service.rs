@@ -9,14 +9,40 @@ use std::{
     io::{Read, Write},
     os::fd::{AsRawFd, FromRawFd, RawFd},
     os::unix::fs::MetadataExt,
+    os::unix::process::CommandExt,
     path::{Component, Path, PathBuf},
     process::{self, Command, Stdio},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn request_stop(_: libc::c_int) {
+    STOP_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+pub fn background_stop_requested() -> bool {
+    STOP_REQUESTED.load(Ordering::Relaxed)
+}
+
+fn install_stop_handlers() -> std::io::Result<()> {
+    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = request_stop as *const () as libc::sighandler_t;
+        unsafe { libc::sigemptyset(&mut action.sa_mask) };
+        if unsafe { libc::sigaction(signal, &action, std::ptr::null_mut()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -26,9 +52,10 @@ struct Manifest {
     resources: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
 pub struct Release {
     contents: PathBuf,
-    bundle: String,
+    agent: String,
     python: PathBuf,
     installer: PathBuf,
 }
@@ -37,7 +64,10 @@ pub struct Release {
 pub struct Paths {
     pub logs: PathBuf,
     pub control: PathBuf,
+    pub projects: PathBuf,
+    pub settings: PathBuf,
     pub storage_id: [u8; 16],
+    pub release: String,
 }
 
 impl Release {
@@ -50,22 +80,60 @@ impl Release {
             .bundleIdentifier()
             .ok_or("Studio must launch from its installed app bundle")?
             .to_string();
-        let manifest: Manifest =
-            serde_json::from_slice(&fs::read(contents.join("Resources/release.json"))?)?;
-        if manifest.schema != "feedbax.desktop.release.v1" || manifest.service_protocol != 1 {
-            return Err("Unsupported Studio release manifest or service protocol".into());
-        }
+        let manifest = read_manifest(&contents)?;
         if identifier != manifest.bundle_id {
             return Err(
                 "Installed application and release manifest have different bundle identities"
                     .into(),
             );
         }
+        Self::from_manifest(contents, manifest)
+    }
+
+    fn load_background() -> Result<Self> {
+        let helper = NSBundle::mainBundle();
+        let bundle = PathBuf::from(helper.bundlePath().to_string()).canonicalize()?;
+        let helpers = bundle
+            .parent()
+            .filter(|parent| parent.ends_with("Contents/Helpers"))
+            .ok_or("Background Activity must run inside the installed Studio bundle")?;
+        let contents = helpers
+            .parent()
+            .ok_or("Missing Studio Contents directory")?;
+        let manifest = read_manifest(contents)?;
+        let executable = std::env::current_exe()?.canonicalize()?;
+        let identifier = helper.bundleIdentifier().map(|id| id.to_string());
+        if !executable.starts_with(bundle.join("Contents/MacOS"))
+            || executable != installed_resource(contents, &manifest, "background_activity")?
+        {
+            return Err("Installed Background Activity does not match the Studio release".into());
+        }
+        let release = Self::from_manifest(contents.to_owned(), manifest)?;
+        if identifier.as_deref() != Some(release.agent.as_str()) {
+            return Err(
+                "Background Activity and its launch registration have different identities".into(),
+            );
+        }
+        Ok(release)
+    }
+
+    fn from_manifest(contents: PathBuf, manifest: Manifest) -> Result<Self> {
         let python = installed_resource(&contents, &manifest, "python")?;
         let installer = installed_resource(&contents, &manifest, "installer")?;
+        let plist = installed_resource(&contents, &manifest, "launch_agent")?;
+        if plist.parent() != Some(contents.join("Library/LaunchAgents").as_path())
+            || plist.extension().and_then(|value| value.to_str()) != Some("plist")
+        {
+            return Err("The Studio LaunchAgent must be an installed property list".into());
+        }
+        let agent = plist
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or("The Studio LaunchAgent has an invalid label")?
+            .to_owned();
         Ok(Self {
             contents,
-            bundle: identifier,
+            agent,
             python,
             installer,
         })
@@ -111,7 +179,7 @@ impl Release {
     }
 
     fn registration(&self) -> objc2::rc::Retained<SMAppService> {
-        let plist = NSString::from_str(&format!("{}.runtime.plist", self.bundle));
+        let plist = NSString::from_str(&format!("{}.plist", self.agent));
         unsafe { SMAppService::agentServiceWithPlistName(&plist) }
     }
 
@@ -119,7 +187,7 @@ impl Release {
         status_name(unsafe { self.registration().status() })
     }
 
-    pub fn register(&self) -> Result<&'static str> {
+    fn register(&self) -> Result<&'static str> {
         let agent = self.registration();
         unsafe {
             if matches!(
@@ -180,7 +248,7 @@ impl Release {
 
     fn await_agent_absent(&self) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(8);
-        let label = format!("gui/{}/{}.runtime", unsafe { libc::getuid() }, self.bundle);
+        let label = self.agent_label();
         loop {
             let output = Command::new("/bin/launchctl")
                 .args(["print", &label])
@@ -201,7 +269,30 @@ impl Release {
         }
     }
 
-    pub fn connect(&self) -> Result<Value> {
+    fn agent_label(&self) -> String {
+        format!("gui/{}/{}", unsafe { libc::getuid() }, self.agent)
+    }
+
+    fn activate(&self) -> Result<&'static str> {
+        let registered = self.registration_status() == "enabled";
+        let status = self.register()?;
+        if registered && status == "enabled" && self.call("health", &[])?["status"] == "unavailable"
+        {
+            let output = Command::new("/bin/launchctl")
+                .args(["kickstart", &self.agent_label()])
+                .output()?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Could not start the Studio service: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )
+                .into());
+            }
+        }
+        Ok(status)
+    }
+
+    pub fn connect(&self, ticket_args: &[&str]) -> Result<Value> {
         let paths = self.paths()?;
         let Some(_activation) = activation_lock(&paths)? else {
             return Ok(json!({"status": "installing"}));
@@ -211,18 +302,20 @@ impl Release {
         }
         let health = self.call("health", &[])?;
         match health["status"].as_str() {
-            Some("ready") => return self.call("ticket", &[]),
+            Some("ready") => return self.call("ticket", ticket_args),
             Some("unavailable") => {}
             _ => return Ok(health),
         }
-        let status = self.register()?;
+        let status = self.activate()?;
         if status != "enabled" {
             return Ok(json!({"status": status}));
         }
-        self.call("ticket", &["--wait", "20"])
+        let mut wait = vec!["--wait", "20"];
+        wait.extend_from_slice(ticket_args);
+        self.call("ticket", &wait)
     }
 
-    pub fn stop(&self, disposition: &str) -> Result<Value> {
+    pub fn quit_background(&self) -> Result<Value> {
         let paths = self.paths()?;
         let Some(_activation) = activation_lock(&paths)? else {
             return Ok(json!({"status": "installing"}));
@@ -230,11 +323,28 @@ impl Release {
         if paths.control.join("installation.json").exists() {
             return Ok(json!({"status": "recovery_required"}));
         }
-        self.stop_locked(disposition)
+        self.call("stop", &["--disposition", "checkpoint"])
+    }
+
+    pub fn activity_ticket(&self, paths: &Paths) -> Result<Value> {
+        let _guard = self.activity_activation(paths)?;
+        self.call("ticket", &["--activity"])
+    }
+
+    pub fn activity_activation(&self, paths: &Paths) -> Result<File> {
+        let guard = activation_lock(paths)?.ok_or("A Studio installation is in progress")?;
+        if paths.control.join("installation.json").exists() {
+            return Err("Complete Studio installation recovery first".into());
+        }
+        Ok(guard)
     }
 
     fn stop_locked(&self, disposition: &str) -> Result<Value> {
-        let result = self.call("stop", &["--disposition", disposition])?;
+        let result = if self.call("health", &[])?["status"] == "unavailable" {
+            self.call("retire-host", &["--disposition", disposition])?
+        } else {
+            self.call("stop", &["--disposition", disposition])?
+        };
         if result["status"] == "ready_to_stop" {
             let deadline = Instant::now() + Duration::from_secs(8);
             loop {
@@ -248,16 +358,34 @@ impl Release {
                 }
                 thread::sleep(Duration::from_millis(125));
             }
-            self.unregister()?;
         }
         Ok(result)
     }
 
     fn serve(&self) -> Result<()> {
-        let logs = self.paths()?.logs;
+        install_stop_handlers()?;
+        let result = self.run_background();
+        if result.is_err() && background_stop_requested() {
+            match self.call("retire-host", &["--disposition", "interrupt"]) {
+                Ok(outcome) if outcome["status"] == "ready_to_stop" => {}
+                outcome => {
+                    eprintln!("Could not release the Studio background runtime: {outcome:?}")
+                }
+            }
+            // launchd must not relaunch after the system requested a stop.
+            return Ok(());
+        }
+        result
+    }
+
+    fn run_background(&self) -> Result<()> {
+        let paths = self.paths()?;
+        let logs = &paths.logs;
         fs::create_dir_all(&logs)?;
+        let activity = crate::background_activity::Menu::new(self, &paths)?;
         let mut child = self
             .command("serve")
+            .process_group(0)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -268,7 +396,8 @@ impl Release {
         let (status, output, error) = thread::scope(|scope| {
             let output = scope.spawn(move || append_log(stdout, &output_log));
             let error = scope.spawn(move || append_log(stderr, &error_log));
-            (child.wait(), output.join(), error.join())
+            let status = activity.run(child);
+            (status, output.join(), error.join())
         });
         output.map_err(|_| "Studio stdout logger panicked")??;
         error.map_err(|_| "Studio stderr logger panicked")??;
@@ -278,6 +407,25 @@ impl Release {
         }
         Ok(())
     }
+
+    pub fn bundle_path(&self) -> &Path {
+        self.contents
+            .parent()
+            .expect("installed Contents directory")
+    }
+}
+
+pub fn run_background() -> Result<()> {
+    Release::load_background()?.serve()
+}
+
+fn read_manifest(contents: &Path) -> Result<Manifest> {
+    let manifest: Manifest =
+        serde_json::from_slice(&fs::read(contents.join("Resources/release.json"))?)?;
+    if manifest.schema != "feedbax.desktop.release.v1" || manifest.service_protocol != 1 {
+        return Err("Unsupported Studio release manifest or service protocol".into());
+    }
+    Ok(manifest)
 }
 
 fn installed_resource(contents: &Path, manifest: &Manifest, role: &str) -> Result<PathBuf> {
@@ -397,10 +545,10 @@ pub fn cli(args: &[String]) -> Result<()> {
         None
     };
     let answer = match (action.as_str(), rest.as_slice()) {
-        ("serve", []) => return release.serve(),
+        ("attest-machine", []) => return crate::authentication::attest_machine(),
         ("register", []) => {
             let _lock = mutation_lock(&release.paths()?, descriptor)?;
-            json!({"status": release.register()?})
+            json!({"status": release.activate()?})
         }
         ("unregister", []) => {
             let _lock = mutation_lock(&release.paths()?, descriptor)?;
@@ -413,7 +561,11 @@ pub fn cli(args: &[String]) -> Result<()> {
         ("health", _) | ("paths", []) => release.call(action, &rest)?,
         ("stop", [disposition @ ("defer" | "checkpoint" | "force")]) => {
             let _lock = mutation_lock(&release.paths()?, descriptor)?;
-            release.stop_locked(disposition)?
+            let stopped = release.stop_locked(disposition)?;
+            if stopped["status"] == "ready_to_stop" && descriptor.is_none() {
+                release.unregister()?;
+            }
+            stopped
         }
         _ => return Err("Unknown Studio service operation".into()),
     };

@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from feedbax.analysis import figures as figure_execution
 from feedbax.analysis.figures import (
     _exact_value_descriptor,
     coerce_figure_spec,
@@ -871,9 +870,7 @@ def test_identity_is_deterministic_and_locator_is_not_authored_identity(tmp_path
     second = resolve_figure_spec(spec, repo_root=tmp_path)
 
     assert first == second
-    assert first.authored_identity_sha256 == figure_execution.figure_composition_envelope_hash(
-        relocated
-    )
+    assert first.authored_identity_sha256 == relocated.identity_sha256()
     assert first.resolved_identity_sha256 == sha256_bytes(
         canonical_json_bytes(first.figure_spec.model_dump(mode="json", exclude_none=True))
     )
@@ -1378,7 +1375,7 @@ def test_figure_cli_resolve_prints_ordinary_spec_and_optional_lineage(
     assert lineage["composition"]["authored_envelope_sha256"] == lineage["authored_identity_sha256"]
 
 
-def test_figure_cli_applies_policy_only_from_an_explicit_project_root(
+def test_figure_cli_does_not_discover_retired_project_policy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from feedbax.bin import figure as figure_cli
@@ -1411,9 +1408,10 @@ def test_figure_cli_applies_policy_only_from_an_explicit_project_root(
     projectless = json.loads(capsys.readouterr().out)
     assert "width" not in projectless["assembler_params"]
 
-    assert figure_cli.main(["resolve", str(spec_path), "--project-root", str(tmp_path)]) == 0
-    governed = json.loads(capsys.readouterr().out)
-    assert governed["assembler_params"]["width"] == 812
+    with pytest.raises(SystemExit) as exc:
+        figure_cli.main(["resolve", str(spec_path), "--project-root", str(tmp_path)])
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --project-root" in capsys.readouterr().err
 
 
 def test_composition_authoring_reference_is_indexed_and_names_public_surfaces() -> None:

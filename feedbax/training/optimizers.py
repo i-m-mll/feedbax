@@ -185,17 +185,22 @@ def validate_optimizer_state_for_spec(optimizer_spec: OptimizerSpec, opt_state: 
     )
 
 
-def _optimizer_factory(
-    optimizer_type: str,
-) -> Callable[..., optax.GradientTransformation]:
-    factories: Mapping[str, Callable[..., optax.GradientTransformation]] = {
-        "adamw": optax.adamw,
-        "adam": optax.adam,
-        "sgd": optax.sgd,
-        "rmsprop": optax.rmsprop,
-    }
+_OPTIMIZER_FACTORIES: Mapping[str, Callable[..., optax.GradientTransformation]] = {
+    "adamw": optax.adamw,
+    "adam": optax.adam,
+    "sgd": optax.sgd,
+    "rmsprop": optax.rmsprop,
+}
+
+
+def optimizer_types() -> tuple[str, ...]:
+    """Return the names accepted by the optimizer builder."""
+    return tuple(_OPTIMIZER_FACTORIES)
+
+
+def _optimizer_factory(optimizer_type: str) -> Callable[..., optax.GradientTransformation]:
     try:
-        return factories[optimizer_type.lower()]
+        return _OPTIMIZER_FACTORIES[optimizer_type.lower()]
     except KeyError as exc:
         raise ValueError(f"Unsupported optimizer type {optimizer_type!r}") from exc
 

@@ -262,32 +262,6 @@ def _figure_authored_ref(value: FigureSpecInput) -> str:
     return "<inline>"
 
 
-def figure_composition_envelope(spec: FigureCompositionSpec) -> dict[str, Any]:
-    """Return the canonical authored identity envelope, excluding the parent locator."""
-    return _raw_figure_composition_envelope(spec.model_dump(mode="json", exclude_none=True))
-
-
-def figure_composition_envelope_hash(spec: FigureCompositionSpec) -> str:
-    """Return deterministic authored identity for one composition envelope."""
-    return spec.identity_sha256()
-
-
-def _raw_figure_composition_envelope(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return identity bytes from one exact authored v1 or v2 envelope."""
-    parent = deepcopy(dict(payload["parent"]))
-    parent.pop("ref", None)
-    return {
-        "schema_id": payload["schema_id"],
-        "schema_version": payload["schema_version"],
-        "parent": parent,
-        "deltas": deepcopy(payload["deltas"]),
-    }
-
-
-def _raw_figure_composition_envelope_hash(payload: Mapping[str, Any]) -> str:
-    return figure_composition_payload_identity_sha256(payload)
-
-
 def _current_figure_spec(payload: Mapping[str, Any]) -> FigureSpec:
     if payload.get("schema_id", FIGURE_SPEC_SCHEMA_ID) != FIGURE_SPEC_SCHEMA_ID:
         raise ValueError(
@@ -374,7 +348,7 @@ def resolve_figure_spec(
             raise ValueError(
                 f"figure composition exceeds maximum depth {MAX_FIGURE_COMPOSITION_DEPTH}: {path}"
             )
-        digest = _raw_figure_composition_envelope_hash(current_authored)
+        digest = figure_composition_payload_identity_sha256(current_authored)
         if digest in first_seen:
             cycle_start = first_seen[digest]
             cycle = [node.parent.ref for _, node, _ in chain[cycle_start:]]
@@ -521,7 +495,7 @@ def resolve_figure_spec(
             )
         )
     provenance = FigureCompositionProvenance(
-        authored_envelope_sha256=_raw_figure_composition_envelope_hash(authored),
+        authored_envelope_sha256=figure_composition_payload_identity_sha256(authored),
         root_figure=root_parent,
         layers=layers,
         documents=custody_documents,

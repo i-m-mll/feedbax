@@ -584,31 +584,6 @@ def test_builtin_muscle_representations_declare_consolidated_geometry_sources() 
     assert point_mass_template.representation.muscle_path_geometry is None
 
 
-def test_builtin_reach_tasks_expose_schematic_objective_representations() -> None:
-    registry = ComponentRegistry()
-    definitions = {item.name: item for item in registry.list_all()}
-
-    simple = definitions["feedbax.SimpleReaches"]
-    assert simple.representation is not None
-    simple_elements = {element.id: element for element in simple.representation.elements}
-    assert simple.representation.metadata["canonical_goal_anchor"] == "goal"
-    assert simple_elements["workspace"].archetype == "region"
-    assert simple_elements["reach-distribution"].archetype == "distribution_glyph"
-    assert simple_elements["goal-marker"].metadata["canonical_goal"] is True
-    assert simple_elements["objective"].archetype == "objective_link"
-
-    delayed = definitions["feedbax.DelayedReaches"]
-    assert delayed.representation is not None
-    delayed_elements = {element.id: element for element in delayed.representation.elements}
-    assert delayed.representation.metadata["temporality"]["kind"] == "scheduled"
-    assert (
-        delayed.representation.metadata["temporality"]["target_on_epochs_param"]
-        == "target_on_epochs"
-    )
-    assert delayed_elements["goal-marker"].metadata["canonical_goal"] is True
-    assert delayed_elements["reach-distribution"].metadata["distribution"] == "center_out"
-
-
 def test_component_registry_rejects_representation_unknown_param_path() -> None:
     class BadRepresentation(Gain):
         def __init__(self, gain: float = 1.0):

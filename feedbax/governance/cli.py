@@ -29,7 +29,7 @@ def build_init_parser() -> argparse.ArgumentParser:
         prog="feedbax init",
         description=(
             "Create or validate this project's Feedbax skeleton: declaration, "
-            "authoring budgets, science-surface policy, minimal package, and agent "
+            "Store ignore rule, science-surface policy, minimal package, and agent "
             "instructions. Deterministic, non-interactive, and transactional."
         ),
     )

@@ -23,7 +23,6 @@ _PUBLIC_ATTR_MODULES = {
     "get_figure_template": ".constructors",
     "loss_history": ".plotly",
     "loss_history_compare": ".plotly",
-    "profiles": ".profiles",
     "register_figure_constructor": ".constructors",
     "register_figure_piece": ".constructors",
     "register_figure_template": ".constructors",
@@ -35,10 +34,6 @@ _PUBLIC_ATTR_MODULES = {
     "save_figure_with_spec": ".io",
     "trajectories": ".trajectories",
     "trajectories_2D": ".trajectories",
-    "trajectories_3D": ".trajectories",
-    "unregister_figure_constructor": ".constructors",
-    "unregister_figure_piece": ".constructors",
-    "unregister_figure_template": ".constructors",
 }
 
 def apply_default_template(requested: str | None = None) -> str:

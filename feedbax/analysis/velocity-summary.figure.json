@@ -1,0 +1,27 @@
+{
+  "schema_version": "feedbax.figure_document.v1",
+  "data": ["summary"],
+  "theme": "plotly_white",
+  "view": {"hovermode": "x unified"},
+  "layout": [
+    {
+      "name": "velocity",
+      "row": 1,
+      "col": 1,
+      "title": "Reach-aligned velocity by condition",
+      "axes_labels": {"x": "Time (s)", "y": "Velocity (m/s)"}
+    }
+  ],
+  "layers": [
+    {
+      "name": "trial-summary",
+      "mark": "band",
+      "panel": "velocity",
+      "role": "summary",
+      "select": {"checkpoint": {"index": 0}},
+      "group": ["condition"],
+      "encode": {"x": "state_time", "y": "mean", "lower": "lower", "upper": "upper"},
+      "style": {"label": "{condition}"}
+    }
+  ]
+}

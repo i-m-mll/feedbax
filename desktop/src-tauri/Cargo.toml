@@ -2,8 +2,15 @@
 name = "feedbax-studio"
 version = "0.0.0"
 edition = "2021"
+default-run = "feedbax-studio"
+
+[[bin]]
+name = "feedbax-background-activity"
+path = "src/background_main.rs"
+required-features = ["background-activity-executable"]
 
 [features]
+background-activity-executable = []
 custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
@@ -16,10 +23,16 @@ tauri = { version = "=2.10.2", features = [] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
+window-shell-geometry = { path = "../../vendor/window-shell/native-geometry", features = ["appkit"] }
 libc = "0.2"
+reqwest = { version = "=0.13.2", default-features = false, features = ["blocking", "json"] }
 objc2 = "0.6.4"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSError", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSRunningApplication", "NSSavePanel", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSWindow", "NSWorkspace"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["WKWebView", "WKContentWorld", "WKFrameInfo", "block2", "objc2-app-kit", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSDate", "NSError", "NSString", "NSNotification", "NSOperation", "NSRunLoop", "NSTimer", "block2"] }
+objc2-local-authentication = { version = "=0.3.2", default-features = false, features = ["std", "LAContext", "block2"] }
 objc2-service-management = "0.3.2"
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
 [profile.release]
 debug = false

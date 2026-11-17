@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -326,7 +325,7 @@ def test_fallback_selected_requires_policy_and_reason_or_fallback_bank() -> None
     assert fallback.failure_reason is not None
 
 
-def test_manifest_lineage_indexes_selected_checkpoint_model_training_and_bank_refs(
+def test_manifest_lineage_persists_selected_checkpoint_model_training_and_bank_refs(
     tmp_path: Path,
 ) -> None:
     candidates = [_candidate("run-a", 100, 0.43, 2), _candidate("run-a", 200, 0.21, 1)]
@@ -375,21 +374,8 @@ def test_manifest_lineage_indexes_selected_checkpoint_model_training_and_bank_re
         "evaluation_bank",
     ) in lineage
 
-    write_manifest(manifest, root=tmp_path, index=True)
-    db_path = tmp_path / "index" / "feedbax.sqlite"
-    with sqlite3.connect(db_path) as conn:
-        indexed_lineage = set(
-            conn.execute(
-                """
-                SELECT parent_kind, parent_id, role
-                FROM lineage_edges
-                WHERE child_id = ?
-                """,
-                (manifest.id,),
-            ).fetchall()
-        )
-
-    assert lineage <= indexed_lineage
+    loaded = load_manifest(write_manifest(manifest, root=tmp_path, index=True))
+    assert loaded.provenance.parents == normalized.provenance.parents
 
 
 def test_checkpoint_selection_schema_registry_identities_and_v0_rejection() -> None:

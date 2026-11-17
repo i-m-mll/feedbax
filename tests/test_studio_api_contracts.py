@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections import Counter
+import re
+
 from feedbax.component_registry import ComponentPack
 from feedbax.contracts.representation import RepresentationSpec
 
@@ -23,7 +26,6 @@ from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.array_values import (
     ConstantArrayValueSpec,
     SparseCooArrayValueSpec,
@@ -34,11 +36,7 @@ from feedbax.contracts.studio_api import (
     ComponentListResponse,
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
-    StudioApiModel,
-    TrainingErrorEvent,
-    TrainingProgressEvent,
-    TrainingResyncEvent,
-    TrainingStartPayload,
+    SuccessPayload,
 )
 from feedbax.contracts.manifest import AnalysisRunSpec, load_manifest
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
@@ -50,6 +48,7 @@ from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
 from scripts.generate_studio_contracts import (
+    AUTHORED_CONTRACT_MODELS,
     CONTRACT_MODEL_NAMES,
     MODEL_TYPES,
     OUTPUT,
@@ -68,15 +67,10 @@ GENERATED_STUDIO_PREFIXES = (
     "/api/graphs",
     "/api/inspection",
     "/api/penzai",
+    "/api/projects",
     "/api/runs",
-    "/api/training",
     "/api/trajectories",
 )
-
-NON_GENERATED_STUDIO_RESPONSE_ROUTES = {
-    "/api/training/loss/validate",
-}
-
 
 def _response_model_members(response_model: object) -> list[type[BaseModel]]:
     origin = get_origin(response_model)
@@ -273,74 +267,6 @@ def test_analysis_bundle_dry_run_endpoint_returns_stage_status() -> None:
     assert payload["stages"][0]["reason"] == "disabled for this bundle"
 
 
-def test_training_progress_event_contract_accepts_worker_shape() -> None:
-    event = TrainingProgressEvent.model_validate(
-        {
-            "type": "training_progress",
-            "job_id": "job-1",
-            "seq": 3,
-            "emitted_at_ms": 1783430000000,
-            "worker_seq": 9,
-            "batch": 1,
-            "total_batches": 10,
-            "loss": 0.5,
-            "loss_terms": {"position": 0.4},
-            "grad_norm": 1.5,
-            "step_time_ms": 12.0,
-            "status": "running",
-            "execution": "generic_graph",
-        }
-    )
-
-    assert event.job_id == "job-1"
-    assert event.seq == 3
-    assert event.worker_seq == 9
-    assert event.loss_terms["position"] == 0.4
-    assert event.schema_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
-
-
-def test_training_error_and_resync_events_have_stable_coordinates() -> None:
-    error = TrainingErrorEvent.model_validate(
-        {
-            "type": "training_error",
-            "job_id": "job-1",
-            "seq": 4,
-            "emitted_at_ms": 1783430000100,
-            "worker_seq": 10,
-            "batch": 2,
-            "error": "worker failed",
-            "diagnostics": [
-                {
-                    "severity": "error",
-                    "code": "graph.missing_subgraph",
-                    "message": "Network node has no subgraph",
-                    "node_ids": ["network"],
-                }
-            ],
-        }
-    )
-    resync = TrainingResyncEvent.model_validate(
-        {
-            "type": "training_resync",
-            "job_id": "job-1",
-            "seq": 5,
-            "emitted_at_ms": 1783430000200,
-            "expected_worker_seq": 11,
-            "observed_worker_seq": 14,
-            "missed_events": 3,
-            "reason": "gap",
-            "message": "Training stream resumed after reconnect with 3 missed event(s).",
-        }
-    )
-
-    assert error.schema_version == STUDIO_API_TRANSPORT_SCHEMA_VERSION
-    assert error.diagnostics[0].code == "graph.missing_subgraph"
-    assert error.diagnostics[0].node_ids == ["network"]
-    assert error.job_id == resync.job_id
-    assert resync.reason == "gap"
-    assert resync.missed_events == 3
-
-
 def test_component_api_serves_representation_contract() -> None:
     class ApiRepresentedGain(Gain):
         """API represented component fixture."""
@@ -453,16 +379,16 @@ def test_component_refresh_failure_preserves_published_state(
 
 def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() -> None:
     with pytest.raises(ValidationError, match="literal_error"):
-        TrainingStartPayload.model_validate(
+        SuccessPayload.model_validate(
             {
                 "schema_id": STUDIO_API_TRANSPORT_SCHEMA_ID,
                 "schema_version": "feedbax.spec.studio.api_transport.v0",
-                "job_id": "job-1",
+                "success": True,
             }
         )
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        TrainingStartPayload.model_validate({"job_id": "job-1", "unexpected": True})
+        SuccessPayload.model_validate({"success": True, "unexpected": True})
 
     family = default_spec_registry.resolve("StudioApiTransport")
     assert family.identity == STUDIO_API_TRANSPORT_SCHEMA_ID
@@ -473,57 +399,11 @@ def test_studio_api_transport_models_declare_identity_and_reject_old_or_extra() 
             {"schema_version": "feedbax.spec.studio.api_transport.v0"},
         )
 
-    assert issubclass(TrainingProgressEvent, StudioApiModel)
-
-
-def test_graph_validate_endpoint_returns_domain_diagnostics() -> None:
-    client = TestClient(create_app())
-    graph = GraphSpec(
-        nodes={
-            "network": ComponentSpec(
-                type="Network",
-                input_ports=["input"],
-                output_ports=[],
-            )
-        }
-    )
-
-    response = client.post(
-        "/api/graphs/graph-1/validate",
-        json=graph.model_dump(mode="json", exclude_none=True),
-    )
-
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert isinstance(data, list)
-    assert data[0]["severity"] == "error"
-    assert data[0]["code"] == "graph.missing_input"
-    assert data[0]["node_ids"] == ["network"]
-    assert "valid" not in data[0]
-
-
-def test_graph_validate_endpoint_names_competing_external_inputs() -> None:
-    client = TestClient(create_app())
-    graph = GraphSpec(
-        nodes={"gain": ComponentSpec(type="feedbax.Gain", input_ports=["input"])},
-        input_ports=["command", "override"],
-        input_bindings={"command": ("gain", "input"), "override": ("gain", "input")},
-    )
-
-    response = client.post("/api/graphs/graph-1/validate", json=graph.model_dump(mode="json"))
-
-    assert response.status_code == 200
-    (conflict,) = response.json()["data"]
-    assert conflict["severity"] == "error"
-    assert conflict["code"] == "graph.input_occupied"
-    assert conflict["ports"] == [["gain", "input"]]
-    assert "external input 'command'" in conflict["message"]
-    assert "external input 'override'" in conflict["message"]
 
 
 def test_generated_studio_contracts_cover_route_response_models() -> None:
     app = create_app()
-    generated_model_names = {model.__name__ for model in MODEL_TYPES}
+    generated_model_names = {model.__name__ for model in (*MODEL_TYPES, *AUTHORED_CONTRACT_MODELS)}
     generated_contract_names = set(CONTRACT_MODEL_NAMES)
     missing: list[str] = []
 
@@ -532,8 +412,6 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
             continue
         if not route.path.startswith(GENERATED_STUDIO_PREFIXES):
             continue
-        if route.path in NON_GENERATED_STUDIO_RESPONSE_ROUTES:
-            continue
         if route.response_model is None:
             continue
         for model in _response_model_members(route.response_model):
@@ -541,7 +419,7 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
             if model_name not in generated_model_names:
                 missing.append(f"{route.path} response_model={model_name}")
             elif (
-                model_name.endswith(("Response", "Envelope", "Info"))
+                (model_name.endswith(("Response", "Envelope", "Info")) or route.path.startswith("/api/projects"))
                 and model_name not in generated_contract_names
             ):
                 missing.append(f"{route.path} contractSchemas missing {model_name}")
@@ -550,21 +428,28 @@ def test_generated_studio_contracts_cover_route_response_models() -> None:
 
 
 def test_generated_studio_contracts_include_nested_model_dependencies() -> None:
-    registered_models = set(MODEL_TYPES)
-    missing = {
-        model.__name__: sorted(
-            dependency.__name__
-            for dependency in model_dependencies(model)
-            if dependency not in registered_models
-        )
+    rendered = generate()
+    types = re.findall(r"^export (?:interface|type) (\w+)\b", rendered, re.MULTILINE)
+    validators = re.findall(r"^export const (\w+)Schema:", rendered, re.MULTILINE)
+    type_counts = Counter(types)
+    validator_counts = Counter(validators)
+    referenced_models = {
+        dependency.__name__
         for model in MODEL_TYPES
+        for dependency in model_dependencies(model)
     }
 
-    assert {name: dependencies for name, dependencies in missing.items() if dependencies} == {}
-    assert MODEL_TYPES.index(LrScheduleSpec) < MODEL_TYPES.index(OptimizerSpec)
+    assert {
+        name: (type_counts[name], validator_counts[name])
+        for name in sorted(referenced_models)
+        if (type_counts[name], validator_counts[name]) != (1, 1)
+    } == {}
+    assert types.index(LrScheduleSpec.__name__) < types.index(OptimizerSpec.__name__)
 
 
 def test_generated_studio_contracts_are_current() -> None:
+    # OpenAPI can annotate recursive root references through endpoint fields.
+    create_app().openapi()
     assert OUTPUT.read_text(encoding="utf-8") == generate()
 
 

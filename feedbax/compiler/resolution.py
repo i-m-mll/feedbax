@@ -23,6 +23,7 @@ from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import (
     SourcePayload,
     derive_acausal_interface,
+    is_acausal_type,
     normalize_acausal_interfaces_for_graph,
 )
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
@@ -111,17 +112,16 @@ def resolve_component_node(
 def _complete_component_node(
     node_name: str,
     node: ComponentSpec,
-    registry: Any,
-    meta: DeclaredComponent | None,
+    declarations: Mapping[str, DeclaredComponent | None],
 ) -> tuple[ComponentSpec, BaseModel | None]:
     from feedbax.compiler.serialization import (
         _split_lowering_metadata,
         _validate_dynamic_component_ports,
     )
 
-    if meta is None:
+    if (meta := declarations[node.type]) is None:
         return node, None
-    params, lowering_metadata = _split_lowering_metadata(node, registry)
+    params, lowering_metadata = _split_lowering_metadata(node, declarations)
     if meta.is_composite:
         return node.model_copy(update={"params": lowering_metadata}), None
     context = {
@@ -138,7 +138,7 @@ def _complete_component_node(
         params,
         node.input_ports,
         node.output_ports,
-        component_registry=registry,
+        component_registry=declarations,
     )
     return node.model_copy(
         update={
@@ -166,7 +166,6 @@ class _Completion:
         driven_boundary_ports: frozenset[str] = frozenset(),
         external_boundary_ports: frozenset[str] | None = None,
     ):
-        self.registry = registry
         self.path = path
         self.graph = normalize_acausal_interfaces_for_graph(graph)
         self.driven_inputs = {(wire.target_node, wire.target_port) for wire in self.graph.wires} | {
@@ -260,12 +259,13 @@ class _Completion:
             shape = tuple(dims) if dims is not None else None
             payload.validate_shape(f"{node}.{port}", shape)
         if key in self.inputs:
-            if _prototype_signature(self.inputs[key]) != _prototype_signature(proto):
-                old_shape, new_shape = shape_from_proto(self.inputs[key]), shape_from_proto(proto)
+            existing = self.inputs[key]
+            if existing is not proto and _prototype_signature(existing) != _prototype_signature(proto):
+                old_shape, new_shape = shape_from_proto(existing), shape_from_proto(proto)
                 kind = "shape" if old_shape != new_shape else "dtype"
                 raise ValueError(
                     f"Graph wiring {kind} mismatch at {key[0]}.{key[1]}: "
-                    f"existing prototype {self.inputs[key]!r}, source provides {proto!r}"
+                    f"existing prototype {existing!r}, source provides {proto!r}"
                 )
             return False
         if node in self.completed and (rule := self.prototype_parameters.get(node)) is not None:
@@ -383,8 +383,7 @@ class _Completion:
         final, config = _complete_component_node(
             name,
             node.model_copy(update={"params": params}),
-            self.registry,
-            self.metadata[node.type],
+            self.metadata,
         )
         for rule, derived in dimensions:
             declared = final.params.get(rule.param)
@@ -423,7 +422,7 @@ class _Completion:
         if name in self.published or name not in self.completed:
             return False
         node = self.completed[name]
-        domain = required_interior_domain(node.type, self.registry)
+        domain = required_interior_domain(node.type, self.metadata)
         if domain is not None and name not in (self.graph.subgraphs or {}):
             if node.type == "feedbax.Network":
                 raise ValueError(
@@ -446,10 +445,22 @@ class _Completion:
             )
         if name in self.children:
             outputs = self.children[name].graph_outputs()
-        elif required_interior_domain(node.type, self.registry) not in (None, CAUSAL_DOMAIN_ID):
-            outputs = {port: jnp.zeros(()) for port in node.output_ports}
+        elif domain not in (None, CAUSAL_DOMAIN_ID):
+            subgraph = (self.graph.subgraphs or {}).get(name)
+            if isinstance(subgraph, AcausalGraphSpec) and subgraph.physical_domain == "planar_multibody":
+                outputs = {
+                    sensor.params.get("port_name", "y"): jnp.zeros((2,))
+                    for sensor in subgraph.nodes.values()
+                    if is_acausal_type(sensor.type, "SensorOutput")
+                    and sensor.params.get("quantity", "position") in {"position", "velocity"}
+                }
+                outputs.update({
+                    port: jnp.zeros(()) for port in node.output_ports if port not in outputs
+                })
+            else:
+                outputs = {port: jnp.zeros(()) for port in node.output_ports}
         else:
-            fn = _lookup_output_prototype_fn(self.registry, node.type)
+            fn = _lookup_output_prototype_fn(self.metadata, node.type)
             if fn is None:
                 if any(wire.source_node == name for wire in self.graph.wires):
                     raise ValueError(

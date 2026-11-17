@@ -15,9 +15,6 @@ from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE
 from feedbax.runtime.filters import LowPassFilter
 from feedbax.runtime.state import CartesianState
-from feedbax.training.rl.env import RLEnvConfig, _physics_substep
-
-
 pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
 
@@ -139,20 +136,6 @@ def test_fresh_mechanics_stateful_solver_jit_and_gradient(backend):
     np.testing.assert_allclose(value, 0.1, atol=1e-12)
     np.testing.assert_allclose(grad, 0.1, atol=1e-12)
     np.testing.assert_allclose(position, 0.005, atol=1e-8)
-
-
-def test_rl_euler_helper_keeps_mixed_storage_in_scan():
-    plant = DirectForceInput(MixedPointMass(mass=1.0), clip_states=False)
-    config = RLEnvConfig(n_steps=2, dt=0.01, n_joints=2, n_muscles=2)
-    initial = (plant.init(key=jax.random.PRNGKey(0)), jnp.ones(2))
-
-    def step(carry, _):
-        return _physics_substep(plant, config, jnp.ones(2), carry), None
-
-    (physical, _), _ = jax.jit(lambda: jax.lax.scan(step, initial, None, length=2))()
-    assert physical.skeleton.pos.dtype == jnp.float32
-    assert physical.skeleton.vel.dtype == jnp.float64
-    np.testing.assert_allclose(physical.skeleton.vel, 0.02, atol=1e-12)
 
 
 class DecayPair(eqx.Module):

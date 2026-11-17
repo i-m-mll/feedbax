@@ -1,0 +1,456 @@
+"""Canonical request identity and stored-object codec for M2."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Mapping
+from copy import deepcopy
+from dataclasses import dataclass, field
+from functools import cache
+from importlib.resources import files
+from typing import Any
+
+from pydantic import TypeAdapter
+from pydantic_core import to_json
+
+from feedbax.contracts._request_codec import (
+    PinnedFields,
+    decode,
+    describe_models,
+    encode,
+    same_typed_value,
+)
+from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.canonical_json import (
+    _dump_canonical_json_v2,
+    canonical_json_v2_bytes,
+    validate_canonical_json_v2,
+)
+from feedbax.contracts.model_document import omit_model_display_names, restore_model_display_names
+from feedbax.contracts.request_refs import (
+    ContentRef,
+    EffectiveBindingId,
+    EffectiveInputs,
+    InputMember,
+    RequestId,
+    RequestInputs,
+    RequestKind,
+)
+from feedbax.contracts.request_specs import (
+    AnalysisRequestSpec,
+    DocumentTrainingRequestSpec,
+    EvaluationRequestSpec,
+    RenderRequestSpec,
+    ReportRequestSpec,
+    RequestSpec,
+    TrialDocuments,
+)
+from feedbax.contracts.task_document import PythonTaskSelection
+
+_IDENTITY = "feedbax.identity.request.v1"
+_STORAGE_SCHEMA = "feedbax.request.v1"
+_DOCUMENT_TRAIN_STORAGE_SCHEMA = "feedbax.request.train.documents.v2"
+_EFFECTIVE_IDENTITY = "feedbax.identity.effective-binding.v1"
+_INPUTS = TypeAdapter(RequestInputs)
+
+
+@dataclass(frozen=True)
+class RequestDescriptor:
+    spec_type: type[RequestSpec]
+    documents: tuple[str, ...] = ()
+    storage_schema: str = _STORAGE_SCHEMA
+
+
+DOCUMENT_TRAIN_REQUEST = RequestDescriptor(
+    DocumentTrainingRequestSpec, ("method_payload",), _DOCUMENT_TRAIN_STORAGE_SCHEMA
+)
+
+REQUEST_KINDS: Mapping[RequestKind, RequestDescriptor] = {
+    "train": DOCUMENT_TRAIN_REQUEST,
+    "evaluate": RequestDescriptor(EvaluationRequestSpec),
+    "analyze": RequestDescriptor(AnalysisRequestSpec),
+    "render": RequestDescriptor(RenderRequestSpec),
+    "report": RequestDescriptor(ReportRequestSpec),
+}
+
+
+def stored_request_descriptor(schema: str, kind: RequestKind) -> RequestDescriptor:
+    for request_kind, descriptor in REQUEST_KINDS.items():
+        if request_kind == kind and descriptor.storage_schema == schema:
+            return descriptor
+    raise ValueError("Unsupported stored request envelope")
+
+
+@dataclass(frozen=True)
+class EncodedTrainTask:
+    """Task projection from a locally encoded Train request."""
+
+    python_selection: bytes | None
+
+
+@dataclass(frozen=True)
+class EncodedRequest:
+    """A request ID, its stored bytes, and the named bytes it references."""
+
+    id: RequestId
+    data: bytes
+    documents: Mapping[str, bytes]
+    train_task: EncodedTrainTask | None = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class DecodedRequest:
+    kind: RequestKind
+    spec: RequestSpec
+    inputs: RequestInputs
+    id: RequestId
+
+
+@dataclass(frozen=True)
+class _FactoredDocument:
+    value: Any
+    projection: Any
+    digest: str
+    data: bytes
+
+
+@dataclass(frozen=True)
+class _InlineTrialDocuments:
+    data: bytes
+    task: EncodedTrainTask | None
+
+
+class RequestDocumentMemo:
+    """Reuse verified documents and pinned defaults under one codec authority."""
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[type[RequestSpec], str], _FactoredDocument] = {}
+        self._inline_trial: tuple[TrialDocuments, _InlineTrialDocuments] | None = None
+        self._pins = PinnedFields(_identity_contract()["fields"])
+
+    def fork(self) -> RequestDocumentMemo:
+        work = RequestDocumentMemo()
+        work._entries.update(self._entries)
+        return work
+
+    def lookup(self, spec: RequestSpec, name: str) -> _FactoredDocument | None:
+        entry = self._entries.get((type(spec), name))
+        if entry is not None and same_typed_value(getattr(spec, name), entry.value):
+            return entry
+        return None
+
+    def remember(
+        self, spec: RequestSpec, name: str, projection: Any, digest: str, data: bytes
+    ) -> None:
+        self._entries[type(spec), name] = _FactoredDocument(
+            deepcopy(getattr(spec, name)), projection, digest, data
+        )
+
+
+@cache
+def _identity_contract() -> dict[str, Any]:
+    data = files("feedbax.contracts").joinpath("request_identity_contract.json").read_bytes()
+    return json.loads(data)
+
+
+def identity_contract() -> dict[str, Any]:
+    """Return a copy of the checked-in field and retirement table."""
+    return deepcopy(_identity_contract())
+
+
+def request_codec_authority() -> tuple[object, ...]:
+    """Identify the loaded request descriptors, validators and identity pins."""
+    return (
+        encode_request,
+        encode,
+        tuple(
+            (kind, descriptor, descriptor.spec_type.__pydantic_validator__)
+            for kind, descriptor in REQUEST_KINDS.items()
+        ),
+        sha256_bytes(to_json(_identity_contract())),
+    )
+
+
+def generate_identity_fields() -> dict[str, Any]:
+    roots = [InputMember]
+    for _, descriptor in REQUEST_KINDS.items():
+        for name in descriptor.documents:
+            if not descriptor.spec_type.model_fields[name].is_required():
+                raise ValueError(
+                    f"Factored request document must be present: {descriptor.spec_type.__name__}.{name}"
+                )
+        roots.append(descriptor.spec_type)
+    return describe_models(roots)
+
+
+def _validated_inputs(inputs: RequestInputs) -> RequestInputs:
+    groups = _INPUTS.validate_python(inputs)
+    for role, members in groups.items():
+        if not members:
+            raise ValueError(f"Input role {role!r} must have at least one member")
+        if len({member.key for member in members}) != len(members):
+            raise ValueError(f"Duplicate input key in role {role!r}")
+    return groups
+
+
+def request_id(
+    kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs, *, storage_schema: str = _STORAGE_SCHEMA,
+) -> RequestId:
+    """Hash an already normalized spec projection and the resolved input references."""
+    if kind not in REQUEST_KINDS:
+        raise ValueError(f"Unknown request kind: {kind!r}")
+    preimage = _request_preimage(kind, spec, inputs, storage_schema)
+    return kind + ":" + sha256_bytes(canonical_json_v2_bytes(preimage))
+
+
+def _request_preimage(
+    kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs, storage_schema: str,
+) -> dict[str, Any]:
+    pins = PinnedFields(_identity_contract()["fields"])
+    references = {
+        role: [
+            {
+                "key": member.key,
+                "reference": (
+                    (
+                        {"sha256": member.reference.sha256, "tree": True}
+                        if member.reference.tree
+                        else {"sha256": member.reference.sha256}
+                    )
+                    if isinstance(member.reference, ContentRef)
+                    else encode(member.reference, type(member.reference), pins)
+                ),
+            }
+            for member in members
+        ]
+        for role, members in _validated_inputs(inputs).items()
+    }
+    preimage = {"identity": _IDENTITY, "kind": kind, "spec": spec, "inputs": references}
+    if storage_schema != _STORAGE_SCHEMA:
+        preimage["schema"] = storage_schema
+    return preimage
+
+
+def _append_spec(outer: bytes, canonical_spec: bytes) -> bytes:
+    """Append the final JCS key to the fixed request envelope fields."""
+    return outer[:-1] + b',"spec":' + canonical_spec + b"}"
+
+
+def _may_spell_unsafe_integer(value: Any) -> bool:
+    # A wide float can serialize as an integer token the stored reader refuses.
+    if type(value) is float:
+        return abs(value) >= 2**53
+    if isinstance(value, dict):
+        return any(map(_may_spell_unsafe_integer, value.values()))
+    if isinstance(value, list):
+        return any(map(_may_spell_unsafe_integer, value))
+    return False
+
+
+def _encoded_train_task(projection: dict[str, Any]) -> EncodedTrainTask | None:
+    if _may_spell_unsafe_integer(projection):
+        return None
+    selection = projection["trial_documents"].get("python_task")
+    return EncodedTrainTask(_dump_canonical_json_v2(selection) if selection is not None else None)
+
+
+def _encode_spec_with_trial_documents(spec: dict[str, Any], trial: _InlineTrialDocuments) -> bytes:
+    # Place the inline member among the fixed ASCII Train spec keys.
+    name = "trial_documents"
+    before = {key: value for key, value in spec.items() if key < name}
+    after = {key: value for key, value in spec.items() if key > name}
+    prefix = _dump_canonical_json_v2(before)[:-1] + (b"," if before else b"")
+    suffix = b"," + _dump_canonical_json_v2(after)[1:] if after else b"}"
+    return prefix + b'"trial_documents":' + trial.data + suffix
+
+
+def decode_python_task_selection(selection: bytes) -> PythonTaskSelection:
+    """Rehydrate a Python Task subtree captured by the local request encoder."""
+    spec = decode(json.loads(selection), PythonTaskSelection, _identity_contract()["fields"])
+    return PythonTaskSelection.model_validate_json(json.dumps(spec))
+
+
+def encode_request(
+    spec: RequestSpec, inputs: RequestInputs, *, document_memo: RequestDocumentMemo | None = None,
+    capture_train_task: bool = False,
+) -> EncodedRequest:
+    """Encode a typed, validated author request and compute its identity."""
+    match = next(
+        ((kind, descriptor) for kind, descriptor in REQUEST_KINDS.items()
+         if descriptor.spec_type is type(spec)),
+        None,
+    )
+    if match is None:
+        raise ValueError(f"Unknown request spec model: {type(spec).__name__}")
+    kind, descriptor = match
+    inputs = _validated_inputs(inputs)
+    pins = (
+        document_memo._pins
+        if document_memo is not None
+        else PinnedFields(_identity_contract()["fields"])
+    )
+    reused = {}
+    if document_memo is not None:
+        reused = {
+            name: entry
+            for name in descriptor.documents
+            if (entry := document_memo.lookup(spec, name)) is not None
+        }
+    trial_documents = None
+    trial = None
+    projected_fields = {name: entry.projection for name, entry in reused.items()}
+    if capture_train_task and document_memo is not None and isinstance(spec, DocumentTrainingRequestSpec):
+        trial_documents = spec.trial_documents
+        if (previous := document_memo._inline_trial) is not None and same_typed_value(trial_documents, previous[0]):
+            trial = previous[1]
+            # The required field keeps its place in validation order.
+            projected_fields["trial_documents"] = None
+    projection = encode(
+        spec, descriptor.spec_type, pins, projected_fields=projected_fields,
+    )
+    train_task = None
+    if descriptor is DOCUMENT_TRAIN_REQUEST:
+        if trial is None:
+            omit_model_display_names(projection["trial_documents"]["model"])
+        if capture_train_task:
+            train_task = _encoded_train_task(projection) if trial is None else (
+                trial.task if not _may_spell_unsafe_integer(projection) else None
+            )
+    documents = {}
+    for name in descriptor.documents:
+        if name in reused:
+            digest, data = reused[name].digest, reused[name].data
+        else:
+            data = canonical_json_v2_bytes(projection[name])
+            digest = sha256_bytes(data)
+            if document_memo is not None:
+                document_memo.remember(spec, name, projection[name], digest, data)
+        projection[name] = digest
+        documents[digest] = data
+
+    envelope = {
+        "schema": descriptor.storage_schema,
+        "kind": kind,
+        "inputs": {
+            role: [encode(member, InputMember, pins) for member in members]
+            for role, members in inputs.items()
+        },
+    }
+    if train_task is not None and _may_spell_unsafe_integer(envelope["inputs"]):
+        train_task = None
+    preimage = _request_preimage(kind, projection, inputs, descriptor.storage_schema)
+    validate_canonical_json_v2(preimage)
+    del preimage["spec"]
+    identity_fields = _dump_canonical_json_v2(preimage)
+    canonical_spec = (
+        _dump_canonical_json_v2(projection) if trial is None else _encode_spec_with_trial_documents(projection, trial)
+    )
+    encoded = EncodedRequest(
+        id=kind + ":" + sha256_bytes(_append_spec(identity_fields, canonical_spec)),
+        data=_append_spec(canonical_json_v2_bytes(envelope), canonical_spec),
+        documents=documents,
+        train_task=train_task,
+    )
+    if trial_documents is not None and trial is None:
+        assert document_memo is not None
+        inline = projection["trial_documents"]
+        document_memo._inline_trial = deepcopy(trial_documents), _InlineTrialDocuments(
+            _dump_canonical_json_v2(inline), _encoded_train_task({"trial_documents": inline}),
+        )
+    return encoded
+
+
+def _read_object(data: bytes, *, nullable: bool = False) -> dict | None:
+    value = json.loads(data)
+    if value is None and nullable and data == b"null":
+        return None
+    if not isinstance(value, dict) or canonical_json_v2_bytes(value) != data:
+        raise ValueError("Expected a canonical request object")
+    return value
+
+
+def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> DecodedRequest:
+    """Verify stored bytes and fill pinned values before validating the request."""
+    payload = _read_object(data)
+    if payload.keys() != {"schema", "kind", "spec", "inputs"}:
+        raise ValueError("Unsupported stored request envelope")
+    kind = payload["kind"]
+    if (
+        not isinstance(kind, str)
+        or kind not in REQUEST_KINDS
+        or not isinstance(payload["spec"], dict)
+    ):
+        raise ValueError("Unknown request kind or invalid stored request spec")
+    descriptor = stored_request_descriptor(payload["schema"], kind)
+    spec_payload = dict(payload["spec"])
+    fields = _identity_contract()["fields"]
+    input_groups = payload["inputs"]
+    if not isinstance(input_groups, dict) or not all(
+        isinstance(group, list) for group in input_groups.values()
+    ):
+        raise ValueError("Invalid stored request input groups")
+    inputs = _validated_inputs(
+        {
+            role: tuple(decode(member, InputMember, fields) for member in group)
+            for role, group in input_groups.items()
+        }
+    )
+    for name in descriptor.documents:
+        digest = spec_payload.get(name)
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(c not in "0123456789abcdef" for c in digest)
+        ):
+            raise ValueError(f"Invalid request document digest for {name}")
+        document = read_document(digest)
+        if sha256_bytes(document) != digest:
+            raise ValueError(f"Invalid request document bytes for {name}")
+        spec_payload[name] = _read_object(document, nullable=kind == "train" and name != "method_payload")
+    if descriptor is DOCUMENT_TRAIN_REQUEST:
+        try:
+            restore_model_display_names(spec_payload["trial_documents"]["model"])
+        except (AttributeError, KeyError, TypeError) as error:
+            raise ValueError("Invalid stored managed Train model projection") from error
+    restored = decode(spec_payload, descriptor.spec_type, fields)
+    spec = descriptor.spec_type.model_validate_json(json.dumps(restored))
+    encoded = encode_request(spec, inputs)
+    if encoded.data != data:
+        raise ValueError("Stored request object is not minimal or did not round-trip")
+    return DecodedRequest(kind=kind, spec=spec, inputs=inputs, id=encoded.id)
+
+
+def effective_binding_id(request: DecodedRequest, inputs: EffectiveInputs) -> EffectiveBindingId:
+    """Project verified bindings to a separately scoped successful-result lookup key."""
+    if inputs.keys() != request.inputs.keys():
+        raise ValueError("Effective inputs must cover the authored input roles")
+    for role, members in inputs.items():
+        authored = request.inputs[role]
+        if tuple(member.key for member in members) != tuple(member.key for member in authored):
+            raise ValueError(f"Effective inputs must preserve authored member order for {role!r}")
+        for bound, source in zip(members, authored, strict=True):
+            if isinstance(source.reference, ContentRef) and source.reference != bound.content:
+                raise ValueError(f"Effective input differs from frozen content for {role}.{bound.key}")
+    encoded = encode_request(request.spec, request.inputs)
+    if encoded.id != request.id:
+        raise ValueError("Effective binding requires an authenticated authored request")
+    normalized = json.loads(encoded.data)
+    preimage = {
+        "identity": _EFFECTIVE_IDENTITY,
+        "kind": normalized["kind"],
+        "spec": normalized["spec"],
+        "inputs": {
+            role: [
+                {
+                    "key": member.key,
+                    "content": member.content.model_dump(mode="json"),
+                    "descriptor": member.descriptor,
+                }
+                for member in members
+            ]
+            for role, members in inputs.items()
+        },
+    }
+    if normalized["schema"] != _STORAGE_SCHEMA:
+        preimage["schema"] = normalized["schema"]
+    return f"effective:{sha256_bytes(canonical_json_v2_bytes(preimage))}"

@@ -84,7 +84,6 @@ def test_importing_runtime_does_not_load_studio_models_or_tasks() -> None:
             "feedbax.runtime.retained_observables",
             "feedbax.runtime.task_bindings",
             "feedbax.runtime.task_data_roles",
-            "feedbax.runtime.timeline_masks",
         ]:
             importlib.import_module(module_name)
 
@@ -114,9 +113,6 @@ def test_importing_runtime_does_not_load_studio_models_or_tasks() -> None:
 def test_relocated_contracts_stay_importable_from_their_original_paths() -> None:
     studio_protocol = importlib.import_module("feedbax.studio.protocol")
     task_data_roles = importlib.import_module("feedbax.runtime.task_data_roles")
-    task_timeline_masks = importlib.import_module("feedbax.tasks.timeline_masks")
-    runtime_timeline_masks = importlib.import_module("feedbax.runtime.timeline_masks")
-
     for name in (
         "GRAPH_BINDABLE_TASK_DATA_ROLES",
         "PROTOCOL_TASK_DATA_KINDS",
@@ -129,11 +125,3 @@ def test_relocated_contracts_stay_importable_from_their_original_paths() -> None
         "task_data_uses_protocol_path",
     ):
         assert getattr(studio_protocol, name) is getattr(task_data_roles, name)
-
-    for name in (
-        "TaskTimelineMask",
-        "TaskTimelineMaskError",
-        "align_time_mask",
-        "build_task_timeline_mask",
-    ):
-        assert getattr(task_timeline_masks, name) is getattr(runtime_timeline_masks, name)

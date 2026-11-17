@@ -1,0 +1,440 @@
+{
+  "planar-rigid": {
+    "bias": -2.9,
+    "control_port": "force",
+    "interior": {
+      "connections": [],
+      "nodes": {
+        "anchor": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "frame": "link0.proximal",
+            "world_frame": "world.frame"
+          },
+          "type": "feedbax.Anchor"
+        },
+        "drive": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "port_name": "force",
+            "size": 6,
+            "source_kind": "muscle_excitation_vector"
+          },
+          "type": "feedbax.ActuationInput"
+        },
+        "effector": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "port_name": "position",
+            "quantity": "position"
+          },
+          "type": "feedbax.SensorOutput"
+        },
+        "joint0": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "child_frame": "link0.proximal",
+            "parent_frame": "world.frame"
+          },
+          "type": "feedbax.RevoluteJoint"
+        },
+        "joint1": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "child_frame": "link1.proximal",
+            "parent_frame": "link0.distal"
+          },
+          "type": "feedbax.RevoluteJoint"
+        },
+        "link0": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "com": 0.3666666666666667,
+            "inertia": 0.008060000000000005,
+            "length": 0.3,
+            "mass": 1.4
+          },
+          "type": "feedbax.PlanarLink"
+        },
+        "link1": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "com": 0.48484848484848486,
+            "inertia": 0.019399999999999997,
+            "length": 0.33,
+            "mass": 1.0
+          },
+          "type": "feedbax.PlanarLink"
+        },
+        "muscle_0": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "law": "feedbax.RigidTendonHillMuscle",
+            "law_parameters": {
+              "initial_activation": 0.05,
+              "max_isometric_force": 80.0,
+              "optimal_muscle_length": 0.065,
+              "tau_act": 0.01,
+              "tau_deact": 0.04,
+              "tendon_slack_length": 0.04652314106563783
+            },
+            "path_points": [
+              {
+                "frame": "world.frame",
+                "offset": [
+                  0.05777349304367749,
+                  0.03952497313765247
+                ]
+              },
+              {
+                "frame": "link0.proximal",
+                "offset": [
+                  0.12,
+                  0.0
+                ]
+              }
+            ],
+            "state_size": 1
+          },
+          "type": "feedbax.MusclePath"
+        },
+        "muscle_1": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "law": "feedbax.RigidTendonHillMuscle",
+            "law_parameters": {
+              "initial_activation": 0.05,
+              "max_isometric_force": 80.0,
+              "optimal_muscle_length": 0.065,
+              "tau_act": 0.01,
+              "tau_deact": 0.04,
+              "tendon_slack_length": 0.04652314106563783
+            },
+            "path_points": [
+              {
+                "frame": "world.frame",
+                "offset": [
+                  -0.009019114600686726,
+                  -0.0694165367316728
+                ]
+              },
+              {
+                "frame": "link0.proximal",
+                "offset": [
+                  0.12,
+                  0.0
+                ]
+              }
+            ],
+            "state_size": 1
+          },
+          "type": "feedbax.MusclePath"
+        },
+        "muscle_2": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "law": "feedbax.RigidTendonHillMuscle",
+            "law_parameters": {
+              "initial_activation": 0.05,
+              "max_isometric_force": 50.0,
+              "optimal_muscle_length": 0.065,
+              "tau_act": 0.01,
+              "tau_deact": 0.04,
+              "tendon_slack_length": 0.026733993650982113
+            },
+            "path_points": [
+              {
+                "frame": "link0.proximal",
+                "offset": [
+                  0.2614884372976346,
+                  0.031888235106725185
+                ]
+              },
+              {
+                "frame": "link1.proximal",
+                "offset": [
+                  0.1,
+                  0.0
+                ]
+              }
+            ],
+            "state_size": 1
+          },
+          "type": "feedbax.MusclePath"
+        },
+        "muscle_3": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "law": "feedbax.RigidTendonHillMuscle",
+            "law_parameters": {
+              "initial_activation": 0.05,
+              "max_isometric_force": 50.0,
+              "optimal_muscle_length": 0.065,
+              "tau_act": 0.01,
+              "tau_deact": 0.04,
+              "tendon_slack_length": 0.026733993650982113
+            },
+            "path_points": [
+              {
+                "frame": "link0.proximal",
+                "offset": [
+                  0.3494385538968021,
+                  0.007471906623679968
+                ]
+              },
+              {
+                "frame": "link1.proximal",
+                "offset": [
+                  0.1,
+                  0.0
+                ]
+              }
+            ],
+            "state_size": 1
+          },
+          "type": "feedbax.MusclePath"
+        },
+        "muscle_4": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "law": "feedbax.RigidTendonHillMuscle",
+            "law_parameters": {
+              "initial_activation": 0.05,
+              "max_isometric_force": 35.0,
+              "optimal_muscle_length": 0.065,
+              "tau_act": 0.01,
+              "tau_deact": 0.04,
+              "tendon_slack_length": 0.2774334871435381
+            },
+            "path_points": [
+              {
+                "frame": "world.frame",
+                "offset": [
+                  0.04126678074548392,
+                  0.028232123669751766
+                ]
+              },
+              {
+                "frame": "link0.proximal",
+                "offset": [
+                  0.08,
+                  0.0
+                ]
+              },
+              {
+                "frame": "link0.proximal",
+                "offset": [
+                  0.2730419061083442,
+                  0.02232176457470763
+                ]
+              },
+              {
+                "frame": "link1.proximal",
+                "offset": [
+                  0.08,
+                  0.0
+                ]
+              }
+            ],
+            "state_size": 1
+          },
+          "type": "feedbax.MusclePath"
+        },
+        "muscle_5": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "law": "feedbax.RigidTendonHillMuscle",
+            "law_parameters": {
+              "initial_activation": 0.05,
+              "max_isometric_force": 35.0,
+              "optimal_muscle_length": 0.065,
+              "tau_act": 0.01,
+              "tau_deact": 0.04,
+              "tendon_slack_length": 0.3377660193487513
+            },
+            "path_points": [
+              {
+                "frame": "world.frame",
+                "offset": [
+                  -0.006442224714776232,
+                  -0.04958324052262343
+                ]
+              },
+              {
+                "frame": "link0.proximal",
+                "offset": [
+                  0.08,
+                  0.0
+                ]
+              },
+              {
+                "frame": "link0.proximal",
+                "offset": [
+                  0.3346069877277615,
+                  0.005230334636575978
+                ]
+              },
+              {
+                "frame": "link1.proximal",
+                "offset": [
+                  0.08,
+                  0.0
+                ]
+              }
+            ],
+            "state_size": 1
+          },
+          "type": "feedbax.MusclePath"
+        },
+        "tip": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "frame": "link1.distal",
+            "marker_name": "effector"
+          },
+          "type": "feedbax.PointMarker"
+        },
+        "world": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {},
+          "type": "feedbax.WorldFrame"
+        }
+      },
+      "physical_domain": "planar_multibody",
+      "planar_dynamics": {
+        "gravity": [
+          0.0,
+          0.0
+        ],
+        "joint_dampers": {
+          "mode_0": {
+            "coefficients": {
+              "joint0": 1.0,
+              "joint1": 1.0
+            },
+            "damping": 0.0375
+          },
+          "mode_1": {
+            "coefficients": {
+              "joint0": 1.0,
+              "joint1": -1.0
+            },
+            "damping": 0.0125
+          }
+        }
+      },
+      "schema_id": "feedbax.spec.acausal_graph",
+      "schema_version": "feedbax.spec.acausal_graph.v2",
+      "solver": {
+        "dt": 0.01,
+        "planar_substeps": 10,
+        "solver_type": "euler"
+      }
+    },
+    "target": [
+      0.6,
+      0.05
+    ],
+    "width": 6
+  },
+  "spatial-mixed": {
+    "bias": -0.8,
+    "control_port": "excitation",
+    "interior": {
+      "connections": [],
+      "mujoco_asset": {
+        "asset": {
+          "object_id": "content-object://sha256/be19bf9bc03e19c2f01c33e9a379b684b0427d7c88397aa30ea4c1ebce3763f6",
+          "schema_id": "feedbax.spec.content_object_ref",
+          "schema_version": "feedbax.spec.content_object_ref.v1",
+          "sha256": "be19bf9bc03e19c2f01c33e9a379b684b0427d7c88397aa30ea4c1ebce3763f6",
+          "size_bytes": 468
+        },
+        "effector_site": "insertion",
+        "paths": {
+          "compliant": {
+            "law": "feedbax.CompliantTendonHillMuscle",
+            "parameters": {
+              "initial_activation": 0.25,
+              "max_isometric_force": 25.0,
+              "optimal_muscle_length": 0.1,
+              "pennation_angle": 0.3,
+              "tendon_slack_length": 0.17
+            },
+            "sites": [
+              "origin",
+              "insertion"
+            ],
+            "state_size": 2,
+            "wraps": []
+          },
+          "rigid": {
+            "law": "feedbax.RigidTendonHillMuscle",
+            "parameters": {
+              "initial_activation": 0.17,
+              "max_isometric_force": 15.0,
+              "optimal_muscle_length": 0.18,
+              "tendon_slack_length": 0.14
+            },
+            "sites": [
+              "antagonist",
+              "insertion"
+            ],
+            "state_size": 1,
+            "wraps": []
+          }
+        },
+        "sites": {}
+      },
+      "nodes": {
+        "drive": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "port_name": "excitation",
+            "source_kind": "muscle_excitation_vector"
+          },
+          "type": "feedbax.ActuationInput"
+        },
+        "tip": {
+          "input_ports": [],
+          "output_ports": [],
+          "params": {
+            "port_name": "position",
+            "quantity": "position"
+          },
+          "type": "feedbax.SensorOutput"
+        }
+      },
+      "physical_domain": "spatial_multibody",
+      "schema_id": "feedbax.spec.acausal_graph",
+      "schema_version": "feedbax.spec.acausal_graph.v2",
+      "solver": {
+        "dt": 0.002,
+        "solver_type": "euler"
+      }
+    },
+    "mjcf": "\n      <mujoco>\n        <option gravity=\"0 0 0\" timestep=\"0.001\"/>\n        <worldbody>\n          <site name=\"origin\" pos=\".15 -.18 .14\"/>\n          <site name=\"antagonist\" pos=\"-.13 .19 -.02\"/>\n          <body name=\"arm\">\n            <joint name=\"pivot\" type=\"ball\" damping=\".05\"/>\n            <inertial pos=\"0 0 0\" mass=\"1\" diaginertia=\".11 .14 .19\"/>\n            <site name=\"insertion\" pos=\".17 .04 -.04\"/>\n          </body>\n        </worldbody>\n      </mujoco>\n    ",
+    "target": [
+      0.16,
+      0.05,
+      -0.02
+    ],
+    "width": 2
+  }
+}

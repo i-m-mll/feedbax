@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 
-BASE_DIR = Path(os.getenv('FEEDBAX_WEB_DATA', Path.home() / '.feedbax' / 'web'))
+from feedbax.studio.paths import STUDIO_DATA_ROOT as BASE_DIR
 GRAPHS_DIR = BASE_DIR / 'graphs'
 TRAJECTORIES_DIR = Path(
     os.getenv('FEEDBAX_TRAJECTORIES_DIR', Path.home() / '.feedbax' / 'trajectories')

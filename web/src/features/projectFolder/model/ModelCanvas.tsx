@@ -1,0 +1,385 @@
+import {
+  Background, BaseEdge, ConnectionMode, EdgeLabelRenderer, Handle, Position, ReactFlowProvider,
+  getBezierPath, getSmoothStepPath, useReactFlow, useStore, useUpdateNodeInternals,
+  type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
+} from '@xyflow/react';
+import {
+  createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useRef, useState,
+  type MouseEvent as ReactMouseEvent, type ReactNode, type Ref,
+} from 'react';
+import { Scan, Lock, Minus, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
+import { appTip } from '@window-shell/browser/tooltip';
+import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
+import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
+import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
+import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
+import { portId, portTypeLabel, type Port } from './modelGraph';
+import './modelCanvas.css';
+
+export type ModelCardData = {
+  address: ModelAddress;
+  name: string;
+  caption?: string;
+  ports: readonly Port[];
+  flipped?: boolean;
+  collapsed?: boolean;
+  stacked?: boolean;
+  locked: boolean;
+  physicalConnections: boolean;
+  selected?: boolean;
+  holdsSelection?: boolean;
+  problem?: string;
+  pickPort?: (port: Port) => void;
+  canPick?: (port: Port) => boolean;
+  cancelPick?: () => void;
+  portReasons?: ReadonlyMap<string, string | null>;
+  portProblems?: ReadonlyMap<string, string>;
+  onPort(port: Port): void;
+  keyboardConnect(port: Port): void;
+  enter?: () => void;
+  rename?: (name: string) => void;
+  renaming?: boolean;
+  endRename?: () => void;
+  addPort?: () => void;
+};
+export type ModelCard = Node<ModelCardData, 'modelCard'>;
+export type ModelEdgeData = {
+  address: ModelAddress;
+  selected?: boolean;
+  waypoints?: readonly ModelPosition[];
+  attachments?: readonly { id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelAddress }[];
+  self?: number;
+  bundleCount?: number;
+  moveWaypoint?: (index: number, point: ModelPosition) => void;
+  problem?: string;
+};
+export type ModelEdge = Edge<ModelEdgeData, 'signal' | 'physical'>;
+
+function side(port: Port, flipped: boolean) {
+  return (port.direction === 'input') !== flipped ? Position.Left : Position.Right;
+}
+
+const HandleUpdates = createContext<(id: string) => void>(() => {
+  throw new Error('Model cards require a handle update queue');
+});
+
+function ModelHandleUpdates({ children }: { children: ReactNode }) {
+  const updateNodeInternals = useUpdateNodeInternals();
+  const pendingHandles = useRef(new Set<string>());
+  const updateHandles = useCallback((id: string) => {
+    const pending = pendingHandles.current;
+    if (!pending.size) queueMicrotask(() => {
+      if (!pending.size) return;
+      const ids = [...pending];
+      pending.clear();
+      updateNodeInternals(ids);
+    });
+    pending.add(id);
+  }, [updateNodeInternals]);
+  useEffect(() => () => pendingHandles.current.clear(), []);
+  return <HandleUpdates.Provider value={updateHandles}>{children}</HandleUpdates.Provider>;
+}
+
+const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
+  const update = useContext(HandleUpdates);
+  const nameId = useId();
+  const input = useRef<HTMLInputElement>(null);
+  const ports = data.ports.map((port) => {
+    const key = portId(port);
+    const reason = data.portReasons?.get(key);
+    const available = data.canPick?.(port);
+    const problem = data.portProblems?.get(key);
+    const verdict = reason ? 'refused' : reason === null || available ? 'allowed' : available === false ? 'refused' : undefined;
+    return { port, key, reason, available, problem, verdict };
+  });
+  const geometry = JSON.stringify([!!data.collapsed, !!data.flipped, ports.map(({ port, key, verdict, problem }) =>
+    [key, port.name, port.mark, verdict === 'allowed', !!problem])]);
+  useEffect(() => { update(id); }, [id, update, geometry]);
+  useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
+  return <article className="studio-model-card" data-stacked={data.stacked} data-selected={data.selected}
+    data-holds-selection={data.holdsSelection} data-boundary={data.address.element.kind === 'graph'}
+    aria-labelledby={nameId}>
+    <header className="studio-model-card-header">
+      <strong id={nameId} className={data.renaming ? 'sr-only' : undefined}>{data.name}</strong>
+      {data.renaming && <form className="nodrag" onSubmit={(event) => {
+        event.preventDefault();
+        const name = input.current?.value.trim();
+        if (name) data.rename?.(name);
+      }}>
+        <input ref={input} autoFocus defaultValue={data.name} aria-label={studioName('name')}
+          onBlur={data.endRename} onKeyDown={(event) => {
+            if (event.key === 'Escape') { event.stopPropagation(); data.endRename?.(); }
+          }} />
+      </form>}
+      {data.caption && <span>{data.caption}</span>}
+      {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
+    </header>
+    {ports.map(({ port, key, reason, available, problem, verdict }) => {
+      const location = side(port, Boolean(data.flipped));
+      const physical = port.direction === 'physical';
+      const interactive = !data.locked && !data.canPick;
+      const connectable = interactive && (!physical || data.physicalConnections);
+      return <div key={key} className="studio-model-port" data-collapsed={data.collapsed}
+        data-direction={port.direction} data-side={location} data-hollow={!!port.taskSignal || !!port.growing}
+        data-verdict={verdict}>
+        <Handle id={key} type={port.direction === 'input' ? 'target' : 'source'}
+          position={location} isConnectable={connectable} isConnectableStart={connectable} isConnectableEnd={connectable}
+          role="button" tabIndex={data.collapsed ? -1 : 0}
+          aria-disabled={!interactive && !available}
+          aria-description={[studioName(port.direction), portTypeLabel(port), reason ?? problem].filter(Boolean).join(' · ')}
+          aria-label={studioAccessibleName('port', port.name)} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
+            event.stopPropagation();
+            if (available) data.pickPort?.(port);
+            else if (!data.canPick) data.onPort(port);
+          }} onKeyDown={(event) => {
+            if (data.canPick && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+              event.preventDefault();
+              event.stopPropagation();
+              const canvas = event.currentTarget.closest('.studio-model-surface');
+              const ports = [...(canvas?.querySelectorAll<HTMLElement>('[data-model-port]') ?? [])];
+              const start = ports.indexOf(event.currentTarget);
+              const direction = event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 1;
+              for (let offset = 1; offset < ports.length; offset += 1) {
+                const candidate = ports[(start + direction * offset + ports.length) % ports.length];
+                if (candidate.getAttribute('aria-disabled') === 'false' && candidate.tabIndex >= 0) {
+                  candidate.focus();
+                  break;
+                }
+              }
+              return;
+            }
+            if (data.canPick && event.key === 'Escape') {
+              event.preventDefault();
+              data.cancelPick?.();
+              event.stopPropagation();
+              return;
+            }
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (available) data.pickPort?.(port);
+            else if (!data.canPick && port.direction === 'output') data.keyboardConnect(port);
+            else if (!data.canPick) data.onPort(port);
+          }} data-physical={physical} />
+        {!data.collapsed && <span>{port.name}</span>}
+        {!data.collapsed && port.mark && <span role="img" aria-label={studioName(port.mark)}
+          {...appTip(studioName(port.mark))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
+        {!data.collapsed && problem && <span role="img" aria-description={problem} aria-label={studioName('problems')}>◆</span>}
+        {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
+      </div>;
+    })}
+    {data.addPort && <button className="nodrag studio-model-add-port" type="button" aria-label={studioName('addPort')}
+      onClick={(event) => { event.stopPropagation(); data.addPort?.(); }}>+</button>}
+  </article>;
+});
+
+function rounded(points: readonly ModelPosition[]) {
+  let path = `M ${points[0].x},${points[0].y}`;
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const a = points[index - 1], b = points[index], c = points[index + 1];
+    const before = Math.min(6, Math.hypot(b.x - a.x, b.y - a.y) / 2);
+    const after = Math.min(6, Math.hypot(c.x - b.x, c.y - b.y) / 2);
+    path += ` L ${b.x + Math.sign(a.x - b.x) * before},${b.y + Math.sign(a.y - b.y) * before}`;
+    path += ` Q ${b.x},${b.y} ${b.x + Math.sign(c.x - b.x) * after},${b.y + Math.sign(c.y - b.y) * after}`;
+  }
+  const last = points.at(-1)!;
+  return `${path} L ${last.x},${last.y}`;
+}
+
+const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targetX, targetY,
+  sourcePosition, targetPosition, markerEnd }: EdgeProps<ModelEdge>) {
+  const { screenToFlowPosition } = useReactFlow();
+  const [moving, setMoving] = useState<{ index: number; point: ModelPosition }>();
+  const physical = type === 'physical';
+  const start = { x: sourceX, y: sourceY }, end = { x: targetX, y: targetY };
+  const a = { x: sourceX + (sourcePosition === Position.Left ? -16 : 16), y: sourceY };
+  const b = { x: targetX + (targetPosition === Position.Left ? -16 : 16), y: targetY };
+  const self = data?.self;
+  const bottom = useStore((state) => {
+    if (self === undefined) return 0;
+    const node = state.nodeLookup.get(source);
+    return node ? node.internals.positionAbsolute.y + (node.measured.height ?? 0) : 0;
+  });
+  const bend = self === undefined ? (sourceY + targetY) / 2 : Math.max(sourceY, targetY, bottom) + 20 + self * 10;
+  const waypoints = data?.waypoints?.map((point, index) => moving?.index === index ? moving.point : point);
+  const pivots = waypoints?.length ? waypoints
+    : [{ x: a.x, y: bend }, { x: b.x, y: bend }];
+  const points = [start, a];
+  for (const pivot of pivots) {
+    const prior = points.at(-1)!;
+    points.push({ x: prior.x, y: pivot.y }, pivot);
+  }
+  points.push({ x: b.x, y: points.at(-1)!.y }, b, end);
+  const turns = points.filter((point, index) => index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
+  const geometry = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition };
+  const [path, labelX, labelY] = physical ? getBezierPath(geometry)
+    : self === undefined && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
+      : [rounded(turns), (a.x + b.x) / 2, bend];
+  const mid = { x: labelX, y: labelY };
+  const delayed = data?.attachments?.some((item) => item.delay);
+  const pathRef = useRef<SVGPathElement>(null);
+  const [dash, setDash] = useState<string>();
+  useEffect(() => {
+    if (!delayed) return;
+    const length = pathRef.current?.getTotalLength() ?? 0;
+    const half = length / 2;
+    setDash(`${half} 0 ${'5 3 '.repeat(Math.min(1000, Math.ceil(half / 8)))}0 ${length}`);
+  }, [delayed, path]);
+  return <>
+    {delayed && <path d={path} ref={pathRef} visibility="hidden" aria-hidden="true" />}
+    <BaseEdge id={id} path={path} markerEnd={markerEnd} className="studio-model-wire"
+      style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3,
+        strokeDasharray: delayed ? dash : undefined }} />
+    {data?.attachments?.length || data?.bundleCount || data?.problem || data?.selected && waypoints?.length ? <EdgeLabelRenderer>
+      {data.selected && waypoints?.map((point, index) => <button key={index} type="button" aria-label={studioAccessibleName('waypoint', index + 1)}
+        className="studio-model-waypoint nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)` }}
+        disabled={!data.moveWaypoint}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setMoving({ index, point });
+        }} onPointerMove={(event) => {
+          if (moving?.index === index) setMoving({ index, point: screenToFlowPosition({ x: event.clientX, y: event.clientY }) });
+        }} onPointerUp={(event) => {
+          if (moving?.index !== index) return;
+          event.stopPropagation();
+          setMoving(undefined);
+          data.moveWaypoint?.(index, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+        }} onPointerCancel={() => setMoving(undefined)} />)}
+      <div className="studio-model-attachments nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${mid.x}px, ${mid.y}px)` }}>
+        {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
+        {data.bundleCount && <span className="rounded border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
+        {data.attachments?.map(({ id, label, description, mark, select, drag }) =>
+          <button key={id} type="button" aria-label={studioAccessibleName('attachment', label)}
+            aria-description={description}
+            {...appTip(studioAccessibleName('attachment', label))}
+            draggable={!!drag} onDragStart={(event) => {
+              if (drag) event.dataTransfer.setData('application/x-feedbax-attachment', JSON.stringify(drag));
+            }}
+            onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</button>)}
+      </div>
+    </EdgeLabelRenderer> : null}
+  </>;
+});
+
+const nodeTypes = { modelCard: Card };
+const edgeTypes = { signal: Wire, physical: Wire };
+const origin = { x: 32, y: 30, zoom: 0.85 };
+
+type Props = {
+  nodes: ModelCard[];
+  edges: ModelEdge[];
+  physical: boolean;
+  locked: boolean;
+  collapsed: boolean;
+  canEdit: boolean;
+  viewportRef: Ref<CanvasViewport>;
+  lock: StudioCommand;
+  collapse: StudioCommand;
+  viewportCommands: readonly CanvasViewportCommand[];
+  onCanvasPoint(point: ModelPosition | undefined): void;
+  onSearch(point: ModelPosition): void;
+  onNode(node: ModelCard, extend: boolean): void;
+  onEdge(edge: ModelEdge): void;
+  onClear(): void;
+  onBox(nodes: ModelCard[]): void;
+  onMove(nodes: ModelCard[]): void;
+  onContext(event: ReactMouseEvent, address: ModelAddress, point: ModelPosition): void;
+  onConnectStart: OnConnectStart;
+  onConnect(source: string, sourceHandle: string | null, target: string, targetHandle: string | null): void;
+  onConnectEnd(point: ModelPosition, valid: boolean, empty: boolean): void;
+  onLibraryDrop(type: string, point: ModelPosition, edge: ModelEdge | undefined, reversed: boolean): void;
+  onAttachmentDrop(raw: string, edge: ModelEdge): void;
+};
+
+export function ModelCanvas(props: Props) {
+  return <ReactFlowProvider><ModelHandleUpdates><Canvas {...props} /></ModelHandleUpdates></ReactFlowProvider>;
+}
+
+const viewportIcons = { fitView: Scan, zoomIn: Plus, zoomOut: Minus };
+
+function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, lock, collapse, viewportCommands, onCanvasPoint,
+  onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd,
+  onLibraryDrop, onAttachmentDrop }: Props) {
+  const { screenToFlowPosition, setNodes, setEdges, getNode, getEdge, getInternalNode } = useReactFlow<ModelCard, ModelEdge>();
+  const viewport = useRef<CanvasViewport>(null);
+  useImperativeHandle(viewportRef, () => ({
+    fitView: () => viewport.current?.fitView(),
+    zoomIn: () => viewport.current?.zoomIn(),
+    zoomOut: () => viewport.current?.zoomOut(),
+  }), []);
+  const [initial] = useState(() => ({ nodes, edges }));
+  const [boxSelecting, setBoxSelecting] = useState(false);
+  const point = (event: { clientX: number; clientY: number }) => screenToFlowPosition({ x: event.clientX, y: event.clientY });
+  useEffect(() => {
+    setNodes((prior) => {
+      const current = new Map(prior.map((node) => [node.id, node]));
+      return nodes.map((node) => {
+        const live = current.get(node.id);
+        if (!live) return node;
+        return {
+          ...node,
+          measured: getInternalNode(node.id)?.measured,
+          ...(live.dragging ? { position: live.position, dragging: true } : {}),
+        };
+      });
+    });
+  }, [nodes, setNodes, getInternalNode]);
+  useEffect(() => { setEdges(edges); }, [edges, setEdges]);
+  return <div className="studio-model-canvas">
+    <div className="studio-model-strip">
+      <button type="button" {...commandAttributes(collapse)} aria-pressed={collapsed} disabled={!collapse.enabled} onClick={collapse.invoke}><ChevronsDownUp /></button>
+      <button type="button" {...commandAttributes(lock)} aria-pressed={locked} disabled={!lock.enabled} onClick={lock.invoke}>{locked ? <Lock /> : <Unlock />}</button>
+      <div />
+      {viewportCommands.map((command) => {
+        const Icon = viewportIcons[command.id];
+        return <button key={command.id} type="button" {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}><Icon /></button>;
+      })}
+    </div>
+    <div className="studio-model-surface" onPointerMove={(event) => onCanvasPoint(point(event))}
+      onPointerLeave={() => onCanvasPoint(undefined)}
+      onDoubleClick={(event) => {
+        if (event.target instanceof Element && event.target.classList.contains('react-flow__pane')) onSearch(point(event));
+      }} onDragOver={(event) => {
+        if (event.dataTransfer.types.some((type) => type === 'application/x-feedbax-component' || type === 'application/x-feedbax-attachment')) {
+          event.preventDefault();
+        }
+      }} onDrop={(event) => {
+        const id = event.target instanceof Element ? event.target.closest('.react-flow__edge')?.getAttribute('data-id') : null;
+        const edge = id ? getEdge(id) : undefined;
+        const type = event.dataTransfer.getData('application/x-feedbax-component');
+        const attachment = event.dataTransfer.getData('application/x-feedbax-attachment');
+        if (attachment && edge?.type === 'signal') {
+          event.preventDefault();
+          onAttachmentDrop(attachment, edge);
+        } else if (type) {
+          event.preventDefault();
+          const reversed = !!edge && (getNode(edge.source)?.position.x ?? 0) > (getNode(edge.target)?.position.x ?? 0);
+          onLibraryDrop(type, point(event), edge, reversed);
+        }
+      }}>
+      <StudioCanvas defaultNodes={initial.nodes} defaultEdges={initial.edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+        viewportRef={viewport} fitReady={false} defaultViewport={origin} minZoom={0.06}
+        zoomOnDoubleClick={false} nodesDraggable={canEdit && !locked} nodesConnectable={canEdit && !locked}
+        connectionMode={physical ? ConnectionMode.Loose : ConnectionMode.Strict}
+        multiSelectionKeyCode="Shift" selectionKeyCode="Shift"
+        onSelectionStart={() => setBoxSelecting(true)} onSelectionEnd={() => setBoxSelecting(false)}
+        onSelectionChange={boxSelecting ? (selection) => onBox(selection.nodes as ModelCard[]) : undefined}
+        onNodeClick={(event, node) => onNode(node as ModelCard, event.shiftKey)}
+        onNodeDoubleClick={(_, node) => (node as ModelCard).data.enter?.()}
+        onNodeContextMenu={(event, node) => onContext(event, (node as ModelCard).data.address, point(event))}
+        onEdgeClick={(_, edge) => onEdge(edge as ModelEdge)}
+        onEdgeContextMenu={(event, edge) => { if (edge.data) onContext(event, (edge as ModelEdge).data!.address, point(event)); }}
+        onPaneClick={onClear} onNodeDragStop={(_, _node, moved) => onMove(moved as ModelCard[])}
+        onConnectStart={onConnectStart}
+        onConnect={(connection) => onConnect(connection.source, connection.sourceHandle, connection.target, connection.targetHandle)}
+        onConnectEnd={(event, connection) => {
+          const pointer = 'changedTouches' in event ? event.changedTouches[0] : event;
+          const target = document.elementFromPoint(pointer.clientX, pointer.clientY);
+          onConnectEnd(point(pointer), connection.isValid === true, !!target?.classList.contains('react-flow__pane'));
+        }}>
+        {physical && <Background gap={16} size={1} />}
+      </StudioCanvas>
+    </div>
+  </div>;
+}

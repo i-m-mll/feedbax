@@ -134,6 +134,18 @@ class ParameterConstraintSpec(BaseModel):
     value: ParamValue = 0.0
 
 
+WIRE_ID_PATTERN = r"^[A-Za-z0-9_-]+$"
+
+
+def derived_wire_id(wire_id: str | None, node: str, segment: str) -> str | None:
+    """Name a generated segment of an explicitly addressed authored wire."""
+    if wire_id is None:
+        return None
+    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+
+    return "wire-" + hashlib.sha256(canonical_json_v2_bytes([wire_id, node, segment])).hexdigest()
+
+
 class WireSpec(BaseModel):
     """Specification for a wire connecting two ports.
 
@@ -144,12 +156,22 @@ class WireSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    id: str | None = Field(default=None, pattern=WIRE_ID_PATTERN, exclude_if=lambda value: value is None)
     source_node: str
     source_port: str
     target_node: str
     target_port: str
     temporality: Literal["instant", "recurrent"] = "instant"
     recurrent_initializer: Optional[Dict[str, Any]] = None
+
+    def authored_id(self) -> str:
+        """Address an older wire without changing its stored model identity."""
+        if self.id is not None:
+            return self.id
+        from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+
+        endpoints = [self.source_node, self.source_port, self.target_node, self.target_port]
+        return "wire-" + hashlib.sha256(canonical_json_v2_bytes(endpoints)).hexdigest()
 
 
 class AdditiveGraphChannelTargetSpec(BaseModel):
@@ -419,6 +441,9 @@ class GraphSpec(BaseModel):
         default=GRAPH_SPEC_SCHEMA_VERSION,
         description="Machine-readable GraphSpec schema version.",
     )
+    step_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
     nodes: Dict[str, ComponentSpec] = Field(default_factory=dict)
     wires: List[WireSpec] = Field(default_factory=list)
     additive_channel_adapters: List[AdditiveGraphChannelAdapterSpec] = Field(default_factory=list)
@@ -434,6 +459,11 @@ class GraphSpec(BaseModel):
     retained_observables: Optional[List[RetainedObservableSpec]] = None
     parameter_constraints: List[ParameterConstraintSpec] = Field(default_factory=list)
     metadata: Optional[GraphMetadata] = None
+
+    @model_validator(mode="after")
+    def _unique_wire_ids(self) -> "GraphSpec":
+        validate_cross_field_refinements("GraphSpec", self)
+        return self
 
     @field_validator("subgraphs", mode="before")
     @classmethod
@@ -1254,16 +1284,6 @@ class StudioScenarioSpec(BaseModel):
     report_spec: Optional[Dict[str, Any]] = None
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("task_spec", mode="before")
-    @classmethod
-    def admit_task_spec(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        from feedbax.contracts.training import TaskSpec
-
-        return TaskSpec.model_validate(value).model_dump(mode="json", exclude_none=True)
-
 
 class StudioStageSpec(BaseModel):
     """Pipeline stage over scenario drafts, collections, and manifests."""

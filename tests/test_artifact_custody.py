@@ -10,18 +10,20 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from tests.support.store_damage import writable_store_object
 
 import pytest
 
 import feedbax.persistence.artifact_custody as custody_module
 from feedbax.contracts.base import ArtifactRef
-from feedbax.contracts.artifact_store import migrate_path_backed_content, store_bytes_artifact
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.artifact_custody import (
     ContentBinding,
     ContentManifestConflictError,
     ContentTree,
     ContentTreeFile,
 )
+from feedbax.contracts.project_io import load_text_project
 from feedbax.persistence import (
     ArtifactBlobContainmentError,
     ArtifactBlobCustodyError,
@@ -36,7 +38,10 @@ from feedbax.persistence import (
     ImmutableArtifactBlobProviderSpec,
     open_immutable_artifact_blob_provider,
 )
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider as CanonicalProvider
+from feedbax.persistence.artifact_custody import (
+    ImmutableArtifactBlobProvider as CanonicalProvider,
+    open_project_store,
+)
 
 
 pytestmark = pytest.mark.feedbax_contract
@@ -49,28 +54,26 @@ def _artifact_path(root: Path, digest: str) -> Path:
     return root / "artifacts" / "sha256" / digest[:2] / digest
 
 
-def test_path_backed_migration_streams_large_source_without_whole_file_read(
+def test_project_store_resolves_owned_objects_after_cwd_change_and_move(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = tmp_path / "diagnostics.json"
-    payload = b'{"trace":"' + b"x" * (12 * 1024 * 1024) + b'"}\n'
-    source.write_bytes(payload)
-    original_read_bytes = Path.read_bytes
-
-    def refuse_source_read(path: Path) -> bytes:
-        if path == source:
-            raise AssertionError("migration read the source into memory")
-        return original_read_bytes(path)
-
-    monkeypatch.setattr(Path, "read_bytes", refuse_source_read)
-    destination = tmp_path / "store"
-    refs, receipt = migrate_path_backed_content(
-        {"training_diagnostics": source}, destination_store=destination
+    project_root = tmp_path / "authored-project"
+    project_root.mkdir()
+    (project_root / "witness.feedbax").write_text(
+        '{"schema_version":"feedbax.project.v1","store":"local/store"}'
     )
-    expected_sha = hashlib.sha256(payload).hexdigest()
-    assert refs["training_diagnostics"].sha256 == expected_sha
-    assert receipt.mappings[0].size_bytes == len(payload)
-    assert _artifact_path(destination, expected_sha).read_bytes() == payload
+    store = open_project_store(load_text_project(project_root))
+    reference = store.store_object(b"retained object")
+
+    monkeypatch.chdir(tmp_path)
+    moved_root = project_root.rename(tmp_path / "moved-project")
+    reopened = open_project_store(load_text_project(moved_root))
+    assert reopened.root == moved_root / "local" / "store"
+    assert reopened.get_object(reference) == b"retained object"
+    with reopened.open_owned_object(reference) as pinned:
+        assert pinned.read_bytes() == b"retained object"
+
+
 
 
 def test_role_free_objects_trees_and_bindings_share_one_canonical_identity(
@@ -197,23 +200,6 @@ def test_content_tree_rejects_links_and_portable_name_collisions(tmp_path: Path)
         ContentTree(files=(ContentTreeFile(relative_path="nested/value", object=object_ref),))
 
 
-def test_path_backed_import_migrates_with_receipt_and_no_source_dependency(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "imported.bin"
-    source.write_bytes(b"path-backed exact bytes")
-    refs, receipt = migrate_path_backed_content(
-        {"legacy-import:one": source},
-        destination_store=tmp_path / "store",
-    )
-    source.unlink()
-
-    ref = refs["legacy-import:one"]
-    assert ImmutableArtifactBlobProvider(tmp_path / "store").get_object(ref) == (
-        b"path-backed exact bytes"
-    )
-    assert receipt.mappings[0].source_ref == "legacy-import:one"
-    assert receipt.mappings[0].target_ref == ref.object_id
 
 
 def test_store_uses_existing_suffixless_cas_and_round_trips_exact_binary_bytes(
@@ -625,13 +611,15 @@ def test_hash_truncation_and_extension_tampering_are_rejected(
     original = b"abcde"
     artifact = provider.store_bytes(original, role="payload", logical_name="blob")
     path = _artifact_path(provider.root, artifact.sha256 or "")
-    path.write_bytes(tampered)
+    assert not path.stat().st_mode & 0o222
+    with writable_store_object(path):
+        path.write_bytes(tampered)
 
     with pytest.raises(ArtifactBlobIntegrityError):
         provider.get_bytes(artifact)
 
 
-def test_corrupt_preexisting_canonical_blob_is_not_overwritten(tmp_path: Path) -> None:
+def test_verified_publication_replaces_corrupt_canonical_blob(tmp_path: Path) -> None:
     provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
     intended = b"right"
     corrupt = b"wrong"
@@ -640,10 +628,59 @@ def test_corrupt_preexisting_canonical_blob_is_not_overwritten(tmp_path: Path) -
     path.parent.mkdir(parents=True)
     path.write_bytes(corrupt)
 
-    with pytest.raises(ArtifactBlobIntegrityError):
-        provider.store_bytes(intended, role="payload", logical_name="blob")
+    old_inode = path.stat().st_ino
+    artifact = provider.store_bytes(intended, role="payload", logical_name="blob")
+    assert artifact.sha256 == digest
+    assert path.read_bytes() == intended
+    assert path.stat().st_ino != old_inode
 
-    assert path.read_bytes() == corrupt
+
+def test_repair_keeps_damage_until_the_verified_object_commits(tmp_path, monkeypatch):
+    from feedbax.persistence.store_damage import KnownDamage, observe_failure, occurrence, read_damage
+
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    another = ImmutableArtifactBlobProvider(tmp_path / "another")
+    data = b"retained bytes"
+    ref = store.store_object(data)
+    assert another.store_object(data) == ref
+    with writable_store_object(store.object_path(ref)) as path:
+        path.write_bytes(b"x" * len(data))
+    old_occurrence = occurrence(store, ref)
+    with pytest.raises(ArtifactBlobIntegrityError) as detected:
+        store.verify_object(ref)
+    assert read_damage(another, ref.sha256) is None
+    observation = read_damage(store, ref.sha256)
+    assert observation.found_sha256 == hashlib.sha256(b"x" * len(data)).hexdigest()
+    assert observation.found_size == len(data)
+    with pytest.raises(KnownDamage):
+        store.get_object(ref)
+
+    original_replace = os.replace
+
+    def fail_install(source, destination, **kwargs):
+        if destination == ref.sha256:
+            raise OSError("interrupt before replacement")
+        return original_replace(source, destination, **kwargs)
+
+    with monkeypatch.context() as probe:
+        probe.setattr(os, "replace", fail_install)
+        with pytest.raises(OSError, match="interrupt before replacement"):
+            store.store_object(data)
+    assert store.object_path(ref).read_bytes() == b"x" * len(data)
+    assert read_damage(store, ref.sha256) is not None
+
+    def fail_clear(*args):
+        raise OSError("interrupt before clearing observation")
+
+    with monkeypatch.context() as probe:
+        probe.setattr(custody_module, "clear_damage", fail_clear)
+        with pytest.raises(OSError, match="interrupt before clearing"):
+            store.store_object(data)
+    assert store.object_path(ref).read_bytes() == data
+    assert read_damage(store, ref.sha256) is not None
+    assert store.store_object(data) == ref
+    observe_failure(store, ref, old_occurrence, detected.value, verifier="stale reader")
+    assert read_damage(store, ref.sha256) is None
 
 
 def test_shared_writer_parent_swap_cannot_write_outside_custody(

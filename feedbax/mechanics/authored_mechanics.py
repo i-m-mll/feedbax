@@ -16,7 +16,9 @@ from jaxtyping import PRNGKeyArray
 from feedbax._atomic import write_bytes_atomic
 from feedbax._vendor.jax_cookbook._io import json_dump, load
 from feedbax.contracts.acausal import AcausalGraphSpec
-from feedbax.contracts.acausal_interface import derive_acausal_interface, is_acausal_type
+from feedbax.contracts.acausal_interface import (
+    PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
+)
 from feedbax.mechanics.articulated_muscles import ArticulatedMusclePlant
 from feedbax.mechanics.backend import DiffraxBackend, MJXBackend, PhysicsCapabilities
 from feedbax.mechanics.compiled_model import CompiledPhysicalModel, outside_wraps_only
@@ -133,7 +135,7 @@ class AuthoredMechanics(Mechanics):
 
         port = interface.input_ports[0]
         interface.input_payloads[port].validate_shape(port, (plant.input_size,))
-        available = {"effector", "position", "velocity", "state"}
+        available = PLANAR_STATE_ONLY_QUANTITIES
         by_port = {
             node.params.get("port_name", "y"): node.params.get("quantity", "position")
             for node in graph.nodes.values() if is_acausal_type(node.type, "SensorOutput")

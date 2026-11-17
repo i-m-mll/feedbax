@@ -33,18 +33,17 @@ def _run_probe(source: str) -> dict:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def test_importing_orchestration_entry_point_leaves_plotly_default_untouched() -> None:
+def test_importing_cli_entry_point_leaves_plotly_default_untouched() -> None:
     probe = _run_probe(
         "import json, plotly.io as pio\n"
-        "import feedbax.bin.orchestrate  # noqa: F401\n"
+        "import feedbax.cli  # noqa: F401\n"
         "import sys\n"
         "print(json.dumps({\n"
         "    'default': pio.templates.default,\n"
         "    'plot_imported': 'feedbax.plot' in sys.modules,\n"
         "}))\n"
     )
-    # The package is reached transitively, and still leaves Plotly's own default in place.
-    assert probe["plot_imported"] is True
+    assert probe["plot_imported"] is False
     assert probe["default"] == "plotly"
 
 

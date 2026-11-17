@@ -15,7 +15,6 @@ import numpy as np
 import optimistix as optx
 import pytest
 
-from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.mechanics import DiffraxBackend, Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
@@ -23,13 +22,6 @@ from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE
 from feedbax.runtime.filters import LowPassFilter
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.state import CartesianState
-from feedbax.training.checkpoint_custody import (
-    CheckpointCompatibilityError,
-    authenticate_published_checkpoint_custody,
-    load_latest_checkpoint,
-    write_checkpoint_transaction,
-)
-from tests.test_checkpoint_custody import _run_spec
 
 
 pytestmark = pytest.mark.usefixtures("enable_jax_x64")
@@ -148,40 +140,13 @@ def _exercise_checkpoint_continuation(tmp_path, kind, solver_type, *, publish=Tr
         step(next_input, warmed_state(), key=key) for step in (model, eqx.filter_jit(model))
     ]
 
-    def slots(component, runtime_state):
-        return {
-            "model": (component, runtime_state),
-            "optimizer": (),
-            "prng": key,
-            "batch_counter": jnp.array(1, dtype=jnp.int32),
-        }
-
-    spec = _run_spec()
-    program = spec.worker_execution.method_contract.phase_program
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    snapshot = tmp_path / "solver.eqx"
     if publish:
-        written = write_checkpoint_transaction(
-            tmp_path,
-            run_spec=spec,
-            phase_program=program,
-            barrier_name="after_train_batch",
-            coordinate=ProgressCoordinate(
-                run_id="run-2",
-                phase="train_batch",
-                program_step=1,
-                completed_barrier="after_train_batch",
-            ),
-            slots=slots(model, state),
-        )
-    authenticated = authenticate_published_checkpoint_custody(tmp_path)
-    if publish:
-        assert authenticated.manifest.transaction_id == written.manifest.transaction_id
-    loaded = load_latest_checkpoint(
-        tmp_path,
-        expected_run_spec=spec,
-        expected_phase_program=program,
-        expected_slots=slots(fresh, fresh.init_state(key=key)),
+        eqx.tree_serialise_leaves(snapshot, (model, state))
+    restored, restored_state = eqx.tree_deserialise_leaves(
+        snapshot, (fresh, fresh.init_state(key=key)),
     )
-    restored, restored_state = loaded.slots["model"]
     if solver_type is dfx.ImplicitEuler:
         assert restored.root_finder is restored.solver.root_finder
         _assert_same_arrays(restored.root_finder, model.root_finder)
@@ -192,16 +157,6 @@ def _exercise_checkpoint_continuation(tmp_path, kind, solver_type, *, publish=Tr
         assert updated.root_finder is updated.solver.root_finder
         _assert_same_arrays(updated.root_finder, replacement)
         assert restored.root_finder.rtol == 1e-8
-        different_norm = eqx.tree_at(
-            lambda component: component.solver.root_finder.norm, fresh, optx.rms_norm
-        )
-        with pytest.raises(CheckpointCompatibilityError, match="norm field=static_repr_sha256"):
-            load_latest_checkpoint(
-                tmp_path,
-                expected_run_spec=spec,
-                expected_phase_program=program,
-                expected_slots=slots(different_norm, different_norm.init_state(key=key)),
-            )
     _assert_same_arrays(_parameter(kind, restored), _parameter(kind, model))
     assert not eqx.tree_equal(_parameter(kind, restored), _parameter(kind, fresh))
     markers = [index.marker for index in _indices(kind, restored).values()]

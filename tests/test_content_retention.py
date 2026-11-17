@@ -538,12 +538,14 @@ def test_mark_and_quarantine_recover_after_interrupted_move(
     assert provider.recover_garbage_collection() is None
 
 
-@pytest.mark.parametrize("interruption", ["receipt-replace", "receipt-sync", "index-replace"])
+@pytest.mark.parametrize("interruption", ["receipt-replace", "receipt-sync", "index-replace", "new-damage"])
 def test_final_sweep_recovery_is_idempotent_after_deleted_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     interruption: str,
 ) -> None:
+    from feedbax.persistence.store_damage import read_damage
+
     provider = ImmutableArtifactBlobProvider(tmp_path / "store")
     reference = provider.store_object(b"recover-after-unlink")
     now = datetime.now(timezone.utc)
@@ -569,7 +571,7 @@ def test_final_sweep_recovery_is_idempotent_after_deleted_bytes(
         destination = Path(destination)
         if destination.name == "swept.json":
             swept_path = destination
-            if interruption == "receipt-replace":
+            if interruption in ("receipt-replace", "new-damage"):
                 raise OSError("interrupted before swept receipt replacement")
         if (
             interruption == "index-replace"
@@ -605,6 +607,10 @@ def test_final_sweep_recovery_is_idempotent_after_deleted_bytes(
 
     provider = ImmutableArtifactBlobProvider(provider.root)
     provider.store_object(b"recover-after-unlink")
+    if interruption == "new-damage":
+        provider.object_path(reference).unlink()
+        with pytest.raises(FileNotFoundError):
+            provider.verify_object(reference)
     if interruption == "receipt-sync":
         with monkeypatch.context() as fault:
             fault.setattr(retention_module.os, "fsync", fsync)
@@ -625,7 +631,10 @@ def test_final_sweep_recovery_is_idempotent_after_deleted_bytes(
     assert completed.generation == recovered.generation
     assert completed.leases[0].released
     assert provider.recover_garbage_collection() is None
-    assert provider.get_object(reference) == b"recover-after-unlink"
+    if interruption == "new-damage":
+        assert read_damage(provider, reference.sha256) is not None
+    else:
+        assert provider.get_object(reference) == b"recover-after-unlink"
 
 
 def test_sweep_refuses_quarantine_damage_during_receipt_publication(

@@ -1,0 +1,507 @@
+import { expect, test, type Locator } from '@playwright/test';
+import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { scanStudio } from './fixtures/studioAccessibility';
+
+test.use({
+  trace: 'off',
+  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
+  viewport: { width: 1440, height: 900 },
+});
+
+test('opens a readable project beside a malformed project folder', async ({ page, request }, info) => {
+  const { snapshot, configuration } = await seedManagedProject(request, []);
+  const projectId = snapshot.project_id;
+  const projects = join(String(info.config.metadata.home), 'state', 'web', 'projects');
+  const brokenFolder = await mkdtemp(join(projects, 'malformed-project-'));
+  const brokenId = basename(brokenFolder);
+  const declaration = brokenId + '.feedbax';
+  await writeFile(join(brokenFolder, declaration), '{', { flag: 'wx' });
+
+  async function open(id: string) {
+    const opened = page.waitForResponse((response) => response.request().method() === 'GET'
+      && new URL(response.url()).pathname === `/api/projects/${encodeURIComponent(id)}/open`);
+    await page.goto(`/?project=${encodeURIComponent(id)}`);
+    return opened;
+  }
+
+  const heading = page.getByRole('heading', { name: configuration.project, exact: true, level: 1 });
+  expect((await open(projectId)).status()).toBe(200);
+  await expect(heading).toBeVisible();
+
+  const refused = await open(brokenId);
+  expect(refused.status()).toBe(422);
+  const { detail } = await refused.json() as { detail: string };
+  expect(detail).toContain(declaration);
+  expect(detail).toContain('Expecting property name enclosed in double quotes');
+  const alert = page.getByRole('alert');
+  await expect(alert).toBeVisible();
+  await expect(alert).toHaveText(detail);
+
+  expect((await open(projectId)).status()).toBe(200);
+  await expect(heading).toBeVisible();
+  await expect(alert.filter({ hasText: detail })).toHaveCount(0);
+});
+
+test('a failed Task read retries in its slot without disturbing Runs', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const routePath = '**' + projectPath + '/authoring/trials';
+  let resume!: () => void;
+  const waiting = new Promise<void>((resolve) => { resume = resolve; });
+  await page.route(routePath, async (route) => {
+    await waiting;
+    await route.fulfill({ status: 500, json: { detail: 'private Task implementation detail' } });
+  }, { times: 1 });
+  try {
+    await page.goto('/?project=' + snapshot.project_id);
+    await mapStep(page, 'train').press('Enter');
+    const primary = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+    const table = primary.getByRole('table', { name: 'Runs', exact: true });
+    await expect(table).toBeVisible();
+    await primary.getByRole('button', { name: 'Split Details' }).click();
+    await page.getByRole('tab', { name: 'Task', exact: true }).click();
+    const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
+    await expect(task.locator('[aria-busy="true"]')).toBeVisible();
+    resume();
+    await expect(task.getByRole('alert')).toHaveText('Task unavailable');
+    await expect(table).toBeVisible();
+    const retry = task.getByRole('button', { name: 'Retry', exact: true });
+    await retry.press('Enter');
+    await expect(task).toBeFocused();
+    await expect(task.getByRole('alert')).toHaveCount(0);
+    await expect(task.getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+    await expect(table).toBeVisible();
+    const current = await request.get(projectPath);
+    expect(current.ok()).toBe(true);
+    expect(await current.json()).toMatchObject({ revision: snapshot.revision });
+  } finally {
+    resume();
+  }
+});
+
+test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }, info) => {
+  test.setTimeout(45_000);
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const host = await request.get('/api/jobs');
+  expect(host.ok(), await host.text()).toBe(true);
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  const card = page.getByRole('article', { name: 'Train train' });
+  const drawer = page.getByRole('navigation', { name: 'Steps' });
+  const table = page.getByRole('table', { name: 'Runs' });
+  const status = page.getByRole('log', { name: 'Status', exact: true });
+  const runButton = page.getByRole('button', { name: 'Run', exact: true });
+  await expect(status).toBeEmpty();
+  await expect(status).toHaveAttribute('aria-live', 'polite');
+  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  const activityRow = activity.getByRole('listitem').filter({
+    has: page.getByRole('button', { name: `Train ${configuration.project} train`, exact: true }),
+  });
+  await expect(table.getByText('Not run', { exact: true })).toBeVisible();
+  await expect(runButton).toBeEnabled();
+  const runsPanel = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+  await runsPanel.focus();
+  await page.keyboard.press('Tab');
+  await expect(runButton).toBeFocused();
+  let submissions = 0;
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === projectPath + '/train-runs') submissions += 1;
+  });
+  const run = page.waitForRequest((request) => request.method() === 'POST'
+    && new URL(request.url()).pathname === `${projectPath}/train-runs`);
+  await page.keyboard.press('Enter');
+  await expect(runButton).toBeFocused();
+  await expect(runButton).toBeDisabled();
+  await page.keyboard.press('Enter');
+  expect((await (await run).response())!.status()).toBe(202);
+  await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(runButton).toBeFocused();
+  expect(submissions).toBe(1);
+  await expect(activityRow.getByText('Done', { exact: true })).toBeVisible();
+  await expect(status.getByText('Train · train: Done', { exact: true })).toHaveCount(1);
+  const messages = await status.locator(':scope > div').allTextContents();
+  expect(new Set(messages).size).toBe(messages.length);
+  for (const message of messages) expect(message).toMatch(/^Train · train: /);
+  await expect(table.locator('tbody [aria-live]')).toHaveCount(0);
+  await expect(activityRow.locator('[aria-live]')).toHaveCount(0);
+  await info.attach('train-status-announcements', { body: JSON.stringify(messages), contentType: 'application/json' });
+  await activity.getByRole('button', { name: 'Close', exact: true }).click();
+
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  const rail = page.getByRole('navigation', { name: 'Details', exact: true });
+  await rail.getByRole('tab', { name: 'Model', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Model', exact: true })
+    .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
+  await expect(mass).toHaveValue(/^1(?:\.0)?$/);
+  await expect(mass).toBeEditable();
+  const write = page.waitForResponse((response) => {
+    if (response.request().method() !== 'POST' || new URL(response.url()).pathname !== projectPath + '/model/edit') return false;
+    return response.request().postDataJSON()?.command?.operation?.op === 'set_field';
+  });
+  await mass.fill('2');
+  await mass.press('Enter');
+  const saved = await write;
+  expect(saved.ok(), await saved.text()).toBe(true);
+  expect((await saved.json()).result.status).toBe('applied');
+  await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
+  await expect(card.getByText('1 Out of date')).toBeVisible();
+  await expect(drawer.getByText('1 Out of date')).toBeVisible();
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
+  await expect(table.getByText('Done', { exact: true })).toBeVisible();
+  await expect(card.getByText('1 Done')).toBeVisible();
+  await expect(drawer.getByText('1 Done')).toBeVisible();
+});
+
+test('outside saved-folder edits join the mounted Undo history', async ({ page, request }, info) => {
+  test.setTimeout(45_000);
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const root = join(String(info.config.metadata.home), 'state', 'web', 'projects', configuration.project);
+  const modelPath = join(root, 'documents', 'point-mass.json');
+  const stepPath = join(root, 'steps', 'train.json');
+  const panel = (name: string) => page.getByRole('tabpanel', { name, exact: true });
+  const tab = (name: string) => page.getByRole('tab', { name, exact: true });
+  async function saved(method: string, suffix: string, action: () => Promise<void>) {
+    const transaction = page.waitForResponse((response) => response.request().method() === method &&
+      new URL(response.url()).pathname === projectPath + suffix);
+    const [response] = await Promise.all([transaction, action()]);
+    expect(response.ok(), await response.text()).toBe(true);
+    return response;
+  }
+  async function edit(field: Locator, value: string, model = false) {
+    await expect(field).toBeEditable();
+    const response = await saved(model ? 'POST' : 'PATCH', model ? '/model/edit' : '', () => enter(field, value));
+    if (model) expect((await response.json()).result.status).toBe('applied');
+    await expect(field).toHaveValue(value);
+  }
+  async function menu(label: string) {
+    await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+    const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
+    await expect(palette.getByRole('option', { name: new RegExp(`^${label}\\b`) })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(palette).toBeHidden();
+  }
+  const read = (path: string) => readFile(path, 'utf8');
+  async function outside(path: string, contents: string) {
+    const temporary = path + '.outside';
+    await writeFile(temporary, contents);
+    await rename(temporary, path);
+  }
+  const json = (data: unknown) => JSON.stringify(data, null, 4) + '\n';
+  const model = panel('Model');
+  const plant = model.getByRole('article', { name: 'Point mass', exact: true }).locator('header');
+  const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
+  const batches = panel('Training').getByRole('textbox', { name: 'N Batches', exact: true });
+  const batchSize = panel('Training').getByRole('textbox', { name: 'Batch Size', exact: true });
+  async function history(keys: string, view: string, suffix = '') {
+    await panel(view).focus();
+    const response = await saved(suffix ? 'POST' : 'PATCH', suffix, () => page.keyboard.press(keys));
+    if (suffix === '/model/undo') expect((await response.json()).result.status).toBe('applied');
+    return response.request().postDataJSON();
+  }
+
+  await page.goto('/?project=' + snapshot.project_id);
+  await mapStep(page, 'train').click();
+  await tab('Training').click();
+  await edit(batchSize, '6');
+  await edit(batches, '5');
+  await tab('Model').click();
+  await plant.click();
+  await edit(mass, '2', true);
+
+  const beforeOutside = await read(modelPath);
+  const changed = JSON.parse(beforeOutside);
+  changed.payload.interior.components.plant.fields.mass = 3;
+  await outside(modelPath, json(changed));
+  await expect(mass).toHaveValue('3', { timeout: 2_000 });
+  await menu('Undo Outside Change');
+  await history('Meta+Z', 'Model', '/history/replay');
+  await expect(mass).toHaveValue('2');
+  expect(await read(modelPath)).toBe(beforeOutside);
+
+  await history('Meta+Z', 'Model', '/model/undo');
+  expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(1);
+  await tab('Training').click();
+  await history('Meta+Z', 'Training');
+  await expect(batches).toHaveValue('2');
+  await history('Meta+Z', 'Training');
+  await expect(batchSize).toHaveValue('4');
+
+  await history('Meta+Shift+Z', 'Training');
+  await expect(batchSize).toHaveValue('6');
+  await history('Meta+Shift+Z', 'Training');
+  await expect(batches).toHaveValue('5');
+  await tab('Model').click();
+  await history('Meta+Shift+Z', 'Model', '/model/undo');
+  expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(2);
+  await plant.click();
+  await expect(mass).toHaveValue('2');
+  await menu('Redo Outside Change');
+  await history('Meta+Shift+Z', 'Model', '/history/replay');
+  await expect(mass).toHaveValue('3');
+  expect(await read(modelPath)).toBe(json(changed));
+
+  const step = await read(stepPath);
+  const outsideStep = JSON.parse(step);
+  outsideStep.base.inline.training_config.batch_size = 8;
+  const outsideModel = structuredClone(changed);
+  outsideModel.payload.interior.components.plant.fields.mass = 4;
+  await outside(modelPath, json(outsideModel));
+  await expect(mass).toHaveValue('4', { timeout: 2_000 });
+  await outside(stepPath, json(outsideStep));
+  await tab('Training').click();
+  await expect(batchSize).toHaveValue('8', { timeout: 2_000 });
+  const burst = await history('Meta+Z', 'Training', '/history/replay');
+  expect(burst.files.map(({ address }: { address: { id: string } }) => address.id).sort()).toEqual(['point-mass', 'train']);
+  await expect(batchSize).toHaveValue('6');
+  expect(await read(stepPath)).toBe(step);
+  expect(await read(modelPath)).toBe(json(changed));
+});
+
+test('the managed window shares selection and retains the folded slot without editing the folder', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('managed-files'));
+  const id = snapshot.project_id;
+  await page.goto(`/?project=${encodeURIComponent(id)}`);
+  await mapStep(page, 'train').click();
+  const primary = page.locator('[data-slot="primary"]');
+  const secondary = page.locator('[data-slot="secondary"]');
+  await expect(primary.getByRole('table', { name: 'Runs' })).toBeVisible();
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await expect(secondary.getByRole('heading', { name: 'Scene', exact: true })).toBeVisible();
+
+  await mapStep(page, 'successor').click();
+  await expect(mapStep(page, 'successor')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Forward', exact: true }).click();
+  await expect(mapStep(page, 'successor')).toHaveAttribute('aria-pressed', 'true');
+
+  const separator = page.getByRole('separator', { name: 'Slot Width', exact: true });
+  await separator.press('ArrowLeft');
+  const width = await separator.getAttribute('aria-valuenow');
+  await page.setViewportSize({ width: 620, height: 850 });
+  await expect(separator).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Details Drawer' })).toBeHidden();
+  await page.setViewportSize({ width: 520, height: 850 });
+  await expect(separator).toBeHidden();
+  await expect(page.locator('.studio-window-slot__strip')).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(separator).toHaveAttribute('aria-valuenow', width!);
+
+  await page.getByRole('button', { name: 'Show Details', exact: true }).click();
+  await expect(mapStep(page, 'successor')).toBeHidden();
+  await expect(page.locator('.studio-window-map__compact').getByRole('button', { name: 'Select successor' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Show Details', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(secondary.getByRole('heading', { name: 'Scene', exact: true })).toBeVisible();
+  await expect(separator).toHaveAttribute('aria-valuenow', width!);
+
+  const latest = await request.get(projectPath);
+  expect(latest.ok()).toBe(true);
+  const reopened = await latest.json() as StudioProjectSnapshot;
+  expect(reopened.revision).toBe(snapshot.revision);
+  expect(reopened.presentation_revision).toBe(snapshot.presentation_revision);
+});
+
+test('keyboard reaches the last Runs column in a narrow split', async ({ page, request }, info) => {
+  const files = await fixture('ordinary-files', '2');
+  files.at(-1).step.sweep = { axes: { seed: { values: {
+    a: { label: 'DeterministicLongNameForFirstReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 7 } } },
+    b: { label: 'DeterministicLongNameForSecondReplicate', patches: { 'method_payload.payload.seed': { op: 'add', value: 9 } } },
+  } } } };
+  const { snapshot } = await seedManagedProject(request, files);
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await page.getByRole('button', { name: 'Show Details', exact: true }).click();
+  await page.getByRole('button', { name: 'Hide Drawer', exact: true }).click();
+  await page.getByRole('button', { name: 'Hide Inspector', exact: true }).click();
+  await page.setViewportSize({ width: 620, height: 860 });
+  await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
+  const table = page.getByRole('table', { name: 'Runs', exact: true });
+  const scroll = table.locator('..');
+  const progress = table.getByRole('columnheader', { name: 'Progress', exact: true });
+  const position = () => scroll.evaluate((element) => ({
+    offset: element.scrollLeft,
+    limit: element.scrollWidth - element.clientWidth,
+  }));
+  await expect.poll(async () => (await position()).limit).toBeGreaterThan(0);
+  await expect(progress).not.toBeInViewport();
+  const row = table.getByRole('button', { name: /FirstReplicate/ });
+  await row.focus();
+  const rowCells = row.locator('xpath=ancestor::tr').getByRole('cell');
+  for (let column = 0; column < await rowCells.count(); column++) {
+    await page.keyboard.press('ArrowRight');
+    await expect(rowCells.nth(column)).toBeFocused();
+  }
+  await expect.poll(async () => {
+    const { limit, offset } = await position();
+    return limit - offset;
+  }).toBeLessThanOrEqual(1);
+  await expect(progress).toBeInViewport({ ratio: 0.9 });
+  await expect(rowCells.last()).toBeFocused();
+  await expect(page.locator('.studio-window-slot__strip')).toHaveCount(0);
+  await captureStudioWindow(page, info, 'narrow-runs-overflow');
+});
+
+test('mounted Scene owns its drawer and inspector and Problems matches the saved Plan', async ({ page, request }, info) => {
+  const [singleModel, chainModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
+  const [,,, template] = await fixture('ordinary-files', '2');
+  const task = { kind: 'document', id: 'task', document: {
+    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.task.reaching.v1', params: {} },
+  } };
+  const objective = { kind: 'document', id: 'objective', document: {
+    schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+  } };
+  const emptyModel = { ...singleModel, id: 'empty-model', document: {
+    ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
+  } };
+  const documents = (model: string) => ({
+    model_name: model, model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+  });
+  const step = (id: string, model: string) => ({
+    ...template, id, step: { ...template.step, base: { inline: {
+      ...template.step.base.inline, trial_documents: documents(model),
+    } } },
+  });
+  const { snapshot, projectPath } = await seedManagedProject(request, [
+    singleModel, chainModel, task, objective, emptyModel,
+    step('train', 'chain'), step('single', 'single'), step('empty', 'empty-model'),
+    { kind: 'step', id: 'broken', step: { kind: 'train', base: { inline: { trial_documents: documents('empty-model') } } } },
+    { kind: 'step', id: 'rowless', step: { kind: 'train', base: { document: 'absent-base' } } },
+  ]);
+  const host = await request.get('/api/jobs');
+  expect(host.ok(), await host.text()).toBe(true);
+  const read = await request.get(`${projectPath}/train-runs?revision=${snapshot.revision}&window_map=true`);
+  expect(read.ok(), await read.text()).toBe(true);
+  const { window_map } = await read.json() as StudioSavedTrainRuns;
+  const problems = window_map!.problems;
+  const brokenProblems = problems.filter(({ step }) => step === 'broken');
+  expect(brokenProblems.length, JSON.stringify(window_map!.steps)).toBeGreaterThan(1);
+  expect(window_map!.steps.find(({ step_id }) => step_id === 'broken')?.status_counts).toEqual({ cannot_run: 1 });
+  expect(window_map!.rows.filter(({ key }) => key.step === 'rowless')).toHaveLength(0);
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  const scene = page.locator('[data-slot="secondary"]').getByRole('tabpanel', { name: 'Scene', exact: true });
+  const upper = scene.getByRole('button', { name: 'Select upper', exact: true });
+  await expect(upper).toBeVisible();
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer' });
+  await drawer.getByRole('region', { name: 'Bodies' }).getByRole('button', { name: 'upper', exact: true }).click();
+  await expect(upper).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
+  await scanStudio(page, info, 'train-scene-geometry');
+  const primary = page.locator('[data-slot="primary"] > section');
+  await primary.focus();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await scene.focus();
+  await page.getByRole('button', { name: 'Show Details', exact: true }).click();
+  await scene.focus();
+  const model = primary.locator('.react-flow');
+  await expect(model.getByRole('article', { name: 'Mechanics', exact: true })).toBeVisible();
+  const zoom = () => model.locator('.react-flow__viewport').evaluate((viewport) =>
+    new DOMMatrix(getComputedStyle(viewport).transform).a);
+  const initialZoom = await zoom();
+  const drawing = scene.getByRole('group', { name: 'Scene', exact: true });
+  await expect.poll(() => drawing.evaluate((svg: SVGSVGElement) =>
+    Math.abs(svg.viewBox.baseVal.width - svg.clientWidth) + Math.abs(svg.viewBox.baseVal.height - svg.clientHeight),
+  )).toBeLessThanOrEqual(2);
+  await expect(primary.getByRole('heading', { name: 'Model', exact: true })).toBeVisible();
+  await expect(primary.locator('.studio-window-slot__header')).toHaveCSS('height', '38px');
+  await expect(scene.locator('.studio-window-slot__header')).toHaveCSS('height', '38px');
+  await captureStudioWindow(page, info, '02-model-scene');
+  await page.setViewportSize({ width: 1240, height: 820 });
+  await expect.poll(zoom).toBeCloseTo(initialZoom);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect.poll(zoom).toBeCloseTo(initialZoom);
+
+  const sceneScale = () => upper.evaluate((limb: SVGGraphicsElement) => limb.getBBox().width);
+  const initialScale = await sceneScale();
+  await scene.getByRole('button', { name: 'Zoom In', exact: true }).click();
+  await expect.poll(sceneScale).toBeGreaterThan(initialScale);
+  const deliberateScale = await sceneScale();
+  await primary.focus();
+  await model.hover();
+  await page.mouse.wheel(0, 180);
+  await expect.poll(zoom).toBeLessThan(initialZoom);
+  const deliberateZoom = await zoom();
+  const modelWidth = await model.evaluate(({ clientWidth }) => clientWidth);
+  await page.setViewportSize({ width: 1160, height: 820 });
+  await expect.poll(() => model.evaluate(({ clientWidth }) => clientWidth)).toBeLessThan(modelWidth);
+  expect(await zoom()).toBeCloseTo(deliberateZoom);
+  expect(await sceneScale()).toBeCloseTo(deliberateScale);
+  await scene.getByRole('button', { name: 'Fit View', exact: true }).click();
+  await expect.poll(sceneScale).toBeLessThan(deliberateScale);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: 'Show Both', exact: true }).click();
+  await primary.focus();
+  await page.keyboard.press('Control+3');
+  await expect(primary.getByRole('heading', { name: 'Task', exact: true })).toBeVisible();
+  await expect(primary.getByRole('combobox', { name: 'Task Document', exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).not.toContainText('upper.proximal');
+  await scene.focus();
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
+  await mapStep(page, 'single').click();
+  await expect(scene.locator('header')).toContainText('single');
+  await expect(scene.getByRole('button', { name: 'Select forearm', exact: true })).toBeHidden();
+  await expect(page.getByRole('complementary', { name: 'Inspector' })).not.toContainText('upper.proximal');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(upper).toBeVisible();
+
+  await page.getByRole('button', { name: 'Show Both', exact: true }).click();
+  const problemButton = page.getByRole('button', { name: /^Problems \d+$/ });
+  await expect(problemButton).toHaveText(`Problems ${problems.length}`);
+  await expect(problemButton).toHaveAccessibleName(`Problems ${problems.length}`);
+  await problemButton.click();
+  const list = page.getByRole('dialog', { name: 'Problems' });
+  await expect(list.getByRole('listitem')).toHaveCount(problems.length);
+  const close = list.getByRole('button', { name: 'Close', exact: true });
+  await expect(close).toBeFocused();
+  async function anchored() {
+    const entry = (await problemButton.boundingBox())!;
+    const panel = (await list.boundingBox())!;
+    expect(Math.abs(panel.x + panel.width - entry.x - entry.width)).toBeLessThan(2);
+    expect(panel.y + panel.height).toBeLessThan(entry.y);
+    expect(panel.x).toBeGreaterThanOrEqual(0);
+  }
+  await anchored();
+  await close.press('Escape');
+  await expect(problemButton).toBeFocused();
+
+  const broken = page.getByRole('article', { name: 'Train broken' });
+  const scoped = broken.getByRole('button', { name: "1 Can't run", exact: true });
+  await scoped.press('Enter');
+  await expect(list.getByRole('listitem')).toHaveCount(brokenProblems.length);
+  await anchored();
+  await close.press('Escape');
+  await expect(scoped).toBeFocused();
+  await scoped.press('Enter');
+  const missingTraining = 'Training · Field required';
+  await list.getByRole('button', { name: missingTraining, exact: true }).press('Enter');
+  await expect(list).toBeHidden();
+  const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
+  await expect(training.getByText(missingTraining, { exact: true })).toBeFocused();
+  await expect(broken.locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
+
+  const rowless = page.getByRole('article', { name: 'Train rowless' });
+  await rowless.getByRole('button', { name: "Can't run", exact: true }).click();
+  await expect(list.getByRole('listitem')).toHaveCount(1);
+  await list.getByRole('button', { name: /absent-base/ }).click();
+  await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
+
+  await problemButton.click();
+  await list.getByRole('button', { name: /Components · Model has no components/ }).click();
+  const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
+  const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
+  await expect(empty.locator(':scope > header')).toContainText('empty-model');
+  await expect(emptyReason).toBeFocused();
+  await expect(page.getByRole('article', { name: 'Train empty' }).locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
+
+  await page.setViewportSize({ width: 520, height: 860 });
+  await problemButton.click();
+  await expect(list.getByRole('listitem')).toHaveCount(problems.length);
+  await anchored();
+});

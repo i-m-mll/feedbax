@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,7 +52,7 @@ def selection(base: str, env: dict[str, str]) -> dict:
             raise RuntimeError(f"affected-test selection returned an invalid {name} gate")
     capabilities = report.get("capabilities")
     if not isinstance(capabilities, list) or any(
-        capability not in {"optional_mjx", "optional_ppo"} for capability in capabilities
+        capability not in {"optional_mjx"} for capability in capabilities
     ):
         raise RuntimeError("affected-test selection returned invalid capability gates")
     if any(
@@ -74,34 +73,20 @@ def reference(env: dict[str, str], profile_json: Path | None, python_junit: Path
     )
     if status.returncode or status.stdout:
         raise RuntimeError("complete reference requires a clean checkout for wheel provenance")
-    with TemporaryDirectory(prefix="feedbax-reference-") as directory:
-        run(
-            [
-                "uv",
-                "run",
-                "--no-sync",
-                "python",
-                "scripts/run_external_conformance.py",
-                "--result-out",
-                str(Path(directory) / "downstream-conformance.json"),
-            ],
-            env=env,
-            timeout=120,
-        )
-        run(["uv", "run", "--no-sync", "python", "scripts/generate_studio_contracts.py"], env=env)
-        run(
-            ["git", "diff", "HEAD", "--exit-code", "--", "web/src/generated/studioContracts.ts"],
-            env=env,
-        )
-        python = ["scripts/full_suite.sh", "--no-memo"]
-        if profile_json is not None:
-            python.extend(["--profile-json", str(profile_json)])
-        if python_junit is not None:
-            python.append(f"--junitxml={python_junit}")
-        run(python, env=env, timeout=420)
-        run(["bun", "run", "test"], cwd=ROOT / "web", env=env)
-        run(["bun", "run", "test:e2e"], cwd=ROOT / "web", env=env)
-        run(["bun", "run", "build"], cwd=ROOT / "web", env=env)
+    run(["uv", "run", "--no-sync", "python", "scripts/generate_studio_contracts.py"], env=env)
+    run(
+        ["git", "diff", "HEAD", "--exit-code", "--", "web/src/generated/studioContracts.ts"],
+        env=env,
+    )
+    python = ["scripts/full_suite.sh", "--no-memo"]
+    if profile_json is not None:
+        python.extend(["--profile-json", str(profile_json)])
+    if python_junit is not None:
+        python.append(f"--junitxml={python_junit}")
+    run(python, env=env, timeout=420)
+    run(["bun", "run", "test"], cwd=ROOT / "web", env=env)
+    run(["bun", "run", "test:e2e"], cwd=ROOT / "web", env=env)
+    run(["bun", "run", "build"], cwd=ROOT / "web", env=env)
 
 
 def affected(

@@ -11,7 +11,6 @@ from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.cde_templates import cde_controller_spec
 from feedbax.models.cde import cde_controller
-from feedbax.runtime.graph import Graph, GraphTraceRequest
 
 
 @pytest.mark.parametrize("decay", [-0.1, 1.1, float("inf")])
@@ -145,60 +144,3 @@ def test_scan_matches_jitted_and_vmapped_step_and_differentiates():
     assert jnp.any(grads.nodes["linear"].layer.weight != 0)
     assert jnp.any(grads.nodes["vf"].linears[-1].weight != 0)
     assert jnp.any(grads.nodes["gru_gate"].cell.weight_ih != 0)
-
-
-def test_full_model_builder():
-    from feedbax.analysis.aligned import DEFAULT_VARSET, ResponseVar
-    from feedbax.tasks import SimpleReaches, prepare_trial
-    from feedbax.xabdeef.losses import simple_reach_loss
-    from feedbax.xabdeef.models import cde_controller_nn
-
-    model_key, trial_key, run_key = jr.split(jr.key(5), 3)
-    task = SimpleReaches(
-        loss_func=simple_reach_loss(),
-        workspace=jnp.array([[-1.0, -1.0], [1.0, 1.0]]),
-        n_steps=10,
-        eval_n_directions=2,
-    )
-    model = cde_controller_nn(
-        task,
-        n_steps=10,
-        dt=0.05,
-        hidden_dim=8,
-        vf_width=16,
-        vf_depth=1,
-        motor_noise_std=0.02,
-        key=model_key,
-    )
-    assert isinstance(model, Graph)
-    assert isinstance(model.nodes["net"], Graph)
-    trial = task.get_train_trial(key=trial_key)
-    prepared = prepare_trial(model, trial)
-    outputs, _, trace = model.rollout_with_trace(
-        prepared.inputs,
-        prepared.init_state,
-        n_steps=prepared.n_steps,
-        key=run_key,
-        trace=(
-            GraphTraceRequest(kind="port", selector="hidden", node="net", port="hidden"),
-            GraphTraceRequest(kind="port", selector="command", node="net", port="output"),
-            GraphTraceRequest(kind="state_path", selector="hidden_history", path="net.hidden"),
-        ),
-    )
-    assert all(jnp.all(jnp.isfinite(x)) for x in jax.tree.leaves(outputs))
-    assert trace["hidden"].shape == (prepared.n_steps, 8)
-    assert jnp.all(jnp.isfinite(trace["hidden"]))
-    _, _, history = model(
-        prepared.inputs,
-        prepared.init_state,
-        n_steps=prepared.n_steps,
-        key=run_key,
-        return_state_history=True,
-    )
-    assert jnp.array_equal(history.net.hidden[0], model.net.nodes["h0"].value)
-    assert jnp.array_equal(history.net.hidden[1:], trace["hidden"])
-    assert jnp.array_equal(history.net.hidden[1:], trace["hidden_history"])
-    assert jnp.allclose(DEFAULT_VARSET[ResponseVar.COMMAND].where(history)[1:], trace["command"])
-    states, losses = task.eval_with_loss(model, run_key)
-    assert states.net.hidden.shape == (2, prepared.n_steps, 8)
-    assert jnp.all(jnp.isfinite(losses["nn_hidden"].value))

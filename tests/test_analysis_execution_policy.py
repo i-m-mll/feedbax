@@ -8,12 +8,6 @@ import pytest
 
 from feedbax.analysis.analysis import AbstractAnalysis, AnalysisRef
 from feedbax.analysis.context import AnalysisRunContext
-from feedbax.analysis.fulfillment_adapters import (
-    AnalysisNodeRequest,
-    FulfillmentEnvironment,
-    fulfill_node,
-)
-from feedbax.analysis.fulfillment_custody import rebuild_node
 from feedbax.analysis.specs import (
     AnalysisRecipeRegistry,
     AnalysisRecipeResult,
@@ -112,42 +106,3 @@ def test_fresh_execution_bypasses_selected_and_transitive_result_caches(
     uncached_root = tmp_path / "uncached"
     execute(root=uncached_root, **fresh)
     assert not (uncached_root / "cache" / "analysis_results").exists()
-
-
-def test_rebuild_detects_changed_computation_despite_mirrored_result_caches(
-    tmp_path: Path, application_registry_bundle, cached_graph
-) -> None:
-    spec, _registry, calls, computation, recipe = cached_graph
-    registry = application_registry_bundle.analysis_recipes
-    registry.register(spec.analysis_type, recipe, computation_revision="1")
-    environment = FulfillmentEnvironment(root=tmp_path, registries=application_registry_bundle)
-    node = AnalysisNodeRequest(node_key="cached", spec=spec)
-    execute_analysis_run_spec(
-        spec,
-        registry=application_registry_bundle.analysis_recipes,
-        evaluation_registry=application_registry_bundle.evaluation_recipes,
-        experiment_registry=application_registry_bundle.experiment_packages,
-        root=tmp_path,
-    )
-    cache_dir = AnalysisRunContext(
-        spec=spec, root=tmp_path, computation=registry.computation(spec.analysis_type)
-    ).results_cache_dir
-    cached_bytes = {p: p.read_bytes() for p in cache_dir.glob("*.pkl")}
-    assert len(cached_bytes) == 2
-    receipt = fulfill_node(node, environment=environment).receipt
-    original = receipt.path.read_bytes()
-    artifact_bytes = {
-        Path(a.uri): Path(a.uri).read_bytes() for a in receipt.manifest.artifacts
-    }
-
-    assert rebuild_node(node, environment=environment).matched
-    assert calls == {"source": 2, "selected": 2}
-    computation["value"] = 9
-    outcome = rebuild_node(node, environment=environment)
-
-    assert calls == {"source": 3, "selected": 3}
-    assert not outcome.matched
-    assert "artifacts[0].sha256" in outcome.field_paths
-    assert receipt.path.read_bytes() == original
-    assert all(path.read_bytes() == data for path, data in artifact_bytes.items())
-    assert {p: p.read_bytes() for p in cache_dir.glob("*.pkl")} == cached_bytes

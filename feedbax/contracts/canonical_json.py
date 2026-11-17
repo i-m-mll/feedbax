@@ -14,6 +14,7 @@ from __future__ import annotations
 from enum import StrEnum
 import json
 import math
+import re
 from typing import Any, Literal, TypeAlias, cast
 
 import rfc8785
@@ -24,6 +25,7 @@ CANONICAL_JSON_V2 = "canonical_json_v2"
 CanonicalJsonAlgorithm: TypeAlias = Literal["canonical_json_v1", "canonical_json_v2"]
 
 _MAX_SAFE_INTEGER = 2**53 - 1
+_SURROGATE = re.compile(r"[\ud800-\udfff]")
 
 
 class CanonicalJsonErrorCode(StrEnum):
@@ -34,7 +36,6 @@ class CanonicalJsonErrorCode(StrEnum):
     LONE_SURROGATE = "lone_surrogate"
     NON_FINITE_NUMBER = "non_finite_number"
     NON_STRING_KEY = "non_string_key"
-    UNKNOWN_ALGORITHM = "unknown_algorithm"
     UNSAFE_INTEGER = "unsafe_integer"
     UNSUPPORTED_TYPE = "unsupported_type"
 
@@ -65,6 +66,12 @@ def canonical_json_v1_bytes(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
+def validate_canonical_json_v2(value: object) -> None:
+    """Require a value in the canonical JSON v2 input domain."""
+
+    _validate_v2_value(value, path="", active_containers=set())
+
+
 def canonical_json_v2_bytes(value: object) -> bytes:
     """Return strict cross-language canonical JSON bytes.
 
@@ -74,7 +81,11 @@ def canonical_json_v2_bytes(value: object) -> bytes:
     contract with :class:`CanonicalJsonError`.
     """
 
-    _validate_v2_value(value, path="", active_containers=set())
+    validate_canonical_json_v2(value)
+    return _dump_canonical_json_v2(value)
+
+
+def _dump_canonical_json_v2(value: object) -> bytes:
     try:
         return rfc8785.dumps(cast(Any, value))
     except rfc8785.CanonicalizationError as exc:
@@ -84,21 +95,6 @@ def canonical_json_v2_bytes(value: object) -> bytes:
             detail=str(exc),
             value_type=type(value).__name__,
         ) from exc
-
-
-def canonical_json_bytes_for_algorithm(value: object, algorithm: str) -> bytes:
-    """Encode ``value`` with one explicitly named canonical JSON algorithm."""
-
-    if algorithm == CANONICAL_JSON_V1:
-        return canonical_json_v1_bytes(value)
-    if algorithm == CANONICAL_JSON_V2:
-        return canonical_json_v2_bytes(value)
-    raise CanonicalJsonError(
-        CanonicalJsonErrorCode.UNKNOWN_ALGORITHM,
-        path="",
-        detail=f"unsupported algorithm {algorithm!r}",
-        value_type=type(value).__name__,
-    )
 
 
 def _validate_v2_value(value: object, *, path: str, active_containers: set[int]) -> None:
@@ -190,7 +186,7 @@ def _validate_container_entry(
 
 
 def _validate_v2_string(value: str, *, path: str) -> None:
-    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+    if not value.isascii() and _SURROGATE.search(value):
         raise CanonicalJsonError(
             CanonicalJsonErrorCode.LONE_SURROGATE,
             path=path,
@@ -209,7 +205,7 @@ __all__ = [
     "CanonicalJsonAlgorithm",
     "CanonicalJsonError",
     "CanonicalJsonErrorCode",
-    "canonical_json_bytes_for_algorithm",
     "canonical_json_v1_bytes",
     "canonical_json_v2_bytes",
+    "validate_canonical_json_v2",
 ]

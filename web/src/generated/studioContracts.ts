@@ -4,7 +4,1125 @@
 import { z } from 'zod';
 
 export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+class JsonValueSchema extends z.ZodType<JsonValue> {
+  _parse(input: z.ParseInput): z.ParseReturnType<JsonValue> {
+    switch (this._getType(input)) {
+      case z.ZodParsedType.string: return jsonString._parse(input);
+      case z.ZodParsedType.number: return jsonNumber._parse(input);
+      case z.ZodParsedType.boolean: return jsonBoolean._parse(input);
+      case z.ZodParsedType.null: return jsonNull._parse(input);
+      case z.ZodParsedType.array: return jsonArray._parse(input);
+      case z.ZodParsedType.object: return jsonObject._parse(input);
+      default: return invalidJsonValue._parse(input);
+    }
+  }
+}
+const jsonValueSchema: z.ZodType<JsonValue> = new JsonValueSchema({});
+const jsonString = z.string();
+const jsonNumber = z.number().finite();
+const jsonBoolean = z.boolean();
+const jsonNull = z.null();
+const jsonArray = z.array(jsonValueSchema);
+const jsonObject = z.record(jsonString, jsonValueSchema);
+const invalidJsonValue = z.never({ invalid_type_error: 'Expected a JSON value' });
 export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;
+
+export interface KeepOpen {
+  kind?: "keep-open";
+}
+
+export interface CloseWhenIdle {
+  kind?: "close-when-idle";
+  seconds: number;
+}
+
+export interface LocalTargetProfile {
+  kind: "local";
+  id: "local";
+  label: "This Mac";
+}
+
+export interface SessionTargetProfile {
+  kind: "session";
+  id: string;
+  label: string;
+  driver: string;
+  resources: Record<string, JsonValue>;
+  lifecycle: KeepOpen | CloseWhenIdle;
+  maximum_microusd: number;
+}
+
+export interface LocalTarget {
+  kind: "local";
+  profile: "local";
+}
+
+export interface TargetRealization {
+  environment: string;
+  placement?: Record<string, JsonValue> | null;
+}
+
+export interface SessionTarget {
+  kind: "session";
+  profile: string;
+  driver: string;
+  session_id: string;
+  realization?: TargetRealization | null;
+}
+
+export interface ReadyTarget {
+  state: "ready";
+}
+
+export interface OffTarget {
+  state: "off";
+  reason: string;
+}
+
+export interface UnreachableTarget {
+  state: "unreachable";
+  reason: string;
+}
+
+export interface TargetOption {
+  profile: LocalTargetProfile | SessionTargetProfile;
+  run_kinds: Array<"train" | "evaluate" | "analyze" | "render" | "report">;
+  availability: ReadyTarget | OffTarget | UnreachableTarget;
+}
+
+export interface ExecutionTargets {
+  default: "local";
+  targets: TargetOption[];
+}
+
+export interface OpeningObservation {
+  step: "acquiring" | "connecting" | "copying" | "installing" | "starting_host";
+  observed_at_ms: number;
+}
+
+export interface JobError {
+  code: string;
+  message: string;
+  phase?: string | null;
+  path?: string | null;
+}
+
+export interface JobOutcome {
+  outcome: "succeeded" | "stopped" | "failed" | "interrupted" | "blocked";
+  error?: JobError | null;
+  receipt?: JobReceipt | null;
+  signal?: number | null;
+  exit?: number | null;
+}
+
+export interface JobProgress {
+  completed_updates: number;
+  total_updates: number;
+}
+
+export interface JobReceipt {
+  manifest_id: string;
+  manifest_sha256: string;
+}
+
+export interface StudioSubmissionActor {
+  client: "studio" | "cli";
+  label?: string | null;
+}
+
+export interface StudioActivityJob {
+  job_id: string;
+  project_id: string;
+  request_id: string;
+  kind: "train" | "evaluate" | "analyze" | "render" | "report";
+  run_key: string;
+  stage_id: string;
+  scenario_id: string;
+  label: string;
+  coordinates: Record<string, JsonValue>;
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  phase?: string | null;
+  reason?: string | null;
+  can_resume?: boolean;
+  allowed_actions: Array<"checkpoint" | "force" | "resume">;
+  continues?: string | null;
+  progress?: JobProgress | null;
+  eta_seconds?: number | null;
+  outcome?: JobOutcome | null;
+  earlier_definition?: boolean;
+  seen?: boolean;
+  actor?: StudioSubmissionActor | null;
+  placement?: "live" | "ordinary" | null;
+  target?: LocalTarget | SessionTarget;
+  log_tail?: string[];
+  collection_progress?: StoreTransferProgress | null;
+}
+
+export interface StudioEventReset {
+  cursor: number;
+  oldest_cursor: number;
+}
+
+export interface StudioEventWatermark {
+  cursor: number;
+}
+
+export interface StudioJobEvent {
+  cursor: number;
+  job_id: string;
+  project_id: string;
+  request_id: string;
+  kind: string;
+  data: Record<string, JsonValue>;
+  activity?: StudioActivityJob | null;
+  venue?: StudioVenueStream | null;
+}
+
+export interface StudioJobEventHistory {
+  cursor: number;
+  oldest_cursor: number;
+  events: StudioJobEvent[];
+}
+
+export interface StudioJobResumeRequest {
+  token: string;
+}
+
+export interface StudioJobSnapshot {
+  jobs: StudioActivityJob[];
+  cursor: number;
+  oldest_cursor: number;
+  sessions: Array<StudioLocalSession | StudioRemoteSession>;
+  remote_version?: number | null;
+  machine_catalog_version?: number | null;
+  venue_cursors?: StudioVenueCursor[];
+}
+
+export interface StudioJobStopItem {
+  job_id: string;
+  job?: StudioActivityJob | null;
+  error?: JobError | null;
+}
+
+export interface StudioJobStopRequest {
+  job_ids: string[];
+  mode: "checkpoint" | "force";
+}
+
+export interface StudioJobSubmission {
+  id: string;
+  token: string;
+  project_id: string;
+  items: StudioSubmissionItem[];
+  actor?: StudioSubmissionActor | null;
+  target?: LocalTarget | SessionTarget;
+}
+
+export interface StudioSavedEvaluationRead {
+  revision: string;
+  key: StudioSavedTrainKey;
+  job_id: string;
+}
+
+export interface StudioSavedEvaluationReplayRequest {
+  revision: string;
+  key: StudioSavedTrainKey;
+  job_id: string;
+  trial: string;
+  checkpoint?: number | null;
+}
+
+export interface StudioEvaluationObjectiveSeries {
+  job_id: string;
+  request_id: string;
+  receipt: JobReceipt | null;
+  lineage: string[];
+  condition: string | null;
+  trials: string[];
+  seed: number;
+  objective: string;
+  requested: number[];
+  points: StudioEvaluationObjectivePoint[];
+  gaps: StudioEvaluationCheckpointGap[];
+}
+
+export interface StudioEvaluationObjectivePoint {
+  checkpoint: StudioEvaluationCheckpoint;
+  total: number;
+  terms: StudioEvaluationObjectiveTerm[];
+}
+
+export interface StudioEvaluationObjectiveTerm {
+  path: string;
+  name: string;
+  value: number;
+  coverage: number;
+}
+
+export interface StudioEvaluationCheckpoint {
+  job_id: string;
+  request_id: string;
+  completed_updates: number;
+  transaction: JobReceipt;
+  transaction_root_sha256: string;
+  binding_sha256: string;
+  publication_cursor: number;
+}
+
+export interface StudioEvaluationCheckpointGap {
+  update: number;
+  reason: "checkpoint_unavailable";
+}
+
+export interface StudioEvaluationCheckpointSeries {
+  subject: StudioSavedTrainKey;
+  requested: number[];
+}
+
+export interface StudioSavedEvaluationResult {
+  job_id: string;
+  receipt: JobReceipt;
+  checkpoint_source: StudioTrainCheckpointSource | null;
+  size_bytes: number;
+  checkpoint_sources?: StudioTrainCheckpointSource[] | null;
+  checkpoint_gaps?: StudioEvaluationCheckpointGap[] | null;
+  placement?: "live" | "ordinary" | null;
+  bound_subject?: StudioBoundBestSubject | null;
+}
+
+export interface StudioSavedEvaluationRow {
+  key: StudioSavedTrainKey;
+  request_id: string;
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  reason: string | null;
+  can_run: boolean;
+  trials: string[];
+  result: StudioSavedEvaluationResult | null;
+  subject_rank_key?: string | null;
+  checkpoint_series?: StudioEvaluationCheckpointSeries | null;
+  checkpoint_attempt?: StudioEvaluationCheckpointAttempt | null;
+  checkpoint_rule?: unknown | null;
+  bound_subject?: StudioBoundBestSubject | null;
+}
+
+export interface StudioSavedTrainAttempt {
+  job_id: string;
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  reason: string | null;
+  progress: JobProgress | null;
+  successful_receipt: JobReceipt | null;
+  continues: string | null;
+  checkpoint_source: StudioTrainCheckpointSource | null;
+  stopped_checkpoint?: number | null;
+}
+
+export interface StudioSavedTrainChange {
+  path: string;
+  before: JsonValue;
+  after: JsonValue;
+}
+
+export interface StudioSavedTrainKey {
+  variant: string;
+  step: string;
+  row: string;
+}
+
+export interface StudioSavedTrainResult {
+  request_id: string;
+  job_id: string;
+  receipt: JobReceipt;
+  progress: JobProgress | null;
+}
+
+export interface StudioSavedTrainRow {
+  key: StudioSavedTrainKey;
+  label: string;
+  request_id: string;
+  attempts: StudioSavedTrainAttempt[];
+  status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  reason: string | null;
+  result: StudioSavedTrainResult | null;
+  previous: StudioSavedTrainResult | null;
+  change: StudioSavedTrainChange | null;
+  previous_attempts?: StudioSavedTrainAttempt[];
+}
+
+export interface StudioSavedTrainRunRequest {
+  revision: string;
+  run_keys: StudioSavedTrainKey[];
+  target?: string;
+  token: string;
+  reuse_completed?: boolean;
+}
+
+export interface StudioSavedMachineQuoteRequest {
+  revision: string;
+  run_keys: StudioSavedTrainKey[];
+  target?: string;
+}
+
+export interface StudioMachineApproval {
+  quote: string;
+}
+
+export interface StudioMachineApprovalReceipt {
+  session_id: string;
+}
+
+export interface StudioMachineQuote {
+  id: string;
+  machine: string;
+  resources: Record<string, JsonValue>;
+  hourly_microusd: number;
+  rows: StudioMachineQuoteRow[];
+  ceiling_microusd: number;
+  expires_at_ms: number;
+  idle_timeout_seconds: number | null;
+  idle_with_results: "on";
+  status: "awaiting_authorization";
+}
+
+export interface StudioMachineQuoteRow {
+  key: StudioSavedTrainKey;
+  label: string;
+  axes: Record<string, JsonValue>;
+}
+
+export interface StudioSavedTrainRuns {
+  revision: string;
+  rows: StudioSavedTrainRow[];
+  window_map?: StudioProjectWindowMap | null;
+  review?: StudioPlanReviewEntry[] | null;
+}
+
+export interface StudioPlanRequestAddress {
+  key: StudioSavedTrainKey;
+  element?: string | null;
+}
+
+export interface StudioPlanReviewEntry {
+  key: StudioSavedTrainKey;
+  element?: string | null;
+  request_id: string;
+  state: "unchanged" | "changed" | "added" | "removed";
+  path?: string | null;
+  upstream?: StudioPlanRequestAddress | null;
+  before_source?: StudioPlanReviewSource | null;
+  after_source?: StudioPlanReviewSource | null;
+}
+
+export interface StudioPlanReviewSource {
+  kind: "document" | "step" | "sweep_value" | "exception" | "variant" | "upstream";
+  name: string;
+  path: string;
+  step?: string | null;
+  axis?: string | null;
+  value?: string | null;
+  variant?: string | null;
+  row?: string | null;
+}
+
+export interface StudioTrainCheckpointSource {
+  job_id: string;
+  request_id: string;
+  completed_updates: number;
+}
+
+export interface StudioLocalSession {
+  id?: "local";
+  state?: "open";
+}
+
+export interface StudioRemoteSession {
+  id: string;
+  name: string;
+  state: "queued" | "opening" | "open" | "closing" | "unreachable" | "off";
+  hourly_microusd: number;
+  estimated_cost_microusd: number;
+  closes_at_ms: number;
+  ceiling_microusd: number;
+  idle_since_ms: number | null;
+  job_ids: string[];
+  can_close: boolean;
+  region?: string | null;
+  opening_observations?: OpeningObservation[];
+  opening_failure?: string | null;
+  billed_cost_microusd?: number | null;
+  provider_observed_at_ms?: number | null;
+  power_state?: "starting" | "on" | "off" | null;
+}
+
+export interface StudioVenueCursor {
+  session_id: string;
+  stream_id: string;
+  cursor: number;
+}
+
+export interface StudioVenueStream {
+  session_id: string;
+  stream_id: string;
+}
+
+export interface StoreTransferProgress {
+  verified_bytes: number;
+  total_bytes: number;
+}
+
+export interface StudioSubmissionItem {
+  run_key: string;
+  job_id?: string | null;
+  disposition: "admitted" | "attached" | "reused" | "rejected";
+  reason?: string | null;
+}
+
+export interface ComponentPortEnd {
+  owner: "component";
+  component: string;
+  port: string;
+}
+
+export interface ComponentPortAddress {
+  owner: "component";
+  component: string;
+  port: string;
+  direction: "input" | "output" | "physical";
+}
+
+export interface InputBoundaryEnd {
+  owner: "inputs";
+  port: string;
+}
+
+export interface OutputBoundaryEnd {
+  owner: "outputs";
+  port: string;
+}
+
+export interface PhysicalBoundaryEnd {
+  owner: "boundary";
+  port: string;
+}
+
+export interface GraphElement {
+  kind: "graph";
+}
+
+export interface ComponentElement {
+  kind: "component";
+  id: string;
+}
+
+export interface WireElement {
+  kind: "wire";
+  id: string;
+}
+
+export interface PhysicalConnectionElement {
+  kind: "physical_connection";
+  id: string;
+}
+
+export interface PortElement {
+  kind: "port";
+  end: ComponentPortAddress | InputBoundaryEnd | OutputBoundaryEnd | PhysicalBoundaryEnd;
+}
+
+export interface AttachmentElement {
+  kind: "attachment";
+  parent: WireElement | PortElement;
+  id: string;
+}
+
+export interface FieldElement {
+  kind: "field";
+  parent: GraphElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement;
+  path: Array<string | number>;
+}
+
+export interface ModelAddress {
+  document: string;
+  composites: string[];
+  element: GraphElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
+}
+
+export interface SignalType {
+  base?: string | null;
+  shape?: Array<number | string | null> | null;
+  unit?: string | null;
+}
+
+export interface ModelTime {
+  value: number;
+  unit: "s" | "st";
+}
+
+export interface InputDefault {
+  value: JsonValue;
+}
+
+export interface DelayAttachment {
+  kind: "delay";
+  id: string;
+  delay: ModelTime;
+  initial?: JsonValue;
+}
+
+export interface InterventionAttachment {
+  kind: "intervention";
+  id: string;
+  operation: string;
+  fields?: Record<string, JsonValue>;
+  window?: JsonValue;
+}
+
+export interface ProbeAttachment {
+  kind: "probe";
+  id: string;
+  name: string;
+}
+
+export interface SignalInput {
+  id: string;
+  name: string;
+  type: SignalType;
+  default?: InputDefault | null;
+}
+
+export interface SignalOutput {
+  id: string;
+  name: string;
+  type: SignalType;
+}
+
+export interface PhysicalPort {
+  id: string;
+  name: string;
+  type: "translational" | "rotational" | "frame";
+}
+
+export interface ModelPorts {
+  inputs?: SignalInput[];
+  outputs?: SignalOutput[];
+  physical?: PhysicalPort[];
+}
+
+export interface ModelPortAttachments {
+  sources?: Record<string, Array<InterventionAttachment | ProbeAttachment>>;
+  sinks?: Record<string, ProbeAttachment[]>;
+}
+
+export interface ModelWire {
+  source: ComponentPortEnd | InputBoundaryEnd;
+  target: ComponentPortEnd | OutputBoundaryEnd;
+  attachments?: Array<DelayAttachment | InterventionAttachment | ProbeAttachment>;
+}
+
+export interface ModelPhysicalConnection {
+  a: ComponentPortEnd | PhysicalBoundaryEnd;
+  b: ComponentPortEnd | PhysicalBoundaryEnd;
+}
+
+export interface LeafComponent {
+  kind: "leaf";
+  name: string;
+  type: string;
+  revision?: number | null;
+  fields?: Record<string, JsonValue>;
+  port_counts?: Record<string, number>;
+  attachments?: ModelPortAttachments;
+}
+
+export interface CompositeComponent {
+  kind: "composite";
+  name: string;
+  ports: ModelPorts;
+  interior: GraphInterior | PhysicalInterior;
+  substeps?: number;
+  attachments?: ModelPortAttachments;
+}
+
+export interface GraphInterior {
+  components?: Record<string, LeafComponent | CompositeComponent>;
+  wires?: Record<string, ModelWire>;
+  attachments?: ModelPortAttachments;
+  physical_domain?: null;
+}
+
+export interface PhysicalInterior {
+  components?: Record<string, LeafComponent | CompositeComponent>;
+  wires?: Record<string, ModelWire>;
+  attachments?: ModelPortAttachments;
+  physical_domain: "translational" | "rotational" | "planar_multibody" | "spatial_multibody";
+  connections?: Record<string, ModelPhysicalConnection>;
+}
+
+export interface ModelWorld {
+  gravity: [number, number, number];
+}
+
+export interface ModelDocument {
+  schema_version?: "feedbax.spec.model.v1";
+  step_seconds: number;
+  ports: ModelPorts;
+  interior: GraphInterior;
+  world?: ModelWorld | null;
+}
+
+export interface ModelPosition {
+  x: number;
+  y: number;
+}
+
+export interface AddComponent {
+  op: "add_component";
+  graph: ModelAddress;
+  component: LeafComponent | CompositeComponent;
+  position: ModelPosition;
+  connect_from?: ComponentPortEnd | InputBoundaryEnd | null;
+  connect_to_port?: string | null;
+}
+
+export interface DeleteElements {
+  selection: ModelAddress[];
+  op: "delete";
+}
+
+export interface ConnectSignal {
+  op: "connect";
+  graph: ModelAddress;
+  source: ComponentPortEnd | InputBoundaryEnd;
+  target: ComponentPortEnd | OutputBoundaryEnd;
+  grow_target?: boolean;
+}
+
+export interface ConnectTaskSignal {
+  op: "connect_task_signal";
+  graph: ModelAddress;
+  run: StudioSavedTrainKey;
+  signal: string;
+  target: ComponentPortEnd | OutputBoundaryEnd;
+}
+
+export interface ConnectPhysical {
+  op: "connect_physical";
+  graph: ModelAddress;
+  connection: ModelPhysicalConnection;
+}
+
+export interface AddPort {
+  op: "add_port";
+  graph: ModelAddress;
+  direction: "input" | "output" | "physical";
+  port: SignalInput | SignalOutput | PhysicalPort;
+}
+
+export interface RemovePort {
+  op: "remove_port";
+  address: ModelAddress;
+}
+
+export interface RenameElement {
+  op: "rename";
+  address: ModelAddress;
+  name: string;
+}
+
+export interface MovePort {
+  op: "move_port";
+  address: ModelAddress;
+  index: number;
+}
+
+export interface SetField {
+  op: "set_field";
+  address: ModelAddress;
+  value: JsonValue;
+}
+
+export interface BringSignalIn {
+  op: "bring_signal_in";
+  source_graph: ModelAddress;
+  source: ComponentPortEnd | InputBoundaryEnd;
+  destination: ModelAddress;
+}
+
+export interface ModelClipboard {
+  positions?: Record<string, ModelPosition>;
+  flipped?: Record<string, boolean>;
+  collapsed?: Record<string, boolean>;
+  waypoints?: Record<string, ModelPosition[]>;
+  components: Record<string, LeafComponent | CompositeComponent>;
+  wires: Record<string, ModelWire>;
+  connections: Record<string, ModelPhysicalConnection>;
+}
+
+export interface CopyComponents {
+  selection: ModelAddress[];
+  op: "copy";
+}
+
+export interface CutComponents {
+  selection: ModelAddress[];
+  op: "cut";
+}
+
+export interface DuplicateComponents {
+  selection: ModelAddress[];
+  op: "duplicate";
+}
+
+export interface EvaluateAttachmentAxis {
+  kind: "axis_value";
+  axis: string;
+  value: string;
+}
+
+export interface EvaluateAttachmentEdit {
+  revision: unknown;
+  changed: ModelAddress;
+  file: StudioProjectFilePatch;
+}
+
+export interface EvaluateAttachmentReadRequest {
+  revision: unknown;
+  run: StudioSavedTrainKey;
+  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant;
+}
+
+export interface EvaluateAttachmentRequest {
+  revision: unknown;
+  run: StudioSavedTrainKey;
+  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant;
+  difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField;
+}
+
+export interface EvaluateAttachmentRows {
+  kind: "rows";
+  rows: string[];
+}
+
+export interface EvaluateAttachmentState {
+  revision: unknown;
+  editable: boolean;
+  records: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
+  effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
+  resolved_model?: ModelDocument | null;
+  source?: StudioEvaluateValueSource | null;
+  field_sources?: Record<string, StudioEvaluateValueSource>;
+}
+
+export interface StudioEvaluateValueSource {
+  kind: "trained" | "evaluate";
+  step: string;
+}
+
+export interface EvaluateAttachmentStep {
+  kind: "step";
+}
+
+export interface EvaluateAttachmentVariant {
+  kind: "variant";
+  variant: string;
+}
+
+export interface AddModelAttachment {
+  op: "add";
+  owner: ModelAddress;
+  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  after: string | null;
+}
+
+export interface ChangeModelAttachment {
+  address: ModelAddress;
+  op: "change";
+  attachment: DelayAttachment | InterventionAttachment | ProbeAttachment;
+  after?: string | null;
+}
+
+export interface RemoveModelAttachment {
+  address: ModelAddress;
+  op: "remove";
+}
+
+export interface PasteComponents {
+  op: "paste";
+  graph: ModelAddress;
+  clipboard: ModelClipboard;
+}
+
+export interface PlaceComponent {
+  address: ModelAddress;
+  position: ModelPosition;
+}
+
+export interface MoveComponents {
+  op: "move_components";
+  placements: PlaceComponent[];
+}
+
+export interface CollapseGraph {
+  op: "collapse_graph";
+  graph: ModelAddress;
+  collapsed: boolean;
+}
+
+export interface FlipComponent {
+  op: "flip_component";
+  address: ModelAddress;
+}
+
+export interface InsertComponentOnWire {
+  op: "insert_component";
+  address: ModelAddress;
+  component: LeafComponent | CompositeComponent;
+  input_port: string;
+  output_port: string;
+  position: ModelPosition;
+  flipped?: boolean;
+}
+
+export interface MoveWireAttachment {
+  op: "move_wire_attachment";
+  address: ModelAddress;
+  destination: ModelAddress;
+  after?: string | null;
+}
+
+export interface RouteWire {
+  op: "route_wire";
+  address: ModelAddress;
+  waypoints: ModelPosition[];
+}
+
+export interface SetModelAttachment {
+  op: "set_attachment";
+  difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment;
+}
+
+export interface GroupComponents {
+  selection: ModelAddress[];
+  op: "group";
+  name: string;
+}
+
+export interface UngroupComposite {
+  op: "ungroup";
+  address: ModelAddress;
+}
+
+export interface ModelEditCommand {
+  operation: AddComponent | MoveComponents | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+}
+
+export interface ModelEditProblem {
+  address: ModelAddress;
+  detail: string;
+}
+
+export interface ModelEditRequest {
+  revision: unknown;
+  presentation_revision: unknown;
+  document: string;
+  command: ModelEditCommand;
+}
+
+export interface ModelEditApplied {
+  status: "applied";
+  snapshot: StudioProjectSnapshot;
+  changed: ModelAddress[];
+  clipboard?: ModelClipboard | null;
+  undo_token?: unknown | null;
+}
+
+export interface ModelEditRefused {
+  status: "refused";
+  problem: ModelEditProblem;
+}
+
+export interface ModelEditResponse {
+  result: ModelEditApplied | ModelEditRefused;
+}
+
+export interface ModelUndoRequest {
+  revision: unknown;
+  presentation_revision: unknown;
+  token: unknown;
+}
+
+export interface ModelConnectionReviewRequest {
+  revision: unknown;
+  graph: ModelAddress;
+  source: ComponentPortEnd | InputBoundaryEnd | TaskSignalSource;
+}
+
+export interface TaskSignalSource {
+  owner: "task";
+  run: StudioSavedTrainKey;
+  signal: string;
+}
+
+export interface ModelConnectionVerdict {
+  target: ComponentPortEnd | OutputBoundaryEnd;
+  reason: string | null;
+}
+
+export interface ModelLibraryConnection {
+  component: string;
+  target_port: string;
+}
+
+export interface ModelConnectionReview {
+  targets: ModelConnectionVerdict[];
+  library?: ModelLibraryConnection[];
+}
+
+export interface ModelPortProjection {
+  address: ModelAddress;
+  type: SignalType;
+}
+
+export interface ModelProjection {
+  ports?: ModelPortProjection[];
+  task_signals?: ModelTaskSignal[];
+  task_inputs?: ModelAddress[];
+  objective_ports?: ModelAddress[];
+  resolved_model?: ModelDocument | null;
+}
+
+export interface ModelProjectionRequest {
+  revision: unknown;
+  run: StudioSavedTrainKey;
+  document: string;
+}
+
+export interface ModelTaskSignal {
+  id: string;
+  label: string;
+  type: SignalType;
+}
+
+export interface ModelFieldRequest {
+  revision: unknown;
+  owner: ModelAddress;
+  run?: StudioSavedTrainKey | null;
+  evaluate_scope?: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
+  address?: ModelAddress | null;
+  lit_steps?: string[];
+  rows?: string[];
+  axes?: Record<string, string[]>;
+  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
+}
+
+export interface ModelFieldResponse {
+  fields?: ModelFieldView[];
+  files?: StudioProjectFilePatch[];
+  problems?: Problem[];
+  command?: ModelEditCommand | null;
+}
+
+export interface FieldKindEdit {
+  kind: "to_sweep" | "to_value" | "to_list";
+  value_id?: string | null;
+}
+
+export interface FieldNameEdit {
+  kind: "name_value";
+  value_id: string;
+  label: string | null;
+}
+
+export interface FieldTextEdit {
+  kind: "text";
+  text: string;
+  value_id?: string | null;
+  seed?: number | null;
+}
+
+export interface StudioSweepValue {
+  id: string;
+  label: string | null;
+  value: number;
+}
+
+export interface StudioSweepList {
+  kind: "list";
+  id: string;
+  values: StudioSweepValue[];
+  editable: boolean;
+}
+
+export interface StudioSweepRange {
+  kind: "range";
+  id: string;
+  rule: RangeValues;
+  can_list: boolean;
+}
+
+export interface StudioSweepSampler {
+  kind: "sampler";
+  id: string;
+  rule: SampleValues;
+  can_list: boolean;
+}
+
+export interface StudioFieldView {
+  label: string;
+  text: string;
+  effective?: string | null;
+  unit?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  can_change_axis?: boolean;
+  members?: StudioSweepValue[];
+}
+
+export interface ModelFieldView {
+  label: string;
+  text: string;
+  effective?: string | null;
+  unit?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  can_change_axis?: boolean;
+  members?: StudioSweepValue[];
+  address: ModelAddress;
+  sources?: StudioPlanReviewSource[];
+}
+
+export interface TrainFieldView {
+  label: string;
+  text: string;
+  effective?: string | null;
+  unit?: string | null;
+  site: SiteProjection;
+  sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  selected_value?: string | null;
+  can_sweep?: boolean;
+  can_change_axis?: boolean;
+  members?: StudioSweepValue[];
+  id: string;
+}
+
+export interface TrainFieldRequest {
+  revision: unknown;
+  run?: StudioSavedTrainKey | null;
+  field?: string | null;
+  rows?: string[];
+  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
+}
+
+export interface TrainFieldResponse {
+  fields?: TrainFieldView[];
+  files?: StudioProjectFilePatch[];
+  dependencies?: string[];
+  problems?: Problem[];
+}
 
 export interface SparseCooEntrySpec {
   coordinate: number[];
@@ -148,6 +1266,7 @@ export interface ParameterConstraintSpec {
 }
 
 export interface WireSpec {
+  id?: string | null;
   source_node: string;
   source_port: string;
   target_node: string;
@@ -322,6 +1441,7 @@ export interface GraphMetadata {
 export interface GraphSpec {
   schema_id?: "feedbax.spec.graph";
   schema_version?: "feedbax.spec.graph.v6";
+  step_seconds?: number | null;
   nodes?: Record<string, ComponentSpec>;
   wires?: WireSpec[];
   additive_channel_adapters?: AdditiveGraphChannelAdapterSpec[];
@@ -391,32 +1511,6 @@ export interface AnalysisPageSpec {
   input_requirements?: AnalysisInputRequirement[];
   eval_run_id?: string | null;
   expanded_field_paths?: string[];
-}
-
-export interface AnalysisCanvasPosition {
-  x: number;
-  y: number;
-}
-
-export interface AnalysisCanvasViewport {
-  x?: number;
-  y?: number;
-  zoom?: number;
-}
-
-export interface AnalysisCanvasPageLayout {
-  node_positions?: Record<string, AnalysisCanvasPosition>;
-  viewport?: AnalysisCanvasViewport;
-}
-
-export interface AnalysisCanvasStageLayout {
-  pages?: Record<string, AnalysisCanvasPageLayout>;
-}
-
-export interface AnalysisCanvasLayoutDocument {
-  schema_id: "feedbax.spec.studio.analysis_canvas_layout";
-  schema_version: "feedbax.spec.studio.analysis_canvas_layout.v1";
-  stages?: Record<string, AnalysisCanvasStageLayout>;
 }
 
 export interface StudioValidationIssue {
@@ -625,97 +1719,6 @@ export interface StudioBiomechanicsSpec {
   metadata?: Record<string, unknown>;
 }
 
-export interface StudioScenarioSpec {
-  id: string;
-  schema_version?: "feedbax.spec.studio.scenario.v3";
-  label: string;
-  stage_id?: string | null;
-  parent_scenario_id?: string | null;
-  training_spec?: Record<string, unknown> | null;
-  task_spec?: Record<string, unknown> | null;
-  task_binding_spec?: StudioTaskBindingSpec | null;
-  objective_spec?: Record<string, unknown> | null;
-  probe_specs?: RetainedObservableSpec[];
-  temporal_spec?: Record<string, unknown> | null;
-  biomechanics_spec?: StudioBiomechanicsSpec | null;
-  analysis_spec?: Record<string, unknown> | null;
-  report_spec?: Record<string, unknown> | null;
-  validation?: StudioValidationState;
-  metadata?: Record<string, unknown>;
-}
-
-export interface StudioStageSpec {
-  id: string;
-  schema_id?: "feedbax.spec.studio.stage";
-  schema_version?: "feedbax.spec.studio.stage.v2";
-  kind: "train" | "eval" | "analysis" | "report" | "import" | "compare" | "export" | "protocol";
-  label: string;
-  status?: "draft" | "invalid" | "ready" | "running" | "completed" | "failed" | "cancelled";
-  scenario_id?: string | null;
-  input_collections?: StudioCollectionRef[];
-  output_collections?: StudioCollectionRef[];
-  manifest_refs?: StudioManifestRef[];
-  artifact_refs?: StudioArtifactRef[];
-  execution_spec?: Record<string, unknown> | null;
-  selection_spec?: Record<string, unknown>;
-  validation?: StudioValidationState;
-  metadata?: Record<string, unknown>;
-}
-
-export interface StudioWorkspaceSpec {
-  id: string;
-  schema_id?: "feedbax.spec.studio.workspace";
-  schema_version?: "feedbax.spec.studio.workspace.v2";
-  label: string;
-  active_stage_id?: string | null;
-  stages?: StudioStageSpec[];
-  scenarios?: Record<string, StudioScenarioSpec>;
-  collections?: StudioCollectionRef[];
-  manifest_refs?: StudioManifestRef[];
-  artifact_refs?: StudioArtifactRef[];
-  validation?: StudioValidationState;
-  metadata?: Record<string, unknown>;
-}
-
-export interface SemanticAnchor {
-  semantic_document_sha256: string;
-  authored_path: string;
-}
-
-export interface WorkspaceDocument {
-  schema_id?: "feedbax.workspace_document";
-  schema_version?: "1";
-  semantic_root: SemanticAnchor;
-  graph_ui_state?: GraphUIState;
-  workspace_ui_state?: Record<string, unknown>;
-  stage_ui_state?: Record<string, Record<string, unknown>>;
-  scenario_ui_state?: Record<string, Record<string, unknown>>;
-  analysis_pages?: AnalysisPageSpec[];
-  active_analysis_page_id?: string | null;
-  analysis_canvas_layout?: AnalysisCanvasLayoutDocument;
-  semantic_anchors?: Record<string, SemanticAnchor>;
-}
-
-export interface StudioPersistenceDocument {
-  schema_id: "feedbax.spec.studio.persistence_document";
-  schema_version: "feedbax.spec.studio.persistence_document.v1";
-  graph?: GraphSpec | null;
-  workspace_document?: WorkspaceDocument | null;
-  workspace?: StudioWorkspaceSpec | null;
-  expected_save_revision?: number | null;
-}
-
-export interface GraphProject {
-  schema_id?: "feedbax.spec.studio.graph_project";
-  schema_version?: "feedbax.spec.studio.graph_project.v1";
-  metadata: GraphMetadata;
-  graph: GraphSpec;
-  workspace_document: WorkspaceDocument;
-  demo_training_data?: unknown | null;
-  workspace?: StudioWorkspaceSpec | null;
-  compile_reports?: Record<string, DomainCompileReport> | null;
-}
-
 export interface ValidationError {
   type: string;
   message: string;
@@ -853,7 +1856,7 @@ export interface RepresentationFrameProvider {
 export interface RepresentationAnchorSpec {
   id: string;
   semantic_role: "origin" | "insertion" | "center" | "endpoint" | "joint" | "body" | "target" | "path" | "region" | "glyph" | "vector_start" | "vector_end" | "label" | "custom";
-  interaction_roles?: "selectable" | "hoverable" | "draggable" | "editable" | "connectable" | "snap_target" | "read_only"[];
+  interaction_roles?: Array<"selectable" | "hoverable" | "draggable" | "editable" | "connectable" | "snap_target" | "read_only">;
   label?: string | null;
   binding?: RepresentationParamPathBinding | RepresentationStateAnchorSelectorBinding | RepresentationTrialSpecPathBinding | RepresentationLiteralBinding | null;
   frame?: string | null;
@@ -954,10 +1957,57 @@ export interface DomainDiagnostic {
   details?: Record<string, unknown>;
 }
 
+export interface ScenePlanarLink {
+  body_id: string;
+  joint_id: string;
+  parent_frame: string;
+  child_frame: string;
+  qpos_index: number;
+  parent_pivot: [number, number];
+  body_pivot: [number, number];
+  reference_angle: number;
+  length: number;
+}
+
+export interface ScenePlanarMuscle {
+  node_id: string;
+  points: RepresentationMusclePathPointSpec[] | null;
+}
+
+export interface ScenePlanarModel {
+  model_identity: string;
+  world_frame: string;
+  links: ScenePlanarLink[];
+  reference_qpos: number[];
+  muscles: ScenePlanarMuscle[];
+}
+
+export interface StudioPlanarSceneRequest {
+  revision: string;
+  document_id: string;
+  node_path: string[];
+}
+
+export interface StudioPlanarSceneResponse {
+  revision: string;
+  document_id: string;
+  node_path: string[];
+  project_id: string;
+  model: ScenePlanarModel | null;
+  diagnostics: DomainDiagnostic[];
+}
+
 export interface DomainRegistryPayload {
   schema_id?: "feedbax.spec.domain";
   schema_version?: "feedbax.spec.domain.v1";
   domains: DomainMeta[];
+}
+
+export interface StudioRenderFailure {
+  region: string;
+  error_type: string;
+  detail: string;
+  component_stack: string;
 }
 
 export interface DomainCompileReport {
@@ -1109,6 +2159,7 @@ export interface ComponentDefinition {
   supported_revisions?: number[];
   migrations?: ComponentMigrationInfo[];
   trainable_by_default?: boolean;
+  reset_outputs?: string[];
   representation?: RepresentationSpec | null;
 }
 
@@ -1136,55 +2187,6 @@ export interface OptimizerSpec {
   lr_schedule?: LrScheduleSpec | null;
 }
 
-export interface TimeAggregationSpec {
-  mode?: "all" | "mean" | "sum" | "final" | "range" | "segment" | "custom";
-  start?: number | null;
-  end?: number | null;
-  segment_name?: string | null;
-  time_idxs?: number[] | null;
-  discount?: "none" | "power" | "linear" | null;
-  discount_exp?: number | null;
-}
-
-export interface LossTermSpec {
-  schema_id?: "feedbax.spec.training.loss_term";
-  schema_version?: string;
-  type: string;
-  label: string;
-  weight?: number;
-  selector?: string | null;
-  target_selector?: string | null;
-  target_value?: unknown | null;
-  retention?: RetentionPolicySpec | null;
-  norm?: "squared_l2" | "l2" | "l1" | "huber" | null;
-  matrix?: unknown | null;
-  matrix_kind?: "dense" | "diagonal" | null;
-  time_agg?: TimeAggregationSpec | null;
-  children?: Record<string, LossTermSpec> | null;
-}
-
-export interface EarlyStoppingSpec {
-  metric: string;
-  patience: number;
-  min_delta: number;
-}
-
-export interface TrainingSpec {
-  optimizer: OptimizerSpec;
-  loss: LossTermSpec;
-  n_batches: number;
-  batch_size: number;
-  n_epochs?: number | null;
-  checkpoint_interval?: number | null;
-  early_stopping?: EarlyStoppingSpec | null;
-}
-
-export interface TaskSpec {
-  type: string;
-  params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
-  timeline?: StudioTaskTimelineSpec | null;
-}
-
 export interface TrainingConfig {
   n_batches?: number;
   batch_size?: number;
@@ -1198,32 +2200,38 @@ export interface TrainingConfig {
 }
 
 export interface TaskTimelineCue {
+  epoch: string;
   label: string;
-  step: number;
-  kind: string;
+  start: number;
+  end: number;
+  outcome: number;
 }
 
 export interface SampledTaskTrial {
   id: string;
-  index: number;
-  start: number[];
-  goal: number[];
-  n_steps: number;
-  timeline?: TaskTimelineCue[];
-  metadata?: Record<string, unknown>;
+  inits: Record<string, unknown>;
+  inputs: Record<string, unknown>;
+  present: Record<string, unknown>;
+  variables: Record<string, unknown>;
+  variable_defined: Record<string, unknown>;
+  timeline: TaskTimelineCue[];
 }
 
 export interface TaskTrialSampleRequest {
-  task_spec: TaskSpec;
+  model_name: string;
+  model: ModelDocument;
+  task?: TaskDocument | null;
+  python_task?: PythonTaskSelection | null;
+  input_overrides?: Record<string, string>;
   seed?: number;
   count?: number;
 }
 
 export interface TaskTrialSampleResponse {
   schema_version?: string;
-  task_type: string;
+  task: string;
   seed: number;
-  count: number;
+  n_steps: number;
   trials: SampledTaskTrial[];
 }
 
@@ -1275,15 +2283,6 @@ export interface SelectionPreview {
   truncated?: boolean;
 }
 
-export interface SelectionRefreshDiff {
-  frozen_refs: ParentRef[];
-  current_refs: ParentRef[];
-  new_refs: ParentRef[];
-  gone_refs: ParentRef[];
-  unchanged_refs: ParentRef[];
-  reprocess_counts: Record<string, number>;
-}
-
 export interface SuccessPayload {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
@@ -1294,87 +2293,6 @@ export interface SuccessResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
   data: SuccessPayload;
-}
-
-export interface GraphListItem {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  id: string;
-  metadata: GraphMetadata;
-}
-
-export interface GraphListPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  graphs: GraphListItem[];
-}
-
-export interface GraphListResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphListPayload;
-}
-
-export interface GraphCreatePayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  id: string;
-  metadata: GraphMetadata;
-}
-
-export interface GraphCreateResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphCreatePayload;
-}
-
-export interface GraphUpdatePayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  success: boolean;
-  metadata: GraphMetadata;
-}
-
-export interface GraphUpdateResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphUpdatePayload;
-}
-
-export interface GraphDetailPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  graph: GraphSpec;
-  workspace_document: WorkspaceDocument;
-  demo_training_data?: unknown | null;
-  metadata?: GraphMetadata | null;
-  workspace?: StudioWorkspaceSpec | null;
-  compile_reports?: Record<string, DomainCompileReport> | null;
-}
-
-export interface GraphDetailResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphDetailPayload;
-}
-
-export interface GraphValidationResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: DomainDiagnostic[];
-}
-
-export interface GraphExportPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  content: string;
-  filename: string;
-}
-
-export interface GraphExportResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: GraphExportPayload;
 }
 
 export interface ComponentListPayload {
@@ -1458,57 +2376,6 @@ export interface PenzaiInspectorResponse {
   schema_id?: "feedbax.spec.studio.api_transport";
   schema_version?: "feedbax.spec.studio.api_transport.v3";
   data: PenzaiInspectorPayload;
-}
-
-export interface TrainingStartPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-}
-
-export interface TrainingStartResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: TrainingStartPayload;
-}
-
-export interface TrainingStatusPayload {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  status: Record<string, unknown>;
-}
-
-export interface TrainingStatusResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: TrainingStatusPayload;
-}
-
-export interface WorkerConnectResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  ok: boolean;
-  url: string;
-}
-
-export interface WorkerConnectEnvelope {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: WorkerConnectResponse;
-}
-
-export interface WorkerStatusResponse {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  mode: "local" | "remote";
-  url?: string | null;
-  connected: boolean;
-}
-
-export interface WorkerStatusEnvelope {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  data: WorkerStatusResponse;
 }
 
 export interface AnalysisClassInfo {
@@ -1665,232 +2532,6 @@ export interface TrainingTrajectoryPayload {
   t?: unknown[] | null;
 }
 
-export interface TrainingProgressEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch?: number | null;
-  program_step?: number | null;
-  type: "training_progress";
-  total_batches: number;
-  loss: number;
-  loss_terms?: Record<string, number>;
-  grad_norm?: number;
-  step_time_ms?: number;
-  metrics?: Record<string, number>;
-  status?: string;
-  execution?: string | null;
-}
-
-export interface TrainingLogEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch?: number | null;
-  program_step?: number | null;
-  type: "training_log";
-  level?: "info" | "warning" | "error";
-  message: string;
-  manifest_path?: string | null;
-  manifest_id?: string | null;
-  execution?: string | null;
-}
-
-export interface TrainingTrajectoryEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch?: number | null;
-  program_step?: number | null;
-  type: "training_trajectory";
-  trajectory: TrainingTrajectoryPayload;
-  execution?: string | null;
-}
-
-export interface TrainingCompleteEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch: number;
-  program_step?: number | null;
-  loss?: number | null;
-  manifest_path?: string | null;
-  manifest_id?: string | null;
-  execution?: string | null;
-  type: "training_complete";
-}
-
-export interface TrainingStoppedEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  batch: number;
-  program_step?: number | null;
-  loss?: number | null;
-  manifest_path?: string | null;
-  manifest_id?: string | null;
-  execution?: string | null;
-  type: "training_stopped";
-}
-
-export interface TrainingErrorEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  type: "training_error";
-  batch?: number | null;
-  error: string;
-  diagnostics?: DomainDiagnostic[];
-}
-
-export interface TrainingResyncEvent {
-  schema_id?: "feedbax.spec.studio.api_transport";
-  schema_version?: "feedbax.spec.studio.api_transport.v3";
-  job_id: string;
-  seq: number;
-  emitted_at_ms: number;
-  worker_seq?: number | null;
-  type: "training_resync";
-  expected_worker_seq?: number | null;
-  observed_worker_seq?: number | null;
-  missed_events?: number;
-  reason: "resumed" | "gap";
-  message: string;
-}
-
-export interface ProbeResponse {
-  id: string;
-  label: string;
-  node: string;
-  timing: string;
-  selector: string;
-  description?: string | null;
-}
-
-export interface ValidationErrorResponse {
-  path: string[];
-  field: string;
-  message: string;
-}
-
-export interface ValidateLossResponse {
-  valid: boolean;
-  errors: ValidationErrorResponse[];
-}
-
-export interface TrainingRunInfo {
-  id: string;
-  name: string;
-  created_at: string;
-  status: string;
-  hyperparams: Record<string, unknown>;
-  metrics?: Record<string, unknown>;
-  uri?: string | null;
-  stage_id?: string | null;
-  scenario_id?: string | null;
-  planned?: boolean;
-  checkpoint_available?: boolean;
-  source_issue?: string | null;
-  provenance_id?: string | null;
-  superseded_by?: string | null;
-  staging_generation?: string | null;
-  result_manifest_id?: string | null;
-  result_manifest_uri?: string | null;
-  execution_error?: string | null;
-  teardown_pending?: boolean;
-}
-
-export interface StudioNativeTrainingDispatchRequest {
-  manifest_id: string;
-  generation: string;
-}
-
-export interface StudioNativeTrainingDispatchAccepted {
-  run_set_id: string;
-  row_id: string;
-}
-
-export interface EvalRunInfo {
-  id: string;
-  training_run_id: string;
-  name: string;
-  created_at: string;
-  status: string;
-  description?: string | null;
-  training_run_ids?: string[];
-  uri?: string | null;
-}
-
-export interface CreateEvalRunRequest {
-  training_run_id: string;
-  name: string;
-  eval_params?: Record<string, unknown>;
-}
-
-export interface TrainingRunCompareRequest {
-  run_ids: string[];
-  param_fields?: string[];
-  metric_fields?: string[];
-}
-
-export interface TrainingRunCompareRow {
-  id: string;
-  params?: Record<string, unknown>;
-  metrics?: Record<string, unknown>;
-}
-
-export interface TrainingRunCompareResponse {
-  rows: TrainingRunCompareRow[];
-}
-
-export interface ManifestImportRequest {
-  path: string;
-  root?: string | null;
-}
-
-export interface ManifestImportResponse {
-  root: string;
-  source_path: string;
-  imported_manifest_ids?: string[];
-  skipped_manifest_ids?: string[];
-  manifest_count?: number;
-  artifact_count?: number;
-  included_artifact_count?: number;
-  external_artifact_count?: number;
-  index_path?: string | null;
-  training_runs?: TrainingRunInfo[];
-  eval_runs?: EvalRunInfo[];
-}
-
-export interface SelectionPreviewRequest {
-  selection_spec: SelectionSpec;
-  limit?: number;
-}
-
-export interface SelectionRefreshRequest {
-  selection_spec: SelectionSpec;
-  failed_parent_ids?: string[];
-  stale_parent_ids?: string[];
-}
-
 export interface DatasetInfo {
   name: string;
   file_size: number;
@@ -2017,12 +2658,6 @@ export interface CycleAnnotationModel {
   target: string;
 }
 
-export interface TreescopeRequest {
-  max_depth?: number;
-  project_cycles?: boolean;
-  roundtrip_mode?: boolean;
-}
-
 export interface InlineTreescopeRequest {
   graph: GraphSpec;
   max_depth?: number;
@@ -2042,6 +2677,1398 @@ export interface InspectionStatusResponse {
   treescope_configured: boolean;
   treescope_version?: string | null;
 }
+
+export type AddModelComponent = {
+  "op": "add_component";
+  "address": ModelAddress;
+  "component": LeafComponent;
+};
+
+export type AnalysisDocument = {
+  "schema_version"?: "feedbax.analysis_document.v1";
+  "operations"?: Record<string, OperationElement>;
+  "views"?: Record<string, FigureElement>;
+};
+
+export type AuthoredFileAddress = {
+  "kind": "document" | "step" | "variant" | "presentation";
+  "id": string;
+};
+
+export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis;
+
+export type AxisGroup = {
+  "axes": Array<string>;
+  "mode": "cross" | "zip";
+};
+
+export type AxisLabels = {
+  "x"?: string | null;
+  "y"?: string | null;
+  "z"?: string | null;
+};
+
+export type AxisValue = {
+  "patches"?: Record<string, PatchValue | null>;
+  "label"?: string | null;
+  "value"?: JsonValue;
+};
+
+export type BandEncodings = {
+  "x": Name | VariableBinding;
+  "y": Name | VariableBinding;
+  "lower": Name | VariableBinding;
+  "upper": Name | VariableBinding;
+};
+
+export type BandLayer = {
+  "name": Name;
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "band";
+  "encode": BandEncodings;
+  "style"?: BandStyle;
+};
+
+export type BandStyle = {
+  "label"?: string | null;
+  "color"?: string | null;
+  "line_dash"?: "solid" | "dot" | "dash" | "longdash" | "dashdot" | "longdashdot" | null;
+  "line_width"?: number | null;
+  "showlegend"?: boolean | null;
+  "band_alpha"?: number;
+};
+
+export type BarrierCheckpoint = {
+  "barrier": string;
+};
+
+export type Base = InlineBase | DocumentReference | StepBase | RunBase | ExternalBase;
+
+export type BatchCheckpoint = {
+  "at": number;
+};
+
+export type Best = {
+  "by": string;
+  "k": number;
+  "order"?: "min" | "max";
+  "per"?: Array<string>;
+};
+
+export type BestCheckpoint = {
+  "best_by": string;
+};
+
+export type CallValue = {
+  "kind"?: "call";
+  "function": string;
+  "args"?: Array<Expression>;
+  "kwargs"?: Record<string, Expression>;
+};
+
+export type Cell = {
+  "first_epoch": string;
+  "last_epoch": string;
+  "value": Expression;
+};
+
+export type CheckpointBatches = {
+  "batches": Array<number>;
+};
+
+export type CheckpointCadence = {
+  "every_k": number;
+  "through": number;
+};
+
+export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
+
+export type CheckpointRuleAxis = {
+  "path"?: CheckpointRulePath;
+  "checkpoint_rule": UpdateRule;
+};
+
+export type CheckpointRulePath = "{\"field\":\"checkpoint\",\"input\":\"subject\"}";
+
+export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
+
+export type CreateNamedDocument = {
+  "kind": "document";
+  "id": string;
+  "document": Document;
+};
+
+export type CreateNamedStep = {
+  "kind": "step";
+  "id": string;
+  "step": StudioTrainStep | StudioEvaluateStep | StudioAnalyzeStep | StudioReportStep;
+};
+
+export type DataDerivedAxisRange = {
+  "schema_id"?: string;
+  "schema_version"?: string;
+  "group": string;
+  "padding_fraction": number;
+};
+
+export type DatasetPort = {
+  "schema_ids": Array<string>;
+  "variables"?: Record<string, FieldDescriptor>;
+  "selected_variables"?: Record<string, FieldDescriptor>;
+  "coordinates"?: Record<string, FieldDescriptor>;
+};
+
+export type Dimensions = {
+  "length"?: number;
+  "mass"?: number;
+  "time"?: number;
+  "current"?: number;
+  "temperature"?: number;
+  "amount"?: number;
+  "luminosity"?: number;
+  "angle"?: number;
+};
+
+export type Document = {
+  "schema": string;
+  "payload": JsonValue;
+};
+
+export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
+
+export type DocumentOverridePath = string;
+
+export type DocumentOverrides = Record<string, JsonValue> | Array<DocumentEdit>;
+
+export type DocumentPresentation = {
+  "positions"?: Record<string, PresentationPosition>;
+  "camera"?: PresentationCamera | null;
+  "flipped"?: Record<string, boolean>;
+  "collapsed"?: Record<string, boolean>;
+  "waypoints"?: Record<string, Array<PresentationPosition>>;
+};
+
+export type DocumentReference = {
+  "document": string;
+  "pointer"?: Pointer | null;
+};
+
+export type DrawValue = {
+  "kind"?: "draw";
+  "family": string;
+  "args": Array<Expression>;
+  "per"?: "run" | "trial";
+};
+
+export type EnsureDocumentCollection = {
+  "op": "ensure";
+  "path": DocumentOverridePath;
+  "collection": "object" | "array";
+};
+
+export type Epoch = {
+  "id": string;
+  "name": string;
+  "length"?: Expression | null;
+  "max_steps"?: number | null;
+};
+
+export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
+
+export type ExternalBase = {
+  "path": string;
+  "sha256": Sha256;
+  "pointer"?: Pointer | null;
+};
+
+export type FieldDescriptor = {
+  "dims": Array<Name>;
+  "units"?: string | null;
+  "quantity"?: string | null;
+  "frame"?: string | null;
+  "inline_values"?: Array<JsonValue> | null;
+};
+
+export type FieldKind = "value" | "sweep" | "draw" | "formula" | "shape" | "link";
+
+export type FieldTextResult = {
+  "value": FieldValue;
+  "spans": Array<LocatedSpan>;
+};
+
+export type FieldValue = Expression | SweepList | SweepRange | SweepSample;
+
+export type FigureDocument = {
+  "schema_version"?: "feedbax.figure_document.v1";
+  "data": Array<Name>;
+  "layout": Array<FigurePanel>;
+  "layers": Array<LineLayer | BandLayer>;
+  "theme"?: Name;
+  "view"?: FigureDocumentView;
+  "caption"?: string | null;
+};
+
+export type FigureDocumentView = {
+  "shared_xaxes"?: boolean | string;
+  "shared_yaxes"?: boolean | string;
+  "horizontal_spacing"?: number | null;
+  "vertical_spacing"?: number | null;
+  "width"?: number | null;
+  "height"?: number | null;
+  "title"?: string | null;
+  "legend_tracegroupgap"?: number | null;
+  "legend_x"?: number | null;
+  "legend_y"?: number | null;
+  "legend_xanchor"?: "auto" | "left" | "center" | "right" | null;
+  "legend_yanchor"?: "auto" | "top" | "middle" | "bottom" | null;
+  "margin"?: FigureMarginParams | null;
+  "hovermode"?: "x" | "y" | "closest" | "x unified" | "y unified" | false | null;
+  "row_label_gutter"?: number | null;
+  "legend_gutter"?: number | null;
+};
+
+export type FigureElement = {
+  "figure": FigureDocument | DocumentReference;
+  "inputs": Record<string, StepDataset | OperationDataset>;
+};
+
+export type FigureMarginParams = {
+  "l"?: number | null;
+  "r"?: number | null;
+  "t"?: number | null;
+  "b"?: number | null;
+  "pad"?: number | null;
+  "autoexpand"?: boolean | null;
+};
+
+export type FigurePanel = {
+  "name": Name;
+  "row": number;
+  "col": number;
+  "title"?: string | null;
+  "axes_labels"?: AxisLabels | null;
+  "x_axis"?: PanelAxis | null;
+  "y_axis"?: PanelAxis | null;
+};
+
+export type FunctionClass = "math" | "shape" | "draw" | "penalty" | "sweep_rule";
+
+export type FunctionInfo = {
+  "id": string;
+  "signature": string;
+  "display_class": FunctionClass;
+  "min_args": number;
+  "max_args": number | null;
+  "keywords"?: Array<string>;
+  "implicit_names"?: Record<string, ValueType>;
+  "level"?: Level;
+  "requires_period"?: boolean;
+  "random"?: boolean;
+  "stateful"?: boolean;
+  "reset"?: StateReset;
+};
+
+export type GroupCombination = {
+  "groups": Record<string, AxisGroup>;
+};
+
+export type IndexSelection = {
+  "index": number;
+};
+
+export type InlineBase = {
+  "inline": Payload;
+};
+
+export type InputAxis = {
+  "input": string;
+};
+
+export type InputBinding = Reference | Array<Reference> | Record<string, Reference>;
+
+export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+
+export type Level = 0 | 1 | 2;
+
+export type LineEncodings = {
+  "x": Name | VariableBinding;
+  "y": Name | VariableBinding;
+};
+
+export type LineLayer = {
+  "name": Name;
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "line";
+  "encode": LineEncodings;
+  "style"?: LineStyle;
+};
+
+export type LineStyle = {
+  "label"?: string | null;
+  "color"?: string | null;
+  "line_dash"?: "solid" | "dot" | "dash" | "longdash" | "dashdot" | "longdashdot" | null;
+  "line_width"?: number | null;
+  "showlegend"?: boolean | null;
+};
+
+export type Link = {
+  "model_field": string;
+  "variable": string;
+};
+
+export type ListedAxis = {
+  "path": SweepTarget;
+  "values": Array<JsonValue>;
+};
+
+export type LiteralValue = {
+  "kind"?: "literal";
+  "value": Scalar;
+  "unit"?: string | null;
+};
+
+export type LocatedSpan = {
+  "path": NodePath;
+  "span": TextSpan;
+};
+
+export type ManualCombination = {
+  "manual": Array<Record<string, string>>;
+};
+
+export type MatrixCompositionDelta = {
+  "layer_id": string;
+  "patches"?: Array<OverridePatch>;
+  "acknowledges_ancestor_paths"?: Array<string>;
+  "schema_id"?: string | null;
+  "schema_version"?: string | null;
+};
+
+export type ModelWireDifference = {
+  "op": "add_wire" | "rewire";
+  "address": ModelAddress;
+  "source": ComponentPortEnd | InputBoundaryEnd;
+  "target": ComponentPortEnd | OutputBoundaryEnd;
+};
+
+export type Name = string;
+
+export type NameValue = {
+  "kind"?: "name";
+  "reference": string;
+};
+
+export type NamedAxis = {
+  "values": Record<string, AxisValue | null>;
+};
+
+export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
+
+export type NamedSubset = {
+  "subset": string;
+};
+
+export type NodePath = Array<string | number>;
+
+export type ObjectiveDocument = {
+  "id": string;
+  "terms"?: Array<ObjectiveTerm>;
+};
+
+export type ObjectiveTerm = {
+  "id": string;
+  "measure": Expression;
+  "measure_type"?: ValueType;
+  "weight"?: Expression;
+  "reduction"?: Reduction;
+  "epochs"?: Array<string>;
+  "enabled"?: boolean;
+  "name"?: string | null;
+};
+
+export type OmittedReference = {
+  "not_applicable": string;
+};
+
+export type OperationDataset = {
+  "element": string;
+  "product": string;
+};
+
+export type OperationDefinition = {
+  "key": string;
+  "owner": string;
+  "label": string;
+  "description": string;
+  "param_schema": Array<ParamSchema>;
+  "parameter_json_schema": Record<string, JsonValue>;
+  "static_parameters": Array<string>;
+  "inputs": Record<string, DatasetPort>;
+  "outputs": Record<string, DatasetPort>;
+};
+
+export type OperationElement = {
+  "operation": string;
+  "inputs": Record<string, StepDataset | OperationDataset>;
+  "params"?: Record<string, JsonValue>;
+};
+
+export type OverridePatch = {
+  "path": string;
+  "value"?: JsonValue;
+  "op"?: "add" | "replace" | "remove";
+};
+
+export type PanelAxis = {
+  "type"?: "linear" | "log" | null;
+  "range"?: [number, number] | null;
+  "derived_range"?: DataDerivedAxisRange | null;
+  "quantity"?: string | null;
+  "unit"?: string | null;
+  "frame"?: string | null;
+};
+
+export type PatchPath = string;
+
+export type PatchValue = SetValue | RemoveValue;
+
+export type Payload = Record<string, JsonValue>;
+
+export type Pointer = string;
+
+export type PresentationCamera = {
+  "x": number;
+  "y": number;
+  "zoom": number;
+};
+
+export type PresentationDocument = {
+  "documents"?: Record<string, DocumentPresentation>;
+  "steps"?: Record<string, StepPresentation>;
+  "visible_groups"?: Array<string>;
+};
+
+export type PresentationPosition = {
+  "x": number;
+  "y": number;
+};
+
+export type Problem = {
+  "code": ProblemCode;
+  "reason": string;
+  "path"?: Array<string | number>;
+  "span"?: TextSpan | null;
+  "model_address"?: ModelAddress | null;
+};
+
+export type ProblemCode = "parse" | "unknown_name" | "duplicate_name" | "unknown_function" | "plugin_missing" | "arity" | "type_mismatch" | "unit_mismatch" | "level_too_fine" | "out_of_scope" | "cycle" | "unbounded_length" | "length_budget" | "missing_limit" | "list_count" | "structure";
+
+export type Project = {
+  "documents"?: Record<string, Document>;
+  "steps"?: Record<string, Step>;
+  "sweep"?: Sweep | null;
+};
+
+export type ProjectConfiguration = {
+  "project": string;
+  "store": string;
+  "settings"?: Payload;
+};
+
+export type ProjectValueEdit = SetProjectValue | RemoveProjectValue;
+
+export type PythonTaskSelection = {
+  "type": string;
+  "params"?: Record<string, JsonValue>;
+};
+
+export type RangeAxis = {
+  "path": SweepTarget;
+  "range": RangeValues;
+};
+
+export type RangeValues = {
+  "start": number;
+  "stop": number;
+  "count": number;
+  "scale"?: "linear" | "log";
+};
+
+export type Reduction = "mean" | "sum" | "last" | "max";
+
+export type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference;
+
+export type RemoveProjectValue = {
+  "op": "remove";
+  "path": DocumentOverridePath;
+};
+
+export type RemoveValue = {
+  "op": "remove";
+};
+
+export type ReplayDeclarationAddress = {
+  "kind": "declaration";
+  "id": "declaration";
+};
+
+export type ReplayFileAddress = {
+  "kind": "document" | "step" | "variant";
+  "id": string;
+};
+
+export type ReportDocument = {
+  "schema_version"?: "feedbax.report_document.v1";
+  "title": string;
+  "blocks": Array<ReportText | ReportFigure>;
+  "completeness"?: "complete" | "allow_omissions";
+};
+
+export type ReportFigure = {
+  "figure": string;
+  "caption"?: string | null;
+};
+
+export type ReportText = {
+  "markdown": string;
+};
+
+export type Row = {
+  "patches"?: Record<string, PatchValue | null>;
+  "label"?: string | null;
+  "value"?: JsonValue;
+  "from"?: string | null;
+};
+
+export type RunBase = {
+  "run": string;
+};
+
+export type RunReference = {
+  "run": string;
+};
+
+export type SampleValues = {
+  "distribution": DrawValue | string;
+  "count": number;
+  "seed": number;
+};
+
+export type SampledAxis = {
+  "path": SweepTarget;
+  "sampler": SampleValues;
+  "draws"?: Record<string, JsonValue> | null;
+};
+
+export type Scalar = boolean | number;
+
+export type ScopedValue = {
+  "id": string;
+  "name": string;
+  "type": ValueType;
+  "level": Level;
+};
+
+export type SelectedRow = {
+  "key": string;
+  "variant": string;
+  "row": string;
+};
+
+export type SetProjectValue = {
+  "op": "add" | "replace";
+  "path": DocumentOverridePath;
+  "value": JsonValue;
+};
+
+export type SetValue = {
+  "value": JsonValue;
+  "op"?: "add" | "replace";
+};
+
+export type Sha256 = string;
+
+export type Signal = {
+  "id": string;
+  "name": string;
+  "type": ValueType;
+  "cells": Array<Cell>;
+  "absent"?: Expression | null;
+};
+
+export type Site = {
+  "expected": ValueType;
+  "finest": Level;
+  "names"?: Array<ScopedValue>;
+  "structural"?: boolean;
+};
+
+export type SiteProjection = {
+  "site": Site;
+  "kinds": Array<FieldKind>;
+  "functions": Array<FunctionInfo>;
+};
+
+export type StateReset = "trial" | "epoch";
+
+export type Step = {
+  "kind": StepKind;
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
+};
+
+export type StepBase = {
+  "step": string;
+  "row"?: string | null;
+};
+
+export type StepDataset = {
+  "input": string;
+};
+
+export type StepKind = "train" | "evaluate" | "analyze" | "report";
+
+export type StepNote = {
+  "issue"?: string | null;
+  "reason"?: string | null;
+  "replaces"?: string | null;
+};
+
+export type StepPresentation = {
+  "sweep_order"?: Array<string>;
+  "folded_sweep_id"?: string | null;
+  "model_positions"?: Record<string, Record<string, PresentationPosition>>;
+};
+
+export type StepReference = {
+  "step": string;
+  "where"?: SubsetTerms | NamedSubset | null;
+  "row"?: string | null;
+  "variants"?: "all" | Array<string> | null;
+  "checkpoint"?: CheckpointRule | null;
+  "element"?: string | null;
+  "product"?: string | null;
+};
+
+export type StoreSubset = {
+  "axes"?: Record<string, Array<string>>;
+  "best"?: Best | null;
+  "when"?: When | null;
+  "rows"?: Array<SelectedRow>;
+  "query": ManifestPredicate;
+};
+
+export type StudioAnalyzeAuthoring = {
+  "revision": Sha256;
+  "document": string;
+  "operations": Array<OperationDefinition>;
+  "states": DatasetPort;
+  "variables": Record<string, Record<string, Array<string>>>;
+  "figure": FigureDocument;
+  "files"?: Array<StudioProjectFilePatch>;
+};
+
+export type StudioAnalyzeRequest = {
+  "revision": Sha256;
+  "key": StudioSavedTrainKey;
+  "wire"?: StudioAnalyzeWire | null;
+};
+
+export type StudioAnalyzeStep = {
+  "kind": "analyze";
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
+};
+
+export type StudioAnalyzeWire = {
+  "element": string;
+  "role": string;
+  "source": StepDataset | OperationDataset;
+};
+
+export type StudioAuthoredDeclaration = {
+  "revision": Sha256;
+  "authored_revision": Sha256;
+  "data": string;
+};
+
+export type StudioAuthoredDocumentFamily = {
+  "schema_id": string | null;
+  "payload_schema": Record<string, JsonValue>;
+};
+
+export type StudioAuthoredFileRevision = {
+  "address": AuthoredFileAddress;
+  "revision": Sha256;
+  "data"?: string | null;
+};
+
+export type StudioAuthoringCatalog = {
+  "project_grammar": Record<string, JsonValue>;
+  "step_grammar": Record<string, JsonValue>;
+  "step_payloads": Record<string, Record<string, JsonValue>>;
+  "document_families": Record<string, StudioAuthoredDocumentFamily>;
+  "registries": Record<string, StudioAuthoringRegistry>;
+};
+
+export type StudioAuthoringChange = {
+  "field": string;
+  "value": string | number;
+};
+
+export type StudioAuthoringChoice = {
+  "kind": "choice";
+  "options": Array<StudioAuthoringOption>;
+};
+
+export type StudioAuthoringField = {
+  "id": string;
+  "label": string;
+  "value": string | number | null;
+  "source": StudioAuthoringSource | null;
+  "control": StudioAuthoringChoice | StudioAuthoringNumber | null;
+  "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  "can_sweep"?: boolean;
+};
+
+export type StudioAuthoringMethod = {
+  "key": string;
+  "schema_id": string;
+  "schema_version": string;
+  "owner": string;
+  "package": string | null;
+  "plugin": string | null;
+  "payload_schema": Record<string, JsonValue>;
+};
+
+export type StudioAuthoringNumber = {
+  "kind": "number";
+  "min"?: number | null;
+  "max"?: number | null;
+  "step"?: number | null;
+};
+
+export type StudioAuthoringOption = {
+  "value": string;
+  "label": string;
+};
+
+export type StudioAuthoringOrigin = {
+  "plugin": string;
+  "distribution": string | null;
+};
+
+export type StudioAuthoringRegistry = {
+  "entries": Array<ComponentDefinition | OperationDefinition | StudioAuthoringMethod | FunctionInfo>;
+  "origins": Record<string, StudioAuthoringOrigin>;
+};
+
+export type StudioAuthoringSource = {
+  "kind": "document" | "step" | "variant";
+  "name": string;
+  "path": string;
+};
+
+export type StudioAuthoringSurface = {
+  "project_grammar": Record<string, JsonValue>;
+  "step_payloads": Record<string, Record<string, JsonValue>>;
+  "document_schemas": Record<string, Record<string, JsonValue>>;
+  "training_methods": Array<StudioAuthoringMethod>;
+};
+
+export type StudioAuthoringSweepChange = {
+  "field": string;
+  "edit": StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue;
+};
+
+export type StudioBestRankGroup = {
+  "coordinates": Record<string, string>;
+  "ranks": Array<string>;
+};
+
+export type StudioBoundBestSubject = {
+  "key": string;
+  "variant": string;
+  "row": string;
+  "consumer_job_id": string;
+  "producer_job_id": string;
+  "producer_request_id": string;
+  "completed_updates": number;
+  "selection_sha256": string;
+};
+
+export type StudioCheckpointRuleEdit = {
+  "revision": string;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioCheckpointRuleRequest = {
+  "revision": string;
+  "run": StudioSavedTrainKey;
+  "edit": StudioCheckpointRuleSet | StudioCheckpointRuleToSweep;
+};
+
+export type StudioCheckpointRuleSet = {
+  "kind": "set";
+  "rule": "last" | BatchCheckpoint | UpdateRule;
+  "scope": EvaluateAttachmentAxis | EvaluateAttachmentRows;
+};
+
+export type StudioCheckpointRuleToSweep = {
+  "kind": "to_sweep";
+};
+
+export type StudioEvaluateStep = {
+  "kind": "evaluate";
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
+};
+
+export type StudioEvaluationCheckpointAttempt = {
+  "job_id": string;
+  "placement": ValidationPlacement;
+  "pending"?: StudioEvaluationPendingCheckpoint | null;
+  "points"?: Array<StudioEvaluationPointProgress>;
+};
+
+export type StudioEvaluationPendingCheckpoint = {
+  "producer_job_id": string;
+  "producer_request_id": string;
+  "state": "queued" | "assigned" | "running" | "stopping" | "resumable";
+  "next_update"?: number | null;
+  "recovery_update"?: number | null;
+};
+
+export type StudioEvaluationPointProgress = {
+  "job_id": string;
+  "request_id": string;
+  "completed_updates": number;
+  "publication_cursor": number;
+  "transaction_root_sha256": string;
+  "status": "scored" | "failed";
+};
+
+export type StudioNameSweepValue = {
+  "kind": "nameSweepValue";
+  "sweep_id": string;
+  "value_id": string;
+  "label": string | null;
+};
+
+export type StudioPlanRequest = {
+  "key": StudioSavedTrainKey;
+  "element"?: string | null;
+  "request_id": string;
+};
+
+export type StudioPresentationWrite = {
+  "revision": Sha256;
+  "presentation": PresentationDocument;
+};
+
+export type StudioProjectCreateFile = {
+  "revision": Sha256;
+  "file": NamedFileCreation;
+};
+
+export type StudioProjectDocument = {
+  "configuration": ProjectConfiguration;
+  "snapshot": StudioProjectSnapshot;
+};
+
+export type StudioProjectFilePatch = {
+  "address": AuthoredFileAddress;
+  "patches": Array<ProjectValueEdit>;
+};
+
+export type StudioProjectPatch = {
+  "address": AuthoredFileAddress;
+  "patches": Array<ProjectValueEdit>;
+  "revision": Sha256;
+  "presentation_revision"?: Sha256 | null;
+};
+
+export type StudioProjectPatchBatch = {
+  "revision": Sha256;
+  "presentation_revision"?: Sha256 | null;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioProjectRename = {
+  "revision": Sha256;
+  "name": string;
+};
+
+export type StudioProjectReplay = {
+  "revision": Sha256;
+  "files": Array<StudioReplayFile>;
+};
+
+export type StudioProjectRevision = {
+  "project_id": string;
+  "revision": Sha256;
+  "presentation_revision": Sha256;
+};
+
+export type StudioProjectSnapshot = {
+  "project_id": string;
+  "revision": Sha256;
+  "presentation_revision": Sha256;
+  "project": Project;
+  "semantic_root": Sha256;
+  "presentation": PresentationDocument | null;
+  "presentation_error"?: "unreadable_presentation" | null;
+  "file_revisions": Array<StudioAuthoredFileRevision>;
+  "declaration"?: StudioAuthoredDeclaration | null;
+};
+
+export type StudioProjectWindowMap = {
+  "variants": Array<string>;
+  "steps": Array<StudioProjectWindowMapStep>;
+  "rows": Array<StudioProjectWindowMapRow>;
+  "edges": Array<StudioProjectWindowMapEdge>;
+  "problems": Array<StudioProjectWindowMapProblem>;
+  "requests"?: Array<StudioPlanRequest>;
+  "evaluations"?: Array<StudioSavedEvaluationRow>;
+  "analysis_elements"?: Array<StudioProjectWindowMapElement>;
+  "analysis_figures"?: Array<StudioProjectWindowMapFigure>;
+};
+
+export type StudioProjectWindowMapCoordinate = {
+  "value_id": string;
+  "label": string | null;
+  "value": JsonValue;
+};
+
+export type StudioProjectWindowMapEdge = {
+  "from_key": StudioSavedTrainKey;
+  "to_key": StudioSavedTrainKey;
+};
+
+export type StudioProjectWindowMapElement = {
+  "result"?: StudioSavedLightResult | null;
+  "previous"?: StudioSavedLightResult | null;
+  "key": StudioSavedTrainKey;
+  "name": string;
+  "kind": "analyze" | "render";
+  "request_id": string;
+  "status": JobStatus;
+  "reason"?: string | null;
+  "figure"?: StepReference | null;
+};
+
+export type StudioProjectWindowMapException = {
+  "id": string;
+  "count": number;
+  "rule": SweepException;
+};
+
+export type StudioProjectWindowMapFigure = {
+  "key": StudioSavedTrainKey;
+  "name": string;
+  "data": Array<string>;
+  "caption": string | null;
+};
+
+export type StudioProjectWindowMapInput = {
+  "id": string;
+  "source_step_id": string;
+  "subset": StudioProjectWindowMapSubset | null;
+  "checkpoint"?: CheckpointRule | null;
+  "checkpoint_axis"?: string | null;
+};
+
+export type StudioProjectWindowMapProblem = {
+  "code": string;
+  "path": string;
+  "detail": string;
+  "variant": string | null;
+  "step": string | null;
+  "row": string | null;
+  "document": string | null;
+  "element"?: string | null;
+  "document_path"?: string | null;
+  "model_address"?: ModelAddress | null;
+  "address"?: string | null;
+  "layer"?: string | null;
+  "authored_path"?: string | null;
+};
+
+export type StudioProjectWindowMapRow = {
+  "key": StudioSavedTrainKey;
+  "label": string;
+  "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
+  "member_key"?: string | null;
+  "status": JobStatus;
+  "reason"?: string | null;
+  "opening_step"?: "acquiring" | "connecting" | "copying" | "installing" | "starting_host" | null;
+  "collection_progress"?: StoreTransferProgress | null;
+  "evaluation_conditions"?: Array<string> | null;
+  "light"?: StudioSavedLightHistory | null;
+};
+
+export type StudioProjectWindowMapStep = {
+  "variant": string;
+  "step_id": string;
+  "kind": StepKind;
+  "group": string | null;
+  "inputs": Array<StudioProjectWindowMapInput>;
+  "document_ids": Record<string, string>;
+  "document_uses"?: Array<string>;
+  "exceptions"?: Array<StudioProjectWindowMapException>;
+  "status_counts": Record<string, number>;
+};
+
+export type StudioProjectWindowMapSubset = {
+  "terms": SubsetTerms;
+  "count": number;
+  "total": number;
+  "document": string | null;
+  "members"?: Array<StudioSavedTrainKey> | null;
+  "ranks"?: Array<string>;
+  "rank_groups"?: Array<StudioBestRankGroup>;
+};
+
+export type StudioReplayFile = {
+  "address": ReplayFileAddress | ReplayDeclarationAddress;
+  "before": Sha256 | null;
+  "after": string | null;
+};
+
+export type StudioReportStep = {
+  "kind": "report";
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
+};
+
+export type StudioSavedLightHistory = {
+  "result"?: StudioSavedLightResult | null;
+  "previous"?: StudioSavedLightResult | null;
+};
+
+export type StudioSavedLightResult = {
+  "job_id": string;
+  "request_id": string;
+  "receipt": JobReceipt;
+  "products": Record<string, string>;
+};
+
+export type StudioSetSweepValue = {
+  "kind": "setSweepValue";
+  "sweep_id": string;
+  "value_id": string;
+  "value": number;
+};
+
+export type StudioSubsetToRowsEdit = {
+  "revision": string;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioSubsetToRowsRequest = {
+  "revision": string;
+  "variant": string;
+  "step": string;
+  "attempts": Array<string>;
+};
+
+export type StudioSweepEdit = {
+  "kind": "addValue" | "toList";
+  "sweep_id": string;
+};
+
+export type StudioTaskChoice = {
+  "document": string;
+  "problems": Array<Problem>;
+};
+
+export type StudioTaskType = {
+  "type": string;
+  "label": string;
+  "parameter_schema": Record<string, JsonValue>;
+};
+
+export type StudioToField = {
+  "kind": "toField";
+  "sweep_id": string;
+  "value_id": string;
+};
+
+export type StudioToSweep = {
+  "kind": "toSweep";
+};
+
+export type StudioTrainAuthoring = {
+  "project_id": string;
+  "step_id": string;
+  "revision": Sha256;
+  "fields": Array<StudioAuthoringField>;
+  "patches": Array<ProjectValueEdit>;
+  "documents": Array<string>;
+};
+
+export type StudioTrainAuthoringRequest = {
+  "revision": Sha256;
+  "change"?: StudioAuthoringChange | StudioAuthoringSweepChange | null;
+};
+
+export type StudioTrainStep = {
+  "kind": "train";
+  "base": Base;
+  "deltas"?: Array<MatrixCompositionDelta>;
+  "document_overrides"?: Record<string, DocumentOverrides>;
+  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
+  "sweep"?: Sweep | null;
+  "inputs"?: Record<string, InputBinding | null>;
+  "requires"?: Array<PatchPath>;
+  "note"?: StepNote | null;
+  "group"?: string | null;
+};
+
+export type StudioTrialAuthoring = {
+  "revision": Sha256;
+  "run": StudioSavedTrainKey;
+  "model": string;
+  "task_document": string | null;
+  "objective_document": string | null;
+  "task": TaskDocument | PythonTaskSelection;
+  "task_source"?: StudioEvaluateValueSource | null;
+  "task_field_sources"?: Record<string, StudioEvaluateValueSource>;
+  "objective": ObjectiveDocument | null;
+  "task_types": Array<StudioTaskType>;
+  "tasks": Array<StudioTaskChoice>;
+  "variables": Array<ScopedValue>;
+  "signals": Array<ScopedValue>;
+  "epochs": Array<Epoch>;
+  "period_seconds": number;
+  "n_steps": number | null;
+  "inputs": Array<StudioTrialInput>;
+  "outputs": Array<StudioTrialOutput>;
+  "resets": Array<StudioTrialReset>;
+  "fields": Array<StudioTrialField>;
+  "problems": Array<Problem>;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioTrialAuthoringRequest = {
+  "revision": Sha256;
+  "run": StudioSavedTrainKey;
+  "change"?: StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectTask | StudioTrialExpressionEdit | null;
+  "scope"?: StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
+};
+
+export type StudioTrialBindingEdit = {
+  "kind": "binding";
+  "input": ModelAddress;
+  "signal": string | null;
+};
+
+export type StudioTrialDocumentEdit = {
+  "kind": "task" | "objective";
+  "edits": Array<ProjectValueEdit>;
+};
+
+export type StudioTrialExpressionEdit = {
+  "kind": "expression";
+  "term": string;
+  "field": "measure" | "weight";
+  "text": string;
+};
+
+export type StudioTrialField = {
+  "path": string;
+  "projection": SiteProjection;
+  "text"?: string | null;
+};
+
+export type StudioTrialInput = {
+  "address": ModelAddress;
+  "name": string;
+  "type": ValueType | null;
+  "required": boolean;
+  "signal": string | null;
+  "explicit": boolean;
+};
+
+export type StudioTrialOutput = {
+  "address": ModelAddress;
+  "value": ScopedValue;
+};
+
+export type StudioTrialReset = {
+  "address": ModelAddress;
+  "type": ValueType;
+  "finest": Level;
+  "variable": string | null;
+};
+
+export type StudioTrialSelectTask = {
+  "kind": "select_task";
+  "document": string;
+};
+
+export type StudioTrialStepScope = {
+  "kind": "step";
+  "lit_steps"?: Array<string>;
+};
+
+export type SubsetTerms = {
+  "axes"?: Record<string, Array<string>>;
+  "best"?: Best | null;
+  "when"?: When | null;
+  "rows"?: Array<SelectedRow>;
+};
+
+export type Sweep = {
+  "axes"?: Record<string, Axis | null>;
+  "rows"?: Record<string, Row | null>;
+  "exceptions"?: Record<string, SweepException | null>;
+  "combination"?: Combination | null;
+  "inherit_rows"?: boolean;
+};
+
+export type SweepException = {
+  "patches"?: Record<string, PatchValue | null>;
+  "where"?: SweepExceptionTerms | null;
+  "exclude"?: boolean;
+};
+
+export type SweepExceptionTerms = {
+  "axes"?: Record<string, Array<string>>;
+  "best"?: Best | null;
+  "when"?: When | null;
+  "rows"?: Array<string>;
+};
+
+export type SweepList = {
+  "kind"?: "list";
+  "members": Array<Expression>;
+};
+
+export type SweepRange = {
+  "kind"?: "range";
+  "first": Expression;
+  "last": Expression;
+  "count": number;
+  "spacing": "linear" | "log";
+};
+
+export type SweepSample = {
+  "kind"?: "sample";
+  "draw": DrawValue;
+  "count": number;
+};
+
+export type SweepTarget = string;
+
+export type TaskDocument = {
+  "id": string;
+  "variables": Array<Variable>;
+  "epochs": Array<Epoch>;
+  "signals": Array<Signal>;
+  "links"?: Array<Link>;
+  "fixed_steps"?: number | null;
+  "validation_trials"?: Array<ValidationTrial>;
+};
+
+export type TextSpan = {
+  "start": number;
+  "end": number;
+};
+
+export type TrialDocuments = {
+  "model_name": string;
+  "model": ModelDocument;
+  "task": TaskDocument | null;
+  "objective": ObjectiveDocument;
+  "input_overrides"?: Record<string, string>;
+  "python_task"?: PythonTaskSelection | null;
+};
+
+export type UpdateCadence = {
+  "every": number;
+  "from"?: number | null;
+  "through"?: number | null;
+};
+
+export type UpdateCheckpoint = {
+  "at": number;
+};
+
+export type UpdateRule = UpdateCadence | Array<UpdateCheckpoint>;
+
+export type ValidationPlacement = {
+  "location": "live" | "ordinary";
+  "reason": "within_budget" | "late" | "unqualified" | "unmeasured" | "over_budget" | "driver_occupied";
+  "predicted_update_fraction"?: number | null;
+};
+
+export type ValidationTrial = {
+  "variables"?: Record<string, ValidationValue>;
+  "epoch_steps"?: Record<string, number>;
+};
+
+export type ValidationValue = Scalar | Array<ValidationValue>;
+
+export type ValueBase = "real" | "integer" | "boolean";
+
+export type ValueType = {
+  "base": ValueBase;
+  "shape"?: Array<number>;
+  "dimensions"?: Dimensions;
+};
+
+export type Variable = {
+  "id": string;
+  "name": string;
+  "type": ValueType;
+  "value": Expression;
+};
+
+export type VariableBinding = {
+  "variable": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+};
+
+export type When = {
+  "metric": string;
+  "op": "lt" | "le" | "eq" | "ne" | "ge" | "gt";
+  "value": number;
+};
 
 export const acausalReportDefaults = {
   "AcausalGraphSpec": {
@@ -2182,6 +4209,1849 @@ function arrayScalarInvalid(value: unknown, dtype: string, nonfinite: string): b
   return dtype in floatMax && Math.abs(value) > floatMax[dtype];
 }
 
+export const KeepOpenSchema: z.ZodType<KeepOpen> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("keep-open").optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<KeepOpen>;
+
+export const CloseWhenIdleSchema: z.ZodType<CloseWhenIdle> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("close-when-idle").optional(),
+      "seconds": z.number().int().safe().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<CloseWhenIdle>;
+
+export const LocalTargetProfileSchema: z.ZodType<LocalTargetProfile> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("local"),
+      "id": z.literal("local"),
+      "label": z.literal("This Mac"),
+    })
+    .strict()
+) as unknown as z.ZodType<LocalTargetProfile>;
+
+export const SessionTargetProfileSchema: z.ZodType<SessionTargetProfile> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("session"),
+      "id": z.string().min(1).regex(new RegExp("^\\S+$")),
+      "label": z.string().min(1),
+      "driver": z.string().min(1).regex(new RegExp("^\\S+$")),
+      "resources": z.record(z.string(), jsonValueSchema),
+      "lifecycle": z.union([KeepOpenSchema, CloseWhenIdleSchema]),
+      "maximum_microusd": z.number().int().safe().gte(0),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.id === "local") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "The local target ID is reserved for This Mac",
+        });
+      }
+    })
+) as unknown as z.ZodType<SessionTargetProfile>;
+
+export const LocalTargetSchema: z.ZodType<LocalTarget> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("local"),
+      "profile": z.literal("local"),
+    })
+    .strict()
+) as unknown as z.ZodType<LocalTarget>;
+
+export const TargetRealizationSchema: z.ZodType<TargetRealization> = z.lazy(() =>
+  z
+    .object({
+      "environment": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "placement": z.record(z.string(), jsonValueSchema).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TargetRealization>;
+
+export const SessionTargetSchema: z.ZodType<SessionTarget> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("session"),
+      "profile": z.string().min(1).regex(new RegExp("^\\S+$")),
+      "driver": z.string().min(1).regex(new RegExp("^\\S+$")),
+      "session_id": z.string().uuid(),
+      "realization": TargetRealizationSchema.nullable().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.profile === "local") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A session cannot run as This Mac",
+        });
+      }
+    })
+) as unknown as z.ZodType<SessionTarget>;
+
+export const ReadyTargetSchema: z.ZodType<ReadyTarget> = z.lazy(() =>
+  z
+    .object({
+      "state": z.literal("ready"),
+    })
+    .strict()
+) as unknown as z.ZodType<ReadyTarget>;
+
+export const OffTargetSchema: z.ZodType<OffTarget> = z.lazy(() =>
+  z
+    .object({
+      "state": z.literal("off"),
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<OffTarget>;
+
+export const UnreachableTargetSchema: z.ZodType<UnreachableTarget> = z.lazy(() =>
+  z
+    .object({
+      "state": z.literal("unreachable"),
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<UnreachableTarget>;
+
+export const TargetOptionSchema: z.ZodType<TargetOption> = z.lazy(() =>
+  z
+    .object({
+      "profile": z.union([LocalTargetProfileSchema, SessionTargetProfileSchema]),
+      "run_kinds": z.array(z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("render"), z.literal("report")])),
+      "availability": z.union([ReadyTargetSchema, OffTargetSchema, UnreachableTargetSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<TargetOption>;
+
+export const ExecutionTargetsSchema: z.ZodType<ExecutionTargets> = z.lazy(() =>
+  z
+    .object({
+      "default": z.literal("local"),
+      "targets": z.array(TargetOptionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ExecutionTargets>;
+
+export const OpeningObservationSchema: z.ZodType<OpeningObservation> = z.lazy(() =>
+  z
+    .object({
+      "step": z.union([z.literal("acquiring"), z.literal("connecting"), z.literal("copying"), z.literal("installing"), z.literal("starting_host")]),
+      "observed_at_ms": z.number().int().safe().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<OpeningObservation>;
+
+export const JobErrorSchema: z.ZodType<JobError> = z.lazy(() =>
+  z
+    .object({
+      "code": z.string(),
+      "message": z.string(),
+      "phase": z.string().nullable().optional(),
+      "path": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<JobError>;
+
+export const JobOutcomeSchema: z.ZodType<JobOutcome> = z.lazy(() =>
+  z
+    .object({
+      "outcome": z.union([z.literal("succeeded"), z.literal("stopped"), z.literal("failed"), z.literal("interrupted"), z.literal("blocked")]),
+      "error": JobErrorSchema.nullable().optional(),
+      "receipt": JobReceiptSchema.nullable().optional(),
+      "signal": z.number().int().safe().nullable().optional(),
+      "exit": z.number().int().safe().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<JobOutcome>;
+
+export const JobProgressSchema: z.ZodType<JobProgress> = z.lazy(() =>
+  z
+    .object({
+      "completed_updates": z.number().int().safe().gte(0),
+      "total_updates": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<JobProgress>;
+
+export const JobReceiptSchema: z.ZodType<JobReceipt> = z.lazy(() =>
+  z
+    .object({
+      "manifest_id": z.string(),
+      "manifest_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+    })
+    .strict()
+) as unknown as z.ZodType<JobReceipt>;
+
+export const StudioSubmissionActorSchema: z.ZodType<StudioSubmissionActor> = z.lazy(() =>
+  z
+    .object({
+      "client": z.union([z.literal("studio"), z.literal("cli")]),
+      "label": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSubmissionActor>;
+
+export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "project_id": z.string(),
+      "request_id": z.string(),
+      "kind": z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("render"), z.literal("report")]),
+      "run_key": z.string(),
+      "stage_id": z.string(),
+      "scenario_id": z.string(),
+      "label": z.string(),
+      "coordinates": z.record(z.string(), jsonValueSchema),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "phase": z.string().nullable().optional(),
+      "reason": z.string().nullable().optional(),
+      "can_resume": z.boolean().optional(),
+      "allowed_actions": z.array(z.union([z.literal("checkpoint"), z.literal("force"), z.literal("resume")])),
+      "continues": z.string().nullable().optional(),
+      "progress": JobProgressSchema.nullable().optional(),
+      "eta_seconds": z.number().finite().nullable().optional(),
+      "outcome": JobOutcomeSchema.nullable().optional(),
+      "earlier_definition": z.boolean().optional(),
+      "seen": z.boolean().optional(),
+      "actor": StudioSubmissionActorSchema.nullable().optional(),
+      "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
+      "target": z.union([LocalTargetSchema, SessionTargetSchema]).optional(),
+      "log_tail": z.array(z.string()).optional(),
+      "collection_progress": StoreTransferProgressSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioActivityJob>;
+
+export const StudioEventResetSchema: z.ZodType<StudioEventReset> = z.lazy(() =>
+  z
+    .object({
+      "cursor": z.number().int().safe().gte(0),
+      "oldest_cursor": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEventReset>;
+
+export const StudioEventWatermarkSchema: z.ZodType<StudioEventWatermark> = z.lazy(() =>
+  z
+    .object({
+      "cursor": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEventWatermark>;
+
+export const StudioJobEventSchema: z.ZodType<StudioJobEvent> = z.lazy(() =>
+  z
+    .object({
+      "cursor": z.number().int().safe().gte(1),
+      "job_id": z.string(),
+      "project_id": z.string(),
+      "request_id": z.string(),
+      "kind": z.string(),
+      "data": z.record(z.string(), jsonValueSchema),
+      "activity": StudioActivityJobSchema.nullable().optional(),
+      "venue": StudioVenueStreamSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobEvent>;
+
+export const StudioJobEventHistorySchema: z.ZodType<StudioJobEventHistory> = z.lazy(() =>
+  z
+    .object({
+      "cursor": z.number().int().safe().gte(0),
+      "oldest_cursor": z.number().int().safe().gte(0),
+      "events": z.array(StudioJobEventSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobEventHistory>;
+
+export const StudioJobResumeRequestSchema: z.ZodType<StudioJobResumeRequest> = z.lazy(() =>
+  z
+    .object({
+      "token": z.string().min(1).max(128),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobResumeRequest>;
+
+export const StudioJobSnapshotSchema: z.ZodType<StudioJobSnapshot> = z.lazy(() =>
+  z
+    .object({
+      "jobs": z.array(StudioActivityJobSchema),
+      "cursor": z.number().int().safe().gte(0),
+      "oldest_cursor": z.number().int().safe().gte(0),
+      "sessions": z.array(z.union([StudioLocalSessionSchema, StudioRemoteSessionSchema])),
+      "remote_version": z.number().int().safe().gte(0).nullable().optional(),
+      "machine_catalog_version": z.number().int().safe().gte(0).nullable().optional(),
+      "venue_cursors": z.array(StudioVenueCursorSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobSnapshot>;
+
+export const StudioJobStopItemSchema: z.ZodType<StudioJobStopItem> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "job": StudioActivityJobSchema.nullable().optional(),
+      "error": JobErrorSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobStopItem>;
+
+export const StudioJobStopRequestSchema: z.ZodType<StudioJobStopRequest> = z.lazy(() =>
+  z
+    .object({
+      "job_ids": z.array(z.string()).min(1),
+      "mode": z.union([z.literal("checkpoint"), z.literal("force")]),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobStopRequest>;
+
+export const StudioJobSubmissionSchema: z.ZodType<StudioJobSubmission> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "token": z.string(),
+      "project_id": z.string(),
+      "items": z.array(StudioSubmissionItemSchema),
+      "actor": StudioSubmissionActorSchema.nullable().optional(),
+      "target": z.union([LocalTargetSchema, SessionTargetSchema]).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioJobSubmission>;
+
+export const StudioSavedEvaluationReadSchema: z.ZodType<StudioSavedEvaluationRead> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "key": StudioSavedTrainKeySchema,
+      "job_id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedEvaluationRead>;
+
+export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEvaluationReplayRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "key": StudioSavedTrainKeySchema,
+      "job_id": z.string(),
+      "trial": z.string(),
+      "checkpoint": z.number().int().safe().gte(0).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedEvaluationReplayRequest>;
+
+export const StudioEvaluationObjectiveSeriesSchema: z.ZodType<StudioEvaluationObjectiveSeries> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "request_id": z.string(),
+      "receipt": JobReceiptSchema.nullable(),
+      "lineage": z.array(z.string()),
+      "condition": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable(),
+      "trials": z.array(z.string()),
+      "seed": z.number().int().safe(),
+      "objective": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "requested": z.array(z.number().int().safe()),
+      "points": z.array(StudioEvaluationObjectivePointSchema),
+      "gaps": z.array(StudioEvaluationCheckpointGapSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationObjectiveSeries>;
+
+export const StudioEvaluationObjectivePointSchema: z.ZodType<StudioEvaluationObjectivePoint> = z.lazy(() =>
+  z
+    .object({
+      "checkpoint": StudioEvaluationCheckpointSchema,
+      "total": z.number().finite(),
+      "terms": z.array(StudioEvaluationObjectiveTermSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationObjectivePoint>;
+
+export const StudioEvaluationObjectiveTermSchema: z.ZodType<StudioEvaluationObjectiveTerm> = z.lazy(() =>
+  z
+    .object({
+      "path": z.string().regex(new RegExp("^/(?:[^~/]|~[01])*$")),
+      "name": z.string(),
+      "value": z.number().finite(),
+      "coverage": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationObjectiveTerm>;
+
+export const StudioEvaluationCheckpointSchema: z.ZodType<StudioEvaluationCheckpoint> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "request_id": z.string(),
+      "completed_updates": z.number().int().safe().gte(0),
+      "transaction": JobReceiptSchema,
+      "transaction_root_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "binding_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "publication_cursor": z.number().int().safe().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationCheckpoint>;
+
+export const StudioEvaluationCheckpointGapSchema: z.ZodType<StudioEvaluationCheckpointGap> = z.lazy(() =>
+  z
+    .object({
+      "update": z.number().int().safe().gt(0),
+      "reason": z.literal("checkpoint_unavailable"),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationCheckpointGap>;
+
+export const StudioEvaluationCheckpointSeriesSchema: z.ZodType<StudioEvaluationCheckpointSeries> = z.lazy(() =>
+  z
+    .object({
+      "subject": StudioSavedTrainKeySchema,
+      "requested": z.array(z.number().int().safe()),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluationCheckpointSeries>;
+
+export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationResult> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "receipt": JobReceiptSchema,
+      "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
+      "size_bytes": z.number().int().safe().gte(0),
+      "checkpoint_sources": z.array(StudioTrainCheckpointSourceSchema).nullable().optional(),
+      "checkpoint_gaps": z.array(StudioEvaluationCheckpointGapSchema).nullable().optional(),
+      "placement": z.union([z.literal("live"), z.literal("ordinary")]).nullable().optional(),
+      "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedEvaluationResult>;
+
+export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "request_id": z.string(),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "reason": z.string().nullable(),
+      "can_run": z.boolean(),
+      "trials": z.array(z.string()),
+      "result": StudioSavedEvaluationResultSchema.nullable(),
+      "subject_rank_key": z.string().nullable().optional(),
+      "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
+      "checkpoint_attempt": StudioEvaluationCheckpointAttemptSchema.nullable().optional(),
+      "checkpoint_rule": z.unknown().nullable().optional(),
+      "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedEvaluationRow>;
+
+export const StudioSavedTrainAttemptSchema: z.ZodType<StudioSavedTrainAttempt> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "reason": z.string().nullable(),
+      "progress": JobProgressSchema.nullable(),
+      "successful_receipt": JobReceiptSchema.nullable(),
+      "continues": z.string().nullable(),
+      "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
+      "stopped_checkpoint": z.number().int().safe().gt(0).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainAttempt>;
+
+export const StudioSavedTrainChangeSchema: z.ZodType<StudioSavedTrainChange> = z.lazy(() =>
+  z
+    .object({
+      "path": z.string(),
+      "before": jsonValueSchema,
+      "after": jsonValueSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainChange>;
+
+export const StudioSavedTrainKeySchema: z.ZodType<StudioSavedTrainKey> = z.lazy(() =>
+  z
+    .object({
+      "variant": z.string(),
+      "step": z.string(),
+      "row": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainKey>;
+
+export const StudioSavedTrainResultSchema: z.ZodType<StudioSavedTrainResult> = z.lazy(() =>
+  z
+    .object({
+      "request_id": z.string(),
+      "job_id": z.string(),
+      "receipt": JobReceiptSchema,
+      "progress": JobProgressSchema.nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainResult>;
+
+export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "label": z.string(),
+      "request_id": z.string(),
+      "attempts": z.array(StudioSavedTrainAttemptSchema),
+      "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "reason": z.string().nullable(),
+      "result": StudioSavedTrainResultSchema.nullable(),
+      "previous": StudioSavedTrainResultSchema.nullable(),
+      "change": StudioSavedTrainChangeSchema.nullable(),
+      "previous_attempts": z.array(StudioSavedTrainAttemptSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainRow>;
+
+export const StudioSavedTrainRunRequestSchema: z.ZodType<StudioSavedTrainRunRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "run_keys": z.array(StudioSavedTrainKeySchema).min(1),
+      "target": z.string().min(1).regex(new RegExp("^\\S+$")).optional(),
+      "token": z.string().min(1).max(128),
+      "reuse_completed": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainRunRequest>;
+
+export const StudioSavedMachineQuoteRequestSchema: z.ZodType<StudioSavedMachineQuoteRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "run_keys": z.array(StudioSavedTrainKeySchema).min(1),
+      "target": z.string().min(1).regex(new RegExp("^\\S+$")).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedMachineQuoteRequest>;
+
+export const StudioMachineApprovalSchema: z.ZodType<StudioMachineApproval> = z.lazy(() =>
+  z
+    .object({
+      "quote": z.string().uuid(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioMachineApproval>;
+
+export const StudioMachineApprovalReceiptSchema: z.ZodType<StudioMachineApprovalReceipt> = z.lazy(() =>
+  z
+    .object({
+      "session_id": z.string().uuid(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioMachineApprovalReceipt>;
+
+export const StudioMachineQuoteSchema: z.ZodType<StudioMachineQuote> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().uuid(),
+      "machine": z.string(),
+      "resources": z.record(z.string(), jsonValueSchema),
+      "hourly_microusd": z.number().int().safe().gte(0),
+      "rows": z.array(StudioMachineQuoteRowSchema).min(1),
+      "ceiling_microusd": z.number().int().safe().gte(0),
+      "expires_at_ms": z.number().int().safe().gt(0),
+      "idle_timeout_seconds": z.number().int().safe().gt(0).nullable(),
+      "idle_with_results": z.literal("on"),
+      "status": z.literal("awaiting_authorization"),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioMachineQuote>;
+
+export const StudioMachineQuoteRowSchema: z.ZodType<StudioMachineQuoteRow> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "label": z.string(),
+      "axes": z.record(z.string(), jsonValueSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioMachineQuoteRow>;
+
+export const StudioSavedTrainRunsSchema: z.ZodType<StudioSavedTrainRuns> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string(),
+      "rows": z.array(StudioSavedTrainRowSchema),
+      "window_map": StudioProjectWindowMapSchema.nullable().optional(),
+      "review": z.array(StudioPlanReviewEntrySchema).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedTrainRuns>;
+
+export const StudioPlanRequestAddressSchema: z.ZodType<StudioPlanRequestAddress> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "element": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanRequestAddress>;
+
+export const StudioPlanReviewEntrySchema: z.ZodType<StudioPlanReviewEntry> = z.lazy(() =>
+  z
+    .object({
+      "key": StudioSavedTrainKeySchema,
+      "element": z.string().nullable().optional(),
+      "request_id": z.string(),
+      "state": z.union([z.literal("unchanged"), z.literal("changed"), z.literal("added"), z.literal("removed")]),
+      "path": z.string().nullable().optional(),
+      "upstream": StudioPlanRequestAddressSchema.nullable().optional(),
+      "before_source": StudioPlanReviewSourceSchema.nullable().optional(),
+      "after_source": StudioPlanReviewSourceSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanReviewEntry>;
+
+export const StudioPlanReviewSourceSchema: z.ZodType<StudioPlanReviewSource> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("document"), z.literal("step"), z.literal("sweep_value"), z.literal("exception"), z.literal("variant"), z.literal("upstream")]),
+      "name": z.string(),
+      "path": z.string(),
+      "step": z.string().nullable().optional(),
+      "axis": z.string().nullable().optional(),
+      "value": z.string().nullable().optional(),
+      "variant": z.string().nullable().optional(),
+      "row": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanReviewSource>;
+
+export const StudioTrainCheckpointSourceSchema: z.ZodType<StudioTrainCheckpointSource> = z.lazy(() =>
+  z
+    .object({
+      "job_id": z.string(),
+      "request_id": z.string(),
+      "completed_updates": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioTrainCheckpointSource>;
+
+export const StudioLocalSessionSchema: z.ZodType<StudioLocalSession> = z.lazy(() =>
+  z
+    .object({
+      "id": z.literal("local").optional(),
+      "state": z.literal("open").optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioLocalSession>;
+
+export const StudioRemoteSessionSchema: z.ZodType<StudioRemoteSession> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().uuid(),
+      "name": z.string(),
+      "state": z.union([z.literal("queued"), z.literal("opening"), z.literal("open"), z.literal("closing"), z.literal("unreachable"), z.literal("off")]),
+      "hourly_microusd": z.number().int().safe().gte(0),
+      "estimated_cost_microusd": z.number().int().safe().gte(0),
+      "closes_at_ms": z.number().int().safe().gt(0),
+      "ceiling_microusd": z.number().int().safe().gte(0),
+      "idle_since_ms": z.number().int().safe().gte(0).nullable(),
+      "job_ids": z.array(z.string()),
+      "can_close": z.boolean(),
+      "region": z.string().nullable().optional(),
+      "opening_observations": z.array(OpeningObservationSchema).optional(),
+      "opening_failure": z.string().nullable().optional(),
+      "billed_cost_microusd": z.number().int().safe().gte(0).nullable().optional(),
+      "provider_observed_at_ms": z.number().int().safe().gt(0).nullable().optional(),
+      "power_state": z.union([z.literal("starting"), z.literal("on"), z.literal("off")]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRemoteSession>;
+
+export const StudioVenueCursorSchema: z.ZodType<StudioVenueCursor> = z.lazy(() =>
+  z
+    .object({
+      "session_id": z.string().uuid(),
+      "stream_id": z.string().min(1),
+      "cursor": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioVenueCursor>;
+
+export const StudioVenueStreamSchema: z.ZodType<StudioVenueStream> = z.lazy(() =>
+  z
+    .object({
+      "session_id": z.string().uuid(),
+      "stream_id": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioVenueStream>;
+
+export const StoreTransferProgressSchema: z.ZodType<StoreTransferProgress> = z.lazy(() =>
+  z
+    .object({
+      "verified_bytes": z.number().int().safe().gte(0),
+      "total_bytes": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<StoreTransferProgress>;
+
+export const StudioSubmissionItemSchema: z.ZodType<StudioSubmissionItem> = z.lazy(() =>
+  z
+    .object({
+      "run_key": z.string(),
+      "job_id": z.string().nullable().optional(),
+      "disposition": z.union([z.literal("admitted"), z.literal("attached"), z.literal("reused"), z.literal("rejected")]),
+      "reason": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSubmissionItem>;
+
+export const ComponentPortEndSchema: z.ZodType<ComponentPortEnd> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("component"),
+      "component": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ComponentPortEnd>;
+
+export const ComponentPortAddressSchema: z.ZodType<ComponentPortAddress> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("component"),
+      "component": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "direction": z.union([z.literal("input"), z.literal("output"), z.literal("physical")]),
+    })
+    .strict()
+) as unknown as z.ZodType<ComponentPortAddress>;
+
+export const InputBoundaryEndSchema: z.ZodType<InputBoundaryEnd> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("inputs"),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<InputBoundaryEnd>;
+
+export const OutputBoundaryEndSchema: z.ZodType<OutputBoundaryEnd> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("outputs"),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<OutputBoundaryEnd>;
+
+export const PhysicalBoundaryEndSchema: z.ZodType<PhysicalBoundaryEnd> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("boundary"),
+      "port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<PhysicalBoundaryEnd>;
+
+export const GraphElementSchema: z.ZodType<GraphElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("graph"),
+    })
+    .strict()
+) as unknown as z.ZodType<GraphElement>;
+
+export const ComponentElementSchema: z.ZodType<ComponentElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("component"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ComponentElement>;
+
+export const WireElementSchema: z.ZodType<WireElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("wire"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<WireElement>;
+
+export const PhysicalConnectionElementSchema: z.ZodType<PhysicalConnectionElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("physical_connection"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<PhysicalConnectionElement>;
+
+export const PortElementSchema: z.ZodType<PortElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("port"),
+      "end": z.union([ComponentPortAddressSchema, InputBoundaryEndSchema, OutputBoundaryEndSchema, PhysicalBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<PortElement>;
+
+export const AttachmentElementSchema: z.ZodType<AttachmentElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("attachment"),
+      "parent": z.union([WireElementSchema, PortElementSchema]),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<AttachmentElement>;
+
+export const FieldElementSchema: z.ZodType<FieldElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("field"),
+      "parent": z.union([GraphElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema]),
+      "path": z.array(z.union([z.string(), z.number().int().safe().gte(0).lte(9007199254740991)])).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldElement>;
+
+export const ModelAddressSchema: z.ZodType<ModelAddress> = z.lazy(() =>
+  z
+    .object({
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "composites": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$"))),
+      "element": z.union([GraphElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelAddress>;
+
+export const SignalTypeSchema: z.ZodType<SignalType> = z.lazy(() =>
+  z
+    .object({
+      "base": z.string().nullable().optional(),
+      "shape": z.array(z.union([z.number().int().safe(), z.string(), z.null()])).nullable().optional(),
+      "unit": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SignalType>;
+
+export const ModelTimeSchema: z.ZodType<ModelTime> = z.lazy(() =>
+  z
+    .object({
+      "value": z.number().finite().gt(0),
+      "unit": z.union([z.literal("s"), z.literal("st")]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelTime>;
+
+export const InputDefaultSchema: z.ZodType<InputDefault> = z.lazy(() =>
+  z
+    .object({
+      "value": jsonValueSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<InputDefault>;
+
+export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("delay"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "delay": ModelTimeSchema,
+      "initial": jsonValueSchema.optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DelayAttachment>;
+
+export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("intervention"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "operation": z.string(),
+      "fields": z.record(z.string(), jsonValueSchema).optional(),
+      "window": jsonValueSchema.optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InterventionAttachment>;
+
+export const ProbeAttachmentSchema: z.ZodType<ProbeAttachment> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("probe"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "name": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<ProbeAttachment>;
+
+export const SignalInputSchema: z.ZodType<SignalInput> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "name": z.string().min(1),
+      "type": SignalTypeSchema,
+      "default": InputDefaultSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<SignalInput>;
+
+export const SignalOutputSchema: z.ZodType<SignalOutput> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "name": z.string().min(1),
+      "type": SignalTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<SignalOutput>;
+
+export const PhysicalPortSchema: z.ZodType<PhysicalPort> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "name": z.string().min(1),
+      "type": z.union([z.literal("translational"), z.literal("rotational"), z.literal("frame")]),
+    })
+    .strict()
+) as unknown as z.ZodType<PhysicalPort>;
+
+export const ModelPortsSchema: z.ZodType<ModelPorts> = z.lazy(() =>
+  z
+    .object({
+      "inputs": z.array(SignalInputSchema).optional(),
+      "outputs": z.array(SignalOutputSchema).optional(),
+      "physical": z.array(PhysicalPortSchema).optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if ((() => {
+              const ports = [...(value.inputs ?? []), ...(value.outputs ?? []), ...(value.physical ?? [])];
+              return new Set(ports.map((port) => port.id)).size !== ports.length;
+            })()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "port IDs must be unique within a port list",
+        });
+      }
+      if ([value.inputs ?? [], value.outputs ?? [], value.physical ?? []].some((ports) => new Set(ports.map((port) => port.name)).size !== ports.length)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "port names must be unique in each direction",
+        });
+      }
+    })
+) as unknown as z.ZodType<ModelPorts>;
+
+export const ModelPortAttachmentsSchema: z.ZodType<ModelPortAttachments> = z.lazy(() =>
+  z
+    .object({
+      "sources": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.array(z.union([InterventionAttachmentSchema, ProbeAttachmentSchema]))).optional(),
+      "sinks": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.array(ProbeAttachmentSchema)).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPortAttachments>;
+
+export const ModelWireSchema: z.ZodType<ModelWire> = z.lazy(() =>
+  z
+    .object({
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "attachments": z.array(z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelWire>;
+
+export const ModelPhysicalConnectionSchema: z.ZodType<ModelPhysicalConnection> = z.lazy(() =>
+  z
+    .object({
+      "a": z.union([ComponentPortEndSchema, PhysicalBoundaryEndSchema]),
+      "b": z.union([ComponentPortEndSchema, PhysicalBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPhysicalConnection>;
+
+export const LeafComponentSchema: z.ZodType<LeafComponent> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("leaf"),
+      "name": z.string().min(1),
+      "type": z.string().min(1),
+      "revision": z.number().int().safe().gte(1).nullable().optional(),
+      "fields": z.record(z.string(), jsonValueSchema).optional(),
+      "port_counts": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.number().int().safe().gte(0)).optional(),
+      "attachments": ModelPortAttachmentsSchema.optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<LeafComponent>;
+
+export const CompositeComponentSchema: z.ZodType<CompositeComponent> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("composite"),
+      "name": z.string().min(1),
+      "ports": ModelPortsSchema,
+      "interior": z.union([GraphInteriorSchema, PhysicalInteriorSchema]),
+      "substeps": z.number().int().safe().gte(1).optional(),
+      "attachments": ModelPortAttachmentsSchema.optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.interior.physical_domain == null && (value.ports.physical?.length ?? 0) > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "physical ports require an Equations or Mechanics interior",
+        });
+      }
+    })
+) as unknown as z.ZodType<CompositeComponent>;
+
+export const GraphInteriorSchema: z.ZodType<GraphInterior> = z.lazy(() =>
+  z
+    .object({
+      "components": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.union([LeafComponentSchema, CompositeComponentSchema])).optional(),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
+      "attachments": ModelPortAttachmentsSchema.optional(),
+      "physical_domain": z.null().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if ((() => {
+      const ids = [value.components, value.wires, "connections" in value ? value.connections : undefined]
+        .flatMap((elements) => Object.keys(elements ?? {}));
+      return new Set(ids).size !== ids.length;
+    })()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "element IDs must be unique within an interior",
+        });
+      }
+    })
+) as unknown as z.ZodType<GraphInterior>;
+
+export const PhysicalInteriorSchema: z.ZodType<PhysicalInterior> = z.lazy(() =>
+  z
+    .object({
+      "components": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.union([LeafComponentSchema, CompositeComponentSchema])).optional(),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
+      "attachments": ModelPortAttachmentsSchema.optional(),
+      "physical_domain": z.union([z.literal("translational"), z.literal("rotational"), z.literal("planar_multibody"), z.literal("spatial_multibody")]),
+      "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema).optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if ((() => {
+      const ids = [value.components, value.wires, "connections" in value ? value.connections : undefined]
+        .flatMap((elements) => Object.keys(elements ?? {}));
+      return new Set(ids).size !== ids.length;
+    })()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "element IDs must be unique within an interior",
+        });
+      }
+    })
+) as unknown as z.ZodType<PhysicalInterior>;
+
+export const ModelWorldSchema: z.ZodType<ModelWorld> = z.lazy(() =>
+  z
+    .object({
+      "gravity": z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelWorld>;
+
+export const ModelDocumentSchema: z.ZodType<ModelDocument> = z.lazy(() =>
+  z
+    .object({
+      "schema_version": z.literal("feedbax.spec.model.v1").optional(),
+      "step_seconds": z.number().finite().gt(0),
+      "ports": ModelPortsSchema,
+      "interior": GraphInteriorSchema,
+      "world": ModelWorldSchema.nullable().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if ((value.ports.physical?.length ?? 0) > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "the model root has signal ports only",
+        });
+      }
+    })
+) as unknown as z.ZodType<ModelDocument>;
+
+export const ModelPositionSchema: z.ZodType<ModelPosition> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number().finite(),
+      "y": z.number().finite(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPosition>;
+
+export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("add_component"),
+      "graph": ModelAddressSchema,
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "position": ModelPositionSchema,
+      "connect_from": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
+      "connect_to_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AddComponent>;
+
+export const DeleteElementsSchema: z.ZodType<DeleteElements> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("delete"),
+    })
+    .strict()
+) as unknown as z.ZodType<DeleteElements>;
+
+export const ConnectSignalSchema: z.ZodType<ConnectSignal> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("connect"),
+      "graph": ModelAddressSchema,
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "grow_target": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ConnectSignal>;
+
+export const ConnectTaskSignalSchema: z.ZodType<ConnectTaskSignal> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("connect_task_signal"),
+      "graph": ModelAddressSchema,
+      "run": StudioSavedTrainKeySchema,
+      "signal": z.string(),
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ConnectTaskSignal>;
+
+export const ConnectPhysicalSchema: z.ZodType<ConnectPhysical> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("connect_physical"),
+      "graph": ModelAddressSchema,
+      "connection": ModelPhysicalConnectionSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ConnectPhysical>;
+
+export const AddPortSchema: z.ZodType<AddPort> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("add_port"),
+      "graph": ModelAddressSchema,
+      "direction": z.union([z.literal("input"), z.literal("output"), z.literal("physical")]),
+      "port": z.union([SignalInputSchema, SignalOutputSchema, PhysicalPortSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<AddPort>;
+
+export const RemovePortSchema: z.ZodType<RemovePort> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("remove_port"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<RemovePort>;
+
+export const RenameElementSchema: z.ZodType<RenameElement> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("rename"),
+      "address": ModelAddressSchema,
+      "name": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<RenameElement>;
+
+export const MovePortSchema: z.ZodType<MovePort> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("move_port"),
+      "address": ModelAddressSchema,
+      "index": z.number().int().safe().gte(0),
+    })
+    .strict()
+) as unknown as z.ZodType<MovePort>;
+
+export const SetFieldSchema: z.ZodType<SetField> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("set_field"),
+      "address": ModelAddressSchema,
+      "value": jsonValueSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<SetField>;
+
+export const BringSignalInSchema: z.ZodType<BringSignalIn> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("bring_signal_in"),
+      "source_graph": ModelAddressSchema,
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+      "destination": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<BringSignalIn>;
+
+export const ModelClipboardSchema: z.ZodType<ModelClipboard> = z.lazy(() =>
+  z
+    .object({
+      "positions": z.record(z.string(), ModelPositionSchema).optional(),
+      "flipped": z.record(z.string(), z.boolean()).optional(),
+      "collapsed": z.record(z.string(), z.boolean()).optional(),
+      "waypoints": z.record(z.string(), z.array(ModelPositionSchema)).optional(),
+      "components": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), z.union([LeafComponentSchema, CompositeComponentSchema])),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema),
+      "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelClipboard>;
+
+export const CopyComponentsSchema: z.ZodType<CopyComponents> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("copy"),
+    })
+    .strict()
+) as unknown as z.ZodType<CopyComponents>;
+
+export const CutComponentsSchema: z.ZodType<CutComponents> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("cut"),
+    })
+    .strict()
+) as unknown as z.ZodType<CutComponents>;
+
+export const DuplicateComponentsSchema: z.ZodType<DuplicateComponents> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("duplicate"),
+    })
+    .strict()
+) as unknown as z.ZodType<DuplicateComponents>;
+
+export const EvaluateAttachmentAxisSchema: z.ZodType<EvaluateAttachmentAxis> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("axis_value"),
+      "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentAxis>;
+
+export const EvaluateAttachmentEditSchema: z.ZodType<EvaluateAttachmentEdit> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "changed": ModelAddressSchema,
+      "file": StudioProjectFilePatchSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentEdit>;
+
+export const EvaluateAttachmentReadRequestSchema: z.ZodType<EvaluateAttachmentReadRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema,
+      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentReadRequest>;
+
+export const EvaluateAttachmentRequestSchema: z.ZodType<EvaluateAttachmentRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema,
+      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]),
+      "difference": z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentRequest>;
+
+export const EvaluateAttachmentRowsSchema: z.ZodType<EvaluateAttachmentRows> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("rows"),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentRows>;
+
+export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "editable": z.boolean(),
+      "records": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
+      "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
+      "resolved_model": ModelDocumentSchema.nullable().optional(),
+      "source": StudioEvaluateValueSourceSchema.nullable().optional(),
+      "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentState>;
+
+export const StudioEvaluateValueSourceSchema: z.ZodType<StudioEvaluateValueSource> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("trained"), z.literal("evaluate")]),
+      "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioEvaluateValueSource>;
+
+export const EvaluateAttachmentStepSchema: z.ZodType<EvaluateAttachmentStep> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("step"),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentStep>;
+
+export const EvaluateAttachmentVariantSchema: z.ZodType<EvaluateAttachmentVariant> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("variant"),
+      "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<EvaluateAttachmentVariant>;
+
+export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("add"),
+      "owner": ModelAddressSchema,
+      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.owner.element.kind !== "wire" && value.owner.element.kind !== "port") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Expected a wire or port owner",
+        });
+      }
+    })
+) as unknown as z.ZodType<AddModelAttachment>;
+
+export const ChangeModelAttachmentSchema: z.ZodType<ChangeModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "op": z.literal("change"),
+      "attachment": z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema]),
+      "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.address.element.kind !== "attachment") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Expected an attachment address",
+        });
+      }
+      if (value.address.element.kind === "attachment" && value.attachment.id !== value.address.element.id) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A replacement must retain the addressed attachment ID",
+        });
+      }
+    })
+) as unknown as z.ZodType<ChangeModelAttachment>;
+
+export const RemoveModelAttachmentSchema: z.ZodType<RemoveModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "op": z.literal("remove"),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.address.element.kind !== "attachment") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Expected an attachment address",
+        });
+      }
+    })
+) as unknown as z.ZodType<RemoveModelAttachment>;
+
+export const PasteComponentsSchema: z.ZodType<PasteComponents> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("paste"),
+      "graph": ModelAddressSchema,
+      "clipboard": ModelClipboardSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<PasteComponents>;
+
+export const PlaceComponentSchema: z.ZodType<PlaceComponent> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "position": ModelPositionSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<PlaceComponent>;
+
+export const MoveComponentsSchema: z.ZodType<MoveComponents> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("move_components"),
+      "placements": z.array(PlaceComponentSchema).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<MoveComponents>;
+
+export const CollapseGraphSchema: z.ZodType<CollapseGraph> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("collapse_graph"),
+      "graph": ModelAddressSchema,
+      "collapsed": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<CollapseGraph>;
+
+export const FlipComponentSchema: z.ZodType<FlipComponent> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("flip_component"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<FlipComponent>;
+
+export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("insert_component"),
+      "address": ModelAddressSchema,
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "input_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "output_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+      "position": ModelPositionSchema,
+      "flipped": z.boolean().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<InsertComponentOnWire>;
+
+export const MoveWireAttachmentSchema: z.ZodType<MoveWireAttachment> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("move_wire_attachment"),
+      "address": ModelAddressSchema,
+      "destination": ModelAddressSchema,
+      "after": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<MoveWireAttachment>;
+
+export const RouteWireSchema: z.ZodType<RouteWire> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("route_wire"),
+      "address": ModelAddressSchema,
+      "waypoints": z.array(ModelPositionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<RouteWire>;
+
+export const SetModelAttachmentSchema: z.ZodType<SetModelAttachment> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("set_attachment"),
+      "difference": z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<SetModelAttachment>;
+
+export const GroupComponentsSchema: z.ZodType<GroupComponents> = z.lazy(() =>
+  z
+    .object({
+      "selection": z.array(ModelAddressSchema).min(1),
+      "op": z.literal("group"),
+      "name": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<GroupComponents>;
+
+export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("ungroup"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<UngroupComposite>;
+
+export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
+  z
+    .object({
+      "operation": z.union([AddComponentSchema, MoveComponentsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditCommand>;
+
+export const ModelEditProblemSchema: z.ZodType<ModelEditProblem> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "detail": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditProblem>;
+
+export const ModelEditRequestSchema: z.ZodType<ModelEditRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "presentation_revision": z.unknown(),
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "command": ModelEditCommandSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditRequest>;
+
+export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
+  z
+    .object({
+      "status": z.literal("applied"),
+      "snapshot": StudioProjectSnapshotSchema,
+      "changed": z.array(ModelAddressSchema),
+      "clipboard": ModelClipboardSchema.nullable().optional(),
+      "undo_token": z.unknown().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditApplied>;
+
+export const ModelEditRefusedSchema: z.ZodType<ModelEditRefused> = z.lazy(() =>
+  z
+    .object({
+      "status": z.literal("refused"),
+      "problem": ModelEditProblemSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditRefused>;
+
+export const ModelEditResponseSchema: z.ZodType<ModelEditResponse> = z.lazy(() =>
+  z
+    .object({
+      "result": z.union([ModelEditAppliedSchema, ModelEditRefusedSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditResponse>;
+
+export const ModelUndoRequestSchema: z.ZodType<ModelUndoRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "presentation_revision": z.unknown(),
+      "token": z.unknown(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelUndoRequest>;
+
+export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReviewRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "graph": ModelAddressSchema,
+      "source": z.union([z.union([ComponentPortEndSchema, InputBoundaryEndSchema]), TaskSignalSourceSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionReviewRequest>;
+
+export const TaskSignalSourceSchema: z.ZodType<TaskSignalSource> = z.lazy(() =>
+  z
+    .object({
+      "owner": z.literal("task"),
+      "run": StudioSavedTrainKeySchema,
+      "signal": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskSignalSource>;
+
+export const ModelConnectionVerdictSchema: z.ZodType<ModelConnectionVerdict> = z.lazy(() =>
+  z
+    .object({
+      "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "reason": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionVerdict>;
+
+export const ModelLibraryConnectionSchema: z.ZodType<ModelLibraryConnection> = z.lazy(() =>
+  z
+    .object({
+      "component": z.string(),
+      "target_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelLibraryConnection>;
+
+export const ModelConnectionReviewSchema: z.ZodType<ModelConnectionReview> = z.lazy(() =>
+  z
+    .object({
+      "targets": z.array(ModelConnectionVerdictSchema),
+      "library": z.array(ModelLibraryConnectionSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelConnectionReview>;
+
+export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "type": SignalTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelPortProjection>;
+
+export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
+  z
+    .object({
+      "ports": z.array(ModelPortProjectionSchema).optional(),
+      "task_signals": z.array(ModelTaskSignalSchema).optional(),
+      "task_inputs": z.array(ModelAddressSchema).optional(),
+      "objective_ports": z.array(ModelAddressSchema).optional(),
+      "resolved_model": ModelDocumentSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelProjection>;
+
+export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema,
+      "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelProjectionRequest>;
+
+export const ModelTaskSignalSchema: z.ZodType<ModelTaskSignal> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "label": z.string(),
+      "type": SignalTypeSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelTaskSignal>;
+
+export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "owner": ModelAddressSchema,
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
+      "evaluate_scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]).nullable().optional(),
+      "address": ModelAddressSchema.nullable().optional(),
+      "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "rows": z.array(z.string()).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldRequest>;
+
+export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(() =>
+  z
+    .object({
+      "fields": z.array(ModelFieldViewSchema).optional(),
+      "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "problems": z.array(ProblemSchema).optional(),
+      "command": ModelEditCommandSchema.nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldResponse>;
+
+export const FieldKindEditSchema: z.ZodType<FieldKindEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.union([z.literal("to_sweep"), z.literal("to_value"), z.literal("to_list")]),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldKindEdit>;
+
+export const FieldNameEditSchema: z.ZodType<FieldNameEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("name_value"),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "label": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldNameEdit>;
+
+export const FieldTextEditSchema: z.ZodType<FieldTextEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("text"),
+      "text": z.string().max(8192),
+      "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "seed": z.number().int().safe().gte(0).lte(4294967295).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldTextEdit>;
+
+export const StudioSweepValueSchema: z.ZodType<StudioSweepValue> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "label": z.string().nullable(),
+      "value": z.union([z.number().int().safe(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSweepValue>;
+
+export const StudioSweepListSchema: z.ZodType<StudioSweepList> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("list"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "values": z.array(StudioSweepValueSchema),
+      "editable": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSweepList>;
+
+export const StudioSweepRangeSchema: z.ZodType<StudioSweepRange> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("range"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rule": RangeValuesSchema,
+      "can_list": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSweepRange>;
+
+export const StudioSweepSamplerSchema: z.ZodType<StudioSweepSampler> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("sampler"),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rule": SampleValuesSchema,
+      "can_list": z.boolean(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSweepSampler>;
+
+export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioFieldView>;
+
+export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+      "address": ModelAddressSchema,
+      "sources": z.array(StudioPlanReviewSourceSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelFieldView>;
+
+export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
+  z
+    .object({
+      "label": z.string(),
+      "text": z.string(),
+      "effective": z.string().nullable().optional(),
+      "unit": z.string().nullable().optional(),
+      "site": SiteProjectionSchema,
+      "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+      "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "can_sweep": z.boolean().optional(),
+      "can_change_axis": z.boolean().optional(),
+      "members": z.array(StudioSweepValueSchema).optional(),
+      "id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldView>;
+
+export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.unknown(),
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
+      "field": z.string().nullable().optional(),
+      "rows": z.array(z.string()).optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldRequest>;
+
+export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(() =>
+  z
+    .object({
+      "fields": z.array(TrainFieldViewSchema).optional(),
+      "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "dependencies": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "problems": z.array(ProblemSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainFieldResponse>;
+
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
     .object({
@@ -2265,7 +6135,7 @@ export const ComponentSpecSchema: z.ZodType<ComponentSpec> = z.lazy(() =>
     })
     .strict()
     .superRefine((value, ctx) => {
-      if (Object.values(value.params).some(invalidTypedParamEnvelope)) {
+      if (Object.values(value.params ?? {}).some(invalidTypedParamEnvelope)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "typed component parameter envelopes must satisfy their declared schema",
@@ -2441,7 +6311,7 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
           message: "Wrap geometry overlays require a planar multibody graph",
         });
       }
-      if (Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))) {
+      if (Object.values(value.nodes ?? {}).some((node) => Object.values(node.params ?? {}).some(containsArrayValueEnvelope))) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "AcausalGraphSpec does not support component-param array value schemas",
@@ -2464,6 +6334,7 @@ export const ParameterConstraintSpecSchema: z.ZodType<ParameterConstraintSpec> =
 export const WireSpecSchema: z.ZodType<WireSpec> = z.lazy(() =>
   z
     .object({
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
       "source_node": z.string(),
       "source_port": z.string(),
       "target_node": z.string(),
@@ -2742,6 +6613,7 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
     .object({
       "schema_id": z.literal("feedbax.spec.graph").optional(),
       "schema_version": z.literal("feedbax.spec.graph.v6").optional(),
+      "step_seconds": z.number().finite().gt(0).nullable().optional(),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "wires": z.array(WireSpecSchema).optional(),
       "additive_channel_adapters": z.array(AdditiveGraphChannelAdapterSpecSchema).optional(),
@@ -2760,6 +6632,12 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
     })
     .strict()
     .superRefine((value, ctx) => {
+      if (hasDuplicate((value.wires ?? []).flatMap((wire) => wire.id == null ? [] : [wire.id]))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Wire IDs must be unique within a graph",
+        });
+      }
       if (value.subgraphs != null && Object.values(value.subgraphs).some((subgraph) => subgraph.schema_id !== 'feedbax.spec.graph' && subgraph.schema_id !== 'feedbax.spec.acausal_graph')) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -2854,52 +6732,6 @@ export const AnalysisPageSpecSchema: z.ZodType<AnalysisPageSpec> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<AnalysisPageSpec>;
-
-export const AnalysisCanvasPositionSchema: z.ZodType<AnalysisCanvasPosition> = z.lazy(() =>
-  z
-    .object({
-      "x": z.number().finite().gte(-10000000).lte(10000000),
-      "y": z.number().finite().gte(-10000000).lte(10000000),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasPosition>;
-
-export const AnalysisCanvasViewportSchema: z.ZodType<AnalysisCanvasViewport> = z.lazy(() =>
-  z
-    .object({
-      "x": z.number().finite().gte(-10000000).lte(10000000).optional(),
-      "y": z.number().finite().gte(-10000000).lte(10000000).optional(),
-      "zoom": z.number().finite().gte(0.1).lte(2.5).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasViewport>;
-
-export const AnalysisCanvasPageLayoutSchema: z.ZodType<AnalysisCanvasPageLayout> = z.lazy(() =>
-  z
-    .object({
-      "node_positions": z.record(z.string(), AnalysisCanvasPositionSchema).optional(),
-      "viewport": AnalysisCanvasViewportSchema.optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasPageLayout>;
-
-export const AnalysisCanvasStageLayoutSchema: z.ZodType<AnalysisCanvasStageLayout> = z.lazy(() =>
-  z
-    .object({
-      "pages": z.record(z.string(), AnalysisCanvasPageLayoutSchema).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasStageLayout>;
-
-export const AnalysisCanvasLayoutDocumentSchema: z.ZodType<AnalysisCanvasLayoutDocument> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.analysis_canvas_layout"),
-      "schema_version": z.literal("feedbax.spec.studio.analysis_canvas_layout.v1"),
-      "stages": z.record(z.string(), AnalysisCanvasStageLayoutSchema).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<AnalysisCanvasLayoutDocument>;
 
 export const StudioValidationIssueSchema: z.ZodType<StudioValidationIssue> = z.lazy(() =>
   z
@@ -3344,147 +7176,6 @@ export const StudioBiomechanicsSpecSchema: z.ZodType<StudioBiomechanicsSpec> = z
     })
     .strict()
 ) as unknown as z.ZodType<StudioBiomechanicsSpec>;
-
-export const StudioScenarioSpecSchema: z.ZodType<StudioScenarioSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "schema_version": z.literal("feedbax.spec.studio.scenario.v3").optional(),
-      "label": z.string(),
-      "stage_id": z.string().nullable().optional(),
-      "parent_scenario_id": z.string().nullable().optional(),
-      "training_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "task_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "task_binding_spec": StudioTaskBindingSpecSchema.nullable().optional(),
-      "objective_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "probe_specs": z.array(RetainedObservableSpecSchema).optional(),
-      "temporal_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "biomechanics_spec": StudioBiomechanicsSpecSchema.nullable().optional(),
-      "analysis_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "report_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "validation": StudioValidationStateSchema.optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.task_spec != null && !TaskSpecSchema.safeParse(value.task_spec).success) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Studio scenario task_spec must satisfy the generated TaskSpec contract",
-        });
-      }
-    })
-) as unknown as z.ZodType<StudioScenarioSpec>;
-
-export const StudioStageSpecSchema: z.ZodType<StudioStageSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "schema_id": z.literal("feedbax.spec.studio.stage").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.stage.v2").optional(),
-      "kind": z.union([z.literal("train"), z.literal("eval"), z.literal("analysis"), z.literal("report"), z.literal("import"), z.literal("compare"), z.literal("export"), z.literal("protocol")]),
-      "label": z.string(),
-      "status": z.union([z.literal("draft"), z.literal("invalid"), z.literal("ready"), z.literal("running"), z.literal("completed"), z.literal("failed"), z.literal("cancelled")]).optional(),
-      "scenario_id": z.string().nullable().optional(),
-      "input_collections": z.array(StudioCollectionRefSchema).optional(),
-      "output_collections": z.array(StudioCollectionRefSchema).optional(),
-      "manifest_refs": z.array(StudioManifestRefSchema).optional(),
-      "artifact_refs": z.array(StudioArtifactRefSchema).optional(),
-      "execution_spec": z.record(z.string(), z.unknown()).nullable().optional(),
-      "selection_spec": z.record(z.string(), z.unknown()).optional(),
-      "validation": StudioValidationStateSchema.optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioStageSpec>;
-
-export const StudioWorkspaceSpecSchema: z.ZodType<StudioWorkspaceSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "schema_id": z.literal("feedbax.spec.studio.workspace").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.workspace.v2").optional(),
-      "label": z.string(),
-      "active_stage_id": z.string().nullable().optional(),
-      "stages": z.array(StudioStageSpecSchema).optional(),
-      "scenarios": z.record(z.string(), StudioScenarioSpecSchema).optional(),
-      "collections": z.array(StudioCollectionRefSchema).optional(),
-      "manifest_refs": z.array(StudioManifestRefSchema).optional(),
-      "artifact_refs": z.array(StudioArtifactRefSchema).optional(),
-      "validation": StudioValidationStateSchema.optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioWorkspaceSpec>;
-
-export const SemanticAnchorSchema: z.ZodType<SemanticAnchor> = z.lazy(() =>
-  z
-    .object({
-      "semantic_document_sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-      "authored_path": z.string().regex(new RegExp("^/")),
-    })
-    .strict()
-) as unknown as z.ZodType<SemanticAnchor>;
-
-export const WorkspaceDocumentSchema: z.ZodType<WorkspaceDocument> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.workspace_document").optional(),
-      "schema_version": z.literal("1").optional(),
-      "semantic_root": SemanticAnchorSchema,
-      "graph_ui_state": GraphUIStateSchema.optional(),
-      "workspace_ui_state": z.record(z.string(), z.unknown()).optional(),
-      "stage_ui_state": z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
-      "scenario_ui_state": z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
-      "analysis_pages": z.array(AnalysisPageSpecSchema).optional(),
-      "active_analysis_page_id": z.string().nullable().optional(),
-      "analysis_canvas_layout": AnalysisCanvasLayoutDocumentSchema.optional(),
-      "semantic_anchors": z.record(z.string(), SemanticAnchorSchema).optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.semantic_root.authored_path !== '/graph') {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "WorkspaceDocument semantic_root must target /graph",
-        });
-      }
-      if (Object.values(value.semantic_anchors).some((anchor) => anchor.semantic_document_sha256 !== value.semantic_root.semantic_document_sha256)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "WorkspaceDocument semantic anchors must target the semantic root revision",
-        });
-      }
-    })
-) as unknown as z.ZodType<WorkspaceDocument>;
-
-export const StudioPersistenceDocumentSchema: z.ZodType<StudioPersistenceDocument> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.persistence_document"),
-      "schema_version": z.literal("feedbax.spec.studio.persistence_document.v1"),
-      "graph": GraphSpecSchema.nullable().optional(),
-      "workspace_document": WorkspaceDocumentSchema.nullable().optional(),
-      "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
-      "expected_save_revision": z.number().int().safe().gte(0).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioPersistenceDocument>;
-
-export const GraphProjectSchema: z.ZodType<GraphProject> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.graph_project").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.graph_project.v1").optional(),
-      "metadata": GraphMetadataSchema,
-      "graph": GraphSpecSchema,
-      "workspace_document": WorkspaceDocumentSchema,
-      "demo_training_data": z.unknown().nullable().optional(),
-      "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
-      "compile_reports": z.record(z.string(), DomainCompileReportSchema).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphProject>;
 
 export const ValidationErrorSchema: z.ZodType<ValidationError> = z.lazy(() =>
   z
@@ -3938,6 +7629,66 @@ export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DomainDiagnostic>;
 
+export const ScenePlanarLinkSchema: z.ZodType<ScenePlanarLink> = z.lazy(() =>
+  z
+    .object({
+      "body_id": z.string(),
+      "joint_id": z.string(),
+      "parent_frame": z.string(),
+      "child_frame": z.string(),
+      "qpos_index": z.number().int().safe().gte(0),
+      "parent_pivot": z.tuple([z.number().finite(), z.number().finite()]),
+      "body_pivot": z.tuple([z.number().finite(), z.number().finite()]),
+      "reference_angle": z.number().finite(),
+      "length": z.number().finite().gt(0),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePlanarLink>;
+
+export const ScenePlanarMuscleSchema: z.ZodType<ScenePlanarMuscle> = z.lazy(() =>
+  z
+    .object({
+      "node_id": z.string(),
+      "points": z.array(RepresentationMusclePathPointSpecSchema).min(2).nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePlanarMuscle>;
+
+export const ScenePlanarModelSchema: z.ZodType<ScenePlanarModel> = z.lazy(() =>
+  z
+    .object({
+      "model_identity": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "world_frame": z.string(),
+      "links": z.array(ScenePlanarLinkSchema).min(1),
+      "reference_qpos": z.array(z.number().finite()).min(1),
+      "muscles": z.array(ScenePlanarMuscleSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePlanarModel>;
+
+export const StudioPlanarSceneRequestSchema: z.ZodType<StudioPlanarSceneRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "node_path": z.array(z.string()).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanarSceneRequest>;
+
+export const StudioPlanarSceneResponseSchema: z.ZodType<StudioPlanarSceneResponse> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "node_path": z.array(z.string()).min(1),
+      "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "model": ScenePlanarModelSchema.nullable(),
+      "diagnostics": z.array(DomainDiagnosticSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPlanarSceneResponse>;
+
 export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.lazy(() =>
   z
     .object({
@@ -3947,6 +7698,17 @@ export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.l
     })
     .strict()
 ) as unknown as z.ZodType<DomainRegistryPayload>;
+
+export const StudioRenderFailureSchema: z.ZodType<StudioRenderFailure> = z.lazy(() =>
+  z
+    .object({
+      "region": z.string().min(1).max(80),
+      "error_type": z.string().min(1).max(80),
+      "detail": z.string().max(2048),
+      "component_stack": z.string().max(4096),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRenderFailure>;
 
 export const DomainCompileReportSchema: z.ZodType<DomainCompileReport> = z.lazy(() =>
   z
@@ -4199,6 +7961,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "supported_revisions": z.array(z.number().int().safe().gt(0)).optional(),
       "migrations": z.array(ComponentMigrationInfoSchema).optional(),
       "trainable_by_default": z.boolean().optional(),
+      "reset_outputs": z.array(z.string()).optional(),
       "representation": RepresentationSpecSchema.nullable().optional(),
     })
     .strict()
@@ -4262,75 +8025,6 @@ export const OptimizerSpecSchema: z.ZodType<OptimizerSpec> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<OptimizerSpec>;
 
-export const TimeAggregationSpecSchema: z.ZodType<TimeAggregationSpec> = z.lazy(() =>
-  z
-    .object({
-      "mode": z.union([z.literal("all"), z.literal("mean"), z.literal("sum"), z.literal("final"), z.literal("range"), z.literal("segment"), z.literal("custom")]).optional(),
-      "start": z.number().int().safe().nullable().optional(),
-      "end": z.number().int().safe().nullable().optional(),
-      "segment_name": z.string().nullable().optional(),
-      "time_idxs": z.array(z.number().int().safe()).nullable().optional(),
-      "discount": z.union([z.literal("none"), z.literal("power"), z.literal("linear")]).nullable().optional(),
-      "discount_exp": z.number().finite().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TimeAggregationSpec>;
-
-export const LossTermSpecSchema: z.ZodType<LossTermSpec> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.training.loss_term").optional(),
-      "schema_version": z.string().optional(),
-      "type": z.string(),
-      "label": z.string(),
-      "weight": z.number().finite().optional(),
-      "selector": z.string().nullable().optional(),
-      "target_selector": z.string().nullable().optional(),
-      "target_value": z.unknown().nullable().optional(),
-      "retention": RetentionPolicySpecSchema.nullable().optional(),
-      "norm": z.union([z.literal("squared_l2"), z.literal("l2"), z.literal("l1"), z.literal("huber")]).nullable().optional(),
-      "matrix": z.unknown().nullable().optional(),
-      "matrix_kind": z.union([z.literal("dense"), z.literal("diagonal")]).nullable().optional(),
-      "time_agg": TimeAggregationSpecSchema.nullable().optional(),
-      "children": z.record(z.string(), LossTermSpecSchema).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<LossTermSpec>;
-
-export const EarlyStoppingSpecSchema: z.ZodType<EarlyStoppingSpec> = z.lazy(() =>
-  z
-    .object({
-      "metric": z.string(),
-      "patience": z.number().int().safe(),
-      "min_delta": z.number().finite(),
-    })
-    .strict()
-) as unknown as z.ZodType<EarlyStoppingSpec>;
-
-export const TrainingSpecSchema: z.ZodType<TrainingSpec> = z.lazy(() =>
-  z
-    .object({
-      "optimizer": OptimizerSpecSchema,
-      "loss": LossTermSpecSchema,
-      "n_batches": z.number().int().safe(),
-      "batch_size": z.number().int().safe(),
-      "n_epochs": z.number().int().safe().nullable().optional(),
-      "checkpoint_interval": z.number().int().safe().nullable().optional(),
-      "early_stopping": EarlyStoppingSpecSchema.nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingSpec>;
-
-export const TaskSpecSchema: z.ZodType<TaskSpec> = z.lazy(() =>
-  z
-    .object({
-      "type": z.string(),
-      "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
-      "timeline": StudioTaskTimelineSpecSchema.nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TaskSpec>;
-
 export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
   z
     .object({
@@ -4350,9 +8044,11 @@ export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
 export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
   z
     .object({
+      "epoch": z.string(),
       "label": z.string(),
-      "step": z.number().int().safe(),
-      "kind": z.string(),
+      "start": z.number().int().safe(),
+      "end": z.number().int().safe(),
+      "outcome": z.number().int().safe(),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
@@ -4361,12 +8057,12 @@ export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
   z
     .object({
       "id": z.string(),
-      "index": z.number().int().safe(),
-      "start": z.array(z.number().finite()),
-      "goal": z.array(z.number().finite()),
-      "n_steps": z.number().int().safe(),
-      "timeline": z.array(TaskTimelineCueSchema).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
+      "inits": z.record(z.string(), z.unknown()),
+      "inputs": z.record(z.string(), z.unknown()),
+      "present": z.record(z.string(), z.unknown()),
+      "variables": z.record(z.string(), z.unknown()),
+      "variable_defined": z.record(z.string(), z.unknown()),
+      "timeline": z.array(TaskTimelineCueSchema),
     })
     .strict()
 ) as unknown as z.ZodType<SampledTaskTrial>;
@@ -4374,20 +8070,32 @@ export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "task_spec": TaskSpecSchema,
+      "model_name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "model": ModelDocumentSchema,
+      "task": TaskDocumentSchema.nullable().optional(),
+      "python_task": PythonTaskSelectionSchema.nullable().optional(),
+      "input_overrides": z.record(z.string(), z.string()).optional(),
       "seed": z.number().int().safe().optional(),
-      "count": z.number().int().safe().optional(),
+      "count": z.number().int().safe().gte(1).lte(64).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if ((value.task == null) === (value.python_task == null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Select one Task document or registered Python task.",
+        });
+      }
+    })
 ) as unknown as z.ZodType<TaskTrialSampleRequest>;
 
 export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> = z.lazy(() =>
   z
     .object({
       "schema_version": z.string().optional(),
-      "task_type": z.string(),
+      "task": z.string(),
       "seed": z.number().int().safe(),
-      "count": z.number().int().safe(),
+      "n_steps": z.number().int().safe(),
       "trials": z.array(SampledTaskTrialSchema),
     })
     .strict()
@@ -4475,19 +8183,6 @@ export const SelectionPreviewSchema: z.ZodType<SelectionPreview> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<SelectionPreview>;
 
-export const SelectionRefreshDiffSchema: z.ZodType<SelectionRefreshDiff> = z.lazy(() =>
-  z
-    .object({
-      "frozen_refs": z.array(ParentRefSchema),
-      "current_refs": z.array(ParentRefSchema),
-      "new_refs": z.array(ParentRefSchema),
-      "gone_refs": z.array(ParentRefSchema),
-      "unchanged_refs": z.array(ParentRefSchema),
-      "reprocess_counts": z.record(z.string(), z.number().int().safe()),
-    })
-    .strict()
-) as unknown as z.ZodType<SelectionRefreshDiff>;
-
 export const SuccessPayloadSchema: z.ZodType<SuccessPayload> = z.lazy(() =>
   z
     .object({
@@ -4507,135 +8202,6 @@ export const SuccessResponseSchema: z.ZodType<SuccessResponse> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<SuccessResponse>;
-
-export const GraphListItemSchema: z.ZodType<GraphListItem> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "id": z.string(),
-      "metadata": GraphMetadataSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphListItem>;
-
-export const GraphListPayloadSchema: z.ZodType<GraphListPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "graphs": z.array(GraphListItemSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphListPayload>;
-
-export const GraphListResponseSchema: z.ZodType<GraphListResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphListPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphListResponse>;
-
-export const GraphCreatePayloadSchema: z.ZodType<GraphCreatePayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "id": z.string(),
-      "metadata": GraphMetadataSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphCreatePayload>;
-
-export const GraphCreateResponseSchema: z.ZodType<GraphCreateResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphCreatePayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphCreateResponse>;
-
-export const GraphUpdatePayloadSchema: z.ZodType<GraphUpdatePayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "success": z.boolean(),
-      "metadata": GraphMetadataSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphUpdatePayload>;
-
-export const GraphUpdateResponseSchema: z.ZodType<GraphUpdateResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphUpdatePayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphUpdateResponse>;
-
-export const GraphDetailPayloadSchema: z.ZodType<GraphDetailPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "graph": GraphSpecSchema,
-      "workspace_document": WorkspaceDocumentSchema,
-      "demo_training_data": z.unknown().nullable().optional(),
-      "metadata": GraphMetadataSchema.nullable().optional(),
-      "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
-      "compile_reports": z.record(z.string(), DomainCompileReportSchema).nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphDetailPayload>;
-
-export const GraphDetailResponseSchema: z.ZodType<GraphDetailResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphDetailPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphDetailResponse>;
-
-export const GraphValidationResponseSchema: z.ZodType<GraphValidationResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": z.array(DomainDiagnosticSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphValidationResponse>;
-
-export const GraphExportPayloadSchema: z.ZodType<GraphExportPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "content": z.string(),
-      "filename": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<GraphExportPayload>;
-
-export const GraphExportResponseSchema: z.ZodType<GraphExportResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": GraphExportPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<GraphExportResponse>;
 
 export const ComponentListPayloadSchema: z.ZodType<ComponentListPayload> = z.lazy(() =>
   z
@@ -4767,89 +8333,6 @@ export const PenzaiInspectorResponseSchema: z.ZodType<PenzaiInspectorResponse> =
     })
     .strict()
 ) as unknown as z.ZodType<PenzaiInspectorResponse>;
-
-export const TrainingStartPayloadSchema: z.ZodType<TrainingStartPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStartPayload>;
-
-export const TrainingStartResponseSchema: z.ZodType<TrainingStartResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": TrainingStartPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStartResponse>;
-
-export const TrainingStatusPayloadSchema: z.ZodType<TrainingStatusPayload> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "status": z.record(z.string(), z.unknown()),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStatusPayload>;
-
-export const TrainingStatusResponseSchema: z.ZodType<TrainingStatusResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": TrainingStatusPayloadSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStatusResponse>;
-
-export const WorkerConnectResponseSchema: z.ZodType<WorkerConnectResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "ok": z.boolean(),
-      "url": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkerConnectResponse>;
-
-export const WorkerConnectEnvelopeSchema: z.ZodType<WorkerConnectEnvelope> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": WorkerConnectResponseSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<WorkerConnectEnvelope>;
-
-export const WorkerStatusResponseSchema: z.ZodType<WorkerStatusResponse> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "mode": z.union([z.literal("local"), z.literal("remote")]),
-      "url": z.string().nullable().optional(),
-      "connected": z.boolean(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkerStatusResponse>;
-
-export const WorkerStatusEnvelopeSchema: z.ZodType<WorkerStatusEnvelope> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "data": WorkerStatusResponseSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<WorkerStatusEnvelope>;
 
 export const AnalysisClassInfoSchema: z.ZodType<AnalysisClassInfo> = z.lazy(() =>
   z
@@ -5073,344 +8556,6 @@ export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayloa
     .strict()
 ) as unknown as z.ZodType<TrainingTrajectoryPayload>;
 
-export const TrainingProgressEventSchema: z.ZodType<TrainingProgressEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "type": z.literal("training_progress"),
-      "total_batches": z.number().int().safe(),
-      "loss": z.number().finite(),
-      "loss_terms": z.record(z.string(), z.number().finite()).optional(),
-      "grad_norm": z.number().finite().optional(),
-      "step_time_ms": z.number().finite().optional(),
-      "metrics": z.record(z.string(), z.number().finite()).optional(),
-      "status": z.string().optional(),
-      "execution": z.string().nullable().optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.batch == null && value.program_step == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A training event requires a completed batch count or a program step",
-        });
-      }
-    })
-) as unknown as z.ZodType<TrainingProgressEvent>;
-
-export const TrainingLogEventSchema: z.ZodType<TrainingLogEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "type": z.literal("training_log"),
-      "level": z.union([z.literal("info"), z.literal("warning"), z.literal("error")]).optional(),
-      "message": z.string(),
-      "manifest_path": z.string().nullable().optional(),
-      "manifest_id": z.string().nullable().optional(),
-      "execution": z.string().nullable().optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.batch == null && value.program_step == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A training event requires a completed batch count or a program step",
-        });
-      }
-    })
-) as unknown as z.ZodType<TrainingLogEvent>;
-
-export const TrainingTrajectoryEventSchema: z.ZodType<TrainingTrajectoryEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "type": z.literal("training_trajectory"),
-      "trajectory": TrainingTrajectoryPayloadSchema,
-      "execution": z.string().nullable().optional(),
-    })
-    .strict()
-    .superRefine((value, ctx) => {
-      if (value.batch == null && value.program_step == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "A training event requires a completed batch count or a program step",
-        });
-      }
-    })
-) as unknown as z.ZodType<TrainingTrajectoryEvent>;
-
-export const TrainingCompleteEventSchema: z.ZodType<TrainingCompleteEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "loss": z.number().finite().nullable().optional(),
-      "manifest_path": z.string().nullable().optional(),
-      "manifest_id": z.string().nullable().optional(),
-      "execution": z.string().nullable().optional(),
-      "type": z.literal("training_complete"),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingCompleteEvent>;
-
-export const TrainingStoppedEventSchema: z.ZodType<TrainingStoppedEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "batch": z.number().int().safe().gte(0),
-      "program_step": z.number().int().safe().gte(0).nullable().optional(),
-      "loss": z.number().finite().nullable().optional(),
-      "manifest_path": z.string().nullable().optional(),
-      "manifest_id": z.string().nullable().optional(),
-      "execution": z.string().nullable().optional(),
-      "type": z.literal("training_stopped"),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingStoppedEvent>;
-
-export const TrainingErrorEventSchema: z.ZodType<TrainingErrorEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "type": z.literal("training_error"),
-      "batch": z.number().int().safe().gte(0).nullable().optional(),
-      "error": z.string(),
-      "diagnostics": z.array(DomainDiagnosticSchema).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingErrorEvent>;
-
-export const TrainingResyncEventSchema: z.ZodType<TrainingResyncEvent> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
-      "job_id": z.string(),
-      "seq": z.number().int().safe(),
-      "emitted_at_ms": z.number().int().safe(),
-      "worker_seq": z.number().int().safe().nullable().optional(),
-      "type": z.literal("training_resync"),
-      "expected_worker_seq": z.number().int().safe().nullable().optional(),
-      "observed_worker_seq": z.number().int().safe().nullable().optional(),
-      "missed_events": z.number().int().safe().optional(),
-      "reason": z.union([z.literal("resumed"), z.literal("gap")]),
-      "message": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingResyncEvent>;
-
-export const ProbeResponseSchema: z.ZodType<ProbeResponse> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "label": z.string(),
-      "node": z.string(),
-      "timing": z.string(),
-      "selector": z.string(),
-      "description": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<ProbeResponse>;
-
-export const ValidationErrorResponseSchema: z.ZodType<ValidationErrorResponse> = z.lazy(() =>
-  z
-    .object({
-      "path": z.array(z.string()),
-      "field": z.string(),
-      "message": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<ValidationErrorResponse>;
-
-export const ValidateLossResponseSchema: z.ZodType<ValidateLossResponse> = z.lazy(() =>
-  z
-    .object({
-      "valid": z.boolean(),
-      "errors": z.array(ValidationErrorResponseSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<ValidateLossResponse>;
-
-export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "name": z.string(),
-      "created_at": z.string(),
-      "status": z.string(),
-      "hyperparams": z.record(z.string(), z.unknown()),
-      "metrics": z.record(z.string(), z.unknown()).optional(),
-      "uri": z.string().nullable().optional(),
-      "stage_id": z.string().nullable().optional(),
-      "scenario_id": z.string().nullable().optional(),
-      "planned": z.boolean().optional(),
-      "checkpoint_available": z.boolean().optional(),
-      "source_issue": z.string().nullable().optional(),
-      "provenance_id": z.string().nullable().optional(),
-      "superseded_by": z.string().nullable().optional(),
-      "staging_generation": z.string().nullable().optional(),
-      "result_manifest_id": z.string().nullable().optional(),
-      "result_manifest_uri": z.string().nullable().optional(),
-      "execution_error": z.string().nullable().optional(),
-      "teardown_pending": z.boolean().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingRunInfo>;
-
-export const StudioNativeTrainingDispatchRequestSchema: z.ZodType<StudioNativeTrainingDispatchRequest> = z.lazy(() =>
-  z
-    .object({
-      "manifest_id": z.string().min(1),
-      "generation": z.string().min(1),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioNativeTrainingDispatchRequest>;
-
-export const StudioNativeTrainingDispatchAcceptedSchema: z.ZodType<StudioNativeTrainingDispatchAccepted> = z.lazy(() =>
-  z
-    .object({
-      "run_set_id": z.string(),
-      "row_id": z.string(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioNativeTrainingDispatchAccepted>;
-
-export const EvalRunInfoSchema: z.ZodType<EvalRunInfo> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "training_run_id": z.string(),
-      "name": z.string(),
-      "created_at": z.string(),
-      "status": z.string(),
-      "description": z.string().nullable().optional(),
-      "training_run_ids": z.array(z.string()).optional(),
-      "uri": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<EvalRunInfo>;
-
-export const CreateEvalRunRequestSchema: z.ZodType<CreateEvalRunRequest> = z.lazy(() =>
-  z
-    .object({
-      "training_run_id": z.string(),
-      "name": z.string(),
-      "eval_params": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<CreateEvalRunRequest>;
-
-export const TrainingRunCompareRequestSchema: z.ZodType<TrainingRunCompareRequest> = z.lazy(() =>
-  z
-    .object({
-      "run_ids": z.array(z.string()).min(2),
-      "param_fields": z.array(z.string()).max(64).optional(),
-      "metric_fields": z.array(z.string()).max(64).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingRunCompareRequest>;
-
-export const TrainingRunCompareRowSchema: z.ZodType<TrainingRunCompareRow> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "params": z.record(z.string(), z.unknown()).optional(),
-      "metrics": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingRunCompareRow>;
-
-export const TrainingRunCompareResponseSchema: z.ZodType<TrainingRunCompareResponse> = z.lazy(() =>
-  z
-    .object({
-      "rows": z.array(TrainingRunCompareRowSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<TrainingRunCompareResponse>;
-
-export const ManifestImportRequestSchema: z.ZodType<ManifestImportRequest> = z.lazy(() =>
-  z
-    .object({
-      "path": z.string(),
-      "root": z.string().nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<ManifestImportRequest>;
-
-export const ManifestImportResponseSchema: z.ZodType<ManifestImportResponse> = z.lazy(() =>
-  z
-    .object({
-      "root": z.string(),
-      "source_path": z.string(),
-      "imported_manifest_ids": z.array(z.string()).optional(),
-      "skipped_manifest_ids": z.array(z.string()).optional(),
-      "manifest_count": z.number().int().safe().optional(),
-      "artifact_count": z.number().int().safe().optional(),
-      "included_artifact_count": z.number().int().safe().optional(),
-      "external_artifact_count": z.number().int().safe().optional(),
-      "index_path": z.string().nullable().optional(),
-      "training_runs": z.array(TrainingRunInfoSchema).optional(),
-      "eval_runs": z.array(EvalRunInfoSchema).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<ManifestImportResponse>;
-
-export const SelectionPreviewRequestSchema: z.ZodType<SelectionPreviewRequest> = z.lazy(() =>
-  z
-    .object({
-      "selection_spec": SelectionSpecSchema,
-      "limit": z.number().int().safe().gte(0).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<SelectionPreviewRequest>;
-
-export const SelectionRefreshRequestSchema: z.ZodType<SelectionRefreshRequest> = z.lazy(() =>
-  z
-    .object({
-      "selection_spec": SelectionSpecSchema,
-      "failed_parent_ids": z.array(z.string()).optional(),
-      "stale_parent_ids": z.array(z.string()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<SelectionRefreshRequest>;
-
 export const DatasetInfoSchema: z.ZodType<DatasetInfo> = z.lazy(() =>
   z
     .object({
@@ -5605,16 +8750,6 @@ export const CycleAnnotationModelSchema: z.ZodType<CycleAnnotationModel> = z.laz
     .strict()
 ) as unknown as z.ZodType<CycleAnnotationModel>;
 
-export const TreescopeRequestSchema: z.ZodType<TreescopeRequest> = z.lazy(() =>
-  z
-    .object({
-      "max_depth": z.number().int().safe().gte(1).lte(50).optional(),
-      "project_cycles": z.boolean().optional(),
-      "roundtrip_mode": z.boolean().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<TreescopeRequest>;
-
 export const InlineTreescopeRequestSchema: z.ZodType<InlineTreescopeRequest> = z.lazy(() =>
   z
     .object({
@@ -5647,46 +8782,1990 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
-export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | TrainingTrajectoryEvent | TrainingCompleteEvent | TrainingStoppedEvent | TrainingErrorEvent | TrainingResyncEvent;
+export const AddModelComponentSchema: z.ZodType<AddModelComponent> = z.lazy(() =>
+  z.object({
+    "op": z.literal("add_component"),
+    "address": ModelAddressSchema,
+    "component": LeafComponentSchema,
+  }).strict()
+) as unknown as z.ZodType<AddModelComponent>;
 
-export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingStoppedEventSchema, TrainingErrorEventSchema, TrainingResyncEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
+export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
+    "operations": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), OperationElementSchema).optional(),
+    "views": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), FigureElementSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<AnalysisDocument>;
+
+export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation")]),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<AuthoredFileAddress>;
+
+export const AxisSchema: z.ZodType<Axis> = z.lazy(() =>
+  z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema, CheckpointRuleAxisSchema])
+) as unknown as z.ZodType<Axis>;
+
+export const AxisGroupSchema: z.ZodType<AxisGroup> = z.lazy(() =>
+  z.object({
+    "axes": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
+    "mode": z.union([z.literal("cross"), z.literal("zip")]),
+  }).strict()
+) as unknown as z.ZodType<AxisGroup>;
+
+export const AxisLabelsSchema: z.ZodType<AxisLabels> = z.lazy(() =>
+  z.object({
+    "x": z.union([z.string(), z.null()]).optional(),
+    "y": z.union([z.string(), z.null()]).optional(),
+    "z": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<AxisLabels>;
+
+export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
+  z.object({
+    "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "value": jsonValueSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<AxisValue>;
+
+export const BandEncodingsSchema: z.ZodType<BandEncodings> = z.lazy(() =>
+  z.object({
+    "x": z.union([NameSchema, VariableBindingSchema]),
+    "y": z.union([NameSchema, VariableBindingSchema]),
+    "lower": z.union([NameSchema, VariableBindingSchema]),
+    "upper": z.union([NameSchema, VariableBindingSchema]),
+  }).strict()
+) as unknown as z.ZodType<BandEncodings>;
+
+export const BandLayerSchema: z.ZodType<BandLayer> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("band"),
+    "encode": BandEncodingsSchema,
+    "style": BandStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<BandLayer>;
+
+export const BandStyleSchema: z.ZodType<BandStyle> = z.lazy(() =>
+  z.object({
+    "label": z.union([z.string(), z.null()]).optional(),
+    "color": z.union([z.string(), z.null()]).optional(),
+    "line_dash": z.union([z.union([z.literal("solid"), z.literal("dot"), z.literal("dash"), z.literal("longdash"), z.literal("dashdot"), z.literal("longdashdot")]), z.null()]).optional(),
+    "line_width": z.union([z.number().finite().gt(0), z.null()]).optional(),
+    "showlegend": z.union([z.boolean(), z.null()]).optional(),
+    "band_alpha": z.number().finite().min(0).max(1).optional(),
+  }).strict()
+) as unknown as z.ZodType<BandStyle>;
+
+export const BarrierCheckpointSchema: z.ZodType<BarrierCheckpoint> = z.lazy(() =>
+  z.object({
+    "barrier": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<BarrierCheckpoint>;
+
+export const BaseSchema: z.ZodType<Base> = z.lazy(() =>
+  z.union([InlineBaseSchema, DocumentReferenceSchema, StepBaseSchema, RunBaseSchema, ExternalBaseSchema])
+) as unknown as z.ZodType<Base>;
+
+export const BatchCheckpointSchema: z.ZodType<BatchCheckpoint> = z.lazy(() =>
+  z.object({
+    "at": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<BatchCheckpoint>;
+
+export const BestSchema: z.ZodType<Best> = z.lazy(() =>
+  z.object({
+    "by": z.string().min(1),
+    "k": z.number().int().safe().min(1),
+    "order": z.union([z.literal("min"), z.literal("max")]).optional(),
+    "per": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<Best>;
+
+export const BestCheckpointSchema: z.ZodType<BestCheckpoint> = z.lazy(() =>
+  z.object({
+    "best_by": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<BestCheckpoint>;
+
+export const CallValueSchema: z.ZodType<CallValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("call").optional(),
+    "function": z.string(),
+    "args": z.array(ExpressionSchema).optional(),
+    "kwargs": z.record(z.string(), ExpressionSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<CallValue>;
+
+export const CellSchema: z.ZodType<Cell> = z.lazy(() =>
+  z.object({
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+    "value": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<Cell>;
+
+export const CheckpointBatchesSchema: z.ZodType<CheckpointBatches> = z.lazy(() =>
+  z.object({
+    "batches": z.array(z.number().int().safe().gt(0).max(9007199254740991)).min(1).max(64),
+  }).strict()
+) as unknown as z.ZodType<CheckpointBatches>;
+
+export const CheckpointCadenceSchema: z.ZodType<CheckpointCadence> = z.lazy(() =>
+  z.object({
+    "every_k": z.number().int().safe().gt(0).max(9007199254740991),
+    "through": z.number().int().safe().gt(0).max(9007199254740991),
+  }).strict()
+) as unknown as z.ZodType<CheckpointCadence>;
+
+export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
+  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
+) as unknown as z.ZodType<CheckpointRule>;
+
+export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(() =>
+  z.object({
+    "path": CheckpointRulePathSchema.optional(),
+    "checkpoint_rule": UpdateRuleSchema,
+  }).strict()
+) as unknown as z.ZodType<CheckpointRuleAxis>;
+
+export const CheckpointRulePathSchema: z.ZodType<CheckpointRulePath> = z.lazy(() =>
+  z.literal("{\"field\":\"checkpoint\",\"input\":\"subject\"}")
+) as unknown as z.ZodType<CheckpointRulePath>;
+
+export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
+  z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
+) as unknown as z.ZodType<Combination>;
+
+export const CreateNamedDocumentSchema: z.ZodType<CreateNamedDocument> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("document"),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": DocumentSchema,
+  }).strict()
+) as unknown as z.ZodType<CreateNamedDocument>;
+
+export const CreateNamedStepSchema: z.ZodType<CreateNamedStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("step"),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "step": z.union([StudioTrainStepSchema, StudioEvaluateStepSchema, StudioAnalyzeStepSchema, StudioReportStepSchema]),
+  }).strict()
+) as unknown as z.ZodType<CreateNamedStep>;
+
+export const DataDerivedAxisRangeSchema: z.ZodType<DataDerivedAxisRange> = z.lazy(() =>
+  z.object({
+    "schema_id": z.string().optional(),
+    "schema_version": z.string().optional(),
+    "group": z.string().min(1),
+    "padding_fraction": z.number().finite().min(0.0),
+  }).strict()
+) as unknown as z.ZodType<DataDerivedAxisRange>;
+
+export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
+  z.object({
+    "schema_ids": z.array(z.string()).min(1),
+    "variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<DatasetPort>;
+
+export const DimensionsSchema: z.ZodType<Dimensions> = z.lazy(() =>
+  z.object({
+    "length": z.number().int().safe().optional(),
+    "mass": z.number().int().safe().optional(),
+    "time": z.number().int().safe().optional(),
+    "current": z.number().int().safe().optional(),
+    "temperature": z.number().int().safe().optional(),
+    "amount": z.number().int().safe().optional(),
+    "luminosity": z.number().int().safe().optional(),
+    "angle": z.number().int().safe().optional(),
+  }).strict()
+) as unknown as z.ZodType<Dimensions>;
+
+export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
+  z.object({
+    "schema": z.string().min(1),
+    "payload": jsonValueSchema,
+  }).strict()
+) as unknown as z.ZodType<Document>;
+
+export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
+  z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
+) as unknown as z.ZodType<DocumentEdit>;
+
+export const DocumentOverridePathSchema: z.ZodType<DocumentOverridePath> = z.lazy(() =>
+  z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
+) as unknown as z.ZodType<DocumentOverridePath>;
+
+export const DocumentOverridesSchema: z.ZodType<DocumentOverrides> = z.lazy(() =>
+  z.union([z.record(DocumentOverridePathSchema, jsonValueSchema), z.array(DocumentEditSchema)])
+) as unknown as z.ZodType<DocumentOverrides>;
+
+export const DocumentPresentationSchema: z.ZodType<DocumentPresentation> = z.lazy(() =>
+  z.object({
+    "positions": z.record(z.string(), PresentationPositionSchema).optional(),
+    "camera": z.union([PresentationCameraSchema, z.null()]).optional(),
+    "flipped": z.record(z.string(), z.boolean()).optional(),
+    "collapsed": z.record(z.string(), z.boolean()).optional(),
+    "waypoints": z.record(z.string(), z.array(PresentationPositionSchema)).optional(),
+  }).strict()
+) as unknown as z.ZodType<DocumentPresentation>;
+
+export const DocumentReferenceSchema: z.ZodType<DocumentReference> = z.lazy(() =>
+  z.object({
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "pointer": z.union([PointerSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DocumentReference>;
+
+export const DrawValueSchema: z.ZodType<DrawValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("draw").optional(),
+    "family": z.string(),
+    "args": z.array(ExpressionSchema),
+    "per": z.union([z.literal("run"), z.literal("trial")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DrawValue>;
+
+export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
+  z.object({
+    "op": z.literal("ensure"),
+    "path": DocumentOverridePathSchema,
+    "collection": z.union([z.literal("object"), z.literal("array")]),
+  }).strict()
+) as unknown as z.ZodType<EnsureDocumentCollection>;
+
+export const EpochSchema: z.ZodType<Epoch> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "length": z.union([ExpressionSchema, z.null()]).optional(),
+    "max_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Epoch>;
+
+export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
+  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
+) as unknown as z.ZodType<Expression>;
+
+export const ExternalBaseSchema: z.ZodType<ExternalBase> = z.lazy(() =>
+  z.object({
+    "path": z.string().min(1),
+    "sha256": Sha256Schema,
+    "pointer": z.union([PointerSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ExternalBase>;
+
+export const FieldDescriptorSchema: z.ZodType<FieldDescriptor> = z.lazy(() =>
+  z.object({
+    "dims": z.array(NameSchema),
+    "units": z.union([z.string(), z.null()]).optional(),
+    "quantity": z.union([z.string(), z.null()]).optional(),
+    "frame": z.union([z.string(), z.null()]).optional(),
+    "inline_values": z.union([z.array(jsonValueSchema), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FieldDescriptor>;
+
+export const FieldKindSchema: z.ZodType<FieldKind> = z.lazy(() =>
+  z.union([z.literal("value"), z.literal("sweep"), z.literal("draw"), z.literal("formula"), z.literal("shape"), z.literal("link")])
+) as unknown as z.ZodType<FieldKind>;
+
+export const FieldTextResultSchema: z.ZodType<FieldTextResult> = z.lazy(() =>
+  z.object({
+    "value": FieldValueSchema,
+    "spans": z.array(LocatedSpanSchema),
+  }).strict()
+) as unknown as z.ZodType<FieldTextResult>;
+
+export const FieldValueSchema: z.ZodType<FieldValue> = z.lazy(() =>
+  z.union([ExpressionSchema, SweepListSchema, SweepRangeSchema, SweepSampleSchema])
+) as unknown as z.ZodType<FieldValue>;
+
+export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.figure_document.v1").optional(),
+    "data": z.array(NameSchema).min(1),
+    "layout": z.array(FigurePanelSchema).min(1),
+    "layers": z.array(z.union([LineLayerSchema, BandLayerSchema])).min(1),
+    "theme": NameSchema.optional(),
+    "view": FigureDocumentViewSchema.optional(),
+    "caption": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigureDocument>;
+
+export const FigureDocumentViewSchema: z.ZodType<FigureDocumentView> = z.lazy(() =>
+  z.object({
+    "shared_xaxes": z.union([z.boolean(), z.string()]).optional(),
+    "shared_yaxes": z.union([z.boolean(), z.string()]).optional(),
+    "horizontal_spacing": z.union([z.number().finite(), z.null()]).optional(),
+    "vertical_spacing": z.union([z.number().finite(), z.null()]).optional(),
+    "width": z.union([z.number().int().safe(), z.null()]).optional(),
+    "height": z.union([z.number().int().safe(), z.null()]).optional(),
+    "title": z.union([z.string(), z.null()]).optional(),
+    "legend_tracegroupgap": z.union([z.number().int().safe(), z.null()]).optional(),
+    "legend_x": z.union([z.number().finite(), z.null()]).optional(),
+    "legend_y": z.union([z.number().finite(), z.null()]).optional(),
+    "legend_xanchor": z.union([z.union([z.literal("auto"), z.literal("left"), z.literal("center"), z.literal("right")]), z.null()]).optional(),
+    "legend_yanchor": z.union([z.union([z.literal("auto"), z.literal("top"), z.literal("middle"), z.literal("bottom")]), z.null()]).optional(),
+    "margin": z.union([FigureMarginParamsSchema, z.null()]).optional(),
+    "hovermode": z.union([z.union([z.literal("x"), z.literal("y"), z.literal("closest"), z.literal("x unified"), z.literal("y unified"), z.literal(false)]), z.null()]).optional(),
+    "row_label_gutter": z.union([z.number().finite().min(0.0).max(256.0), z.null()]).optional(),
+    "legend_gutter": z.union([z.number().finite().min(0.0).max(512.0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigureDocumentView>;
+
+export const FigureElementSchema: z.ZodType<FigureElement> = z.lazy(() =>
+  z.object({
+    "figure": z.union([FigureDocumentSchema, DocumentReferenceSchema]),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepDatasetSchema, OperationDatasetSchema])),
+  }).strict()
+) as unknown as z.ZodType<FigureElement>;
+
+export const FigureMarginParamsSchema: z.ZodType<FigureMarginParams> = z.lazy(() =>
+  z.object({
+    "l": z.union([z.number().finite(), z.null()]).optional(),
+    "r": z.union([z.number().finite(), z.null()]).optional(),
+    "t": z.union([z.number().finite(), z.null()]).optional(),
+    "b": z.union([z.number().finite(), z.null()]).optional(),
+    "pad": z.union([z.number().finite(), z.null()]).optional(),
+    "autoexpand": z.union([z.boolean(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigureMarginParams>;
+
+export const FigurePanelSchema: z.ZodType<FigurePanel> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "row": z.number().int().safe().gt(0),
+    "col": z.number().int().safe().gt(0),
+    "title": z.union([z.string(), z.null()]).optional(),
+    "axes_labels": z.union([AxisLabelsSchema, z.null()]).optional(),
+    "x_axis": z.union([PanelAxisSchema, z.null()]).optional(),
+    "y_axis": z.union([PanelAxisSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<FigurePanel>;
+
+export const FunctionClassSchema: z.ZodType<FunctionClass> = z.lazy(() =>
+  z.union([z.literal("math"), z.literal("shape"), z.literal("draw"), z.literal("penalty"), z.literal("sweep_rule")])
+) as unknown as z.ZodType<FunctionClass>;
+
+export const FunctionInfoSchema: z.ZodType<FunctionInfo> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "signature": z.string(),
+    "display_class": FunctionClassSchema,
+    "min_args": z.number().int().safe(),
+    "max_args": z.union([z.number().int().safe(), z.null()]),
+    "keywords": z.array(z.string()).optional(),
+    "implicit_names": z.record(z.string(), ValueTypeSchema).optional(),
+    "level": LevelSchema.optional(),
+    "requires_period": z.boolean().optional(),
+    "random": z.boolean().optional(),
+    "stateful": z.boolean().optional(),
+    "reset": StateResetSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<FunctionInfo>;
+
+export const GroupCombinationSchema: z.ZodType<GroupCombination> = z.lazy(() =>
+  z.object({
+    "groups": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), AxisGroupSchema),
+  }).strict()
+) as unknown as z.ZodType<GroupCombination>;
+
+export const IndexSelectionSchema: z.ZodType<IndexSelection> = z.lazy(() =>
+  z.object({
+    "index": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<IndexSelection>;
+
+export const InlineBaseSchema: z.ZodType<InlineBase> = z.lazy(() =>
+  z.object({
+    "inline": PayloadSchema,
+  }).strict()
+) as unknown as z.ZodType<InlineBase>;
+
+export const InputAxisSchema: z.ZodType<InputAxis> = z.lazy(() =>
+  z.object({
+    "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<InputAxis>;
+
+export const InputBindingSchema: z.ZodType<InputBinding> = z.lazy(() =>
+  z.union([ReferenceSchema, z.array(ReferenceSchema), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), ReferenceSchema)])
+) as unknown as z.ZodType<InputBinding>;
+
+export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
+  z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
+) as unknown as z.ZodType<JobStatus>;
+
+export const LevelSchema: z.ZodType<Level> = z.lazy(() =>
+  z.union([z.literal(0), z.literal(1), z.literal(2)])
+) as unknown as z.ZodType<Level>;
+
+export const LineEncodingsSchema: z.ZodType<LineEncodings> = z.lazy(() =>
+  z.object({
+    "x": z.union([NameSchema, VariableBindingSchema]),
+    "y": z.union([NameSchema, VariableBindingSchema]),
+  }).strict()
+) as unknown as z.ZodType<LineEncodings>;
+
+export const LineLayerSchema: z.ZodType<LineLayer> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("line"),
+    "encode": LineEncodingsSchema,
+    "style": LineStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<LineLayer>;
+
+export const LineStyleSchema: z.ZodType<LineStyle> = z.lazy(() =>
+  z.object({
+    "label": z.union([z.string(), z.null()]).optional(),
+    "color": z.union([z.string(), z.null()]).optional(),
+    "line_dash": z.union([z.union([z.literal("solid"), z.literal("dot"), z.literal("dash"), z.literal("longdash"), z.literal("dashdot"), z.literal("longdashdot")]), z.null()]).optional(),
+    "line_width": z.union([z.number().finite().gt(0), z.null()]).optional(),
+    "showlegend": z.union([z.boolean(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<LineStyle>;
+
+export const LinkSchema: z.ZodType<Link> = z.lazy(() =>
+  z.object({
+    "model_field": z.string(),
+    "variable": z.string(),
+  }).strict()
+) as unknown as z.ZodType<Link>;
+
+export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
+  z.object({
+    "path": SweepTargetSchema,
+    "values": z.array(jsonValueSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<ListedAxis>;
+
+export const LiteralValueSchema: z.ZodType<LiteralValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("literal").optional(),
+    "value": ScalarSchema,
+    "unit": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<LiteralValue>;
+
+export const LocatedSpanSchema: z.ZodType<LocatedSpan> = z.lazy(() =>
+  z.object({
+    "path": NodePathSchema,
+    "span": TextSpanSchema,
+  }).strict()
+) as unknown as z.ZodType<LocatedSpan>;
+
+export const ManualCombinationSchema: z.ZodType<ManualCombination> = z.lazy(() =>
+  z.object({
+    "manual": z.array(z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.string().min(1))),
+  }).strict()
+) as unknown as z.ZodType<ManualCombination>;
+
+export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z.lazy(() =>
+  z.object({
+    "layer_id": z.string(),
+    "patches": z.array(OverridePatchSchema).optional(),
+    "acknowledges_ancestor_paths": z.array(z.string()).optional(),
+    "schema_id": z.union([z.string(), z.null()]).optional(),
+    "schema_version": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<MatrixCompositionDelta>;
+
+export const ModelWireDifferenceSchema: z.ZodType<ModelWireDifference> = z.lazy(() =>
+  z.object({
+    "op": z.union([z.literal("add_wire"), z.literal("rewire")]),
+    "address": ModelAddressSchema,
+    "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
+    "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+  }).strict()
+) as unknown as z.ZodType<ModelWireDifference>;
+
+export const NameSchema: z.ZodType<Name> = z.lazy(() =>
+  z.string()
+) as unknown as z.ZodType<Name>;
+
+export const NameValueSchema: z.ZodType<NameValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("name").optional(),
+    "reference": z.string(),
+  }).strict()
+) as unknown as z.ZodType<NameValue>;
+
+export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
+  z.object({
+    "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
+  }).strict()
+) as unknown as z.ZodType<NamedAxis>;
+
+export const NamedFileCreationSchema: z.ZodType<NamedFileCreation> = z.lazy(() =>
+  z.union([CreateNamedDocumentSchema, CreateNamedStepSchema])
+) as unknown as z.ZodType<NamedFileCreation>;
+
+export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
+  z.object({
+    "subset": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<NamedSubset>;
+
+export const NodePathSchema: z.ZodType<NodePath> = z.lazy(() =>
+  z.array(z.union([z.string(), z.number().int().safe()]))
+) as unknown as z.ZodType<NodePath>;
+
+export const ObjectiveDocumentSchema: z.ZodType<ObjectiveDocument> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "terms": z.array(ObjectiveTermSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<ObjectiveDocument>;
+
+export const ObjectiveTermSchema: z.ZodType<ObjectiveTerm> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "measure": ExpressionSchema,
+    "measure_type": ValueTypeSchema.optional(),
+    "weight": ExpressionSchema.optional(),
+    "reduction": ReductionSchema.optional(),
+    "epochs": z.array(z.string()).optional(),
+    "enabled": z.boolean().optional(),
+    "name": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ObjectiveTerm>;
+
+export const OmittedReferenceSchema: z.ZodType<OmittedReference> = z.lazy(() =>
+  z.object({
+    "not_applicable": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<OmittedReference>;
+
+export const OperationDatasetSchema: z.ZodType<OperationDataset> = z.lazy(() =>
+  z.object({
+    "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "product": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<OperationDataset>;
+
+export const OperationDefinitionSchema: z.ZodType<OperationDefinition> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "owner": z.string(),
+    "label": z.string(),
+    "description": z.string(),
+    "param_schema": z.array(ParamSchemaSchema),
+    "parameter_json_schema": z.record(z.string(), jsonValueSchema),
+    "static_parameters": z.array(z.string()),
+    "inputs": z.record(z.string(), DatasetPortSchema),
+    "outputs": z.record(z.string(), DatasetPortSchema),
+  }).strict()
+) as unknown as z.ZodType<OperationDefinition>;
+
+export const OperationElementSchema: z.ZodType<OperationElement> = z.lazy(() =>
+  z.object({
+    "operation": z.string().min(1),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepDatasetSchema, OperationDatasetSchema])),
+    "params": z.record(z.string(), jsonValueSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<OperationElement>;
+
+export const OverridePatchSchema: z.ZodType<OverridePatch> = z.lazy(() =>
+  z.object({
+    "path": z.string(),
+    "value": jsonValueSchema.optional(),
+    "op": z.union([z.literal("add"), z.literal("replace"), z.literal("remove")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<OverridePatch>;
+
+export const PanelAxisSchema: z.ZodType<PanelAxis> = z.lazy(() =>
+  z.object({
+    "type": z.union([z.union([z.literal("linear"), z.literal("log")]), z.null()]).optional(),
+    "range": z.union([z.tuple([z.number().finite(), z.number().finite()]), z.null()]).optional(),
+    "derived_range": z.union([DataDerivedAxisRangeSchema, z.null()]).optional(),
+    "quantity": z.union([z.string().min(1).max(128), z.null()]).optional(),
+    "unit": z.union([z.string().min(1).max(128), z.null()]).optional(),
+    "frame": z.union([z.string().min(1).max(128), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<PanelAxis>;
+
+export const PatchPathSchema: z.ZodType<PatchPath> = z.lazy(() =>
+  z.string().regex(new RegExp("^[^.]+(?:\\.[^.]+)*$"))
+) as unknown as z.ZodType<PatchPath>;
+
+export const PatchValueSchema: z.ZodType<PatchValue> = z.lazy(() =>
+  z.union([SetValueSchema, RemoveValueSchema])
+) as unknown as z.ZodType<PatchValue>;
+
+export const PayloadSchema: z.ZodType<Payload> = z.lazy(() =>
+  z.record(z.string(), jsonValueSchema)
+) as unknown as z.ZodType<Payload>;
+
+export const PointerSchema: z.ZodType<Pointer> = z.lazy(() =>
+  z.string().regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
+) as unknown as z.ZodType<Pointer>;
+
+export const PresentationCameraSchema: z.ZodType<PresentationCamera> = z.lazy(() =>
+  z.object({
+    "x": z.number().finite(),
+    "y": z.number().finite(),
+    "zoom": z.number().finite().gt(0),
+  }).strict()
+) as unknown as z.ZodType<PresentationCamera>;
+
+export const PresentationDocumentSchema: z.ZodType<PresentationDocument> = z.lazy(() =>
+  z.object({
+    "documents": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentPresentationSchema).optional(),
+    "steps": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), StepPresentationSchema).optional(),
+    "visible_groups": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<PresentationDocument>;
+
+export const PresentationPositionSchema: z.ZodType<PresentationPosition> = z.lazy(() =>
+  z.object({
+    "x": z.number().finite(),
+    "y": z.number().finite(),
+  }).strict()
+) as unknown as z.ZodType<PresentationPosition>;
+
+export const ProblemSchema: z.ZodType<Problem> = z.lazy(() =>
+  z.object({
+    "code": ProblemCodeSchema,
+    "reason": z.string(),
+    "path": z.array(z.union([z.string(), z.number().int().safe()])).optional(),
+    "span": z.union([TextSpanSchema, z.null()]).optional(),
+    "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Problem>;
+
+export const ProblemCodeSchema: z.ZodType<ProblemCode> = z.lazy(() =>
+  z.union([z.literal("parse"), z.literal("unknown_name"), z.literal("duplicate_name"), z.literal("unknown_function"), z.literal("plugin_missing"), z.literal("arity"), z.literal("type_mismatch"), z.literal("unit_mismatch"), z.literal("level_too_fine"), z.literal("out_of_scope"), z.literal("cycle"), z.literal("unbounded_length"), z.literal("length_budget"), z.literal("missing_limit"), z.literal("list_count"), z.literal("structure")])
+) as unknown as z.ZodType<ProblemCode>;
+
+export const ProjectSchema: z.ZodType<Project> = z.lazy(() =>
+  z.object({
+    "documents": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentSchema).optional(),
+    "steps": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), StepSchema).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Project>;
+
+export const ProjectConfigurationSchema: z.ZodType<ProjectConfiguration> = z.lazy(() =>
+  z.object({
+    "project": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "store": z.string().min(1),
+    "settings": PayloadSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<ProjectConfiguration>;
+
+export const ProjectValueEditSchema: z.ZodType<ProjectValueEdit> = z.lazy(() =>
+  z.union([SetProjectValueSchema, RemoveProjectValueSchema])
+) as unknown as z.ZodType<ProjectValueEdit>;
+
+export const PythonTaskSelectionSchema: z.ZodType<PythonTaskSelection> = z.lazy(() =>
+  z.object({
+    "type": z.string(),
+    "params": z.record(z.string(), jsonValueSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<PythonTaskSelection>;
+
+export const RangeAxisSchema: z.ZodType<RangeAxis> = z.lazy(() =>
+  z.object({
+    "path": SweepTargetSchema,
+    "range": RangeValuesSchema,
+  }).strict()
+) as unknown as z.ZodType<RangeAxis>;
+
+export const RangeValuesSchema: z.ZodType<RangeValues> = z.lazy(() =>
+  z.object({
+    "start": z.union([z.number().int().safe(), z.number().finite()]),
+    "stop": z.union([z.number().int().safe(), z.number().finite()]),
+    "count": z.number().int().safe().min(1),
+    "scale": z.union([z.literal("linear"), z.literal("log")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<RangeValues>;
+
+export const ReductionSchema: z.ZodType<Reduction> = z.lazy(() =>
+  z.union([z.literal("mean"), z.literal("sum"), z.literal("last"), z.literal("max")])
+) as unknown as z.ZodType<Reduction>;
+
+export const ReferenceSchema: z.ZodType<Reference> = z.lazy(() =>
+  z.union([StepReferenceSchema, RunReferenceSchema, StoreSubsetSchema, NamedSubsetSchema, OmittedReferenceSchema])
+) as unknown as z.ZodType<Reference>;
+
+export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove"),
+    "path": DocumentOverridePathSchema,
+  }).strict()
+) as unknown as z.ZodType<RemoveProjectValue>;
+
+export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove"),
+  }).strict()
+) as unknown as z.ZodType<RemoveValue>;
+
+export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("declaration"),
+    "id": z.literal("declaration"),
+  }).strict()
+) as unknown as z.ZodType<ReplayDeclarationAddress>;
+
+export const ReplayFileAddressSchema: z.ZodType<ReplayFileAddress> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant")]),
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<ReplayFileAddress>;
+
+export const ReportDocumentSchema: z.ZodType<ReportDocument> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.report_document.v1").optional(),
+    "title": z.string().min(1),
+    "blocks": z.array(z.union([ReportTextSchema, ReportFigureSchema])).min(1),
+    "completeness": z.union([z.literal("complete"), z.literal("allow_omissions")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ReportDocument>;
+
+export const ReportFigureSchema: z.ZodType<ReportFigure> = z.lazy(() =>
+  z.object({
+    "figure": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "caption": z.union([z.string().min(1), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ReportFigure>;
+
+export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
+  z.object({
+    "markdown": z.string(),
+  }).strict()
+) as unknown as z.ZodType<ReportText>;
+
+export const RowSchema: z.ZodType<Row> = z.lazy(() =>
+  z.object({
+    "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "value": jsonValueSchema.optional(),
+    "from": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Row>;
+
+export const RunBaseSchema: z.ZodType<RunBase> = z.lazy(() =>
+  z.object({
+    "run": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<RunBase>;
+
+export const RunReferenceSchema: z.ZodType<RunReference> = z.lazy(() =>
+  z.object({
+    "run": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<RunReference>;
+
+export const SampleValuesSchema: z.ZodType<SampleValues> = z.lazy(() =>
+  z.object({
+    "distribution": z.union([DrawValueSchema, z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))]),
+    "count": z.number().int().safe().min(1),
+    "seed": z.number().int().safe(),
+  }).strict()
+) as unknown as z.ZodType<SampleValues>;
+
+export const SampledAxisSchema: z.ZodType<SampledAxis> = z.lazy(() =>
+  z.object({
+    "path": SweepTargetSchema,
+    "sampler": SampleValuesSchema,
+    "draws": z.union([z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), jsonValueSchema), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<SampledAxis>;
+
+export const ScalarSchema: z.ZodType<Scalar> = z.lazy(() =>
+  z.union([z.boolean(), z.number().int().safe(), z.number().finite()])
+) as unknown as z.ZodType<Scalar>;
+
+export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
+  z.object({
+    "id": z.string().min(1),
+    "name": z.string().min(1),
+    "type": ValueTypeSchema,
+    "level": LevelSchema,
+  }).strict()
+) as unknown as z.ZodType<ScopedValue>;
+
+export const SelectedRowSchema: z.ZodType<SelectedRow> = z.lazy(() =>
+  z.object({
+    "key": z.string().min(1),
+    "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+    "row": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+  }).strict()
+) as unknown as z.ZodType<SelectedRow>;
+
+export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
+  z.object({
+    "op": z.union([z.literal("add"), z.literal("replace")]),
+    "path": DocumentOverridePathSchema,
+    "value": jsonValueSchema,
+  }).strict()
+) as unknown as z.ZodType<SetProjectValue>;
+
+export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
+  z.object({
+    "value": jsonValueSchema,
+    "op": z.union([z.literal("add"), z.literal("replace")]).optional(),
+  }).strict()
+) as unknown as z.ZodType<SetValue>;
+
+export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
+  z.string().regex(new RegExp("^[a-f0-9]{64}$"))
+) as unknown as z.ZodType<Sha256>;
+
+export const SignalSchema: z.ZodType<Signal> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "type": ValueTypeSchema,
+    "cells": z.array(CellSchema),
+    "absent": z.union([ExpressionSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Signal>;
+
+export const SiteSchema: z.ZodType<Site> = z.lazy(() =>
+  z.object({
+    "expected": ValueTypeSchema,
+    "finest": LevelSchema,
+    "names": z.array(ScopedValueSchema).optional(),
+    "structural": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<Site>;
+
+export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
+  z.object({
+    "site": SiteSchema,
+    "kinds": z.array(FieldKindSchema),
+    "functions": z.array(FunctionInfoSchema),
+  }).strict()
+) as unknown as z.ZodType<SiteProjection>;
+
+export const StateResetSchema: z.ZodType<StateReset> = z.lazy(() =>
+  z.union([z.literal("trial"), z.literal("epoch")])
+) as unknown as z.ZodType<StateReset>;
+
+export const StepSchema: z.ZodType<Step> = z.lazy(() =>
+  z.object({
+    "kind": StepKindSchema,
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Step>;
+
+export const StepBaseSchema: z.ZodType<StepBase> = z.lazy(() =>
+  z.object({
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StepBase>;
+
+export const StepDatasetSchema: z.ZodType<StepDataset> = z.lazy(() =>
+  z.object({
+    "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StepDataset>;
+
+export const StepKindSchema: z.ZodType<StepKind> = z.lazy(() =>
+  z.union([z.literal("train"), z.literal("evaluate"), z.literal("analyze"), z.literal("report")])
+) as unknown as z.ZodType<StepKind>;
+
+export const StepNoteSchema: z.ZodType<StepNote> = z.lazy(() =>
+  z.object({
+    "issue": z.union([z.string(), z.null()]).optional(),
+    "reason": z.union([z.string(), z.null()]).optional(),
+    "replaces": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StepNote>;
+
+export const StepPresentationSchema: z.ZodType<StepPresentation> = z.lazy(() =>
+  z.object({
+    "sweep_order": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+    "folded_sweep_id": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "model_positions": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string(), PresentationPositionSchema)).optional(),
+  }).strict()
+) as unknown as z.ZodType<StepPresentation>;
+
+export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
+  z.object({
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "where": z.union([SubsetTermsSchema, NamedSubsetSchema, z.null()]).optional(),
+    "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
+    "variants": z.union([z.literal("all"), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))), z.null()]).optional(),
+    "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
+    "element": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "product": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StepReference>;
+
+export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "best": z.union([BestSchema, z.null()]).optional(),
+    "when": z.union([WhenSchema, z.null()]).optional(),
+    "rows": z.array(SelectedRowSchema).optional(),
+    "query": ManifestPredicateSchema,
+  }).strict()
+) as unknown as z.ZodType<StoreSubset>;
+
+export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "operations": z.array(OperationDefinitionSchema),
+    "states": DatasetPortSchema,
+    "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
+    "figure": FigureDocumentSchema,
+    "files": z.array(StudioProjectFilePatchSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeAuthoring>;
+
+export const StudioAnalyzeRequestSchema: z.ZodType<StudioAnalyzeRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "key": StudioSavedTrainKeySchema,
+    "wire": z.union([StudioAnalyzeWireSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeRequest>;
+
+export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("analyze"),
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeStep>;
+
+export const StudioAnalyzeWireSchema: z.ZodType<StudioAnalyzeWire> = z.lazy(() =>
+  z.object({
+    "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "role": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "source": z.union([StepDatasetSchema, OperationDatasetSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeWire>;
+
+export const StudioAuthoredDeclarationSchema: z.ZodType<StudioAuthoredDeclaration> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "authored_revision": Sha256Schema,
+    "data": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoredDeclaration>;
+
+export const StudioAuthoredDocumentFamilySchema: z.ZodType<StudioAuthoredDocumentFamily> = z.lazy(() =>
+  z.object({
+    "schema_id": z.union([z.string(), z.null()]),
+    "payload_schema": z.record(z.string(), jsonValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoredDocumentFamily>;
+
+export const StudioAuthoredFileRevisionSchema: z.ZodType<StudioAuthoredFileRevision> = z.lazy(() =>
+  z.object({
+    "address": AuthoredFileAddressSchema,
+    "revision": Sha256Schema,
+    "data": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoredFileRevision>;
+
+export const StudioAuthoringCatalogSchema: z.ZodType<StudioAuthoringCatalog> = z.lazy(() =>
+  z.object({
+    "project_grammar": z.record(z.string(), jsonValueSchema),
+    "step_grammar": z.record(z.string(), jsonValueSchema),
+    "step_payloads": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
+    "document_families": z.record(z.string(), StudioAuthoredDocumentFamilySchema),
+    "registries": z.record(z.string(), StudioAuthoringRegistrySchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringCatalog>;
+
+export const StudioAuthoringChangeSchema: z.ZodType<StudioAuthoringChange> = z.lazy(() =>
+  z.object({
+    "field": z.string(),
+    "value": z.union([z.string(), z.number().int().safe(), z.number().finite()]),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringChange>;
+
+export const StudioAuthoringChoiceSchema: z.ZodType<StudioAuthoringChoice> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("choice"),
+    "options": z.array(StudioAuthoringOptionSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringChoice>;
+
+export const StudioAuthoringFieldSchema: z.ZodType<StudioAuthoringField> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "label": z.string(),
+    "value": z.union([z.string(), z.number().int().safe(), z.number().finite(), z.null()]),
+    "source": z.union([StudioAuthoringSourceSchema, z.null()]),
+    "control": z.union([z.union([StudioAuthoringChoiceSchema, StudioAuthoringNumberSchema]), z.null()]),
+    "sweep": z.union([z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema]), z.null()]).optional(),
+    "can_sweep": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringField>;
+
+export const StudioAuthoringMethodSchema: z.ZodType<StudioAuthoringMethod> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "schema_id": z.string(),
+    "schema_version": z.string(),
+    "owner": z.string(),
+    "package": z.union([z.string(), z.null()]),
+    "plugin": z.union([z.string(), z.null()]),
+    "payload_schema": z.record(z.string(), jsonValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringMethod>;
+
+export const StudioAuthoringNumberSchema: z.ZodType<StudioAuthoringNumber> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("number"),
+    "min": z.union([z.number().finite(), z.null()]).optional(),
+    "max": z.union([z.number().finite(), z.null()]).optional(),
+    "step": z.union([z.number().int().safe(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringNumber>;
+
+export const StudioAuthoringOptionSchema: z.ZodType<StudioAuthoringOption> = z.lazy(() =>
+  z.object({
+    "value": z.string(),
+    "label": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringOption>;
+
+export const StudioAuthoringOriginSchema: z.ZodType<StudioAuthoringOrigin> = z.lazy(() =>
+  z.object({
+    "plugin": z.string(),
+    "distribution": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringOrigin>;
+
+export const StudioAuthoringRegistrySchema: z.ZodType<StudioAuthoringRegistry> = z.lazy(() =>
+  z.object({
+    "entries": z.array(z.union([ComponentDefinitionSchema, OperationDefinitionSchema, StudioAuthoringMethodSchema, FunctionInfoSchema])),
+    "origins": z.record(z.string(), StudioAuthoringOriginSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringRegistry>;
+
+export const StudioAuthoringSourceSchema: z.ZodType<StudioAuthoringSource> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant")]),
+    "name": z.string(),
+    "path": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringSource>;
+
+export const StudioAuthoringSurfaceSchema: z.ZodType<StudioAuthoringSurface> = z.lazy(() =>
+  z.object({
+    "project_grammar": z.record(z.string(), jsonValueSchema),
+    "step_payloads": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
+    "document_schemas": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
+    "training_methods": z.array(StudioAuthoringMethodSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringSurface>;
+
+export const StudioAuthoringSweepChangeSchema: z.ZodType<StudioAuthoringSweepChange> = z.lazy(() =>
+  z.object({
+    "field": z.string(),
+    "edit": z.union([StudioToSweepSchema, StudioSweepEditSchema, StudioToFieldSchema, StudioSetSweepValueSchema, StudioNameSweepValueSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioAuthoringSweepChange>;
+
+export const StudioBestRankGroupSchema: z.ZodType<StudioBestRankGroup> = z.lazy(() =>
+  z.object({
+    "coordinates": z.record(z.string(), z.string()),
+    "ranks": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioBestRankGroup>;
+
+export const StudioBoundBestSubjectSchema: z.ZodType<StudioBoundBestSubject> = z.lazy(() =>
+  z.object({
+    "key": z.string(),
+    "variant": z.string(),
+    "row": z.string(),
+    "consumer_job_id": z.string(),
+    "producer_job_id": z.string(),
+    "producer_request_id": z.string(),
+    "completed_updates": z.number().int().safe(),
+    "selection_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+  }).strict()
+) as unknown as z.ZodType<StudioBoundBestSubject>;
+
+export const StudioCheckpointRuleEditSchema: z.ZodType<StudioCheckpointRuleEdit> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioCheckpointRuleEdit>;
+
+export const StudioCheckpointRuleRequestSchema: z.ZodType<StudioCheckpointRuleRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "run": StudioSavedTrainKeySchema,
+    "edit": z.union([StudioCheckpointRuleSetSchema, StudioCheckpointRuleToSweepSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioCheckpointRuleRequest>;
+
+export const StudioCheckpointRuleSetSchema: z.ZodType<StudioCheckpointRuleSet> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("set"),
+    "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema]),
+    "scope": z.union([EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioCheckpointRuleSet>;
+
+export const StudioCheckpointRuleToSweepSchema: z.ZodType<StudioCheckpointRuleToSweep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("to_sweep"),
+  }).strict()
+) as unknown as z.ZodType<StudioCheckpointRuleToSweep>;
+
+export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("evaluate"),
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioEvaluateStep>;
+
+export const StudioEvaluationCheckpointAttemptSchema: z.ZodType<StudioEvaluationCheckpointAttempt> = z.lazy(() =>
+  z.object({
+    "job_id": z.string(),
+    "placement": ValidationPlacementSchema,
+    "pending": z.union([StudioEvaluationPendingCheckpointSchema, z.null()]).optional(),
+    "points": z.array(StudioEvaluationPointProgressSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioEvaluationCheckpointAttempt>;
+
+export const StudioEvaluationPendingCheckpointSchema: z.ZodType<StudioEvaluationPendingCheckpoint> = z.lazy(() =>
+  z.object({
+    "producer_job_id": z.string(),
+    "producer_request_id": z.string(),
+    "state": z.union([z.literal("queued"), z.literal("assigned"), z.literal("running"), z.literal("stopping"), z.literal("resumable")]),
+    "next_update": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+    "recovery_update": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioEvaluationPendingCheckpoint>;
+
+export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPointProgress> = z.lazy(() =>
+  z.object({
+    "job_id": z.string(),
+    "request_id": z.string(),
+    "completed_updates": z.number().int().safe().min(0),
+    "publication_cursor": z.number().int().safe().gt(0),
+    "transaction_root_sha256": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+    "status": z.union([z.literal("scored"), z.literal("failed")]),
+  }).strict()
+) as unknown as z.ZodType<StudioEvaluationPointProgress>;
+
+export const StudioNameSweepValueSchema: z.ZodType<StudioNameSweepValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("nameSweepValue"),
+    "sweep_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "label": z.union([z.string().min(1), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioNameSweepValue>;
+
+export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
+  z.object({
+    "key": StudioSavedTrainKeySchema,
+    "element": z.union([z.string(), z.null()]).optional(),
+    "request_id": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioPlanRequest>;
+
+export const StudioPresentationWriteSchema: z.ZodType<StudioPresentationWrite> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "presentation": PresentationDocumentSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioPresentationWrite>;
+
+export const StudioProjectCreateFileSchema: z.ZodType<StudioProjectCreateFile> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "file": NamedFileCreationSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectCreateFile>;
+
+export const StudioProjectDocumentSchema: z.ZodType<StudioProjectDocument> = z.lazy(() =>
+  z.object({
+    "configuration": ProjectConfigurationSchema,
+    "snapshot": StudioProjectSnapshotSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectDocument>;
+
+export const StudioProjectFilePatchSchema: z.ZodType<StudioProjectFilePatch> = z.lazy(() =>
+  z.object({
+    "address": AuthoredFileAddressSchema,
+    "patches": z.array(ProjectValueEditSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectFilePatch>;
+
+export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
+  z.object({
+    "address": AuthoredFileAddressSchema,
+    "patches": z.array(ProjectValueEditSchema).min(1),
+    "revision": Sha256Schema,
+    "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectPatch>;
+
+export const StudioProjectPatchBatchSchema: z.ZodType<StudioProjectPatchBatch> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
+    "files": z.array(StudioProjectFilePatchSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectPatchBatch>;
+
+export const StudioProjectRenameSchema: z.ZodType<StudioProjectRename> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectRename>;
+
+export const StudioProjectReplaySchema: z.ZodType<StudioProjectReplay> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "files": z.array(StudioReplayFileSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectReplay>;
+
+export const StudioProjectRevisionSchema: z.ZodType<StudioProjectRevision> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "revision": Sha256Schema,
+    "presentation_revision": Sha256Schema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectRevision>;
+
+export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "revision": Sha256Schema,
+    "presentation_revision": Sha256Schema,
+    "project": ProjectSchema,
+    "semantic_root": Sha256Schema,
+    "presentation": z.union([PresentationDocumentSchema, z.null()]),
+    "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
+    "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
+    "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectSnapshot>;
+
+export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z.lazy(() =>
+  z.object({
+    "variants": z.array(z.string()),
+    "steps": z.array(StudioProjectWindowMapStepSchema),
+    "rows": z.array(StudioProjectWindowMapRowSchema),
+    "edges": z.array(StudioProjectWindowMapEdgeSchema),
+    "problems": z.array(StudioProjectWindowMapProblemSchema),
+    "requests": z.array(StudioPlanRequestSchema).optional(),
+    "evaluations": z.array(StudioSavedEvaluationRowSchema).optional(),
+    "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
+    "analysis_figures": z.array(StudioProjectWindowMapFigureSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMap>;
+
+export const StudioProjectWindowMapCoordinateSchema: z.ZodType<StudioProjectWindowMapCoordinate> = z.lazy(() =>
+  z.object({
+    "value_id": z.string(),
+    "label": z.union([z.string(), z.null()]),
+    "value": jsonValueSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapCoordinate>;
+
+export const StudioProjectWindowMapEdgeSchema: z.ZodType<StudioProjectWindowMapEdge> = z.lazy(() =>
+  z.object({
+    "from_key": StudioSavedTrainKeySchema,
+    "to_key": StudioSavedTrainKeySchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapEdge>;
+
+export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowMapElement> = z.lazy(() =>
+  z.object({
+    "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "key": StudioSavedTrainKeySchema,
+    "name": z.string(),
+    "kind": z.union([z.literal("analyze"), z.literal("render")]),
+    "request_id": z.string(),
+    "status": JobStatusSchema,
+    "reason": z.union([z.string(), z.null()]).optional(),
+    "figure": z.union([StepReferenceSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapElement>;
+
+export const StudioProjectWindowMapExceptionSchema: z.ZodType<StudioProjectWindowMapException> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "count": z.number().int().safe(),
+    "rule": SweepExceptionSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapException>;
+
+export const StudioProjectWindowMapFigureSchema: z.ZodType<StudioProjectWindowMapFigure> = z.lazy(() =>
+  z.object({
+    "key": StudioSavedTrainKeySchema,
+    "name": z.string(),
+    "data": z.array(z.string()),
+    "caption": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapFigure>;
+
+export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMapInput> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "source_step_id": z.string(),
+    "subset": z.union([StudioProjectWindowMapSubsetSchema, z.null()]),
+    "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
+    "checkpoint_axis": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapInput>;
+
+export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowMapProblem> = z.lazy(() =>
+  z.object({
+    "code": z.string(),
+    "path": z.string(),
+    "detail": z.string(),
+    "variant": z.union([z.string(), z.null()]),
+    "step": z.union([z.string(), z.null()]),
+    "row": z.union([z.string(), z.null()]),
+    "document": z.union([z.string(), z.null()]),
+    "element": z.union([z.string(), z.null()]).optional(),
+    "document_path": z.union([z.string(), z.null()]).optional(),
+    "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
+    "address": z.union([z.string(), z.null()]).optional(),
+    "layer": z.union([z.string(), z.null()]).optional(),
+    "authored_path": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
+
+export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRow> = z.lazy(() =>
+  z.object({
+    "key": StudioSavedTrainKeySchema,
+    "label": z.string(),
+    "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
+    "member_key": z.union([z.string(), z.null()]).optional(),
+    "status": JobStatusSchema,
+    "reason": z.union([z.string(), z.null()]).optional(),
+    "opening_step": z.union([z.union([z.literal("acquiring"), z.literal("connecting"), z.literal("copying"), z.literal("installing"), z.literal("starting_host")]), z.null()]).optional(),
+    "collection_progress": z.union([StoreTransferProgressSchema, z.null()]).optional(),
+    "evaluation_conditions": z.union([z.array(z.string()), z.null()]).optional(),
+    "light": z.union([StudioSavedLightHistorySchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapRow>;
+
+export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapStep> = z.lazy(() =>
+  z.object({
+    "variant": z.string(),
+    "step_id": z.string(),
+    "kind": StepKindSchema,
+    "group": z.union([z.string(), z.null()]),
+    "inputs": z.array(StudioProjectWindowMapInputSchema),
+    "document_ids": z.record(z.string(), z.string()),
+    "document_uses": z.array(z.string()).optional(),
+    "exceptions": z.array(StudioProjectWindowMapExceptionSchema).optional(),
+    "status_counts": z.record(z.string(), z.number().int().safe()),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapStep>;
+
+export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMapSubset> = z.lazy(() =>
+  z.object({
+    "terms": SubsetTermsSchema,
+    "count": z.number().int().safe(),
+    "total": z.number().int().safe(),
+    "document": z.union([z.string(), z.null()]),
+    "members": z.union([z.array(StudioSavedTrainKeySchema), z.null()]).optional(),
+    "ranks": z.array(z.string()).optional(),
+    "rank_groups": z.array(StudioBestRankGroupSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
+
+export const StudioReplayFileSchema: z.ZodType<StudioReplayFile> = z.lazy(() =>
+  z.object({
+    "address": z.union([ReplayFileAddressSchema, ReplayDeclarationAddressSchema]),
+    "before": z.union([Sha256Schema, z.null()]),
+    "after": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioReplayFile>;
+
+export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("report"),
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioReportStep>;
+
+export const StudioSavedLightHistorySchema: z.ZodType<StudioSavedLightHistory> = z.lazy(() =>
+  z.object({
+    "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioSavedLightHistory>;
+
+export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z.lazy(() =>
+  z.object({
+    "job_id": z.string(),
+    "request_id": z.string(),
+    "receipt": JobReceiptSchema,
+    "products": z.record(z.string(), z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioSavedLightResult>;
+
+export const StudioSetSweepValueSchema: z.ZodType<StudioSetSweepValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("setSweepValue"),
+    "sweep_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "value": z.union([z.number().int().safe(), z.number().finite()]),
+  }).strict()
+) as unknown as z.ZodType<StudioSetSweepValue>;
+
+export const StudioSubsetToRowsEditSchema: z.ZodType<StudioSubsetToRowsEdit> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioSubsetToRowsEdit>;
+
+export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "attempts": z.array(z.string()).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
+
+export const StudioSweepEditSchema: z.ZodType<StudioSweepEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("addValue"), z.literal("toList")]),
+    "sweep_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioSweepEdit>;
+
+export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
+  z.object({
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "problems": z.array(ProblemSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskChoice>;
+
+export const StudioTaskTypeSchema: z.ZodType<StudioTaskType> = z.lazy(() =>
+  z.object({
+    "type": z.string(),
+    "label": z.string(),
+    "parameter_schema": z.record(z.string(), jsonValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskType>;
+
+export const StudioToFieldSchema: z.ZodType<StudioToField> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("toField"),
+    "sweep_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioToField>;
+
+export const StudioToSweepSchema: z.ZodType<StudioToSweep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("toSweep"),
+  }).strict()
+) as unknown as z.ZodType<StudioToSweep>;
+
+export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "step_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "revision": Sha256Schema,
+    "fields": z.array(StudioAuthoringFieldSchema),
+    "patches": z.array(ProjectValueEditSchema),
+    "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainAuthoring>;
+
+export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "change": z.union([StudioAuthoringChangeSchema, StudioAuthoringSweepChangeSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainAuthoringRequest>;
+
+export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("train"),
+    "base": BaseSchema,
+    "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
+    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
+    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
+    "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
+    "requires": z.array(PatchPathSchema).optional(),
+    "note": z.union([StepNoteSchema, z.null()]).optional(),
+    "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainStep>;
+
+export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "run": StudioSavedTrainKeySchema,
+    "model": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "task_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
+    "objective_document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
+    "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
+    "task_source": z.union([StudioEvaluateValueSourceSchema, z.null()]).optional(),
+    "task_field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
+    "objective": z.union([ObjectiveDocumentSchema, z.null()]),
+    "task_types": z.array(StudioTaskTypeSchema),
+    "tasks": z.array(StudioTaskChoiceSchema),
+    "variables": z.array(ScopedValueSchema),
+    "signals": z.array(ScopedValueSchema),
+    "epochs": z.array(EpochSchema),
+    "period_seconds": z.number().finite(),
+    "n_steps": z.union([z.number().int().safe(), z.null()]),
+    "inputs": z.array(StudioTrialInputSchema),
+    "outputs": z.array(StudioTrialOutputSchema),
+    "resets": z.array(StudioTrialResetSchema),
+    "fields": z.array(StudioTrialFieldSchema),
+    "problems": z.array(ProblemSchema),
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialAuthoring>;
+
+export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "run": StudioSavedTrainKeySchema,
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialBindingEditSchema, StudioTrialSelectTaskSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
+    "scope": z.union([z.union([StudioTrialStepScopeSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
+
+export const StudioTrialBindingEditSchema: z.ZodType<StudioTrialBindingEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("binding"),
+    "input": ModelAddressSchema,
+    "signal": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialBindingEdit>;
+
+export const StudioTrialDocumentEditSchema: z.ZodType<StudioTrialDocumentEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("task"), z.literal("objective")]),
+    "edits": z.array(ProjectValueEditSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialDocumentEdit>;
+
+export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("expression"),
+    "term": z.string(),
+    "field": z.union([z.literal("measure"), z.literal("weight")]),
+    "text": z.string().max(8192),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialExpressionEdit>;
+
+export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
+  z.object({
+    "path": z.string(),
+    "projection": SiteProjectionSchema,
+    "text": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialField>;
+
+export const StudioTrialInputSchema: z.ZodType<StudioTrialInput> = z.lazy(() =>
+  z.object({
+    "address": ModelAddressSchema,
+    "name": z.string(),
+    "type": z.union([ValueTypeSchema, z.null()]),
+    "required": z.boolean(),
+    "signal": z.union([z.string(), z.null()]),
+    "explicit": z.boolean(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialInput>;
+
+export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =>
+  z.object({
+    "address": ModelAddressSchema,
+    "value": ScopedValueSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioTrialOutput>;
+
+export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
+  z.object({
+    "address": ModelAddressSchema,
+    "type": ValueTypeSchema,
+    "finest": LevelSchema,
+    "variable": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialReset>;
+
+export const StudioTrialSelectTaskSchema: z.ZodType<StudioTrialSelectTask> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("select_task"),
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialSelectTask>;
+
+export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("step"),
+    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialStepScope>;
+
+export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "best": z.union([BestSchema, z.null()]).optional(),
+    "when": z.union([WhenSchema, z.null()]).optional(),
+    "rows": z.array(SelectedRowSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<SubsetTerms>;
+
+export const SweepSchema: z.ZodType<Sweep> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisSchema, z.null()])).optional(),
+    "rows": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([RowSchema, z.null()])).optional(),
+    "exceptions": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([SweepExceptionSchema, z.null()])).optional(),
+    "combination": z.union([CombinationSchema, z.null()]).optional(),
+    "inherit_rows": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<Sweep>;
+
+export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
+  z.object({
+    "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
+    "where": z.union([SweepExceptionTermsSchema, z.null()]).optional(),
+    "exclude": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<SweepException>;
+
+export const SweepExceptionTermsSchema: z.ZodType<SweepExceptionTerms> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "best": z.union([BestSchema, z.null()]).optional(),
+    "when": z.union([WhenSchema, z.null()]).optional(),
+    "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<SweepExceptionTerms>;
+
+export const SweepListSchema: z.ZodType<SweepList> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("list").optional(),
+    "members": z.array(ExpressionSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<SweepList>;
+
+export const SweepRangeSchema: z.ZodType<SweepRange> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("range").optional(),
+    "first": ExpressionSchema,
+    "last": ExpressionSchema,
+    "count": z.number().int().safe().gt(0),
+    "spacing": z.union([z.literal("linear"), z.literal("log")]),
+  }).strict()
+) as unknown as z.ZodType<SweepRange>;
+
+export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("sample").optional(),
+    "draw": DrawValueSchema,
+    "count": z.number().int().safe().gt(0),
+  }).strict()
+) as unknown as z.ZodType<SweepSample>;
+
+export const SweepTargetSchema: z.ZodType<SweepTarget> = z.lazy(() =>
+  z.string().regex(new RegExp("^(?:(?:steps\\.[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
+) as unknown as z.ZodType<SweepTarget>;
+
+export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "variables": z.array(VariableSchema),
+    "epochs": z.array(EpochSchema).min(1),
+    "signals": z.array(SignalSchema),
+    "links": z.array(LinkSchema).optional(),
+    "fixed_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "validation_trials": z.array(ValidationTrialSchema).min(1).optional(),
+  }).strict()
+) as unknown as z.ZodType<TaskDocument>;
+
+export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
+  z.object({
+    "start": z.number().int().safe(),
+    "end": z.number().int().safe(),
+  }).strict()
+) as unknown as z.ZodType<TextSpan>;
+
+export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
+  z.object({
+    "model_name": z.string(),
+    "model": ModelDocumentSchema,
+    "task": z.union([TaskDocumentSchema, z.null()]),
+    "objective": ObjectiveDocumentSchema,
+    "input_overrides": z.record(z.string(), z.string()).optional(),
+    "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
+  }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
+) as unknown as z.ZodType<TrialDocuments>;
+
+export const UpdateCadenceSchema: z.ZodType<UpdateCadence> = z.lazy(() =>
+  z.object({
+    "every": z.number().int().safe().gt(0).max(9007199254740991),
+    "from": z.union([z.number().int().safe().gt(0).max(9007199254740991), z.null()]).optional(),
+    "through": z.union([z.number().int().safe().gt(0).max(9007199254740991), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<UpdateCadence>;
+
+export const UpdateCheckpointSchema: z.ZodType<UpdateCheckpoint> = z.lazy(() =>
+  z.object({
+    "at": z.number().int().safe().gt(0).max(9007199254740991),
+  }).strict()
+) as unknown as z.ZodType<UpdateCheckpoint>;
+
+export const UpdateRuleSchema: z.ZodType<UpdateRule> = z.lazy(() =>
+  z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])
+) as unknown as z.ZodType<UpdateRule>;
+
+export const ValidationPlacementSchema: z.ZodType<ValidationPlacement> = z.lazy(() =>
+  z.object({
+    "location": z.union([z.literal("live"), z.literal("ordinary")]),
+    "reason": z.union([z.literal("within_budget"), z.literal("late"), z.literal("unqualified"), z.literal("unmeasured"), z.literal("over_budget"), z.literal("driver_occupied")]),
+    "predicted_update_fraction": z.union([z.number().finite(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ValidationPlacement>;
+
+export const ValidationTrialSchema: z.ZodType<ValidationTrial> = z.lazy(() =>
+  z.object({
+    "variables": z.record(z.string(), ValidationValueSchema).optional(),
+    "epoch_steps": z.record(z.string(), z.number().int().safe()).optional(),
+  }).strict()
+) as unknown as z.ZodType<ValidationTrial>;
+
+export const ValidationValueSchema: z.ZodType<ValidationValue> = z.lazy(() =>
+  z.union([ScalarSchema, z.array(ValidationValueSchema)])
+) as unknown as z.ZodType<ValidationValue>;
+
+export const ValueBaseSchema: z.ZodType<ValueBase> = z.lazy(() =>
+  z.union([z.literal("real"), z.literal("integer"), z.literal("boolean")])
+) as unknown as z.ZodType<ValueBase>;
+
+export const ValueTypeSchema: z.ZodType<ValueType> = z.lazy(() =>
+  z.object({
+    "base": ValueBaseSchema,
+    "shape": z.array(z.number().int().safe().gt(0)).optional(),
+    "dimensions": DimensionsSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<ValueType>;
+
+export const VariableSchema: z.ZodType<Variable> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "type": ValueTypeSchema,
+    "value": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<Variable>;
+
+export const VariableBindingSchema: z.ZodType<VariableBinding> = z.lazy(() =>
+  z.object({
+    "variable": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+  }).strict()
+) as unknown as z.ZodType<VariableBinding>;
+
+export const WhenSchema: z.ZodType<When> = z.lazy(() =>
+  z.object({
+    "metric": z.string().min(1),
+    "op": z.union([z.literal("lt"), z.literal("le"), z.literal("eq"), z.literal("ne"), z.literal("ge"), z.literal("gt")]),
+    "value": z.number().finite(),
+  }).strict()
+) as unknown as z.ZodType<When>;
 
 export const contractSchemas = {
-  GraphListResponse: GraphListResponseSchema,
-  GraphCreateResponse: GraphCreateResponseSchema,
-  GraphUpdateResponse: GraphUpdateResponseSchema,
-  GraphDetailResponse: GraphDetailResponseSchema,
-  GraphValidationResponse: GraphValidationResponseSchema,
-  GraphExportResponse: GraphExportResponseSchema,
+  KeepOpen: KeepOpenSchema,
+  CloseWhenIdle: CloseWhenIdleSchema,
+  LocalTargetProfile: LocalTargetProfileSchema,
+  SessionTargetProfile: SessionTargetProfileSchema,
+  LocalTarget: LocalTargetSchema,
+  TargetRealization: TargetRealizationSchema,
+  SessionTarget: SessionTargetSchema,
+  ReadyTarget: ReadyTargetSchema,
+  OffTarget: OffTargetSchema,
+  UnreachableTarget: UnreachableTargetSchema,
+  TargetOption: TargetOptionSchema,
+  ExecutionTargets: ExecutionTargetsSchema,
+  OpeningObservation: OpeningObservationSchema,
+  JobError: JobErrorSchema,
+  JobOutcome: JobOutcomeSchema,
+  JobProgress: JobProgressSchema,
+  JobReceipt: JobReceiptSchema,
+  StudioSubmissionActor: StudioSubmissionActorSchema,
+  StudioActivityJob: StudioActivityJobSchema,
+  StudioEventReset: StudioEventResetSchema,
+  StudioEventWatermark: StudioEventWatermarkSchema,
+  StudioJobEvent: StudioJobEventSchema,
+  StudioJobEventHistory: StudioJobEventHistorySchema,
+  StudioJobResumeRequest: StudioJobResumeRequestSchema,
+  StudioJobSnapshot: StudioJobSnapshotSchema,
+  StudioJobStopItem: StudioJobStopItemSchema,
+  StudioJobStopRequest: StudioJobStopRequestSchema,
+  StudioJobSubmission: StudioJobSubmissionSchema,
+  StudioSavedEvaluationRead: StudioSavedEvaluationReadSchema,
+  StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequestSchema,
+  StudioEvaluationObjectiveSeries: StudioEvaluationObjectiveSeriesSchema,
+  StudioEvaluationObjectivePoint: StudioEvaluationObjectivePointSchema,
+  StudioEvaluationObjectiveTerm: StudioEvaluationObjectiveTermSchema,
+  StudioEvaluationCheckpoint: StudioEvaluationCheckpointSchema,
+  StudioEvaluationCheckpointGap: StudioEvaluationCheckpointGapSchema,
+  StudioEvaluationCheckpointSeries: StudioEvaluationCheckpointSeriesSchema,
+  StudioSavedEvaluationResult: StudioSavedEvaluationResultSchema,
+  StudioSavedEvaluationRow: StudioSavedEvaluationRowSchema,
+  StudioSavedTrainAttempt: StudioSavedTrainAttemptSchema,
+  StudioSavedTrainChange: StudioSavedTrainChangeSchema,
+  StudioSavedTrainKey: StudioSavedTrainKeySchema,
+  StudioSavedTrainResult: StudioSavedTrainResultSchema,
+  StudioSavedTrainRow: StudioSavedTrainRowSchema,
+  StudioSavedTrainRunRequest: StudioSavedTrainRunRequestSchema,
+  StudioSavedMachineQuoteRequest: StudioSavedMachineQuoteRequestSchema,
+  StudioMachineApproval: StudioMachineApprovalSchema,
+  StudioMachineApprovalReceipt: StudioMachineApprovalReceiptSchema,
+  StudioMachineQuote: StudioMachineQuoteSchema,
+  StudioMachineQuoteRow: StudioMachineQuoteRowSchema,
+  StudioSavedTrainRuns: StudioSavedTrainRunsSchema,
+  StudioPlanRequestAddress: StudioPlanRequestAddressSchema,
+  StudioPlanReviewEntry: StudioPlanReviewEntrySchema,
+  StudioPlanReviewSource: StudioPlanReviewSourceSchema,
+  StudioTrainCheckpointSource: StudioTrainCheckpointSourceSchema,
+  StudioLocalSession: StudioLocalSessionSchema,
+  StudioRemoteSession: StudioRemoteSessionSchema,
+  StudioVenueCursor: StudioVenueCursorSchema,
+  StudioVenueStream: StudioVenueStreamSchema,
+  StoreTransferProgress: StoreTransferProgressSchema,
+  StudioSubmissionItem: StudioSubmissionItemSchema,
+  ModelAddress: ModelAddressSchema,
+  ModelDocument: ModelDocumentSchema,
+  ModelEditRequest: ModelEditRequestSchema,
+  ModelEditResponse: ModelEditResponseSchema,
+  ModelConnectionReviewRequest: ModelConnectionReviewRequestSchema,
+  ModelConnectionReview: ModelConnectionReviewSchema,
+  ModelProjectionRequest: ModelProjectionRequestSchema,
+  ModelProjection: ModelProjectionSchema,
+  ModelFieldRequest: ModelFieldRequestSchema,
+  ModelFieldResponse: ModelFieldResponseSchema,
+  TrainFieldRequest: TrainFieldRequestSchema,
+  TrainFieldResponse: TrainFieldResponseSchema,
+  EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
+  EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
+  EvaluateAttachmentState: EvaluateAttachmentStateSchema,
+  EvaluateAttachmentEdit: EvaluateAttachmentEditSchema,
+  ModelUndoRequest: ModelUndoRequestSchema,
+  AnalysisDocument: AnalysisDocumentSchema,
+  TaskDocument: TaskDocumentSchema,
+  PythonTaskSelection: PythonTaskSelectionSchema,
+  ObjectiveDocument: ObjectiveDocumentSchema,
+  TrialDocuments: TrialDocumentsSchema,
+  StudioTrialAuthoring: StudioTrialAuthoringSchema,
+  StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
+  StudioCheckpointRuleEdit: StudioCheckpointRuleEditSchema,
+  StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
+  StudioSubsetToRowsEdit: StudioSubsetToRowsEditSchema,
+  StudioSubsetToRowsRequest: StudioSubsetToRowsRequestSchema,
+  FieldTextResult: FieldTextResultSchema,
+  Problem: ProblemSchema,
+  RangeValues: RangeValuesSchema,
+  ReportDocument: ReportDocumentSchema,
+  SampleValues: SampleValuesSchema,
+  SiteProjection: SiteProjectionSchema,
+  StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
+  StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
+  StudioAuthoringCatalog: StudioAuthoringCatalogSchema,
+  StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
+  StudioTrainAuthoring: StudioTrainAuthoringSchema,
+  StudioTrainAuthoringRequest: StudioTrainAuthoringRequestSchema,
+  AuthoredFileAddress: AuthoredFileAddressSchema,
+  RemoveProjectValue: RemoveProjectValueSchema,
+  SetProjectValue: SetProjectValueSchema,
+  StudioAuthoredFileRevision: StudioAuthoredFileRevisionSchema,
+  StudioPresentationWrite: StudioPresentationWriteSchema,
+  StudioProjectCreateFile: StudioProjectCreateFileSchema,
+  StudioProjectDocument: StudioProjectDocumentSchema,
+  StudioProjectWindowMap: StudioProjectWindowMapSchema,
+  StudioProjectPatch: StudioProjectPatchSchema,
+  StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
+  StudioProjectFilePatch: StudioProjectFilePatchSchema,
+  StudioProjectRename: StudioProjectRenameSchema,
+  StudioProjectReplay: StudioProjectReplaySchema,
+  StudioProjectRevision: StudioProjectRevisionSchema,
+  StudioProjectSnapshot: StudioProjectSnapshotSchema,
+  ProjectValueEdit: ProjectValueEditSchema,
   ComponentListResponse: ComponentListResponseSchema,
   ComponentDetailResponse: ComponentDetailResponseSchema,
   ComponentRefreshResponse: ComponentRefreshResponseSchema,
   DomainListResponse: DomainListResponseSchema,
   DomainCompileReport: DomainCompileReportSchema,
+  StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
+  StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
+  StudioRenderFailure: StudioRenderFailureSchema,
+  WorkspaceReplayTrial: WorkspaceReplayTrialSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
-  TrainingStartResponse: TrainingStartResponseSchema,
-  TrainingStatusResponse: TrainingStatusResponseSchema,
   SuccessResponse: SuccessResponseSchema,
-  WorkerConnectEnvelope: WorkerConnectEnvelopeSchema,
-  WorkerStatusEnvelope: WorkerStatusEnvelopeSchema,
   AnalysisPackagesResponse: AnalysisPackagesResponseSchema,
   AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponseSchema,
   GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
   AnalysisJobStatusResponse: AnalysisJobStatusResponseSchema,
-  TrainingRunInfo: TrainingRunInfoSchema,
-  StudioNativeTrainingDispatchRequest: StudioNativeTrainingDispatchRequestSchema,
-  StudioNativeTrainingDispatchAccepted: StudioNativeTrainingDispatchAcceptedSchema,
-  EvalRunInfo: EvalRunInfoSchema,
-  CreateEvalRunRequest: CreateEvalRunRequestSchema,
-  TrainingRunCompareResponse: TrainingRunCompareResponseSchema,
-  ManifestImportResponse: ManifestImportResponseSchema,
   SelectionSpec: SelectionSpecSchema,
   SelectionPreview: SelectionPreviewSchema,
-  SelectionRefreshDiff: SelectionRefreshDiffSchema,
-  SelectionPreviewRequest: SelectionPreviewRequestSchema,
-  SelectionRefreshRequest: SelectionRefreshRequestSchema,
   DatasetInfo: DatasetInfoSchema,
   TrajectoryMetadata: TrajectoryMetadataSchema,
   FilterResult: FilterResultSchema,
@@ -5696,54 +10775,150 @@ export const contractSchemas = {
   HistogramResponse: HistogramResponseSchema,
   ScatterResponse: ScatterResponseSchema,
   DiagnosticsResponse: DiagnosticsResponseSchema,
-  TreescopeRequest: TreescopeRequestSchema,
   InlineTreescopeRequest: InlineTreescopeRequestSchema,
   TreescopeResponse: TreescopeResponseSchema,
   InspectionStatusResponse: InspectionStatusResponseSchema,
-  ProbeResponse: ProbeResponseSchema,
-  ValidateLossResponse: ValidateLossResponseSchema,
   TaskTrialSampleRequest: TaskTrialSampleRequestSchema,
   TaskTrialSampleResponse: TaskTrialSampleResponseSchema,
-  TrainingWebSocketEvent: TrainingWebSocketEventSchema,
 } as const;
 
 export type ContractName = keyof typeof contractSchemas;
 export interface ContractTypeMap {
-  GraphListResponse: GraphListResponse;
-  GraphCreateResponse: GraphCreateResponse;
-  GraphUpdateResponse: GraphUpdateResponse;
-  GraphDetailResponse: GraphDetailResponse;
-  GraphValidationResponse: GraphValidationResponse;
-  GraphExportResponse: GraphExportResponse;
+  KeepOpen: KeepOpen;
+  CloseWhenIdle: CloseWhenIdle;
+  LocalTargetProfile: LocalTargetProfile;
+  SessionTargetProfile: SessionTargetProfile;
+  LocalTarget: LocalTarget;
+  TargetRealization: TargetRealization;
+  SessionTarget: SessionTarget;
+  ReadyTarget: ReadyTarget;
+  OffTarget: OffTarget;
+  UnreachableTarget: UnreachableTarget;
+  TargetOption: TargetOption;
+  ExecutionTargets: ExecutionTargets;
+  OpeningObservation: OpeningObservation;
+  JobError: JobError;
+  JobOutcome: JobOutcome;
+  JobProgress: JobProgress;
+  JobReceipt: JobReceipt;
+  StudioSubmissionActor: StudioSubmissionActor;
+  StudioActivityJob: StudioActivityJob;
+  StudioEventReset: StudioEventReset;
+  StudioEventWatermark: StudioEventWatermark;
+  StudioJobEvent: StudioJobEvent;
+  StudioJobEventHistory: StudioJobEventHistory;
+  StudioJobResumeRequest: StudioJobResumeRequest;
+  StudioJobSnapshot: StudioJobSnapshot;
+  StudioJobStopItem: StudioJobStopItem;
+  StudioJobStopRequest: StudioJobStopRequest;
+  StudioJobSubmission: StudioJobSubmission;
+  StudioSavedEvaluationRead: StudioSavedEvaluationRead;
+  StudioSavedEvaluationReplayRequest: StudioSavedEvaluationReplayRequest;
+  StudioEvaluationObjectiveSeries: StudioEvaluationObjectiveSeries;
+  StudioEvaluationObjectivePoint: StudioEvaluationObjectivePoint;
+  StudioEvaluationObjectiveTerm: StudioEvaluationObjectiveTerm;
+  StudioEvaluationCheckpoint: StudioEvaluationCheckpoint;
+  StudioEvaluationCheckpointGap: StudioEvaluationCheckpointGap;
+  StudioEvaluationCheckpointSeries: StudioEvaluationCheckpointSeries;
+  StudioSavedEvaluationResult: StudioSavedEvaluationResult;
+  StudioSavedEvaluationRow: StudioSavedEvaluationRow;
+  StudioSavedTrainAttempt: StudioSavedTrainAttempt;
+  StudioSavedTrainChange: StudioSavedTrainChange;
+  StudioSavedTrainKey: StudioSavedTrainKey;
+  StudioSavedTrainResult: StudioSavedTrainResult;
+  StudioSavedTrainRow: StudioSavedTrainRow;
+  StudioSavedTrainRunRequest: StudioSavedTrainRunRequest;
+  StudioSavedMachineQuoteRequest: StudioSavedMachineQuoteRequest;
+  StudioMachineApproval: StudioMachineApproval;
+  StudioMachineApprovalReceipt: StudioMachineApprovalReceipt;
+  StudioMachineQuote: StudioMachineQuote;
+  StudioMachineQuoteRow: StudioMachineQuoteRow;
+  StudioSavedTrainRuns: StudioSavedTrainRuns;
+  StudioPlanRequestAddress: StudioPlanRequestAddress;
+  StudioPlanReviewEntry: StudioPlanReviewEntry;
+  StudioPlanReviewSource: StudioPlanReviewSource;
+  StudioTrainCheckpointSource: StudioTrainCheckpointSource;
+  StudioLocalSession: StudioLocalSession;
+  StudioRemoteSession: StudioRemoteSession;
+  StudioVenueCursor: StudioVenueCursor;
+  StudioVenueStream: StudioVenueStream;
+  StoreTransferProgress: StoreTransferProgress;
+  StudioSubmissionItem: StudioSubmissionItem;
+  ModelAddress: ModelAddress;
+  ModelDocument: ModelDocument;
+  ModelEditRequest: ModelEditRequest;
+  ModelEditResponse: ModelEditResponse;
+  ModelConnectionReviewRequest: ModelConnectionReviewRequest;
+  ModelConnectionReview: ModelConnectionReview;
+  ModelProjectionRequest: ModelProjectionRequest;
+  ModelProjection: ModelProjection;
+  ModelFieldRequest: ModelFieldRequest;
+  ModelFieldResponse: ModelFieldResponse;
+  TrainFieldRequest: TrainFieldRequest;
+  TrainFieldResponse: TrainFieldResponse;
+  EvaluateAttachmentRequest: EvaluateAttachmentRequest;
+  EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
+  EvaluateAttachmentState: EvaluateAttachmentState;
+  EvaluateAttachmentEdit: EvaluateAttachmentEdit;
+  ModelUndoRequest: ModelUndoRequest;
+  AnalysisDocument: AnalysisDocument;
+  TaskDocument: TaskDocument;
+  PythonTaskSelection: PythonTaskSelection;
+  ObjectiveDocument: ObjectiveDocument;
+  TrialDocuments: TrialDocuments;
+  StudioTrialAuthoring: StudioTrialAuthoring;
+  StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;
+  StudioCheckpointRuleEdit: StudioCheckpointRuleEdit;
+  StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
+  StudioSubsetToRowsEdit: StudioSubsetToRowsEdit;
+  StudioSubsetToRowsRequest: StudioSubsetToRowsRequest;
+  FieldTextResult: FieldTextResult;
+  Problem: Problem;
+  RangeValues: RangeValues;
+  ReportDocument: ReportDocument;
+  SampleValues: SampleValues;
+  SiteProjection: SiteProjection;
+  StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
+  StudioAnalyzeRequest: StudioAnalyzeRequest;
+  StudioAuthoringCatalog: StudioAuthoringCatalog;
+  StudioAuthoringSurface: StudioAuthoringSurface;
+  StudioTrainAuthoring: StudioTrainAuthoring;
+  StudioTrainAuthoringRequest: StudioTrainAuthoringRequest;
+  AuthoredFileAddress: AuthoredFileAddress;
+  RemoveProjectValue: RemoveProjectValue;
+  SetProjectValue: SetProjectValue;
+  StudioAuthoredFileRevision: StudioAuthoredFileRevision;
+  StudioPresentationWrite: StudioPresentationWrite;
+  StudioProjectCreateFile: StudioProjectCreateFile;
+  StudioProjectDocument: StudioProjectDocument;
+  StudioProjectWindowMap: StudioProjectWindowMap;
+  StudioProjectPatch: StudioProjectPatch;
+  StudioProjectPatchBatch: StudioProjectPatchBatch;
+  StudioProjectFilePatch: StudioProjectFilePatch;
+  StudioProjectRename: StudioProjectRename;
+  StudioProjectReplay: StudioProjectReplay;
+  StudioProjectRevision: StudioProjectRevision;
+  StudioProjectSnapshot: StudioProjectSnapshot;
+  ProjectValueEdit: ProjectValueEdit;
   ComponentListResponse: ComponentListResponse;
   ComponentDetailResponse: ComponentDetailResponse;
   ComponentRefreshResponse: ComponentRefreshResponse;
   DomainListResponse: DomainListResponse;
   DomainCompileReport: DomainCompileReport;
+  StudioPlanarSceneRequest: StudioPlanarSceneRequest;
+  StudioPlanarSceneResponse: StudioPlanarSceneResponse;
+  StudioRenderFailure: StudioRenderFailure;
+  WorkspaceReplayTrial: WorkspaceReplayTrial;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;
-  TrainingStartResponse: TrainingStartResponse;
-  TrainingStatusResponse: TrainingStatusResponse;
   SuccessResponse: SuccessResponse;
-  WorkerConnectEnvelope: WorkerConnectEnvelope;
-  WorkerStatusEnvelope: WorkerStatusEnvelope;
   AnalysisPackagesResponse: AnalysisPackagesResponse;
   AnalysisBundleDryRunResponse: AnalysisBundleDryRunResponse;
   GenerateAnalysisResponse: GenerateAnalysisResponse;
   AnalysisJobStatusResponse: AnalysisJobStatusResponse;
-  TrainingRunInfo: TrainingRunInfo;
-  StudioNativeTrainingDispatchRequest: StudioNativeTrainingDispatchRequest;
-  StudioNativeTrainingDispatchAccepted: StudioNativeTrainingDispatchAccepted;
-  EvalRunInfo: EvalRunInfo;
-  CreateEvalRunRequest: CreateEvalRunRequest;
-  TrainingRunCompareResponse: TrainingRunCompareResponse;
-  ManifestImportResponse: ManifestImportResponse;
   SelectionSpec: SelectionSpec;
   SelectionPreview: SelectionPreview;
-  SelectionRefreshDiff: SelectionRefreshDiff;
-  SelectionPreviewRequest: SelectionPreviewRequest;
-  SelectionRefreshRequest: SelectionRefreshRequest;
   DatasetInfo: DatasetInfo;
   TrajectoryMetadata: TrajectoryMetadata;
   FilterResult: FilterResult;
@@ -5753,15 +10928,11 @@ export interface ContractTypeMap {
   HistogramResponse: HistogramResponse;
   ScatterResponse: ScatterResponse;
   DiagnosticsResponse: DiagnosticsResponse;
-  TreescopeRequest: TreescopeRequest;
   InlineTreescopeRequest: InlineTreescopeRequest;
   TreescopeResponse: TreescopeResponse;
   InspectionStatusResponse: InspectionStatusResponse;
-  ProbeResponse: ProbeResponse;
-  ValidateLossResponse: ValidateLossResponse;
   TaskTrialSampleRequest: TaskTrialSampleRequest;
   TaskTrialSampleResponse: TaskTrialSampleResponse;
-  TrainingWebSocketEvent: TrainingWebSocketEvent;
 }
 
 function formatPath(path: Array<string | number>): string {

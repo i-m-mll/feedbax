@@ -26,7 +26,7 @@ from plotly.subplots import make_subplots
 # pyright: reportMissingTypeStubs=false
 from plotly.colors import convert_colors_to_same_type
 
-from feedbax.objectives.loss import TermTree
+from feedbax.objectives.base import TermTree
 from feedbax.plot import apply_default_template
 from feedbax.plot.colors import DEFAULT_COLORS, color_add_alpha
 from feedbax.plot.misc import columns_mean_std, errorbars
@@ -418,19 +418,6 @@ def activity_heatmap(
         This is a helper for Plotly's [`imshow`](https://plotly.com/python/imshow/),
         when the data is an array of neural network unit activities with shape
         `(time, unit)`.
-
-    !!! Example
-        To plot hidden activity from a point-mass model built with
-        [`point_mass_nn`][feedbax.xabdeef.models.point_mass_nn], select the hidden
-        trajectory from its controller graph.
-
-        ```python
-        import feedbax._vendor.jax_cookbook.tree as jtree
-
-        states = task.eval(model, key=key_eval)  # States for all validation trials.
-        states_trial0 = jtree.take(states, 0)
-        activity_heatmap(states_trial0.net.hidden)
-        ```
 
     Arguments:
         activity: The array of activity over time for each unit in a network layer.

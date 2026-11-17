@@ -6,9 +6,26 @@
 
 from collections.abc import Iterable, Mapping
 from heapq import heapify, heappop, heappush
+from typing import TypeVar
+
+NodeId = TypeVar("NodeId", str, tuple[str, ...])
 
 
-def topological_sort(adjacency: Mapping[str, Iterable[str]]) -> list[str]:
+def instant_execution_order(nodes: Iterable[str], edges: Iterable[tuple[str, str]]) -> tuple[str, ...]:
+    adjacency = {name: set() for name in nodes}
+    for source, target in edges:
+        adjacency[source].add(target)
+    order, back_edges = detect_cycles_and_sort(adjacency)
+    if back_edges:
+        cycle_text = ", ".join(f"{source}->{target}" for source, target in back_edges)
+        raise ValueError(
+            "Instant graph wires contain a same-step cycle. "
+            f"Mark one cycle edge recurrent: {cycle_text}"
+        )
+    return tuple(order)
+
+
+def topological_sort(adjacency: Mapping[NodeId, Iterable[NodeId]]) -> list[NodeId]:
     """Return the topological order with lexical priority among ready node IDs.
 
     If cycles remain, the remaining nodes are appended in lexical order.
@@ -39,15 +56,17 @@ def topological_sort(adjacency: Mapping[str, Iterable[str]]) -> list[str]:
     return order
 
 
-def _canonical_adjacency(adjacency: Mapping[str, Iterable[str]]) -> dict[str, tuple[str, ...]]:
+def _canonical_adjacency(
+    adjacency: Mapping[NodeId, Iterable[NodeId]],
+) -> dict[NodeId, tuple[NodeId, ...]]:
     targets = {node: tuple(sorted(set(edges))) for node, edges in adjacency.items()}
     nodes = set(targets).union(*(set(edges) for edges in targets.values()))
     return {node: targets.get(node, ()) for node in sorted(nodes)}
 
 
 def detect_cycles_and_sort(
-    adjacency: Mapping[str, Iterable[str]],
-) -> tuple[list[str], list[tuple[str, str]]]:
+    adjacency: Mapping[NodeId, Iterable[NodeId]],
+) -> tuple[list[NodeId], list[tuple[NodeId, NodeId]]]:
     """Detect cycle-forming edges and return a topological order.
 
     Uses lexical DFS traversal to identify back edges deterministically. The
@@ -55,10 +74,10 @@ def detect_cycles_and_sort(
     """
     adjacency = _canonical_adjacency(adjacency)
     nodes = tuple(adjacency)
-    visited: dict[str, int] = {node: 0 for node in nodes}  # 0=unseen,1=visiting,2=done
-    back_edges: list[tuple[str, str]] = []
+    visited: dict[NodeId, int] = {node: 0 for node in nodes}  # 0=unseen,1=visiting,2=done
+    back_edges: list[tuple[NodeId, NodeId]] = []
 
-    def dfs(node: str) -> None:
+    def dfs(node: NodeId) -> None:
         visited[node] = 1
         for tgt in adjacency[node]:
             if visited[tgt] == 0:

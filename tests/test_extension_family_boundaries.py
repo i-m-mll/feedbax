@@ -3,20 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 
 import pytest
 
 from feedbax.analysis.evaluation_compaction import EvaluationBatchFragment
-from tests.support.training_fixtures import synthetic_supervised_training_program
-from feedbax.contracts.training import (
-    TrainingProgramAuthoringFacet,
-    TrainingMethodAuthoringContribution,
-    TrainingMethodAuthoringHook,
-)
 from feedbax.plugins import (
     EVALUATION_PRODUCT_UNION_FINALIZERS,
-    TRAINING_PROGRAMS,
     BootstrapError,
     BootstrapErrorCode,
     FamilyRequirement,
@@ -25,71 +17,6 @@ from feedbax.plugins import (
     bootstrap_application,
     new_registration_context,
 )
-
-
-def _authoring_contribution(_payload: object) -> TrainingMethodAuthoringContribution:
-    return TrainingMethodAuthoringContribution()
-
-
-def _projection(_payload: object) -> dict[str, object]:
-    return {}
-
-
-def _descriptor_plugin() -> PluginRegistration:
-    baseline = synthetic_supervised_training_program()
-    descriptor = replace(
-        baseline,
-        declaration=replace(
-            baseline.declaration,
-            method_ref="tests/external_authoring/v1",
-            payload_schema_id="tests.spec.external_authoring",
-            payload_schema_version="tests.spec.external_authoring.v1",
-            owner="tests.external",
-            package="tests",
-        ),
-        authoring=TrainingProgramAuthoringFacet(TrainingMethodAuthoringHook(
-            lowerer_id="tests.external_authoring",
-            lowerer_version="tests.external_authoring.v1",
-            compile=_authoring_contribution,
-            graph=_projection,
-            task=_projection,
-            objective=_projection,
-            domain=_projection,
-        )),
-    )
-
-    def register(context) -> None:
-        methods = context.registry(TRAINING_PROGRAMS)
-        methods.register_program(descriptor)
-
-    return PluginRegistration(
-        PluginDeclaration(
-            "tests.external_descriptor",
-            "1",
-            2,
-            families=(FamilyRequirement(TRAINING_PROGRAMS.family),),
-        ),
-        register,
-    )
-
-
-def test_external_plugin_uses_public_descriptor_row_lowerer_helper() -> None:
-    state = asyncio.run(
-        bootstrap_application(
-            new_registration_context(),
-            registrations=(_descriptor_plugin(),),
-        )
-    )
-
-    assert state.registry(TRAINING_PROGRAMS).program("tests/external_authoring/v1") is not None
-    assert state.bundle.row_lowerers.available_keys() == (
-        (
-            "tests.spec.external_authoring",
-            "tests.spec.external_authoring.v1",
-            "tests.external_authoring",
-            "tests.external_authoring.v1",
-        ),
-    )
 
 
 def _finalizer_plugin(plugin_id: str) -> PluginRegistration:

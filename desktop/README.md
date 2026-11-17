@@ -2,6 +2,8 @@
 
 Feedbax Studio uses Tauri, macOS 14 or newer on Apple Silicon, and bundled CPython 3.12.9 with MJX on JAX CPU. Each Studio bundle contains Feedbax from the same source commit and version as the release. The app reads its resources from the signed bundle and requires no developer checkout, virtual environment, or dependency installer at runtime.
 
+The native build and Studio web styles use the signed shared window shell pinned in `vendor/window-shell`. Initialize that submodule before installing dependencies or building. For a local-only source, set the submodule URL for the checkout to the registered shell repository and initialize with Git's file transport allowed for that command. The native receipt records the pin.
+
 ## Build a private candidate
 
 From a clean commit on an Apple Silicon build Mac with Xcode command-line tools, Rust, Bun and uv, install the two locked Bun environments and run the native and bundle phases.
@@ -13,6 +15,7 @@ uv run --no-project --with packaging==26.3 python desktop/package.py native
 uv run --no-project --with packaging==26.3 python desktop/package.py bundle \
   --output .desktop-build/candidate --build-number 1 \
   --numerical-manifest "$STUDIO_NUMERICAL_MANIFEST" \
+  --runpod-uv "$STUDIO_RUNPOD_UV" \
   --signing-identity "$STUDIO_SIGNING_IDENTITY"
 ```
 
@@ -39,32 +42,16 @@ Run the installer commands on the executable in the unpacked app. The executable
 
 ## Service and data
 
-Studio's Quit command closes the GUI. Its per-user background service continues training and analysis. Reopen Studio and use Background jobs to inspect them. Cancel requests a cooperative training stop or interrupts an analysis job. A settled native training checkpoint can start a linked continuation. After a service crash, native training adopts verified surviving local workers, while interrupted HTTP worker jobs and analyses retain their last durable disposition and results.
+Studio's Quit command closes the GUI. Its per-user background service continues running jobs. The service shows the active run count in the menu bar while runs are active. Choose Activity to see those runs. Stop All requests checkpoints and Option reveals Force Stop All. Quit Service requests checkpoints and shuts down the service when its jobs settle. Open Studio again to start the service.
 
-The application menu has idle, checkpoint and force service stops, Reconnect, Login Items and Service Logs. Stop at a checkpoint can wait for the next supported training checkpoint. The owner-only control socket is separate from the loopback Studio origin, and the app exchanges a short-lived ticket for the browser session.
+The application menu has Reconnect, Login Items and Service Logs. A run that finishes or fails can notify you when its project window is in the background. The owner-only control socket is separate from the loopback Studio origin, and the app exchanges a short-lived ticket for the browser session.
 
 Installed files live inside the app bundle. Durable application state lives under `~/.feedbax`, with configuration in `config`, preferences in `settings` and the default workspace under `workspace`. Project-selected output locations retain models, checkpoints and results. `~/.cache/feedbax` contains disposable compilation files, temporary files and bounded service logs. Replacement and uninstall preserve durable state and project data.
 
-Import a self-contained UTF-8 MJCF document through the authenticated Studio endpoint `POST /api/graphs/assets/mujoco` with the XML as the request body. Use the returned content reference as `mujoco_asset.asset` in the authored graph. Studio retains the exact asset in its durable web content store and resolves the same reference when opening the project, training and resuming.
+## RunPod machines
 
-## Qualify the signed MJX CPU candidate
+Each release contains a sealed venue source tree from its own commit and the qualified Linux x86-64 `uv` binary. Supply the pinned Linux binary as `STUDIO_RUNPOD_UV` at bundle assembly.
 
-Generate the fixture inputs with the source development environment. Copy the harness and JSON to a private QA directory outside the developer checkout. Every installed harness command uses the signed app's bundled interpreter and the exact installed fixture root.
+An installed service with an owner-only `config/desktop-service/runpod.json` loads RunPod profiles at startup. The file uses `schema_id: "feedbax.desktop.runpod.v1"` and contains `profiles` (session target profiles with RunPod resources) and `authorization_seconds`. Set `runpod_config` to the absolute path of the account's RunPod TOML configuration and `ssh_identity` to the absolute path of the client SSH identity.
 
-```sh
-uv run --no-sync python -m scripts.qualify_biomechanics_desktop author > "$QA/fixtures.json"
-cp scripts/qualify_biomechanics_desktop.py "$QA/"
-CONTENTS="$APP/Contents"
-PYTHON="$CONTENTS/Resources/python/bin/python3.12"
-LAUNCHER="$CONTENTS/MacOS/feedbax-studio"
-```
-
-Install the retained signed archive using its receipt and verify native background-service readiness. For the source-denial phase, stop the registered service and run the exact installed launcher with `service serve` under the host's fixture sandbox. Deny reads from the developer checkout, Homebrew and dependency stores, and deny writes inside the app. Keep the fixture state and JIT cache writable. Prove both sandbox denials before collecting results. Start a fresh service under the same sandbox after the checkpoint stop. Keep the native installation and each service-generation receipt together.
-
-Run the harness as `"$PYTHON" -I -B "$QA/qualify_biomechanics_desktop.py"`. Pass `--contents "$CONTENTS" --fixture-root "$FIXTURE"` to commands that address the installed app. Capture each command's JSON output.
-
-1. Run `start "$QA/fixtures.json" planar-rigid --batches 2 --checkpoint-interval 1`. Wait with `snapshot "$JOB" --status completed`, then run `checkpoint "$QA/fixtures.json" planar-rigid "$JOB"`. The checkpoint command authenticates the model slot, checks that the controller weights moved and executes the loaded model to verify its planar observation and muscle state.
-2. Open the installed GUI and start `spatial-mixed` with a batch target large enough to span Quit and relaunch. Use a short checkpoint interval. Capture `snapshot "$JOB" --status running --gui present` after the first progress event, then quit the GUI and capture an absent-GUI snapshot. Reopen and capture a present-GUI snapshot. Use `--after-sequence` with the prior event sequence for each subsequent sample. Run `prove-quit` on the three snapshots to compare the service, worker, job and progress.
-3. Request `"$LAUNCHER" service stop checkpoint`. With the service stopped, run `checkpoint "$QA/fixtures.json" spatial-mixed "$JOB" --source-snapshot "$QA/reopened.json"`. Restart the service and use `resume "$JOB" "$PROJECT" "$QA/fixtures.json" spatial-mixed`. Wait for the successor to progress, then let it complete or checkpoint-stop it. If stopped, use its own pre-stop snapshot for offline checkpoint inspection. Run `prove-resume` on the original and successor checkpoint records. The proof checks restart generation, checkpoint lineage, unchanged authored model, controller weight progress, XYZ observations, a normalized quaternion, and the mixed muscle-state widths.
-
-Run `cache-probe` with the bundled interpreter under the same sandbox. It compiles a small CPU executable and verifies an actual write to the fixture's configured JIT cache. Retain the exact release and dependency identities, source-denial and native readiness logs, signed size, startup time, bundled MuJoCo notices, native inventory and cache proof. Stop and unregister the fixture after acceptance.
+Studio reads the machine quote before asking for Touch ID. Approve returns once Jobs records the approved saved selection. Jobs advances the recorded operation in the background and recovers it after restart. Keep the configured account and the approved release available while work is outstanding.

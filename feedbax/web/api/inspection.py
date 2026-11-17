@@ -9,13 +9,10 @@ from feedbax.web.models.inspection import (
     CycleAnnotationModel,
     InlineTreescopeRequest,
     InspectionStatusResponse,
-    TreescopeRequest,
     TreescopeResponse,
 )
-from feedbax.web.services.graph_service import GraphService
 
 router = APIRouter()
-graph_service = GraphService()
 
 
 def _graph_spec_to_tree_dict(graph_spec: GraphSpec) -> dict:
@@ -184,31 +181,4 @@ async def render_treescope_from_spec(
         request.graph,
         max_depth=request.max_depth,
         project_cycles=request.project_cycles,
-    )
-
-
-@router.post("/treescope/{graph_id}")
-async def render_treescope(
-    graph_id: str,
-    request: TreescopeRequest,
-) -> TreescopeResponse:
-    """Render a graph as Treescope HTML visualization.
-
-    Args:
-        graph_id: The ID of the graph to render.
-        request: Rendering options.
-
-    Returns:
-        TreescopeResponse containing the HTML and cycle information.
-    """
-    try:
-        record = graph_service.get_graph(graph_id)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Graph not found")
-
-    return _render_graph_spec(
-        record.project.graph,
-        max_depth=request.max_depth,
-        project_cycles=request.project_cycles,
-        roundtrip_mode=request.roundtrip_mode,
     )

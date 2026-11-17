@@ -1,0 +1,98 @@
+"""Typed request parameters. Inputs and attempt policy live outside these models."""
+
+from __future__ import annotations
+
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+from feedbax.contracts.figure_document import FigureDocument
+from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.report_document import ReportDocument
+from feedbax.contracts.request_identity_guard import IdentityWideInteger
+from feedbax.contracts.request_refs import Name
+from feedbax.contracts.training import (
+    MethodPayloadEnvelope,
+    MethodRefSpec,
+    RiskAggregationSpec,
+    TrialDocuments as TrialDocuments,
+)
+
+
+class NumericalSettings(BaseModel):
+    """Runtime settings that change the computation."""
+
+    model_config = ConfigDict(extra="forbid")
+    floating_point_bits: Literal[32, 64] | None = None
+    matmul_precision: (
+        Literal["default", "high", "highest", "bfloat16", "tensorfloat32", "float32"] | None
+    ) = None
+    deterministic: bool | None = Field(default=None, strict=True)
+
+
+class RequestSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    numerical_settings: NumericalSettings = Field(default_factory=NumericalSettings)
+
+
+class DocumentTrainingConfig(BaseModel):
+    """Run controls authored alongside a Model, Task and Objective."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    n_batches: int = 2000
+    batch_size: int = 128
+    grad_clip: float | None = 1.0
+    n_reach_steps: int = 80
+    snapshot_interval: int = 100
+
+
+class DocumentTrainingRequestSpec(RequestSpec):
+    """Managed Train parameters with optimizer settings owned by the method."""
+
+    trial_documents: TrialDocuments
+    method_payload: MethodPayloadEnvelope
+    method_ref: MethodRefSpec
+    training_config: DocumentTrainingConfig
+    risk_aggregation: RiskAggregationSpec = Field(default_factory=RiskAggregationSpec)
+    seed: Annotated[int | None, IdentityWideInteger()] = Field(default=None, strict=True)
+    on_nan: Literal["raise", "halt_restore_checkpoint"] = "raise"
+
+
+class EvaluationRequestSpec(RequestSpec):
+    evaluation_type: Name
+    params: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class AnalysisRequestSpec(RequestSpec):
+    analysis_type: Name
+    params: dict[str, JsonValue] = Field(default_factory=dict)
+    evaluation_states_policy: Literal["recompute", "require_durable"] = "recompute"
+
+
+class RenderRequestSpec(RequestSpec):
+    figure: FigureSpec | None
+    document: FigureDocument | None = None
+
+    @model_validator(mode="after")
+    def _require_lowered_inputs(self) -> RenderRequestSpec:
+        if (self.figure is None) == (self.document is None):
+            raise ValueError("Declare one render figure or dataset figure document.")
+        if self.figure is not None and (self.figure.inputs or self.figure.input_authorities):
+            raise ValueError("Lower figure input authorities to kernel inputs before encoding")
+        return self
+
+
+class ReportRequestSpec(RequestSpec):
+    report_type: Name | None
+    params: dict[str, JsonValue] = Field(default_factory=dict)
+    narrative: str | None = None
+    document: ReportDocument | None = None
+
+    @model_validator(mode="after")
+    def _require_one_report(self) -> ReportRequestSpec:
+        if (self.report_type is None) == (self.document is None):
+            raise ValueError("Declare one report recipe type or Report document.")
+        if self.document is not None and (self.params or self.narrative is not None):
+            raise ValueError("Report documents cannot carry recipe parameters or narrative.")
+        return self

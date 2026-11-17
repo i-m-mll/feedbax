@@ -1,0 +1,3 @@
+[submodule "window-shell"]
+	path = vendor/window-shell
+	url = https://github.com/i-m-mll/window-shell.git

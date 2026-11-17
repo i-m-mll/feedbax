@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -11,14 +12,7 @@ import numpy as np
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.contracts.training import GraphTopologySourceSpec
-from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.runtime.iteration import iterate_component
-from feedbax.training.checkpoint_custody import (
-    load_latest_checkpoint,
-    write_checkpoint_transaction,
-)
-from tests.test_checkpoint_custody import _run_spec
 
 _NOISE_MODELS = (
     "signal_dependent_gaussian",
@@ -53,10 +47,7 @@ def _setup():
     model = compile_graph(
         GraphDocument(graph=graph_spec), ComponentRegistry()
     ).graph.prepare()
-    spec = _run_spec().model_copy(
-        update={"graph": GraphTopologySourceSpec(inline=graph_spec.model_dump(mode="json"))}
-    )
-    return model, spec, spec.worker_execution.method_contract.phase_program
+    return model
 
 
 def _slots(model, carry, key):
@@ -78,16 +69,12 @@ def _continue(slots):
 
 
 def _resume(root):
-    model, spec, program = _setup()
+    model = _setup()
     fresh_key = jax.random.PRNGKey(88)
-    loaded = load_latest_checkpoint(
-        root / "checkpoint",
-        expected_run_spec=spec,
-        expected_phase_program=program,
-        expected_slots=_slots(model, model.init_state(key=fresh_key), fresh_key),
+    carry, key = eqx.tree_deserialise_leaves(
+        root / "carry.eqx", (model.init_state(key=fresh_key), fresh_key),
     )
-    carry = loaded.slots["model"][1]
-    actual = jax.tree.leaves((carry, _continue(loaded.slots)))
+    actual = jax.tree.leaves((carry, _continue(_slots(model, carry, key))))
     with np.load(root / "uninterrupted.npz") as expected:
         assert len(actual) == len(expected.files)
         for index, array in enumerate(actual):
@@ -99,7 +86,7 @@ def _resume(root):
 
 
 def test_registered_channel_checkpoint_continues_in_fresh_process(tmp_path):
-    model, spec, program = _setup()
+    model = _setup()
     prefix = jnp.array([[-0.5, 1.25], [-2.0, 3.0]], dtype=jnp.float32)
     prefix_key, continuation_key = jax.random.split(jax.random.PRNGKey(4))
     _, carry, _ = iterate_component(
@@ -120,19 +107,7 @@ def test_registered_channel_checkpoint_continues_in_fresh_process(tmp_path):
         assert np.any(outputs[noise][1] != 0)
     np.savez(tmp_path / "uninterrupted.npz", *jax.tree.leaves((carry, (outputs, final_carry))))
 
-    write_checkpoint_transaction(
-        tmp_path / "checkpoint",
-        run_spec=spec,
-        phase_program=program,
-        barrier_name="after_train_batch",
-        coordinate=ProgressCoordinate(
-            run_id="run-2",
-            phase="train_batch",
-            program_step=1,
-            completed_barrier="after_train_batch",
-        ),
-        slots=slots,
-    )
+    eqx.tree_serialise_leaves(tmp_path / "carry.eqx", (carry, continuation_key))
     process = subprocess.run(
         [
             sys.executable,

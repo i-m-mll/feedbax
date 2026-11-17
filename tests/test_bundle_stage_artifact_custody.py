@@ -1,14 +1,4 @@
-"""A freshly written bundle stage product carries the custody a reused one does.
-
-Reusing a cached stage product runs the full per-kind admission, and artifact
-byte custody is part of it. Binding a *freshly written* product on its manifest
-bytes alone would make a first run's custody weaker than the identical rerun's:
-the same artifacts, admitted on the second pass and trusted on the first.
-
-So the artifact half of that admission runs where the fresh receipt is built.
-These tests state it at both ends — the reusable gate on its own, and the
-bundle-stage receipt that now routes through it.
-"""
+"""Artifact custody verifies declared digests against saved analysis bytes."""
 
 from __future__ import annotations
 
@@ -17,11 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.analysis.fulfillment import (
-    FulfillmentAdmissionError,
-    admit_manifest_artifact_custody,
-)
-from feedbax.analysis.fulfillment_adapters import _bundle_stage_receipt
+from feedbax.analysis.fulfillment import admit_manifest_artifact_custody
 from feedbax.contracts.base import (
     ArtifactRef,
     Provenance,
@@ -66,17 +52,6 @@ def _write_product(root: Path, payload: bytes, relative: str = "products/stage.b
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
-
-
-def _write_manifest_bytes(root: Path, manifest: AnalysisRunManifest) -> tuple[Path, bytes]:
-    path = root / "manifests" / "analysis_runs" / "stage-custody.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = (manifest.model_dump_json(indent=2, exclude_none=True) + "\n").encode("utf-8")
-    path.write_bytes(raw)
-    return path, raw
-
-
-# -- the reusable gate ------------------------------------------------------
 
 
 def test_artifact_custody_admits_bytes_that_match_what_the_manifest_recorded(
@@ -132,54 +107,3 @@ def test_artifact_custody_refuses_an_artifact_that_declares_no_digest(tmp_path: 
 
     assert not outcome.admitted
     assert outcome.codes == ("artifact_digest_absent",)
-
-
-# -- the bundle-stage receipt now routes through it -------------------------
-
-
-def test_fresh_bundle_stage_receipt_refuses_artifacts_that_do_not_verify(
-    tmp_path: Path,
-) -> None:
-    declared = b"stage product bytes"
-    _write_product(tmp_path, b"a different product")
-    manifest = _manifest(
-        _artifact(hashlib.sha256(declared).hexdigest(), len(declared), "products/stage.bin")
-    )
-    path, raw = _write_manifest_bytes(tmp_path, manifest)
-
-    with pytest.raises(FulfillmentAdmissionError) as excinfo:
-        _bundle_stage_receipt(manifest, path, raw, root=tmp_path, node_key="analysis:stage")
-
-    assert excinfo.value.outcome.codes == ("artifact_sha256_mismatch",)
-
-
-def test_fresh_bundle_stage_receipt_binds_when_artifact_custody_holds(tmp_path: Path) -> None:
-    """Control: the receipt is still bound when the product really is there."""
-    payload = b"stage product bytes"
-    _write_product(tmp_path, payload)
-    manifest = _manifest(
-        _artifact(hashlib.sha256(payload).hexdigest(), len(payload), "products/stage.bin")
-    )
-    path, raw = _write_manifest_bytes(tmp_path, manifest)
-
-    receipt = _bundle_stage_receipt(
-        manifest, path, raw, root=tmp_path, node_key="analysis:stage"
-    )
-
-    assert receipt.manifest.id == MANIFEST_ID
-    assert receipt.node_kind == "analysis"
-
-
-def test_fresh_bundle_stage_receipt_gate_also_runs_without_captured_bytes(
-    tmp_path: Path,
-) -> None:
-    """The template path hands back no read, and is held to the same custody."""
-    declared = b"stage product bytes"
-    _write_product(tmp_path, b"a different product")
-    manifest = _manifest(
-        _artifact(hashlib.sha256(declared).hexdigest(), len(declared), "products/stage.bin")
-    )
-    path, _raw = _write_manifest_bytes(tmp_path, manifest)
-
-    with pytest.raises(FulfillmentAdmissionError):
-        _bundle_stage_receipt(manifest, path, None, root=tmp_path, node_key="analysis:stage")

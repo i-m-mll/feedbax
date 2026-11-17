@@ -1,180 +1,132 @@
+"""Preview authored trials from the same source used by the rollout."""
+
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import jax
-import jax.numpy as jnp
-import numpy as np
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from feedbax.contracts.graph import GraphSpec
-from feedbax.compiler.builders import build_component
-from feedbax.contracts.training import TaskSpec
-from feedbax.tasks import TaskTrialSpec
-from feedbax.tasks.reach_components import DelayedReaches, SimpleReaches
+from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.runtime._graph_key_schedule import sample_training_trials
+from feedbax.tasks.document import TaskParameters
 
 router = APIRouter()
 
 
-class SimulationRequest(BaseModel):
-    graph: GraphSpec
-    n_steps: int
-    inputs: Optional[dict[str, Any]] = None
-
-
-@router.post("/simulate")
-async def simulate(_: SimulationRequest):
-    raise HTTPException(status_code=501, detail="Simulation not implemented yet")
-
-
 class TaskTrialSampleRequest(BaseModel):
-    task_spec: TaskSpec
+    model_name: ProjectName
+    model: ModelDocument
+    task: TaskDocument | None = None
+    python_task: PythonTaskSelection | None = None
+    input_overrides: dict[str, str] = Field(default_factory=dict)
     seed: int = 0
-    count: int = 8
+    count: int = Field(default=8, ge=1, le=64)
+
+    @model_validator(mode="after")
+    def _one_task(self):
+        validate_cross_field_refinements("TaskTrialSampleRequest", self)
+        return self
 
 
 class TaskTimelineCue(BaseModel):
+    epoch: str
     label: str
-    step: int
-    kind: str
+    start: int
+    end: int
+    outcome: int
 
 
 class SampledTaskTrial(BaseModel):
     id: str
-    index: int
-    start: list[float]
-    goal: list[float]
-    n_steps: int
-    timeline: list[TaskTimelineCue] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    inits: dict[str, Any]
+    inputs: dict[str, Any]
+    present: dict[str, Any]
+    variables: dict[str, Any]
+    variable_defined: dict[str, Any]
+    timeline: list[TaskTimelineCue]
 
 
 class TaskTrialSampleResponse(BaseModel):
-    schema_version: str = "feedbax.execution.sampled_task_trials.v1"
-    task_type: str
+    schema_version: str = "feedbax.execution.sampled_task_trials.v2"
+    task: str
     seed: int
-    count: int
+    n_steps: int
     trials: list[SampledTaskTrial]
-
-
-def _normal_task_type(task_type: str) -> str:
-    if task_type in {
-        "ReachingTask",
-        "feedbax.task.ReachingTask",
-        "feedbax.task.SimpleReaches",
-        f"feedbax.{SimpleReaches.__name__}",
-    }:
-        return "SimpleReaches"
-    if task_type in {"feedbax.task.DelayedReaches", f"feedbax.{DelayedReaches.__name__}"}:
-        return "DelayedReaches"
-    return task_type
-
-
-def _as_pair(value: Any, *, path: str) -> list[float]:
-    array = np.asarray(value, dtype=float)
-    if array.shape[-1:] != (2,):
-        raise ValueError(f"{path} must end in a 2D position, got shape {array.shape}")
-    point = array.reshape((-1, 2))[-1]
-    return [float(point[0]), float(point[1])]
-
-
-def _timeline_cues(trial: TaskTrialSpec) -> list[TaskTimelineCue]:
-    timeline = trial.timeline
-    cues: list[TaskTimelineCue] = []
-    bounds = np.asarray(timeline.epoch_bounds)
-    if bounds.size and bounds.ndim >= 1:
-        flat_bounds = bounds.reshape((-1, bounds.shape[-1]))[0]
-        names = list(timeline.epoch_names)
-        for index, step in enumerate(flat_bounds[:-1]):
-            label = names[index] if index < len(names) else f"epoch {index + 1}"
-            cues.append(TaskTimelineCue(label=label, step=int(step), kind="epoch"))
-    event_steps = timeline.event_steps
-    if event_steps is not None:
-        flat_steps = np.asarray(event_steps).reshape((-1,))
-        names = list(timeline.event_names)
-        for index, step in enumerate(flat_steps):
-            label = names[index] if index < len(names) else f"event {index + 1}"
-            cues.append(TaskTimelineCue(label=label, step=int(step), kind="event"))
-    return cues
-
-
-def _sampled_trial_payload(
-    trial: TaskTrialSpec, *, index: int, state_steps: int
-) -> SampledTaskTrial:
-    try:
-        start = _as_pair(trial.inits["mechanics.effector"].pos, path="inits.mechanics.effector.pos")
-        goal = _as_pair(
-            trial.targets["mechanics.effector.pos"].value,
-            path="targets.mechanics.effector.pos.value",
-        )
-    except KeyError as exc:
-        raise ValueError(
-            "Task trial does not expose mechanics.effector start/goal positions for preview"
-        ) from exc
-
-    metadata: dict[str, Any] = {}
-    if trial.extra:
-        for key, value in trial.extra.items():
-            array = np.asarray(value)
-            metadata[key] = array.item() if array.shape == () else array.tolist()
-
-    return SampledTaskTrial(
-        id=f"trial:{index}",
-        index=index,
-        start=start,
-        goal=goal,
-        n_steps=state_steps,
-        timeline=_timeline_cues(trial),
-        metadata=metadata,
-    )
 
 
 @router.post("/task-trials/sample", response_model=TaskTrialSampleResponse)
 async def sample_task_trials(
-    payload: TaskTrialSampleRequest, request: Request
+    payload: TaskTrialSampleRequest,
+    request: Request,
 ) -> TaskTrialSampleResponse:
-    count = int(payload.count)
-    if count < 1 or count > 64:
-        raise HTTPException(status_code=422, detail="count must be between 1 and 64")
-
-    task_type = _normal_task_type(payload.task_spec.type)
-    if task_type not in {"SimpleReaches", "DelayedReaches"}:
+    bundle = request.app.state.bootstrap_state.bundle
+    selected = payload.task if payload.task is not None else payload.python_task
+    assert selected is not None
+    paired = compile_trial_execution(
+        payload.model_name,
+        payload.model,
+        selected,
+        bundle.components,
+        bundle.expression_functions,
+        python_tasks=bundle.python_tasks,
+        input_overrides=payload.input_overrides,
+    )
+    if not isinstance(paired, PreparedTrialExecution):
         raise HTTPException(
-            status_code=422,
-            detail=f"Task type {payload.task_spec.type!r} is not supported for sampled preview",
+            status_code=422, detail=[item.model_dump(mode="json") for item in paired]
         )
-
-    owner = {"SimpleReaches": SimpleReaches, "DelayedReaches": DelayedReaches}[task_type]
-    try:
-        component = build_component(
-            "preview_task",
-            f"feedbax.{owner.__name__}",
-            payload.task_spec.params,
-            component_registry=request.app.state.bootstrap_state.bundle.components,
-        )
-    except (NotImplementedError, ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    task = getattr(component, "task", None)
-    if task is None or not hasattr(task, "sample_trial"):
+    task = paired.execution.task
+    if task.reads_model:
         raise HTTPException(
-            status_code=422,
-            detail=f"Task type {payload.task_spec.type!r} cannot sample preview trials",
+            status_code=422, detail="This task needs model outputs to produce a trial."
         )
 
-    keys = jax.random.split(jax.random.PRNGKey(int(payload.seed)), count)
-    trials: list[SampledTaskTrial] = []
-    for index, key in enumerate(keys):
-        try:
-            trial = task.sample_trial(jnp.asarray(key))
-            trials.append(_sampled_trial_payload(trial, index=index, state_steps=task.n_steps))
-        except (ValueError, TypeError, KeyError, AttributeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
+    key = jax.random.PRNGKey(payload.seed)
+    samples = jax.device_get(
+        sample_training_trials(
+            lambda trial_key: task.ahead(TaskParameters(), key, trial_key),
+            key,
+            payload.count,
+        )
+    )
+    labels = {epoch.id: epoch.name for epoch in selected.epochs} if isinstance(selected, TaskDocument) else {}
+    trials = []
+    for index in range(payload.count):
+        trial = jax.tree.map(lambda values: values[index], samples)
+        timeline = [
+            TaskTimelineCue(
+                epoch=epoch,
+                label=labels.get(epoch, epoch),
+                start=int(start),
+                end=int(end),
+                outcome=int(outcome),
+            )
+            for epoch, start, end, outcome in zip(
+                task.epochs,
+                *trial.epochs,
+                strict=True,
+            )
+        ]
+        trials.append(
+            SampledTaskTrial(
+                id=f"trial:{index}",
+                inits={key: value.tolist() for key, value in trial.inits.items()},
+                inputs={key: value.tolist() for key, value in trial.inputs.items()},
+                present={key: value.tolist() for key, value in trial.present.items()},
+                variables={key: value.tolist() for key, value in trial.variables.items()},
+                variable_defined={
+                    key: value.tolist() for key, value in (trial.variable_defined or {}).items()
+                },
+                timeline=timeline,
+            )
+        )
     return TaskTrialSampleResponse(
-        task_type=task_type,
-        seed=int(payload.seed),
-        count=count,
-        trials=trials,
+        task=selected.id if isinstance(selected, TaskDocument) else selected.type,
+        seed=payload.seed, n_steps=task.n_steps, trials=trials,
     )

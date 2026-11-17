@@ -11,6 +11,7 @@ from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 
 from feedbax.models.feedback import feedback_state_view
 from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime._signal_schedule import SignalSchedule
 from feedbax.runtime.trial_history import trial_history_plan
 from feedbax.runtime.graph import (
     AuthoredArrayEncoding,
@@ -19,6 +20,7 @@ from feedbax.runtime.graph import (
     Graph,
     GraphNode,
     Wire,
+    _InterleavedGraph,
 )
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
@@ -248,9 +250,11 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
         )
 
     return GraphSpec(
+        step_seconds=graph.step_seconds,
         nodes=nodes,
         wires=[
             WireSpec(
+                id=wire.id,
                 source_node=wire.source_node,
                 source_port=wire.source_port,
                 target_node=wire.target_node,
@@ -287,8 +291,13 @@ def _instantiate_graph(
     construction_key: PRNGKeyArray,
     initialization_keys: Mapping[tuple[str, ...], PRNGKeyArray] | None = None,
     artifact_provider: ArtifactBlobProvider | None = None,
+    scoped_schedule: SignalSchedule | None = None,
+    inherited_period: float | None = None,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
+    period = spec.step_seconds if inherited_period is None else inherited_period
+    if inherited_period is not None and spec.step_seconds is not None:
+        raise ValueError("A nested graph cannot declare a second model period")
     keys_by_node: dict[str, dict[tuple[str, ...], PRNGKeyArray]] = {}
     for (node_name, *path), key in (initialization_keys or {}).items():
         keys_by_node.setdefault(node_name, {})[tuple(path)] = key
@@ -380,6 +389,8 @@ def _instantiate_graph(
                     )
                 compiler = get_domain_compiler(domain.compiler_id)
                 if isinstance(subgraph, AcausalGraphSpec):
+                    if period is not None and subgraph.solver.dt != period:
+                        raise ValueError(f"Solver period for {node_name!r} differs from the model root")
                     nodes[node_name] = compiler(
                         subgraph, node_name, execution_registry, artifact_provider=artifact_provider,
                     )
@@ -399,6 +410,7 @@ def _instantiate_graph(
                 construction_key=derive_key(construction_key, "construction", node_name),
                 initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
                 artifact_provider=artifact_provider,
+                inherited_period=period,
             )
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
@@ -415,6 +427,7 @@ def _instantiate_graph(
                 construction_key=derive_key(construction_key, "construction", node_name),
                 initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
                 artifact_provider=artifact_provider,
+                inherited_period=period,
             )
             continue
         meta = metadata_registry.get(node_type)
@@ -440,6 +453,10 @@ def _instantiate_graph(
             params = {**params, "key": derive_key(construction_key, "construction", node_name)}
         config = resolution.node_configs.get(node_name)
         if config is not None:
+            if period is not None:
+                for name in ("dt", "control_dt"):
+                    if name in type(config).model_fields and getattr(config, name) != period:
+                        raise ValueError(f"Period for {node_name!r} differs from the model root")
             config = config.model_copy(
                 update={
                     name: _materialize_component_param_value(
@@ -488,6 +505,7 @@ def _instantiate_graph(
             wire.target_port,
             wire.temporality,
             wire.recurrent_initializer,
+            id=wire.id,
         )
         for wire in spec.wires
     )
@@ -499,7 +517,9 @@ def _instantiate_graph(
         name: (binding[0], binding[1]) for name, binding in spec.output_bindings.items()
     }
 
-    return Graph(
+    graph_fields = dict(
+        step_seconds=spec.step_seconds,
+        inherited_period=inherited_period,
         nodes=nodes,
         wires=wires,
         input_ports=tuple(spec.input_ports),
@@ -513,6 +533,9 @@ def _instantiate_graph(
             nodes, wires, input_bindings=input_bindings, output_bindings=output_bindings
         ),
     )
+    if scoped_schedule is not None:
+        return _InterleavedGraph(**graph_fields, schedule=scoped_schedule)
+    return Graph(**graph_fields)
 
 
 def _split_lowering_metadata(

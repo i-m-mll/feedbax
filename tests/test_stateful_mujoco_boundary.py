@@ -18,10 +18,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.mechanics.body import default_3link_bounds, sample_preset
 from feedbax.mechanics.model_builder import ChainConfig, SimConfig, planar_chain_graph
 from feedbax.mechanics.skeleton.mjx_skeleton import AppliedWrench
-from feedbax.objectives.loss import TargetSpec, TargetStateLoss
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.runtime.mapping import WhereDict
-from feedbax.tasks.task import TaskTrialSpec, prepare_trial
 
 
 mujoco = pytest.importorskip("mujoco")
@@ -188,29 +185,27 @@ def test_spatial_continuous_configuration_and_trial_loss_gradient(tmp_path):
     mujoco.mj_integratePos(node.descriptor.model, minus, np.asarray(qvel), -1e-5)
     np.testing.assert_allclose(velocity, (plus - minus) / 2e-5, atol=1e-11)
 
-    position = lambda state: state.physics.effector.pos
-    loss = TargetStateLoss(label="spatial reach", where=position)
-    trial = TaskTrialSpec(
-        inits=WhereDict({
-            "physics.plant.skeleton.qpos": qpos,
-            "physics.plant.skeleton.qvel": qvel,
-        }),
-        targets=WhereDict({"physics.effector.pos": TargetSpec(value=jnp.array([[.3, .2, .8]]))}),
-        inputs=jnp.zeros((5, 1)),
-    )
-    prepared = prepare_trial(graph, trial)
+    n_steps = 5
+    target = jnp.array([0.3, 0.2, 0.8])
+
+    def initial(model):
+        owner = model.nodes["physics"]
+        state = model.init_state(key=key)
+        state = owner.replace_state_value(state, ("plant", "skeleton", "qpos"), qpos)
+        return owner.replace_state_value(state, ("plant", "skeleton", "qvel"), qvel)
+
+    start = initial(graph)
 
     def rollout(command):
         return graph(
-            {"control": jnp.broadcast_to(command, (prepared.n_steps, 1))},
-            prepared.init_state, key=key, n_steps=prepared.n_steps, return_state_history=True,
+            {"control": jnp.broadcast_to(command, (n_steps, 1))},
+            start, key=key, n_steps=n_steps,
         )
 
     @eqx.filter_jit
     def objective(command):
-        _, _, history = rollout(command)
-        batched = jax.tree.map(lambda value: value[None], history)
-        return loss.term(batched, trial, graph)[0]
+        outputs, _ = rollout(command)
+        return jnp.mean(jnp.sum((outputs["effector"].pos - target) ** 2, axis=-1))
 
     control = jnp.array(0.8)
     epsilon = 1e-4
@@ -219,7 +214,7 @@ def test_spatial_continuous_configuration_and_trial_loss_gradient(tmp_path):
     assert abs(reverse) > 1e-7
     np.testing.assert_allclose(reverse, finite_difference, rtol=2e-4, atol=1e-9)
 
-    outputs, state, _ = rollout(control)
+    outputs, state = rollout(control)
     positions = outputs["effector"].pos
     assert abs(positions[-1, 2] - positions[0, 2]) > 1e-4
     np.testing.assert_allclose(
@@ -244,9 +239,9 @@ def test_spatial_continuous_configuration_and_trial_loss_gradient(tmp_path):
         _document(_spatial(provider, solver="euler", dt=0.0025)),
         ComponentRegistry(), artifact_provider=provider,
     ).graph
-    fine_trial = eqx.tree_at(lambda spec: spec.inputs, trial, jnp.ones((10, 1)) * control)
-    fine = prepare_trial(refined_graph, fine_trial)
-    _, refined_state = refined_graph(fine.inputs, fine.init_state, key=key, n_steps=fine.n_steps)
+    _, refined_state = refined_graph(
+        {"control": jnp.full((10, 1), control)}, initial(refined_graph), key=key, n_steps=10,
+    )
     coarse_qpos = node.state_view(state).plant.skeleton.qpos
     refined_qpos = refined_graph.nodes["physics"].state_view(refined_state).plant.skeleton.qpos
     coarse_error = np.linalg.norm(coarse_qpos - reference.qpos)

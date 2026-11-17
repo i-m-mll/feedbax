@@ -101,22 +101,28 @@ class AppPaths:
     def logs(self) -> Path:
         return self.cache / "logs"
 
-    def configure_studio(self) -> None:
+    @property
+    def host(self) -> Path:
+        return self.state / "host"
+
+    def configure_studio(self, *, desktop: bool = True) -> None:
         """Bind the existing Studio authorities before loading its Python modules."""
         os.environ.update(
             FEEDBAX_WEB_DATA=str(self.web),
             FEEDBAX_TRAJECTORIES_DIR=str(self.state / "trajectories"),
             FEEDBAX_EXPERIMENTS_CONFIG_DIR=str(self.config),
-            FEEDBAX_ORCHESTRATION_ROOT=str(self.workspace / "orchestration"),
-            FEEDBAX_CONTROLLER_EVENT_LOG=str(self.state / "controller" / "events.jsonl"),
             FEEDBAX_RUNS_DIR=str(self.workspace / "runs"),
+            FEEDBAX_HOST_ROOT=str(self.host),
             FEEDBAX_JAX_COMPILATION_CACHE_DIR=str(self.cache / "jax"),
             JAX_COMPILATION_CACHE_DIR=str(self.cache / "jax"),
             JAX_PLATFORMS="cpu",
             TMPDIR=str(self.cache / "tmp"),
             PYTHONDONTWRITEBYTECODE="1",
-            FEEDBAX_DESKTOP_STATE=str(self.state),
         )
+        if desktop:
+            os.environ["FEEDBAX_DESKTOP_STATE"] = str(self.state)
+        else:
+            os.environ.pop("FEEDBAX_DESKTOP_STATE", None)
         for directory in (self.control, self.settings, self.workspace, self.cache / "tmp"):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         control_stat = self.control.stat(follow_symlinks=False)

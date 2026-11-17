@@ -18,10 +18,6 @@ Two public seams keep execution ownership explicit:
   the complete Equinox-compatible task a mandatory compiled operand. Use it
   when a task object owns the scan and carries Feedbax components or other
   stateful execution structure.
-
-Native `AbstractTask` models may continue to use `AbstractTask.eval_trials` and
-`eval_ensemble_on_trials` (`feedbax/tasks/task.py`), whose time-step iteration
-belongs to `run_component` (`feedbax/runtime/iteration.py`).
 """
 
 from __future__ import annotations
@@ -483,8 +479,7 @@ def compiled_task_rollout(
     The mapped execution uses :func:`equinox.filter_jit`, so array leaves in an
     Equinox-compatible task PyTree remain dynamic compiled operands while its
     non-array leaves participate as static structure. This supports task
-    objects that carry Feedbax components and own their task-specific scan; it
-    does not require an :class:`~feedbax.tasks.AbstractTask`.
+    objects that carry Feedbax components and own their task-specific scan.
 
     As with :func:`compiled_trial_rollout`, trial leaves are mapped sequentially
     with :func:`jax.lax.map`, and the wrapper validates their common leading

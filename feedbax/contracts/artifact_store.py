@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import stat
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,8 +11,6 @@ from feedbax.contracts.base import (
     default_manifest_root,
 )
 from feedbax.contracts.artifact_custody import (
-    ContentMigrationMapping,
-    ContentMigrationReceipt,
     ContentObjectRef,
 )
 from feedbax.contracts.retention_artifact_schema import (
@@ -181,80 +177,6 @@ def _stored_artifact_ref(
     )
 
 
-def migrate_path_backed_content(
-    sources: dict[str, Path | str],
-    *,
-    destination_store: Path | str,
-) -> tuple[dict[str, ContentObjectRef], ContentMigrationReceipt]:
-    """Offline-only ingestion of explicitly named path-backed imported material."""
-    from feedbax.persistence.artifact_custody import (
-        ArtifactBlobContainmentError,
-        ArtifactBlobIntegrityError,
-        ImmutableArtifactBlobProvider,
-    )
-
-    provider = ImmutableArtifactBlobProvider(Path(destination_store).absolute())
-    refs: dict[str, ContentObjectRef] = {}
-    mappings: list[ContentMigrationMapping] = []
-    collision_keys: set[str] = set()
-    for source_ref, supplied_path in sorted(sources.items()):
-        if not source_ref or "\x00" in source_ref:
-            raise ArtifactBlobContainmentError(
-                "path-backed source refs must be non-empty and NUL-free"
-            )
-        path = Path(supplied_path)
-        if not path.is_absolute() or ".." in path.parts:
-            raise ArtifactBlobContainmentError(
-                f"path-backed migration source must be an explicit absolute path: {path}"
-            )
-        lexical = Path(os.path.abspath(path))
-        resolved = path.resolve(strict=True)
-        before = path.stat(follow_symlinks=False)
-        collision_key = os.path.normcase(str(resolved))
-        if collision_key in collision_keys:
-            raise ArtifactBlobContainmentError(
-                f"path-backed migration contains a target-path collision: {path}"
-            )
-        collision_keys.add(collision_key)
-        if lexical != resolved or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise ArtifactBlobContainmentError(
-                f"path-backed migration source must be one canonical regular non-link file: {path}"
-            )
-        object_ref = provider._store_file(path)
-        after = path.stat(follow_symlinks=False)
-        if (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-            before.st_ctime_ns,
-        ) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        ):
-            raise ArtifactBlobIntegrityError(
-                f"path-backed migration source changed during ingest: {path}"
-            )
-        refs[source_ref] = object_ref
-        mappings.append(
-            ContentMigrationMapping(
-                source_type="path-backed-import",
-                source_ref=source_ref,
-                source_sha256=object_ref.sha256,
-                target_ref=object_ref.object_id,
-                target_sha256=object_ref.sha256,
-                size_bytes=object_ref.size_bytes,
-            )
-        )
-    return refs, ContentMigrationReceipt(
-        source_schema_version="feedbax.path_backed_import.v1",
-        destination_store=str(provider.root),
-        mappings=tuple(mappings),
-        metadata={"migration_mode": "offline-explicit"},
-    )
 
 
 def _validate_retention_artifact_version(

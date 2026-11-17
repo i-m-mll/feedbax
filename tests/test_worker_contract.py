@@ -10,7 +10,6 @@ from feedbax.contracts.training import standard_supervised_method_contract
 from feedbax.contracts.worker import (
     CONSISTENCY_PREDICATE_GENERATOR_HASH,
     CONSISTENCY_PREDICATE_SCHEMA_VERSION,
-    PPO_MAPPING_TABLE,
     AxisReducerSpec,
     AxisSpec,
     BarrierArtifactSinkSpec,
@@ -23,7 +22,6 @@ from feedbax.contracts.worker import (
     StateSlotSpec,
     SlotAxisBindingSpec,
     UpdateKernelSpec,
-    supervised_executor_mapping,
     toy_adaptive_curriculum_method_contract,
     toy_minimax_method_contract,
 )
@@ -111,26 +109,6 @@ def _toy_adaptive_guards():
     return {
         "toy_adaptive.stop_when_counter_satisfied": _stop_when_counter_satisfied,
     }
-
-
-def test_supervised_executor_and_ppo_map_to_worker_vocabulary() -> None:
-    supervised = supervised_executor_mapping()
-
-    assert supervised[0].phase == "train_batch"
-    assert "batch" in supervised[0].axes
-    assert "task_optimizer_to_model" in supervised[0].optimizer_bindings
-    assert "checkpoint transaction" in (supervised[0].checkpoint_transaction or "")
-
-    ppo_phases = {row.phase for row in PPO_MAPPING_TABLE}
-    assert {
-        "collect_rollout",
-        "compute_gae",
-        "ppo_epoch_minibatch",
-        "batched_body_collect_and_update",
-    } <= ppo_phases
-    ppo_axes = {axis for row in PPO_MAPPING_TABLE for axis in row.axes}
-    assert {"environment", "rollout", "epoch", "minibatch", "replicate"} <= ppo_axes
-    assert any("observation_norm" in row.state_slots for row in PPO_MAPPING_TABLE)
 
 
 def test_single_mapping_level_resolves_role_agnostic_slot_bindings() -> None:

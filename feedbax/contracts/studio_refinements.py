@@ -17,7 +17,104 @@ class CrossFieldRefinement:
     typescript_invalid: str
 
 
+_INTERIOR_IDS = CrossFieldRefinement(
+    "model-interior.unique-ids",
+    "element IDs must be unique within an interior",
+    lambda value: (
+        len(value.components) + len(value.wires) + len(getattr(value, "connections", {}))
+        != len(value.components.keys() | value.wires.keys() | getattr(value, "connections", {}).keys())
+    ),
+    """(() => {
+      const ids = [value.components, value.wires, "connections" in value ? value.connections : undefined]
+        .flatMap((elements) => Object.keys(elements ?? {}));
+      return new Set(ids).size !== ids.length;
+    })()""",
+)
+
+
+_ONE_TRIAL_SOURCE = CrossFieldRefinement(
+    "trial-source.exclusive",
+    "Select one Task document or registered Python task.",
+    lambda value: (value.task is None) == (value.python_task is None),
+    "(value.task == null) === (value.python_task == null)",
+)
+
+
 CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
+    "SessionTargetProfile": (
+        CrossFieldRefinement(
+            "target-profile.local-id",
+            "The local target ID is reserved for This Mac",
+            lambda value: value.id == "local",
+            'value.id === "local"',
+        ),
+    ),
+    "SessionTarget": (
+        CrossFieldRefinement(
+            "attempt-target.local-profile",
+            "A session cannot run as This Mac",
+            lambda value: value.profile == "local",
+            'value.profile === "local"',
+        ),
+    ),
+    "TaskTrialSampleRequest": (_ONE_TRIAL_SOURCE,),
+    "TrialDocuments": (_ONE_TRIAL_SOURCE,),
+    "AddModelAttachment": (
+        CrossFieldRefinement(
+            "model-attachment.owner",
+            "Expected a wire or port owner",
+            lambda value: value.owner.element.kind not in {"wire", "port"},
+            'value.owner.element.kind !== "wire" && value.owner.element.kind !== "port"',
+        ),
+    ),
+    "ExistingModelAttachment": (
+        CrossFieldRefinement(
+            "model-attachment.address",
+            "Expected an attachment address",
+            lambda value: value.address.element.kind != "attachment",
+            'value.address.element.kind !== "attachment"',
+        ),
+    ),
+    "ModelPorts": (
+        CrossFieldRefinement(
+            "model-ports.unique-ids",
+            "port IDs must be unique within a port list",
+            lambda value: len(value.inputs) + len(value.outputs) + len(value.physical)
+            != len({port.id for port in (*value.inputs, *value.outputs, *value.physical)}),
+            """(() => {
+              const ports = [...(value.inputs ?? []), ...(value.outputs ?? []), ...(value.physical ?? [])];
+              return new Set(ports.map((port) => port.id)).size !== ports.length;
+            })()""",
+        ),
+        CrossFieldRefinement(
+            "model-ports.unique-names",
+            "port names must be unique in each direction",
+            lambda value: any(
+                len(ports) != len({port.name for port in ports})
+                for ports in (value.inputs, value.outputs, value.physical)
+            ),
+            "[value.inputs ?? [], value.outputs ?? [], value.physical ?? []].some("
+            "(ports) => new Set(ports.map((port) => port.name)).size !== ports.length)",
+        ),
+    ),
+    "GraphInterior": (_INTERIOR_IDS,),
+    "PhysicalInterior": (_INTERIOR_IDS,),
+    "CompositeComponent": (
+        CrossFieldRefinement(
+            "model-composite.physical-interface",
+            "physical ports require an Equations or Mechanics interior",
+            lambda value: value.interior.physical_domain is None and bool(value.ports.physical),
+            "value.interior.physical_domain == null && (value.ports.physical?.length ?? 0) > 0",
+        ),
+    ),
+    "ModelDocument": (
+        CrossFieldRefinement(
+            "model-root.signal-interface",
+            "the model root has signal ports only",
+            lambda value: bool(value.ports.physical),
+            "(value.ports.physical?.length ?? 0) > 0",
+        ),
+    ),
     "AdditiveGraphChannelTargetSpec": (
         CrossFieldRefinement(
             "additive-target.edge-source",
@@ -203,14 +300,6 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
             "(value.epoch_value_specs ?? []).some((entry, index, entries) => index > 0 && (entries[index - 1].target_id > entry.target_id || (entries[index - 1].target_id === entry.target_id && (value.epochs ?? []).findIndex((epoch) => epoch.id === entries[index - 1].epoch_id) > (value.epochs ?? []).findIndex((epoch) => epoch.id === entry.epoch_id))))",
         ),
     ),
-    "StudioScenarioSpec": (
-        CrossFieldRefinement(
-            "studio-scenario.task-spec",
-            "Studio scenario task_spec must satisfy the generated TaskSpec contract",
-            None,
-            "value.task_spec != null && !TaskSpecSchema.safeParse(value.task_spec).success",
-        ),
-    ),
     "WorkspaceDocument": (
         CrossFieldRefinement(
             "workspace-document.semantic-root",
@@ -231,16 +320,15 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
 }
 
 
-_TRAINING_POSITION_FIELDS = ("batch", "program_step")
-_TRAINING_POSITION_MODELS = ("TrainingProgressEvent", "TrainingLogEvent", "TrainingTrajectoryEvent")
-_TRAINING_POSITION_REFINEMENT = CrossFieldRefinement(
-    "training.position",
-    "A training event requires a completed batch count or a program step",
-    lambda value: all(getattr(value, field) is None for field in _TRAINING_POSITION_FIELDS),
-    " && ".join(f"value.{field} == null" for field in _TRAINING_POSITION_FIELDS),
-)
-CROSS_FIELD_REFINEMENTS.update(
-    dict.fromkeys(_TRAINING_POSITION_MODELS, (_TRAINING_POSITION_REFINEMENT,))
+CROSS_FIELD_REFINEMENTS["RemoveModelAttachment"] = CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"]
+CROSS_FIELD_REFINEMENTS["ChangeModelAttachment"] = (
+    *CROSS_FIELD_REFINEMENTS["ExistingModelAttachment"],
+    CrossFieldRefinement(
+        "model-attachment.retained-id",
+        "A replacement must retain the addressed attachment ID",
+        lambda value: value.address.element.kind == "attachment" and value.attachment.id != value.address.element.id,
+        'value.address.element.kind === "attachment" && value.attachment.id !== value.address.element.id',
+    ),
 )
 
 
@@ -303,7 +391,7 @@ CROSS_FIELD_REFINEMENTS.update(
             _typescript_refinement(
                 "acausal-graph.no-array-params",
                 "AcausalGraphSpec does not support component-param array value schemas",
-                "Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))",
+                "Object.values(value.nodes ?? {}).some((node) => Object.values(node.params ?? {}).some(containsArrayValueEnvelope))",
             ),
         ),
         "ContentObjectRef": (
@@ -314,6 +402,13 @@ CROSS_FIELD_REFINEMENTS.update(
             ),
         ),
         "GraphSpec": (
+            CrossFieldRefinement(
+                "causal-graph.wire-ids",
+                "Wire IDs must be unique within a graph",
+                lambda value: len(ids := [wire.id for wire in value.wires if wire.id is not None])
+                != len(set(ids)),
+                "hasDuplicate((value.wires ?? []).flatMap((wire) => wire.id == null ? [] : [wire.id]))",
+            ),
             _typescript_refinement(
                 "graph.subgraph-family",
                 "GraphSpec subgraphs must use a supported graph schema identity",
@@ -324,7 +419,7 @@ CROSS_FIELD_REFINEMENTS.update(
             _typescript_refinement(
                 "component.typed-param-envelopes",
                 "typed component parameter envelopes must satisfy their declared schema",
-                "Object.values(value.params).some(invalidTypedParamEnvelope)",
+                "Object.values(value.params ?? {}).some(invalidTypedParamEnvelope)",
             ),
         ),
         "AnalysisDataProductRequirement": (
@@ -505,23 +600,33 @@ CROSS_FIELD_REFINEMENTS.update(
 
 
 REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
-    **dict.fromkeys(_TRAINING_POSITION_MODELS, frozenset({"require_position"})),
+    "SessionTargetProfile": frozenset({"_remote_id"}),
+    "SessionTarget": frozenset({"_remote_id"}),
+    "AddModelAttachment": frozenset({"_owner"}),
+    "ChangeModelAttachment": frozenset({"_attachment", "_id"}),
+    "RemoveModelAttachment": frozenset({"_attachment"}),
+    "ModelPorts": frozenset({"_unique_ports"}),
+    "GraphInterior": frozenset({"_unique_elements"}),
+    "PhysicalInterior": frozenset({"_unique_elements"}),
+    "CompositeComponent": frozenset({"_physical_interface"}),
+    "ModelDocument": frozenset({"_physical_interface"}),
     "SparseCooArrayValueSpec": frozenset({"validate_entries"}),
     "ConstantArrayValueSpec": frozenset({"validate_value"}),
     "AcausalConnectionSpec": frozenset({"validate_and_canonicalize"}),
+    "TaskTrialSampleRequest": frozenset({"_one_task"}),
+    "TrialDocuments": frozenset({"_one_task"}),
     "ContentObjectRef": frozenset({"_validate_identity"}),
     "AcausalGraphSpec": frozenset(
         {"validate_subgraph_family", "reject_component_param_array_values"}
     ),
     "AdditiveGraphChannelTargetSpec": frozenset({"validate_target"}),
     "AnalysisDataProductRequirement": frozenset({"validate_schema_identity"}),
-    "GraphSpec": frozenset({"validate_subgraph_schema_family"}),
+    "GraphSpec": frozenset({"validate_subgraph_schema_family", "_unique_wire_ids"}),
     "StudioValueEnumerableSpec": frozenset({"validate_form_payload"}),
     "StudioValueVariationSpec": frozenset({"validate_scope_payload"}),
     "StudioValueSpec": frozenset({"validate_value_variation"}),
     "StudioEpochValueSpec": frozenset({"validate_safe_value"}),
     "StudioTaskTimelineSpec": frozenset({"validate_epoch_values"}),
-    "StudioScenarioSpec": frozenset({"admit_task_spec"}),
     "WorkspaceDocument": frozenset({"validate_semantic_anchors"}),
     "DynamicPortPolicy": frozenset({"validate_port_namespace"}),
     "RepresentationStateAnchorSelectorBinding": frozenset({"validate_anchor_subpath_namespace"}),

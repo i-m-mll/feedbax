@@ -405,11 +405,12 @@ class ComponentDefinition(BaseModel):
     )
     migrations: List[ComponentMigrationInfo] = Field(default_factory=list)
     trainable_by_default: bool = False
+    reset_outputs: list[str] = Field(default_factory=list)
     representation: Optional[RepresentationSpec] = None
 
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_definition(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
+        if not isinstance(data, dict) or "name" not in data:
             return data
         return migrate_component_definition_payload(data)

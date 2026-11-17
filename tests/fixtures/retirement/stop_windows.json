@@ -1,0 +1,147 @@
+{
+  "source_revision": "47fe615970e7c4d320f174d16587385d95433ea1",
+  "source_tree": "a42465cbb79a34f01c391d1e03709b8ca0e3f168",
+  "runtime": {
+    "python": "3.13.5",
+    "jax": "0.7.2",
+    "equinox": "0.13.1",
+    "numpy": "2.2.3",
+    "jax_x64": false,
+    "jax_platforms": "cpu",
+    "prng_impl": "threefry2x32",
+    "uv_lock_sha256": "2912b1c8f08761670038e8fd64280161c8649e0d2b36fe0974c9b52d957d2110"
+  },
+  "donor_test": "tests/test_stop_at_goal_loss.py::test_stop_at_goal_scores_only_complete_windows_within_each_trial",
+  "tolerances": {
+    "rtol": 1e-06,
+    "atol": 1e-12
+  },
+  "cases": {
+    "softmin": {
+      "target_start_step": 2,
+      "window_len": 2,
+      "std_dist": 1.0,
+      "std_vel": 1.0,
+      "vel_weight": 4.0,
+      "tau": 1.0,
+      "eps": 1e-06,
+      "term_weight": 3.0,
+      "goal_shape": "trial,coordinate"
+    },
+    "soft-or": {
+      "target_start_step": 2,
+      "window_len": 2,
+      "std_dist": 1.0,
+      "std_vel": 1.0,
+      "vel_weight": 4.0,
+      "tau": 1.0,
+      "eps": 1e-06,
+      "term_weight": 3.0,
+      "goal_shape": "trial,scored_time,coordinate"
+    }
+  },
+  "legacy_stop_complete_windows.npz": {
+    "sha256": "e9c9960fc766d0fa254fab598100cffb89c9069145347adcdd854899793ec3a4",
+    "arrays": {
+      "softmin/inputs/position": {
+        "shape": [
+          2,
+          5,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "softmin/inputs/velocity": {
+        "shape": [
+          2,
+          5,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "softmin/inputs/goal": {
+        "shape": [
+          2,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "softmin/inputs/scored_step_mask": {
+        "shape": [
+          5
+        ],
+        "dtype": "|b1"
+      },
+      "softmin/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "softmin/terms/stop/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "softmin/terms/stop/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "softmin/terms/stop/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "soft-or/inputs/position": {
+        "shape": [
+          2,
+          5,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "soft-or/inputs/velocity": {
+        "shape": [
+          2,
+          5,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "soft-or/inputs/goal": {
+        "shape": [
+          2,
+          3,
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "soft-or/inputs/scored_step_mask": {
+        "shape": [
+          5
+        ],
+        "dtype": "|b1"
+      },
+      "soft-or/total": {
+        "shape": [],
+        "dtype": "<f4"
+      },
+      "soft-or/terms/stop/per_trial_raw": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "soft-or/terms/stop/per_trial_weighted": {
+        "shape": [
+          2
+        ],
+        "dtype": "<f4"
+      },
+      "soft-or/terms/stop/weighted_total": {
+        "shape": [],
+        "dtype": "<f4"
+      }
+    }
+  }
+}

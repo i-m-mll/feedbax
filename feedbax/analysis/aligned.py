@@ -1,4 +1,4 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
 import equinox as eqx
@@ -6,29 +6,16 @@ import jax.numpy as jnp
 import jax.tree as jt
 import feedbax._vendor.jax_cookbook.tree as jtree
 from equinox import Module, field
-from feedbax.tasks import AbstractTask
 from feedbax._vendor.jax_cookbook import (
     LDict,
-    compose,
     is_module,
     is_type,
 )
 from jaxtyping import Array, Float, PyTree
 
-from feedbax.analysis.analysis import (
-    AbstractAnalysis,
-    NoPorts,
-    get_validation_trial_specs,
-)
-from feedbax.analysis.state_utils import (
-    get_align_epoch_start,
-    get_pos_endpoints,
-    get_trial_start_positions,
-    unsqueezer,
-)
+from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.support import _OptionalCallableFieldConverter
 from feedbax.config.defaults import EVAL_REACH_LENGTH
-from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.types import (
     AnalysisInputData,
     Direction,
@@ -40,26 +27,8 @@ from feedbax.analysis.types import (
 if TYPE_CHECKING:
     import plotly.graph_objects as go
 
-    from feedbax.analysis.plot import ScatterPlots
-
 VAR_LEVEL_LABEL = "var"
 DIRECTION_LEVEL_LABEL = "direction"
-
-
-def get_reach_directions(task: AbstractTask, *args) -> Array:
-    pos_endpoints = get_pos_endpoints(get_validation_trial_specs(task))
-    return pos_endpoints[1] - pos_endpoints[0]
-
-
-def get_trivial_reach_directions(task: AbstractTask, *args) -> Array:
-    """Return 'aligns' 'reaches' with the x-y axes; i.e. effectively does nothing.
-
-    The purpose of this is to avoid (for now) trying to bypass `AlignedVars` as a dependency of
-    other analyses (e.g. `Profiles`) in cases where it doesn't make sense to align with a certain
-    directon (e.g. certain steady-state tasks performed using `SimpleReaches`).
-    """
-    origins, _ = get_pos_endpoints(get_validation_trial_specs(task))
-    return jnp.broadcast_to(jnp.array([1.0, 0.0]), origins.shape)
 
 
 def _where_force(states, *_):
@@ -83,7 +52,6 @@ DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
         ResponseVar.POSITION: VarSpec(
             where=lambda states, *_: states.mechanics.effector.pos,
             labels=Labels("Position", "Pos.", "p"),
-            origin=compose(get_trial_start_positions).then(unsqueezer(-2)),
         ),
         ResponseVar.VELOCITY: VarSpec(
             where=lambda states, *_: states.mechanics.effector.vel,
@@ -143,7 +111,7 @@ def get_forward_lateral_vel(
 
 def project_onto_direction(
     var: Float[Array, "*batch conditions time xy=2"],
-    direction_vec: Float[Array, "conditions xy=2"],
+    direction_vec: Float[Array, "*batch conditions xy=2"],
 ):
     """Projects components of arbitrary variables into components parallel and orthogonal to a given direction.
 
@@ -158,7 +126,7 @@ def project_onto_direction(
     direction_vec_norm = direction_vec / jnp.linalg.norm(direction_vec, axis=-1, keepdims=True)
 
     # Broadcast line_vec_norm to match velocity's shape
-    direction_vec_norm = direction_vec_norm[:, None]  # Shape: (conditions, 1, xy)
+    direction_vec_norm = direction_vec_norm[..., None, :]
 
     # Calculate forward component (dot product)
     parallel = jnp.sum(var * direction_vec_norm, axis=-1)
@@ -177,18 +145,11 @@ def get_aligned_vars(vars, directions):
     )
 
 
-def get_reach_origins_directions(task: AbstractTask, models: PyTree[Module], hps: TreeNamespace):
-    pos_endpoints = get_pos_endpoints(get_validation_trial_specs(task))
-    directions = pos_endpoints[1] - pos_endpoints[0]
-    origins = pos_endpoints[0]
-    return origins, directions
-
-
 class AlignedVars(AbstractAnalysis[NoPorts]):
     """Align spatial variable (e.g. position and velocity) coordinates with the reach direction."""
 
+    directions_fn: Callable = eqx.field(kw_only=True)
     varset: PyTree[VarSpec] = eqx.field(default_factory=lambda: DEFAULT_VARSET)
-    directions_fn: Callable = get_reach_directions
 
     def compute(
         self,
@@ -249,60 +210,6 @@ def add_aligned_position_endpoints(
         figs,
         is_leaf=is_type(go.Figure),
     )
-
-
-def get_aligned_trajectories_node(
-    colorscale_key: Optional[str] = None,
-    pos_endpoints: bool = True,
-    varset: PyTree[VarSpec] = DEFAULT_VARSET,
-    subplot_level: str = VAR_LEVEL_LABEL,
-    align_epoch: Optional[int] = None,
-    pre_transform_fns: Sequence[Callable] = (),
-) -> "ScatterPlots":
-    import feedbax.plot as fbp
-
-    from feedbax.analysis.plot import ScatterPlots
-
-    aligned_var_subplot_titles = get_varset_labels(varset).medium
-    aligned_var_axes_labels = jt.map(
-        lambda label: fbp.AxesLabels(
-            rf"${label}_\parallel$", rf"${label}_\perp$"
-        ),
-        get_varset_labels(varset).short,
-    )
-    node = ScatterPlots(
-        inputs=ScatterPlots.Ports(input=AlignedVars(varset=varset)),
-        colorscale_key=colorscale_key,
-        subplot_level=subplot_level,
-    ).with_fig_params(
-        subplot_titles=aligned_var_subplot_titles,
-        #! TODO: Probably leave the individual labels out; just use master labels
-        axes_labels=aligned_var_axes_labels,
-        # master_axes_labels=AxesLabels2D("Parallel", "Lateral"),
-    )
-    for transform_fn in pre_transform_fns:
-        node = node.after_transform(transform_fn)
-    if align_epoch is not None:
-        node = node._add_prep_op(
-            name="align_epoch_start",
-            dep_name=None,
-            fn=get_align_epoch_start(align_epoch),
-            params=dict(epoch=align_epoch),
-            uses_callback=False,
-        )
-    if colorscale_key is not None:
-        node = node.after_stacking(colorscale_key)
-    if pos_endpoints:
-        import plotly.graph_objects as go
-
-        node = node._add_final_op(
-            op_type="figs",
-            name="add_aligned_position_endpoints",
-            fn=add_aligned_position_endpoints,
-            is_leaf=is_type(go.Figure),
-            uses_callback=False,
-        )
-    return node
 
 
 #! TODO: This should not be limited to `ResponseVar`

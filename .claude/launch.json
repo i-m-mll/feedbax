@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Studio development",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["scripts/dev.sh"],
+      "port": 3008
+    },
+    {
+      "name": "Studio production preview",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["scripts/dev.sh", "--preview", "--backend-port", "8001"],
+      "port": 3009
+    }
+  ]
+}

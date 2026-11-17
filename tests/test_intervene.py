@@ -10,17 +10,12 @@ import pytest
 from feedbax.runtime.signal_transforms import (
     AddNoise,
     AddNoiseParams,
-    ConstantInputTransform,
-    ConstantInputParams,
 )
 from feedbax.models.feedback_impulse import feedback_impulse
 from feedbax.mechanics.force_fields import DynamicsMatrixPerturb, DynamicsMatrixPerturbParams
-from feedbax.runtime.graph import Graph, Wire, init_state_from_component
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.runtime.state import CartesianState
-from feedbax.tasks.task import TaskTrialSpec, prepare_trial
-
-
 def _make_state(component: DynamicsMatrixPerturb, params: DynamicsMatrixPerturbParams) -> State:
     """Construct an Equinox ``State`` container with the component's params set."""
     state = State(component)
@@ -178,44 +173,6 @@ def test_feedback_impulse_adds_signed_offset_in_window(
     expected = list(feedback)
     expected[feedback_var] = expected[feedback_var].at[active, feedback_dim].add(-0.25)
     np.testing.assert_array_equal(actual, expected)
-
-
-def test_nested_feedback_impulse_and_task_constant_input(feedback):
-    pulse = feedback_impulse(
-        n_steps=5, amplitude=-0.25, duration=4, feedback_var=1, start_timestep=3, feedback_dim=1
-    )
-    offsets = (jnp.array([0.0, 2.0]), jnp.array([3.0, 0.0]))
-    graph = Graph(
-        nodes={
-            "pulse": pulse,
-            "constant": ConstantInputTransform(ConstantInputParams(arrays=offsets)),
-        },
-        wires=(Wire("pulse", "output", "constant", "input"),),
-        input_ports=("input",),
-        output_ports=("output",),
-        input_bindings={"input": ("pulse", "input")},
-        output_bindings={"output": ("constant", "output")},
-    )
-    trial = prepare_trial(
-        graph,
-        TaskTrialSpec(
-            inits={"constant.params_index.scale": jnp.asarray(2.0)},
-            targets={},
-            inputs={"input": feedback},
-        ),
-    )
-    outputs, _, _ = run_component(
-        graph,
-        trial.inputs,
-        trial.init_state,
-        n_steps=trial.n_steps,
-        key=jr.key(0),
-        state_filter=False,
-    )
-
-    expected_pos = feedback[0] + jnp.array([0.0, 4.0])
-    expected_vel = (feedback[1] + jnp.array([6.0, 0.0])).at[3, 1].add(-0.25)
-    np.testing.assert_array_equal(outputs["output"], (expected_pos, expected_vel))
 
 
 @pytest.mark.parametrize(

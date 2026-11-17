@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, TypeVar
 
-from .application import APPLICATION_REGISTRY_KEYS, new_application_registry_bundle
+from .application import (
+    APPLICATION_REGISTRY_KEYS,
+    ApplicationRegistryBundle,
+    new_application_registry_bundle,
+)
 from .bootstrap import (
     BootstrapError,
     BootstrapErrorCode,
@@ -96,10 +100,21 @@ async def compose_application(
     entry_points: Iterable[Any] | None = None,
 ) -> BootstrapState:
     """Discover and bootstrap one isolated application registry state."""
+    return await _compose(
+        new_application_registry_bundle, modules=modules, entry_points=entry_points
+    )
+
+
+async def _compose(
+    bundle_factory: Callable[[], ApplicationRegistryBundle],
+    *,
+    modules: Sequence[str],
+    entry_points: Iterable[Any] | None,
+) -> BootstrapState:
     sources = discover_plugin_registrations(entry_points=entry_points, modules=modules)
     family_providers = _extension_family_providers(sources)
     context = RegistrationContext(
-        new_application_registry_bundle,
+        bundle_factory,
         APPLICATION_REGISTRY_KEYS,
         registry_families=family_providers,
     )

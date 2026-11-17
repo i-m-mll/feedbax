@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec, acausal_interior_content_hash
@@ -23,8 +21,6 @@ from feedbax.contracts.graph import (
 )
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
 from feedbax.compiler.mechanics_templates import two_link_arm_6muscle_template_graph
-from feedbax.web.app import create_app
-from feedbax.web.services.graph_service import GraphService
 
 
 pytestmark = pytest.mark.feedbax_contract
@@ -379,19 +375,9 @@ def test_graph_project_drops_old_compile_report_versions() -> None:
     assert project.compile_reports is None
 
 
-def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) -> None:
-    service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(GraphSpec())
+def test_compile_report_is_stale_after_an_interior_edit() -> None:
     interior = _msd_interior()
-
-    report = service.compile_node(
-        record.graph_id,
-        node_path=["plant"],
-        interior=interior,
-        component_registry=_registry(),
-    )
-    loaded = service.get_graph(record.graph_id).project
-    cached = (loaded.compile_reports or {})["plant"]
+    cached = _report(interior)
 
     edited = interior.model_copy(
         update={
@@ -401,7 +387,6 @@ def test_graph_service_persists_report_and_derives_stale_status(tmp_path: Path) 
             }
         }
     )
-    assert cached == report
     assert (
         derive_compile_status(
             cached,
@@ -426,43 +411,3 @@ def test_internal_compile_exception_becomes_error_report(
     diagnostic = _diagnostic(report, "acausal.internal")
     assert report.status == "error"
     assert "boom during structural compile" in diagnostic.message
-
-
-def test_compile_endpoint_returns_report_and_malformed_body_422(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import feedbax.web.api.graphs as graphs_api
-
-    service = GraphService(storage_dir=tmp_path)
-    record = service.create_graph(GraphSpec())
-    monkeypatch.setattr(graphs_api, "service", service)
-
-    with TestClient(create_app()) as client:
-        response = client.post(
-            f"/api/graphs/{record.graph_id}/nodes/compile",
-            json={
-                "node_path": ["plant"],
-                "interior": _msd_interior().model_dump(mode="json"),
-            },
-        )
-
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["status"] == "ok"
-        assert service.get_graph(record.graph_id).project.compile_reports is not None
-
-        fixture_path = Path(__file__).parent / "fixtures" / "acausal_report_subject.json"
-        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        authored = client.post(
-            f"/api/graphs/{record.graph_id}/nodes/compile",
-            json={"node_path": ["plant"], "interior": fixture["interior"]},
-        )
-        assert authored.status_code == 200
-        assert authored.json()["interior_content_hash"] == fixture["subject"]
-
-        malformed = client.post(
-            f"/api/graphs/{record.graph_id}/nodes/compile",
-            json={"node_path": ["plant"]},
-        )
-    assert malformed.status_code == 422

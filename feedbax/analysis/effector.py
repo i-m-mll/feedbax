@@ -1,15 +1,13 @@
-from collections.abc import Callable, Mapping, Sequence, ValuesView
-from functools import partial
+from collections.abc import Mapping, ValuesView
 from types import MappingProxyType
 from typing import Annotated, Literal, Optional
 
 import feedbax.plot as fbp
+import jax.numpy as jnp
 import jax.tree as jt
-import feedbax._vendor.jax_cookbook.tree as jtree
 import plotly.graph_objects as go
-from equinox import Module, field
+from equinox import field
 from feedbax.plot import AxesLabels
-from feedbax.tasks import AbstractTask
 from feedbax._vendor.jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
 
@@ -17,7 +15,6 @@ from feedbax.analysis.types import AnalysisInputData, VarSpec
 from feedbax.config.namespace import TreeNamespace
 from feedbax.analysis.aligned import DEFAULT_VARSET, get_varset_labels
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
-from feedbax.analysis.state_utils import get_pos_endpoints
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.defaults import REPLICATE_CRITERION
 from feedbax.config.utils import deep_merge
@@ -72,7 +69,6 @@ class EffectorTrajectories(AbstractAnalysis[NoPorts]):
     )
     colorscale_key: Optional[str] = None
     colorscale_axis: Optional[int] = None
-    pos_endpoints: bool = True
     straight_guides: bool = True
     label_fmt: Literal["short", "medium", "full"] = "medium"
 
@@ -81,6 +77,7 @@ class EffectorTrajectories(AbstractAnalysis[NoPorts]):
         data: AnalysisInputData,
         *,
         colorscales,
+        endpoints: tuple[Array, Array] | None = None,
         **kwargs,
     ):
         #! TODO: Add a general way to include callables in `fig_params`;
@@ -108,15 +105,7 @@ class EffectorTrajectories(AbstractAnalysis[NoPorts]):
 
         figs = jt.map(_make_fig, data.states[self.variant], is_leaf=is_module)
 
-        if self.pos_endpoints:
-            #! Assume all tasks are straight reaches with the same length.
-            #! TODO: Remove this assumption. Depending on `_pre_ops`/`_fig_ops`, the
-            #! PyTree structure of `data.tasks[self.variant]` may differ from that of `figs`
-            #! and thus we have to be careful about how to perform the mapping.
-            #! (In the simplest case, without ops, the task PyTree is a prefix of `figs`)
-            task_0 = jt.leaves(data.tasks[self.variant], is_leaf=is_type(AbstractTask))[0]
-            pos_endpoints = get_pos_endpoints(task_0.validation_trials)
-
+        if endpoints is not None:
             colorscale = colorscales.get(self.colorscale_key) if self.colorscale_key else None
 
             init_marker_kws = dict(color="rgb(25, 25, 25)")
@@ -124,7 +113,7 @@ class EffectorTrajectories(AbstractAnalysis[NoPorts]):
             figs = jt.map(
                 lambda fig: add_endpoint_traces(
                     fig,
-                    pos_endpoints,
+                    jnp.stack(endpoints),
                     xaxis="x1",
                     yaxis="y1",
                     colorscale=colorscale,

@@ -25,10 +25,7 @@ from feedbax.contracts.base import (
     utc_now,
 )
 from feedbax.contracts.artifact_custody import (
-    LEGACY_CONTENT_MIGRATION_COMMAND,
     ContentManifestConflictError,
-    ContentMigrationMapping,
-    ContentMigrationReceipt,
     LegacyContentFormatError,
 )
 from feedbax.contracts.manifest import (
@@ -580,118 +577,8 @@ def _packet_destination_file(
     return path, current
 
 
-def migrate_manifest_packet_v1(
-    packet: Path | str,
-    *,
-    destination_root: Path | str,
-) -> ContentMigrationReceipt:
-    """Offline-only conversion of one authenticated packet-v1 directory into the store."""
-    packet_path = Path(packet)
-    index_path = packet_path / "packet.json"
-    try:
-        raw_index = index_path.read_bytes()
-        payload = strict_json_loads(raw_index.decode("utf-8"), ref=str(index_path))
-        index = _ManifestPacketIndexV1.model_validate(payload)
-    except Exception as exc:
-        raise ManifestPacketValidationError(f"invalid manifest packet v1 index: {exc}") from exc
-    provider = ImmutableArtifactBlobProvider(Path(destination_root).absolute())
-    mappings: list[ContentMigrationMapping] = []
-    manifests: list[tuple[str, str, bytes]] = []
-
-    for entry in index.manifests:
-        source = _contained_path(
-            packet_path,
-            _safe_packet_entry_path(entry.path, entry_type="manifest", entry_id=entry.id),
-            container_name="packet directory",
-            entry_type="manifest",
-            entry_id=entry.id,
-            raw_path=entry.path,
-        )
-        data = _read_legacy_packet_file(source, expected_sha256=entry.sha256)
-        manifests.append((entry.kind, entry.id, data))
-        object_ref = provider.store_object(data)
-        mappings.append(
-            ContentMigrationMapping(
-                source_type="manifest-packet-v1",
-                source_ref=f"{index_path}:{entry.path}",
-                source_sha256=entry.sha256,
-                target_ref=f"content-manifest://{entry.kind}/{entry.id}",
-                target_sha256=object_ref.sha256,
-                size_bytes=object_ref.size_bytes,
-            )
-        )
-
-    for entry in index.artifacts:
-        if entry.mode != "included" or entry.path is None:
-            raise ManifestPacketValidationError(
-                "packet-v1 external/path-backed artifacts require their exact source paths; "
-                f"rerun {LEGACY_CONTENT_MIGRATION_COMMAND} with a self-contained packet"
-            )
-        source = _contained_path(
-            packet_path,
-            _safe_packet_entry_path(
-                entry.path,
-                entry_type="artifact",
-                entry_id=entry.artifact_id,
-            ),
-            container_name="packet directory",
-            entry_type="artifact",
-            entry_id=entry.artifact_id,
-            raw_path=entry.path,
-        )
-        data = _read_legacy_packet_file(
-            source,
-            expected_sha256=entry.sha256,
-            expected_size=entry.size_bytes,
-        )
-        object_ref = provider.store_object(data)
-        mappings.append(
-            ContentMigrationMapping(
-                source_type="manifest-packet-v1",
-                source_ref=(
-                    f"{index_path}:{entry.path}"
-                    f"#{entry.manifest_kind}/{entry.manifest_id}{entry.ref_path}"
-                ),
-                source_sha256=entry.sha256,
-                target_ref=object_ref.object_id,
-                target_sha256=object_ref.sha256,
-                size_bytes=object_ref.size_bytes,
-            )
-        )
-    provider.bind_manifests(tuple(manifests))
-    return ContentMigrationReceipt(
-        source_schema_version=MANIFEST_PACKET_SCHEMA_VERSION_V1,
-        destination_store=str(provider.root),
-        mappings=tuple(sorted(mappings, key=lambda item: (item.source_ref, item.target_ref))),
-        metadata={
-            "packet_index_sha256": sha256_bytes(raw_index),
-            "migration_mode": "offline-explicit",
-        },
-    )
 
 
-def _read_legacy_packet_file(
-    source: Path,
-    *,
-    expected_sha256: str,
-    expected_size: int | None = None,
-) -> bytes:
-    try:
-        source_stat = source.lstat()
-    except OSError as exc:
-        raise ManifestPacketValidationError(
-            f"legacy packet member is unavailable: {source}"
-        ) from exc
-    if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_nlink != 1:
-        raise ManifestPacketValidationError(
-            f"legacy packet member must be one regular non-link file: {source}"
-        )
-    data = source.read_bytes()
-    if sha256_bytes(data) != expected_sha256 or (
-        expected_size is not None and len(data) != expected_size
-    ):
-        raise ManifestPacketValidationError(f"legacy packet member identity mismatch: {source}")
-    return data
 
 
 class _ManifestRecord(StrictModel):
@@ -1026,8 +913,7 @@ def _load_packet_index(
     if payload.get("schema_version") == MANIFEST_PACKET_SCHEMA_VERSION_V1:
         raise LegacyContentFormatError(
             "manifest packet v1 is offline-migration input, not runtime input; run "
-            f"{LEGACY_CONTENT_MIGRATION_COMMAND} --packet-v1 <packet> "
-            "--destination-store <root>"
+            "re-export it on the source revision before importing."
         )
     registry.migrate(
         "ManifestPacket",

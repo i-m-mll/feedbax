@@ -16,16 +16,6 @@ class CycleAnnotationModel(BaseModel):
     target: str = Field(description="Target node.port identifier")
 
 
-class TreescopeRequest(BaseModel):
-    """Request for Treescope visualization."""
-
-    max_depth: int = Field(default=10, ge=1, le=50, description="Maximum tree depth")
-    project_cycles: bool = Field(default=True, description="Include cycle annotations")
-    roundtrip_mode: bool = Field(
-        default=False, description="Render in reconstructable format"
-    )
-
-
 class InlineTreescopeRequest(BaseModel):
     """Request for Treescope visualization from an in-memory graph spec."""
 

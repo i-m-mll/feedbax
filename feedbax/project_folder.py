@@ -1,0 +1,1143 @@
+"""Revision-guarded edits to a named text project and its presentation."""
+
+from __future__ import annotations
+
+from base64 import b64decode, b64encode
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, replace
+import fcntl
+from functools import lru_cache
+import os
+from pathlib import Path
+import re
+import stat
+from tempfile import TemporaryDirectory
+from threading import Lock
+from typing import Literal, Protocol, TYPE_CHECKING
+from uuid import uuid4
+
+from pydantic import JsonValue, TypeAdapter, ValidationError
+
+from feedbax._atomic import sync_parent_directories, write_bytes_atomic
+from feedbax._secure_fs import (
+    DirectoryRecord, SecurePathRigor, close_directory_chain, directory_open_flags, open_directory_chain,
+    open_existing_directory, open_existing_file, recheck_directory_chain, rename_no_replace,
+)
+from feedbax.expression_registry import FunctionRegistry
+from feedbax.tasks.registry import PythonTaskRegistry
+from feedbax.contracts.base import StrictModel, sha256_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
+from feedbax.contracts.matrix_core import apply_value_patch_in_place
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.project import Project, Sha256, json_pointer_parts
+from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_io import (
+    ProjectConfiguration,
+    ProjectReadError,
+    STUDIO_PATCH_JOURNAL_FILENAME,
+    STUDIO_PRESENTATION_FILENAME,
+    STUDIO_WRITE_LOCK_FILENAME,
+    TextFileStamp,
+    TextProject,
+    TextProjectExternalInputs,
+    authored_declaration_revision,
+    dump_text_project,
+    parse_text_project_files,
+    project_declaration_name,
+    read_text_project_declaration,
+    read_text_project_snapshot,
+    project_semantic_root,
+    replay_text_project_declaration,
+    require_text_declaration,
+    text_file_stamp,
+    text_project_fingerprint,
+)
+from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
+from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
+from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.studio_project import (
+    PRESENTATION_ADDRESS,
+    AuthoredFileAddress,
+    CreateNamedDocument,
+    PresentationDocument,
+    ReplayDeclarationAddress,
+    ReplayFileAddress,
+    StudioProjectFilePatch,
+    RemoveProjectValue,
+    SetProjectValue,
+    StudioAuthoredDeclaration,
+    StudioAuthoredFileRevision,
+    StudioPresentationWrite,
+    StudioProjectDocument,
+    StudioProjectCreateFile,
+    StudioProjectPatch,
+    StudioProjectPatchBatch,
+    StudioProjectRename,
+    StudioProjectReplay,
+    StudioProjectRevision,
+    StudioProjectSnapshot,
+)
+
+if TYPE_CHECKING:
+    from feedbax.analysis.operations import OperationRegistry
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.model_edit import (
+        ModelClipboard, ModelEditProblem, ModelEditRequest,
+    )
+
+
+_FAMILIES = {"document": "documents", "step": "steps", "variant": "variants"}
+_KINDS = {family: kind for kind, family in _FAMILIES.items()}
+_FOLDER_ID = TypeAdapter(ProjectName)
+_CANONICAL_PROJECT_ID = re.compile(r"external-[0-9a-f]{64}")
+type _Resource = Literal["project", "presentation"]
+
+
+_MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
+
+
+def _document_sweep_paths(project: Project, document: str) -> set[tuple[str, ...] | ModelAddress]:
+    prefix = f"documents.{document}.payload."
+
+    def paths(sweep: Sweep):
+        for axis in sweep.axes.values():
+            if isinstance(axis, GeneratedAxis):
+                yield axis.path
+            if isinstance(axis, NamedAxis):
+                for entry in axis.values.values():
+                    if entry is not None:
+                        yield from entry.patches
+        for entry in (*sweep.rows.values(), *sweep.exceptions.values()):
+            if entry is not None:
+                yield from entry.patches
+
+    targets = set()
+    for sweep in (project.sweep, *(step.sweep for step in project.steps.values())):
+        if sweep is None:
+            continue
+        for path in paths(sweep):
+            if path.startswith(prefix):
+                targets.add(tuple(path.removeprefix(prefix).split(".")))
+                continue
+            try:
+                target = model_field_target(path)
+            except ValueError:
+                continue  # The Plan reports malformed authored targets.
+            if target is not None and target.address.document == document:
+                targets.add(target.address)
+    return targets
+
+
+def _model_field_exists(payload, path):
+    for key in path:
+        if isinstance(payload, list) and key.isdecimal() and int(key) < len(payload):
+            payload = payload[int(key)]
+        elif isinstance(payload, dict) and key in payload:
+            payload = payload[key]
+        else:
+            return False
+    return True
+
+
+def _loses_model_target(payload, next_payload, targets, state, result, authority, functions):
+    from feedbax.studio.model_edit import ModelEditDraft
+
+    if any(_model_field_exists(payload, path) and not _model_field_exists(next_payload, path)
+           for path in targets if isinstance(path, tuple)):
+        return True
+    addresses = [address for address in targets if isinstance(address, ModelAddress)]
+    if not addresses:
+        return False
+    document = addresses[0].document
+    before = ModelEditDraft(document, state, authority.port, authority.accepts)
+    after = ModelEditDraft(document, result, authority.port, authority.accepts)
+    return any(
+        before.has_field(address, functions=functions) and not after.has_field(address, functions=functions)
+        for address in addresses
+    )
+
+
+def model_edit_source(
+    snapshot: StudioProjectSnapshot, document: ProjectName,
+) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
+    source = snapshot.project.documents.get(document)
+    if source is None or source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+        raise ProjectFolderNotFound(document)
+    if snapshot.presentation is None:
+        raise ProjectFolderInvalid("The project presentation document is unreadable")
+    entry = snapshot.presentation.documents.get(document)
+    present = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
+    layout = {key: present[key] for key in _MODEL_LAYOUT_FIELDS if key in present}
+    assert isinstance(source.payload, dict)
+    return source.payload, layout
+
+
+
+class ProjectFolderNotFound(FileNotFoundError):
+    """The addressed project does not exist in the Studio project directory."""
+
+
+class ProjectFolderInvalid(ValueError):
+    """The folder or the requested edit is invalid."""
+
+
+class ProjectFileExists(FileExistsError):
+    """The requested authored name already has a file in its family."""
+
+
+class ProjectRevisionConflict(RuntimeError):
+    """The addressed resource changed before the edit could be published."""
+
+    def __init__(self, resource: _Resource, current: str) -> None:
+        self.resource = resource
+        self.current = current
+        super().__init__(f"{resource.capitalize()} changed before this edit.")
+
+
+def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operation: bool = False) -> None:
+    def check_model() -> None:
+        if file.address.kind == "document" and not model_operation and entry.get("schema") == MODEL_DOCUMENT_SCHEMA_ID:
+            raise ProjectFolderInvalid("Model documents are edited through addressed operations")
+
+    check_model()
+    for patch in file.patches:
+        apply_value_patch_in_place(
+            entry, json_pointer_parts(patch.path), patch.op,
+            patch.value if isinstance(patch, SetProjectValue) else None, path=patch.path,
+        )
+    check_model()
+
+
+def _project_file_entry(payload: dict, address: AuthoredFileAddress) -> dict:
+    family = _FAMILIES[address.kind]
+    return (payload["sweep"]["rows"] if family == "variants" else payload[family])[address.id]
+
+
+def preview_authored_files(project: Project, files: Sequence[StudioProjectFilePatch]) -> Project:
+    payload = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    for file in files:
+        _apply_file_edits(_project_file_entry(payload, file.address), file)
+    return Project.model_validate(payload)
+
+
+@dataclass(frozen=True)
+class SettledProjectPlan:
+    """The compiler portion of Plan, bound to one saved project revision."""
+
+    project_id: str
+    revision: str
+    semantic_root: str
+    configuration: ProjectConfiguration
+    store_path: Path
+    plan: ProjectPlan
+    readers: BaseReaders
+
+    @classmethod
+    def from_text(
+        cls, location: ProjectFolderLocation, text: TextProject, plan: ProjectPlan, *,
+        readers: BaseReaders = BaseReaders(),
+        store: Path | None = None,
+    ) -> SettledProjectPlan:
+        return cls(
+            location.project_id, text.revision, project_semantic_root(text.project),
+            text.configuration, text.store_path if store is None else store, plan, readers,
+        )
+
+
+class SavedProjectPlans(Protocol):
+    def read_plan(self, project_id: str, *, revision: str | None) -> SettledProjectPlan: ...
+
+    def admission_plan(self, project_id: str) -> AbstractContextManager[SettledProjectPlan]: ...
+
+
+def compile_saved_project(
+    text: TextProject, *, project_id: str, store: Path, readers: BaseReaders,
+    operations: OperationRegistry | None = None, components: ComponentRegistry | None = None,
+    functions: FunctionRegistry | None = None, python_tasks: PythonTaskRegistry | None = None,
+    source_runs: Iterable[RunKey] = (), memo: ProjectPlanMemo | None = None,
+) -> SettledProjectPlan:
+    """Compile a snapshot against the Store of its resolved local or delegated project."""
+    readers = replace(readers, terminal_train=terminal_train_reader(store))
+    plan = compile_project(
+        text.project, source_runs=source_runs, memo=memo,
+        operations=operations, components=components, functions=functions,
+        python_tasks=python_tasks, readers=readers,
+    )
+    return SettledProjectPlan(
+        project_id, text.revision, project_semantic_root(text.project), text.configuration, store, plan, readers,
+    )
+
+
+def _may_read_figure_pin(project: Project) -> bool:
+    figures = {
+        name: document for name, document in project.documents.items()
+        if document.schema_id == FIGURE_DOCUMENT_SCHEMA
+    }
+    if any(is_figure_document_pin(document.payload) for document in figures.values()):
+        return True
+    if any(figures.keys() & step.document_overrides.keys() for step in project.steps.values()):
+        return True
+    if (sweep := project.sweep) is None:
+        return False
+
+    def affects_figures(path: str) -> bool:
+        family, *parts = path.split(".")
+        return family == "documents" or bool(figures) and family == "steps" and (
+            len(parts) == 1 or parts[1:2] == ["document_overrides"]
+        )
+
+    patches = [
+        *sweep.rows.values(), *sweep.exceptions.values(),
+        *(value for axis in sweep.axes.values() if isinstance(axis, NamedAxis) for value in axis.values.values()),
+    ]
+    return any(
+        affects_figures(path) for value in patches if value is not None for path in value.patches
+    ) or any(
+        isinstance(axis, GeneratedAxis) and affects_figures(axis.path) for axis in sweep.axes.values()
+    )
+
+def _regular(path: Path) -> os.stat_result:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ProjectFolderInvalid(f"{path.name} must be a regular file")
+    return info
+
+
+class _PendingDeclarationAddress(StrictModel):
+    kind: Literal["declaration"]
+    id: ProjectName
+
+
+class _PendingFile(StrictModel):
+    address: AuthoredFileAddress | _PendingDeclarationAddress
+    before: Sha256 | None
+    data: str | None
+    encoding: Literal["utf8", "base64"] = "utf8"
+
+    @property
+    def relative(self) -> str:
+        if isinstance(self.address, _PendingDeclarationAddress):
+            return project_declaration_name(self.address.id)
+        return _relative_file(self.address)
+
+    def target(self) -> bytes | None:
+        if self.data is None:
+            return None
+        return b64decode(self.data, validate=True) if self.encoding == "base64" else self.data.encode()
+
+
+_PENDING_FILES = TypeAdapter(list[_PendingFile])
+
+
+def _relative_file(address: AuthoredFileAddress | ReplayFileAddress) -> str:
+    if address == PRESENTATION_ADDRESS:
+        return STUDIO_PRESENTATION_FILENAME
+    if address.kind not in _FAMILIES:
+        raise ProjectFolderInvalid("Invalid project file address")
+    return f"{_FAMILIES[address.kind]}/{address.id}.json"
+
+
+@contextmanager
+def _patch_parent(root_fd: int, relative: Path, *, create: bool = False) -> Iterator[int]:
+    if relative.parent == Path("."):
+        yield root_fd
+        return
+    family = relative.parent.name
+    if create:
+        try:
+            os.mkdir(family, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        else:
+            os.fsync(root_fd)
+    descriptor = open_existing_directory(
+        family, dir_fd=root_fd, error_factory=ProjectFolderInvalid, context=family,
+    )
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _patch_preimage(relative: Path, directory_fd: int, *, exact_name: bool = False) -> tuple[int, str | None]:
+    if exact_name and relative.name not in os.listdir(directory_fd):
+        return 0o600, None
+    try:
+        descriptor, info = open_existing_file(
+            relative.name, dir_fd=directory_fd, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+            error_factory=ProjectFolderInvalid, context=relative.as_posix(),
+        )
+    except FileNotFoundError:
+        return 0o600, None
+    with os.fdopen(descriptor, "rb") as stream:
+        return stat.S_IMODE(info.st_mode), sha256_bytes(stream.read())
+
+
+def _finish_patch_at(root: Path, root_fd: int) -> None:
+    try:
+        descriptor, _ = open_existing_file(
+            STUDIO_PATCH_JOURNAL_FILENAME, dir_fd=root_fd, rigor=SecurePathRigor.REGULAR_FILE_IDENTITY,
+            error_factory=ProjectFolderInvalid, context="Studio edit journal",
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            files = _PENDING_FILES.validate_json(stream.read())
+        targets = [(file, Path(file.relative), file.target()) for file in files]
+    except FileNotFoundError:
+        return
+    except ValueError as error:
+        raise ProjectFolderInvalid("Studio edit journal is invalid") from error
+    if not files or len({relative for _, relative, _ in targets}) != len(files):
+        raise ProjectFolderInvalid("Studio edit journal is invalid")
+    for file, relative, _ in targets:
+        if isinstance(file.address, _PendingDeclarationAddress):
+            try:
+                require_text_declaration(root, relative.name)
+            except ProjectReadError as error:
+                raise ProjectFolderInvalid(str(error)) from error
+    for file, relative, data in targets:
+        target = sha256_bytes(data) if data is not None else None
+        try:
+            with _patch_parent(root_fd, relative) as directory_fd:
+                _, current = _patch_preimage(
+                    relative, directory_fd, exact_name=file.before is None or data is None,
+                )
+        except FileNotFoundError:
+            current = None
+        if current not in (target, file.before):
+            raise ProjectFolderInvalid(f"{relative} changed during a Studio edit")
+
+    # Clear old spellings before creating new ones on case-insensitive volumes.
+    for file, relative, data in sorted(targets, key=lambda target: target[2] is not None):
+        exact_name = file.before is None or data is None
+        try:
+            with _patch_parent(root_fd, relative, create=file.before is None and data is not None) as directory_fd:
+                mode, current = _patch_preimage(relative, directory_fd, exact_name=exact_name)
+                target = sha256_bytes(data) if data is not None else None
+                if current == target:
+                    os.fsync(directory_fd)
+                    continue
+
+                def guard() -> None:
+                    if _patch_preimage(relative, directory_fd, exact_name=exact_name)[1] != file.before:
+                        raise ProjectFolderInvalid(f"{relative} changed during a Studio edit")
+
+                if data is None:
+                    guard()
+                    os.unlink(relative.name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                else:
+                    write_bytes_atomic(
+                        root / relative, data, mode=mode, replace=file.before is not None,
+                        before_publish=guard, directory_fd=directory_fd,
+                    )
+        except FileNotFoundError:
+            if data is not None:
+                raise
+
+    os.fsync(root_fd)
+    os.unlink(STUDIO_PATCH_JOURNAL_FILENAME, dir_fd=root_fd)
+    os.fsync(root_fd)
+
+
+def _publish_patch(folder: _LockedProjectFolder, files: list[_PendingFile], guard: Callable[[], None]) -> None:
+    if not files:
+        return
+    file = files[0]
+    if len(files) == 1 and file.before is not None and file.data is not None and file.address != PRESENTATION_ADDRESS:
+        relative = Path(file.relative)
+        with _patch_parent(folder.descriptor, relative) as directory_fd:
+            mode, _ = _patch_preimage(relative, directory_fd)
+        data = file.target()
+        assert data is not None
+        folder.write(folder.path / relative, data, mode=mode, before_publish=guard)
+    else:
+        # Readers recover the edit after its journal has been published.
+        folder.write(
+            folder.path / STUDIO_PATCH_JOURNAL_FILENAME, _PENDING_FILES.dump_json(files), replace=False,
+            before_publish=guard,
+        )
+        _finish_patch_at(folder.path, folder.descriptor)
+
+
+def _check_file_spellings(root: Path, files: Iterable[str]) -> None:
+    lock = root / STUDIO_WRITE_LOCK_FILENAME
+    try:
+        alternate = lock.with_name(lock.name.upper()).lstat()
+    except FileNotFoundError:
+        return
+    if not os.path.samestat(alternate, lock.lstat()):
+        return
+    folded = set()
+    for name in files:
+        normalized = name.casefold()
+        if normalized in folded:
+            raise ProjectFolderInvalid(f"{name} aliases another authored file on this volume")
+        folded.add(normalized)
+
+
+@dataclass(frozen=True)
+class ProjectFolderLocation:
+    path: Path
+    identity: tuple[int, int]
+
+    @property
+    def project_id(self) -> str:
+        locator = os.fsencode(self.path) + b"\0" + str(self.identity).encode("ascii")
+        return f"external-{sha256_bytes(locator)}"
+
+    @classmethod
+    def selected(cls, path: Path) -> ProjectFolderLocation:
+        with _project_directory_chain(path) as chain:
+            opened, descriptor, info = chain[-1]
+            if hasattr(fcntl, "F_GETPATH"):
+                # APFS can open a differently cased spelling of the same folder.
+                spelling = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
+                opened = Path(os.fsdecode(spelling.split(b"\0", 1)[0]))
+            return cls(opened, (info.st_dev, info.st_ino))
+
+
+@contextmanager
+def _project_directory_chain(path: Path) -> Iterator[list[DirectoryRecord]]:
+    try:
+        chain = open_directory_chain(
+            path, create=False, error_factory=ProjectFolderInvalid, context="Project folder",
+        )
+    except FileNotFoundError as error:
+        raise ProjectFolderNotFound("Project folder is missing") from error
+    try:
+        yield chain
+    finally:
+        close_directory_chain(chain)
+
+
+@dataclass(frozen=True)
+class _LockedProjectFolder:
+    location: ProjectFolderLocation
+    descriptor: int
+    check: Callable[[], None]
+
+    @property
+    def path(self) -> Path:
+        return self.location.path
+
+    def write(
+        self, path: Path, data: bytes, *, before_publish: Callable[[], None],
+        mode: int = 0o600, replace: bool = True,
+    ) -> None:
+        def guard() -> None:
+            self.check()
+            before_publish()
+
+        relative = path.relative_to(self.path)
+        self.check()
+        with _patch_parent(self.descriptor, relative, create=not replace) as directory:
+            write_bytes_atomic(path, data, mode=mode, replace=replace, before_publish=guard, directory_fd=directory)
+
+
+@contextmanager
+def _folder_lock(
+    location: ProjectFolderLocation, *, write: bool = True, declaration: str | None = None,
+    verify_project: bool = False,
+) -> Iterator[_LockedProjectFolder]:
+    root = location.path
+    with _project_directory_chain(root) as chain:
+        _, directory, info = chain[-1]
+        if (info.st_dev, info.st_ino) != location.identity:
+            raise ProjectFolderNotFound("The selected project folder was replaced")
+
+        def check_folder() -> None:
+            recheck_directory_chain(chain, error_factory=ProjectFolderInvalid, context="Project folder")
+
+        def check_declaration() -> None:
+            if verify_project or declaration is not None:
+                try:
+                    read_text_project_declaration(root, directory, expected=declaration)
+                except (OSError, ProjectReadError) as error:
+                    raise ProjectFolderInvalid(str(error)) from error
+
+        check_declaration()
+        lock = STUDIO_WRITE_LOCK_FILENAME
+        descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX if write else fcntl.LOCK_SH)
+            check_folder()
+            opened = os.fstat(descriptor)
+            current = os.stat(lock, dir_fd=directory, follow_symlinks=False)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or (opened.st_dev, opened.st_ino) != (
+                current.st_dev, current.st_ino,
+            ):
+                raise ProjectFolderInvalid("Project write lock changed")
+            try:
+                os.stat(STUDIO_PATCH_JOURNAL_FILENAME, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if not write:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                    check_folder()
+                check_declaration()
+                _finish_patch_at(root, directory)
+            yield _LockedProjectFolder(location, directory, check_folder)
+            check_folder()
+        finally:
+            os.close(descriptor)
+
+
+def check_revision(resource: _Resource, expected: str, current: str) -> None:
+    if expected != current:
+        raise ProjectRevisionConflict(resource, current)
+
+
+def _read_presentation(root: Path) -> tuple[bytes | None, str]:
+    path = root / STUDIO_PRESENTATION_FILENAME
+    try:
+        _regular(path)
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None, sha256_bytes(b"feedbax.presentation.v1\0")
+    return data, sha256_bytes(b"feedbax.presentation.v1\1" + data)
+
+
+def _encode_presentation(presentation: PresentationDocument) -> bytes:
+    return (presentation.model_dump_json(indent=2, exclude_unset=True) + "\n").encode()
+
+
+def _decode_presentation(data: bytes | None) -> PresentationDocument:
+    return (
+        PresentationDocument.model_validate(strict_json_loads(data, ref=STUDIO_PRESENTATION_FILENAME))
+        if data is not None else PresentationDocument()
+    )
+
+
+def write_new_project_folder(
+    destination: Path,
+    project: Project,
+    configuration: ProjectConfiguration,
+    presentation: PresentationDocument,
+) -> None:
+    """Publish the ordinary authored folder and presentation in one exclusive rename."""
+    root = destination.parent.resolve(strict=True)
+    files = dump_text_project(project, configuration)
+    files[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(presentation)
+    with TemporaryDirectory(prefix=".studio-project-", dir=root) as staged:
+        staging = Path(staged)
+        for relative, data in files.items():
+            write_bytes_atomic(staging / relative, data, replace=False)
+        parent = os.open(root, directory_open_flags(error_factory=OSError))
+        try:
+            rename_no_replace(
+                staging.name,
+                destination.name,
+                source_dir_fd=parent,
+                destination_dir_fd=parent,
+                error_factory=OSError,
+                context="new Studio project",
+            )
+        finally:
+            os.close(parent)
+        sync_parent_directories(root / destination.name)
+
+
+@dataclass(frozen=True)
+class ModelEditChange:
+    before_snapshot: StudioProjectSnapshot
+    before: tuple[dict[str, JsonValue], dict[str, JsonValue]]
+    after: tuple[dict[str, JsonValue], dict[str, JsonValue]]
+
+
+@dataclass(frozen=True)
+class AppliedModelEdit:
+    snapshot: StudioProjectSnapshot
+    changed: tuple[ModelAddress, ...]
+    clipboard: ModelClipboard | None
+    change: ModelEditChange | None
+
+
+class ProjectFolder:
+    """Read and edit named projects under a caller-supplied parent directory."""
+
+    def __init__(
+        self, root: Path, *, operations: OperationRegistry | None = None,
+        components: ComponentRegistry | None = None,
+        functions: FunctionRegistry | None = None,
+        python_tasks: PythonTaskRegistry | None = None,
+        local_folder: ProjectFolderLocation | None = None,
+    ) -> None:
+        self.root = root.resolve()
+        self._local_folder = local_folder
+        self.operations = operations
+        self.components = components
+        self.functions = functions
+        self.python_tasks = python_tasks
+        self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
+        self._known_locations: dict[str, ProjectFolderLocation] = {}
+        self._known_locations_lock = Lock()
+
+    def _folder(self, project_id: str) -> ProjectFolderLocation:
+        if self._local_folder is not None:
+            if project_id not in (self._local_folder.path.name, self._local_folder.project_id):
+                raise ProjectFolderNotFound(project_id)
+            return self._local_folder
+        with self._known_locations_lock:
+            location = self._known_locations.get(project_id)
+        if location is not None:
+            return location
+        if _CANONICAL_PROJECT_ID.fullmatch(project_id):
+            if self.root.is_dir():
+                for child in self.root.iterdir():
+                    if child.is_symlink() or not child.is_dir():
+                        continue
+                    try:
+                        location = ProjectFolderLocation.selected(child)
+                    except (ProjectFolderInvalid, ProjectFolderNotFound):
+                        continue
+                    if location.project_id == project_id:
+                        self._remember_location(location)
+                        return location
+            raise ProjectFolderNotFound(project_id)
+        try:
+            _FOLDER_ID.validate_python(project_id)
+        except ValidationError as error:
+            raise ProjectFolderInvalid("Invalid project name") from error
+        folder = self.root / project_id
+        try:
+            return ProjectFolderLocation.selected(folder)
+        except ProjectFolderNotFound as error:
+            raise ProjectFolderNotFound(project_id) from error
+
+    def _remember_location(self, location: ProjectFolderLocation) -> None:
+        with self._known_locations_lock:
+            self._known_locations[location.project_id] = location
+
+    def project_id(self, address: str) -> str:
+        return self._folder(address).project_id
+
+    def _locked_folder(self, project_id: str, *, write: bool = True) -> AbstractContextManager[_LockedProjectFolder]:
+        return _folder_lock(self._folder(project_id), write=write)
+
+    def fingerprint(self, project_id: str) -> tuple[TextFileStamp, ...]:
+        with self._locked_folder(project_id, write=False) as folder:
+            root = folder.path
+            try:
+                authored = text_project_fingerprint(root)
+                try:
+                    return (*authored, text_file_stamp(root / STUDIO_PRESENTATION_FILENAME, root))
+                except FileNotFoundError:
+                    return authored
+            except (OSError, ProjectReadError) as error:
+                raise ProjectFolderInvalid(str(error)) from error
+
+    def _load(self, root: Path, *, declaration: str | None = None) -> TextProject:
+        try:
+            return read_text_project_snapshot(root, declaration=declaration)
+        except ProjectReadError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+
+    def _snapshot(self, location: ProjectFolderLocation, text: TextProject) -> StudioProjectSnapshot:
+        data, presentation_revision = _read_presentation(text.root)
+        presentation_error = None
+        try:
+            presentation = _decode_presentation(data)
+        except (ValueError, UnicodeError):
+            presentation = None
+            presentation_error = "unreadable_presentation"
+        return StudioProjectSnapshot(
+            project_id=location.project_id,
+            revision=text.revision,
+            project=text.project,
+            semantic_root=project_semantic_root(text.project),
+            presentation=presentation,
+            presentation_revision=presentation_revision,
+            presentation_error=presentation_error,
+            file_revisions=[
+                StudioAuthoredFileRevision(
+                    address=AuthoredFileAddress(kind=_KINDS[path.parent.name], id=path.stem),
+                    revision=digest,
+                    data=b64encode(text.files[relative]).decode("ascii"),
+                )
+                for relative, digest in text.file_revisions.items()
+                if (path := Path(relative)).parent.name in _KINDS
+            ],
+            declaration=StudioAuthoredDeclaration(
+                revision=text.file_revisions[text.declaration],
+                authored_revision=authored_declaration_revision(text.manifest),
+                data=b64encode(text.files[text.declaration]).decode("ascii"),
+            ),
+        )
+
+    def _document(self, location: ProjectFolderLocation, text: TextProject) -> StudioProjectDocument:
+        return StudioProjectDocument(
+            configuration=text.configuration,
+            snapshot=self._snapshot(location, text),
+        )
+
+    def open(self, project_id: str) -> StudioProjectDocument:
+        return self._open_folder(self._folder(project_id))
+
+    def represented_declaration(self, project_id: str, identity: tuple[int, int]) -> Path:
+        location = self._folder(project_id)
+        if location.identity != identity:
+            raise ProjectFolderNotFound("The saved project folder was replaced")
+        with _project_directory_chain(location.path) as chain:
+            _, directory, info = chain[-1]
+            if (info.st_dev, info.st_ino) != identity:
+                raise ProjectFolderNotFound("The saved project folder was replaced")
+            try:
+                declaration = read_text_project_declaration(location.path, directory)
+            except ProjectReadError as error:
+                raise ProjectFolderInvalid(str(error)) from error
+            recheck_directory_chain(chain, error_factory=ProjectFolderInvalid, context="Project folder")
+            return declaration
+
+    def _open_folder(
+        self, location: ProjectFolderLocation, *, declaration: str | None = None,
+    ) -> StudioProjectDocument:
+        with _folder_lock(location, write=False, declaration=declaration, verify_project=True) as folder:
+            document = self._document(location, self._load(folder.path, declaration=declaration))
+        self._remember_location(location)
+        return document
+
+    def read(self, project_id: str, *, revision: str | None = None) -> StudioProjectSnapshot:
+        with self._locked_folder(project_id, write=False) as folder:
+            text = self._load(folder.path)
+            if revision is not None:
+                check_revision("project", revision, text.revision)
+            return self._snapshot(folder.location, text)
+
+    def read_plan(
+        self, project_id: str, *, revision: str | None, source_runs: Iterable[RunKey] = (),
+        declaration: str | None = None,
+    ) -> SettledProjectPlan:
+        """Compile the acknowledged folder snapshot and resolve its Store subjects."""
+        location = self._folder(project_id)
+        text = self._read_authored_snapshot(location, revision=revision, declaration=declaration)
+        return self._compile(location, text, source_runs)
+
+    def read_authored_snapshot(
+        self, project_id: str, *, revision: str | None, declaration: str | None = None,
+    ) -> TextProject:
+        """Freeze the exact authored files under the project folder's read lock."""
+        return self._read_authored_snapshot(self._folder(project_id), revision=revision, declaration=declaration)
+
+    def _read_authored_snapshot(
+        self, location: ProjectFolderLocation, *, revision: str | None, declaration: str | None,
+    ) -> TextProject:
+        with _folder_lock(location, write=False, declaration=declaration) as folder:
+            text = self._load(folder.path, declaration=declaration)
+        if revision is not None:
+            check_revision("project", revision, text.revision)
+        return text
+
+    def _compile(
+        self, location: ProjectFolderLocation, text: TextProject, source_runs: Iterable[RunKey] = ()
+    ) -> SettledProjectPlan:
+        project_id = location.project_id
+        return compile_saved_project(
+            text, project_id=project_id, store=text.store_path, readers=self._base_readers(location, text),
+            source_runs=source_runs, memo=self._plan_memo(project_id),
+            operations=self.operations, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
+        )
+
+    def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:
+        if not _may_read_figure_pin(text.project):
+            return BaseReaders()
+        return BaseReaders(figure_external=TextProjectExternalInputs(text, authority=self.root).read)
+
+    @contextmanager
+    def admission_plan(self, project_id: str) -> Iterator[SettledProjectPlan]:
+        """Hold the project folder's writer lock through comparison and Host admission."""
+        with self._locked_folder(project_id) as folder:
+            plan = self._compile(folder.location, self._load(folder.path))
+            folder.check()
+            yield plan
+
+    def new(self) -> StudioProjectDocument:
+        return self._new_folder()[0]
+
+    def _new_folder(self) -> tuple[StudioProjectDocument, ProjectFolderLocation]:
+        project_id = f"untitled-{uuid4().hex}"
+        configuration = ProjectConfiguration(project=project_id, store="results")
+        self.root.mkdir(parents=True, exist_ok=True)
+        write_new_project_folder(self.root / project_id, Project(), configuration, PresentationDocument())
+        location = self._folder(project_id)
+        return self._open_folder(location), location
+
+    def rename(self, project_id: str, body: StudioProjectRename) -> StudioProjectDocument:
+        with self._locked_folder(project_id) as folder:
+            root = folder.path
+            text = self._load(root)
+            check_revision("project", body.revision, text.revision)
+            if body.name != text.configuration.project:
+                try:
+                    destination = project_declaration_name(body.name)
+                    check_revision("project", text.revision, self._load(root).revision)
+                    folder.check()
+                    rename_no_replace(
+                        text.declaration, destination, source_dir_fd=folder.descriptor,
+                        destination_dir_fd=folder.descriptor, error_factory=ProjectFolderInvalid,
+                        context="Rename project declaration",
+                    )
+                except FileExistsError as error:
+                    raise ProjectFileExists(destination) from error
+                os.fsync(folder.descriptor)
+                folder.check()
+                text = self._load(root)
+            return self._document(folder.location, text)
+
+    def create_file(self, project_id: str, body: StudioProjectCreateFile) -> StudioProjectDocument:
+        file = body.file
+        family = _FAMILIES[file.kind]
+        relative = f"{family}/{file.id}.json"
+        with self._locked_folder(project_id) as folder:
+            root = folder.path
+            text = self._load(root)
+            check_revision("project", body.revision, text.revision)
+            entries = text.project.documents if isinstance(file, CreateNamedDocument) else text.project.steps
+            if file.id in entries:
+                raise ProjectFileExists(relative)
+            entry = file.document if isinstance(file, CreateNamedDocument) else file.step
+            project = Project.model_validate({
+                **text.project.model_dump(mode="json", by_alias=True, exclude_unset=True),
+                family: {**entries, file.id: entry},
+            })
+            data = dump_text_project(project, text.configuration)[relative]
+            def guard() -> None:
+                check_revision("project", text.revision, self._load(root).revision)
+
+            try:
+                folder.write(root / relative, data, replace=False, before_publish=guard)
+            except FileExistsError as error:
+                raise ProjectFileExists(relative) from error
+            return self._document(folder.location, self._load(root))
+
+    def revision(self, project_id: str) -> StudioProjectRevision:
+        with self._locked_folder(project_id, write=False) as folder:
+            root = folder.path
+            return StudioProjectRevision(
+                project_id=project_id,
+                revision=self._load(root).revision,
+                presentation_revision=_read_presentation(root)[1],
+            )
+
+    def patch(self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch) -> StudioProjectSnapshot:
+        return self._patch(project_id, body, model_operation=False)
+
+    def replay(self, project_id: str, body: StudioProjectReplay) -> StudioProjectSnapshot:
+        """Apply a window's guarded replay against one acknowledged folder snapshot."""
+        with self._locked_folder(project_id) as folder:
+            root = folder.path
+            text = self._load(root)
+            check_revision("project", body.revision, text.revision)
+            proposed = dict(text.files)
+            pending = []
+            seen = set()
+            try:
+                for file in body.files:
+                    declaration = isinstance(file.address, ReplayDeclarationAddress)
+                    relative = text.declaration if declaration else _relative_file(file.address)
+                    if relative in seen:
+                        raise ProjectFolderInvalid(f"{relative} is addressed twice")
+                    seen.add(relative)
+                    if text.file_revisions.get(relative) != file.before:
+                        raise ProjectRevisionConflict("project", text.revision)
+                    if file.after is None:
+                        if declaration:
+                            raise ProjectFolderInvalid("The project declaration is required")
+                        data = None
+                        proposed.pop(relative, None)
+                    else:
+                        data = b64decode(file.after, validate=True)
+                        if declaration:
+                            data = replay_text_project_declaration(text.manifest, data, declaration=relative)
+                        proposed[relative] = data
+                    if data != text.files.get(relative):
+                        pending.append(_PendingFile(
+                            address=_PendingDeclarationAddress(kind="declaration", id=text.configuration.project)
+                            if declaration else file.address.model_dump(), before=file.before,
+                            data=b64encode(data).decode("ascii") if data is not None else None,
+                            encoding="base64",
+                        ))
+                if pending:
+                    _check_file_spellings(root, proposed)
+                    validated = parse_text_project_files(root, proposed)
+                    # Validate the encodings the acknowledged snapshot will need before committing.
+                    project_semantic_root(validated.project)
+                    authored_declaration_revision(validated.manifest)
+            except (ValueError, RecursionError) as error:
+                if isinstance(error, ProjectFolderInvalid):
+                    raise
+                raise ProjectFolderInvalid(str(error)) from error
+
+            if pending:
+                _publish_patch(folder, pending, lambda: check_revision("project", text.revision, self._load(root).revision))
+                text = self._load(root)
+            return self._snapshot(folder.location, text)
+
+    def apply_model_command(
+        self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,
+    ) -> AppliedModelEdit | ModelEditProblem:
+        """Apply a named Model operation and commit its document and layout together."""
+        from feedbax.contracts.model_edit import ModelEditProblem, ModelEditState, ModelProjectionRequest
+        from feedbax.studio.model_edit import apply_model_edit
+        from feedbax.studio.model_ports import ModelRegistryPorts
+        from feedbax.project_model_selection import selected_task_signal
+
+        snapshot = self.read(project_id, revision=body.revision)
+        check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
+        payload, layout = model_edit_source(snapshot, body.document)
+        state = ModelEditState.model_validate({
+            "document": payload, **layout,
+        })
+        authority = ModelRegistryPorts(components)
+        result = apply_model_edit(
+            body.document, state, body.command, ports=authority.port, accepts=authority.accepts,
+            next_input=authority.next_input, functions=self.functions,
+            task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
+                revision=body.revision, run=command.run, document=body.document,
+            ), command.signal),
+        )
+        if isinstance(result, ModelEditProblem):
+            return result
+        change = None
+        if result.state != state:
+            next_payload = result.state.document.model_dump(mode="json") if result.state.document != state.document else payload
+            targets = _document_sweep_paths(snapshot.project, body.document) if next_payload is not payload else ()
+            if targets and _loses_model_target(payload, next_payload, targets, state, result.state, authority, self.functions):
+                return ModelEditProblem(
+                    address=result.changed[0], detail="Convert the affected sweep to a Value before moving or removing its field.",
+                )
+            next_layout = layout.copy()
+            updated_layout = result.state.model_dump(mode="json", include=set(_MODEL_LAYOUT_FIELDS))
+            for key in _MODEL_LAYOUT_FIELDS:
+                if getattr(result.state, key) == getattr(state, key):
+                    continue
+                if updated_layout[key]:
+                    next_layout[key] = updated_layout[key]
+                else:
+                    next_layout.pop(key, None)
+            change = ModelEditChange(snapshot, (payload, layout), (next_payload, next_layout))
+            snapshot = self._write_model_change(snapshot, body.document, next_payload, next_layout)
+        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change)
+
+    def _write_model_change(
+        self, snapshot: StudioProjectSnapshot, document: ProjectName,
+        payload: dict[str, JsonValue], layout: dict[str, JsonValue],
+        *, had_entry: bool = True, had_documents: bool = True,
+    ) -> StudioProjectSnapshot:
+        from feedbax.contracts.project_sources import pointer
+
+        assert snapshot.presentation is not None
+        before, old_layout = model_edit_source(snapshot, document)
+        files: list[StudioProjectFilePatch] = []
+        if canonical_json_v2_bytes(before) != canonical_json_v2_bytes(payload):
+            files.append(StudioProjectFilePatch(
+                address=AuthoredFileAddress(kind="document", id=document),
+                patches=[SetProjectValue(op="replace", path="/payload", value=payload)],
+            ))
+        if layout != old_layout:
+            entry = snapshot.presentation.documents.get(document)
+            current = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
+            next_entry = {key: value for key, value in current.items() if key not in _MODEL_LAYOUT_FIELDS} | layout
+            path = pointer(("documents", document))
+            if not next_entry and not had_entry:
+                if not had_documents and snapshot.presentation.documents.keys() == {document}:
+                    path = "/documents"
+                patch = RemoveProjectValue(op="remove", path=path)
+            elif "documents" not in snapshot.presentation.model_fields_set:
+                patch = SetProjectValue(op="add", path="/documents", value={document: next_entry})
+            else:
+                patch = SetProjectValue(op="replace" if entry is not None else "add", path=path, value=next_entry)
+            files.append(StudioProjectFilePatch(address=PRESENTATION_ADDRESS, patches=[patch]))
+        if not files:
+            return snapshot
+        return self._patch(snapshot.project_id, StudioProjectPatchBatch(
+            revision=snapshot.revision, presentation_revision=snapshot.presentation_revision, files=files,
+        ), model_operation=True)
+
+    def _patch(
+        self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch, *, model_operation: bool,
+    ) -> StudioProjectSnapshot:
+        with self._locked_folder(project_id) as folder:
+            root = folder.path
+            text = self._load(root)
+            check_revision("project", body.revision, text.revision)
+            files = body.files if isinstance(body, StudioProjectPatchBatch) else [body]
+            original = dump_text_project(text.project, text.configuration)
+            payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+            addresses = {}
+            presentation_data = None
+            edits_presentation = any(file.address == PRESENTATION_ADDRESS for file in files)
+            if edits_presentation:
+                if body.presentation_revision is None:
+                    raise ProjectFolderInvalid("A presentation edit requires its revision")
+                presentation_data, current = _read_presentation(root)
+                check_revision("presentation", body.presentation_revision, current)
+            try:
+                presentation = (
+                    _decode_presentation(presentation_data).model_dump(mode="json", exclude_unset=True)
+                    if edits_presentation else None
+                )
+                for file in files:
+                    relative = _relative_file(file.address)
+                    if relative in addresses:
+                        raise ProjectFolderInvalid(f"{relative} is addressed twice")
+                    addresses[relative] = file.address
+                    if relative == STUDIO_PRESENTATION_FILENAME:
+                        assert presentation is not None
+                        entry = presentation
+                    else:
+                        if relative not in original:
+                            raise ProjectFolderNotFound(file.address.id)
+                        entry = _project_file_entry(payload, file.address)
+                    _apply_file_edits(entry, file, model_operation=model_operation)
+                project = Project.model_validate(payload)
+                encoded = dump_text_project(project, text.configuration)
+                if presentation is not None:
+                    original[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(_decode_presentation(presentation_data))
+                    encoded[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument.model_validate(presentation))
+            except (ValueError, TypeError, RecursionError) as error:
+                raise ProjectFolderInvalid(str(error)) from error
+            changed = [relative for relative in addresses if encoded[relative] != original[relative]]
+
+            def guard() -> None:
+                check_revision("project", text.revision, self._load(root).revision)
+                if edits_presentation:
+                    check_revision("presentation", body.presentation_revision, _read_presentation(root)[1])
+
+            if changed:
+                _publish_patch(folder, [
+                    _PendingFile(
+                        address=addresses[relative],
+                        before=(
+                            sha256_bytes(presentation_data) if presentation_data is not None else None
+                        ) if relative == STUDIO_PRESENTATION_FILENAME else text.file_revisions[relative],
+                        data=encoded[relative].decode(),
+                    )
+                    for relative in changed
+                ], guard)
+                text = self._load(root)
+            return self._snapshot(folder.location, text)
+
+    def write_presentation(
+        self, project_id: str, body: StudioPresentationWrite
+    ) -> StudioProjectSnapshot:
+        with self._locked_folder(project_id) as folder:
+            root = folder.path
+            text = self._load(root)
+            data, revision = _read_presentation(root)
+            check_revision("presentation", body.revision, revision)
+            replacement = _encode_presentation(body.presentation)
+            if replacement != data:
+                path = root / STUDIO_PRESENTATION_FILENAME
+                mode = stat.S_IMODE(_regular(path).st_mode) if data is not None else 0o600
+                def guard() -> None:
+                    check_revision("presentation", revision, _read_presentation(root)[1])
+
+                folder.write(path, replacement, mode=mode, before_publish=guard)
+                text = self._load(root)
+            return self._snapshot(folder.location, text)

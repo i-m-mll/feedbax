@@ -296,22 +296,13 @@ is no generic "hash the whole dict" fallback.
 
 ### 5.3 Training compiler/storage changes
 
-The current `emit_training_run_spec_storage()` writes one resolved snapshot and one
-capsule for the entire materialized run set. Attaching those records to every row would
-not satisfy this contract.
+`feedbax.training.spec_storage.compile_training_run_matrix(...)` returns typed row
+payloads, resolved semantics, immutable inputs, and launch declarations. The compiler
+and identity adapter are pure with respect to custody.
 
-Refactor `feedbax.training.spec_storage` into:
-
-- pure authored/matrix intent hashing and training identity-adapter helpers; and
-- `compile_training_run_matrix(...) -> CompiledRunSet`, which returns typed row payloads,
-  resolved semantics, immutable inputs, and launch declarations without writing custody.
-
-`feedbax.orchestration.assembly.persist_compiled_row(...) -> CompiledRowStorageResult`
-then performs the generic content-addressed writes and supplies all references and hashes
-needed to build `ExecutionIdentityEnvelope`. The existing run-set storage result may
-remain as an aggregate convenience, but it must be derived from these row results rather
-than reused as row evidence. The compiler and identity adapter remain pure with respect
-to custody; ASSEMBLE owns the writes.
+ASSEMBLE owns the writes. `feedbax.orchestration.assembly.persist_compiled_row(...)`
+writes each row's payload, resolved snapshot, and capsule to content-addressed custody
+and supplies the references and hashes for that row's `ExecutionIdentityEnvelope`.
 
 Every compiled payload must declare a schema family/version registered in
 `SpecSchemaRegistry`. Opaque mappings and strings fail ASSEMBLE.

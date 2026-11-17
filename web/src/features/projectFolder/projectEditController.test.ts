@@ -1,0 +1,548 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { ApiRequestError } from '@/api/request';
+import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
+import { addressKey, applyAuthoredEdits, presentationAddress } from './authoredEdits';
+import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
+import { createCheckpointTrain } from './createCheckpointTrain';
+import { createFirstTrain } from './createFirstTrain';
+import { projectWindowPlan, savedRunId } from './projectWindowPlan';
+
+const model: AuthoredFileAddress = { kind: 'document', id: 'model' };
+const task: AuthoredFileAddress = { kind: 'document', id: 'task' };
+const hex = (number: number) => number.toString(16).padStart(64, '0');
+const encoded = (value: unknown) => btoa(JSON.stringify(value));
+const value = (number: number): ProjectValueEdit => ({ op: 'replace', path: '/payload/value', value: number });
+const initial: StudioProjectSnapshot = {
+  project_id: 'reach',
+  revision: hex(1),
+  presentation_revision: hex(2),
+  semantic_root: hex(3),
+  presentation: null,
+  declaration: { revision: hex(3), data: encoded({}), authored_revision: hex(3) },
+  file_revisions: [
+    { address: model, revision: hex(4), data: encoded({ schema: 'graph', payload: { value: 1 } }) },
+    { address: task, revision: hex(5), data: encoded({ schema: 'task', payload: { value: 1 } }) },
+  ],
+  project: { documents: {
+    model: { schema: 'graph', payload: { value: 1 } },
+    task: { schema: 'task', payload: { value: 1 } },
+  } },
+};
+
+function fixture(settleMs = 400, start = initial) {
+  let current = start;
+  let name = 'reach';
+  let sequence = 6;
+  const digests = new Map(start.file_revisions.flatMap(({ data, revision }) => data == null ? [] : [[data, revision] as const]));
+  function fileDigest(data: string) {
+    const known = digests.get(data);
+    if (known) return known;
+    const revision = hex(sequence++);
+    digests.set(data, revision);
+    return revision;
+  }
+  const document = () => ({ configuration: { project: name, store: 'results' }, snapshot: current });
+  const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[], indent?: number) => {
+    if (address.kind === 'presentation') {
+      const { project } = applyAuthoredEdits({ ...current.project, presentation: current.presentation }, address, edits);
+      current = { ...current, presentation: project.presentation ?? null, presentation_revision: hex(sequence++) };
+      return current;
+    }
+    const { project } = applyAuthoredEdits(current.project, address, edits);
+    const data = btoa(JSON.stringify(project.documents?.[address.id], null, indent));
+    current = {
+      ...current,
+      project,
+      revision: hex(sequence++),
+      file_revisions: current.file_revisions.map((entry) => addressKey(entry.address) === addressKey(address)
+        ? { ...entry, revision: fileDigest(data), data } : entry),
+    };
+    return current;
+  };
+  const write = vi.fn<ProjectEditTransport['write']>(async (_id, body) => {
+    if (body.revision !== current.revision) throw new ApiRequestError('http', '/api/projects/reach', 'Changed', { status: 409 });
+    const files = 'files' in body ? body.files : [body];
+    if (files.some(({ address }) => address.kind === 'presentation') &&
+        body.presentation_revision !== current.presentation_revision) {
+      throw new ApiRequestError('http', '/api/projects/reach', 'Presentation changed', { status: 409 });
+    }
+    for (const { address, patches } of files) external(address, patches);
+    return current;
+  });
+  const replay = vi.fn<ProjectEditTransport['replay']>(async (_id, body) => {
+    if (body.revision !== current.revision) throw new ApiRequestError('http', '/history/replay', 'Changed', { status: 409 });
+    const documents = { ...current.project.documents };
+    const revisions = new Map(current.file_revisions.map((file) => [addressKey(file.address), file]));
+    for (const { address, before, after } of body.files) {
+      if (address.kind !== 'document') throw new Error('Expected a document in the fixture');
+      const key = addressKey(address);
+      if (before !== (revisions.get(key)?.revision ?? null)) throw new Error('Wrong file preimage');
+      if (after === null) {
+        delete documents[address.id];
+        revisions.delete(key);
+      } else {
+        documents[address.id] = JSON.parse(atob(after));
+        revisions.set(key, { address, revision: fileDigest(after), data: after });
+      }
+    }
+    current = { ...current, project: { ...current.project, documents }, revision: hex(sequence++), file_revisions: [...revisions.values()] };
+    return current;
+  });
+  const externalRename = (next: string) => {
+    name = next;
+    current = { ...current, revision: hex(sequence++) };
+    return document();
+  };
+  const read = vi.fn<ProjectEditTransport['read']>(async () => document());
+  const rename = vi.fn<ProjectEditTransport['rename']>(async (_id, body) => {
+    if (body.revision !== current.revision) throw new ApiRequestError('http', '/api/projects/reach/rename', 'Changed', { status: 409 });
+    return externalRename(body.name);
+  });
+  const create = vi.fn<ProjectEditTransport['create']>();
+  const editor = new ProjectEditController(document(), { read, write, replay, rename, create }, settleMs);
+  return { editor, write, replay, read, rename, create, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
+}
+
+afterEach(() => vi.useRealTimers());
+
+it('binds the first compatible documents by name and scaffolds only the missing type', async () => {
+  const { editor } = fixture(400, {
+    ...initial,
+    project: { documents: {
+      model: { schema: 'feedbax.spec.model', payload: {} },
+      task: { schema: 'feedbax.spec.python_task', payload: {} },
+      objective: { schema: 'feedbax.report_document.v1', payload: {} },
+      'a-model': { schema: 'feedbax.spec.model', payload: {} },
+      'a-task': { schema: 'feedbax.spec.task_document', payload: {} },
+    } },
+  });
+  const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(undefined);
+  await expect(createFirstTrain(editor, hex(99))).rejects.toBeInstanceOf(ProjectEditConflictError);
+  expect(create).not.toHaveBeenCalled();
+
+  await createFirstTrain(editor, initial.revision);
+  expect(create).toHaveBeenCalledWith('New Step', [
+    { kind: 'document', id: 'objective-2', document: {
+      schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+    } },
+    expect.objectContaining({ kind: 'step', id: 'train', step: expect.objectContaining({
+      base: { inline: expect.objectContaining({ trial_documents: {
+        model_name: 'a-model', model: { document: 'a-model' }, task: { document: 'a-task' },
+        objective: { document: 'objective-2' },
+      } }) },
+    }) }),
+  ], initial.revision);
+  editor.dispose();
+});
+
+it('acknowledges every file of a scoped edit after a lost response and undoes it together', async () => {
+  const { editor, external, write, current } = fixture();
+  write.mockImplementationOnce(async (_id, body) => {
+    if (!('files' in body)) throw new Error('Expected the whole gesture');
+    for (const { address, patches } of body.files) external(address, patches);
+    throw new ApiRequestError('network', '/api/projects/reach', 'Response lost');
+  });
+  editor.editFiles('Mass', [
+    { address: model, patches: [value(2)] },
+    { address: task, patches: [value(2)] },
+  ], { reviewedRevision: initial.revision });
+  const revision = await editor.flush();
+  expect(revision).toBe(current().revision);
+  expect(editor.getSnapshot().undoName).toBe('Mass');
+  expect(write).toHaveBeenCalledTimes(1);
+  editor.undo();
+  await editor.flush();
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(write.mock.calls[1][1]).toMatchObject({ files: expect.arrayContaining([
+    { address: model, patches: [value(1)] },
+    { address: task, patches: [value(1)] },
+  ]) });
+  expect(current().project).toEqual(initial.project);
+  editor.dispose();
+});
+
+it('undoes and redoes placement while preserving a later fold', async () => {
+  const start = { ...initial, presentation: {} };
+  const { editor, write, external, current } = fixture(400, start);
+  const positions = { model: { gru: { x: 8, y: -9 } } };
+  write.mockImplementationOnce(async (_id, body) => {
+    if (!('files' in body)) throw new Error('Expected one combined save');
+    expect(body.presentation_revision).toBe(start.presentation_revision);
+    for (const { address, patches } of body.files) external(address, patches);
+    throw new ApiRequestError('network', '/api/projects/reach', 'Response lost');
+  });
+  editor.editFiles('Add Component', [
+    { address: model, patches: [value(2)] },
+    { address: presentationAddress, patches: [{
+      op: 'add', path: '/steps', value: { fit: { model_positions: positions } },
+    }] },
+  ], { reviewedRevision: start.revision, reviewedPresentationRevision: start.presentation_revision });
+  await editor.flush();
+  expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions } } });
+  external(presentationAddress, [{ op: 'add', path: '/steps/fit/folded_sweep_id', value: 'seed' }]);
+  await editor.flush();
+  editor.undo();
+  await editor.flush();
+  expect(current().project).toEqual(start.project);
+  expect(current().presentation).toEqual({ steps: { fit: { folded_sweep_id: 'seed' } } });
+  editor.redo();
+  await editor.flush();
+  expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions, folded_sweep_id: 'seed' } } });
+  editor.dispose();
+});
+
+it('does not attribute a preexisting identical file to a failed create', async () => {
+  const { editor, create } = fixture();
+  create.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach/files', 'Offline'));
+  await expect(editor.createFile({
+    kind: 'document', id: 'model', document: { schema: 'graph', payload: { value: 1 } },
+  })).rejects.toMatchObject({ kind: 'network' });
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(editor.getSnapshot().saved.revision).toBe(initial.revision);
+  editor.dispose();
+});
+
+it('refuses to create a file from a stale reviewed project', async () => {
+  const { editor, create, external } = fixture();
+  external(model, [value(2)]);
+  await expect(editor.createFile({
+    kind: 'step', id: 'continuation', step: { kind: 'train', base: { step: 'train' } },
+  }, initial.revision)).rejects.toBeInstanceOf(ProjectEditConflictError);
+  expect(create).not.toHaveBeenCalled();
+  editor.dispose();
+});
+
+it('does not widen a selected Train row to an unselected variant', async () => {
+  const { editor, create } = fixture();
+  const variants = ['baseline', 'compare'];
+  const rows = variants.map((variant) => ({
+    key: { variant, step: 'train', row: 'seed=a' },
+    label: 'Replicate A', request_id: variant,
+    attempts: [], status: 'not_run' as const,
+    reason: null, result: null, previous: null, change: null,
+  }));
+  const projection: StudioSavedTrainRuns = {
+    revision: initial.revision,
+    rows,
+    window_map: {
+      variants,
+      steps: variants.map((variant) => ({
+        variant, step_id: 'train', kind: 'train', group: null, inputs: [],
+        document_ids: {}, status_counts: { not_run: 1 },
+      })),
+      rows: rows.map(({ key, label, status }) => ({
+        key, label, status, coordinates: { seed: { value_id: 'a', label: 'Replicate A', value: 1 } },
+      })),
+      edges: [],
+      problems: [],
+    },
+  };
+  const project = { steps: { train: { kind: 'train' as const, base: { inline: {} } } } };
+  await expect(createCheckpointTrain(editor, {
+    stepId: 'train', selection: { kind: 'rows', stepId: 'train', runIds: [savedRunId(rows[1].key)] },
+  }, projectWindowPlan(project, projection, 'compare'), projection)).rejects.toBeInstanceOf(ProjectEditConflictError);
+  expect(create).not.toHaveBeenCalled();
+  editor.dispose();
+});
+
+it('advances a delayed metadata observation without discarding an edit typed during Open', async () => {
+  const { editor, read, write, externalRename } = fixture();
+  const renamed = externalRename('outside-name');
+  let finish!: (document: StudioProjectDocument) => void;
+  read.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  const flushed = editor.flush();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  editor.edit(model, 'Model value', [value(2)]);
+  finish(renamed);
+
+  await flushed;
+  expect(write.mock.calls[0][1].revision).toBe(renamed.snapshot.revision);
+  expect(editor.getSnapshot()).toMatchObject({
+    configuration: { project: 'outside-name' }, outside: null, pending: 0, undoName: 'Model value',
+  });
+  editor.dispose();
+});
+
+it('reports a Rename conflict after reading the current name and never retries the command', async () => {
+  const { editor, rename, externalRename } = fixture();
+  rename.mockImplementationOnce(async () => {
+    externalRename('other-name');
+    throw new ApiRequestError('http', '/api/projects/reach/rename', 'Changed', { status: 409 });
+  });
+  await expect(editor.rename('my-name')).rejects.toMatchObject({ status: 409 });
+  expect(editor.getSnapshot().configuration.project).toBe('other-name');
+  expect(rename).toHaveBeenCalledTimes(1);
+  editor.dispose();
+});
+
+it('coalesces settled edits per file and preserves one undo entry per gesture', async () => {
+  vi.useFakeTimers();
+  const { editor, write, current } = fixture();
+  editor.edit(model, 'First value', [value(2)]);
+  await vi.advanceTimersByTimeAsync(200);
+  editor.edit(model, 'Second value', [value(3)]);
+  await vi.advanceTimersByTimeAsync(399);
+  expect(write).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(write).toHaveBeenCalledTimes(1);
+  expect((write.mock.calls[0][1] as StudioProjectFilePatch).patches).toEqual([value(2), value(3)]);
+  expect(editor.getSnapshot().saved.revision).toBe(current().revision);
+  editor.undo();
+  await editor.flush();
+  expect((write.mock.calls[1][1] as StudioProjectFilePatch).patches).toEqual([value(2)]);
+  expect(editor.getSnapshot().undoName).toBe('First value');
+  expect(editor.getSnapshot().redoName).toBe('Second value');
+  editor.redo();
+  expect(await editor.flush()).toBe(current().revision);
+  expect((write.mock.calls[2][1] as StudioProjectFilePatch).patches).toEqual([value(3)]);
+  editor.dispose();
+});
+
+it('retains history for an unchanged file and offers both versions for dirty outside changes', async () => {
+  const { editor, external, write } = fixture();
+  editor.edit(model, 'Model value', [value(2)]);
+  editor.edit(task, 'Task value', [value(3)]);
+  await editor.flush();
+  editor.observe(external(task, [value(4)]));
+  await editor.flush();
+  expect(editor.getSnapshot().undoName).toBe('Outside Change');
+  editor.edit(task, 'New local value', [value(6)]);
+  const outside = external(task, [value(5)]);
+  editor.observe(outside);
+  await expect(editor.flush()).rejects.toBeInstanceOf(ProjectEditConflictError);
+  expect(editor.getSnapshot().outside?.revision).toBe(outside.revision);
+  expect(editor.getSnapshot().pending).toBe(1);
+  expect(write).toHaveBeenCalledTimes(2);
+  await editor.keep('disk');
+  expect(editor.getSnapshot().draft).toEqual(outside.project);
+  expect(editor.getSnapshot().undoName).toBe('Model value');
+  editor.dispose();
+});
+
+it('coalesces observed revisions across files and stops the burst at an undo or a user edit', async () => {
+  const { editor, external, current, replay } = fixture();
+  editor.edit(task, 'Local Task', [value(2)]);
+  await editor.flush();
+  editor.observe(external(task, [value(3)]));
+  await editor.flush();
+  editor.observe(external(model, [value(4)]));
+  const outside = await editor.flush();
+  expect(editor.getSnapshot().undoName).toBe('Outside Change');
+
+  await editor.undo();
+  const request = replay.mock.calls[0][1];
+  expect(request.revision).toBe(outside);
+  expect(request.files.map(({ address, after }) => [address.id, after]).sort()).toEqual([
+    ['model', encoded({ schema: 'graph', payload: { value: 1 } })],
+    ['task', encoded({ schema: 'task', payload: { value: 2 } })],
+  ]);
+  expect(editor.getSnapshot()).toMatchObject({ undoName: 'Local Task', redoName: 'Outside Change' });
+  await editor.redo();
+  expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
+
+  editor.edit(task, 'Second Local Task', [value(5)]);
+  await editor.flush();
+  editor.observe(external(task, [value(6)]));
+  await editor.flush();
+  await editor.undo();
+  await editor.flush();
+  expect(editor.getSnapshot()).toMatchObject({ undoName: 'Second Local Task', redoName: 'Outside Change' });
+  expect(current().project.documents?.task?.payload).toEqual({ value: 5 });
+  editor.dispose();
+});
+
+it('replays exact outside bytes after local Undo canonicalizes the same authored content', async () => {
+  const { editor, external, current, replay } = fixture();
+  const outside = external(task, [value(3)], 4);
+  editor.observe(outside);
+  await editor.flush();
+  editor.edit(task, 'Local Task', [value(5)]);
+  await editor.flush();
+  editor.undo();
+  await editor.flush();
+  const canonical = current().file_revisions.find(({ address }) => address.id === task.id)!;
+  expect(canonical.revision).not.toBe(outside.file_revisions.find(({ address }) => address.id === task.id)?.revision);
+
+  await editor.undo();
+  expect(replay.mock.calls[0][1].files[0].before).toBe(canonical.revision);
+  expect(current().project.documents?.task?.payload).toEqual({ value: 1 });
+  await editor.redo();
+  expect(current().file_revisions.find(({ address }) => address.id === task.id)?.data)
+    .toBe(outside.file_revisions.find(({ address }) => address.id === task.id)?.data);
+  editor.dispose();
+});
+
+it('drops a net-zero outside burst and restores the prior redo branch', async () => {
+  const { editor, external, write } = fixture();
+  editor.edit(task, 'Local Task', [value(2)]);
+  await editor.flush();
+  editor.undo();
+  await editor.flush();
+  editor.observe(external(task, [value(3)]));
+  await editor.flush();
+  expect(editor.getSnapshot()).toMatchObject({ undoName: 'Outside Change', redoName: null });
+  editor.observe(external(task, [value(1)]));
+  await editor.flush();
+  expect(editor.getSnapshot()).toMatchObject({ undoName: null, redoName: 'Local Task' });
+  expect(write).toHaveBeenCalledTimes(2);
+  editor.dispose();
+});
+
+it('moves a replay acknowledged by exact observed file digests after losing its response', async () => {
+  const { editor, external, replay, current } = fixture();
+  editor.observe(external(task, [value(3)]));
+  await editor.flush();
+  const perform = replay.getMockImplementation()!;
+  replay.mockImplementationOnce(async (...args) => {
+    await perform(...args);
+    throw new ApiRequestError('network', '/history/replay', 'Response lost');
+  });
+  await editor.undo();
+  expect(replay).toHaveBeenCalledTimes(1);
+  expect(current().project).toEqual(initial.project);
+  expect(editor.getSnapshot()).toMatchObject({ undoName: null, redoName: 'Outside Change' });
+  await editor.redo();
+  expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
+  editor.dispose();
+});
+
+it('rejects a stale outside replay and shows the newer observation', async () => {
+  const { editor, external, replay, current } = fixture();
+  editor.observe(external(task, [value(3)]));
+  await editor.flush();
+  external(task, [value(4)]);
+  await expect(editor.undo()).rejects.toMatchObject({ status: 409 });
+  expect(replay).toHaveBeenCalledTimes(1);
+  expect(editor.getSnapshot()).toMatchObject({ saved: current(), pending: 0, undoName: 'Outside Change', redoName: null });
+  expect(current().project.documents?.task?.payload).toEqual({ value: 4 });
+  editor.dispose();
+});
+
+it('rebases kept edits over the latest revision and gives undo the outside value', async () => {
+  const { editor, external, write } = fixture();
+  editor.edit(model, 'Keep value', [value(2)]);
+  const outside = external(model, [value(3)]);
+  await expect(editor.flush()).rejects.toMatchObject({ status: 409 });
+  expect(editor.getSnapshot().outside?.revision).toBe(outside.revision);
+  await editor.keep('edits');
+  expect(write.mock.calls[1][1]).toEqual({ address: model, revision: outside.revision, patches: [value(2)] });
+  editor.undo();
+  await editor.flush();
+  expect((write.mock.calls[2][1] as StudioProjectFilePatch).patches).toEqual([value(3)]);
+  editor.dispose();
+});
+
+it('checks a structural edit guard against outside dependencies on undo and Keep Edits', async () => {
+  const validate = (_before: StudioProjectSnapshot['project'], after: StudioProjectSnapshot['project']) => {
+    const payload = after.documents?.task?.payload as { value: number };
+    if (payload.value !== 1) throw new Error('The task now depends on the existing model layout.');
+  };
+  const saved = fixture();
+  saved.editor.edit(model, 'Change layout', [value(2)], validate);
+  await saved.editor.flush();
+  saved.editor.observe(saved.external(task, [value(5)]));
+  await saved.editor.flush();
+  expect(saved.editor.getSnapshot().undoName).toBe('Outside Change');
+  await saved.editor.undo();
+  await saved.editor.flush();
+  expect(saved.editor.getSnapshot().undoName).toBe('Change layout');
+  await saved.editor.redo();
+  await saved.editor.flush();
+  expect(saved.editor.getSnapshot()).toMatchObject({ pending: 0, undoName: 'Outside Change' });
+  saved.editor.dispose();
+
+  const pending = fixture();
+  pending.editor.edit(model, 'Change layout', [value(2)], validate);
+  const outside = pending.external(task, [value(5)]);
+  await expect(pending.editor.flush()).rejects.toMatchObject({ status: 409 });
+  await expect(pending.editor.keep('edits')).rejects.toThrow('depends on the existing model layout');
+  expect(pending.editor.getSnapshot()).toMatchObject({ outside, pending: 1 });
+  pending.editor.dispose();
+});
+
+it('retries a lost connection after a fresh read and flushes edits arriving during a write', async () => {
+  const { editor, current, write, external } = fixture();
+  write.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach', 'Offline'));
+  editor.edit(model, 'Offline edit', [value(2)]);
+  await expect(editor.flush()).rejects.toMatchObject({ kind: 'network' });
+  editor.connected();
+  await vi.waitFor(() => expect(editor.getSnapshot().pending).toBe(0));
+
+  let complete!: () => void;
+  const waiting = new Promise<void>((resolve) => { complete = resolve; });
+  write.mockImplementationOnce(async (_id, body) => {
+    await waiting;
+    if ('files' in body) throw new Error('Expected one file');
+    return external(body.address, body.patches);
+  });
+  editor.edit(model, 'Waiting edit', [value(3)]);
+  const flushing = editor.flush();
+  await vi.waitFor(() => expect(editor.getSnapshot().saving).toBe(true));
+  editor.edit(task, 'Queued edit', [value(4)]);
+  complete();
+  expect(await flushing).toBe(current().revision);
+  expect(write.mock.calls.map((call) => (call[1] as StudioProjectFilePatch).address.id)).toEqual(['model', 'model', 'model', 'task']);
+  expect(editor.getSnapshot().pending).toBe(0);
+  editor.dispose();
+});
+
+it('gets a current saved revision for a clean flush before the next folder notice', async () => {
+  const { editor, external, read, write } = fixture();
+  const latest = external(model, [value(8)]);
+  expect(await editor.flush()).toBe(latest.revision);
+  expect(editor.getSnapshot().draft).toEqual(latest.project);
+  expect(write).not.toHaveBeenCalled();
+  read.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach', 'Offline'));
+  await expect(editor.flush()).rejects.toMatchObject({ kind: 'network' });
+  editor.dispose();
+});
+
+it('keeps an observed postimage after a lost save response without adding a second write or undo entry', async () => {
+  const { editor, external, write, current } = fixture();
+  write.mockImplementationOnce(async (_id, body) => {
+    if ('files' in body) throw new Error('Expected one file');
+    external(body.address, body.patches);
+    throw new ApiRequestError('network', '/api/projects/reach', 'Response lost');
+  });
+  editor.edit(model, 'Add a field and update it', [
+    { op: 'add', path: '/payload/added', value: { field: 1 } },
+    { op: 'replace', path: '/payload/added/field', value: 2 },
+  ]);
+  await expect(editor.flush()).rejects.toMatchObject({ kind: 'network' });
+  expect((write.mock.calls[0][1] as StudioProjectFilePatch).patches[0]).toMatchObject({ value: { field: 1 } });
+  editor.connected();
+  await vi.waitFor(() => expect(editor.getSnapshot().outside?.revision).toBe(current().revision));
+  await editor.keep('edits');
+  expect(editor.getSnapshot()).toMatchObject({ draft: current().project, outside: null, pending: 0, undoName: null });
+  expect(write).toHaveBeenCalledTimes(1);
+  editor.dispose();
+});
+
+it('leaves a conflict open when an outside insertion moves an edited list element', async () => {
+  const { editor, external, write, current } = fixture();
+  editor.observe(external(model, [{ op: 'add', path: '/payload/items', value: ['a', 'b'] }]));
+  await editor.flush();
+  editor.edit(model, 'Change b', [{ op: 'replace', path: '/payload/items/1', value: 'B' }]);
+  const outside = external(model, [{ op: 'add', path: '/payload/items/0', value: 'new' }]);
+  await expect(editor.flush()).rejects.toMatchObject({ status: 409 });
+  await expect(editor.keep('edits')).rejects.toThrow('changed outside Studio');
+  expect(editor.getSnapshot()).toMatchObject({ outside, pending: 1 });
+  expect(write).toHaveBeenCalledTimes(1);
+  expect(current()).toBe(outside);
+  editor.dispose();
+});
+
+it('resumes autosave when an outside revision returns to the saved bytes', async () => {
+  vi.useFakeTimers();
+  const { editor, external, restore, write } = fixture();
+  editor.edit(model, 'Local value', [value(2)]);
+  editor.observe(external(model, [value(3)]));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(editor.getSnapshot().outside).not.toBeNull();
+  restore(initial);
+  editor.observe(initial);
+  await vi.advanceTimersByTimeAsync(400);
+  expect(editor.getSnapshot()).toMatchObject({ outside: null, pending: 0 });
+  expect(write).toHaveBeenCalledTimes(1);
+  editor.dispose();
+});

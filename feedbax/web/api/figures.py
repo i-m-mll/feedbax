@@ -228,15 +228,12 @@ async def list_figures(
     expt_name: Optional[str] = Query(default=None),
     figure_type: Optional[str] = Query(default=None),
     identifier: Optional[str] = Query(default=None, description="Partial match"),
-    pert_type: Optional[str] = Query(default=None),
-    pert_std: Optional[float] = Query(default=None),
     date_from: Optional[datetime] = Query(default=None),
     date_to: Optional[datetime] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> FigureListResponse:
     """List and search manifest-backed figures with optional filters."""
-    del pert_type, pert_std
     items = [_figure_to_info(manifest) for manifest in _figure_manifests()]
     if evaluation_hash is not None:
         items = [item for item in items if evaluation_hash in item.input_manifest_ids]

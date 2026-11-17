@@ -1,0 +1,290 @@
+"""Author the signed Evaluate fixture and observe one selected Analysis variable."""
+
+from copy import deepcopy
+import json
+from pathlib import Path
+import sys
+from unittest.mock import patch
+
+import numpy as np
+
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
+from feedbax.contracts.project import Project
+from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.contracts.rollout import ROLLOUT_TYPE
+from feedbax.desktop.release import AppPaths
+from feedbax.host import HostClient
+from feedbax.job_completion import verify_bound_training_completion
+from feedbax.jobs import JobService
+from feedbax.persistence.array_container import ArrayContainerReader
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, state_key
+from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import ProjectPlanService
+from tests.test_document_train_pair import authored_documents, document_project
+
+
+_MASS = ModelAddress.model_validate({
+    "document": "reach-model", "composites": [],
+    "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+}).to_text()
+
+
+def _evaluation_step():
+    return {
+        "kind": "evaluate",
+        "base": {"inline": {
+            "evaluation_type": ROLLOUT_TYPE,
+            "params": {
+                "seed": 731,
+                "trial_set": {"kind": "every_condition"},
+                "trial_policy": "paired",
+                "variation": [],
+            },
+        }},
+        "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
+    }
+
+
+def _evaluation_project():
+    raw = document_project(authored_documents())
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["snapshot_interval"] = 1
+    baseline = _evaluation_step()
+    raw["steps"].update({
+        "baseline": baseline,
+        "conditions": baseline | {"sweep": {"axes": {"mass": {"values": {
+            name: {"value": mass, "patches": {"params.seed": {"value": 732}, _MASS: {"value": mass}}}
+            for name, mass in (("nominal", 1), ("heavy", 2))
+        }}}}},
+        "unsupported": baseline | {
+            "inputs": {"subject": {"step": "train", "checkpoint": {"best_by": "loss"}}},
+        },
+    })
+    finite = deepcopy(baseline)
+    finite["inputs"]["subject"]["checkpoint"] = {"batches": [2, 1]}
+    raw["steps"]["finite"] = finite
+    return raw
+
+
+def seed(home: str, project_id: str):
+    paths = AppPaths.resolve(instance_root=Path(home))
+    folders = ProjectFolderService(paths.web / "projects")
+    project = Project.model_validate(_evaluation_project())
+    for name, data in dump_text_project(
+        project, ProjectConfiguration(project=project_id, store="results"),
+    ).items():
+        path = folders.root / project_id / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return folders.open(project_id).snapshot.project_id
+
+
+def walkthrough_files(batches: str | None = None):
+    project = document_project(authored_documents())
+    if batches is not None:
+        train = project["steps"]["train"]["base"]["inline"]
+        train["training_config"]["n_batches"] = int(batches)
+        train["method_payload"]["payload"]["target_total"] = int(batches)
+    documents = [
+        {"kind": "document", "id": name, "document": document}
+        for name, document in project["documents"].items()
+    ]
+    return [*documents, {"kind": "step", "id": "train", "step": project["steps"]["train"]}]
+
+
+def series_files():
+    files = walkthrough_files("4")
+    files[-1]["step"]["base"]["inline"]["training_config"]["snapshot_interval"] = 2
+    return files
+
+
+def measured_subset_files():
+    files = walkthrough_files()
+    files[-1]["step"]["sweep"] = {"axes": {"updates": {"values": {
+        name: {"label": name, "patches": {
+            "training_config.n_batches": {"value": updates},
+            "method_payload.payload.target_total": {"value": updates},
+        }}
+        for name, updates in (("Long", 4), ("Medium", 3), ("Short", 2))
+    }}}}
+    return files
+
+
+def grouped_subset_files():
+    files = measured_subset_files()
+    train = files[-1]["step"]
+    del train["sweep"]["axes"]["updates"]["values"]["Medium"]
+    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["sweep"]["axes"]["replicate"] = {"values": {
+        name: {"label": label, "patches": {"method_payload.payload.seed": {"value": seed}}}
+        for name, label, seed in (("zeta", "First", 1), ("alpha", "Second", 2))
+    }}
+    return files
+
+
+def task_pivot_files():
+    files = walkthrough_files()
+    train = files[-1]["step"]
+    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["sweep"] = {"axes": {
+        "learning-rate": {"values": {
+            name: {"label": name, "value": rate, "patches": {
+                "method_payload.payload.optimizer.params.learning_rate": {"value": rate},
+            }} for name, rate in (("Slow", 0.001), ("Medium", 0.002), ("Fast", 0.003))
+        }},
+        "seed": {"values": {
+            name: {"label": name, "value": seed, "patches": {"method_payload.payload.seed": {"value": seed}}}
+            for name, seed in (("one", 1), ("two", 2))
+        }},
+    }}
+    task = next(file["document"] for file in files if file["id"] == "task")
+    documents = []
+    for name, count in (("short-task", 2), ("long-task", 3)):
+        document = deepcopy(task)
+        document["payload"]["id"] = name
+        document["payload"]["validation_trials"] = document["payload"]["validation_trials"][:count]
+        documents.append({"kind": "document", "id": name, "document": document})
+    evaluate = _evaluation_step()
+    evaluate["base"]["inline"]["params"]["variation"] = {"task": {
+        "op": "replace", "path": "task", "value": {"document": "short-task"},
+    }}
+    evaluate["inputs"]["subject"]["where"] = {"axes": {"learning-rate": ["Slow", "Fast"], "seed": ["one"]}}
+    evaluate["sweep"] = {"axes": {
+        "subject": {"input": "subject"},
+        "task": {"values": {
+            name: {"label": label, "patches": {"params.variation.task.value": {"value": {"document": name}}}}
+            for name, label in (("short-task", "Short Task"), ("long-task", "Long Task"))
+        }},
+    }}
+    return [*files, *documents, {"kind": "step", "id": "evaluate", "step": evaluate}]
+
+
+def scoped_series_files():
+    evaluation = _evaluation_step()
+    evaluation["inputs"]["subject"]["checkpoint"] = {"every": 2}
+    evaluation["sweep"] = {"axes": {
+        "subject": {"input": "subject"},
+        "replicate": {"values": {
+            "left": {"patches": {"params.seed": {"value": 31}}},
+            "right": {"patches": {"params.seed": {"value": 32}}},
+        }},
+    }}
+    return [*series_files(), {"kind": "step", "id": "evaluate", "step": evaluation}]
+
+
+def seed_series_variants(home: str):
+    *documents, train = series_files()
+    evaluation = _evaluation_step()
+    evaluation["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    project = Project.model_validate({
+        "documents": {file["id"]: file["document"] for file in documents},
+        "steps": {"train": train["step"], "evaluate": evaluation},
+        "sweep": {"rows": {"base": {}, "comparison": {"from": "base"}}},
+    })
+    project_id = "series-variants"
+    root = AppPaths.resolve(instance_root=Path(home)).web / "projects" / project_id
+    for name, data in dump_text_project(
+        project, ProjectConfiguration(project=project_id, store="results"),
+    ).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return ProjectFolderService(root.parent).open(project_id).snapshot.project_id
+
+
+def train_measures(home: str, project: str, metric: str, *attempts: str):
+    host = HostClient(AppPaths.resolve(instance_root=Path(home)).host)
+    jobs = {job["id"]: job for job in host.jobs_snapshot(project=project, start_host=False)["jobs"]}
+    values = {}
+    for attempt in attempts:
+        completion = jobs[attempt]["outcome"]["completion"]
+        verify_bound_training_completion(completion)
+        manifest = load_manifest(canonical_manifest_path(
+            "TrainingRunManifest", completion["receipt"]["manifest_id"],
+            root=Path(completion["manifest_root"]),
+        ))
+        values[attempt] = manifest.summary_metrics[metric]
+    return values
+
+
+def observe(home: str, project: str, revision: str, trial_index: str):
+    paths = AppPaths.resolve(instance_root=Path(home))
+    folders = ProjectFolderService(paths.web / "projects")
+    jobs = JobService(HostClient(paths.host), new_application_registry_bundle())
+    view = ProjectPlanService(folders, jobs).read(project, revision=revision)
+    variable = state_key("plant", "effector/position")
+    trial = int(trial_index)
+    reads = []
+    original = ArrayContainerReader.read_tensor
+
+    def read_tensor(reader, name):
+        reads.append(name)
+        return original(reader, name)
+
+    observed = {}
+    for key, row in view.evaluations.items():
+        if row.result is None:
+            continue
+        result = jobs.read_evaluation_result(
+            project=project, store=view.settled.store_path, job_id=row.result.job_id,
+        )
+        assert result.receipt == row.result.receipt
+        assert result.size_bytes == row.result.size_bytes
+        with result.open_states(verify=True) as dataset:
+            coordinates = dataset.data("checkpoint").tolist()
+            descriptor = dataset.descriptor
+            assert descriptor.schema_id == RAW_STATES_SCHEMA
+            assert descriptor.dimensions["state_time"] == 81
+            assert descriptor.dimensions["checkpoint"] == len(coordinates)
+            assert dataset.data("trial").tolist() == row.trials
+            assert len(row.trials) == 28
+            label = row.trials[trial]
+            assert np.isfinite(dataset.data("objective/total")).all()
+            assert np.all(dataset.data("objective/coverage/effort") == 28)
+            reads.clear()
+            with patch.object(ArrayContainerReader, "read_tensor", read_tensor):
+                if row.result.checkpoint_sources:
+                    samples = [
+                        dataset.select(variable, labels={"checkpoint": coordinate, "trial": label})[0].tolist()
+                        for coordinate in coordinates
+                    ]
+                    expected_reads = ["checkpoint", variable] * len(coordinates)
+                else:
+                    samples = [dataset.select(variable, labels={"trial": label})[0, 0].tolist()]
+                    expected_reads = [variable]
+        assert reads == expected_reads, reads
+        facts = {
+            "key": [key.variant, key.step, key.row],
+            "request_id": row.request_id,
+            "receipt": result.receipt.model_dump(mode="json"),
+            "size_bytes": result.size_bytes,
+            "trial_index": trial,
+            "tensor_reads": [name for name in reads if name != "checkpoint"],
+        }
+        if row.result.checkpoint_sources:
+            facts["checkpoint_coordinate_reads"] = reads.count("checkpoint")
+            facts["checkpoint_sources"] = [
+                source.model_dump(mode="json") for source in row.result.checkpoint_sources
+            ]
+            facts["checkpoints"] = [
+                {"coordinate": coordinate, "samples": selected}
+                for coordinate, selected in zip(coordinates, samples, strict=True)
+            ]
+        else:
+            assert row.result.checkpoint_source is not None
+            facts["checkpoint_source"] = row.result.checkpoint_source.model_dump(mode="json")
+            facts["samples"] = samples[0]
+        observed[row.result.job_id] = facts
+    return observed
+
+
+if __name__ == "__main__":
+    action, *args = sys.argv[1:]
+    print(json.dumps({
+        "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
+        "series-files": series_files, "seed-series-variants": seed_series_variants,
+        "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
+        "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,
+        "task-pivot-files": task_pivot_files,
+    }[action](*args)))

@@ -1,0 +1,436 @@
+"""Real saved checkpoint selection through Plan, Host, custody and datasets."""
+
+from copy import deepcopy
+
+import numpy as np
+import pytest
+from pydantic import ValidationError
+
+from feedbax.contracts.effective_success import EvaluationSubjectValue
+from feedbax.contracts.project import Project
+from feedbax.contracts.request_identity import decode_request, effective_binding_id
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, CheckpointCadence
+from feedbax.contracts.rollout import ResolvedRolloutBinding
+from feedbax.jobs import JobService
+from feedbax.persistence.array_container import ArrayContainerReader
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.evaluation_subject import evaluation_subject_objects
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.studio.canonical_evaluate import CannotRun
+from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import ProjectPlanService
+from tests.test_canonical_evaluate_admission import _save_project
+from tests.test_document_train_pair import authored_documents, document_project
+from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
+from tests.support.finite_train import _damaged_prng, install_finite_gate
+
+host = host_fixture
+
+
+def _train(step, batches):
+    step = deepcopy(step)
+    payload = step["base"]["inline"]
+    payload["training_config"].update(n_batches=batches, snapshot_interval=2)
+    payload["method_payload"]["payload"]["target_total"] = batches
+    return step
+
+
+def _fixture(*, late=False):
+    definition = document_project(authored_documents(), evaluation=True)
+    baseline = definition["steps"]["baseline"]
+
+    def evaluate(rule, source="train"):
+        step = deepcopy(baseline)
+        step["inputs"]["subject"] = {"step": source, "checkpoint": rule}
+        return step
+
+    steps = {
+        "train": _train(definition["steps"]["train"], 6),
+        "short": _train(definition["steps"]["train"], 2),
+        "ordered": evaluate({"batches": [4, 2]}),
+        "cadence": evaluate({"every_k": 2, "through": 4}),
+        "ascending": evaluate({"batches": [2, 4]}),
+        "missing": evaluate({"batches": [1, 2]}, source="short"),
+    }
+    if late:
+        steps["late"] = evaluate({"batches": [2, 6]})
+    return Project.model_validate(definition | {"steps": steps})
+
+
+@pytest.mark.parametrize("rule", [
+    {"batches": []}, {"batches": [0, 2]}, {"batches": [2, 2]},
+    {"every_k": 2}, {"every_k": 2, "through": 1}, {"every_k": 1, "through": 65},
+])
+def test_invalid_finite_rule_is_rejected_during_project_validation(rule):
+    definition = _fixture().model_dump(mode="json", exclude_unset=True)
+    definition["steps"]["ordered"]["inputs"]["subject"]["checkpoint"] = rule
+    with pytest.raises(ValidationError):
+        Project.model_validate(definition)
+
+
+def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpoints(
+    host, tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    jobs = JobService(host, new_application_registry_bundle())
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "finite"
+    _save_project(folders, project, _fixture())
+    plan = folders.read_plan(project, revision=None)
+    assert not plan.plan.diagnostics and not plan.store_path.exists()
+    by_step = {run.key.step: run for run in plan.plan.runs}
+    for name, selector in (
+        ("ordered", BatchSetMember(batches=(4, 2))),
+        ("ascending", BatchSetMember(batches=(2, 4))),
+        ("cadence", BatchSetMember(batches=(2, 4), cadence=CheckpointCadence(every_k=2, through=4))),
+    ):
+        run = by_step[name]
+        encoded = decode_request(plan.plan.requests[run.request_id], plan.plan.documents.__getitem__)
+        (member,) = encoded.inputs["subject"]
+        assert member.reference.select == selector
+        assert member.reference.request_id == by_step["train"].request_id
+        assert member == run.inputs["subject"].member
+    assert len({by_step[name].request_id for name in ("ordered", "ascending", "cadence")}) == 3
+
+    host.policy(compute=1)
+    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4)
+
+    def launch(token, *steps):
+        return jobs.admit_plan(folders, plan, run_keys=tuple(by_step[name].key for name in steps), token=token)
+
+    def terminal(job_id, state):
+        row = wait_until(lambda: (
+            row if (row := job_row(host, job_id)) and row["outcome"] is not None else None
+        ), timeout=22)
+        assert row["state"] == state, row.get("outcome")
+        return row
+
+    (producer,) = launch("producer", "train").items
+    source = host.jobs(job_id=producer.job_id, include_launch=True)[0]
+    assert source["launch"]["payload"]["checkpoint_catalog"] == [2, 4]
+    admitted = launch("consumers", "ordered", "cadence")
+    assert all(item.disposition == "admitted" for item in admitted.items)
+    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    jobs.stop([producer.job_id], "checkpoint")
+    stopped = terminal(producer.job_id, "stopped")
+    assert stopped["outcome"]["checkpoint"]["completed_updates"] == 3
+    restart(host)
+    assert launch("consumers", "ordered", "cadence") == admitted
+    for item in admitted.items:
+        row = job_row(host, item.job_id, "queued")
+        assert row["delivery"] == 0 and not row["edges"][0]["satisfied"]
+
+    resumed = jobs.resume(producer.job_id, token="resume")
+    wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+    host.policy(compute=2)
+    try:
+        rows = [terminal(item.job_id, "succeeded") for item in admitted.items]
+        assert job_row(host, resumed.job_id, "running") is not None
+    finally:
+        (tmp_path / "finish-train").touch()
+    terminal(resumed.job_id, "succeeded")
+    restart(host)
+    assert launch("consumers", "ordered", "cadence") == admitted
+    events = host.events(projects=(plan.project_id,))["events"]
+
+    position = "/v1/model/state/plant/effector~1position"
+    target = "/v1/task/output/target_pos"
+    service = ProjectPlanService(folders, jobs)
+    settled = service.read(project, revision=plan.revision)
+    trajectories, effective_bindings = [], []
+    for name, row, coordinates, attempts in zip(
+        ("ordered", "cadence"), rows, ([4, 2], [2, 4]),
+        ([resumed.job_id, producer.job_id], [producer.job_id, resumed.job_id]), strict=True,
+    ):
+        binding = row["edges"][0]["binding"]["checkpoint_selection"]
+        assert binding["requested"] == coordinates
+        assert binding["lineage"] == [producer.job_id, resumed.job_id]
+        assert [item["producer_job_id"] for item in binding["members"]] == attempts
+        assert row["delivery"] == 1
+        assert [
+            event["data"] for event in events
+            if event["job_id"] == row["id"] and event["kind"] == "dependency_bound"
+        ] == [row["edges"][0]["binding"]]
+        result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=row["id"])
+        receipt = result._manifest()
+        effective = ResolvedRolloutBinding.model_validate(receipt.metadata["effective_binding"])
+        assert [member.coordinate for member in effective.members] == coordinates
+        assert receipt.metadata["effective_binding_sha256"] == effective.digest()
+        effective_bindings.append(effective)
+        assert receipt.input_training_runs == []
+        assert receipt.provenance.metadata["checkpoint_selection"]["lineage_tip"] == resumed.job_id
+        assert [item.id for item in receipt.provenance.parents] == [
+            item["checkpoint"]["pointer"]["transaction_id"] for item in binding["members"]
+        ]
+        assert [item.metadata["publication_cursor"] for item in receipt.provenance.parents] == [
+            item["publication_cursor"] for item in binding["members"]
+        ]
+        assert [item.metadata["manifest_sha256"] for item in receipt.provenance.parents] == [
+            item["checkpoint"]["pointer"]["manifest_sha256"] for item in binding["members"]
+        ]
+        planned = settled.evaluations[by_step[name].key].result
+        assert planned.receipt == result.receipt
+        assert planned.checkpoint_source is None
+        assert [item.completed_updates for item in planned.checkpoint_sources] == coordinates
+        with result.open_states() as dataset:
+            assert dataset.descriptor.dimensions["checkpoint"] == 2
+            assert dataset.descriptor.dimensions["state_time"] == 81
+            assert dataset.data("checkpoint").tolist() == coordinates
+            np.testing.assert_array_equal(dataset.data(target)[0], dataset.data(target)[1])
+            trajectories.append(dataset.data(position))
+            np.testing.assert_array_equal(
+                dataset.select(position, labels={"checkpoint": 4, "trial": settled.evaluations[by_step[name].key].trials[0]})[0],
+                trajectories[-1][coordinates.index(4), 0, 0],
+            )
+        trials = settled.evaluations[by_step[name].key].trials
+        with pytest.raises(CannotRun, match="choose a retained checkpoint"):
+            result.replay_trial(trials[0], anchor_id="effector")
+        with pytest.raises(CannotRun, match="absent from the retained set"):
+            result.replay_trial(trials[0], anchor_id="effector", checkpoint=3)
+        reads = []
+        read_slice = ArrayContainerReader.read_unverified_slice
+
+        def observed(reader, field, selection):
+            reads.append((field, selection))
+            return read_slice(reader, field, selection)
+
+        with monkeypatch.context() as context:
+            context.setattr(ArrayContainerReader, "read_unverified_slice", observed)
+            replay = result.replay_trial(trials[1], anchor_id="effector", checkpoint=4)
+        assert [field for field, _ in reads] == ["checkpoint", "state_time", position]
+        assert reads[-1] == (position, (coordinates.index(4), 0, 1))
+        assert replay.identity.stable_id == trials[1] and replay.identity.index == 1
+        np.testing.assert_allclose(replay.tracks[0].samples, trajectories[-1][coordinates.index(4), 0, 1])
+    assert not np.array_equal(trajectories[0][0], trajectories[0][1])
+    np.testing.assert_array_equal(trajectories[0], trajectories[1][::-1])
+    first, second = effective_bindings
+    assert first.members == second.members[::-1]
+    assert len({member.model_tree for member in first.members}) == 2
+    assert first.digest() != second.digest()
+
+    store = ImmutableArtifactBlobProvider(plan.store_path)
+    view = SuccessView(store)
+    reversed_result, cadence_result = (view.read_attempt(row["id"]) for row in rows)
+    assert reversed_result is not None and cadence_result is not None
+    assert reversed_result.receipt.effective != cadence_result.receipt.effective
+    fixed = decode_request(plan.plan.requests[by_step["ascending"].request_id], plan.plan.documents.__getitem__)
+    (fixed_member,) = fixed.inputs["subject"]
+    (bound,) = cadence_result.receipt.inputs["subject"]
+    value = EvaluationSubjectValue.model_validate(bound.descriptor)
+    assert value.resolved == second
+    evaluation_subject_objects(store, fixed, fixed_member, bound)
+    assert effective_binding_id(fixed, cadence_result.receipt.inputs) == cadence_result.receipt.effective
+    (reversed_bound,) = reversed_result.receipt.inputs["subject"]
+    with pytest.raises(ValueError, match="coverage differs from the authored selector"):
+        evaluation_subject_objects(store, fixed, fixed_member, reversed_bound)
+
+    source = bound.evaluation_subject
+    swapped_models = bound.model_copy(update={"evaluation_subject": source.model_copy(update={
+        "checkpoints": source.checkpoints[::-1],
+    })})
+    with pytest.raises(ValueError, match="checkpoint differs from its resolved model and coordinate"):
+        evaluation_subject_objects(store, fixed, fixed_member, swapped_models)
+
+    first_member, second_member = second.members
+    wrong_trials = first_member.model_copy(update={"trials": first_member.trials[::-1]})
+    wrong_binding = second.model_copy(update={"members": (wrong_trials, second_member)})
+    wrong_value = value.model_copy(update={"resolved": wrong_binding})
+    with pytest.raises(ValueError, match="trial binding differs from its authored parameters"):
+        evaluation_subject_objects(store, fixed, fixed_member, bound.model_copy(update={
+            "descriptor": wrong_value.model_dump(mode="json"),
+        }))
+
+    (short,) = launch("short-producer", "short").items
+    (missing,) = launch("missing-consumer", "missing").items
+    assert missing.disposition == "admitted"
+    terminal(short.job_id, "succeeded")
+    refused = terminal(missing.job_id, "blocked")
+    assert refused["delivery"] == 0 and not refused["edges"][0]["satisfied"]
+    assert refused["outcome"]["error"] == {
+        "code": "input_unavailable", "path": "/inputs/subject/checkpoint",
+        "message": "Producer closed without checkpoint coordinates [1].",
+    }
+
+    _save_project(folders, project, _fixture(late=True))
+    edited = folders.read_plan(project, revision=None)
+    by_edited_step = {run.key.step: run for run in edited.plan.runs}
+    assert by_edited_step["train"].request_id == by_step["train"].request_id
+    late = by_edited_step["late"]
+    assert not service.read(project, revision=edited.revision).evaluations[late.key].can_run
+    (late_item,) = jobs.admit_plan(folders, edited, run_keys=(late.key,), token="late").items
+    assert late_item.disposition == "rejected"
+    assert late_item.reason == "/inputs/subject/checkpoint: admitted Train catalogue omits requested batches"
+    (stale_train,) = launch("stale-producer", "train").items
+    assert stale_train.disposition == "rejected"
+    assert stale_train.reason == "/checkpoint_catalog: the reviewed publication demand changed."
+    train_attempts = [
+        row for row in host.jobs(project=plan.project_id, include_launch=True)
+        if row["request"] == by_step["train"].request_id
+    ]
+    assert {row["id"] for row in train_attempts} == {producer.job_id, resumed.job_id}
+    assert all(row["launch"]["payload"]["checkpoint_catalog"] == [2, 4] for row in train_attempts)
+
+
+def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    registries = new_application_registry_bundle()
+    jobs = JobService(host, registries)
+    folders = ProjectFolderService(tmp_path / "projects")
+    project = "stopped"
+    definition = document_project(authored_documents(), evaluation=True)
+    baseline = definition["steps"]["baseline"]
+
+    def evaluate(rule, source="train"):
+        return baseline | {"inputs": {"subject": {"step": source, "checkpoint": rule}}}
+
+    steps = {
+        "train": _train(definition["steps"]["train"], 6),
+        "short": _train(definition["steps"]["train"], 2),
+        "last": evaluate("last"),
+        "exact": evaluate({"at": 3}),
+        "past": evaluate({"at": 1}),
+        "future": evaluate({"at": 4}),
+        "missing": evaluate({"at": 3}, source="short"),
+        "zero": evaluate({"at": 0}),
+    }
+
+    def save():
+        _save_project(folders, project, Project.model_validate(definition | {"steps": steps}))
+        saved = folders.read_plan(project, revision=None)
+        assert not saved.plan.diagnostics
+        return saved, {run.key.step: run for run in saved.plan.runs}
+
+    plan, by_step = save()
+
+    def launch(token, *names, service=jobs):
+        return service.admit_plan(
+            folders, plan, run_keys=tuple(by_step[name].key for name in names), token=token,
+        ).items
+
+    def terminal(job_id, state):
+        row = wait_until(lambda: (
+            row if (row := job_row(host, job_id)) and row["outcome"] is not None else None
+        ), timeout=22)
+        assert row["state"] == state, row.get("outcome")
+        return row
+
+    def pending(item):
+        row = job_row(host, item.job_id, "queued")
+        assert row["delivery"] == 0 and not row["edges"][0]["satisfied"]
+
+    subject = by_step["exact"].inputs["subject"].member.reference
+    assert subject.select == BatchMember(batch=3)
+    assert subject.request_id == by_step["train"].request_id
+    (held,) = launch("held", "exact", service=JobService(host, registries))
+    assert held.disposition == "rejected" and "/inputs/subject" in held.reason
+    (zero,) = launch("zero", "zero")
+    assert zero.disposition == "rejected" and "/inputs/subject/checkpoint" in zero.reason
+
+    host.policy(compute=1)
+    install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4)
+    (producer,) = launch("producer", "train")
+    last, exact = launch("consumers", "last", "exact")
+    assert {last.disposition, exact.disposition} == {"admitted"}
+    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    pending(last)
+    pending(exact)
+    jobs.stop([producer.job_id], "checkpoint")
+    stopped = terminal(producer.job_id, "stopped")
+    checkpoint = stopped["outcome"]["checkpoint"]
+    assert checkpoint["completed_updates"] == 3
+    assert host.stopped_checkpoint(producer.job_id, project=plan.project_id, manifest_root=str(plan.store_path)) == 3
+    assert "checkpoint_catalog" not in host.jobs(job_id=producer.job_id, include_launch=True)[0]["launch"]["payload"]
+    evaluated = terminal(exact.job_id, "succeeded")
+    binding = evaluated["edges"][0]["binding"]
+    selection = binding["checkpoint_selection"]
+    (member,) = selection["members"]
+    assert selection["requested"] == [3] and selection["lineage"] == [producer.job_id]
+    assert member["checkpoint"] == checkpoint
+    assert member["producer_job_id"] == producer.job_id
+    assert evaluated["delivery"] == 1
+    restart(host)
+    pending(last)
+    assert launch("consumers", "last", "exact") == [last, exact]
+    past, future = launch("around-stop", "past", "future")
+    absent = terminal(past.job_id, "blocked")
+    assert absent["outcome"]["error"]["code"] == "input_unavailable"
+    assert absent["delivery"] == 0 and not absent["edges"][0]["satisfied"]
+    pending(future)
+
+    # A coordinate authored after admission uses the retained publication in the same lineage.
+    steps["late"] = deepcopy(evaluate({"at": 3}))
+    steps["late"]["base"]["inline"]["params"]["seed"] += 1
+    plan, by_step = save()
+    service = ProjectPlanService(folders, jobs)
+    assert service.read(project, revision=plan.revision).evaluations[by_step["late"].key].can_run
+    resumed = jobs.resume(producer.job_id, token="resume")
+    wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+    pending(last)
+    try:
+        (late,) = launch("late", "late")
+        assert late.disposition == "admitted"
+        pinned = wait_until(lambda: (
+            row["edges"][0]["binding"] if (row := job_row(host, late.job_id, "queued")) else None
+        ))
+        assert pinned == binding
+        with _damaged_prng(checkpoint):
+            assert host.stopped_checkpoint(producer.job_id, project=plan.project_id, manifest_root=str(plan.store_path)) is None
+            # A fresh admission detects corruption at selection. The earlier pin also
+            # detects the same damage before delivery.
+            (corrupt,) = launch("corrupt", "exact")
+            rejected = terminal(corrupt.job_id, "blocked")
+            assert not rejected["edges"][0]["satisfied"]
+            host.policy(compute=2)
+            refused = terminal(late.job_id, "blocked")
+            assert refused["edges"][0]["binding"] == binding
+            for row in (rejected, refused):
+                assert row["outcome"]["error"]["code"] == "dependency_corrupt"
+                assert row["delivery"] == 0 and "receipt" not in row["outcome"]
+        released = terminal(future.job_id, "succeeded")["edges"][0]["binding"]["checkpoint_selection"]
+        assert job_row(host, resumed.job_id, "running") is not None
+    finally:
+        (tmp_path / "finish-train").touch()
+    completed = terminal(resumed.job_id, "succeeded")
+    final = terminal(last.job_id, "succeeded")
+    bound_terminal = final["edges"][0]["binding"]["terminal"]
+    assert bound_terminal["receipt"] == completed["outcome"]["store_success"]
+    last_result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=last.job_id)
+    with last_result.open_states() as states:
+        assert states.data("checkpoint").tolist() == [6]
+    assert released["requested"] == [4]
+    assert released["lineage"] == [producer.job_id, resumed.job_id]
+    (resumed_member,) = released["members"]
+    assert resumed_member["producer_job_id"] == resumed.job_id
+    restart(host)
+    assert job_row(host, exact.job_id)["edges"][0]["binding"] == binding
+    assert job_row(host, last.job_id)["edges"][0]["binding"]["terminal"] == bound_terminal
+
+    result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=exact.job_id)
+    receipt = result._manifest()
+    assert receipt.input_training_runs == []
+    (parent,) = receipt.provenance.parents
+    assert parent.id == checkpoint["pointer"]["transaction_id"]
+    assert parent.metadata["publication_cursor"] == member["publication_cursor"]
+    assert parent.metadata["transaction_root_sha256"] == checkpoint["pointer"]["transaction_root_sha256"]
+    settled = service.read(project, revision=plan.revision)
+    planned = settled.evaluations[by_step["exact"].key].result
+    assert planned.receipt == result.receipt
+    (source,) = planned.checkpoint_sources
+    assert source.job_id == producer.job_id and source.completed_updates == 3
+    with result.open_states() as dataset:
+        assert dataset.data("checkpoint").tolist() == [3]
+    trial = settled.evaluations[by_step["exact"].key].trials[0]
+    assert result.replay_trial(trial, anchor_id="effector").identity.stable_id == trial
+
+    (short,) = launch("short", "short")
+    terminal(short.job_id, "succeeded")
+    (missing,) = launch("missing", "missing")
+    unavailable = terminal(missing.job_id, "blocked")
+    assert unavailable["delivery"] == 0 and not unavailable["edges"][0]["satisfied"]
+    assert unavailable["outcome"]["error"] == {
+        "code": "input_unavailable", "path": "/inputs/subject/checkpoint",
+        "message": "Producer closed without checkpoint coordinates [3].",
+    }

@@ -13,9 +13,6 @@ from feedbax.contracts.strict_json import (
     DuplicateJsonKeyError,
     strict_model_validate_json,
 )
-from feedbax.orchestration.content_staging import main as stage_content
-from feedbax.orchestration.events import RunEventProtocolError, RunEventReader
-from feedbax.training.run_matrix import RunMatrixError, _load_pinned_canonical_document
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.strict_json_boundary_contract]
 
@@ -57,44 +54,3 @@ def test_public_evaluation_loader_refuses_duplicate_authored_members(tmp_path: P
     path.write_text('{"evaluation_type":"first","evaluation_type":"second"}', encoding="utf-8")
     with pytest.raises(DuplicateJsonKeyError):
         coerce_evaluation_run_spec(path)
-
-
-def test_pinned_matrix_loader_keeps_its_domain_error_for_duplicate_json(tmp_path: Path) -> None:
-    path = tmp_path / "matrix.json"
-    path.write_text('{"schema_version":"first","schema_version":"second"}', encoding="utf-8")
-    with pytest.raises(RunMatrixError, match="cannot load pinned JSON document"):
-        _load_pinned_canonical_document(
-            tmp_path,
-            ref=path.name,
-            expected_sha256="0" * 64,
-            field="/matrix",
-        )
-
-
-def test_event_reader_keeps_its_protocol_error_for_duplicate_json(tmp_path: Path) -> None:
-    path = tmp_path / "events.jsonl"
-    path.write_text('{"seq":1,"seq":2}\n', encoding="utf-8")
-    with pytest.raises(RunEventProtocolError, match="Invalid RunEvent JSONL"):
-        RunEventReader(path).read_all()
-
-
-@pytest.mark.parametrize("operation", ("inspect", "publish", "project"))
-def test_content_staging_refuses_ambiguous_command_references(
-    operation: str, tmp_path: Path
-) -> None:
-    digest = "a" * 64
-    object_ref = (
-        f'{{"object_id":"content-object://sha256/{digest}","sha256":"{digest}",'
-        '"size_bytes":1,"size_bytes":2}'
-    )
-    refs = f"[{object_ref}]"
-    path = r"\$\[0\]\.size_bytes"
-    args = [operation, str(tmp_path / "cache")]
-    if operation != "inspect":
-        args.append(str(tmp_path / "transfer"))
-    if operation == "project":
-        refs = f'[{{"tree_id":"content-tree://sha256/{digest}","descriptor":{object_ref}}}]'
-        path = r"\$\[0\]\.descriptor\.size_bytes"
-
-    with pytest.raises(DuplicateJsonKeyError, match=path):
-        stage_content([*args, refs])

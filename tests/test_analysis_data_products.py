@@ -4,7 +4,6 @@ import inspect
 
 import pytest
 
-from feedbax.analysis.context import AnalysisRunContext
 from feedbax.contracts.graph import AnalysisDataProductRequirement
 from feedbax.contracts.base import (
     ArtifactRef,
@@ -16,7 +15,6 @@ from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisOutputDescriptor,
     AnalysisRunManifest,
-    AnalysisRunSpec,
     load_manifest,
     analysis_data_product_identity_envelope,
     preserve_analysis_output_descriptor,
@@ -25,9 +23,6 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.value_schema import ValueSchema
-from feedbax.integrations import provider as provider_module
-from feedbax.integrations.provider import provider_manifest, validate_analysis_spec
-from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def _product(**updates: object) -> AnalysisDataProduct:
@@ -101,14 +96,6 @@ def _requirement(**updates: object) -> dict[str, object]:
     }
     payload.update(updates)
     return payload
-
-
-def _analysis_payload(requirement: dict[str, object]) -> dict[str, object]:
-    return {
-        "analysis_type": "feedbax.analysis.perturbation_response_bank",
-        "inputs": [{"kind": "AnalysisRunManifest", "id": "analysis-run:selected-checkpoint"}],
-        "input_requirements": [{"data_product": requirement}],
-    }
 
 
 def test_analysis_data_product_emits_identity_and_round_trips(tmp_path) -> None:
@@ -262,207 +249,21 @@ def test_output_descriptor_round_trips_with_saved_product(tmp_path) -> None:
     assert loaded.produced_data[0] == product
 
 
-def test_analysis_data_product_requirement_validates_resolved_manifest_success(
-    application_registry_bundle,
-) -> None:
-    product = _product()
-    requirement = _requirement(product_identity_hash=product.product_identity_hash)
-
-    result = validate_analysis_spec(
-        _analysis_payload(requirement),
-        resolved_manifests=[
-            {
-                "kind": "AnalysisRunManifest",
-                "produced_data": [product.model_dump(mode="json", exclude_none=True)],
-            }
-        ],
-        component_registry=application_registry_bundle.components,
-        analysis_registry=application_registry_bundle.analysis_recipes,
-    )
-
-    assert result.valid is True
-
-
-def test_context_recorded_product_satisfies_public_consumer_requirement(
-    tmp_path, application_registry_bundle
-) -> None:
-    context = AnalysisRunContext(
-        spec=AnalysisRunSpec(analysis_type="downstream.scalar_projection"),
-        root=tmp_path,
-        index_manifest=False,
-    )
-    product = context.record_data_product(
-        {"value": 1.25},
-        product_schema_id="downstream.scalar_projection",
-        product_schema_version="downstream.scalar_projection.v1",
-        role="peak_velocity_scalar",
-        logical_name="peak_velocity_scalar",
-        materialization={"scalar_path": "value"},
-    )
-    manifest, _path = context.finalize()
-
-    result = validate_analysis_spec(
-        {
-            "analysis_type": "downstream.scalar_consumer",
-            "inputs": [
-                {
-                    "kind": "AnalysisRunManifest",
-                    "id": manifest.id,
-                }
-            ],
-            "input_requirements": [
-                {
-                    "data_product": {
-                        "role": product.role,
-                        "product_schema_id": product.product_schema_id,
-                        "exact_product_schema_version": product.product_schema_version,
-                        "logical_name": product.logical_name,
-                        "producer_manifest_id": manifest.id,
-                        "artifact_sha256": product.artifacts[0].sha256,
-                    }
-                }
-            ],
-        },
-        resolved_manifests=[manifest.model_dump(mode="json", exclude_none=True)],
-        component_registry=application_registry_bundle.components,
-        analysis_registry=application_registry_bundle.analysis_recipes,
-    )
-
-    assert result.valid is True
-
-
 @pytest.mark.parametrize(
-    ("name", "product", "expected_class"),
+    ("kind", "version"),
     [
-        (
-            "wrong-run",
-            _product(producer_manifest_id="analysis-run:other"),
-            "wrong-run",
-        ),
-        (
-            "wrong-checkpoint",
-            _product(
-                checkpoint_policy={"selection": "validation_selected", "checkpoint_id": "other"}
-            ),
-            "wrong-checkpoint",
-        ),
-        (
-            "wrong-basis",
-            _product(descriptor_basis_hash="sha256:other-basis"),
-            "wrong-basis",
-        ),
-        (
-            "wrong-role",
-            _product(role="diagnostic_table"),
-            "wrong-role",
-        ),
+        ("AnalysisDataProduct", "feedbax.manifest.analysis_data_product.v0"),
+        ("AnalysisDataProductRequirement", "feedbax.spec.analysis_data_product_requirement.v0"),
     ],
 )
-def test_named_negative_fixtures_fail_closed(
-    name, product, expected_class, application_registry_bundle
-) -> None:
-    result = validate_analysis_spec(
-        _analysis_payload(_requirement()),
-        resolved_manifests=[
-            {
-                "kind": "AnalysisRunManifest",
-                "produced_data": [product.model_dump(mode="json", exclude_none=True)],
-            }
-        ],
-        component_registry=application_registry_bundle.components,
-        analysis_registry=application_registry_bundle.analysis_recipes,
-    )
-
-    assert name
-    assert result.valid is False
-    assert result.errors[0].type == "analysis_data_product_mismatch"
-    assert result.errors[0].details["kind"] == "Mismatch"
-    assert result.errors[0].details["mismatch_class"] == expected_class
-
-
-def test_data_product_requirement_fails_closed_for_absence_and_incompatibility(
-    application_registry_bundle,
-) -> None:
-    missing = validate_analysis_spec(
-        _analysis_payload(_requirement()),
-        resolved_manifests=[],
-        component_registry=application_registry_bundle.components,
-        analysis_registry=application_registry_bundle.analysis_recipes,
-    )
-    assert missing.valid is False
-    assert missing.errors[0].type == "analysis_data_product_missing"
-    assert missing.errors[0].details["kind"] == "Missing"
-
-    incompatible = validate_analysis_spec(
-        _analysis_payload(_requirement(artifact_sha256="def")),
-        resolved_manifests=[
-            {
-                "kind": "AnalysisRunManifest",
-                "produced_data": [_product().model_dump(mode="json", exclude_none=True)],
-            }
-        ],
-        component_registry=application_registry_bundle.components,
-        analysis_registry=application_registry_bundle.analysis_recipes,
-    )
-    assert incompatible.valid is False
-    assert incompatible.errors[0].details["mismatch_class"] == "artifact-byte-hash"
-
-
-def test_data_product_schema_version_range_and_old_version_rejection(
-    application_registry_bundle,
-) -> None:
-    requirement = _requirement(
-        exact_product_schema_version=None,
-        min_product_schema_version="rlrmp.controller_feedback_scales.v1",
-        max_product_schema_version="rlrmp.controller_feedback_scales.v1",
-    )
-    result = validate_analysis_spec(
-        _analysis_payload(requirement),
-        resolved_manifests=[
-            {
-                "kind": "AnalysisRunManifest",
-                "produced_data": [_product().model_dump(mode="json", exclude_none=True)],
-            }
-        ],
-        component_registry=application_registry_bundle.components,
-        analysis_registry=application_registry_bundle.analysis_recipes,
-    )
-    assert result.valid is True
-
-    incompatible = validate_analysis_spec(
-        _analysis_payload(
-            _requirement(exact_product_schema_version="rlrmp.controller_feedback_scales.v2")
-        ),
-        resolved_manifests=[
-            {
-                "kind": "AnalysisRunManifest",
-                "produced_data": [_product().model_dump(mode="json", exclude_none=True)],
-            }
-        ],
-        component_registry=application_registry_bundle.components,
-        analysis_registry=application_registry_bundle.analysis_recipes,
-    )
-    assert incompatible.valid is False
-    assert incompatible.errors[0].details["mismatch_class"] == "schema-version"
-
+def test_data_product_schema_rejects_old_versions(kind, version) -> None:
     with pytest.raises(UnsupportedSpecVersion):
-        default_spec_registry.migrate(
-            "AnalysisDataProduct",
-            {"schema_version": "feedbax.manifest.analysis_data_product.v0"},
-        )
-    with pytest.raises(UnsupportedSpecVersion):
-        default_spec_registry.migrate(
-            "AnalysisDataProductRequirement",
-            {"schema_version": "feedbax.spec.analysis_data_product_requirement.v0"},
-        )
+        default_spec_registry.migrate(kind, {"schema_version": version})
 
 
-def test_provider_manifest_and_policy_matrix_export_data_product_families() -> None:
-    manifest = provider_manifest()
+def test_policy_matrix_exports_data_product_families() -> None:
     policies = default_spec_registry.policy_matrix()
 
-    assert "AnalysisDataProduct" in manifest.schemas
-    assert "AnalysisDataProductRequirement" in manifest.schemas
     assert policies["AnalysisDataProduct"].stance == "reject"
     assert policies["AnalysisDataProductRequirement"].stance == "reject"
     assert "tests/test_analysis_data_products.py" in policies["AnalysisDataProduct"].required_tests
@@ -493,7 +294,5 @@ def test_data_product_contract_does_not_import_bundle_selection() -> None:
     import feedbax.contracts.manifest as manifest_module
 
     manifest_source = inspect.getsource(manifest_module)
-    provider_source = inspect.getsource(provider_module)
 
     assert "select_bundle_manifests" not in manifest_source
-    assert "select_bundle_manifests" not in provider_source

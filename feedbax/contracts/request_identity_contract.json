@@ -1,0 +1,3207 @@
+{
+  "fields": {
+    "feedbax.contracts.base.ParentRef": {
+      "id": {},
+      "kind": {},
+      "metadata": {
+        "absent": {}
+      },
+      "role": {
+        "absent": null
+      },
+      "uri": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.expression_values.CallValue": {
+      "args": {
+        "absent": [],
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "function": {},
+      "kind": {
+        "absent": "call",
+        "values": [
+          "call"
+        ]
+      },
+      "kwargs": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      }
+    },
+    "feedbax.contracts.expression_values.Dimensions": {
+      "amount": {
+        "absent": 0
+      },
+      "angle": {
+        "absent": 0
+      },
+      "current": {
+        "absent": 0
+      },
+      "length": {
+        "absent": 0
+      },
+      "luminosity": {
+        "absent": 0
+      },
+      "mass": {
+        "absent": 0
+      },
+      "temperature": {
+        "absent": 0
+      },
+      "time": {
+        "absent": 0
+      }
+    },
+    "feedbax.contracts.expression_values.DrawValue": {
+      "args": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "family": {},
+      "kind": {
+        "absent": "draw",
+        "values": [
+          "draw"
+        ]
+      },
+      "per": {
+        "absent": "trial",
+        "values": [
+          "run",
+          "trial"
+        ]
+      }
+    },
+    "feedbax.contracts.expression_values.LiteralValue": {
+      "kind": {
+        "absent": "literal",
+        "values": [
+          "literal"
+        ]
+      },
+      "unit": {
+        "absent": null
+      },
+      "value": {}
+    },
+    "feedbax.contracts.expression_values.NameValue": {
+      "kind": {
+        "absent": "name",
+        "values": [
+          "name"
+        ]
+      },
+      "reference": {}
+    },
+    "feedbax.contracts.expression_values.ValueType": {
+      "base": {
+        "values": [
+          "boolean",
+          "integer",
+          "real"
+        ]
+      },
+      "dimensions": {
+        "absent": {}
+      },
+      "shape": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.expressions.AllOf": {
+      "exprs": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "kind": {
+        "absent": "all",
+        "values": [
+          "all"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.AnyOf": {
+      "exprs": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "kind": {
+        "absent": "any",
+        "values": [
+          "any"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.Coalesce": {
+      "default": {
+        "absent": null
+      },
+      "queries": {}
+    },
+    "feedbax.contracts.expressions.Coerce": {
+      "scale": {
+        "absent": null
+      },
+      "to": {
+        "absent": null,
+        "values": [
+          "bool",
+          "float",
+          "int",
+          "str"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.Compare": {
+      "item": {},
+      "kind": {
+        "absent": "compare",
+        "values": [
+          "compare"
+        ]
+      },
+      "op": {
+        "values": [
+          "approx_eq",
+          "contains",
+          "endswith",
+          "eq",
+          "exists",
+          "ge",
+          "gt",
+          "has_type",
+          "in",
+          "le",
+          "lt",
+          "ne",
+          "startswith"
+        ]
+      },
+      "path": {
+        "absent": ""
+      },
+      "tolerance": {
+        "absent": null
+      },
+      "value": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.expressions.Filter": {
+      "where": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.MapObjectList": {
+      "item_output_path": {},
+      "items": {},
+      "kind": {
+        "absent": "map_object_list",
+        "values": [
+          "map_object_list"
+        ]
+      },
+      "template": {}
+    },
+    "feedbax.contracts.expressions.NamedPredicateRef": {
+      "kind": {
+        "absent": "named",
+        "values": [
+          "named"
+        ]
+      },
+      "params": {
+        "absent": {}
+      },
+      "predicate_id": {}
+    },
+    "feedbax.contracts.expressions.Not": {
+      "expr": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "kind": {
+        "absent": "not",
+        "values": [
+          "not"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.Select": {
+      "where": {
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      }
+    },
+    "feedbax.contracts.expressions.ValueQuery": {
+      "coerce": {
+        "absent": null
+      },
+      "default": {
+        "absent": null
+      },
+      "filter": {
+        "absent": null
+      },
+      "item": {},
+      "path": {
+        "absent": ""
+      },
+      "select": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.BandEncodings": {
+      "lower": {},
+      "upper": {},
+      "x": {},
+      "y": {}
+    },
+    "feedbax.contracts.figure_document.BandLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "band"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.BandStyle": {
+      "band_alpha": {
+        "absent": 0.2
+      },
+      "color": {
+        "absent": null
+      },
+      "label": {
+        "absent": null
+      },
+      "line_dash": {
+        "absent": null,
+        "values": [
+          "dash",
+          "dashdot",
+          "dot",
+          "longdash",
+          "longdashdot",
+          "solid"
+        ]
+      },
+      "line_width": {
+        "absent": null
+      },
+      "showlegend": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.FigureDocument": {
+      "caption": {
+        "absent": null
+      },
+      "data": {},
+      "layers": {
+        "families": [
+          "feedbax.contracts.figure_document.BandLayer",
+          "feedbax.contracts.figure_document.LineLayer"
+        ]
+      },
+      "layout": {},
+      "theme": {
+        "absent": "plotly_white"
+      },
+      "view": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.FigureDocumentView": {
+      "height": {
+        "absent": null
+      },
+      "horizontal_spacing": {
+        "absent": null
+      },
+      "hovermode": {
+        "absent": null,
+        "values": [
+          "closest",
+          "x unified",
+          "x",
+          "y unified",
+          "y",
+          false
+        ]
+      },
+      "legend_gutter": {
+        "absent": null
+      },
+      "legend_tracegroupgap": {
+        "absent": null
+      },
+      "legend_x": {
+        "absent": null
+      },
+      "legend_xanchor": {
+        "absent": null,
+        "values": [
+          "auto",
+          "center",
+          "left",
+          "right"
+        ]
+      },
+      "legend_y": {
+        "absent": null
+      },
+      "legend_yanchor": {
+        "absent": null,
+        "values": [
+          "auto",
+          "bottom",
+          "middle",
+          "top"
+        ]
+      },
+      "margin": {
+        "absent": null
+      },
+      "row_label_gutter": {
+        "absent": null
+      },
+      "shared_xaxes": {
+        "absent": false
+      },
+      "shared_yaxes": {
+        "absent": "all"
+      },
+      "title": {
+        "absent": null
+      },
+      "vertical_spacing": {
+        "absent": null
+      },
+      "width": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.FigurePanel": {
+      "axes_labels": {
+        "absent": null
+      },
+      "col": {},
+      "name": {},
+      "row": {},
+      "title": {
+        "absent": null
+      },
+      "x_axis": {
+        "absent": null
+      },
+      "y_axis": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.IndexSelection": {
+      "index": {}
+    },
+    "feedbax.contracts.figure_document.LineEncodings": {
+      "x": {},
+      "y": {}
+    },
+    "feedbax.contracts.figure_document.LineLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "line"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.figure_document.LineStyle": {
+      "color": {
+        "absent": null
+      },
+      "label": {
+        "absent": null
+      },
+      "line_dash": {
+        "absent": null,
+        "values": [
+          "dash",
+          "dashdot",
+          "dot",
+          "longdash",
+          "longdashdot",
+          "solid"
+        ]
+      },
+      "line_width": {
+        "absent": null
+      },
+      "showlegend": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.VariableBinding": {
+      "select": {
+        "absent": {}
+      },
+      "variable": {}
+    },
+    "feedbax.contracts.figure_layout.FigureMarginParams": {
+      "autoexpand": {
+        "absent": null
+      },
+      "b": {
+        "absent": null
+      },
+      "l": {
+        "absent": null
+      },
+      "pad": {
+        "absent": null
+      },
+      "r": {
+        "absent": null
+      },
+      "t": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.AxisLabels": {
+      "x": {
+        "absent": null
+      },
+      "y": {
+        "absent": null
+      },
+      "z": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.AxisSemanticClass": {
+      "frame": {
+        "absent": null
+      },
+      "quantity": {},
+      "unit": {}
+    },
+    "feedbax.contracts.figures.ColorbarPanelPlacement": {
+      "center_fraction": {
+        "absent": 0.5
+      },
+      "length_fraction": {},
+      "offset_fraction": {
+        "absent": 0.0
+      },
+      "panel": {},
+      "side": {
+        "absent": "right",
+        "values": [
+          "left",
+          "right"
+        ]
+      }
+    },
+    "feedbax.contracts.figures.DataDerivedAxisRange": {
+      "group": {},
+      "padding_fraction": {}
+    },
+    "feedbax.contracts.figures.EqualDataAspect": {
+      "ratio": {
+        "absent": 1,
+        "values": [
+          1
+        ]
+      }
+    },
+    "feedbax.contracts.figures.FigureArtifactPayload": {
+      "artifact_provider": {},
+      "artifact_role": {},
+      "authority": {
+        "absent": "artifact_provider",
+        "values": [
+          "artifact_provider"
+        ]
+      },
+      "manifest_role": {},
+      "manifest_status": {
+        "absent": "completed",
+        "values": [
+          "completed"
+        ]
+      },
+      "media_type": {
+        "absent": "application/json"
+      },
+      "name": {},
+      "payload_schema_id": {
+        "absent": null
+      },
+      "payload_schema_version": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.FigureColorbar": {
+      "colorscale": {
+        "absent": null
+      },
+      "family": {
+        "absent": null
+      },
+      "placement": {
+        "absent": null
+      },
+      "range": {
+        "absent": null
+      },
+      "title": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.FigureDataProductArtifactPayload": {
+      "artifact_provider": {},
+      "artifact_role": {},
+      "authority": {
+        "absent": "analysis_data_product",
+        "values": [
+          "analysis_data_product"
+        ]
+      },
+      "manifest_role": {},
+      "manifest_status": {
+        "absent": "completed",
+        "values": [
+          "completed"
+        ]
+      },
+      "media_type": {
+        "absent": "application/json"
+      },
+      "name": {},
+      "payload_schema_id": {
+        "absent": null
+      },
+      "payload_schema_version": {
+        "absent": null
+      },
+      "product_role": {},
+      "product_schema_id": {},
+      "product_schema_version": {}
+    },
+    "feedbax.contracts.figures.FigureInputAuthority": {
+      "artifact_payloads": {
+        "absent": [],
+        "families": [
+          "feedbax.contracts.figures.FigureArtifactPayload",
+          "feedbax.spec.figure_data_product_payload"
+        ]
+      },
+      "parent": {}
+    },
+    "feedbax.contracts.figures.FigureInputRoleAuthority": {
+      "artifact_payloads": {
+        "absent": [],
+        "families": [
+          "feedbax.contracts.figures.FigureArtifactPayload",
+          "feedbax.spec.figure_data_product_payload"
+        ]
+      },
+      "input_role": {}
+    },
+    "feedbax.contracts.figures.FigureSlotFamily": {
+      "constructor": {
+        "absent": ""
+      },
+      "data": {
+        "absent": {},
+        "families": [
+          "$json",
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "name": {},
+      "params": {
+        "absent": {}
+      },
+      "required": {
+        "absent": false
+      },
+      "rows": {},
+      "slot": {}
+    },
+    "feedbax.contracts.figures.FigureSlotFamilyRow": {
+      "color": {},
+      "data_paths": {
+        "families": [
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "label": {},
+      "marker": {},
+      "name": {},
+      "panel": {}
+    },
+    "feedbax.contracts.figures.FigureSpec": {
+      "assembler": {
+        "absent": null
+      },
+      "assembler_params": {
+        "absent": {}
+      },
+      "colorbar": {
+        "absent": null
+      },
+      "exclude_pieces": {
+        "absent": []
+      },
+      "facet_bindings": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "figure_routing": {
+        "absent": {}
+      },
+      "input_authorities": {
+        "absent": [],
+        "families": [
+          "feedbax.spec.figure_input_authority",
+          "feedbax.spec.figure_input_role_authority"
+        ]
+      },
+      "inputs": {
+        "absent": []
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "name": {},
+      "panels": {
+        "absent": []
+      },
+      "pieces": {
+        "absent": []
+      },
+      "run_condition": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "semantic_range_policy": {
+        "absent": null
+      },
+      "slot_bindings": {
+        "absent": {}
+      },
+      "slot_families": {
+        "absent": null
+      },
+      "template": {
+        "absent": null
+      },
+      "trace_families": {
+        "absent": null
+      },
+      "traces": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.figures.FigureTemplate": {
+      "assembler": {},
+      "assembler_params": {
+        "absent": {}
+      },
+      "default_pieces": {
+        "absent": []
+      },
+      "description": {},
+      "facet_by": {
+        "absent": []
+      },
+      "facet_target": {
+        "absent": "figures",
+        "values": [
+          "figures",
+          "panels"
+        ]
+      },
+      "metadata": {
+        "absent": {}
+      },
+      "name": {},
+      "slots": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.figures.PanelAxis": {
+      "derived_range": {
+        "absent": null
+      },
+      "frame": {
+        "absent": null
+      },
+      "quantity": {
+        "absent": null
+      },
+      "range": {
+        "absent": null
+      },
+      "type": {
+        "absent": null,
+        "values": [
+          "linear",
+          "log"
+        ]
+      },
+      "unit": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.PanelSpec": {
+      "axes_labels": {
+        "absent": null
+      },
+      "camera": {
+        "absent": null
+      },
+      "col": {
+        "absent": null
+      },
+      "col_span": {
+        "absent": null
+      },
+      "equal_data_aspect": {
+        "absent": null
+      },
+      "name": {},
+      "panel_type": {
+        "absent": null,
+        "values": [
+          "scene",
+          "xy"
+        ]
+      },
+      "row": {
+        "absent": null
+      },
+      "row_label": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "row_span": {
+        "absent": null
+      },
+      "title": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "x_axis": {
+        "absent": null
+      },
+      "y_axis": {
+        "absent": null
+      },
+      "z_axis": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.SceneCamera": {
+      "azimuth": {},
+      "distance": {
+        "absent": 2.1650635094610964
+      },
+      "elevation": {},
+      "projection": {
+        "absent": null,
+        "values": [
+          "orthographic",
+          "perspective"
+        ]
+      }
+    },
+    "feedbax.contracts.figures.SemanticAxisRangePolicy": {
+      "classes": {
+        "absent": "all",
+        "values": [
+          "all"
+        ]
+      },
+      "padding_fraction": {}
+    },
+    "feedbax.contracts.figures.SlotSpec": {
+      "constructor": {},
+      "multiplicity": {
+        "absent": "one",
+        "values": [
+          "many",
+          "one",
+          "per_facet"
+        ]
+      },
+      "name": {},
+      "params_defaults": {
+        "absent": {}
+      },
+      "required": {
+        "absent": true
+      }
+    },
+    "feedbax.contracts.figures.TraceBinding": {
+      "constructor": {},
+      "data": {
+        "absent": {},
+        "families": [
+          "$json",
+          "feedbax.contracts.expressions.Coalesce",
+          "feedbax.contracts.expressions.MapObjectList",
+          "feedbax.contracts.expressions.ValueQuery"
+        ]
+      },
+      "include_when": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expressions.AllOf",
+          "feedbax.contracts.expressions.AnyOf",
+          "feedbax.contracts.expressions.Compare",
+          "feedbax.contracts.expressions.NamedPredicateRef",
+          "feedbax.contracts.expressions.Not"
+        ]
+      },
+      "name": {},
+      "panel": {
+        "absent": null
+      },
+      "params": {
+        "absent": {}
+      },
+      "piece": {
+        "absent": null
+      },
+      "required": {
+        "absent": false
+      }
+    },
+    "feedbax.contracts.figures.TraceFamily": {
+      "colorscale": {
+        "absent": null
+      },
+      "index": {},
+      "interleave_group": {
+        "absent": null
+      },
+      "legend_index": {
+        "absent": null
+      },
+      "name": {},
+      "trace": {},
+      "values": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.TraceFamilyIndex": {
+      "range": {
+        "absent": null
+      },
+      "values": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figures.TraceFamilyRange": {
+      "start": {
+        "absent": 0
+      },
+      "step": {
+        "absent": 1
+      },
+      "stop": {}
+    },
+    "feedbax.contracts.model_address.ComponentPortEnd": {
+      "component": {},
+      "owner": {
+        "values": [
+          "component"
+        ]
+      },
+      "port": {}
+    },
+    "feedbax.contracts.model_address.InputBoundaryEnd": {
+      "owner": {
+        "values": [
+          "inputs"
+        ]
+      },
+      "port": {}
+    },
+    "feedbax.contracts.model_address.OutputBoundaryEnd": {
+      "owner": {
+        "values": [
+          "outputs"
+        ]
+      },
+      "port": {}
+    },
+    "feedbax.contracts.model_address.PhysicalBoundaryEnd": {
+      "owner": {
+        "values": [
+          "boundary"
+        ]
+      },
+      "port": {}
+    },
+    "feedbax.contracts.model_document.CompositeComponent": {
+      "attachments": {
+        "absent": {}
+      },
+      "interior": {
+        "families": [
+          "feedbax.contracts.model_document.GraphInterior",
+          "feedbax.contracts.model_document.PhysicalInterior"
+        ]
+      },
+      "kind": {
+        "values": [
+          "composite"
+        ]
+      },
+      "name": {},
+      "ports": {},
+      "substeps": {
+        "absent": 1
+      }
+    },
+    "feedbax.contracts.model_document.DelayAttachment": {
+      "delay": {},
+      "id": {},
+      "initial": {
+        "absent": 0
+      },
+      "kind": {
+        "values": [
+          "delay"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.GraphInterior": {
+      "attachments": {
+        "absent": {}
+      },
+      "components": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.model_document.CompositeComponent",
+          "feedbax.contracts.model_document.LeafComponent"
+        ]
+      },
+      "physical_domain": {
+        "absent": null
+      },
+      "wires": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.model_document.InputDefault": {
+      "value": {}
+    },
+    "feedbax.contracts.model_document.InterventionAttachment": {
+      "fields": {
+        "absent": {}
+      },
+      "id": {},
+      "kind": {
+        "values": [
+          "intervention"
+        ]
+      },
+      "operation": {},
+      "window": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.model_document.LeafComponent": {
+      "attachments": {
+        "absent": {}
+      },
+      "fields": {
+        "absent": {}
+      },
+      "kind": {
+        "values": [
+          "leaf"
+        ]
+      },
+      "name": {},
+      "port_counts": {
+        "absent": {}
+      },
+      "revision": {
+        "absent": null
+      },
+      "type": {}
+    },
+    "feedbax.contracts.model_document.ModelDocument": {
+      "interior": {},
+      "ports": {},
+      "step_seconds": {},
+      "world": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.model_document.ModelPhysicalConnection": {
+      "a": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.PhysicalBoundaryEnd"
+        ]
+      },
+      "b": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.PhysicalBoundaryEnd"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.ModelPortAttachments": {
+      "sinks": {
+        "absent": {}
+      },
+      "sources": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.model_document.InterventionAttachment",
+          "feedbax.contracts.model_document.ProbeAttachment"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.ModelPorts": {
+      "inputs": {
+        "absent": []
+      },
+      "outputs": {
+        "absent": []
+      },
+      "physical": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.model_document.ModelTime": {
+      "unit": {
+        "values": [
+          "s",
+          "st"
+        ]
+      },
+      "value": {}
+    },
+    "feedbax.contracts.model_document.ModelWire": {
+      "attachments": {
+        "absent": [],
+        "families": [
+          "feedbax.contracts.model_document.DelayAttachment",
+          "feedbax.contracts.model_document.InterventionAttachment",
+          "feedbax.contracts.model_document.ProbeAttachment"
+        ]
+      },
+      "source": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.InputBoundaryEnd"
+        ]
+      },
+      "target": {
+        "families": [
+          "feedbax.contracts.model_address.ComponentPortEnd",
+          "feedbax.contracts.model_address.OutputBoundaryEnd"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.ModelWorld": {
+      "gravity": {}
+    },
+    "feedbax.contracts.model_document.PhysicalInterior": {
+      "attachments": {
+        "absent": {}
+      },
+      "components": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.model_document.CompositeComponent",
+          "feedbax.contracts.model_document.LeafComponent"
+        ]
+      },
+      "connections": {
+        "absent": {}
+      },
+      "physical_domain": {
+        "values": [
+          "planar_multibody",
+          "rotational",
+          "spatial_multibody",
+          "translational"
+        ]
+      },
+      "wires": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.model_document.PhysicalPort": {
+      "id": {},
+      "name": {},
+      "type": {
+        "values": [
+          "frame",
+          "rotational",
+          "translational"
+        ]
+      }
+    },
+    "feedbax.contracts.model_document.ProbeAttachment": {
+      "id": {},
+      "kind": {
+        "values": [
+          "probe"
+        ]
+      },
+      "name": {}
+    },
+    "feedbax.contracts.model_document.SignalInput": {
+      "default": {
+        "absent": null
+      },
+      "id": {},
+      "name": {},
+      "type": {}
+    },
+    "feedbax.contracts.model_document.SignalOutput": {
+      "id": {},
+      "name": {},
+      "type": {}
+    },
+    "feedbax.contracts.model_document.SignalType": {
+      "base": {
+        "absent": null
+      },
+      "shape": {
+        "absent": null
+      },
+      "unit": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.objective_document.ObjectiveDocument": {
+      "id": {},
+      "terms": {
+        "absent": []
+      }
+    },
+    "feedbax.contracts.objective_document.ObjectiveTerm": {
+      "enabled": {
+        "absent": true
+      },
+      "epochs": {
+        "absent": []
+      },
+      "id": {},
+      "measure": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "measure_type": {
+        "absent": {
+          "base": "real"
+        }
+      },
+      "reduction": {
+        "absent": "mean",
+        "values": [
+          "last",
+          "max",
+          "mean",
+          "sum"
+        ]
+      },
+      "weight": {
+        "absent": {
+          "$family": "feedbax.contracts.expression_values.LiteralValue",
+          "value": 1
+        },
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      }
+    },
+    "feedbax.contracts.report_document.ReportDocument": {
+      "blocks": {
+        "families": [
+          "feedbax.contracts.report_document.ReportFigure",
+          "feedbax.contracts.report_document.ReportText"
+        ]
+      },
+      "completeness": {
+        "absent": "complete",
+        "values": [
+          "allow_omissions",
+          "complete"
+        ]
+      },
+      "title": {}
+    },
+    "feedbax.contracts.report_document.ReportFigure": {
+      "caption": {
+        "absent": null
+      },
+      "figure": {}
+    },
+    "feedbax.contracts.report_document.ReportText": {
+      "markdown": {}
+    },
+    "feedbax.contracts.request_refs.BarrierMember": {
+      "kind": {
+        "absent": "barrier",
+        "values": [
+          "barrier"
+        ]
+      },
+      "name": {}
+    },
+    "feedbax.contracts.request_refs.BatchMember": {
+      "batch": {},
+      "kind": {
+        "absent": "batch",
+        "values": [
+          "batch"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.BatchSetMember": {
+      "batches": {},
+      "cadence": {
+        "absent": null
+      },
+      "kind": {
+        "absent": "batch_set",
+        "values": [
+          "batch_set"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.BestCandidate": {
+      "key": {},
+      "reference": {},
+      "row": {},
+      "variant": {}
+    },
+    "feedbax.contracts.request_refs.BestMember": {
+      "kind": {
+        "absent": "best_by",
+        "values": [
+          "best_by"
+        ]
+      },
+      "metric": {}
+    },
+    "feedbax.contracts.request_refs.BestRank": {
+      "candidates": {},
+      "count": {},
+      "group": {
+        "absent": {}
+      },
+      "kind": {
+        "absent": "best_rank",
+        "values": [
+          "best_rank"
+        ]
+      },
+      "metric": {},
+      "order": {
+        "values": [
+          "max",
+          "min"
+        ]
+      },
+      "rank": {}
+    },
+    "feedbax.contracts.request_refs.CheckpointCadence": {
+      "every_k": {},
+      "through": {}
+    },
+    "feedbax.contracts.request_refs.ContentRef": {
+      "media_type": {
+        "absent": null
+      },
+      "sha256": {},
+      "size": {},
+      "tree": {
+        "absent": false
+      }
+    },
+    "feedbax.contracts.request_refs.InputMember": {
+      "key": {},
+      "reference": {
+        "families": [
+          "best_rank",
+          "content",
+          "product"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.LastMember": {
+      "kind": {
+        "absent": "last",
+        "values": [
+          "last"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.NamedMember": {
+      "kind": {
+        "absent": "member",
+        "values": [
+          "member"
+        ]
+      },
+      "member": {}
+    },
+    "feedbax.contracts.request_refs.ProductRef": {
+      "request_id": {},
+      "role": {},
+      "select": {
+        "absent": null,
+        "families": [
+          "barrier",
+          "batch",
+          "batch_set",
+          "best_by",
+          "last",
+          "member",
+          "slot",
+          "update_series"
+        ]
+      }
+    },
+    "feedbax.contracts.request_refs.SlotMember": {
+      "kind": {
+        "absent": "slot",
+        "values": [
+          "slot"
+        ]
+      },
+      "slot": {}
+    },
+    "feedbax.contracts.request_refs.UpdateCadence": {
+      "every": {},
+      "from_": {
+        "absent": null
+      },
+      "through": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.request_refs.UpdateCheckpoint": {
+      "at": {}
+    },
+    "feedbax.contracts.request_refs.UpdateSeriesMember": {
+      "kind": {
+        "absent": "update_series",
+        "values": [
+          "update_series"
+        ]
+      },
+      "rule": {},
+      "updates": {}
+    },
+    "feedbax.contracts.request_specs.AnalysisRequestSpec": {
+      "analysis_type": {},
+      "evaluation_states_policy": {
+        "absent": "recompute",
+        "values": [
+          "recompute",
+          "require_durable"
+        ]
+      },
+      "numerical_settings": {
+        "absent": {}
+      },
+      "params": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.request_specs.DocumentTrainingConfig": {
+      "batch_size": {
+        "absent": 128
+      },
+      "grad_clip": {
+        "absent": 1.0
+      },
+      "n_batches": {
+        "absent": 2000
+      },
+      "n_reach_steps": {
+        "absent": 80
+      },
+      "snapshot_interval": {
+        "absent": 100
+      }
+    },
+    "feedbax.contracts.request_specs.DocumentTrainingRequestSpec": {
+      "method_payload": {},
+      "method_ref": {},
+      "numerical_settings": {
+        "absent": {}
+      },
+      "on_nan": {
+        "absent": "raise",
+        "values": [
+          "halt_restore_checkpoint",
+          "raise"
+        ]
+      },
+      "risk_aggregation": {
+        "absent": {}
+      },
+      "seed": {
+        "absent": null
+      },
+      "training_config": {},
+      "trial_documents": {}
+    },
+    "feedbax.contracts.request_specs.EvaluationRequestSpec": {
+      "evaluation_type": {},
+      "numerical_settings": {
+        "absent": {}
+      },
+      "params": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.request_specs.NumericalSettings": {
+      "deterministic": {
+        "absent": null
+      },
+      "floating_point_bits": {
+        "absent": null,
+        "values": [
+          32,
+          64
+        ]
+      },
+      "matmul_precision": {
+        "absent": null,
+        "values": [
+          "bfloat16",
+          "default",
+          "float32",
+          "high",
+          "highest",
+          "tensorfloat32"
+        ]
+      }
+    },
+    "feedbax.contracts.request_specs.RenderRequestSpec": {
+      "document": {
+        "absent": null
+      },
+      "figure": {},
+      "numerical_settings": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.request_specs.ReportRequestSpec": {
+      "document": {
+        "absent": null
+      },
+      "narrative": {
+        "absent": null
+      },
+      "numerical_settings": {
+        "absent": {}
+      },
+      "params": {
+        "absent": {}
+      },
+      "report_type": {}
+    },
+    "feedbax.contracts.task_document.Cell": {
+      "first_epoch": {},
+      "last_epoch": {},
+      "value": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      }
+    },
+    "feedbax.contracts.task_document.Epoch": {
+      "id": {},
+      "length": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "max_steps": {
+        "absent": null
+      },
+      "name": {}
+    },
+    "feedbax.contracts.task_document.Link": {
+      "model_field": {},
+      "variable": {}
+    },
+    "feedbax.contracts.task_document.PythonTaskSelection": {
+      "params": {
+        "absent": {}
+      },
+      "type": {}
+    },
+    "feedbax.contracts.task_document.Signal": {
+      "absent": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      },
+      "cells": {},
+      "id": {},
+      "name": {},
+      "type": {}
+    },
+    "feedbax.contracts.task_document.TaskDocument": {
+      "epochs": {},
+      "fixed_steps": {
+        "absent": null
+      },
+      "id": {},
+      "links": {
+        "absent": []
+      },
+      "signals": {},
+      "validation_trials": {
+        "absent": [
+          {}
+        ]
+      },
+      "variables": {}
+    },
+    "feedbax.contracts.task_document.ValidationTrial": {
+      "epoch_steps": {
+        "absent": {}
+      },
+      "variables": {
+        "absent": {}
+      }
+    },
+    "feedbax.contracts.task_document.Variable": {
+      "id": {},
+      "name": {},
+      "type": {},
+      "value": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue"
+        ]
+      }
+    },
+    "feedbax.contracts.training.MethodPayloadEnvelope": {
+      "metadata": {
+        "absent": {}
+      },
+      "payload": {
+        "absent": {}
+      },
+      "schema_id": {},
+      "schema_version": {}
+    },
+    "feedbax.contracts.training.MethodRefSpec": {
+      "name": {},
+      "package": {},
+      "version": {}
+    },
+    "feedbax.contracts.training.RiskAggregationSpec": {
+      "metadata": {
+        "absent": {}
+      },
+      "realization": {
+        "absent": "none",
+        "values": [
+          "custom",
+          "max",
+          "mean",
+          "min",
+          "none",
+          "sum"
+        ]
+      },
+      "replicate": {
+        "absent": "none",
+        "values": [
+          "custom",
+          "max",
+          "mean",
+          "min",
+          "none",
+          "sum"
+        ]
+      },
+      "time": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.training.TimeAggregationSpec": {
+      "discount": {
+        "absent": null,
+        "values": [
+          "linear",
+          "none",
+          "power"
+        ]
+      },
+      "discount_exp": {
+        "absent": null
+      },
+      "end": {
+        "absent": null
+      },
+      "mode": {
+        "absent": "all",
+        "values": [
+          "all",
+          "custom",
+          "final",
+          "mean",
+          "range",
+          "segment",
+          "sum"
+        ]
+      },
+      "segment_name": {
+        "absent": null
+      },
+      "start": {
+        "absent": null
+      },
+      "time_idxs": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.training.TrialDocuments": {
+      "input_overrides": {
+        "absent": {}
+      },
+      "model": {},
+      "model_name": {},
+      "objective": {},
+      "python_task": {
+        "absent": null
+      },
+      "task": {}
+    }
+  },
+  "retired": {
+    "fields": [
+      {
+        "field": "a",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalConnectionSpec"
+      },
+      {
+        "field": "b",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalConnectionSpec"
+      },
+      {
+        "field": "connections",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "mujoco_asset",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "nodes",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "physical_domain",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "planar_dynamics",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "solver",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "subgraphs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "wrap_geometries",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.AcausalGraphSpec"
+      },
+      {
+        "field": "coefficients",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.JointDampingMode"
+      },
+      {
+        "field": "damping",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.JointDampingMode"
+      },
+      {
+        "field": "asset",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuJoCoAssetBinding"
+      },
+      {
+        "field": "effector_site",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuJoCoAssetBinding"
+      },
+      {
+        "field": "paths",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuJoCoAssetBinding"
+      },
+      {
+        "field": "sites",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuJoCoAssetBinding"
+      },
+      {
+        "field": "after_site",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuscleWrap"
+      },
+      {
+        "field": "geom",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuscleWrap"
+      },
+      {
+        "field": "side_site",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.MuscleWrap"
+      },
+      {
+        "field": "gravity",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarDynamicsSpec"
+      },
+      {
+        "field": "joint_dampers",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarDynamicsSpec"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarWrapGeometry"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarWrapGeometry"
+      },
+      {
+        "field": "offset",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarWrapGeometry"
+      },
+      {
+        "field": "radius",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.PlanarWrapGeometry"
+      },
+      {
+        "field": "atol",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.RootFinderSpec"
+      },
+      {
+        "field": "max_steps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.RootFinderSpec"
+      },
+      {
+        "field": "method",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.RootFinderSpec"
+      },
+      {
+        "field": "rtol",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.RootFinderSpec"
+      },
+      {
+        "field": "dt",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "mjx_backend",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "planar_substeps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "root_finder",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "solver_type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SolverConfigSpec"
+      },
+      {
+        "field": "law",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "law_revision",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "parameters",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "sites",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "state_size",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "wraps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialMusclePath"
+      },
+      {
+        "field": "body",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialSite"
+      },
+      {
+        "field": "position",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.acausal.SpatialSite"
+      },
+      {
+        "field": "object_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.artifact_custody.ContentObjectRef"
+      },
+      {
+        "field": "sha256",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.artifact_custody.ContentObjectRef"
+      },
+      {
+        "field": "size_bytes",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.artifact_custody.ContentObjectRef"
+      },
+      {
+        "field": "adapter_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "input_key",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "payload_dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "payload_shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "provenance_role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "target",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelAdapterSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "source_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "source_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "target_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "target_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.AdditiveGraphChannelTargetSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "read_paths",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "timing",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "transform",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "write_paths",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.BarnacleSpec"
+      },
+      {
+        "field": "input_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "output_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "params",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "revision",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ComponentSpec"
+      },
+      {
+        "field": "axis",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "param",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "source",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.DerivedDimensionRuleSpec"
+      },
+      {
+        "field": "additive_channel_adapters",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "barnacles",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "derived_dimensions",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "input_bindings",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "input_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "nodes",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "output_bindings",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "output_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "parameter_constraints",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "retained_observables",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "step_seconds",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "subgraphs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "taps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "user_ports",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "wires",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.GraphSpec"
+      },
+      {
+        "field": "mask",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ParameterConstraintSpec"
+      },
+      {
+        "field": "node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ParameterConstraintSpec"
+      },
+      {
+        "field": "role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ParameterConstraintSpec"
+      },
+      {
+        "field": "value",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.ParameterConstraintSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "retention",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "target",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "value_schema",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableSpec"
+      },
+      {
+        "field": "edge_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "node_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "path",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "timing",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetainedObservableTargetSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "mode",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "order",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "reason",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "window_size",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.RetentionPolicySpec"
+      },
+      {
+        "field": "epoch_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioEpochValueSpec"
+      },
+      {
+        "field": "target_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioEpochValueSpec"
+      },
+      {
+        "field": "value_spec",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioEpochValueSpec"
+      },
+      {
+        "field": "bounds",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "operation",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "parameters",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "target_selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "value",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionTransformSpec"
+      },
+      {
+        "field": "max",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionValueBounds"
+      },
+      {
+        "field": "min",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioInterventionValueBounds"
+      },
+      {
+        "field": "compact",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "expected_shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "namespace",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "path",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "target_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "units",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioSelectorRef"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "source_data_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "target_node_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "target_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBinding"
+      },
+      {
+        "field": "bindings",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBindingSpec"
+      },
+      {
+        "field": "exposed_data",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBindingSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskBindingSpec"
+      },
+      {
+        "field": "bindable",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "expected_shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "path",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "role",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "units",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "value_spec",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskDataSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "index",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "length",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskEpochSpec"
+      },
+      {
+        "field": "epoch_ids",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSegmentSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "path",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "task_data_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "task_data_schema",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "value_schema",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "value_spec",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSignalSpec"
+      },
+      {
+        "field": "epoch_value_specs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "epochs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "segments",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "signals",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioTaskTimelineSpec"
+      },
+      {
+        "field": "count",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "form",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "n",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "sampler",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "scale",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "start",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "stop",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "values",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueEnumerableSpec"
+      },
+      {
+        "field": "distribution",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "expression",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "function_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "mode",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "parameters",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "reference",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "sampling_scope",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "schedule",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "units",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "value",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "value_form",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "variation",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueSpec"
+      },
+      {
+        "field": "enumerable",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueVariationSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueVariationSpec"
+      },
+      {
+        "field": "scope",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueVariationSpec"
+      },
+      {
+        "field": "stochastic_policy",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.StudioValueVariationSpec"
+      },
+      {
+        "field": "afterNode",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapPositionSpec"
+      },
+      {
+        "field": "targetNode",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapPositionSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "paths",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "position",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "transform",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapSpec"
+      },
+      {
+        "field": "intervention",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapTransform"
+      },
+      {
+        "field": "params",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapTransform"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.TapTransform"
+      },
+      {
+        "field": "inputs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.UserPortSpec"
+      },
+      {
+        "field": "outputs",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.UserPortSpec"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "recurrent_initializer",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "source_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "source_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "target_node",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "target_port",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "temporality",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.graph.WireSpec"
+      },
+      {
+        "field": "graph",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "method_payload",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "method_ref",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "numerical_settings",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "objective",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "on_nan",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "risk_aggregation",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "seed",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "task",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "task_binding_spec",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "training_config",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "trial_documents",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.request_specs.TrainingRequestSpec"
+      },
+      {
+        "field": "children",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "matrix",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "matrix_kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "norm",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "retention",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "target_selector",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "target_value",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "time_agg",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "weight",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.LossTermSpec"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "loss",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "payload",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "schema_id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "schema_version",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.ObjectiveSlotSpec"
+      },
+      {
+        "field": "params",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TaskSpec"
+      },
+      {
+        "field": "timeline",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TaskSpec"
+      },
+      {
+        "field": "type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TaskSpec"
+      },
+      {
+        "field": "batch_size",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "effort_weight",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "grad_clip",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "hidden_dim",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "learning_rate",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "n_batches",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "n_reach_steps",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "network_type",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "snapshot_interval",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.training.TrainingConfig"
+      },
+      {
+        "field": "dtype",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "frame",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "id",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "kind",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "label",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "metadata",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "origin",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "quantity",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "rank",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "shape",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      },
+      {
+        "field": "units",
+        "migration": "m2-train-v1-retirement",
+        "model": "feedbax.contracts.value_schema.ValueSchema"
+      }
+    ],
+    "values": []
+  }
+}

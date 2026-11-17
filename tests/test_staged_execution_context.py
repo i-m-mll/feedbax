@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import shutil
 
-import numpy as np
 import pytest
 
 import feedbax.analysis.execution_context as execution_context_module
@@ -63,8 +62,7 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
-from feedbax.training.checkpoint_custody import write_checkpoint_transaction
-from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
+from tests.test_checkpoint_custody import _resolver_parent_ref, _write_resolver_checkpoint
 from tests.test_staged_exact_parents import _exact_document, _write_exact_parent
 from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 from tests.support.evaluation_registry import (
@@ -241,22 +239,13 @@ def test_repo_root_binding_is_runtime_only_and_rejects_conflicting_authority(
 
 
 def test_descriptor_is_discoverable_with_explicit_reject_migration_policy() -> None:
-    from feedbax.integrations.provider import provider_manifest
-
     family = default_spec_registry.resolve("StagedExecutionDescriptor")
     nested = default_spec_registry.resolve("StagedCheckpointCustodySpec")
-    manifest = provider_manifest()
 
     assert family.identity == STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID
     assert family.current_version == STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION
     assert family.policy is not None and family.policy.stance == "reject"
     assert nested.policy is not None and nested.policy.covers == family.kind
-    assert manifest.schemas["StagedExecutionDescriptor"] == (
-        StagedExecutionDescriptor.model_json_schema()
-    )
-    assert manifest.capabilities["resolve_staged_execution_context"].input_schema == (
-        "StagedExecutionDescriptor"
-    )
     with pytest.raises(UnsupportedSpecVersion, match="current_version"):
         default_spec_registry.migrate(
             family.kind,
@@ -433,6 +422,7 @@ def test_manifest_provider_lookup_rejects_authenticated_byte_mismatch(
             size_bytes=int(parent.metadata["size_bytes"]),
         )
         raw = path.read_bytes()
+        path.chmod(0o600)
         path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
     context = resolve_staged_execution_context(
         _descriptor(),
@@ -639,25 +629,15 @@ def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_referenc
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkpoint_root = tmp_path / "checkpoint-authority"
-    run_spec = _run_spec(minimax=True)
-    result = write_checkpoint_transaction(
-        checkpoint_root,
-        run_spec=run_spec,
-        phase_program=run_spec.worker_execution.method_contract.phase_program,
-        barrier_name="after_warmup",
-        coordinate=_coordinate(),
-        slots=_minimax_slots(),
-    )
-    relative_uri = result.manifest_path.relative_to(checkpoint_root).as_posix()
-    parent = ParentRef(
-        kind="TrainingCheckpointTransactionManifest",
-        id=result.manifest.transaction_id,
-        role="training_checkpoint_custody",
-        uri=relative_uri,
-        metadata={
-            "checkpoint_custody_binding": "training-checkpoints",
-            "manifest_sha256": sha256_bytes(result.manifest_path.read_bytes()),
-        },
+    result = _write_resolver_checkpoint(checkpoint_root)
+    parent = _resolver_parent_ref(result)
+    parent = parent.model_copy(
+        update={
+            "metadata": {
+                **parent.metadata,
+                "checkpoint_custody_binding": "training-checkpoints",
+            }
+        }
     )
     descriptor = StagedExecutionDescriptor(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -692,21 +672,21 @@ def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_referenc
     explicit = context.resolve_checkpoint_custody_ref(
         parent,
         binding_name="training-checkpoints",
-        slot_names=["controller"],
+        slot_names=["batch_counter"],
     )
     repeated = context.resolve_checkpoint_custody_ref(
         parent,
         binding_name="training-checkpoints",
-        slot_names=["controller"],
+        slot_names=["batch_counter"],
     )
-    from_metadata = context.resolve_checkpoint_custody_ref(parent, slot_names=["rng"])
+    from_metadata = context.resolve_checkpoint_custody_ref(parent, slot_names=["prng"])
     assert repeated is explicit
     assert resolutions == 2
     assert explicit.parent_ref == parent
     assert explicit.manifest.transaction_id == result.manifest.transaction_id
-    assert set(explicit.slots) == {"controller"}
+    assert set(explicit.slots) == {"batch_counter"}
     assert from_metadata.parent_ref == parent
-    assert set(from_metadata.slots) == {"rng"}
+    assert set(from_metadata.slots) == {"prng"}
 
     with pytest.raises(StagedExecutionContextError, match="disagrees"):
         context.resolve_checkpoint_custody_ref(parent, binding_name="other")
@@ -719,32 +699,13 @@ def test_real_checkpoint_resolution_uses_pinned_authority_and_preserves_referenc
     checkpoint_root.rename(retained)
     checkpoint_root.symlink_to(replacement, target_is_directory=True)
     with pytest.raises(StagedExecutionContextError, match="unavailable|replaced"):
-        context.resolve_checkpoint_custody_ref(parent, slot_names=["controller"])
+        context.resolve_checkpoint_custody_ref(parent, slot_names=["batch_counter"])
 
 
-def test_cached_checkpoint_snapshot_recursively_rejects_mutation(tmp_path: Path) -> None:
+def test_cached_checkpoint_snapshot_rejects_slot_replacement(tmp_path: Path) -> None:
     checkpoint_root = tmp_path / "checkpoint-mutability"
-    run_spec = _run_spec(minimax=True)
-    slots = _minimax_slots()
-    slots["controller"] = {
-        "array": np.asarray([1, 2], dtype=np.int32),
-        "metadata": {"tag": "original", "labels": ["verified"]},
-    }
-    result = write_checkpoint_transaction(
-        checkpoint_root,
-        run_spec=run_spec,
-        phase_program=run_spec.worker_execution.method_contract.phase_program,
-        barrier_name="after_warmup",
-        coordinate=_coordinate(),
-        slots=slots,
-    )
-    parent = ParentRef(
-        kind="TrainingCheckpointTransactionManifest",
-        id=result.manifest.transaction_id,
-        role="training_checkpoint_custody",
-        uri=result.manifest_path.relative_to(checkpoint_root).as_posix(),
-        metadata={"manifest_sha256": sha256_bytes(result.manifest_path.read_bytes())},
-    )
+    result = _write_resolver_checkpoint(checkpoint_root)
+    parent = _resolver_parent_ref(result)
     descriptor = StagedExecutionDescriptor(
         schema_id=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
         schema_version=STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,
@@ -765,26 +726,18 @@ def test_cached_checkpoint_snapshot_recursively_rejects_mutation(tmp_path: Path)
     first = context.resolve_checkpoint_custody_ref(
         parent,
         binding_name="training-checkpoints",
-        slot_names=["controller"],
+        slot_names=["batch_counter"],
     )
-    controller = first.slots["controller"]
-    with pytest.raises(ValueError, match="read-only"):
-        controller["array"][0] = -1
     with pytest.raises(TypeError, match="immutable"):
-        controller["metadata"]["tag"] = "mutated"
-    with pytest.raises(TypeError, match="immutable"):
-        controller["metadata"]["labels"].append("mutated")
-    with pytest.raises(TypeError, match="immutable"):
-        first.slots["controller"] = {"array": np.asarray([-1])}
+        first.slots["batch_counter"] = -1
 
     second = context.resolve_checkpoint_custody_ref(
         parent,
         binding_name="training-checkpoints",
-        slot_names=["controller"],
+        slot_names=["batch_counter"],
     )
     assert second is first
-    np.testing.assert_array_equal(second.slots["controller"]["array"], [1, 2])
-    assert second.slots["controller"]["metadata"]["tag"] == "original"
+    assert int(second.slots["batch_counter"]) == 1
 
 
 class _StatProxy:

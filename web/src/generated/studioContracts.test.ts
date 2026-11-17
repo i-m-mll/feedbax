@@ -1,15 +1,20 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
+  AddModelAttachmentSchema,
   AdditiveGraphChannelTargetSpecSchema,
   ConstantArrayValueSpecSchema,
+  ChangeModelAttachmentSchema,
+  DocumentSchema,
+  ExecutionTargetsSchema,
   GraphMetadataSchema,
-  SemanticAnchorSchema,
+  ModelDocumentSchema,
+  SessionTargetSchema,
   SparseCooArrayValueSpecSchema,
   SparseCooEntrySpecSchema,
-  StudioPersistenceDocumentSchema,
   StudioTaskTimelineSpecSchema,
   StudioValueEnumerableSpecSchema,
 } from '@/generated/studioContracts';
+import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
   ConstantArrayValueSpec,
   SparseCooArrayValueSpec,
@@ -20,6 +25,66 @@ const tags = {
   schema_id: 'feedbax.spec.component_param.array_value',
   schema_version: 'feedbax.spec.component_param.array_value.v1',
 } as const;
+
+it('validates named execution targets and the exact venue session identity', () => {
+  const profile = {
+    kind: 'session', id: 'cpu-test', label: 'CPU test', driver: 'local-rehearsal',
+    resources: { compute: 1 }, lifecycle: { kind: 'keep-open' }, maximum_microusd: 1000,
+  };
+  const target = {
+    kind: 'session', profile: profile.id, driver: profile.driver,
+    session_id: '3e030d7a-5884-47cd-a987-3b75a13d812d',
+    realization: { environment: 'a'.repeat(64), placement: { device: 'cpu' } },
+  };
+  const catalog = {
+    default: 'local',
+    targets: [{
+      profile, run_kinds: ['train', 'evaluate'],
+      availability: { state: 'off', reason: 'Driver is unavailable.' },
+    }],
+  };
+  expect(ExecutionTargetsSchema.parse(catalog)).toEqual(catalog);
+  expect(SessionTargetSchema.parse(target)).toEqual(target);
+  expect(SessionTargetSchema.safeParse({ ...target, profile: 'local' }).success).toBe(false);
+  expect(SessionTargetSchema.safeParse({ ...target, session_id: 'arbitrary' }).success).toBe(false);
+  expect(ExecutionTargetsSchema.safeParse({
+    ...catalog, targets: [{ ...catalog.targets[0], profile: { ...profile, id: 'local' } }],
+  }).success).toBe(false);
+});
+
+it('preserves JSON payloads and reports the nested path for invalid values', () => {
+  const payload = { sample: [null, false, '', -0, 1.25, { scalar: Number.MAX_VALUE }], empty: {} };
+  const document = { schema: 'example', payload };
+  const parsed = DocumentSchema.parse(document);
+  expect(parsed).toEqual(document);
+  expect(Object.is(parsed.payload, payload)).toBe(false);
+  expect(canonicalJsonV2(parsed)).toBe(canonicalJsonV2(document));
+  expect(DocumentSchema.safeParse({ ...document, extra: true }).success).toBe(false);
+  expect(DocumentSchema.safeParse({ schema: 'example' }).success).toBe(false);
+
+  for (const invalid of [Infinity, -Infinity, NaN, undefined, 1n, new Date(0), new Map(), new Set()]) {
+    const result = DocumentSchema.safeParse({ schema: 'example', payload: { sample: [0, invalid] } });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0].path).toEqual(['payload', 'sample', 1]);
+  }
+
+  const malformedModel = { step_seconds: 'zero', ports: {}, interior: {} };
+  expect(DocumentSchema.safeParse({ schema: 'feedbax.spec.model', payload: malformedModel }).success).toBe(true);
+  expect(ModelDocumentSchema.safeParse(malformedModel).success).toBe(false);
+});
+
+it('validates an attachment owner, source-end anchor, and retained ID', () => {
+  const owner = { document: 'model', composites: ['controller'], element: { kind: 'wire', id: 'feedback' } };
+  const attachment = { kind: 'intervention', id: 'gain', operation: 'Scale', fields: { factor: 0.5 } };
+  const addition = { op: 'add', owner, attachment };
+  expect(AddModelAttachmentSchema.safeParse(addition).success).toBe(false);
+  expect(AddModelAttachmentSchema.safeParse({ ...addition, after: null }).success).toBe(true);
+  const address = { ...owner, element: { kind: 'attachment', id: 'gain', parent: owner.element } };
+  expect(ChangeModelAttachmentSchema.safeParse({ op: 'change', address, attachment }).success).toBe(true);
+  expect(ChangeModelAttachmentSchema.safeParse({
+    op: 'change', address, attachment: { ...attachment, id: 'another-gain' },
+  }).success).toBe(false);
+});
 
 describe('generated component-param array value contracts', () => {
   it('preserves numeric array and scalar union types', () => {
@@ -128,7 +193,7 @@ describe('generated Studio constraint parity', () => {
     metadata: {},
   });
 
-  it('projects numeric bounds and string patterns', () => {
+  it('projects numeric bounds', () => {
     expect(
       GraphMetadataSchema.safeParse({
         name: 'test',
@@ -137,12 +202,7 @@ describe('generated Studio constraint parity', () => {
         save_revision: -1,
       }).success,
     ).toBe(false);
-    expect(
-      SemanticAnchorSchema.safeParse({
-        semantic_document_sha256: 'not-a-digest',
-        authored_path: 'graph',
-      }).success,
-    ).toBe(false);
+
   });
 
   it('runs the same registered cross-field refinements as Python', () => {
@@ -158,15 +218,6 @@ describe('generated Studio constraint parity', () => {
         form: 'range',
         start: 0,
         stop: 1,
-      }).success,
-    ).toBe(false);
-  });
-
-  it('fails closed on an unknown persistence-document version', () => {
-    expect(
-      StudioPersistenceDocumentSchema.safeParse({
-        schema_id: 'feedbax.spec.studio.persistence_document',
-        schema_version: 'feedbax.spec.studio.persistence_document.v99',
       }).success,
     ).toBe(false);
   });

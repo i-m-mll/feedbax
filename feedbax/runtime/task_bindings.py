@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import equinox as eqx
 
@@ -12,6 +12,7 @@ from feedbax.contracts.graph import (
     StudioTaskDataSpec,
 )
 from feedbax.runtime.graph import Graph
+from feedbax.runtime._signal_schedule import ScopedPort
 from feedbax.runtime.task_data_roles import task_data_role
 
 
@@ -73,12 +74,28 @@ def expose_task_inputs(
             )
         )
 
+    if input_bindings == graph.input_bindings:
+        return graph, tuple(input_plans)
     exposed_graph = eqx.tree_at(
         lambda g: (g.input_ports, g.input_bindings),
         graph,
         (tuple(input_ports), input_bindings),
     )
     exposed_graph._validate_graph()
+    if (schedule := graph._scoped_schedule) is not None:
+        aliases = dict(schedule.input_aliases)
+        occupied = {target for _, target in schedule.inputs}
+        occupied.update(route.target for route in schedule.routes)
+        inputs = list(schedule.inputs)
+        for name in input_bindings.keys() - graph.input_bindings.keys():
+            node, port = input_bindings[name]
+            endpoint = ScopedPort((node,), port)
+            target = aliases.get(endpoint, endpoint)
+            if target in occupied:
+                raise ValueError(f"Task input {name!r} would add another driver to {target!r}")
+            occupied.add(target)
+            inputs.append((name, target))
+        object.__setattr__(exposed_graph, "schedule", replace(schedule, inputs=tuple(sorted(inputs))))
     return exposed_graph, tuple(input_plans)
 
 

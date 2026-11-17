@@ -96,7 +96,8 @@ class ComponentParamValidation:
         return self.value is not None
 
 
-def _param_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema, ...]:
+def parameter_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema, ...]:
+    """Project authored model fields into the shared authoring controls."""
     schemas: list[ParamSchema] = []
     for name, model_field in model.model_fields.items():
         extra = (model_field.json_schema_extra or {}).get("feedbax", {})
@@ -160,7 +161,7 @@ class ComponentParamContract:
 
     @property
     def param_schema(self) -> tuple[ParamSchema, ...]:
-        return _param_schema_from_model(self.model)
+        return parameter_schema_from_model(self.model)
 
     @property
     def default_params(self) -> dict[str, Any]:
@@ -257,11 +258,15 @@ class ComponentCompilerFacet:
     parameter_contract: ComponentParamContract
     input_ports: tuple[str, ...]
     output_ports: tuple[str, ...]
+    required_inputs: tuple[str, ...] = ()
     port_types: PortTypeSpec | None = None
     dynamic_port_policy: DynamicPortPolicy | None = None
     domain: str = CAUSAL_DOMAIN_ID
     interior_domain: str | None = None
     is_composite: bool = False
+    instantaneous: bool = False
+    state_only_outputs: tuple[str, ...] = ()
+    reset_outputs: tuple[str, ...] = ()
     output_prototype_fn: OutputPrototypeFn | None = None
     prototype_depends_on_connected_inputs: bool = False
     input_prototype_parameter: InputPrototypeParameter | None = None

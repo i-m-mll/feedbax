@@ -8,7 +8,6 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphCompilationError
-from feedbax.runtime.mapping import WhereDict
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_ID,
     GRAPH_SPEC_SCHEMA_VERSION_V4,
@@ -31,7 +30,6 @@ from feedbax.component_migrations.mechanics import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
 )
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.tasks import TaskTrialSpec, TrialTimeline, prepare_trial
 
 
 def _spec(*, active: bool = False) -> GraphSpec:
@@ -223,56 +221,31 @@ def test_signed_and_nominal_structural_variants(
             pos_slice=(0, 1),
             vel_slice=(1, 2),
         )
-        trial = TaskTrialSpec(
-            inits=WhereDict(
-                {
-                    "structural_params_index": StructuralLinearDynamicsPerturbation.from_entries(
-                        (2, 2), [(0, 1, 0.5)], scale=scale, active=active
-                    )
-                }
-            ),
-            targets=WhereDict(),
-            inputs={"force": jnp.zeros((1, 1)), "epsilon": jnp.zeros((1, 0))},
+        state = init_state_from_component(component)
+        slot = component.structural_params_index
+        params = StructuralLinearDynamicsPerturbation.from_entries(
+            (2, 2), [(0, 1, 0.5)], scale=scale, active=active,
         )
-        prepared = prepare_trial(component, trial)
+        params = jax.tree.map(lambda value, template: value.astype(template.dtype), params, state.get(slot))
+        state = state.set(slot, params)
         outputs, _ = eqx.filter_jit(component)(
-            {port: value[0] for port, value in prepared.inputs.items()},
-            prepared.init_state,
-            key=jr.PRNGKey(0),
+            {"force": jnp.zeros(1), "epsilon": jnp.zeros(0)}, state, key=jr.PRNGKey(0),
         )
 
         assert outputs["state"].dtype == jnp.float64
         assert outputs["state"].tolist() == [expected + tail, 2.0]
 
 
-def test_task_trial_selects_one_constant_structural_variant() -> None:
+def test_graph_owned_state_accepts_one_constant_structural_variant() -> None:
     graph = spec_to_graph(_spec(), ComponentRegistry())
     component = graph.nodes["plant"]
-    trial = TaskTrialSpec(
-        inits=WhereDict(
-            {
-                "plant.structural_params_index": StructuralLinearDynamicsPerturbation(
-                    delta_A=jnp.asarray([[0.0, -0.5], [0.0, 0.0]]),
-                    active=True,
-                )
-            }
-        ),
-        targets=WhereDict(),
-        inputs={
-            "force": jnp.zeros((3, 1)),
-            "epsilon": jnp.zeros((3, 1)),
-        },
-        timeline=TrialTimeline(n_steps=3),
+    params = StructuralLinearDynamicsPerturbation(
+        delta_A=jnp.asarray([[0.0, -0.5], [0.0, 0.0]]), active=True,
     )
+    state = init_state_from_component(graph).set(component.structural_params_index, params)
+    selected = state.get(component.structural_params_index)
 
-    prepared = prepare_trial(graph, trial)
-    selected = prepared.init_state.get(component.structural_params_index)
-
-    assert prepared.n_steps == 3
-    assert jnp.array_equal(
-        selected.delta_A,
-        jnp.asarray([[0.0, -0.5], [0.0, 0.0]]),
-    )
+    assert jnp.array_equal(selected.delta_A, params.delta_A)
     assert bool(selected.active)
 
 

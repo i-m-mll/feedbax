@@ -9,6 +9,7 @@ import type { Plugin } from 'vite';
 
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
+const apiAddress = `127.0.0.1:${process.env.VITE_FEEDBAX_API_PORT ?? 8000}`;
 
 const plotlyPackage = 'plotly.js-dist-min';
 const desktopPlotlyAsset = 'vendor/plotly.mjs';
@@ -68,6 +69,9 @@ function desktopResources(): Plugin {
 }
 
 export default defineConfig({
+  cacheDir: process.env.FEEDBAX_VITE_CACHE_DIR,
+  // The standalone folder controller can load before a shell imports it.
+  optimizeDeps: { include: ['immer'] },
   test: {
     // Transform Zod's ESM re-exports in Vitest instead of loading them through Bun's SSR interop.
     server: { deps: { inline: ['zod'] } },
@@ -85,8 +89,8 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         runtimeCaching: [
           {
-            // Graph state must never be served from cache (Cache-Control: no-store is ignored by NetworkFirst)
-            urlPattern: /^https?:\/\/.*\/api\/graphs(\/.*)?$/i,
+            // Project state, job snapshots, and event streams must reach the live service.
+            urlPattern: /^https?:\/\/[^/]+\/api\/(?:graphs|projects|jobs|submissions|events|sessions|provider\/health)(?:[/?].*)?$/i,
             handler: 'NetworkOnly',
           },
           {
@@ -150,11 +154,19 @@ export default defineConfig({
       ? undefined
       : {
           '/api': {
-            target: 'http://localhost:8000',
+            target: `http://${apiAddress}`,
             changeOrigin: true,
+            configure(proxy) {
+              proxy.on('proxyRes', (upstream, _request, downstream) => {
+                if (!upstream.headers['content-type']?.startsWith('text/event-stream')) return;
+                upstream.once('close', () => {
+                  if (!upstream.complete && !downstream.writableEnded) downstream.destroy();
+                });
+              });
+            },
           },
           '/ws': {
-            target: 'ws://localhost:8000',
+            target: `ws://${apiAddress}`,
             ws: true,
           },
         },

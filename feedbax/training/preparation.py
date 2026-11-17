@@ -27,7 +27,6 @@ from feedbax.contracts.worker import (
     MethodContractSpec,
     validate_worker_identifier,
 )
-from feedbax.objectives.service import LossService
 from feedbax.training.checkpoint_custody import ResumeSlotTransform
 from feedbax.training.worker_validation import resolve_execution_mapping
 
@@ -98,7 +97,6 @@ class ExecutionPreparationResult:
 
     initial_slots: Mapping[str, Any]
     kernel_context: Mapping[str, Any] = field(default_factory=dict)
-    loss_service: LossService | None = None
     resume_slot_transform: ResumeSlotTransform | None = None
     restored_schedule_context_binder: RestoredScheduleContextBinder | None = None
 
@@ -173,7 +171,6 @@ class ExecutionPreparationPlan:
 
     shared_slots: Mapping[str, Any]
     kernel_context: Mapping[str, Any]
-    loss_service: LossService | None
     resume_slot_transform: ResumeSlotTransform | None
     rng_roots: Mapping[str, Any]
     materialize_instance: ScalarInstanceMaterializer
@@ -182,8 +179,6 @@ class ExecutionPreparationPlan:
     def __post_init__(self) -> None:
         if not callable(self.materialize_instance):
             raise TypeError("materialize_instance must be callable")
-        if self.loss_service is not None and not isinstance(self.loss_service, LossService):
-            raise TypeError("loss_service must be a LossService when provided")
         if self.resume_slot_transform is not None and not callable(self.resume_slot_transform):
             raise TypeError("resume_slot_transform must be callable when provided")
         if self.restored_schedule_context_binder is not None and not callable(
@@ -227,7 +222,6 @@ class MaterializedExecutionPreparation:
 
     initial_slots: Mapping[str, Any]
     kernel_context: Mapping[str, Any]
-    loss_service: LossService | None
     resume_slot_transform: ResumeSlotTransform | None
     restored_schedule_context_binder: RestoredScheduleContextBinder | None
     mapping_levels: tuple[MaterializedMappingLevelSpec, ...]
@@ -432,7 +426,6 @@ def _build_materialized_execution_preparation(
     provider_identity: str,
     initial_slots: Mapping[str, Any],
     kernel_context: Mapping[str, Any],
-    loss_service: LossService | None,
     resume_slot_transform: ResumeSlotTransform | None,
     restored_schedule_context_binder: RestoredScheduleContextBinder | None = None,
     coordinate_order: tuple[tuple[AxisCoordinateSpec, ...], ...],
@@ -475,7 +468,6 @@ def _build_materialized_execution_preparation(
     for name, value in {
         "initial_slots": _freeze_named_mapping(initial_slots, path="initial_slots"),
         "kernel_context": _freeze_named_mapping(kernel_context, path="kernel_context"),
-        "loss_service": loss_service,
         "resume_slot_transform": resume_slot_transform,
         "restored_schedule_context_binder": restored_schedule_context_binder,
         "mapping_levels": levels,
@@ -761,7 +753,6 @@ def materialize_execution_preparation(
         provider_identity=provider_identity,
         initial_slots=initial_slots,
         kernel_context=plan.kernel_context,
-        loss_service=plan.loss_service,
         resume_slot_transform=plan.resume_slot_transform,
         restored_schedule_context_binder=plan.restored_schedule_context_binder,
         coordinate_order=coordinate_order,
@@ -945,10 +936,6 @@ class ExecutionPreparationProviderRegistry:
                 f"execution preparation provider for {method_ref!r} returned reserved "
                 f"kernel_context keys {sorted(reserved_keys)!r}"
             )
-        if result.loss_service is not None and not isinstance(result.loss_service, LossService):
-            raise ExecutionPreparationError(
-                f"execution preparation provider for {method_ref!r} returned invalid loss_service"
-            )
         if result.resume_slot_transform is not None and not callable(result.resume_slot_transform):
             raise ExecutionPreparationError(
                 f"execution preparation provider for {method_ref!r} returned non-callable "
@@ -984,7 +971,6 @@ def lower_zero_level_preparation_plan(
     return ExecutionPreparationResult(
         initial_slots={**plan.shared_slots, **raw.mapped_slots},
         kernel_context=plan.kernel_context,
-        loss_service=plan.loss_service,
         resume_slot_transform=plan.resume_slot_transform,
         restored_schedule_context_binder=plan.restored_schedule_context_binder,
     )

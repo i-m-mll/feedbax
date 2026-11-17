@@ -7,10 +7,12 @@ from __future__ import annotations
 import json
 import sys
 import types
+from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
+from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 from pydantic.fields import FieldInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,7 +48,21 @@ from feedbax.contracts.acausal import (
     SpatialMusclePath,
     SpatialSite,
 )
-from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
+from feedbax.contracts.execution_target import (
+    CloseWhenIdle, ExecutionTargets, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
+    SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
+)
+from feedbax.contracts.analysis_document import AnalysisDocument
+from feedbax.contracts.report_document import ReportDocument
+from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
+from feedbax.contracts.studio_scene import (
+    ScenePlanarLink,
+    ScenePlanarModel,
+    ScenePlanarMuscle,
+    StudioPlanarSceneRequest,
+    StudioPlanarSceneResponse,
+)
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
     RepresentationElementSpec,
@@ -72,11 +88,6 @@ from feedbax.contracts.graph import (
     AnalysisDataProductRequirement,
     AnalysisInputRequirement,
     AnalysisPageSpec,
-    AnalysisCanvasPosition,
-    AnalysisCanvasViewport,
-    AnalysisCanvasPageLayout,
-    AnalysisCanvasStageLayout,
-    AnalysisCanvasLayoutDocument,
     AssemblyViewUIState,
     BarnacleSpec,
     CanvasPositionSpec,
@@ -88,7 +99,6 @@ from feedbax.contracts.graph import (
     EdgeRoutingPoint,
     EdgeUIState,
     GraphMetadata,
-    GraphProject,
     GraphSpec,
     GraphUIState,
     NodeUIState,
@@ -97,7 +107,6 @@ from feedbax.contracts.graph import (
     RetainedObservableSpec,
     RetainedObservableTargetSpec,
     RetentionPolicySpec,
-    SemanticAnchor,
     StudioBiomechanicsSpec,
     StudioArtifactRef,
     StudioCollectionRef,
@@ -105,10 +114,7 @@ from feedbax.contracts.graph import (
     StudioInterventionTransformSpec,
     StudioInterventionValueBounds,
     StudioManifestRef,
-    StudioPersistenceDocument,
-    StudioScenarioSpec,
     StudioSelectorRef,
-    StudioStageSpec,
     StudioTaskBinding,
     StudioTaskBindingSpec,
     StudioTaskDataSpec,
@@ -121,8 +127,6 @@ from feedbax.contracts.graph import (
     StudioValidationIssue,
     StudioValidationState,
     StudioValueSpec,
-    StudioWorkspaceSpec,
-    WorkspaceDocument,
     TapSpec,
     TapPositionSpec,
     TapTransform,
@@ -139,6 +143,7 @@ from feedbax.contracts.array_values import (
     SparseCooEntrySpec,
 )
 from feedbax.contracts.studio_api import (
+    StudioRenderFailure,
     AnalysisBundleDryRunPayload,
     AnalysisBundleDryRunRequest,
     AnalysisBundleDryRunResponse,
@@ -163,30 +168,9 @@ from feedbax.contracts.studio_api import (
     GenerateAnalysisPayload,
     GenerateAnalysisRequest,
     GenerateAnalysisResponse,
-    GraphCreatePayload,
-    GraphCreateResponse,
-    GraphDetailPayload,
-    GraphDetailResponse,
-    GraphExportPayload,
-    GraphExportResponse,
-    GraphListItem,
-    GraphListPayload,
-    GraphListResponse,
-    GraphUpdatePayload,
-    GraphUpdateResponse,
-    GraphValidationResponse,
     SuccessPayload,
     SuccessResponse,
-    TrainingStartPayload,
-    TrainingStartResponse,
-    TrainingStatusPayload,
-    TrainingStatusResponse,
     TrainingTrajectoryPayload,
-    TrainingWebSocketEvent,
-    WorkerConnectEnvelope,
-    WorkerConnectResponse,
-    WorkerStatusEnvelope,
-    WorkerStatusResponse,
     BundleMissingRoleRecord,
     BundleStageDryRunOutputRecord,
     BundleStageDryRunRecord,
@@ -194,24 +178,158 @@ from feedbax.contracts.studio_api import (
 )
 from feedbax.contracts.training import (
     BatchScheduleOriginSpec,
-    EarlyStoppingSpec,
-    LossTermSpec,
     LrScheduleSpec,
     OptimizerSpec,
-    TaskSpec,
-    TimeAggregationSpec,
     TrainingConfig,
-    TrainingSpec,
 )
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.jobs import (
+    JobError,
+    JobOutcome,
+    JobProgress,
+    JobReceipt,
+    StudioActivityJob,
+    StudioEventReset,
+    StudioEventWatermark,
+    StudioJobEvent,
+    StudioJobEventHistory,
+    StudioJobResumeRequest,
+    StudioJobSnapshot,
+    StudioJobStopItem,
+    StudioJobStopRequest,
+    StudioJobSubmission,
+    StudioLocalSession,
+    StudioRemoteSession,
+    StudioVenueCursor,
+    StudioVenueStream,
+    StudioPlanRequestAddress,
+    StudioPlanReviewEntry,
+    StudioPlanReviewSource,
+    StudioProjectWindowMap,
+    StudioSavedEvaluationRead,
+    StudioSavedEvaluationReplayRequest,
+    StudioEvaluationObjectiveSeries,
+    StudioEvaluationObjectivePoint,
+    StudioEvaluationObjectiveTerm,
+    StudioEvaluationCheckpoint,
+    StudioEvaluationCheckpointGap,
+    StudioEvaluationCheckpointSeries,
+    StudioSavedEvaluationResult,
+    StudioSavedEvaluationRow,
+    StudioSavedTrainAttempt,
+    StudioSavedTrainChange,
+    StudioSavedTrainKey,
+    StudioSubmissionActor,
+    StudioSavedTrainResult,
+    StudioSavedTrainRow,
+    StudioSavedTrainRunRequest,
+    StudioSavedMachineQuoteRequest,
+    StudioMachineApproval,
+    StudioMachineApprovalReceipt,
+    StudioMachineQuote,
+    StudioMachineQuoteRow,
+    StudioSavedTrainRuns,
+    StudioTrainCheckpointSource,
+    StudioSubmissionItem,
+)
 from feedbax.contracts.selection import (
     ManifestPredicate,
     SelectionPreview,
-    SelectionRefreshDiff,
     SelectionSpec,
     TopKByMetricPerGroup,
 )
 from feedbax.contracts.value_schema import ValueSchema
+from feedbax.contracts.model_address import (
+    AttachmentElement,
+    ComponentElement,
+    ComponentPortAddress,
+    ComponentPortEnd,
+    FieldElement,
+    GraphElement,
+    InputBoundaryEnd,
+    ModelAddress,
+    OutputBoundaryEnd,
+    PhysicalBoundaryEnd,
+    PhysicalConnectionElement,
+    PortElement,
+    WireElement,
+)
+from feedbax.contracts.model_document import (
+    CompositeComponent,
+    DelayAttachment,
+    GraphInterior,
+    InputDefault,
+    InterventionAttachment,
+    LeafComponent,
+    ModelDocument,
+    ModelPhysicalConnection,
+    ModelPortAttachments,
+    ModelPorts,
+    ModelTime,
+    ModelWire,
+    ModelWorld,
+    PhysicalInterior,
+    PhysicalPort,
+    ProbeAttachment,
+    SignalInput,
+    SignalOutput,
+    SignalType,
+)
+from feedbax.contracts.model_attachment import AddModelAttachment, ChangeModelAttachment, RemoveModelAttachment
+from feedbax.contracts.model_edit import (
+    AddComponent,
+    AddPort,
+    BringSignalIn,
+    ConnectPhysical,
+    ConnectSignal,
+    ConnectTaskSignal,
+    CopyComponents,
+    CutComponents,
+    DeleteElements,
+    DuplicateComponents,
+    EvaluateAttachmentAxis,
+    EvaluateAttachmentEdit,
+    EvaluateAttachmentReadRequest,
+    EvaluateAttachmentRequest,
+    EvaluateAttachmentRows,
+    EvaluateAttachmentState,
+    StudioEvaluateValueSource,
+    EvaluateAttachmentStep,
+    EvaluateAttachmentVariant,
+    GroupComponents,
+    ModelClipboard,
+    ModelConnectionReview,
+    ModelConnectionReviewRequest,
+    ModelConnectionVerdict,
+    ModelLibraryConnection,
+    ModelPortProjection,
+    ModelProjection,
+    ModelProjectionRequest,
+    ModelTaskSignal,
+    TaskSignalSource,
+    ModelEditApplied,
+    ModelEditCommand,
+    ModelEditProblem,
+    ModelEditRefused,
+    ModelEditRequest,
+    ModelEditResponse,
+    ModelUndoRequest,
+    ModelPosition,
+    MoveComponents,
+    CollapseGraph,
+    FlipComponent,
+    InsertComponentOnWire,
+    MoveWireAttachment,
+    MovePort,
+    PasteComponents,
+    PlaceComponent,
+    RemovePort,
+    RenameElement,
+    RouteWire,
+    SetField,
+    SetModelAttachment,
+    UngroupComposite,
+)
 from feedbax.contracts.workspace_replay import (
     ResolvedWorkspaceReplayScene,
     WorkspaceReplayImportedArtifact,
@@ -230,38 +348,16 @@ from feedbax.contracts.studio_refinements import (
     CROSS_FIELD_REFINEMENTS,
     REGISTERED_CONSTRAINT_VALIDATORS,
 )
-from feedbax.web.api.training import (
-    ProbeResponse,
-    ValidateLossResponse,
-    ValidationErrorResponse,
-)
 from feedbax.web.api.execution import (
     SampledTaskTrial,
     TaskTimelineCue,
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
 )
-from feedbax.studio.execution import (
-    StudioNativeTrainingDispatchAccepted,
-    StudioNativeTrainingDispatchRequest,
-)
-from feedbax.web.api.runs import (
-    CreateEvalRunRequest,
-    EvalRunInfo,
-    ManifestImportRequest,
-    ManifestImportResponse,
-    SelectionPreviewRequest,
-    SelectionRefreshRequest,
-    TrainingRunCompareRequest,
-    TrainingRunCompareResponse,
-    TrainingRunCompareRow,
-    TrainingRunInfo,
-)
 from feedbax.web.models.inspection import (
     CycleAnnotationModel,
     InlineTreescopeRequest,
     InspectionStatusResponse,
-    TreescopeRequest,
     TreescopeResponse,
 )
 from feedbax.web.models.statistics import (
@@ -284,14 +380,245 @@ from feedbax.web.models.trajectory import (
     TrajectoryData,
     TrajectoryMetadata,
 )
+from feedbax.contracts.expression_values import FieldTextResult, Problem
+from feedbax.expression_site import SiteProjection
+from feedbax.contracts.project_sweep import RangeValues, SampleValues
+from feedbax.contracts.studio_field import (
+    FieldKindEdit, FieldNameEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
+    StudioFieldView, StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue,
+    TrainFieldRequest, TrainFieldResponse, TrainFieldView,
+)
+from feedbax.contracts.studio_authoring import (
+    StudioAuthoringCatalog,
+    StudioAuthoringSurface,
+    StudioTrainAuthoring,
+    StudioTrainAuthoringRequest,
+)
+from feedbax.contracts.studio_project import (
+    AuthoredFileAddress,
+    RemoveProjectValue,
+    SetProjectValue,
+    StudioAuthoredFileRevision,
+    StudioPresentationWrite,
+    StudioProjectCreateFile,
+    StudioProjectDocument,
+    StudioProjectPatch,
+    StudioProjectPatchBatch,
+    StudioProjectFilePatch,
+    StudioProjectRename,
+    StudioProjectReplay,
+    StudioProjectRevision,
+    StudioProjectSnapshot,
+)
+from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.request_specs import TrialDocuments
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
+from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
+from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
+from scripts.studio_json_schema import emit_authored_contracts
 
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
 
-EVENT_MODELS = get_args(TrainingWebSocketEvent)
+
+JOB_MODELS = (
+    KeepOpen, CloseWhenIdle, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
+    ReadyTarget, OffTarget, UnreachableTarget, TargetOption, ExecutionTargets, OpeningObservation,
+    JobError,
+    JobOutcome,
+    JobProgress,
+    JobReceipt,
+    StudioSubmissionActor,
+    StudioActivityJob,
+    StudioEventReset,
+    StudioEventWatermark,
+    StudioJobEvent,
+    StudioJobEventHistory,
+    StudioJobResumeRequest,
+    StudioJobSnapshot,
+    StudioJobStopItem,
+    StudioJobStopRequest,
+    StudioJobSubmission,
+    StudioSavedEvaluationRead,
+    StudioSavedEvaluationReplayRequest,
+    StudioEvaluationObjectiveSeries,
+    StudioEvaluationObjectivePoint,
+    StudioEvaluationObjectiveTerm,
+    StudioEvaluationCheckpoint,
+    StudioEvaluationCheckpointGap,
+    StudioEvaluationCheckpointSeries,
+    StudioSavedEvaluationResult,
+    StudioSavedEvaluationRow,
+    StudioSavedTrainAttempt,
+    StudioSavedTrainChange,
+    StudioSavedTrainKey,
+    StudioSavedTrainResult,
+    StudioSavedTrainRow,
+    StudioSavedTrainRunRequest,
+    StudioSavedMachineQuoteRequest,
+    StudioMachineApproval,
+    StudioMachineApprovalReceipt,
+    StudioMachineQuote,
+    StudioMachineQuoteRow,
+    StudioSavedTrainRuns,
+    StudioPlanRequestAddress,
+    StudioPlanReviewEntry,
+    StudioPlanReviewSource,
+    StudioTrainCheckpointSource,
+    StudioLocalSession,
+    StudioRemoteSession,
+    StudioVenueCursor,
+    StudioVenueStream,
+    StoreTransferProgress,
+    StudioSubmissionItem,
+)
+
+AUTHORED_CONTRACT_MODELS = (
+    AnalysisDocument,
+    TaskDocument,
+    PythonTaskSelection,
+    ObjectiveDocument,
+    TrialDocuments,
+    StudioTrialAuthoring,
+    StudioTrialAuthoringRequest,
+    StudioCheckpointRuleEdit,
+    StudioCheckpointRuleRequest,
+    StudioSubsetToRowsEdit,
+    StudioSubsetToRowsRequest,
+    FieldTextResult,
+    Problem,
+    RangeValues,
+    ReportDocument,
+    SampleValues,
+    SiteProjection,
+    StudioAnalyzeAuthoring,
+    StudioAnalyzeRequest,
+    StudioAuthoringCatalog,
+    StudioAuthoringSurface,
+    StudioTrainAuthoring,
+    StudioTrainAuthoringRequest,
+    AuthoredFileAddress,
+    RemoveProjectValue,
+    SetProjectValue,
+    StudioAuthoredFileRevision,
+    StudioPresentationWrite,
+    StudioProjectCreateFile,
+    StudioProjectDocument,
+    StudioProjectWindowMap,
+    StudioProjectPatch,
+    StudioProjectPatchBatch,
+    StudioProjectFilePatch,
+    StudioProjectRename,
+    StudioProjectReplay,
+    StudioProjectRevision,
+    StudioProjectSnapshot,
+)
 
 
 MODEL_TYPES: list[type[BaseModel]] = [
+    *JOB_MODELS,
+    ComponentPortEnd,
+    ComponentPortAddress,
+    InputBoundaryEnd,
+    OutputBoundaryEnd,
+    PhysicalBoundaryEnd,
+    GraphElement,
+    ComponentElement,
+    WireElement,
+    PhysicalConnectionElement,
+    PortElement,
+    AttachmentElement,
+    FieldElement,
+    ModelAddress,
+    SignalType,
+    ModelTime,
+    InputDefault,
+    DelayAttachment,
+    InterventionAttachment,
+    ProbeAttachment,
+    SignalInput,
+    SignalOutput,
+    PhysicalPort,
+    ModelPorts,
+    ModelPortAttachments,
+    ModelWire,
+    ModelPhysicalConnection,
+    LeafComponent,
+    CompositeComponent,
+    GraphInterior,
+    PhysicalInterior,
+    ModelWorld,
+    ModelDocument,
+    ModelPosition,
+    AddComponent,
+    DeleteElements,
+    ConnectSignal,
+    ConnectTaskSignal,
+    ConnectPhysical,
+    AddPort,
+    RemovePort,
+    RenameElement,
+    MovePort,
+    SetField,
+    BringSignalIn,
+    ModelClipboard,
+    CopyComponents,
+    CutComponents,
+    DuplicateComponents,
+    EvaluateAttachmentAxis,
+    EvaluateAttachmentEdit,
+    EvaluateAttachmentReadRequest,
+    EvaluateAttachmentRequest,
+    EvaluateAttachmentRows,
+    EvaluateAttachmentState,
+    StudioEvaluateValueSource,
+    EvaluateAttachmentStep,
+    EvaluateAttachmentVariant,
+    AddModelAttachment,
+    ChangeModelAttachment,
+    RemoveModelAttachment,
+    PasteComponents,
+    PlaceComponent,
+    MoveComponents,
+    CollapseGraph,
+    FlipComponent,
+    InsertComponentOnWire,
+    MoveWireAttachment,
+    RouteWire,
+    SetModelAttachment,
+    GroupComponents,
+    UngroupComposite,
+    ModelEditCommand,
+    ModelEditProblem,
+    ModelEditRequest,
+    ModelEditApplied,
+    ModelEditRefused,
+    ModelEditResponse,
+    ModelUndoRequest,
+    ModelConnectionReviewRequest,
+    TaskSignalSource,
+    ModelConnectionVerdict,
+    ModelLibraryConnection,
+    ModelConnectionReview,
+    ModelPortProjection,
+    ModelProjection,
+    ModelProjectionRequest,
+    ModelTaskSignal,
+    ModelFieldRequest,
+    ModelFieldResponse,
+    FieldKindEdit,
+    FieldNameEdit,
+    FieldTextEdit,
+    StudioSweepValue,
+    StudioSweepList,
+    StudioSweepRange,
+    StudioSweepSampler,
+    StudioFieldView,
+    ModelFieldView,
+    TrainFieldView,
+    TrainFieldRequest,
+    TrainFieldResponse,
     SparseCooEntrySpec,
     SparseCooArrayValueSpec,
     ConstantArrayValueSpec,
@@ -338,11 +665,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     AssemblyViewUIState,
     GraphUIState,
     AnalysisPageSpec,
-    AnalysisCanvasPosition,
-    AnalysisCanvasViewport,
-    AnalysisCanvasPageLayout,
-    AnalysisCanvasStageLayout,
-    AnalysisCanvasLayoutDocument,
     StudioValidationIssue,
     StudioValidationState,
     StudioManifestRef,
@@ -364,13 +686,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioTaskBinding,
     StudioTaskBindingSpec,
     StudioBiomechanicsSpec,
-    StudioScenarioSpec,
-    StudioStageSpec,
-    StudioWorkspaceSpec,
-    SemanticAnchor,
-    WorkspaceDocument,
-    StudioPersistenceDocument,
-    GraphProject,
     ValidationError,
     ValidationWarning,
     ValidationResult,
@@ -399,7 +714,13 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DomainTheme,
     DomainMeta,
     DomainDiagnostic,
+    ScenePlanarLink,
+    ScenePlanarMuscle,
+    ScenePlanarModel,
+    StudioPlanarSceneRequest,
+    StudioPlanarSceneResponse,
     DomainRegistryPayload,
+    StudioRenderFailure,
     DomainCompileReport,
     WorkspaceReplayWarning,
     WorkspaceReplayTrialIdentity,
@@ -417,11 +738,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     BatchScheduleOriginSpec,
     LrScheduleSpec,
     OptimizerSpec,
-    TimeAggregationSpec,
-    LossTermSpec,
-    EarlyStoppingSpec,
-    TrainingSpec,
-    TaskSpec,
     TrainingConfig,
     TaskTimelineCue,
     SampledTaskTrial,
@@ -432,21 +748,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ManifestPredicate,
     SelectionSpec,
     SelectionPreview,
-    SelectionRefreshDiff,
     SuccessPayload,
     SuccessResponse,
-    GraphListItem,
-    GraphListPayload,
-    GraphListResponse,
-    GraphCreatePayload,
-    GraphCreateResponse,
-    GraphUpdatePayload,
-    GraphUpdateResponse,
-    GraphDetailPayload,
-    GraphDetailResponse,
-    GraphValidationResponse,
-    GraphExportPayload,
-    GraphExportResponse,
     ComponentListPayload,
     ComponentListResponse,
     ComponentDetailResponse,
@@ -459,14 +762,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     PenzaiNodeRequest,
     PenzaiInspectorPayload,
     PenzaiInspectorResponse,
-    TrainingStartPayload,
-    TrainingStartResponse,
-    TrainingStatusPayload,
-    TrainingStatusResponse,
-    WorkerConnectResponse,
-    WorkerConnectEnvelope,
-    WorkerStatusResponse,
-    WorkerStatusEnvelope,
     AnalysisClassInfo,
     AnalysisPackageInfo,
     AnalysisPackagesPayload,
@@ -484,22 +779,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     AnalysisJobStatusPayload,
     AnalysisJobStatusResponse,
     TrainingTrajectoryPayload,
-    *EVENT_MODELS,
-    ProbeResponse,
-    ValidationErrorResponse,
-    ValidateLossResponse,
-    TrainingRunInfo,
-    StudioNativeTrainingDispatchRequest,
-    StudioNativeTrainingDispatchAccepted,
-    EvalRunInfo,
-    CreateEvalRunRequest,
-    TrainingRunCompareRequest,
-    TrainingRunCompareRow,
-    TrainingRunCompareResponse,
-    ManifestImportRequest,
-    ManifestImportResponse,
-    SelectionPreviewRequest,
-    SelectionRefreshRequest,
     DatasetInfo,
     TrajectoryMetadata,
     FilterResult,
@@ -517,7 +796,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DiagnosticCheck,
     DiagnosticsResponse,
     CycleAnnotationModel,
-    TreescopeRequest,
     InlineTreescopeRequest,
     TreescopeResponse,
     InspectionStatusResponse,
@@ -600,41 +878,45 @@ function arrayScalarInvalid(value: unknown, dtype: string, nonfinite: string): b
 """
 
 CONTRACT_MODEL_NAMES = [
-    "GraphListResponse",
-    "GraphCreateResponse",
-    "GraphUpdateResponse",
-    "GraphDetailResponse",
-    "GraphValidationResponse",
-    "GraphExportResponse",
+    *(model.__name__ for model in JOB_MODELS),
+    "ModelAddress",
+    "ModelDocument",
+    "ModelEditRequest",
+    "ModelEditResponse",
+    "ModelConnectionReviewRequest",
+    "ModelConnectionReview",
+    "ModelProjectionRequest",
+    "ModelProjection",
+    "ModelFieldRequest",
+    "ModelFieldResponse",
+    "TrainFieldRequest",
+    "TrainFieldResponse",
+    "EvaluateAttachmentRequest",
+    "EvaluateAttachmentReadRequest",
+    "EvaluateAttachmentState",
+    "EvaluateAttachmentEdit",
+    "ModelUndoRequest",
+    *(model.__name__ for model in AUTHORED_CONTRACT_MODELS),
+    "ProjectValueEdit",
     "ComponentListResponse",
     "ComponentDetailResponse",
     "ComponentRefreshResponse",
     "DomainListResponse",
     "DomainCompileReport",
+    "StudioPlanarSceneRequest",
+    "StudioPlanarSceneResponse",
+    "StudioRenderFailure",
+    "WorkspaceReplayTrial",
     "PenzaiBuilderListResponse",
     "PenzaiInspectorResponse",
     "PenzaiNodeRequest",
-    "TrainingStartResponse",
-    "TrainingStatusResponse",
     "SuccessResponse",
-    "WorkerConnectEnvelope",
-    "WorkerStatusEnvelope",
     "AnalysisPackagesResponse",
     "AnalysisBundleDryRunResponse",
     "GenerateAnalysisResponse",
     "AnalysisJobStatusResponse",
-    "TrainingRunInfo",
-    "StudioNativeTrainingDispatchRequest",
-    "StudioNativeTrainingDispatchAccepted",
-    "EvalRunInfo",
-    "CreateEvalRunRequest",
-    "TrainingRunCompareResponse",
-    "ManifestImportResponse",
     "SelectionSpec",
     "SelectionPreview",
-    "SelectionRefreshDiff",
-    "SelectionPreviewRequest",
-    "SelectionRefreshRequest",
     "DatasetInfo",
     "TrajectoryMetadata",
     "FilterResult",
@@ -644,15 +926,11 @@ CONTRACT_MODEL_NAMES = [
     "HistogramResponse",
     "ScatterResponse",
     "DiagnosticsResponse",
-    "TreescopeRequest",
     "InlineTreescopeRequest",
     "TreescopeResponse",
     "InspectionStatusResponse",
-    "ProbeResponse",
-    "ValidateLossResponse",
     "TaskTrialSampleRequest",
     "TaskTrialSampleResponse",
-    "TrainingWebSocketEvent",
 ]
 
 MIGRATION_OR_NORMALIZATION_VALIDATORS = {
@@ -661,7 +939,6 @@ MIGRATION_OR_NORMALIZATION_VALIDATORS = {
     ("StudioTaskTimelineSpec", "migrate_v1"),
     ("StudioTaskBinding", "reject_legacy_task_binding_field_names"),
     ("StudioTaskBindingSpec", "reject_legacy_task_binding_contract"),
-    ("GraphProject", "drop_unparseable_compile_reports"),
     ("PortType", "migrate_legacy_signal_port"),
     ("ComponentDefinition", "migrate_legacy_definition"),
     ("LrScheduleSpec", "_migrate_v1_origin"),
@@ -723,9 +1000,11 @@ def ts_type(annotation: Any) -> str:
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "unknown"
+    if annotation is JsonValue:
+        return "JsonValue"
     if annotation is NONE_TYPE:
         return "null"
-    if annotation is str:
+    if annotation is str or annotation is UUID:
         return "string"
     if annotation is int or annotation is float:
         return "number"
@@ -735,13 +1014,22 @@ def ts_type(annotation: Any) -> str:
         return "Record<string, unknown>"
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return annotation.__name__
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return " | ".join(_literal_value(member.value) for member in annotation)
 
     origin = get_origin(annotation)
     args = get_args(annotation)
 
     if origin is list or (origin is tuple and len(args) == 2 and args[1] is Ellipsis):
-        item = args[0] if args else Any
-        return f"{ts_type(item)}[]"
+        item = _unwrap_annotated(args[0]) if args else Any
+        item_type = ts_type(item)
+        if (
+            _is_union(item)
+            or (get_origin(item) is Literal and len(get_args(item)) > 1)
+            or (isinstance(item, type) and issubclass(item, Enum) and len(item) > 1)
+        ):
+            return f"Array<{item_type}>"
+        return f"{item_type}[]"
     if origin is dict:
         value = args[1] if len(args) == 2 else Any
         return f"Record<string, {ts_type(value)}>"
@@ -769,6 +1057,8 @@ def _apply_zod_constraints(
         name = type(constraint).__name__
         if name == "Strict":
             continue
+        if name == "AllowInfNan" and base is float and not constraint.allow_inf_nan:
+            continue  # The float schema is already finite.
         if name == "Gt":
             schema += f".gt({_literal_value(constraint.gt)})"
         elif name == "Ge":
@@ -783,8 +1073,14 @@ def _apply_zod_constraints(
             schema += f".min({constraint.min_length})"
         elif name == "MaxLen":
             schema += f".max({constraint.max_length})"
-        elif name == "_PydanticGeneralMetadata":
-            values = vars(constraint)
+        elif name in ("_PydanticGeneralMetadata", "StringConstraints"):
+            values = {key: value for key, value in vars(constraint).items() if value is not None}
+            if base is float and values.get("allow_inf_nan") is False:
+                del values["allow_inf_nan"]  # The float schema is already finite.
+            if base is str:
+                for key, operation in (("min_length", "min"), ("max_length", "max")):
+                    if key in values:
+                        schema += f".{operation}({_literal_value(values.pop(key))})"
             unsupported = sorted(set(values) - {"pattern"})
             if unsupported:
                 raise ValueError(
@@ -819,8 +1115,12 @@ def zod_schema(
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "z.unknown()"
+    if annotation is JsonValue:
+        return "jsonValueSchema"
     if annotation is NONE_TYPE:
         return "z.null()"
+    if annotation is UUID:
+        return "z.string().uuid()"
     if annotation is str:
         return _apply_zod_constraints("z.string()", annotation, metadata, context=context)
     if annotation is int:
@@ -835,6 +1135,9 @@ def zod_schema(
         return "z.record(z.string(), z.unknown())"
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return f"{annotation.__name__}Schema"
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        schemas = [f"z.literal({_literal_value(member.value)})" for member in annotation]
+        return schemas[0] if len(schemas) == 1 else f"z.union([{', '.join(schemas)}])"
 
     origin = get_origin(annotation)
     args = get_args(annotation)
@@ -845,7 +1148,11 @@ def zod_schema(
         return _apply_zod_constraints(schema, annotation, metadata, context=context)
     if origin is dict:
         value = args[1] if len(args) == 2 else Any
-        return f"z.record(z.string(), {zod_schema(value, context=f'{context}.*')})"
+        key = args[0] if args else str
+        return (
+            f"z.record({zod_schema(key, context=f'{context}.key')}, "
+            f"{zod_schema(value, context=f'{context}.*')})"
+        )
     if origin is tuple:
         if len(args) == 2 and args[1] is Ellipsis:
             schema = f"z.array({zod_schema(args[0], context=f'{context}[]')})"
@@ -873,9 +1180,6 @@ def zod_schema(
                 context=context,
             )
             return f"{inner}.nullable()"
-        if field is not None and field.discriminator:
-            schemas = ", ".join(zod_schema(arg, context=context) for arg in args)
-            return f"z.discriminatedUnion({_literal_value(field.discriminator)}, [{schemas}])"
         return f"z.union([{', '.join(zod_schema(arg, context=context) for arg in args)}])"
 
     return "z.unknown()"
@@ -1005,6 +1309,7 @@ def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
 def generate() -> str:
     interfaces = "\n\n".join(emit_interface(model) for model in MODEL_TYPES)
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
+    authored_types, authored_schemas = emit_authored_contracts(AUTHORED_CONTRACT_MODELS, MODEL_TYPES)
     acausal_report_defaults = {
         model.__name__: {
             name: field.get_default(call_default_factory=True)
@@ -1024,14 +1329,6 @@ def generate() -> str:
             SpatialMusclePath,
         )
     }
-    event_model_names = [model.__name__ for model in EVENT_MODELS]
-    event_type = " | ".join(event_model_names)
-    event_schema = (
-        f"export type TrainingWebSocketEvent = {event_type};\n\n"
-        "export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = "
-        f"z.union([{', '.join(name + 'Schema' for name in event_model_names)}]) "
-        "as unknown as z.ZodType<TrainingWebSocketEvent>;"
-    )
     contract_entries = "\n".join(f"  {name}: {name}Schema," for name in CONTRACT_MODEL_NAMES)
     type_entries = "\n".join(f"  {name}: {name};" for name in CONTRACT_MODEL_NAMES)
     return (
@@ -1039,12 +1336,35 @@ def generate() -> str:
         "// Generated by scripts/generate_studio_contracts.py. Do not edit by hand.\n\n"
         "import { z } from 'zod';\n\n"
         "export type JsonPrimitive = string | number | boolean | null;\n"
+        "export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };\n"
+        "class JsonValueSchema extends z.ZodType<JsonValue> {\n"
+        "  _parse(input: z.ParseInput): z.ParseReturnType<JsonValue> {\n"
+        "    switch (this._getType(input)) {\n"
+        "      case z.ZodParsedType.string: return jsonString._parse(input);\n"
+        "      case z.ZodParsedType.number: return jsonNumber._parse(input);\n"
+        "      case z.ZodParsedType.boolean: return jsonBoolean._parse(input);\n"
+        "      case z.ZodParsedType.null: return jsonNull._parse(input);\n"
+        "      case z.ZodParsedType.array: return jsonArray._parse(input);\n"
+        "      case z.ZodParsedType.object: return jsonObject._parse(input);\n"
+        "      default: return invalidJsonValue._parse(input);\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+        "const jsonValueSchema: z.ZodType<JsonValue> = new JsonValueSchema({});\n"
+        "const jsonString = z.string();\n"
+        "const jsonNumber = z.number().finite();\n"
+        "const jsonBoolean = z.boolean();\n"
+        "const jsonNull = z.null();\n"
+        "const jsonArray = z.array(jsonValueSchema);\n"
+        "const jsonObject = z.record(jsonString, jsonValueSchema);\n"
+        "const invalidJsonValue = z.never({ invalid_type_error: 'Expected a JSON value' });\n"
         "export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;\n\n"
         f"{interfaces}\n\n"
+        f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"
-        f"{event_schema}\n\n"
+        f"{authored_schemas}\n\n"
         "export const contractSchemas = {\n"
         f"{contract_entries}\n"
         "} as const;\n\n"

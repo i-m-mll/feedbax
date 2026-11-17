@@ -6,8 +6,7 @@ satisfy every digest, pin, and schema check this layer performs while presenting
 a different first value to whatever else reads the bytes. These tests hold the
 boundaries where that document could previously enter: the packet importer, the
 packet index, the target manifest root, repo-ref composition parents, extraction
-sources, content-pinned bases, authoring budgets, project declarations,
-evaluation-state containers, and NPZ array stores.
+sources, content-pinned bases, evaluation-state containers, and NPZ array stores.
 
 Each boundary is stated twice: a well-formed document still loads exactly as it
 did, and the two-authority document is refused with a message naming what and
@@ -40,14 +39,12 @@ from feedbax.contracts.artifact_schema import (
     read_npz_array_store,
     write_npz_array_store,
 )
-from feedbax.contracts.authoring_budget import load_authoring_budget_document
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_METADATA_KEY,
     EVALUATION_STATES_METADATA_VALUES_KEY,
     evaluation_states_container_bytes,
     load_evaluation_states_container_bytes,
 )
-from feedbax.contracts.experiment_envelope import ExperimentEnvelopeRejection
 from feedbax.contracts.extraction import SourceBinding, load_expression_context
 from feedbax.contracts.base import (
     canonical_json_bytes,
@@ -65,13 +62,6 @@ from feedbax.contracts.matrix_core import (
     ContentPinnedJsonBase,
     load_content_pinned_json_base,
 )
-from feedbax.contracts.project_experiment import (
-    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
-    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
-    AuthoringBudgetResource,
-    ProjectExperimentDeclarationError,
-    parse_project_declaration,
-)
 from feedbax.contracts.run_composition import (
     CompositionNode,
     ResolvedOutputParent,
@@ -81,15 +71,6 @@ from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 
 pytestmark = [pytest.mark.feedbax_contract]
-
-BUDGET_FIXTURE = (
-    Path(__file__).parent
-    / "support"
-    / "fake_project_experiment"
-    / "budgets"
-    / "quillon.envelope_budgets.json"
-)
-
 
 # -- helpers -----------------------------------------------------------------
 
@@ -352,60 +333,6 @@ def test_content_pinned_base_that_states_a_member_twice_is_refused(tmp_path: Pat
 
 
 # -- authoring budgets -------------------------------------------------------
-
-
-def test_authoring_budget_that_states_a_cap_twice_is_refused() -> None:
-    """Two caps for one dimension is exactly the fact a budget must not restate."""
-    raw = BUDGET_FIXTURE.read_bytes()
-    document = load_authoring_budget_document(raw, field="budget.json")
-    assert document["schema_id"] == "feedbax.spec.authoring_budget"
-
-    text = raw.decode("utf-8")
-    duplicated = text.replace('"training": {', '"training": {"max_bytes": 1048576, ', 1)
-    assert duplicated != text
-    assert json.loads(duplicated)["layers"]["training"]["max_bytes"] == 8192
-
-    with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
-        load_authoring_budget_document(duplicated.encode("utf-8"), field="budget.json")
-    message = str(excinfo.value)
-    assert "duplicate JSON object key 'max_bytes'" in message
-    assert "$.layers.training.max_bytes" in message
-    assert "budget.json" in message
-
-
-# -- project declarations ----------------------------------------------------
-
-
-def _declaration_document() -> dict[str, Any]:
-    return {
-        "schema_id": PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
-        "schema_version": PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
-        "project": "probe",
-        "envelope_directory": "envelopes",
-        "output_directory": "results",
-        "authoring_budget": "probe.budgets.json",
-    }
-
-
-def test_project_declaration_that_states_its_project_twice_is_refused(tmp_path: Path) -> None:
-    budget_root = tmp_path / "budgets"
-    budget_root.mkdir()
-    (budget_root / "probe.budgets.json").write_bytes(BUDGET_FIXTURE.read_bytes())
-
-    raw = json.dumps(_declaration_document()).encode("utf-8")
-    declaration = parse_project_declaration(raw, budget_root=budget_root, source="tests:probe")
-    assert declaration.project == "probe"
-    assert isinstance(declaration.authoring_budget, AuthoringBudgetResource)
-
-    duplicated = _state_member_twice(raw.decode("utf-8"), "project", "attacker")
-    _assert_decoy_is_invisible_to_json_loads(duplicated, "project", "probe")
-    with pytest.raises(ProjectExperimentDeclarationError) as excinfo:
-        parse_project_declaration(
-            duplicated.encode("utf-8"), budget_root=budget_root, source="tests:probe"
-        )
-    message = str(excinfo.value)
-    assert "duplicate JSON object key 'project'" in message
-    assert "tests:probe" in message
 
 
 # -- evaluation-state containers ---------------------------------------------

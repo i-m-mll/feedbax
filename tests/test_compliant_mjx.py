@@ -13,10 +13,7 @@ from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.objectives.loss import TargetSpec, TargetStateLoss
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.runtime.mapping import WhereDict
-from feedbax.tasks.task import TaskTrialSpec, prepare_trial
 
 
 pytestmark = [pytest.mark.optional_mjx, pytest.mark.usefixtures("enable_jax_x64")]
@@ -105,28 +102,25 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
     from fastapi.testclient import TestClient
 
     from feedbax.contracts.artifact_custody import ContentGcRequest
-    from feedbax.contracts.graph import (
-        STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
-        STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
-    )
     from feedbax.training.checkpoint_custody import (
         _semantic_structural_abi_sha256,
         structural_abi_fingerprint,
     )
-    from feedbax.web import config
-    from feedbax.web.api import graphs
-    from feedbax.web.model_assets import model_artifact_provider
-    from feedbax.web.services.graph_service import GraphService
+    from feedbax.studio import paths
+    from feedbax.web.api import graphs, projects
+    from feedbax.persistence.model_assets import model_artifact_provider
+    from feedbax.web.services.project_folder import ProjectFolderService
 
     pytest.importorskip("mujoco.mjx")
     fixture = ImmutableArtifactBlobProvider(tmp_path / "fixture")
     graph = _document(fixture, 0.001).graph
     asset = graph.subgraphs["physics"].mujoco_asset.asset
-    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
-    monkeypatch.setattr(graphs, "service", GraphService(tmp_path))
+    monkeypatch.setattr(paths, "STUDIO_DATA_ROOT", tmp_path)
     app = FastAPI()
     app.state.bootstrap_state = SimpleNamespace(bundle=SimpleNamespace(components=ComponentRegistry()))
     app.include_router(graphs.router, prefix="/api/graphs")
+    app.include_router(projects.router)
+    app.state.project_folders = ProjectFolderService(tmp_path / "projects")
 
     with TestClient(app) as client:
         external = client.post("/api/graphs/assets/mujoco", content=b'<mujoco><include file="other.xml"/></mujoco>')
@@ -134,12 +128,16 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         imported = client.post("/api/graphs/assets/mujoco", content=fixture.get_object(asset))
         assert imported.status_code == 200
         assert imported.json() == asset.model_dump(mode="json")
-        saved = client.post("/api/graphs", json={
-            "schema_id": STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
-            "schema_version": STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
-            "graph": graph.model_dump(mode="json", exclude_none=True),
+        created = client.post("/api/projects").json()["snapshot"]
+        project_id = created["project_id"]
+        path = f"/api/projects/{project_id}"
+        saved = client.post(path + "/files", json={
+            "revision": created["revision"],
+            "file": {"kind": "document", "id": "model", "document": {
+                "schema": graph.schema_id, "payload": graph.model_dump(mode="json", exclude_none=True),
+            }},
         })
-        assert saved.status_code == 200, saved.text
+        assert saved.status_code == 201, saved.text
         content = model_artifact_provider(graph)
         assert content is not None
         dry_run = content.collect_garbage()
@@ -150,12 +148,13 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
         content.collect_garbage(ContentGcRequest(
             destructive=True, expected_generation=dry_run.generation,
         ))
-        project = client.get(f"/api/graphs/{saved.json()['data']['id']}")
+        project = client.get(path + "/open")
         assert project.status_code == 200, project.text
-        binding = project.json()["data"]["graph"]["subgraphs"]["physics"]["mujoco_asset"]
+        payload = project.json()["snapshot"]["project"]["documents"]["model"]["payload"]
+        binding = payload["subgraphs"]["physics"]["mujoco_asset"]
         assert binding["asset"] == imported.json()
 
-    reopened = GraphSpec.model_validate(project.json()["data"]["graph"])
+    reopened = GraphSpec.model_validate(payload)
     compiled = compile_graph(
         GraphDocument(graph=reopened), app.state.bootstrap_state.bundle.components,
         artifact_provider=model_artifact_provider(reopened),
@@ -223,17 +222,7 @@ def test_spatial_mixed_muscles_reset_refine_differentiate_and_resume(tmp_path):
     n_steps = 8
     angle = 0.18
     qpos = jnp.array([math.cos(angle / 2), 0.0, 0.0, math.sin(angle / 2)])
-    def where(state):
-        return state.physics.effector.pos
-
-    loss = TargetStateLoss("spatial target", where=where)
-    trial = TaskTrialSpec(
-        inits=WhereDict({"physics.plant.skeleton.qpos": qpos}),
-        targets=WhereDict({"physics.effector.pos": TargetSpec(
-            value=jnp.array([[0.16, 0.05, -0.02]]),
-        )}),
-        inputs=jnp.zeros((n_steps, 2)),
-    )
+    target = jnp.array([0.16, 0.05, -0.02])
 
     def build(dt, *, roundtrip=False):
         graph = compile_graph(_document(provider, dt), registry, artifact_provider=provider).graph
@@ -243,7 +232,9 @@ def test_spatial_mixed_muscles_reset_refine_differentiate_and_resume(tmp_path):
                 GraphDocument.model_validate_json(saved), registry, artifact_provider=provider,
             ).graph
         node = graph.nodes["physics"]
-        initial = prepare_trial(graph, trial).init_state
+        initial = node.replace_state_value(
+            graph.init_state(key=key), ("plant", "skeleton", "qpos"), qpos,
+        )
         @jax.jit
         def rollout(state, command):
             return graph(
@@ -264,9 +255,8 @@ def test_spatial_mixed_muscles_reset_refine_differentiate_and_resume(tmp_path):
 
     @jax.jit
     def objective(command):
-        _, _, history = rollout(initial, command)
-        batched = jax.tree.map(lambda value: value[None], history)
-        return loss.term(batched, trial, middle)[0]
+        outputs, _, _ = rollout(initial, command)
+        return jnp.mean(jnp.sum((outputs["effector"].pos - target) ** 2, axis=-1))
 
     command = jnp.array([0.34, 0.29])
     direction = jnp.array([0.8, -0.6])

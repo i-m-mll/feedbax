@@ -29,17 +29,9 @@ the review bundle.
 
 ## 1. Current state (what this contract replaces or absorbs)
 
-Two disjoint orchestration systems exist today.
+This section records the two systems at the start of the orchestration migration.
 
-**System A — RunPod CLI path.** `scripts/deploy/runpod_deploy.sh` (driver, ~1130 lines) with
-`lib_acquire.sh` (pure pod-state/rows-manifest helpers) and `lib_run_prep.sh` (provider-
-abstracted run-prep: train-spec gate, baseline staging, row launch, warm-compile gate). Rows
-are launched as `nohup` processes with file sentinels (`<row>.started/.pid/.done/.failed`);
-progress is inferred by `poll_run.sh` grepping logs with a loose regex; readiness for warm-
-compile fan-out is a log-regex probe; teardown fires only if acquisition never completed; the
-run's operational state lives in the shell process and is lost when it exits. rlrmp's
-`scripts/post_run.sh` performs artifact sync, manifest parity checks, run-spec commit, and the
-terminal ledger checkpoint.
+**System A — RunPod CLI path.** The original deploy scripts launched pod rows with process sentinels and inferred readiness and progress from logs. The shell process owned the run state. The RunPod driver and persisted stage engine now own that workflow, with `feedbax-orchestrate status` and `watch` for inspection.
 
 **System B — Studio path.** `feedbax/web/services/training_service.py` spawns (or connects to)
 a `feedbax.web.worker` FastAPI process; the worker mints a `uuid4()` job id, runs the shared
@@ -442,9 +434,7 @@ Wave 2 (children specced with this document; unblocked by review):
 | W2-6 | Studio adoption: external job identity, persisted job state, run-event envelope in the worker, reconcile-on-startup. | W2-1, W2-2 |
 
 Wave 3 (enumerated, not filed): `modal` driver; browser-WS `from_seq` resume in the frontend;
-compile-class launch policy (`738a221`) as a launch-policy plugin; rlrmp REGISTER plugin
-replacing `post_run.sh` (requires W2-2 + W2-4 in production use first); retirement of
-`poll_run.sh` once `feedbax-orchestrate status/watch` reaches parity.
+compile-class launch policy (`738a221`) as a launch-policy plugin and an rlrmp REGISTER plugin replacing `post_run.sh` (requires W2-2 + W2-4 in production use first). The RunPod polling script was retired after `feedbax-orchestrate status/watch` reached parity.
 
 Sequencing rule: wave-1 stopgaps must not be blocked on wave 2; wave-2 children land behind
 this accepted document; no wave-3 work starts before W2-3 has run a real billable training run

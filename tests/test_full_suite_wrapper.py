@@ -226,7 +226,7 @@ def test_pytest_command_uses_xdist_by_default(monkeypatch) -> None:
         "auto",
         "--dist=loadgroup",
         "-m",
-        "not optional_mjx and not optional_ppo",
+        "not optional_mjx",
         "-q",
     ]
 
@@ -234,12 +234,11 @@ def test_pytest_command_uses_xdist_by_default(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("flag", "profile", "expression"),
     [
-        ("--include-mjx", "mjx", "not optional_ppo"),
-        ("--include-ppo", "ppo", "not optional_mjx"),
+        ("--include-mjx", "mjx", "optional_mjx or not optional_mjx"),
         (
             "--include-optional",
             "all",
-            "optional_mjx or optional_ppo or (not optional_mjx and not optional_ppo)",
+            "optional_mjx or not optional_mjx",
         ),
     ],
 )
@@ -376,21 +375,14 @@ def test_mjx(): pass
 @pytest.mark.optional_mjx
 @pytest.mark.slow
 def test_mjx_slow(): pass
-@pytest.mark.optional_ppo
-def test_ppo(): pass
-@pytest.mark.optional_ppo
-@pytest.mark.slow
-def test_ppo_slow(): pass
 """)
     core = {"test_core", "test_slow"}
     mjx = {"test_mjx", "test_mjx_slow"}
-    ppo = {"test_ppo", "test_ppo_slow"}
     cases = {
         None: {"test_core"},
         "core": core,
         "mjx": core | mjx,
-        "ppo": core | ppo,
-        "all": core | mjx | ppo,
+        "all": core | mjx,
     }
     collection = ["--collect-only", "-q", "-p", "xdist.plugin"]
     for profile, expected in cases.items():
@@ -422,11 +414,9 @@ def test_ppo_slow(): pass
 def test_representative_nodes_have_expected_optional_markers() -> None:
     tests_dir = Path(__file__).parent
     mjx_source = (tests_dir / "test_mjx_plant.py").read_text(encoding="utf-8")
-    ppo_source = (tests_dir / "test_batched_ppo.py").read_text(encoding="utf-8")
     backend_source = (tests_dir / "test_backend.py").read_text(encoding="utf-8")
 
     assert _assigned_pytest_marker(mjx_source) == "optional_mjx"
-    assert _assigned_pytest_marker(ppo_source) == "optional_ppo"
     assert "optional_mjx" in _class_pytest_markers(backend_source, "TestMJXBackendState")
     assert "optional_mjx" not in _class_pytest_markers(backend_source, "TestDiffraxBackendSubstep")
 

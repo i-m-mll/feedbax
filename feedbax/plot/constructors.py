@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from importlib import resources
 import json
 import re
 from typing import Any, Literal
@@ -13,8 +12,13 @@ from typing import Any, Literal
 import numpy as np
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
-from pydantic import Field, field_validator
+from pydantic import field_validator
 
+from feedbax.contracts.figure_layout import (
+    ComparisonGridParams,
+    FigureMarginParams as FigureMarginParams,
+    FigureView,
+)
 from feedbax.contracts.figures import (
     ColorscaleSpec,
     DataDerivedAxisRange,
@@ -167,43 +171,11 @@ class VRectParams(StrictModel):
     event_line_width: float = 1.5
 
 
-class ComparisonGridParams(StrictModel):
-    """Defaults for panel population."""
-
-    shared_xaxes: bool | str = False
-    shared_yaxes: bool | str = "all"
-    horizontal_spacing: float | None = None
-    vertical_spacing: float | None = None
-
-
-class FigureMarginParams(StrictModel):
-    """Optional Plotly figure margins."""
-
-    l: float | None = None  # noqa: E741 - Plotly's public margin key is "l".
-    r: float | None = None
-    t: float | None = None
-    b: float | None = None
-    pad: float | None = None
-    autoexpand: bool | None = None
-
-
-class GridFigureParams(StrictModel):
+class GridFigureParams(FigureView):
     """Defaults for whole-figure layout."""
 
     panel_constructor: str = "feedbax.comparison_grid"
-    width: int | None = None
-    height: int | None = None
-    title: str | None = None
-    legend_tracegroupgap: int | None = None
-    legend_x: float | None = None
-    legend_y: float | None = None
-    legend_xanchor: Literal["auto", "left", "center", "right"] | None = None
-    legend_yanchor: Literal["auto", "top", "middle", "bottom"] | None = None
-    margin: FigureMarginParams | None = None
-    hovermode: Literal["x", "y", "closest", "x unified", "y unified", False] | None = None
     template: str | dict[str, Any] | None = None
-    row_label_gutter: float | None = Field(default=None, ge=0.0, le=256.0)
-    legend_gutter: float | None = Field(default=None, ge=0.0, le=512.0)
     # Resolved by figure execution from FigureSpec.colorbar; not authored here.
     colorbar: FigureColorbar | None = None
     # Resolved by figure execution from FigureSpec.semantic_range_policy.
@@ -484,93 +456,6 @@ def get_figure_piece(name: str, *, registry: FigureRegistry) -> Any:
 def registered_figure_pieces(*, registry: FigureRegistry) -> tuple[Any, ...]:
     """Return registered figure pieces sorted by their namespaced key."""
     return registry.pieces()
-
-
-def _resource_file(
-    key: str,
-    *,
-    directory: str,
-    registry: Any,
-) -> tuple[str, Any]:
-    """Resolve one package figure-resource key to an importlib resource."""
-    if "/" in key:
-        package_name, resource_name = key.split("/", 1)
-        if not resource_name:
-            raise ValueError(f"Empty figure resource name after package {package_name!r}")
-        metadata = registry.get_package_metadata(package_name)
-        candidates = [(package_name, metadata, resource_name)]
-    else:
-        package_prefix, separator, dotted_name = key.partition(".")
-        candidates = []
-        if separator:
-            try:
-                metadata = registry.get_package_metadata(package_prefix)
-            except (KeyError, ValueError):
-                pass
-            else:
-                candidates.append((package_prefix, metadata, dotted_name))
-        if not candidates:
-            single = registry.single_package_name()
-            if single is not None:
-                candidates.append((single, registry.get_package_metadata(single), key))
-            else:
-                candidates.extend(
-                    (package_name, metadata, key)
-                    for package_name, metadata in registry.iter_package_metadata()
-                )
-
-    matches: list[tuple[str, Any]] = []
-    for package_name, metadata, resource_name in candidates:
-        root = f"{metadata.package_module.__name__}.{metadata.config_resource_root}.{directory}"
-        try:
-            root_files = resources.files(root)
-        except (FileNotFoundError, ModuleNotFoundError):
-            continue
-        for suffix in (".yml", ".yaml"):
-            resource = root_files.joinpath(f"{resource_name}{suffix}")
-            if resource.is_file():
-                matches.append((package_name, resource))
-    if not matches:
-        raise FileNotFoundError(
-            f"Figure resource {key!r} not found under any registered package {directory!r} root"
-        )
-    if len(matches) > 1:
-        options = ", ".join(f"{package}/{key}" for package, _resource in matches)
-        raise ValueError(f"Figure resource {key!r} is ambiguous; use one of {options}")
-    return matches[0]
-
-
-def _load_figure_resource(key: str, *, directory: str, model: type[Any], registry: Any) -> Any:
-    from feedbax.config.yaml import get_yaml_loader
-
-    _package_name, resource = _resource_file(key, directory=directory, registry=registry)
-    with resource.open("r", encoding="utf-8") as stream:
-        payload = get_yaml_loader(typ="safe").load(stream) or {}
-    return model.model_validate(payload)
-
-
-def load_figure_template(key: str, *, registry: Any) -> Any:
-    """Load and validate a FigureTemplate YAML package resource."""
-    from feedbax.contracts.figures import FigureTemplate
-
-    return _load_figure_resource(
-        key,
-        directory="figure_templates",
-        model=FigureTemplate,
-        registry=registry,
-    )
-
-
-def load_figure_piece(key: str, *, registry: Any) -> Any:
-    """Load and validate a FigurePiece YAML package resource."""
-    from feedbax.contracts.figures import FigurePiece
-
-    return _load_figure_resource(
-        key,
-        directory="figure_pieces",
-        model=FigurePiece,
-        registry=registry,
-    )
 
 
 def constructor_catalog(*, registry: FigureRegistry) -> list[dict[str, Any]]:
@@ -1376,7 +1261,9 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
         )
 
 
-def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
+def _comparison_grid(
+    panels: Sequence[PanelContent], params: StrictModel, *, figure: go.Figure | None = None,
+) -> go.Figure:
     p = ComparisonGridParams.model_validate(params.model_dump())
     panel_list = list(panels) or [PanelContent(name="main")]
     max_row = max(
@@ -1408,6 +1295,7 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
         horizontal_spacing=p.horizontal_spacing,
         vertical_spacing=p.vertical_spacing,
         specs=_subplot_specs(panel_list, rows=max_row, cols=max_col),
+        figure=figure,
     )
     populated_row_titles = [
         (row, label) for row, label in enumerate(row_titles, start=1) if label is not None

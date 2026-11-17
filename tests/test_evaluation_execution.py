@@ -157,16 +157,10 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(
             "SELECT kind, status FROM manifests WHERE id = ?",
             (manifest.id,),
         ).fetchone()
-        edge = conn.execute(
-            """
-            SELECT parent_kind, parent_id, role
-            FROM lineage_edges
-            WHERE child_id = ?
-            """,
-            (manifest.id,),
-        ).fetchone()
     assert row == ("EvaluationRunManifest", "completed")
-    assert edge == ("TrainingRunManifest", parent.id, "training_run")
+    assert [(ref.kind, ref.id, ref.role) for ref in loaded.provenance.parents] == [
+        ("TrainingRunManifest", parent.id, "training_run"),
+    ]
 
 
 @pytest.mark.parametrize("restore_receipt", [False, True], ids=["orphan", "older-receipt"])

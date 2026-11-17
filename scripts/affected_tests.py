@@ -27,7 +27,6 @@ SHARED_STUDIO_SOURCES = (
     "web/src/features/schema/",
     "web/src/types/graph.ts",
     "web/src/utils/canonicalJsonV2.ts",
-    "web/src/utils/studioDraftHash.ts",
 )
 PANTS_LAUNCHER_VERSION = "v0.13.2"
 PANTS_LAUNCHERS = {
@@ -138,7 +137,7 @@ def _python_related(root: Path, changed: set[str]) -> list[str]:
         for path in os.fsdecode(raw).split("\0")[:-1]
         if path.endswith(".py")
         and path.partition("/")[0] in PYTHON_ROOTS
-        and not path.startswith("tests/fixtures/")
+        and not path.startswith("tests/fixtures/downstream/")
         and (root / path).is_file()
     }
     pants = _pants_launcher()
@@ -234,7 +233,7 @@ def _studio_related(root: Path, paths: set[str]) -> list[str]:
 
 
 def _capabilities(root: Path, tests: list[str]) -> list[str]:
-    markers = {"optional_mjx", "optional_ppo"}
+    markers = {"optional_mjx"}
     required: set[str] = set()
     for path in tests:
         syntax = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
@@ -396,7 +395,11 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
             ):
                 python_reason = studio_reason = f"shared Python contract: {path}"
                 browser = build = contracts = True
-        elif _python_test(path):
+        elif (
+            path.startswith("tests/")
+            and path.endswith(".py")
+            and not path.startswith("tests/fixtures/downstream/")
+        ):
             python.add(path)
         elif path.startswith("tests/fixtures/") and Path(path).suffix in {".json", ".yaml", ".yml"}:
             fixtures.add(path)
@@ -450,7 +453,7 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
         "contracts": contracts,
         "clean_wheel": clean_wheel,
         "capabilities": (
-            ["optional_mjx", "optional_ppo"]
+            ["optional_mjx"]
             if python_reason
             else _capabilities(root, python_tests)
             if python_tests

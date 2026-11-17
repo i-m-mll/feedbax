@@ -9,8 +9,9 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ from feedbax.contracts.artifact_custody import (
     ContentGcRequest,
     ContentHoldRecord,
     ContentLeaseRecord,
+    ContentObjectRef,
     ContentPendingGc,
     ContentRetentionIndex,
     ContentRetentionTarget,
@@ -29,6 +31,14 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.host.python import same_python_argv
+from feedbax.persistence._store_metadata import (
+    ensure_store_directory,
+    sync_directory,
+    write_store_metadata,
+)
+
+from feedbax.persistence.store_damage import clear_damage, inspect_without_recording, read_damage
 
 if TYPE_CHECKING:
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -36,6 +46,10 @@ if TYPE_CHECKING:
 
 class ContentRetentionError(ValueError):
     """Retention state is invalid, ambiguous, or conflicts with an existing record."""
+
+
+_ensure_store_directory = partial(ensure_store_directory, error_factory=ContentRetentionError)
+_write_new_or_replace = partial(write_store_metadata, error_factory=ContentRetentionError)
 
 
 def _index_path(provider: ImmutableArtifactBlobProvider) -> Path:
@@ -110,66 +124,9 @@ def _read_index(provider: ImmutableArtifactBlobProvider) -> ContentRetentionInde
     return index
 
 
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _ensure_store_directory(provider: ImmutableArtifactBlobProvider, path: Path) -> None:
-    try:
-        relative = path.relative_to(provider.root)
-    except ValueError as exc:
-        raise ContentRetentionError("retention path escapes the canonical content store") from exc
-    current = provider.root
-    for part in relative.parts:
-        current = current / part
-        try:
-            current.mkdir()
-        except FileExistsError:
-            pass
-        mode = current.lstat().st_mode
-        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
-            raise ContentRetentionError(f"retention path contains an unsafe component: {current}")
-        # An earlier attempt may have created the directory but failed to sync its parent.
-        _sync_directory(current.parent)
-
-
-def _write_new_or_replace(
-    provider: ImmutableArtifactBlobProvider,
-    path: Path,
-    data: bytes,
-) -> None:
-    _ensure_store_directory(provider, path.parent)
-    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        view = memoryview(data)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise ContentRetentionError("retention record write made no progress")
-            view = view[written:]
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = None
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-
-
 def _write_index(provider: ImmutableArtifactBlobProvider, index: ContentRetentionIndex) -> None:
     _write_new_or_replace(
-        provider,
+        provider.root,
         _index_path(provider),
         canonical_json_v1_bytes(index.model_dump(mode="json")),
     )
@@ -179,12 +136,12 @@ def _write_receipt(provider: ImmutableArtifactBlobProvider, receipt: ContentGcRe
     path = _receipt_path(provider, receipt.receipt_id, receipt.stage)
     data = canonical_json_v1_bytes(receipt.model_dump(mode="json"))
     if _entry_exists(path):
-        _ensure_store_directory(provider, path.parent)
+        _ensure_store_directory(provider.root, path.parent)
         if not _is_single_regular_file(path) or path.read_bytes() != data:
             raise ContentRetentionError("GC receipt identity drifted during recovery")
-        _sync_directory(path.parent)
+        sync_directory(path.parent)
         return
-    _write_new_or_replace(provider, path, data)
+    _write_new_or_replace(provider.root, path, data)
 
 
 def _replace_record(
@@ -203,30 +160,26 @@ def _replace_record(
     return index.model_copy(update={field: tuple(records), "generation": index.generation + 1})
 
 
-def _target_digests(
+def _target_objects(
     provider: ImmutableArtifactBlobProvider,
     target: ContentRetentionTarget,
-) -> set[str]:
+) -> Iterator[ContentObjectRef]:
     if target.ref_kind == "object":
         assert target.object is not None
-        provider.verify_object(target.object)
-        return {target.object.sha256}
-    if target.ref_kind == "tree":
+        yield target.object
+    elif target.ref_kind == "tree":
         assert target.tree is not None
         tree = provider.get_tree(target.tree)
-        digests = {target.tree.descriptor.sha256}
-        for member in tree.files:
-            provider.verify_object(member.object)
-            digests.add(member.object.sha256)
-        return digests
-    assert target.manifest is not None
-    resolved = provider._resolve_manifest_ref(target.manifest.kind, target.manifest.id)
-    provider.verify_object(resolved.object)
-    if resolved != target.manifest:
-        raise ContentRetentionError(
-            f"manifest retention target identity drifted: {target.manifest.ref}"
-        )
-    return {target.manifest.object.sha256}
+        yield target.tree.descriptor
+        yield from (member.object for member in tree.files)
+    else:
+        assert target.manifest is not None
+        resolved = provider._resolve_manifest_ref(target.manifest.kind, target.manifest.id)
+        if resolved != target.manifest:
+            raise ContentRetentionError(
+                f"manifest retention target identity drifted: {target.manifest.ref}"
+            )
+        yield resolved.object
 
 
 def _validate_targets(
@@ -235,24 +188,42 @@ def _validate_targets(
 ) -> set[str]:
     digests: set[str] = set()
     for target in targets:
-        digests.update(_target_digests(provider, target))
+        for ref in _target_objects(provider, target):
+            provider.verify_object(ref)
+            digests.add(ref.sha256)
     return digests
 
 
+def _active_roots(index: ContentRetentionIndex, root_ids: tuple[str, ...]) -> tuple[ContentRootRecord, ...]:
+    if index.pending_gc is not None:
+        raise ContentRetentionError("recover the pending GC generation before verifying roots")
+    wanted = set(root_ids)
+    active = {
+        root.root_id: root for root in index.roots
+        if root.root_id in wanted and not root.released and root.domain == "canonical"
+    }
+    try:
+        return tuple(active[root_id] for root_id in root_ids)
+    except KeyError as error:
+        raise ContentRetentionError(f"active retention root is unavailable: {error.args[0]}") from error
+
+
+def read_active_roots(
+    provider: ImmutableArtifactBlobProvider, root_ids: tuple[str, ...],
+) -> tuple[ContentRootRecord, ...]:
+    """Read active retention metadata for a caller that authenticates selected data."""
+    with provider._exclusive_lock(create=False):
+        return _active_roots(_read_index(provider), root_ids)
+
+
 def require_active_root(
-    provider: ImmutableArtifactBlobProvider,
-    root_id: str,
+    provider: ImmutableArtifactBlobProvider, root_id: str,
 ) -> ContentRootRecord:
     """Verify one active canonical root and its retained objects without changing it."""
     with provider._exclusive_lock():
-        index = _read_index(provider)
-        if index.pending_gc is not None:
-            raise ContentRetentionError("recover the pending GC generation before verifying roots")
-        for root in index.roots:
-            if root.root_id == root_id and not root.released and root.domain == "canonical":
-                _validate_targets(provider, root.targets)
-                return root
-    raise ContentRetentionError(f"active retention root is unavailable: {root_id}")
+        (root,) = _active_roots(_read_index(provider), (root_id,))
+        _validate_targets(provider, root.targets)
+        return root
 
 
 def register_root(
@@ -593,7 +564,7 @@ def _release_record(provider, field: str, key: str, record_id: str, *, owner: st
         return released
 
 
-def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int], list[str]]:
+def _inventory_stats(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, os.stat_result], list[str]]:
     root = provider.root / "artifacts" / "sha256"
     try:
         root_mode = root.lstat().st_mode
@@ -601,7 +572,7 @@ def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int],
         return {}, []
     if not stat.S_ISDIR(root_mode):
         return {}, ["canonical object namespace is not one directory"]
-    objects: dict[str, int] = {}
+    objects: dict[str, os.stat_result] = {}
     errors: list[str] = []
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
@@ -616,7 +587,16 @@ def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int],
         if not expected or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
             errors.append(f"unsafe or unknown object-store entry: {relative}")
             continue
+        objects[digest] = current
+    return objects, errors
+
+
+def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int], list[str]]:
+    stats, errors = _inventory_stats(provider)
+    objects = {}
+    for digest, current in stats.items():
         try:
+            path = provider._canonical_path(digest)
             provider._verify_blob(path, sha256=digest, size_bytes=current.st_size)
         except (ArtifactBlobCustodyError, OSError) as exc:
             errors.append(f"object identity drift: {digest}: {exc}")
@@ -716,6 +696,7 @@ def _receipt(
     )
 
 
+@inspect_without_recording()
 def collect_garbage(
     provider: ImmutableArtifactBlobProvider,
     request: ContentGcRequest | None = None,
@@ -1021,9 +1002,9 @@ def launch_scheduled_lease_collection(
     elif job_path.exists():
         raise ContentRetentionError("automatic collection job path is unsafe")
     else:
-        _write_new_or_replace(provider, job_path, job_bytes)
+        _write_new_or_replace(provider.root, job_path, job_bytes)
     log_path = provider.root / "retention" / "automatic-collection.log"
-    _ensure_store_directory(provider, log_path.parent)
+    _ensure_store_directory(provider.root, log_path.parent)
     if log_path.exists() and not _is_single_regular_file(log_path):
         raise ContentRetentionError("automatic collection log path is unsafe")
     log_descriptor = os.open(
@@ -1037,13 +1018,12 @@ def launch_scheduled_lease_collection(
         raise ContentRetentionError("automatic collection log identity is unsafe")
     with os.fdopen(log_descriptor, "ab", buffering=0) as log:
         process = subprocess.Popen(
-            [
-                sys.executable,
+            same_python_argv(
                 "-m",
                 "feedbax.persistence.content_retention",
                 "--automatic-release-job",
                 str(job_path),
-            ],
+            ),
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,
@@ -1082,9 +1062,10 @@ def _recover_locked(
     )
     quarantine = _quarantine_directory(provider, pending)
     marked = pending.stage == "marked"
+    collected_observations: set[str] = set()
     try:
         if pending.decisions:
-            _ensure_store_directory(provider, quarantine)
+            _ensure_store_directory(provider.root, quarantine)
         if marked:
             _write_receipt(
                 provider,
@@ -1112,11 +1093,17 @@ def _recover_locked(
                     provider._verify_blob(
                         source, sha256=candidate.sha256, size_bytes=candidate.size_bytes
                     )
+                    observation = read_damage(provider, candidate.sha256)
+                    if observation is not None:
+                        from feedbax.persistence.artifact_custody import _file_state
+
+                        if observation.occurrence == tuple(map(str, _file_state(source.lstat()))):
+                            collected_observations.add(candidate.sha256)
                     os.replace(source, destination)
             for directory in sorted(source_directories):
-                _sync_directory(directory)
+                sync_directory(directory)
             if pending.decisions:
-                _sync_directory(quarantine)
+                sync_directory(quarantine)
             _verify_quarantine(provider, pending, quarantine)
             pending = pending.model_copy(
                 update={
@@ -1151,7 +1138,7 @@ def _recover_locked(
         for path in _verify_quarantine(provider, pending, quarantine):
             path.unlink()
         if pending.decisions:
-            _sync_directory(quarantine)
+            sync_directory(quarantine)
 
         receipt = _receipt(
             receipt_id=pending.receipt_id,
@@ -1169,6 +1156,9 @@ def _recover_locked(
             ),
         )
         _write_receipt(provider, receipt)
+        for digest in collected_observations:
+            if not _entry_exists(provider._canonical_path(digest)):
+                clear_damage(provider, digest)
         expired_lease_ids = set(pending.expired_lease_ids)
         _write_index(
             provider,

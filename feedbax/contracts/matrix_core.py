@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from copy import deepcopy
+from copy import copy, deepcopy
 import json
 import math
 from pathlib import Path
@@ -682,37 +682,83 @@ def apply_override_patch_in_place(
     error_context: Literal["override", "delta"] = "override",
 ) -> None:
     """Apply one validated patch to an owned payload, copying any inserted value."""
+    apply_value_patch_in_place(
+        root, patch.path.split("."), patch.op, patch.value, path=patch.path, error_context=error_context,
+    )
+
+
+def apply_override_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dict[str, Any]:
+    """Apply a patch to new containers along its path, sharing untouched subtrees."""
     parts = patch.path.split(".")
-    parent = _resolve_patch_parent(root, parts, path=patch.path, error_context=error_context)
-    leaf = parts[-1]
-    if patch.op == "add" and isinstance(parent, list) and _is_list_append(parent, leaf):
-        parent.append(deepcopy(patch.value))
+    result = copy(root)
+    parent = _resolve_patch_parent(
+        result, parts, path=patch.path, error_context="override", copy_path=True
+    )
+    _apply_patch_target(parent, parts[-1], patch.op, patch.value, patch.path, "override")
+    return result
+
+
+def apply_value_patch_in_place(
+    root: dict[str, Any],
+    parts: Sequence[str],
+    op: Literal["add", "replace", "remove"],
+    value: Any,
+    *,
+    path: str,
+    error_context: Literal["override", "delta"] = "override",
+) -> None:
+    """Apply the common patch semantics to an already decoded path."""
+    parent = _resolve_patch_parent(root, parts, path=path, error_context=error_context)
+    _apply_patch_target(parent, parts[-1], op, value, path, error_context)
+
+
+def ensure_value_collection(
+    root: dict[str, Any], parts: Sequence[str], empty: dict | list, *, path: str,
+) -> None:
+    parent = _resolve_patch_parent(root, parts, path=path, error_context="override")
+    key = parts[-1]
+    if not isinstance(parent, dict):
+        raise ValueError(f"collection path must name an object member: {path!r}")
+    if key not in parent:
+        parent[key] = empty
+    elif not isinstance(parent[key], dict if isinstance(empty, dict) else list):
+        raise ValueError(f"collection at {path!r} has the wrong kind")
+
+
+def _apply_patch_target(
+    parent: Any,
+    leaf: str,
+    op: Literal["add", "replace", "remove"],
+    value: Any,
+    path: str,
+    error_context: Literal["override", "delta"],
+) -> None:
+    if op == "add" and isinstance(parent, list) and _is_list_append(parent, leaf):
+        parent.append(deepcopy(value))
         return
     exists = _patch_target_exists(parent, leaf)
-    if patch.op == "add":
+    if op == "add":
         if isinstance(parent, list) and exists:
-            parent.insert(int(leaf), deepcopy(patch.value))
+            parent.insert(int(leaf), deepcopy(value))
             return
         if exists:
             if error_context == "delta":
-                raise ValueError(f"add delta path already exists: {patch.path!r}")
-            raise ValueError(f"override add patch path already exists: {patch.path!r}")
-        _set_patch_target(parent, leaf, deepcopy(patch.value), path=patch.path)
+                raise ValueError(f"add delta path already exists: {path!r}")
+            raise ValueError(f"override add patch path already exists: {path!r}")
+        _set_patch_target(parent, leaf, deepcopy(value), path=path)
         return
-    if patch.op == "replace":
+    if op == "replace":
         if not exists:
             if error_context == "delta":
-                raise ValueError(f"replace delta path is missing: {patch.path!r}")
-            raise ValueError(
-                f"override replace patch targets a missing key/index: {patch.path!r}"
-            )
-        _set_patch_target(parent, leaf, deepcopy(patch.value), path=patch.path)
+                raise ValueError(f"replace delta path is missing: {path!r}")
+            raise ValueError(f"override replace patch targets a missing key/index: {path!r}")
+        _set_patch_target(parent, leaf, deepcopy(value), path=path)
         return
     if not exists:
         if error_context == "delta":
-            raise ValueError(f"remove delta path is missing: {patch.path!r}")
-        raise ValueError(f"override remove patch targets a missing key/index: {patch.path!r}")
-    _remove_patch_target(parent, leaf, path=patch.path)
+            raise ValueError(f"remove delta path is missing: {path!r}")
+        raise ValueError(f"override remove patch targets a missing key/index: {path!r}")
+    _remove_patch_target(parent, leaf, path=path)
 
 
 def _is_list_append(parent: list[Any], leaf: str) -> bool:
@@ -721,25 +767,28 @@ def _is_list_append(parent: list[Any], leaf: str) -> bool:
 
 def _resolve_patch_parent(
     root: Any,
-    parts: list[str],
+    parts: Sequence[str],
     *,
     path: str,
     error_context: Literal["override", "delta"],
+    copy_path: bool = False,
 ) -> Any:
     if not parts:
         raise ValueError(f"patch path must be non-empty: {path!r}")
     current = root
     for part in parts[:-1]:
         if isinstance(current, dict) and part in current:
-            current = current[part]
-            continue
-        if isinstance(current, list) and part.isdigit():
-            index = int(part)
-            if 0 <= index < len(current):
-                current = current[index]
-                continue
-        prefix = "delta path" if error_context == "delta" else "patch path"
-        raise ValueError(f"{prefix} cannot traverse missing segment {part!r}: {path!r}")
+            key = part
+        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            key = int(part)
+        else:
+            prefix = "delta path" if error_context == "delta" else "patch path"
+            raise ValueError(f"{prefix} cannot traverse missing segment {part!r}: {path!r}")
+        child = current[key]
+        if copy_path and isinstance(child, (dict, list)):
+            child = copy(child)
+            current[key] = child
+        current = child
     return current
 
 

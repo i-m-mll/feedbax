@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import pickle
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -23,9 +22,10 @@ import jax.tree as jt
 import numpy as np
 from pydantic import ValidationError
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
-from feedbax.contracts.publication import CheckpointSet
+from feedbax.contracts.publication import CheckpointSet, ExactRef
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentBinding
 from feedbax.contracts.checkpoint_initialization import (
     CheckpointInitializationPlan,
@@ -38,7 +38,9 @@ from feedbax.contracts.checkpoint_initialization import (
 )
 from feedbax.contracts.checkpoints import (
     PHASE_BOUNDARY_DECISION_METADATA_KEY,
+    CheckpointContinuationRequest,
     CheckpointForkPlan,
+    CheckpointLatestPointer,
     CheckpointSegmentLineage,
     CheckpointLineageRef,
     CheckpointTransactionManifest,
@@ -89,7 +91,6 @@ from feedbax.contracts.nan_attribution import (
     SlotNonFiniteSummary,
 )
 from feedbax.contracts.training import (
-    GraphTopologySourceSpec,
     OptimizerSpec,
     ResolvedTrainingMethod,
     ScheduleProjection,
@@ -109,20 +110,19 @@ from feedbax.contracts.worker import (
     MethodTrainingDiagnosticsSpec,
     ProgressCoordinate,
 )
-from feedbax.objectives.service import LossService, ObjectiveLoweringError
-from feedbax.orchestration.events import (
+from feedbax.training.metrics import (
     MAPPED_METRIC_VALUE_SCHEMA_VERSION,
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
     STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
-    RunEventEmitter,
     normalize_serialized_metrics,
 )
-from feedbax.orchestration.schedule_eval import project_training_schedules
+from feedbax.training.schedule_eval import project_training_schedules
 from feedbax.training.checkpoint_custody import (
     CheckpointForkPlanBindings,
     CheckpointForkTransformRegistry,
     CheckpointWriteResult,
     ResumeSlotTransform,
+    _continuation_was_applied,
     authenticate_published_checkpoint_custody,
     checkpoint_fork_plan_sha256,
     fork_checkpoint_plan,
@@ -132,7 +132,7 @@ from feedbax.training.checkpoint_custody import (
     resolve_checkpoint_custody_ref,
     structural_abi_fingerprint,
     write_checkpoint_transaction,
-    materialize_concatenated_checkpoint_histories,
+    checkpoint_slot_names,
 )
 from feedbax.training.checkpoint_transform import (
     CheckpointTransformRefused,
@@ -146,6 +146,7 @@ from feedbax.training.phase_executor import (
     _StepObservation,
     _metric_nan_flags,
     _next_checkpoint_visit_ordinal,
+    CommittedUpdateCallback,
     PhaseBoundaryDecision,
     PhaseCheckpoint,
     PhaseProgramExecutor,
@@ -159,6 +160,7 @@ from feedbax.training.manifest_preflight import (
     validate_training_run_spec,
 )
 from feedbax.training.interruption import CancellationDecision
+from feedbax.training.model_checkpoint import SemanticModelWriter
 from feedbax.training.preparation import (
     ExecutionPreparationResult,
     MaterializedExecutionPreparation,
@@ -190,7 +192,6 @@ from feedbax.training.worker_validation import (
     resolve_execution_mapping,
     validate_worker_contract,
 )
-
 
 ManifestConflictPolicy = Literal["error", "reuse-identical"]
 ProgressCallback = Callable[[Mapping[str, Any]], None]
@@ -429,7 +430,7 @@ class _PreparedBarrierArtifact:
 
 @dataclass(frozen=True)
 class TrainingRunExecutionResult:
-    """Result returned by ``execute_training_run_spec``."""
+    """Result returned by ``execute_managed_training_run``."""
 
     run_id: str
     status: ManifestStatus
@@ -500,15 +501,16 @@ class StreamingCheckpointStore:
         phase_program: Any,
         parent_lineage: Sequence[CheckpointLineageRef] = (),
         segment_start_batch: int = 0,
-        segment_batch_count: int | None = None,
         segment_parent_transaction_id: str | None = None,
-        segment_parent_checkpoint_set: CheckpointSet | None = None,
+        segment_parent_ref: ExactRef | None = None,
+        continuation: CheckpointContinuationRequest | None = None,
         resolved_method: ResolvedTrainingMethod[Any],
         slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
-        run_event_emitter: RunEventEmitter | None = None,
         checkpoint_initialization: Mapping[str, Any] | None = None,
         content_provider: ArtifactBlobProvider | None = None,
+        semantic_model: SemanticModelWriter | None = None,
         resume_checkpoint: PhaseCheckpoint | None = None,
+        checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
     ) -> None:
         self.root = Path(root)
         self.artifact_root = Path(artifact_root)
@@ -516,14 +518,15 @@ class StreamingCheckpointStore:
         self.phase_program = phase_program
         self.parent_lineage = tuple(parent_lineage)
         self.segment_start_batch = segment_start_batch
-        self.segment_batch_count = segment_batch_count
         self.segment_parent_transaction_id = segment_parent_transaction_id
-        self.segment_parent_checkpoint_set = segment_parent_checkpoint_set
+        self.segment_parent_ref = segment_parent_ref
+        self.continuation = continuation
         self.resolved_method = resolved_method
         self.slot_axis_bindings = dict(slot_axis_bindings or {})
-        self.run_event_emitter = run_event_emitter
         self.checkpoint_initialization = dict(checkpoint_initialization or {})
         self.content_provider = content_provider
+        self.semantic_model = semantic_model
+        self._checkpoint_published = checkpoint_published
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
         }
@@ -563,8 +566,8 @@ class StreamingCheckpointStore:
             barrier_spec.artifact_sinks,
             run_id=saved.coordinate.run_id,
         )
-        segment_batch_count = self.segment_batch_count
-        if segment_batch_count is None and self.segment_start_batch > 0:
+        segment_batch_count = None
+        if self.segment_start_batch > 0 or self.continuation is not None:
             cumulative_completed_batches = _terminal_completed_batches(
                 program=self.phase_program,
                 final_slots=saved.slots,
@@ -573,9 +576,12 @@ class StreamingCheckpointStore:
                 slot_axis_bindings=self.slot_axis_bindings,
             )
             segment_batch_count = cumulative_completed_batches - self.segment_start_batch
-            if segment_batch_count < 0:
+            if segment_batch_count < 0 or (
+                self.continuation is not None
+                and cumulative_completed_batches > self.continuation.target_total
+            ):
                 raise TrainingRunExecutorError(
-                    "resumed checkpoint progress precedes its validated segment start: "
+                    "checkpoint progress lies outside its validated segment: "
                     f"completed_batches={cumulative_completed_batches} "
                     f"segment_start_batch={self.segment_start_batch}"
                 )
@@ -587,6 +593,11 @@ class StreamingCheckpointStore:
                 else {}
             ),
         }
+        if self.continuation is not None:
+            checkpoint_metadata["checkpoint_continuation"] = self.continuation.model_dump(
+                mode="json", exclude_none=True
+            )
+            checkpoint_metadata["checkpoint_continuation_applied"] = True
         if saved.boundary_decision is not None:
             checkpoint_metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY] = {
                 "schema_version": 1,
@@ -612,35 +623,16 @@ class StreamingCheckpointStore:
             segment_start_batch=self.segment_start_batch,
             segment_batch_count=segment_batch_count,
             segment_parent_transaction_id=self.segment_parent_transaction_id,
-            segment_parent_checkpoint_set=self.segment_parent_checkpoint_set,
+            segment_parent_ref=self.segment_parent_ref,
             history_availability={"progress": True},
             metadata=checkpoint_metadata,
             content_provider=self.content_provider,
+            semantic_model=self.semantic_model,
         )
         self._writes.append(write)
+        if self._checkpoint_published is not None:
+            self._checkpoint_published(write)
         self._visit_ordinals[saved.barrier] = ordinal
-        if self.run_event_emitter is not None:
-            coordinate_payload, checkpoint_metrics = normalize_serialized_metrics(
-                saved.coordinate,
-                saved.coordinate.metrics,
-                self.slot_axis_bindings,
-            )
-            checkpoint_payload: dict[str, Any] = {
-                "barrier": saved.barrier,
-                "barrier_visit_ordinal": saved.visit_ordinal,
-                "transaction_id": write.manifest.transaction_id,
-                "coordinate": coordinate_payload,
-                "program_step": saved.coordinate.program_step,
-            }
-            if any(
-                name in saved.coordinate.metrics and bindings and bindings[0].mode == "mapped"
-                for name, bindings in self.slot_axis_bindings.items()
-            ):
-                checkpoint_payload["metrics"] = checkpoint_metrics
-            self.run_event_emitter.emit(
-                "checkpoint_written",
-                checkpoint_payload,
-            )
         for prepared in prepared_artifacts:
             self._barrier_artifacts.append(
                 store_bytes_artifact(
@@ -663,8 +655,8 @@ class StreamingCheckpointStore:
         return saved
 
 
-def execute_training_run_spec(
-    spec: TrainingRunSpec | Mapping[str, Any],
+def execute_managed_training_run(
+    spec: TrainingRunSpec,
     *,
     run_id: str | None = None,
     preparation: ExecutionPreparationResult | MaterializedExecutionPreparation | None = None,
@@ -673,14 +665,16 @@ def execute_training_run_spec(
     manifest_root: Path | str | None = None,
     checkpoint_root: Path | str | None = None,
     checkpoint_source_root: Path | str | None = None,
+    checkpoint_source_pointer: CheckpointLatestPointer | None = None,
     checkpoint_initialization_plan: CheckpointInitializationPlan | None = None,
+    checkpoint_initialization_request: CheckpointInitializationRequest | None = None,
     checkpoint_fork_plan: CheckpointForkPlan | None = None,
     checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
     checkpoint_fork_target_id: str | None = None,
     checkpoint_content_provider: ArtifactBlobProvider | None = None,
+    semantic_model: SemanticModelWriter | None = None,
     checkpoint_source_content_binding: ContentBinding | None = None,
     registry: TrainingProgramRegistry,
-    loss_service: LossService | None = None,
     environment: WorkerExecutabilityEnvironment | None = None,
     training_spec_payload: Mapping[str, Any] | None = None,
     training_spec_payload_kind: str = "TrainingRunSpec",
@@ -690,7 +684,6 @@ def execute_training_run_spec(
     manifest_metadata_projection: TrainingManifestMetadataProjection
     | Mapping[str, Any]
     | None = None,
-    task_binding_spec: Mapping[str, Any] | None = None,
     resume: bool = False,
     resume_slot_transform: ResumeSlotTransform | None = None,
     stop_after_barrier: str | None = None,
@@ -699,41 +692,16 @@ def execute_training_run_spec(
     issues: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
     retain_history: bool = True,
-    run_event_emitter: RunEventEmitter | None = None,
     cancellation_probe: CancellationProbe | None = None,
     stop_before_update: Callable[[], bool] | None = None,
+    start_callback: Callable[[int], None] | None = None,
+    committed_update_callback: CommittedUpdateCallback | None = None,
+    checkpoint_published: Callable[[CheckpointWriteResult], None] | None = None,
+    before_finalize: Callable[[], None] | None = None,
     execution_started_at_monotonic: float | None = None,
     execution_start_semantics: str = "executor_entry",
     execution_context: NativeExecutionProducerContext | Mapping[str, Any] | None = None,
 ) -> TrainingRunExecutionResult:
-    """Validate, execute, checkpoint, and natively emit one training-run manifest.
-
-    ``progress_callback`` is called once for each generated training-progress
-    history event, in history order, as each progress coordinate is produced
-    during execution. Callback payloads have the same shape as stored history
-    events. Exceptions raised by the callback propagate to the caller.
-
-    With ``retain_history=False``, the result omits the in-memory history and
-    diagnostics (``history_events=()``, ``diagnostics=None``). The published
-    artifacts and progress callbacks are produced in either mode.
-
-    ``run_event_emitter`` optionally receives the versioned run-event protocol.
-    Emitter I/O diagnostics are contained by the emitter and do not change
-    training-loop failure behavior.
-
-    ``cancellation_probe`` is checked at progress boundaries. A ``stop``
-    decision completes the next durable checkpoint before returning a cancelled
-    manifest; ``terminate`` emits a cancelled manifest immediately.
-    ``stop_before_update`` can interrupt before any pending update, finalizing
-    the last committed state. Unsaved progress is checkpointed through the
-    committed phase's authored barrier. A stop before any new progress leaves
-    existing custody in place.
-
-    ``checkpoint_source_root`` names a read-only source for legacy resume or an
-    explicit initialization/fork plan. Plan-driven execution additionally
-    requires the source's canonical content binding and publishes every output
-    checkpoint through that immutable content provider.
-    """
     started_at = (
         time.perf_counter()
         if execution_started_at_monotonic is None
@@ -741,20 +709,15 @@ def execute_training_run_spec(
     )
     cache_before = _compilation_cache_snapshot()
     run_spec = _validate_spec(spec)
-    if run_spec.task_binding_spec is not None:
-        bound_task = run_spec.task_binding_spec.model_dump(mode="json", exclude_none=True)
-        if task_binding_spec is not None and task_binding_spec != bound_task:
-            raise TrainingRunExecutorError("task bindings disagree with the authored training spec")
-        task_binding_spec = bound_task
     mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
     loose_preparation = any(
         value is not None
-        for value in (initial_slots, kernel_context, loss_service, resume_slot_transform)
+        for value in (initial_slots, kernel_context, resume_slot_transform)
     )
     if preparation is not None and loose_preparation:
         raise TrainingRunExecutorError(
             "preparation is mutually exclusive with initial_slots, kernel_context, "
-            "loss_service, and resume_slot_transform"
+            "and resume_slot_transform"
         )
     if mapping_levels:
         if not isinstance(preparation, MaterializedExecutionPreparation):
@@ -770,7 +733,6 @@ def execute_training_run_spec(
             ) from exc
         initial_slots = _thaw_runtime_value(preparation.initial_slots)
         kernel_context = preparation.kernel_context
-        loss_service = preparation.loss_service
         resume_slot_transform = preparation.resume_slot_transform
         restored_schedule_context_binder = preparation.restored_schedule_context_binder
     elif isinstance(preparation, MaterializedExecutionPreparation):
@@ -780,7 +742,6 @@ def execute_training_run_spec(
     elif isinstance(preparation, ExecutionPreparationResult):
         initial_slots = preparation.initial_slots
         kernel_context = preparation.kernel_context
-        loss_service = preparation.loss_service
         resume_slot_transform = preparation.resume_slot_transform
         restored_schedule_context_binder = preparation.restored_schedule_context_binder
     else:
@@ -829,7 +790,6 @@ def execute_training_run_spec(
         training_spec_payload_schema_version=training_spec_payload_schema_version,
         training_spec_payload_ref=training_spec_payload_ref,
         authoritative_training_spec_payload_ref=authoritative_training_spec_ref,
-        task_binding_spec=task_binding_spec,
     )
     effective_training_spec_ref = resolve_training_spec_payload_ref(
         training_spec_payload_ref,
@@ -891,12 +851,8 @@ def execute_training_run_spec(
     method_contract = resolved_method.contract
     _validate_declarations_match_spec(run_spec, method_contract.method_ref)
 
-    graph_inline = _graph_inline(run_spec.graph)
-    lowered = _lower_objective(
-        run_spec,
-        graph_inline=graph_inline,
-        loss_service=loss_service or LossService(),
-    )
+    if preparation is None:
+        raise TrainingRunExecutorError("Managed Train requires its prepared objective.")
     kernels = dict(resolved_method.update_kernels)
     guards = dict(resolved_method.guard_predicates)
     effective_phase = validate_worker_contract(
@@ -904,8 +860,6 @@ def execute_training_run_spec(
         environment=environment,
         update_kernels=kernels,
         guard_predicates=guards,
-        task_binding_spec=task_binding_spec,
-        objective_requirements=lowered.requirements,
         active_mapping_axes=tuple(level.axis for level in mapping_levels),
     )
     if (
@@ -919,7 +873,6 @@ def execute_training_run_spec(
     executor_owned_slots = executor_owned_initial_slot_names(run_spec, slot_axis_bindings)
     slots = _initial_slots(
         initial_slots,
-        lowered_objective=lowered.loss,
         executor_owned_slots=executor_owned_slots,
     )
     slots = _normalize_batch_progress_slot(slots, program=program)
@@ -953,17 +906,18 @@ def execute_training_run_spec(
         run_id=resolved_run_id,
     )
     initialization_authorities = sum(
-        value is not None for value in (checkpoint_initialization_plan, checkpoint_fork_plan)
+        value is not None for value in (
+            checkpoint_initialization_plan, checkpoint_initialization_request, checkpoint_fork_plan
+        )
     )
     if initialization_authorities > 1:
         raise TrainingRunExecutorError(
-            "checkpoint initialization accepts either a same-graph initialization plan or "
-            "an explicit graph-changing fork plan, not both"
+            "checkpoint initialization accepts one request, initialization plan or fork plan"
         )
     if initialization_authorities and resume:
         raise TrainingRunExecutorError(
             "the checkpoint initialization authority is mutually "
-            "exclusive with the legacy resume flag"
+            "exclusive with exact checkpoint resume"
         )
     if initialization_authorities and checkpoint_source_root is None:
         raise TrainingRunExecutorError(
@@ -994,6 +948,12 @@ def execute_training_run_spec(
             "checkpoint_source_root requires resume=True; it names a read-only "
             "checkpoint source that is distinct from the checkpoint output namespace"
         )
+    if checkpoint_source_pointer is not None and (
+        checkpoint_source_root is None or not resume or initialization_authorities
+    ):
+        raise TrainingRunExecutorError(
+            "an exact checkpoint pointer requires a source root and same-request resume"
+        )
     resume_source_root = (
         Path(checkpoint_source_root).expanduser()
         if checkpoint_source_root is not None
@@ -1003,14 +963,20 @@ def execute_training_run_spec(
     if initialization_authorities:
         assert checkpoint_content_provider is not None
         assert checkpoint_source_content_binding is not None
+        initialization = checkpoint_initialization_plan or checkpoint_initialization_request
         with materialize_checkpoint_content(
             checkpoint_source_content_binding,
             checkpoint_content_provider,
             owner=f"training-executor:{resolved_run_id}",
+            scope=(
+                "model_only" if initialization is not None and initialization.mode == "initialize_from"
+                else checkpoint_fork_plan_bindings.source_scope if checkpoint_fork_plan_bindings is not None
+                else "full"
+            ),
         ) as canonical_source_root:
-            if checkpoint_initialization_plan is not None:
+            if initialization is not None:
                 resolved_initialization = _resolve_checkpoint_initialization(
-                    checkpoint_initialization_plan,
+                    initialization,
                     source_root=canonical_source_root,
                     target_slots=slots,
                     state_slots=effective_phase.state_slots,
@@ -1044,16 +1010,19 @@ def execute_training_run_spec(
                     run_spec=run_spec,
                     phase_program=program,
                     content_provider=checkpoint_content_provider,
+                    source_content_binding=checkpoint_source_content_binding,
                 )
         slots.update(resolved_initialization.slots)
 
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
-    legacy_resume_parent: ParentRef | None = None
+    resume_parent: ParentRef | None = None
+    continuation = run_spec.checkpoint_progress.continuation
+    continuation_applied = False
+    resume_completed_batches = 0
     checkpoint_lineage_start = 0
-    segment_batch_count: int | None = None
     segment_parent_transaction_id: str | None = None
-    segment_parent_checkpoint_set: CheckpointSet | None = None
+    segment_parent_ref: ExactRef | None = None
     if resolved_initialization is None and resume:
         loaded = load_latest_checkpoint(
             resume_source_root,
@@ -1061,17 +1030,14 @@ def execute_training_run_spec(
             expected_phase_program=program,
             expected_slots=slots,
             resume_slot_transform=resume_slot_transform,
-            continuation_request=run_spec.checkpoint_progress.continuation,
-            allow_new_lineage_override=(run_spec.checkpoint_progress.continuation is not None),
+            continuation_request=continuation,
+            allow_new_lineage_override=continuation is not None,
+            published_pointer=checkpoint_source_pointer,
         )
-        legacy_resume_parent = loaded.parent_ref
+        resume_parent = loaded.parent_ref
         resolved_initialization = _ResolvedCheckpointInitialization(
             mode="continue_from",
-            source=ParentRef(
-                kind="TrainingCheckpointTransactionManifest",
-                id=loaded.manifest.transaction_id,
-                role="resume_parent",
-            ),
+            source=loaded.parent_ref.model_copy(update={"role": "resume_parent"}),
             manifest=loaded.manifest,
             slots=dict(loaded.slots),
             source_root=resume_source_root,
@@ -1101,18 +1067,34 @@ def execute_training_run_spec(
             )
         )
         if resolved_initialization.mode == "continue_from":
-            continuation = run_spec.checkpoint_progress.continuation
-            checkpoint_lineage_start = _same_row_resume_start_batch(source_manifest)
-            if (
-                continuation is not None
-                and continuation.source_completed_batches != checkpoint_lineage_start
-            ):
-                raise TrainingRunExecutorError(
-                    "checkpoint continue_from source progress disagrees with the authored "
-                    "continuation policy: "
-                    f"source={checkpoint_lineage_start} "
-                    f"authored={continuation.source_completed_batches}"
-                )
+            resume_completed_batches = _same_row_resume_start_batch(source_manifest)
+            checkpoint_lineage_start = resume_completed_batches
+            if continuation is not None:
+                continuation_applied = _continuation_was_applied(source_manifest, continuation)
+                checkpoint_lineage_start = continuation.source_completed_batches
+                if continuation_applied:
+                    source_segment = source_manifest.segment_lineage
+                    if (
+                        source_segment.start_batch != checkpoint_lineage_start
+                        or resume_completed_batches > continuation.target_total
+                    ):
+                        raise TrainingRunExecutorError(
+                            "applied continuation checkpoint disagrees with the authored "
+                            "segment: "
+                            f"start={source_segment.start_batch} "
+                            f"completed={resume_completed_batches} "
+                            f"authored={checkpoint_lineage_start}..{continuation.target_total}"
+                        )
+                    # BatchHistory covers the authored segment. The separate parent_lineage
+                    # entry above records the exact snapshot used by this attempt.
+                    segment_parent_transaction_id = source_segment.parent_transaction_id
+                    segment_parent_ref = resolved_initialization.checkpoint_set.parent
+                elif checkpoint_lineage_start != resume_completed_batches:
+                    raise TrainingRunExecutorError(
+                        "checkpoint continue_from source progress disagrees with the authored "
+                        "continuation policy: "
+                        f"source={resume_completed_batches} authored={checkpoint_lineage_start}"
+                    )
             loaded_resume_checkpoint = PhaseCheckpoint(
                 barrier=source_manifest.barrier,
                 coordinate=source_manifest.completed_coordinate,
@@ -1122,12 +1104,9 @@ def execute_training_run_spec(
                     source_manifest.metadata
                 ),
             )
-            if continuation is not None:
-                segment_batch_count = continuation.additional_batches
-            if continuation is not None or checkpoint_lineage_start > 0:
+            if not continuation_applied and checkpoint_lineage_start > 0:
                 segment_parent_transaction_id = source_manifest.transaction_id
-        if segment_parent_transaction_id is not None:
-            segment_parent_checkpoint_set = resolved_initialization.checkpoint_set
+                segment_parent_ref = resolved_initialization.checkpoint_set.exact_ref
 
     checkpoint_store = StreamingCheckpointStore(
         root=custody_root,
@@ -1136,12 +1115,11 @@ def execute_training_run_spec(
         phase_program=program,
         parent_lineage=parent_lineage,
         segment_start_batch=checkpoint_lineage_start,
-        segment_batch_count=segment_batch_count,
         segment_parent_transaction_id=segment_parent_transaction_id,
-        segment_parent_checkpoint_set=segment_parent_checkpoint_set,
+        segment_parent_ref=segment_parent_ref,
+        continuation=continuation if loaded_resume_checkpoint is not None else None,
         resolved_method=resolved_method,
         slot_axis_bindings=slot_axis_bindings,
-        run_event_emitter=run_event_emitter,
         checkpoint_initialization=(
             resolved_initialization.provenance
             if resolved_initialization is not None
@@ -1152,7 +1130,9 @@ def execute_training_run_spec(
             else None
         ),
         content_provider=checkpoint_content_provider,
+        semantic_model=semantic_model,
         resume_checkpoint=loaded_resume_checkpoint,
+        checkpoint_published=checkpoint_published,
     )
     resolved_checkpoint_parents = (
         [resolved_initialization.source] if resolved_initialization is not None else []
@@ -1180,11 +1160,23 @@ def execute_training_run_spec(
         if loaded_resume_checkpoint is not None
         else slots
     )
+    total_batches = int(run_spec.training_config.n_batches or 0)
+    schedule_lineage = CheckpointSegmentLineage(
+        parent_transaction_id=segment_parent_transaction_id,
+        start_batch=checkpoint_lineage_start,
+        segment_batch_count=(
+            continuation.target_total - checkpoint_lineage_start
+            if loaded_resume_checkpoint is not None and continuation is not None
+            else total_batches
+        ),
+    )
     if loaded_resume_checkpoint is not None:
         executor_context = _bind_restored_schedule_context(
             run_spec=run_spec,
             resolved_method=resolved_method,
             slots=prepared_slots,
+            current_step=resume_completed_batches,
+            lineage=schedule_lineage,
             slot_axis_bindings=slot_axis_bindings,
             kernel_context=executor_context,
             binder=restored_schedule_context_binder,
@@ -1198,7 +1190,6 @@ def execute_training_run_spec(
     except ValueError as exc:
         raise TrainingRunExecutorError(f"kernel preparation preflight failed: {exc}") from exc
     declaration = method_contract.training_diagnostics
-    total_batches = int(run_spec.training_config.n_batches or 0)
     runtime_telemetry: dict[str, Any] = dict(executor.preparation_telemetry)
     cancellation: CancellationDecision | None = None
 
@@ -1241,10 +1232,10 @@ def execute_training_run_spec(
 
         def begin_segment(initial_batch: int) -> None:
             nonlocal segment_start_batch, method_trace, method_observation_buffer
-            if loaded_resume_checkpoint is not None and initial_batch != checkpoint_lineage_start:
+            if loaded_resume_checkpoint is not None and initial_batch != resume_completed_batches:
                 raise TrainingRunExecutorError(
                     "restored batch authority disagrees with checkpoint lineage: "
-                    f"restored={initial_batch} source={checkpoint_lineage_start}"
+                    f"restored={initial_batch} source={resume_completed_batches}"
                 )
             segment_start_batch = initial_batch
             if declaration is None:
@@ -1272,8 +1263,6 @@ def execute_training_run_spec(
         live_progress_callback = _live_progress_callback(
             progress_callback,
             record_progress,
-            run_event_emitter=run_event_emitter,
-            total_batches=total_batches,
             started_at=started_at,
             cancellation_observer=observe_cancellation,
             runtime_telemetry=runtime_telemetry,
@@ -1294,22 +1283,30 @@ def execute_training_run_spec(
             flush_method_observations(coordinate)
             live_progress_callback(coordinate)
 
+        def start_execution(initial_batch: int) -> None:
+            begin_segment(initial_batch)
+            if start_callback is not None:
+                start_callback(initial_batch)
+
         execution = executor.run(
             slots,
             run_id=resolved_run_id,
             resume_checkpoint=loaded_resume_checkpoint,
             extend_terminal_phase=(
-                loaded_resume_checkpoint is not None and segment_batch_count is not None
+                loaded_resume_checkpoint is not None
+                and continuation is not None
+                and not continuation_applied
             ),
             stop_after_barrier=stop_after_barrier,
             stop_after_next_barrier=lambda _barrier: cancellation is not None,
             context=executor_context,
-            start_callback=begin_segment,
+            start_callback=start_execution,
             progress_callback=publish_progress,
             retain_progress=False,
             method_observation_callback=(
                 record_method_observation if declaration is not None else None
             ),
+            committed_update_callback=committed_update_callback,
             step_guard=_executor_nan_guard(
                 run_spec=run_spec,
                 run_id=resolved_run_id,
@@ -1321,15 +1318,7 @@ def execute_training_run_spec(
                 resolved_method=resolved_method,
                 registry=registry,
                 slot_axis_bindings=slot_axis_bindings,
-                schedule_lineage=CheckpointSegmentLineage(
-                    parent_transaction_id=(
-                        segment_parent_transaction_id if checkpoint_lineage_start > 0 else None
-                    ),
-                    start_batch=checkpoint_lineage_start,
-                    segment_batch_count=(
-                        segment_batch_count if segment_batch_count is not None else total_batches
-                    ),
-                ),
+                schedule_lineage=schedule_lineage,
             ),
             checkpoint_interval=run_spec.checkpoint_progress.checkpoint_interval,
             progress_interval=run_spec.checkpoint_progress.progress_interval,
@@ -1340,46 +1329,13 @@ def execute_training_run_spec(
             update_budget=update_budget,
             stop_before_update=stop_before_update,
         )
+        if before_finalize is not None:
+            before_finalize()
         status = "cancelled" if execution.interrupted or cancellation is not None else "completed"
         if method_observation_buffer is not None:
             method_observation_buffer.flush()
             method_observation_buffer.assert_empty()
         checkpoint_writes = checkpoint_store.writes
-        continuation = run_spec.checkpoint_progress.continuation
-        if continuation is not None and continuation.self_contained and checkpoint_writes:
-            stitched_path = (
-                custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl"
-            )
-            if (
-                resolved_initialization is not None
-                and resolved_initialization.source_content_binding is not None
-                and resolved_initialization.content_provider is not None
-            ):
-                with materialize_checkpoint_content(
-                    resolved_initialization.source_content_binding,
-                    resolved_initialization.content_provider,
-                    owner=f"training-history:{resolved_run_id}",
-                ) as parent_root:
-                    materialize_concatenated_checkpoint_histories(
-                        custody_root,
-                        stitched_path,
-                        parent_roots={
-                            lineage.transaction_id: parent_root for lineage in parent_lineage
-                        },
-                    )
-            else:
-                parent_root = (
-                    resolved_initialization.source_root
-                    if resolved_initialization is not None
-                    else resume_source_root
-                )
-                materialize_concatenated_checkpoint_histories(
-                    custody_root,
-                    stitched_path,
-                    parent_roots={
-                        lineage.transaction_id: parent_root for lineage in parent_lineage
-                    },
-                )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         final_metrics = _final_metrics(
             execution.slots,
@@ -1406,9 +1362,9 @@ def execute_training_run_spec(
             learning_rates=None if retain_history else learning_rates.ordered_rows(),
         )
         inherited_terminal_checkpoint = (
-            InheritedTerminalCheckpoint(checkpoint=legacy_resume_parent)
-            if legacy_resume_parent is not None
-            and continuation is None
+            InheritedTerminalCheckpoint(checkpoint=resume_parent)
+            if resume_parent is not None
+            and (continuation is None or continuation_applied)
             and resume_slot_transform is None
             and execution.resumed_terminal
             and status == "completed"
@@ -1426,7 +1382,6 @@ def execute_training_run_spec(
             training_spec_payload_schema_id=training_spec_payload_schema_id,
             training_spec_payload_schema_version=training_spec_payload_schema_version,
             training_spec_payload_ref=effective_training_spec_ref,
-            task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
             checkpoint_writes=checkpoint_writes,
             checkpoint_parents=resolved_checkpoint_parents,
             checkpoint_initialization=resolved_checkpoint_initialization,
@@ -1462,81 +1417,41 @@ def execute_training_run_spec(
             conflict_policy=manifest_conflict_policy,
             path=manifest_output_path,
         )
-        if run_event_emitter is not None:
-            terminal_coordinate, _ = normalize_serialized_metrics(
-                execution.coordinate,
-                execution.coordinate.metrics,
-                slot_axis_bindings,
-            )
-            run_event_emitter.emit_terminal(
-                "complete",
-                {
-                    "run_id": resolved_run_id,
-                    "status": status,
-                    "coordinate": terminal_coordinate,
-                    "program_step": execution.coordinate.program_step,
-                    "manifest_path": str(manifest_path),
-                    "manifest_id": manifest.id,
-                    "metrics": final_metrics,
-                    "runtime_telemetry": runtime_telemetry,
-                    **(
-                        {"cancellation": cancellation.as_provenance()}
-                        if cancellation is not None
-                        else {}
-                    ),
-                },
-            )
     except _NanGuardFailure as failure:
         assert segment_start_batch is not None
-        try:
-            failed_result = _finalize_nan_guard_failure(
-                failure,
-                run_spec=run_spec,
-                run_id=resolved_run_id,
-                manifest_id=exact_manifest_id,
-                root_path=root_path,
-                collection_root=collection_root,
-                program=program,
-                checkpoint_store=checkpoint_store,
-                method_observation_buffer=method_observation_buffer,
-                progress_history=progress_history,
-                learning_rates=learning_rates,
-                scratch=scratch,
-                retain_history=retain_history,
-                slot_axis_bindings=slot_axis_bindings,
-                segment_start_batch=segment_start_batch,
-                embedded_training_spec_payload=embedded_training_spec_payload,
-                training_spec_payload_kind=training_spec_payload_kind,
-                training_spec_payload_schema_id=training_spec_payload_schema_id,
-                training_spec_payload_schema_version=training_spec_payload_schema_version,
-                effective_training_spec_ref=effective_training_spec_ref,
-                task_binding_spec=task_binding_spec,
-                issues=issues,
-                runtime_telemetry=runtime_telemetry,
-                producer_context=producer_context,
-                projection_custody=projection_custody,
-                manifest_conflict_policy=manifest_conflict_policy,
-                diagnostics_path=diagnostics_path,
-                payload_binding_status=payload_binding_status,
-                run_event_emitter=run_event_emitter,
-                checkpoint_parents=resolved_checkpoint_parents,
-                checkpoint_initialization=resolved_checkpoint_initialization,
-            )
-        except Exception as finalization_error:
-            if run_event_emitter is not None:
-                run_event_emitter.emit_terminal(
-                    "failed",
-                    {
-                        "run_id": resolved_run_id,
-                        "status": "failed",
-                        "failure_kind": "nan_guard",
-                        "stopped": True,
-                        "stop_reason": str(failure),
-                        "error": str(finalization_error),
-                        "error_type": type(finalization_error).__name__,
-                    },
-                )
-            raise
+        if before_finalize is not None:
+            before_finalize()
+        failed_result = _finalize_nan_guard_failure(
+            failure,
+            run_spec=run_spec,
+            run_id=resolved_run_id,
+            manifest_id=exact_manifest_id,
+            root_path=root_path,
+            collection_root=collection_root,
+            program=program,
+            checkpoint_store=checkpoint_store,
+            method_observation_buffer=method_observation_buffer,
+            progress_history=progress_history,
+            learning_rates=learning_rates,
+            scratch=scratch,
+            retain_history=retain_history,
+            slot_axis_bindings=slot_axis_bindings,
+            segment_start_batch=segment_start_batch,
+            embedded_training_spec_payload=embedded_training_spec_payload,
+            training_spec_payload_kind=training_spec_payload_kind,
+            training_spec_payload_schema_id=training_spec_payload_schema_id,
+            training_spec_payload_schema_version=training_spec_payload_schema_version,
+            effective_training_spec_ref=effective_training_spec_ref,
+            issues=issues,
+            runtime_telemetry=runtime_telemetry,
+            producer_context=producer_context,
+            projection_custody=projection_custody,
+            manifest_conflict_policy=manifest_conflict_policy,
+            diagnostics_path=diagnostics_path,
+            payload_binding_status=payload_binding_status,
+            checkpoint_parents=resolved_checkpoint_parents,
+            checkpoint_initialization=resolved_checkpoint_initialization,
+        )
         if failure.mode == "raise":
             raise FloatingPointError(str(failure)) from failure
         return failed_result
@@ -1578,7 +1493,6 @@ def execute_training_run_spec(
             training_spec_payload_schema_id=training_spec_payload_schema_id,
             training_spec_payload_schema_version=training_spec_payload_schema_version,
             training_spec_payload_ref=effective_training_spec_ref,
-            task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
             checkpoint_writes=checkpoint_writes,
             checkpoint_parents=resolved_checkpoint_parents,
             checkpoint_initialization=resolved_checkpoint_initialization,
@@ -1611,26 +1525,6 @@ def execute_training_run_spec(
             conflict_policy=manifest_conflict_policy,
             path=manifest_output_path,
         )
-        if run_event_emitter is not None:
-            terminal_coordinate, _ = normalize_serialized_metrics(
-                interrupted.coordinate,
-                interrupted.coordinate.metrics,
-                slot_axis_bindings,
-            )
-            run_event_emitter.emit_terminal(
-                "complete",
-                {
-                    "run_id": resolved_run_id,
-                    "status": "cancelled",
-                    "coordinate": terminal_coordinate,
-                    "program_step": interrupted.coordinate.program_step,
-                    "manifest_path": str(manifest_path),
-                    "manifest_id": manifest.id,
-                    "metrics": final_metrics,
-                    "cancellation": interrupted.decision.as_provenance(),
-                    "runtime_telemetry": runtime_telemetry,
-                },
-            )
         return TrainingRunExecutionResult(
             run_id=resolved_run_id,
             status="cancelled",
@@ -1646,18 +1540,6 @@ def execute_training_run_spec(
             history_events=progress_history.events(),
             payload_binding_status=payload_binding_status,
         )
-    except Exception as exc:
-        if run_event_emitter is not None:
-            run_event_emitter.emit_terminal(
-                "failed",
-                {
-                    "run_id": resolved_run_id,
-                    "status": "failed",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
-            )
-        raise
     finally:
         scratch_scope.close()
     return TrainingRunExecutionResult(
@@ -1699,7 +1581,6 @@ def _finalize_nan_guard_failure(
     training_spec_payload_schema_id: str | None,
     training_spec_payload_schema_version: str | None,
     effective_training_spec_ref: str | None,
-    task_binding_spec: Mapping[str, Any] | None,
     issues: Sequence[str] | None,
     runtime_telemetry: Mapping[str, Any],
     producer_context: NativeExecutionProducerContext | None,
@@ -1707,7 +1588,6 @@ def _finalize_nan_guard_failure(
     manifest_conflict_policy: ManifestConflictPolicy,
     diagnostics_path: Path,
     payload_binding_status: Literal["verified", "not_bound"],
-    run_event_emitter: RunEventEmitter | None,
     checkpoint_parents: Sequence[ParentRef],
     checkpoint_initialization: Mapping[str, Any] | None,
 ) -> TrainingRunExecutionResult:
@@ -1776,7 +1656,6 @@ def _finalize_nan_guard_failure(
         training_spec_payload_schema_id=training_spec_payload_schema_id,
         training_spec_payload_schema_version=training_spec_payload_schema_version,
         training_spec_payload_ref=effective_training_spec_ref,
-        task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
         checkpoint_writes=checkpoint_writes,
         checkpoint_parents=checkpoint_parents,
         checkpoint_initialization=checkpoint_initialization,
@@ -1834,27 +1713,6 @@ def _finalize_nan_guard_failure(
             root=root_path,
             conflict_policy="reuse-identical",
             path=fallback_path,
-        )
-    if run_event_emitter is not None:
-        run_event_emitter.emit_terminal(
-            "failed",
-            {
-                "run_id": run_id,
-                "status": "failed",
-                "failure_kind": "nan_guard",
-                "stopped": True,
-                "stop_reason": str(failure),
-                "coordinate": failure.coordinate.model_copy(update={"metrics": {}}).model_dump(
-                    mode="json", exclude_none=True
-                ),
-                "program_step": failure.coordinate.program_step,
-                "manifest_path": str(manifest_path),
-                "manifest_id": manifest.id,
-                "attribution_artifacts": [
-                    ref.model_dump(mode="json", exclude_none=True) for ref in attribution_refs
-                ],
-                "persistence_errors": list(failure.persistence_errors),
-            },
         )
     return TrainingRunExecutionResult(
         run_id=run_id,
@@ -2320,6 +2178,8 @@ def _bind_restored_schedule_context(
     run_spec: TrainingRunSpec,
     resolved_method: ResolvedTrainingMethod[Any],
     slots: Mapping[str, Any],
+    current_step: int,
+    lineage: CheckpointSegmentLineage,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
     kernel_context: Mapping[str, Any],
     binder: RestoredScheduleContextBinder | None,
@@ -2328,15 +2188,10 @@ def _bind_restored_schedule_context(
     program = resolved_method.program
     if continuation is None:
         return dict(kernel_context)
-    current_step = continuation.source_completed_batches
     projection = project_training_schedules(
         run_spec,
         coordinates=(current_step, current_step + 1, current_step + 2),
-        lineage=CheckpointSegmentLineage(
-            start_batch=current_step,
-            segment_batch_count=continuation.additional_batches or 0,
-            parent_transaction_id="restored" if current_step else None,
-        ),
+        lineage=lineage,
         resolved_method=resolved_method,
     )
     projected_context = {
@@ -2363,8 +2218,8 @@ def _bind_restored_schedule_context(
     )
     if restored_count != current_step:
         raise TrainingRunExecutorError(
-            "restored optimizer count disagrees with continuation source; "
-            f"optimizer_count={restored_count}, source_completed_batches={current_step}"
+            "restored optimizer count disagrees with checkpoint progress; "
+            f"optimizer_count={restored_count}, completed_batches={current_step}"
         )
     if binder is None:
         raise TrainingRunExecutorError(
@@ -2372,11 +2227,7 @@ def _bind_restored_schedule_context(
         )
     window = resolve_schedule_window(
         schedule.origin,
-        lineage=CheckpointSegmentLineage(
-            start_batch=current_step,
-            segment_batch_count=continuation.additional_batches or 0,
-            parent_transaction_id="restored" if current_step else None,
-        ),
+        lineage=lineage,
         duration=schedule.total_steps,
         allow_inert=schedule.allow_inert,
     )
@@ -2432,46 +2283,21 @@ def _validate_declarations_match_spec(spec: TrainingRunSpec, resolved_method_ref
         )
 
 
-def _graph_inline(graph: GraphTopologySourceSpec) -> dict[str, Any] | None:
-    return dict(graph.inline) if graph.inline is not None else None
-
-
-def _lower_objective(
-    spec: TrainingRunSpec,
-    *,
-    graph_inline: dict[str, Any] | None,
-    loss_service: LossService,
-) -> Any:
-    try:
-        from feedbax.contracts.graph import GraphSpec
-
-        graph = GraphSpec.model_validate(graph_inline) if graph_inline is not None else None
-        return loss_service.lower_objective_slot(
-            spec.objective,
-            graph=graph,
-            trial_axis="batch",
-            path="/objective",
-        )
-    except ObjectiveLoweringError as exc:
-        raise TrainingRunExecutorError(str(exc)) from exc
-
-
 def _initial_slots(
     initial_slots: Mapping[str, Any] | None,
     *,
-    lowered_objective: Any,
     executor_owned_slots: Sequence[str],
 ) -> dict[str, Any]:
     if initial_slots is None:
         raise TrainingRunExecutorError("/initial_slots are required for native execution")
     slots = dict(initial_slots)
     for slot in executor_owned_slots:
-        slots.setdefault(slot, lowered_objective)
+        slots.setdefault(slot, None)
     return slots
 
 
 def _resolve_checkpoint_initialization(
-    plan: CheckpointInitializationPlan,
+    initialization: CheckpointInitializationPlan | CheckpointInitializationRequest,
     *,
     source_root: Path,
     target_slots: Mapping[str, Any],
@@ -2479,14 +2305,19 @@ def _resolve_checkpoint_initialization(
     run_spec: TrainingRunSpec,
     phase_program: Any,
 ) -> _ResolvedCheckpointInitialization:
-    """Authenticate, revalidate, and apply one same-graph initialization plan."""
+    """Authenticate and apply a same-graph initialization request or plan."""
 
-    request = CheckpointInitializationRequest(mode=plan.mode, source=plan.source)
+    plan = initialization if isinstance(initialization, CheckpointInitializationPlan) else None
+    request = (
+        CheckpointInitializationRequest(mode=plan.mode, source=plan.source)
+        if plan is not None else initialization
+    )
     expected_profile = authenticated_manifest_ref_profile(request.source)
     assert expected_profile is not None
     expected_manifest_sha256, expected_manifest_size = expected_profile
 
-    authenticated = authenticate_published_checkpoint_custody(source_root)
+    scope = "model_only" if request.mode == "initialize_from" else "full"
+    authenticated = authenticate_published_checkpoint_custody(source_root, scope=scope)
     if authenticated.manifest.transaction_id != request.source.id:
         raise TrainingRunExecutorError(
             "checkpoint initialization source root resolves a different transaction: "
@@ -2518,8 +2349,9 @@ def _resolve_checkpoint_initialization(
     resolved = resolve_checkpoint_custody_ref(
         authenticated.parent_ref,
         allowed_root=source_root,
+        slot_names=authenticated.slot_names,
     )
-    if plan.mode == "continue_from":
+    if request.mode == "continue_from":
         continuation = run_spec.checkpoint_progress.continuation
         if continuation is None:
             raise TrainingRunExecutorError(
@@ -2543,7 +2375,10 @@ def _resolve_checkpoint_initialization(
     else:
         resolved_manifest = resolved.manifest
         resolved_slots = resolved.slots
-    declared_slots = {entry.slot: entry for entry in plan.slots}
+    declared_slots = (
+        [entry.slot for entry in plan.slots] if plan is not None
+        else list(checkpoint_slot_names(phase_program, resolved_manifest.barrier))
+    )
     missing_targets = sorted(set(declared_slots) - set(target_slots))
     if missing_targets:
         raise TrainingRunExecutorError(
@@ -2556,23 +2391,25 @@ def _resolve_checkpoint_initialization(
         phase_program=phase_program,
         names=list(declared_slots),
     )
+    source_structure = checkpoint_structure_from_manifest(resolved_manifest)
     validated_plan = lower_checkpoint_initialization(
         request,
-        source=checkpoint_structure_from_manifest(resolved_manifest),
+        source=source_structure,
         target=target_structure,
     )
-    if validated_plan != plan:
+    if plan is not None and validated_plan != plan:
         raise TrainingRunExecutorError(
             "checkpoint initialization plan disagrees with the authenticated source and "
             "prepared target structures"
         )
 
+    plan = validated_plan
     try:
         initialized = apply_semantic_checkpoint_initialization(
             plan,
-            source_structure=checkpoint_structure_from_manifest(resolved_manifest),
+            source_structure=source_structure,
             target_structure=target_structure,
-            source_values={entry.slot: resolved_slots[entry.slot] for entry in plan.slots},
+            source_values=resolved_slots,
             target_values={entry.slot: target_slots[entry.slot] for entry in plan.slots},
         )
     except CheckpointTransformRefused as exc:
@@ -2633,6 +2470,7 @@ def _resolve_checkpoint_fork_initialization(
     run_spec: TrainingRunSpec,
     phase_program: Any,
     content_provider: ArtifactBlobProvider,
+    source_content_binding: ContentBinding,
 ) -> _ResolvedCheckpointInitialization:
     """Execute one explicit graph-changing fork and prepare its continuation."""
     if len(plan.targets) != 1 or plan.targets[0].target_id != target_id:
@@ -2660,9 +2498,11 @@ def _resolve_checkpoint_fork_initialization(
         raise TrainingRunExecutorError(
             "checkpoint fork target run-spec binding disagrees with the executed run spec"
         )
-    authenticated_source = authenticate_published_checkpoint_custody(source_root)
-    source_structure = checkpoint_structure_from_manifest(authenticated_source.manifest)
-    target_names = [slot.slot for slot in source_structure.slots]
+    authenticated_source = authenticate_published_checkpoint_custody(
+        source_root, scope=bindings.source_scope,
+    )
+    manifest = authenticated_source.manifest
+    target_names = [slot.slot for slot in manifest.slots]
     if set(target_names) != set(bound_target_slots) or set(target_names) - set(target_slots):
         raise TrainingRunExecutorError(
             "checkpoint fork target template must cover exactly the source checkpoint slots"
@@ -2692,12 +2532,24 @@ def _resolve_checkpoint_fork_initialization(
         raise TrainingRunExecutorError(
             "graph-changing execution requires exactly one target_post semantic transform step"
         )
+    if isinstance(bindings.source_scope, frozenset):
+        if set(target_names) - bindings.source_scope != semantic_steps[0].target_only_slots.keys():
+            raise TrainingRunExecutorError("Checkpoint projection differs from target initialization slots")
+        manifest = manifest.model_copy(update={
+            "slots": [slot for slot in manifest.slots if slot.slot in bindings.source_scope],
+        })
+    source_structure = checkpoint_structure_from_manifest(manifest)
     try:
         semantic_runtime = bind_semantic_checkpoint_fork_step(
             semantic_steps[0],
             source_structure=source_structure,
             target_structure=target_structure,
             target_values=bound_target_slots,
+            rebuild_slots=(
+                frozenset(record.slot for record in semantic_steps[0].records)
+                & frozenset(("model", "optimizer"))
+                if target_id in bindings.semantic_model_writers else frozenset()
+            ),
         )
     except CheckpointTransformRefused as exc:
         raise TrainingRunExecutorError(str(exc)) from exc
@@ -2727,6 +2579,7 @@ def _resolve_checkpoint_fork_initialization(
         bindings,
         transform_registry=registry,
         content_provider=content_provider,
+        source_content_binding=source_content_binding,
     )
     forked = results[target_id]
     if (
@@ -2755,6 +2608,7 @@ def _resolve_checkpoint_fork_initialization(
             sha256_bytes(manifest_bytes), len(manifest_bytes)
         ),
     )
+    producer_source = authenticated_source.parent_ref.model_copy(update={"uri": None})
     return _ResolvedCheckpointInitialization(
         mode="continue_from",
         source=source,
@@ -2773,6 +2627,10 @@ def _resolve_checkpoint_fork_initialization(
             "accounting": list(transformed.accounting_records()),
             "optimizer_policy": transformed.optimizer_policy,
             "learning_rate_schedule_policy": transformed.learning_rate_schedule_policy,
+            "producer_source": producer_source.model_dump(mode="json"),
+            "producer_content_binding": source_content_binding.model_dump(mode="json"),
+            "rng_policy": parameters.get("rng_policy", "carry"),
+            "cursor_policy": "carry",
             "fork_transaction_id": forked.manifest.transaction_id,
             "content_binding": forked.content_binding.model_dump(mode="json"),
             "content_root": forked.content_root.model_dump(mode="json"),
@@ -3333,8 +3191,6 @@ def _live_progress_callback(
     progress_callback: ProgressCallback | None,
     record_history: Callable[[dict[str, Any]], None],
     *,
-    run_event_emitter: RunEventEmitter | None = None,
-    total_batches: int | None = None,
     started_at: float | None = None,
     cancellation_observer: Callable[[ProgressCoordinate], None] | None = None,
     runtime_telemetry: dict[str, Any] | None = None,
@@ -3342,11 +3198,10 @@ def _live_progress_callback(
     start_semantics: str = "executor_entry",
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> Callable[[ProgressCoordinate], None]:
-    ready_emitted = False
     first_progress_recorded = False
 
     def emit(coordinate: ProgressCoordinate) -> None:
-        nonlocal ready_emitted, first_progress_recorded
+        nonlocal first_progress_recorded
         bindings = dict(slot_axis_bindings or {})
         event = _history_event(coordinate, bindings)
         if runtime_telemetry is not None and not first_progress_recorded:
@@ -3360,78 +3215,12 @@ def _live_progress_callback(
             )
             event["runtime_telemetry"] = deepcopy(runtime_telemetry)
         record_history(event)
-        if run_event_emitter is not None:
-            if not ready_emitted:
-                ready_emitted = True
-                ready_payload: dict[str, Any] = {
-                    "run_id": coordinate.run_id,
-                    "phase": coordinate.phase,
-                    "program_step": coordinate.program_step,
-                    "coordinate": event["coordinate"],
-                    "runtime_telemetry": deepcopy(runtime_telemetry or {}),
-                }
-                if any(
-                    name in coordinate.metrics
-                    and axis_bindings
-                    and axis_bindings[0].mode == "mapped"
-                    for name, axis_bindings in bindings.items()
-                ):
-                    ready_payload["metrics"] = event["metrics"]
-                run_event_emitter.emit(
-                    "ready",
-                    ready_payload,
-                )
-            elapsed_seconds = time.perf_counter() - started_at if started_at is not None else None
-            payload = _run_progress_event_payload(
-                event,
-                coordinate=coordinate,
-                total_batches=total_batches,
-                elapsed_seconds=elapsed_seconds,
-            )
-            run_event_emitter.emit_progress(
-                payload,
-                batch=coordinate.program_step,
-                total_batches=total_batches,
-            )
         if progress_callback is not None:
             progress_callback(deepcopy(event))
         if cancellation_observer is not None:
             cancellation_observer(coordinate)
 
     return emit
-
-
-def _run_progress_event_payload(
-    event: Mapping[str, Any],
-    *,
-    coordinate: ProgressCoordinate,
-    total_batches: int | None,
-    elapsed_seconds: float | None,
-) -> dict[str, Any]:
-    metrics = event.get("metrics", {})
-    metrics = metrics if isinstance(metrics, Mapping) else {}
-    coordinate_payload = event.get("coordinate")
-    payload: dict[str, Any] = {
-        "run_id": coordinate.run_id,
-        "phase": coordinate.phase,
-        "program_step": coordinate.program_step,
-        "total_batches": total_batches,
-        "coordinate": coordinate_payload,
-        "metrics": dict(metrics),
-        "status": "running",
-    }
-    if elapsed_seconds is not None:
-        payload["elapsed_seconds"] = elapsed_seconds
-    loss = metrics.get("train_loss")
-    if loss is not None and not (
-        isinstance(loss, Mapping)
-        and loss.get("schema_id") == "feedbax.manifest.mapped_metric_value"
-    ):
-        try:
-            payload["loss"] = float(loss)
-        except (TypeError, ValueError):
-            payload["loss"] = loss
-    return payload
 
 
 def _prepare_barrier_artifacts(
@@ -3484,12 +3273,10 @@ def _barrier_artifact_bytes(
             f"/artifact_sinks/{sink.slot}/encoding: raw artifact sinks require bytes-like "
             f"slot values; found {type(value).__name__}"
         )
-    if sink.encoding == "json":
-        media_type = (
-            "application/json" if sink.media_type == "application/octet-stream" else sink.media_type
-        )
-        return canonical_json_bytes(value), media_type
-    return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), sink.media_type
+    media_type = (
+        "application/json" if sink.media_type == "application/octet-stream" else sink.media_type
+    )
+    return canonical_json_bytes(value), media_type
 
 
 def _barrier_artifact_suffix(sink: BarrierArtifactSinkSpec) -> str:
@@ -3501,8 +3288,6 @@ def _barrier_artifact_suffix(sink: BarrierArtifactSinkSpec) -> str:
             return suffix
     if sink.encoding == "json":
         return ".json"
-    if sink.encoding == "pickle":
-        return ".pkl"
     return ""
 
 
@@ -3771,7 +3556,7 @@ def _structured_replica_value(value: Mapping[str, Any], *, index: int, size: int
 
 
 def _same_row_resume_start_batch(manifest: CheckpointTransactionManifest) -> int:
-    """Return the authoritative segment origin for an operational resume."""
+    """Return the authoritative completed progress for an operational resume."""
 
     completed_batches = manifest.completed_training_batches
     if (
@@ -3990,7 +3775,6 @@ def _build_manifest(
     training_spec_payload_schema_id: str | None,
     training_spec_payload_schema_version: str | None,
     training_spec_payload_ref: str | None,
-    task_binding_spec: dict[str, Any] | None,
     checkpoint_writes: Sequence[CheckpointWriteResult],
     checkpoint_parents: Sequence[ParentRef],
     checkpoint_initialization: Mapping[str, Any] | None,
@@ -4035,7 +3819,6 @@ def _build_manifest(
         training_spec_payload_schema_id=training_spec_payload_schema_id,
         training_spec_payload_schema_version=training_spec_payload_schema_version,
         training_spec_payload_ref=training_spec_payload_ref,
-        task_binding_spec=task_binding_spec,
     )
     execution_identity = execution_context.execution if execution_context is not None else None
     row_provenance = (
@@ -4064,8 +3847,6 @@ def _build_manifest(
         completed_at=utc_now(),
         graph_spec=payloads.graph_spec,
         training_spec=payloads.training_spec,
-        task_spec=payloads.task_spec,
-        task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
         inherited_terminal_checkpoint=inherited_terminal_checkpoint,
         terminal_certification=TrainingRunCertification(
@@ -4120,7 +3901,7 @@ def _build_manifest(
         provenance=Provenance(
             entrypoint=EntrypointRef(
                 kind="feedbax-training-executor",
-                command="python -m feedbax execute-training-run-spec",
+                command="feedbax.training_host_worker:main",
             ),
             issues=list(issues or ()),
             parents=checkpoint_parents,
@@ -4186,8 +3967,7 @@ def _emit_manifest(
         return path
     if path == root / "manifests" / "training_runs" / f"{manifest.id.replace(':', '_')}.json":
         return write_manifest(manifest, root=root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload, encoding="utf-8")
+    write_bytes_atomic(path, payload.encode("utf-8"), replace=False)
     return path
 
 
@@ -4209,8 +3989,3 @@ def _preflight_manifest_emission(
         )
     if conflict_policy != "reuse-identical":
         raise ManifestEmissionConflictError(f"manifest identity already exists: {manifest.id!r}")
-
-
-def load_training_run_spec(path: Path | str) -> TrainingRunSpec:
-    """Load a TrainingRunSpec JSON file."""
-    return TrainingRunSpec.model_validate(strict_json_loads(Path(path).read_text(encoding="utf-8")))

@@ -16,19 +16,16 @@ from feedbax.contracts.checkpoints import (
     RunContractBinding,
     ScheduleStateWindowSpec,
 )
+from tests.support.managed_train_fixture import managed_train_spec
 from tests.support.training_fixtures import synthetic_training_program_registry
 from feedbax.contracts.training import (
     GovernedScheduleProjection,
-    LossTermSpec,
     LrScheduleSpec,
     MethodPayloadEnvelope,
-    ObjectiveSlotSpec,
     OptimizerSpec,
     ScheduleProjection,
     ScheduleProjectionSample,
     RunControlSpec,
-    TaskSpec,
-    TrainingConfig,
     TrainingMethodScheduleProjector,
     TrainingRunSpec,
     WorkerExecutionSpec,
@@ -39,7 +36,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_ref,
     resolve_training_run_spec,
 )
-from feedbax.orchestration.schedule_eval import (
+from feedbax.training.schedule_eval import (
     compare_continuation_schedule_projections,
     project_training_schedules,
 )
@@ -52,29 +49,12 @@ from feedbax.training.checkpoint_custody import (
 RAMP_ID = "rlrmp.applied_damage"
 
 
-def _minimal_graph() -> dict[str, object]:
-    return {
-        "nodes": {
-            "gain": {
-                "type": "Gain",
-                "params": {"gain": 1.0},
-                "input_ports": ["input"],
-                "output_ports": ["output"],
-            }
-        },
-        "wires": [],
-        "input_ports": ["input"],
-        "output_ports": ["output"],
-        "input_bindings": {"input": ("gain", "input")},
-        "output_bindings": {"output": ("gain", "output")},
-    }
-
-
 def _run_spec(
     *,
     continuation: CheckpointContinuationRequest | None = None,
     lr_schedule: LrScheduleSpec | None = None,
 ) -> TrainingRunSpec:
+    managed, _ = managed_train_spec(batches=4)
     payload = standard_supervised_method_payload().model_dump(mode="json")
     optimizer = OptimizerSpec(
         type="adamw",
@@ -82,20 +62,18 @@ def _run_spec(
         lr_schedule=lr_schedule,
     )
     payload["payload"]["optimizer"] = optimizer.model_dump(mode="json")
-    return TrainingRunSpec(
-        graph={"inline": _minimal_graph()},
-        task=TaskSpec(type="ReachingTask", params={"n_steps": 4}),
-        training_config=TrainingConfig(n_batches=4, batch_size=3),
-        objective=ObjectiveSlotSpec(
-            loss=LossTermSpec(type="target_state", label="target", selector="output")
-        ),
-        method_ref=standard_supervised_method_ref(),
-        method_payload=MethodPayloadEnvelope.model_validate(payload),
-        worker_execution=WorkerExecutionSpec(
-            method_contract=standard_supervised_method_contract(),
-            effective_phase=standard_supervised_effective_phase_spec(),
-        ),
-        checkpoint_progress={"continuation": continuation},
+    return managed.model_copy(
+        update={
+            "method_ref": standard_supervised_method_ref(),
+            "method_payload": MethodPayloadEnvelope.model_validate(payload),
+            "worker_execution": WorkerExecutionSpec(
+                method_contract=standard_supervised_method_contract(),
+                effective_phase=standard_supervised_effective_phase_spec(),
+            ),
+            "checkpoint_progress": managed.checkpoint_progress.model_copy(
+                update={"continuation": continuation}
+            ),
+        }
     )
 
 
@@ -127,7 +105,11 @@ def _with_method_schedule(
                 )
             ),
         )
-    program = evolve_training_program(resolved.program, schedule_projector=projector)
+    program = evolve_training_program(
+        resolved.program,
+        schedule_projector=projector,
+        optimizer_spec_projector=lambda payload: payload.optimizer,
+    )
     return replace(resolved, program=program)
 
 
@@ -235,6 +217,7 @@ def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> 
 
     descriptor = evolve_training_program(
         resolved.program,
+        optimizer_spec_projector=lambda payload: payload.optimizer,
         schedule_projector=TrainingMethodScheduleProjector(
             projector_id="tests.segment_local_projection",
             projector_version="v1",
@@ -423,7 +406,7 @@ def test_pre_v4_source_projection_fails_closed() -> None:
         algorithm_version="feedbax.training_checkpoint.run_contract_binding.v3"
     )
 
-    with pytest.raises(CheckpointCompatibilityError, match="algorithm v4"):
+    with pytest.raises(CheckpointCompatibilityError, match="v4"):
         authenticated_run_contract_source_projection(manifest)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from typing import Any
 
@@ -18,7 +19,6 @@ from feedbax.runtime.components import Demux, ElementwiseAffineModulator
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
-    RetainedObservableSpec,
     StudioTaskBindingSpec,
     WireSpec,
 )
@@ -48,8 +48,8 @@ from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.prototypes import output_prototypes_for_node
 from feedbax.compiler.prototypes import infer_node_input_prototypes
+from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.runtime.state import CartesianState
-from feedbax.runtime.retained_observables import lower_retention_plan
 
 
 def _components() -> ComponentRegistry:
@@ -673,10 +673,8 @@ def test_feedback_channels_materialize_point_mass_selector(selector: str) -> Non
         noise_role="sensory_feedback",
         noise_timing="pre_controller",
     )
-    spec.retained_observables = [RetainedObservableSpec(selector="port:feedback.feedback")]
     compiled = compile_graph(GraphDocument(graph=spec), _components())
     graph = compiled.graph
-    assert "port:feedback.feedback" in lower_retention_plan(compiled.resolved.graph).by_selector
 
     mechanics = graph.nodes["mechanics"]
     subgraph = graph.nodes["feedback"]
@@ -2084,6 +2082,55 @@ def test_connected_sum_and_reshape_preserve_input_prototype(use_registry: bool) 
     assert inputs[("delay", "input")].dtype == jnp.float16
     graph = spec_to_graph(spec, registry or _components(), inputs)
     assert graph.nodes["delay"].input_proto.shape == (1, 3)
+
+
+def test_parameter_resolution_reuses_declarations_across_propagation():
+    class CountingRegistry(ComponentRegistry):
+        def __init__(self):
+            self.lookups = Counter()
+            super().__init__()
+
+        def get(self, name):
+            self.lookups[name] += 1
+            return super().get(name)
+
+    registry = CountingRegistry()
+    graph = GraphSpec(
+        nodes={
+            name: ComponentSpec(
+                type="feedbax.Sum", input_ports=["a", "b", "c", "d"], output_ports=["output"],
+            )
+            for name in ("first", "second", "third")
+        },
+        wires=[
+            WireSpec(source_node=source, source_port="output", target_node=target, target_port="a")
+            for source, target in (("first", "second"), ("second", "third"))
+        ],
+        input_ports=["target"],
+        input_bindings={"target": ("first", "a")},
+        output_ports=["result"],
+        output_bindings={"result": ("third", "output")},
+    )
+    registry.lookups.clear()
+    prototype = jax.ShapeDtypeStruct((2,), jnp.float32)
+    resolved = resolve_graph_parameters(graph, {("__graph__", "target"): prototype}, registry)
+    assert resolved.graph_outputs == {"result": prototype}
+    assert registry.lookups["feedbax.Sum"] == 1
+    declarations = {"feedbax.Sum": registry.get("feedbax.Sum")}
+    assert resolve_graph_parameters(
+        graph, {("__graph__", "target"): prototype}, declarations,
+    ).graph_outputs == resolved.graph_outputs
+    conflict = {
+        ("first", "a"): prototype,
+        ("__graph__", "target"): jax.ShapeDtypeStruct((3,), jnp.float32),
+    }
+    expected = resolve_graph_parameters(graph, conflict, registry, allow_incomplete=True)
+    assert expected.errors[0].authored_path == "/graph/nodes/first"
+    assert "Graph wiring shape mismatch at first.a" in str(expected.errors[0])
+    mapped = resolve_graph_parameters(graph, conflict, declarations, allow_incomplete=True)
+    assert [(error.authored_path, str(error)) for error in mapped.errors] == [
+        (error.authored_path, str(error)) for error in expected.errors
+    ]
 
 
 @pytest.mark.parametrize("strict", [False, True])

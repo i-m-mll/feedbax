@@ -42,14 +42,16 @@ from feedbax.component_registry.declarations import ComponentParamValidationErro
 from feedbax.compiler.serialization import (
     _instantiate_graph,
 )
+from feedbax.runtime._graph import instant_execution_order
 from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID
+from feedbax.runtime._signal_schedule import SignalSchedule, needs_signal_schedule, resolve_signal_schedule
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 
 
 GRAPH_COMPILER_ID = "feedbax.graph.compiler"
-GRAPH_COMPILER_VERSION = "5"
+GRAPH_COMPILER_VERSION = "6"
 
 
 class CompilerPhase(StrEnum):
@@ -146,6 +148,9 @@ class GraphKeySchedule(BaseModel):
 
     schedule_id: Literal[KEY_SCHEDULE_ID]
     node_order: tuple[str, ...]
+    scoped_node_order: tuple[tuple[str, ...], ...] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
     @field_validator("schedule_id", mode="before")
     @classmethod
@@ -263,6 +268,22 @@ class ExecutableGraph:
     record: CompilationRecord
 
 
+@dataclass(frozen=True)
+class GraphResolution:
+    """Process-local graph semantics and construction inputs before realization."""
+
+    document: GraphDocument
+    component_registry: Any
+    authored_graph: GraphSpec
+    graph: GraphSpec
+    parameters: GraphParameterResolution
+    tap_origins: dict[tuple[str, str], str]
+    anchor: SemanticAnchor
+    schema_source_version: str
+    schema_target_version: str
+    migration_record_count: int
+
+
 def _require_compiler_version(value: str) -> str:
     if value != GRAPH_COMPILER_VERSION:
         raise ValueError(
@@ -362,6 +383,7 @@ def _source_map(
     authored_wires = [
         wire.model_dump(mode="json", exclude_none=True) for wire in authored_graph.wires
     ]
+    wire_indices = {wire.id: index for index, wire in enumerate(authored_graph.wires) if wire.id}
 
     def entry(resolved_path: str, authored_path: str, *, generated: bool) -> GraphSourceMapEntry:
         return GraphSourceMapEntry(
@@ -386,9 +408,9 @@ def _source_map(
         )
     for index, wire in enumerate(graph.wires):
         wire_payload = wire.model_dump(mode="json", exclude_none=True)
-        authored_index = (
-            authored_wires.index(wire_payload) if wire_payload in authored_wires else None
-        )
+        authored_index = wire_indices.get(wire.id) if wire.id else None
+        if authored_index is None and wire_payload in authored_wires:
+            authored_index = authored_wires.index(wire_payload)
         authored_path = (
             f"/graph/wires/{authored_index}"
             if authored_index is not None
@@ -518,13 +540,14 @@ def compile_graph(
     component_registry: Any,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
     *,
+    initialization_key: PRNGKeyArray | None = None,
     initialization_keys: Mapping[str | tuple[str, ...], PRNGKeyArray] | None = None,
     artifact_provider: ArtifactBlobProvider | None = None,
 ) -> ExecutableGraph:
     """Compile one exact graph document through resolution and realization.
 
-    Stochastic builders receive a key derived from seed zero and their
-    scoped occurrence ID. An explicit
+    Stochastic builders receive a key derived from the root initialization key
+    (seed zero by default) and their scoped occurrence ID. An explicit
     ``initialization_keys`` entry overrides derivation for one leaf. Use a node
     ID for a top-level leaf or a tuple of IDs for a nested leaf. These keys
     do not change the resolved topology.
@@ -532,6 +555,20 @@ def compile_graph(
     Supply the artifact provider for content-addressed model assets. The
     provider is construction context and stays outside the saved document.
     """
+    return realize_graph(
+        resolve_graph(document, component_registry, input_prototypes),
+        initialization_key=initialization_key,
+        initialization_keys=initialization_keys,
+        artifact_provider=artifact_provider,
+    )
+
+
+def resolve_graph(
+    document: GraphDocument,
+    component_registry: Any,
+    input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+) -> GraphResolution:
+    """Resolve the semantic graph without constructing a seeded model."""
     document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
     graph_anchor = SemanticAnchor(
         semantic_document_sha256=document_sha256,
@@ -633,28 +670,59 @@ def compile_graph(
         ),
     )
 
-    def build_schedule() -> tuple[Graph, tuple[str, ...]]:
+    return GraphResolution(
+        document, component_registry, authored_graph, graph, resolution, tap_origins, graph_anchor,
+        migration.source_version, migration.target_version, len(migration.migration_records),
+    )
+
+
+def resolve_graph_schedule(graph: GraphSpec) -> tuple[SignalSchedule | None, GraphKeySchedule]:
+    """Compute runtime and PRNG order from the resolved topology alone."""
+    scoped = resolve_signal_schedule(graph) if needs_signal_schedule(graph) else None
+    return scoped, GraphKeySchedule(
+        schedule_id=KEY_SCHEDULE_ID,
+        node_order=() if scoped is not None else instant_execution_order(graph.nodes, (
+            (wire.source_node, wire.target_node) for wire in graph.wires if wire.temporality != "recurrent"
+        )),
+        scoped_node_order=scoped.order if scoped is not None else None,
+    )
+
+
+def realize_graph(
+    resolved: GraphResolution,
+    *,
+    initialization_key: PRNGKeyArray | None = None,
+    initialization_keys: Mapping[str | tuple[str, ...], PRNGKeyArray] | None = None,
+    artifact_provider: ArtifactBlobProvider | None = None,
+) -> ExecutableGraph:
+    """Construct and schedule a model from the exact resolved graph."""
+    graph = resolved.graph
+    document_sha256 = resolved.anchor.semantic_document_sha256
+
+    def build_schedule() -> tuple[Graph, GraphKeySchedule]:
         leaf_keys = {}
         for name, key in (initialization_keys or {}).items():
             path = (name,) if isinstance(name, str) else name
             if not path or path in leaf_keys:
                 raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
             leaf_keys[path] = key
+        scoped_schedule, key_schedule = resolve_graph_schedule(graph)
         instantiated = _instantiate_graph(
             graph,
-            component_registry,
-            resolution,
-            construction_key=jr.PRNGKey(0),
+            resolved.component_registry,
+            resolved.parameters,
+            construction_key=jr.PRNGKey(0) if initialization_key is None else initialization_key,
             initialization_keys=leaf_keys,
             artifact_provider=artifact_provider,
+            scoped_schedule=scoped_schedule,
         )
         executable = apply_parameter_constraints(instantiated).prepare()
-        return executable, tuple(executable._execution_order)
+        return executable, key_schedule
 
-    executable, node_order = _compile_phase(
+    executable, key_schedule = _compile_phase(
         phase=CompilerPhase.SCHEDULING,
         code="compiler.scheduling.invalid_executable_schedule",
-        anchor=graph_anchor,
+        anchor=resolved.anchor,
         document_sha256=document_sha256,
         expected=(
             "every resolved component realizes and the graph has one deterministic "
@@ -668,10 +736,11 @@ def compile_graph(
     )
 
     def emit_resolved_ir() -> tuple[ResolvedGraph, CompilationRecord]:
-        source_map = _source_map(document, authored_graph, graph, document_sha256, tap_origins)
-        key_schedule = GraphKeySchedule(schedule_id=KEY_SCHEDULE_ID, node_order=node_order)
+        source_map = _source_map(
+            resolved.document, resolved.authored_graph, graph, document_sha256, resolved.tap_origins,
+        )
         resolved_sha256 = _resolved_digest(graph, source_map, key_schedule)
-        resolved = ResolvedGraph(
+        evidence = ResolvedGraph(
             schema_id=RESOLVED_GRAPH_SCHEMA_ID,
             schema_version=RESOLVED_GRAPH_SCHEMA_VERSION,
             graph=graph,
@@ -689,20 +758,20 @@ def compile_graph(
             resolved_sha256=resolved_sha256,
             source_map=source_map,
             key_schedule=key_schedule,
-            graph_schema_source_version=migration.source_version,
-            graph_schema_target_version=migration.target_version,
-            migration_record_count=len(migration.migration_records),
+            graph_schema_source_version=resolved.schema_source_version,
+            graph_schema_target_version=resolved.schema_target_version,
+            migration_record_count=resolved.migration_record_count,
             diagnostics=(),
         )
-        return resolved, record
+        return evidence, record
 
-    resolved, record = _compile_phase(
+    evidence, record = _compile_phase(
         phase=CompilerPhase.RESOLVED_IR_EMISSION,
         code="compiler.resolved_ir_emission.invalid_compilation_record",
-        anchor=graph_anchor,
+        anchor=resolved.anchor,
         document_sha256=document_sha256,
         expected="resolved IR, source map, key schedule, and record have canonical identities",
         action="report the compiler defect with the authored document revision",
         operation=emit_resolved_ir,
     )
-    return ExecutableGraph(graph=executable, resolved=resolved, record=record)
+    return ExecutableGraph(graph=executable, resolved=evidence, record=record)

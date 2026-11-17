@@ -337,11 +337,16 @@ def _selector_ref_to_retention_target(
     path: str,
 ) -> RetainedObservableTargetSpec:
     kind = _retention_kind_for_selector(selector.namespace, path=path)
+    edge_id = None
+    if kind in {"edge", "recurrent_carry"}:
+        edge_id = selector.target_id
+        if edge_id is not None and "->" not in edge_id:
+            edge_id = selector.compact
     return RetainedObservableTargetSpec(
         kind=kind,
         selector=selector.compact,
         node_id=selector.target_id if kind == "port" else None,
-        edge_id=selector.target_id if kind in {"edge", "recurrent_carry"} else None,
+        edge_id=edge_id,
         port=_port_from_compact(selector.compact) if kind == "port" else None,
         path=selector.path,
         metadata={

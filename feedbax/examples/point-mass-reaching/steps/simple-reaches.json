@@ -1,0 +1,42 @@
+{
+  "kind": "train",
+  "base": {
+    "inline": {
+      "method_payload": {
+        "schema_id": "feedbax.spec.training_method.studio_graph",
+        "schema_version": "feedbax.spec.training_method.studio_graph.v1",
+        "payload": {
+          "optimizer": {
+            "type": "adam",
+            "params": {
+              "learning_rate": 0.001
+            }
+          },
+          "target_total": 2,
+          "key_schedule": "independent_v1"
+        }
+      },
+      "method_ref": {
+        "package": "feedbax",
+        "name": "studio_graph",
+        "version": "v1"
+      },
+      "training_config": {
+        "n_batches": 2,
+        "batch_size": 4
+      },
+      "trial_documents": {
+        "model_name": "point-mass",
+        "model": {
+          "document": "point-mass"
+        },
+        "task": {
+          "document": "simple-reaches-task"
+        },
+        "objective": {
+          "document": "simple-reaches-objective"
+        }
+      }
+    }
+  }
+}

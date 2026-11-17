@@ -4,20 +4,10 @@ import {
   CanonicalJsonV2Error,
   canonicalJsonV2,
 } from '@/utils/canonicalJsonV2';
-import {
-  STUDIO_DRAFT_HASH_PIN,
-  STUDIO_DRAFT_HASH_SCHEMA_ID,
-  STUDIO_DRAFT_HASH_SCHEMA_VERSION,
-  admitStudioDraftHashes,
-  studioDraftDigestV2,
-  studioDraftHashes,
-} from '@/utils/studioDraftHash';
-
 interface ConformanceCase {
   case_id: string;
   input: { form: 'json'; value: unknown } | { form: 'special'; name: string };
   expected_utf8_hex?: string;
-  expected_draft_digest?: string;
   expected_error?: string;
 }
 
@@ -25,7 +15,6 @@ interface ConformanceVector {
   schema_id: string;
   schema_version: string;
   algorithm: string;
-  draft_hash: { schema_id: string; schema_version: string; pin: string };
   cases: ConformanceCase[];
 }
 
@@ -66,25 +55,17 @@ const vector = JSON.parse(
 ) as ConformanceVector;
 
 describe('canonical_json_v2 shared conformance', () => {
-  it('pins the exact shared canonical bytes, rejections, and Studio draft digests', () => {
+  it('pins the exact shared canonical bytes and rejections', () => {
     expect(vector).toMatchObject({
       schema_id: 'feedbax.conformance.canonical_json_v2',
       schema_version: 'feedbax.conformance.canonical_json_v2.v1',
       algorithm: 'canonical_json_v2',
-      draft_hash: {
-        schema_id: STUDIO_DRAFT_HASH_SCHEMA_ID,
-        schema_version: STUDIO_DRAFT_HASH_SCHEMA_VERSION,
-        pin: STUDIO_DRAFT_HASH_PIN,
-      },
     });
 
     for (const testCase of vector.cases) {
       const value = inputValue(testCase);
       if (testCase.expected_utf8_hex) {
         expect(hex(canonicalJsonV2(value)), testCase.case_id).toBe(testCase.expected_utf8_hex);
-        expect(studioDraftDigestV2(value), testCase.case_id).toBe(
-          testCase.expected_draft_digest
-        );
       } else {
         try {
           canonicalJsonV2(value);
@@ -95,33 +76,7 @@ describe('canonical_json_v2 shared conformance', () => {
             testCase.expected_error
           );
         }
-        expect(() => studioDraftDigestV2(value), testCase.case_id).toThrow(
-          CanonicalJsonV2Error
-        );
       }
     }
-  });
-
-  it('migrates legacy maps, round-trips current hashes, and rejects unknown pins', () => {
-    const legacy = admitStudioDraftHashes({ training_spec: 'fnv1a:12345678' });
-    expect(legacy).toEqual({
-      schema_id: 'feedbax.studio.draft_hashes',
-      schema_version: 'feedbax.studio.draft_hashes.v1',
-      pin: 'fnv1a32-runtime_local_json_v1',
-      rehash_required: true,
-      hashes: { training_spec: 'fnv1a:12345678' },
-    });
-    expect(admitStudioDraftHashes(JSON.parse(JSON.stringify(legacy)))).toEqual(legacy);
-
-    const current = studioDraftHashes({ training_spec: { integral: 1, zero: -0 } });
-    expect(admitStudioDraftHashes(JSON.parse(JSON.stringify(current)))).toEqual(current);
-    expect(() => admitStudioDraftHashes({ ...current, pin: 'fnv1a32-canonical_json_v999' }))
-      .toThrow('Unsupported Studio draft hash pin: fnv1a32-canonical_json_v999');
-    expect(() => admitStudioDraftHashes({
-      ...current,
-      schema_version: 'feedbax.studio.draft_hashes.v999',
-    })).toThrow(
-      'Unsupported Studio draft hash schema version: feedbax.studio.draft_hashes.v999'
-    );
   });
 });

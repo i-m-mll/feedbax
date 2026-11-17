@@ -19,11 +19,13 @@ from equinox.nn import State, StateIndex
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
+from pydantic import BaseModel, ConfigDict
 
 from feedbax.contracts.array_values import ArrayValueSpec
-from feedbax.contracts.portable import ComponentOwner
+from feedbax.contracts.portable import ComponentOptions, ComponentOwner, GraphTemplate
 from feedbax.contracts._causal_inputs import input_driver_conflicts
-from feedbax.runtime._graph import detect_cycles_and_sort
+from feedbax.contracts.model_delay import ModelDelayCarry
+from feedbax.runtime._graph import instant_execution_order
 from feedbax.runtime._graph_key_schedule import (
     derive_key,
     keyed_nodes,
@@ -32,6 +34,7 @@ from feedbax.runtime._graph_key_schedule import (
     step_keys,
 )
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
+from feedbax.runtime._signal_schedule import ScopedPort, SignalSchedule
 from feedbax.runtime.selectors import Selection, select
 
 _NESTED_CYCLE_NODE = "__nested__"
@@ -45,6 +48,18 @@ def _nested_cycle_key(node_name: str) -> tuple[str, str]:
 
 def _is_nested_cycle_key(key: tuple[str, str]) -> bool:
     return key[0] == _NESTED_CYCLE_NODE
+
+
+def _cycle_sample(wire: Wire, carry: PyTree) -> PyTree:
+    initializer = wire.recurrent_initializer or {}
+    return carry[0] if "model_delay_id" in initializer and initializer.get("steps", 1) > 1 else carry
+
+
+def _advance_cycle(wire: Wire, carry: PyTree, sample: PyTree) -> PyTree:
+    initializer = wire.recurrent_initializer or {}
+    if "model_delay_id" in initializer and initializer.get("steps", 1) > 1:
+        return jnp.concatenate((carry[1:], jnp.expand_dims(sample, 0)), axis=0)
+    return sample
 
 
 def init_state_from_component(component: "Component") -> State:
@@ -183,6 +198,10 @@ class RolloutStepContext(Module):
     node_name: str = field(static=True)
     node_inputs: dict[str, PyTree]
 
+    @property
+    def period_seconds(self) -> float | None:
+        return self.graph.period_seconds
+
 
 class RolloutStepHookResult(Module):
     """Replacement values returned by a graph rollout-step hook.
@@ -212,6 +231,7 @@ class Wire(Module):
     target_port: str
     temporality: str = field(default="instant", static=True)
     recurrent_initializer: Optional[dict] = field(default=None, static=True)
+    id: str | None = field(default=None, static=True)
 
     def __repr__(self) -> str:
         arrow = "-[recurrent]->" if self.temporality == "recurrent" else "->"
@@ -321,8 +341,18 @@ class Graph(GraphNode):
         default=None, static=True
     )
     checkpoint: bool = eqx.field(default=False, static=True)
+    step_seconds: float | None = field(default=None, static=True)
+    inherited_period: float | None = field(default=None, static=True, repr=False)
     parameter_constraints: tuple[object, ...] = field(default_factory=tuple, static=True)
     component_bindings: dict[str, ComponentBinding] = field(default_factory=dict, static=True)
+
+    @property
+    def period_seconds(self) -> float | None:
+        return self.step_seconds if self.step_seconds is not None else self.inherited_period
+
+    @property
+    def _scoped_schedule(self) -> SignalSchedule | None:
+        return None
 
     def __check_init__(
         self,
@@ -371,20 +401,12 @@ class Graph(GraphNode):
         self._validate_node_output_recurrent_initializers()
 
     @property
-    def _cycle_analysis(self) -> tuple[tuple[str, ...], tuple[Wire, ...]]:
-        return self._analyze_cycles()
-
-    @property
     def _execution_order(self) -> tuple[str, ...]:
-        return self._cycle_analysis[0]
+        return self._analyze_execution_order()
 
     @property
     def _cycle_wires(self) -> tuple[Wire, ...]:
-        return self._cycle_analysis[1]
-
-    @property
-    def _cycle_wire_set(self) -> set[Wire]:
-        return set(self._cycle_wires)
+        return tuple(wire for wire in self.wires if wire.temporality == "recurrent")
 
     @property
     def _needs_iteration(self) -> bool:
@@ -623,24 +645,10 @@ class Graph(GraphNode):
             outgoing.setdefault((wire.source_node, wire.source_port), []).append(wire)
         return outgoing
 
-    def _analyze_cycles(self) -> tuple[tuple[str, ...], tuple[Wire, ...]]:
-        adjacency = {name: set() for name in self.nodes}
-        for wire in self.wires:
-            if wire.temporality == "recurrent":
-                continue
-            adjacency[wire.source_node].add(wire.target_node)
-
-        execution_order, back_edges = detect_cycles_and_sort(adjacency)
-        if back_edges:
-            cycle_text = ", ".join(f"{src}->{tgt}" for src, tgt in back_edges)
-            raise ValueError(
-                "Instant graph wires contain a same-step cycle. "
-                f"Mark one cycle edge recurrent: {cycle_text}"
-            )
-
-        cycle_wires = [wire for wire in self.wires if wire.temporality == "recurrent"]
-
-        return tuple(execution_order), tuple(cycle_wires)
+    def _analyze_execution_order(self) -> tuple[str, ...]:
+        return instant_execution_order(self.nodes, (
+            (wire.source_node, wire.target_node) for wire in self.wires if wire.temporality != "recurrent"
+        ))
 
     def state_view(self, state: State) -> PyTree:
         return self._view_from_state_and_carry(state, {})
@@ -901,6 +909,10 @@ class Graph(GraphNode):
         trace: tuple[GraphTraceRequest, ...] = (),
     ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree], dict[str, PyTree]]:
         port_values = {} if cycle_port_values is None else dict(cycle_port_values)
+        if self._scoped_schedule is None and cycle_port_values is not None:
+            for wire in self._cycle_wires:
+                target = (wire.target_node, wire.target_port)
+                port_values[target] = _cycle_sample(wire, cycle_port_values[target])
         trial_scope_sources, initializer_upstream_nodes = (
             (set(), set()) if cycle_port_values is None else self._trial_initializer_dependencies()
         )
@@ -908,22 +920,31 @@ class Graph(GraphNode):
             if ext_port in inputs and ext_port not in trial_scope_sources:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
-        port_values, new_state = self._execute_step(
-            port_values,
-            state,
-            key=key,
-            step_inputs=inputs,
-            t=t,
-            initializer_upstream_nodes=initializer_upstream_nodes,
-            rollout_step_hook=rollout_step_hook,
-        )
+        if self._scoped_schedule is None:
+            port_values, new_state = self._execute_step(
+                port_values,
+                state,
+                key=key,
+                step_inputs=inputs,
+                t=t,
+                initializer_upstream_nodes=initializer_upstream_nodes,
+                rollout_step_hook=rollout_step_hook,
+            )
+        else:
+            if rollout_step_hook is not None:
+                raise ValueError("A composite rollout hook requires a contiguous composite schedule")
+            port_values, new_state = self._execute_scoped_step(
+                self._scoped_schedule, port_values, state, key=key,
+            )
 
         new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
         if cycle_port_values is not None:
             for wire in self._cycle_wires:
                 source_key = (wire.source_node, wire.source_port)
                 target_key = (wire.target_node, wire.target_port)
-                new_cycle_port_values[target_key] = port_values[source_key]
+                new_cycle_port_values[target_key] = _advance_cycle(
+                    wire, cycle_port_values[target_key], port_values[source_key],
+                )
             for port_key, value in port_values.items():
                 if _is_nested_cycle_key(port_key):
                     new_cycle_port_values[port_key] = value
@@ -944,6 +965,87 @@ class Graph(GraphNode):
             )
         return outputs, new_state, new_cycle_port_values, trace_values
 
+    def _execute_scoped_step(
+        self,
+        schedule: SignalSchedule,
+        root_values: dict[tuple[str, str], PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+    ) -> tuple[dict[tuple[str, str], PyTree], State]:
+        """Interleave leaves while retaining hierarchical state and carry addresses."""
+        owners = {(): self}
+        keys = {(): key}
+        for scope in schedule.order:
+            for depth in range(1, len(scope) + 1):
+                path = scope[:depth]
+                if path in keys:
+                    continue
+                keys[path] = derive_key(keys[path[:-1]], "occurrence", path[-1])
+                node = owners[path[:-1]].nodes[path[-1]]
+                if isinstance(node, Graph):
+                    owners[path] = node
+
+        previous = {(): root_values}
+        for owner in sorted(owners):
+            if owner:
+                previous[owner] = previous[owner[:-1]].get(_nested_cycle_key(owner[-1]), {})
+        values: dict[ScopedPort, PyTree] = {}
+        for name, target in schedule.inputs:
+            binding = self.input_bindings[name]
+            if binding in root_values:
+                values[target] = root_values[binding]
+
+        outgoing: dict[ScopedPort, list[ScopedPort]] = {}
+        for route in schedule.routes:
+            if route.temporality == "instant":
+                outgoing.setdefault(route.source, []).append(route.target)
+            else:
+                wire = owners[route.wire.owner].wires[route.wire.index]
+                carry = previous[route.wire.owner][wire.target_node, wire.target_port]
+                values[route.target] = _cycle_sample(wire, carry)
+
+        for scope in schedule.order:
+            node = owners[scope[:-1]].nodes[scope[-1]]
+            inputs = {
+                port: values[endpoint]
+                for port in node.input_ports if (endpoint := ScopedPort(scope, port)) in values
+            }
+            outputs, state = node(inputs, state, key=keys[scope])
+            for port, value in outputs.items():
+                endpoint = ScopedPort(scope, port)
+                values[endpoint] = value
+                for target in outgoing.get(endpoint, ()):
+                    values[target] = value
+
+        for alias, source in schedule.output_aliases:
+            if source in values:
+                values[alias] = values[source]
+        for endpoint, value in values.items():
+            if len(endpoint.node) == 1:
+                root_values[endpoint.node[0], endpoint.port] = value
+        for name, source in schedule.outputs:
+            root_values[self.output_bindings[name]] = values[source]
+
+        next_carry: dict[tuple[str, ...], dict[tuple[str, str], PyTree]] = {}
+        for route in schedule.routes:
+            wire_owner = route.wire.owner
+            wire = owners[wire_owner].wires[route.wire.index]
+            if route.temporality == "recurrent" and wire_owner:
+                target = (wire.target_node, wire.target_port)
+                next_carry.setdefault(wire_owner, {})[target] = _advance_cycle(
+                    wire, previous[wire_owner][target], values[route.source],
+                )
+            if not wire_owner and route.target in values:
+                root_values.setdefault((wire.target_node, wire.target_port), values[route.target])
+        for owner in sorted(owners, reverse=True):
+            if owner and owner in next_carry:
+                next_carry.setdefault(owner[:-1], {})[_nested_cycle_key(owner[-1])] = next_carry[owner]
+        for name in self.nodes:
+            root_values.pop(_nested_cycle_key(name), None)
+        root_values.update(next_carry.get((), {}))
+        return root_values, state
+
     def _execute_step(
         self,
         port_values: dict[tuple[str, str], PyTree],
@@ -955,8 +1057,8 @@ class Graph(GraphNode):
         initializer_upstream_nodes: set[str],
         rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
-        execution_order, cycle_wires = self._cycle_analysis
-        cycle_wire_set = set(cycle_wires)
+        execution_order = self._execution_order
+        cycle_wire_set = set(self._cycle_wires)
         outgoing_wires = self._outgoing_wires
         nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
         for port_key in tuple(port_values):
@@ -1236,6 +1338,20 @@ class Graph(GraphNode):
             if target_key in init_values:
                 continue
             initializer = wire.recurrent_initializer or {}
+            if "model_delay_id" in initializer:
+                delay = ModelDelayCarry.model_validate(initializer)
+                if delay.reset_output is None:
+                    value = jnp.full(delay.shape, delay.initial, dtype=delay.dtype)
+                else:
+                    end = delay.reset_output
+                    outputs = self.nodes[end.component].initial_outputs(node_states.get(end.component))
+                    if end.port not in outputs:
+                        raise ValueError(f"{wire} reset output {end.component}.{end.port} is unavailable")
+                    value = jnp.asarray(outputs[end.port], dtype=delay.dtype)
+                    if value.shape != delay.shape:
+                        raise ValueError(f"{wire} reset output shape {value.shape} differs from {delay.shape}")
+                init_values[target_key] = jnp.broadcast_to(value, delay.carry_shape)
+                continue
             if initializer.get("kind") == "state_output" and (
                 "source_node" in initializer or "source_port" in initializer
             ):
@@ -1529,16 +1645,31 @@ class Graph(GraphNode):
         Trial initializer inputs are passed without a time axis. Other inputs
         are time-major. Each trace entry aligns with the output of that step.
         """
-        outputs, final_state, _, traces = self._scan_rollout(
-            inputs,
-            state,
-            key=key,
-            n_steps=n_steps,
-            cycle_init=cycle_init,
-            rollout_step_hook=rollout_step_hook,
-            trace=trace,
+        outputs, final_state, traces, _ = self.rollout_with_trace_and_history(
+            inputs, state, key=key, n_steps=n_steps, trace=trace,
+            cycle_init=cycle_init, rollout_step_hook=rollout_step_hook,
         )
         return outputs, final_state, traces
+
+    def rollout_with_trace_and_history(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+        n_steps: int,
+        trace: tuple[GraphTraceRequest, ...],
+        capture_state: Callable[[State, dict | None], PyTree] | None = None,
+        cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
+    ) -> tuple[dict[str, PyTree], State, dict[str, PyTree], PyTree | None]:
+        """Capture declared reset-inclusive state in the same scan as post-step traces."""
+        outputs, final_state, history, traces = self._scan_rollout(
+            inputs, state, key=key, n_steps=n_steps, trace=trace,
+            cycle_init=cycle_init, rollout_step_hook=rollout_step_hook,
+            save_history=capture_state is not None, capture_state=capture_state,
+        )
+        return outputs, final_state, traces, history
 
     def _scan_rollout(
         self,
@@ -1554,6 +1685,7 @@ class Graph(GraphNode):
         rollout_step_hook: Optional[RolloutStepHook] = None,
         trace: tuple[GraphTraceRequest, ...] = (),
         checkpoint: bool | None = None,
+        capture_state: Callable[[State, dict | None], PyTree] | None = None,
     ) -> tuple[dict[str, PyTree], State, PyTree | None, dict[str, PyTree]]:
         trial_scope_sources = self.trial_initializer_input_names
         scan_inputs = {
@@ -1603,7 +1735,7 @@ class Graph(GraphNode):
             step_inputs_seq,
             keys,
             n_steps,
-            state_view_fn=self._rollout_state_view,
+            state_view_fn=self._rollout_state_view if capture_state is None else capture_state,
             init_step_carry=init_cycle_values,
             checkpoint=self.checkpoint if checkpoint is None else checkpoint,
             save_history=save_history,
@@ -1617,6 +1749,7 @@ class Graph(GraphNode):
     # ========== Graph Surgery API ==========
 
     def add_node(self, name: str, component: Component) -> "Graph":
+        self._check_topology_edit()
         if name in self.nodes:
             raise ValueError(f"Node '{name}' already exists")
         return eqx.tree_at(
@@ -1629,6 +1762,7 @@ class Graph(GraphNode):
         """Remove a local node, its incident wires, bindings, and parameter constraints."""
         from feedbax.runtime.parameter_constraints import normalize_parameter_constraints
 
+        self._check_topology_edit()
         if name not in self.nodes:
             raise ValueError(f"Node '{name}' does not exist")
 
@@ -1659,6 +1793,7 @@ class Graph(GraphNode):
         return graph
 
     def _with_wires(self, wires: tuple[Wire, ...]) -> "Graph":
+        self._check_topology_edit()
         graph = eqx.tree_at(lambda g: g.wires, self, wires)
         graph._validate_graph()
         return graph
@@ -1667,12 +1802,17 @@ class Graph(GraphNode):
         return self._with_wires(self.wires + (wire,))
 
     def remove_wire(self, wire: Wire) -> "Graph":
+        self._check_topology_edit()
         new_wires = tuple(w for w in self.wires if w != wire)
         return eqx.tree_at(
             lambda g: g.wires,
             self,
             new_wires,
         )
+
+    def _check_topology_edit(self) -> None:
+        if self._scoped_schedule is not None:
+            raise ValueError("Edit the authored graph and recompile its interleaved schedule")
 
     def insert_between(
         self,
@@ -1698,6 +1838,9 @@ class Graph(GraphNode):
         if old_wire is None:
             raise ValueError(f"No wire {source_node}.{source_port} -> {target_node}.{target_port}")
 
+        from feedbax.contracts.graph import derived_wire_id
+
+        recurrent = old_wire.temporality == "recurrent"
         # The new component receives the value previously delivered to the target,
         # including any recurrent delay and reset value on that connection.
         incoming = Wire(
@@ -1707,8 +1850,12 @@ class Graph(GraphNode):
             input_port,
             old_wire.temporality,
             old_wire.recurrent_initializer,
+            id=old_wire.id if recurrent else derived_wire_id(old_wire.id, node_name, "incoming"),
         )
-        outgoing = Wire(node_name, output_port, target_node, target_port)
+        outgoing = Wire(
+            node_name, output_port, target_node, target_port,
+            id=derived_wire_id(old_wire.id, node_name, "outgoing") if recurrent else old_wire.id,
+        )
         wires = tuple(wire for wire in self.wires if wire is not old_wire)
         return self.add_node(node_name, component)._with_wires((*wires, incoming, outgoing))
 
@@ -1764,8 +1911,14 @@ class Graph(GraphNode):
         return select(self).at(lambda g: g.nodes).at_instances_of(*types)
 
 
-from pydantic import BaseModel, ConfigDict
-from feedbax.contracts.portable import GraphTemplate, ComponentOptions
+class _InterleavedGraph(Graph):
+    """A causal graph whose leaf dependencies cross its composite boundaries."""
+
+    schedule: SignalSchedule = field(kw_only=True, static=True, repr=False)
+
+    @property
+    def _scoped_schedule(self) -> SignalSchedule:
+        return self.schedule
 
 
 class _SubgraphConfig(BaseModel):

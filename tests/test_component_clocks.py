@@ -12,7 +12,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.runtime.components import Constant, Pulse, Ramp, Sine
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.iteration import run_component
-from feedbax.web.worker.execution import _compile_trainability
+from feedbax.compiler.trainability import compile_trainability
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -85,7 +85,7 @@ def test_waveforms_keep_their_own_clocks_across_scanned_rollouts(x64: bool) -> N
             assert actual.type == node.type
             assert {field: actual.params[field] for field in node.params} == node.params
         graph = spec_to_graph(serialized, registry)
-        _, trainable_filter = _compile_trainability(serialized, graph, registry)
+        _, trainable_filter = compile_trainability(serialized, graph, registry)
         assert not jax.tree.leaves(eqx.filter(graph, trainable_filter))
 
         key = jax.random.key(0)

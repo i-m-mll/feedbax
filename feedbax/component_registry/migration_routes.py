@@ -90,7 +90,6 @@ def source_endpoint(
         and any(source_type == type_id for source_type, _ in routes)
     ):
         raise UnsupportedComponentMigration(
-            f"Ambiguous unversioned component parameters for {type_id!r}; "
-            "supply the original parameter schema version"
+            f"Ambiguous unversioned component parameters for {type_id!r}"
         )
     return type_id, current_revision(type_id)

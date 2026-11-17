@@ -59,16 +59,12 @@ def test_typed_compose_discovers_once_after_import(monkeypatch) -> None:
 @pytest.mark.parametrize(
     "module_name",
     (
-        "feedbax.__main__",
         "feedbax.bin.analysis",
+        "feedbax.bin.describe",
         "feedbax.bin.figure",
-        "feedbax.bin.orchestrate",
-        "feedbax.bin.provider",
         "feedbax.bin.run",
-        "feedbax.bin.studio_pipeline",
         "feedbax.web.api.components",
         "feedbax.web.app",
-        "feedbax.web.worker.app",
     ),
 )
 def test_public_composition_roots_use_the_shared_composer(module_name: str) -> None:

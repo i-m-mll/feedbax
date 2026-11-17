@@ -1,5 +1,7 @@
 """Analysis-owned data containers and spec enums."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from enum import Enum
 from typing import Any, NamedTuple, Optional
@@ -10,7 +12,6 @@ from feedbax._vendor.jax_cookbook import LDict
 from jaxtyping import Array, ArrayLike, PyTree
 
 from feedbax.config.namespace import TreeNamespace
-from feedbax.tasks import AbstractTask
 
 
 class AnalysisInputData(Module):
@@ -32,7 +33,7 @@ class VarSpec(eqx.Module):
     labels: Labels
     time_axis: int = -2
     vec_axis: int = -1
-    origin: Optional[ArrayLike | Callable[[AbstractTask], ArrayLike]] = None
+    origin: Optional[ArrayLike | Callable[[Module], ArrayLike]] = None
 
 
 class Polar(NamedTuple):

@@ -14,10 +14,31 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
-from seal import APP_NAME, LAUNCHER, json_bytes, sha256, verify
+from seal import APP_NAME, BACKGROUND_APP, LAUNCHER, allow_owner_write, json_bytes, sha256, verify
 
 JOURNAL_SCHEMA = "feedbax.desktop.install.v1"
 STAGE_PREFIX = ".feedbax-replace-"
+LSREGISTER = (
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+    "LaunchServices.framework/Support/lsregister"
+)
+
+
+def _launch_services(app: Path, *, register: bool) -> None:
+    if register:
+        subprocess.run([LSREGISTER, "-f", str(app)], check=True, timeout=10)
+        return
+
+    helper = app / "Contents" / BACKGROUND_APP
+    for path in ((helper, app) if helper.is_dir() else (app,)):
+        result = subprocess.run(
+            [LSREGISTER, "-u", str(path)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=10,
+        )
+        # A staged or moved bundle may have no entry for this exact path.
+        absent = f"failed to scan {path}: -10814" in result.stdout.splitlines()
+        if not (result.returncode == 1 and absent):
+            result.check_returncode()
 
 
 def _service(app: Path, *args: str, lock: int | None = None) -> dict:
@@ -89,17 +110,31 @@ def _stage_archive(archive: Path, expected: dict, directory: Path) -> Path:
 
 def _stop(app: Path, disposition: str, lock: int) -> dict | None:
     status = _service(app, "health")["status"]
-    if status == "ready":
-        outcome = _service(app, "stop", disposition, lock=lock)
-        if outcome["status"] != "ready_to_stop":
-            return outcome
-    elif status != "unavailable":
+    if status not in ("ready", "unavailable"):
         raise RuntimeError(f"cannot establish safe Studio stop: {status}")
-    _service(app, "unregister", lock=lock)
-    return None
+    outcome = _service(app, "stop", disposition, lock=lock)
+    if outcome["status"] == "ready_to_stop":
+        _require_no_bundle_host(app)
+        _service(app, "unregister", lock=lock)
+        return None
+    return outcome
+
+
+def _require_no_bundle_host(app: Path) -> None:
+    manifest = json.loads((app / "Contents" / "Resources" / "release.json").read_bytes())
+    python = (app / "Contents" / manifest["resources"]["python"]).resolve(strict=True)
+    rows = subprocess.check_output(
+        ["/bin/ps", "-axww", "-o", "command="], text=True, timeout=5,
+    )
+    for command in rows.splitlines():
+        interpreter, separator, _ = command.partition(" -m feedbax.host --root ")
+        interpreter = interpreter.removesuffix(" -I").removesuffix(" -B")
+        if separator and Path(interpreter).resolve() == python:
+            raise RuntimeError("The retiring Studio release still owns a Host. Stop that Host before continuing.")
 
 
 def _activate(app: Path, receipt: dict, lock: int) -> dict:
+    _launch_services(app, register=True)
     registration = _service(app, "register", lock=lock)["status"]
     if registration != "enabled":
         raise RuntimeError(f"Studio background service activation returned {registration}")
@@ -119,7 +154,8 @@ def _require_closed_gui(app: Path) -> None:
     processes = subprocess.check_output(
         ["/bin/ps", "-axww", "-o", "command="], text=True, timeout=5,
     )
-    if executable in processes.splitlines():
+    gui_commands = {executable, f"{executable} --activity", f"{executable} --open-documents"}
+    if gui_commands.intersection(processes.splitlines()):
         raise RuntimeError("Quit the installed Studio GUI before replacing or removing it")
 
 
@@ -140,11 +176,23 @@ def _transaction_paths(document: dict, destination: Path) -> tuple[Path, Path, P
     return stage, stage / APP_NAME, stage / "previous.app"
 
 
+def _discard_stage(stage: Path) -> None:
+    # A bundled venue snapshot is read-only. Unlinking its files requires write
+    # permission on their parent directories, including during recovery.
+    for directory, _, _ in os.walk(stage, followlinks=False):
+        allow_owner_write(Path(directory))
+    shutil.rmtree(stage)
+
+
 def _finish(journal: Path, document: dict, destination: Path) -> None:
-    stage, _, _ = _transaction_paths(document, destination)
+    stage, candidate, previous = _transaction_paths(document, destination)
+    if stage.exists():
+        for bundle in (candidate, previous):
+            if bundle.exists():
+                _launch_services(bundle, register=False)
     _record(journal, document | {"phase": "complete"})
     if stage.exists():
-        shutil.rmtree(stage)
+        _discard_stage(stage)
         _sync(stage.parent)
     journal.unlink()
     _sync(journal.parent)
@@ -164,11 +212,13 @@ def _replace(journal: Path, document: dict, destination: Path, lock: int, *, pre
             blocked = _stop(destination, document["disposition"], lock)
             if blocked is not None:
                 return blocked
+            _launch_services(destination, register=False)
             destination.rename(previous)
             _sync(destination.parent)
             _sync(previous.parent)
         if not prepared and (verify(candidate) != new or (old is not None and verify(previous) != old)):
             raise RuntimeError("staged or rollback bytes changed during installation")
+        _launch_services(candidate, register=False)
         candidate.rename(destination)
         _sync(candidate.parent)
         _sync(destination.parent)
@@ -207,7 +257,9 @@ def install(archive: Path, receipt_path: Path, destination: Path, disposition: s
             return outcome
     finally:
         if not recorded and stage.exists():
-            shutil.rmtree(stage)
+            if (candidate := stage / APP_NAME).exists():
+                _launch_services(candidate, register=False)
+            _discard_stage(stage)
 
 
 def recover(control: Path, destination: Path, rollback: bool) -> dict:
@@ -218,6 +270,10 @@ def recover(control: Path, destination: Path, rollback: bool) -> dict:
         if document["phase"] == "complete":
             _finish(journal, document, destination)
             return {"status": "cleanup_complete"}
+        if document["phase"] == "uninstall":
+            if rollback:
+                raise ValueError("Recover the interrupted uninstall without --rollback.")
+            return _remove_installation(journal, document, destination)
         if not rollback:
             return _replace(journal, document, destination, lock)
         old, new = document["old"], document["new"]
@@ -229,12 +285,14 @@ def recover(control: Path, destination: Path, rollback: bool) -> dict:
             blocked = _stop(destination, document["disposition"], lock)
             if blocked is not None:
                 return blocked
+            _launch_services(destination, register=False)
             destination.rename(candidate)
             _sync(destination.parent)
             _sync(stage)
         if old is not None and installed != old:
             if verify(previous) != old:
                 raise RuntimeError("rollback release does not match the journal")
+            _launch_services(previous, register=False)
             previous.rename(destination)
             _sync(destination.parent)
             _sync(stage)
@@ -244,7 +302,7 @@ def recover(control: Path, destination: Path, rollback: bool) -> dict:
 
 
 def uninstall(destination: Path, disposition: str) -> dict:
-    verify(destination)
+    release = verify(destination)
     control = Path(_service(destination, "paths")["control"])
     with _installation(control) as lock:
         if (control / "installation.json").exists():
@@ -253,10 +311,33 @@ def uninstall(destination: Path, disposition: str) -> dict:
         blocked = _stop(destination, disposition, lock)
         if blocked is not None:
             return blocked
-        with tempfile.TemporaryDirectory(prefix=STAGE_PREFIX, dir=destination.parent) as stage:
-            destination.rename(Path(stage) / APP_NAME)
-            _sync(destination.parent)
-        return {"status": "uninstalled", "data": "preserved"}
+        stage = Path(tempfile.mkdtemp(prefix=STAGE_PREFIX, dir=destination.parent))
+        document = {
+            "schema": JOURNAL_SCHEMA, "phase": "uninstall", "destination": str(destination),
+            "stage": str(stage), "old": release, "new": None, "disposition": disposition,
+        }
+        try:
+            _record(control / "installation.json", document)
+        except OSError:
+            if not (control / "installation.json").exists():
+                stage.rmdir()
+            raise
+        return _remove_installation(control / "installation.json", document, destination)
+
+
+def _remove_installation(journal: Path, document: dict, destination: Path) -> dict:
+    stage, candidate, _ = _transaction_paths(document, destination)
+    if destination.exists():
+        if candidate.exists() or verify(destination) != document["old"]:
+            raise RuntimeError("uninstall journal does not match the installed release")
+        _launch_services(destination, register=False)
+        destination.rename(candidate)
+        _sync(destination.parent)
+        _sync(stage)
+    elif candidate.exists() and verify(candidate) != document["old"]:
+        raise RuntimeError("staged uninstall bytes changed")
+    _finish(journal, document, destination)
+    return {"status": "uninstalled", "data": "preserved"}
 
 
 def main() -> None:

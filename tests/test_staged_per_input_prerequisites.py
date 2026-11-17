@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from tests.support.store_damage import writable_store_object
 
 from feedbax.analysis import (
     AnalysisBundleSpec,
@@ -233,10 +234,12 @@ def test_provider_backed_prerequisite_round_trips_through_provider_authority(
     digest = refs[0].metadata["manifest_sha256"]
     blob_path = provider_root / "artifacts" / "sha256" / digest[:2] / digest
     original_bytes = blob_path.read_bytes()
-    blob_path.write_bytes(b"x" * len(original_bytes))
+    with writable_store_object(blob_path):
+        blob_path.write_bytes(b"x" * len(original_bytes))
     with pytest.raises(ValueError, match="sha256 mismatch"):
         contexts[0].resolve_manifest_input(refs[0])
-    blob_path.write_bytes(original_bytes)
+    with writable_store_object(blob_path):
+        blob_path.write_bytes(original_bytes)
     original_get_bytes = type(provider).get_bytes
     original_root = provider_root.with_name("provider-original")
 
