@@ -8,6 +8,7 @@ import { setAppearance } from '@/appearance/appearance';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
+import { CommandBar, type BarCommand } from '@/components/ui/CommandBar';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Chip } from '@/components/ui/Chip';
 import { Combobox } from '@/components/ui/Combobox';
@@ -218,6 +219,24 @@ function State({ name, children }: { name: string; children: ReactNode }) {
   );
 }
 
+function CommandBarDemo() {
+  const [last, setLast] = useState('');
+  const command = (id: string, title: string, glyph?: BarCommand['glyph'], enabled = true): BarCommand =>
+    ({ id, title, label: title, glyph, enabled, invoke: () => setLast(title) });
+  const commands = [
+    command('run', 'Run'), command('stop', 'Stop', undefined, false), command('open', 'Open Run'),
+    command('add', 'Add', Plus), command('pivot', 'Pivot'),
+  ];
+  return (
+    <div className="space-y-2">
+      <div className="w-[min(100%,24rem)] resize-x overflow-hidden rounded-surface border border-shell-divider p-1">
+        <CommandBar commands={commands} moreLabel="More" aria-label="Commands" />
+      </div>
+      <div className="text-sm text-shell-muted">{last}</div>
+    </div>
+  );
+}
+
 export function Gallery() {
   useLayoutEffect(() => installTooltips(), []);
   const theme = useRootAttribute<Theme>('data-theme');
@@ -418,13 +437,17 @@ export function Gallery() {
           <ScrollFadeDemo />
         </Group>
 
+        <Group name="CommandBar">
+          <CommandBarDemo />
+        </Group>
+
         <Group name="Card">
           <CardDemo />
         </Group>
 
         <Group name="InlineEdit">
           <State name={editingTitle ? 'editing' : 'closed'}>
-            <div className="flex h-row w-48 items-center rounded-row px-1 hover:bg-shell-hover" tabIndex={0}
+            <div className="flex h-row w-48 items-center rounded-row px-1 hover:bg-shell-row-hover" tabIndex={0}
               onKeyDown={(event) => { if (event.key === 'Enter') setEditingTitle(true); }}
               onDoubleClick={() => setEditingTitle(true)}>
               <InlineEdit aria-label="Name" value={title} editing={editingTitle} onEditingChange={setEditingTitle} onCommit={setTitle} />

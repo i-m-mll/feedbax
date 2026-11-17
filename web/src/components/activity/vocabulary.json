@@ -125,6 +125,7 @@
     "per": "Per",
     "pipelineMap": "Pipeline Map",
     "pivot": "Pivot",
+    "more": "More",
     "play": "Play",
     "playbackPosition": "Playback Position",
     "playbackSpeed": "Playback Speed",
@@ -413,6 +414,10 @@
       "source": "Source changed", "computation": "Results differ", "unverifiable": "Can't be checked",
       "pending": "Not yet checked", "confirmed": "Same results", "different": "Different results", "not_checked": "Not checked"
     },
+    "environmentChange": {
+      "arguments": "Starting arguments differ", "rejected_update": "An update was rejected",
+      "output_shape_or_dtype": "Output shapes differ", "numerical_drift": "Outputs drifted", "nonfinite_outputs": "Outputs not finite"
+    },
     "power": { "starting": "Starting", "on": "On", "off": "Off" },
     "openingStep": {
       "acquiring": "Waiting for a machine",
@@ -471,6 +476,12 @@
     "takesInteger": "{value} takes a whole number"
   },
   "format": {
+    "validityDriver": "{driver} revision {previous} → {present}",
+    "validityArguments": "Arguments of {slots}",
+    "validityProgram": "Program of {slots}",
+    "validitySteps": "Updates {previous} → {present}",
+    "validityLossDrift": "Loss drift {value}",
+    "validityParameterDrift": "Parameter drift {value}",
     "bestSubset": "{order} {metric} · {count}",
     "subsetPer": "Per {axes}",
     "fieldSource": "{kind} · {name}",

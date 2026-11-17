@@ -19,7 +19,7 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.computation_validity import (
     REFERENCE_PLATFORM, ArgumentIdentity, ArgumentSignature, ComputationDifferent, ComputationStart,
-    ComputationTrace, ComputationUnconfirmable, DriverIdentity, PrefixChanged, PrefixConfirmed, ProgramIdentity,
+    ComputationTrace, ComputationUnconfirmable, DriverChanged, DriverIdentity, PrefixChanged, PrefixConfirmed, ProgramIdentity,
     TrainPrefix,
 )
 from feedbax.contracts.effective_success import RequestObject
@@ -264,8 +264,7 @@ def _check_code(
 
     if previous.driver != present.driver:
         return CheckOutcome(
-            outcome="different",
-            detail=f"{previous.driver.name} driver revision {previous.driver.revision} → {present.driver.revision}",
+            outcome="different", changes=(DriverChanged(previous=previous.driver, present=present.driver),),
         )
     program_platforms = {program.execution.platform for program in previous.programs}
     if len(program_platforms) != 1:
@@ -293,7 +292,7 @@ def _check_code(
     if isinstance(comparison, ComputationUnconfirmable):
         return CheckOutcome(outcome="unavailable", detail=comparison.reason)
     if isinstance(comparison, ComputationDifferent):
-        return CheckOutcome(outcome="different", detail=comparison.model_dump_json())
+        return CheckOutcome(outcome="different", changes=comparison.changes)
     return CheckOutcome(outcome="equal")
 
 
@@ -304,7 +303,7 @@ def _check_environment(
     from feedbax.contracts.receipt_validity import CheckOutcome
 
     if present.starts[0].arguments != previous.starts[0].arguments:
-        return CheckOutcome(outcome="different", detail="The exact starting arguments changed")
+        return CheckOutcome(outcome="different", change="arguments")
     if not isinstance(previous.prefix, TrainPrefix) or len(previous.prefix.losses) != 5:
         return CheckOutcome(outcome="unavailable", detail="The qualified five-update Train witness is unavailable")
 
@@ -326,16 +325,15 @@ def _check_environment(
         end=prepared.schedule.prefix_end,
     )
     if evaluated.rejected:
-        return CheckOutcome(outcome="different", detail="The repeated Train prefix rejected a numerical update")
+        return CheckOutcome(outcome="different", change="rejected_update")
     present = present.model_copy(update={"prefix": witness.retain(keep)})
     measured = compare_environment_prefix(
         previous, present, read_blob=lambda ref: outputs[ref.sha256] if ref.sha256 in outputs else store.get_object(ref),
     )
     if isinstance(measured, PrefixConfirmed):
-        return CheckOutcome(outcome="equal", detail=measured.drift.model_dump_json())
+        return CheckOutcome(outcome="equal", drift=measured.drift)
     if isinstance(measured, PrefixChanged):
-        error = measured.reason if measured.drift is None else f"{measured.reason}: {measured.drift.model_dump_json()}"
-        return CheckOutcome(outcome="different", detail=error)
+        return CheckOutcome(outcome="different", change=measured.reason, drift=measured.drift)
     return CheckOutcome(outcome="unavailable", detail=measured.reason)
 
 

@@ -47,7 +47,7 @@ export function Section({
           aria-controls={body}
           onClick={toggle}
           className={clsx(
-            'flex h-full min-w-0 flex-1 cursor-default select-none items-center gap-1 rounded-row px-1 text-left hover:bg-shell-row',
+            'flex h-full min-w-0 flex-1 cursor-default select-none items-center gap-1 rounded-row px-1 text-left hover:bg-shell-row-hover',
             focusRing,
           )}
         >

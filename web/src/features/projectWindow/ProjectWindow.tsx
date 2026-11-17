@@ -1,6 +1,6 @@
 import {
-  ArrowLeft, ArrowRight, BarChart3, Columns2, Command, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Settings2, Target, Workflow, X,
+  BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
+  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
@@ -13,6 +13,7 @@ import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
 import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { Button, IconButton } from '@/components/ui/Button';
+import { CommandBar } from '@/components/ui/CommandBar';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
@@ -89,9 +90,9 @@ const slots = ['primary', 'secondary'] as const;
 const regionOrder = ['top', 'map', 'steps', 'rail', 'drawer', ...slots, 'inspector', 'bottom'] as const;
 type WindowRegion = typeof regionOrder[number];
 
-function WindowButton({ command, icon: Icon, pressed, controls, tab, placement = tab ? 'right' : 'bottom' }: {
+function WindowButton({ command, icon: Icon = command.glyph!, pressed, controls, tab, placement = tab ? 'right' : 'bottom' }: {
   command: StudioCommand;
-  icon: LucideIcon;
+  icon?: LucideIcon;
   pressed?: boolean;
   controls?: string;
   tab?: { id: string; tabbable: boolean };
@@ -367,9 +368,11 @@ export function ProjectWindow({
               value: target, label: command.label, icon: <Icon aria-hidden="true" />, disabled: !command.enabled,
               attributes: commandAttributes(command),
             }))} />
-          <WindowButton command={back} icon={ArrowLeft} />
-          <WindowButton command={forward} icon={ArrowRight} />
-          <WindowButton command={steps} icon={PanelLeft} pressed={mapDrawerVisible} controls={ids.mapDrawer} />
+          <CommandBar commands={[steps, back, forward]} moreLabel={studioName('more')} itemClassName="studio-window-control"
+            itemProps={(command) => ({
+              ...commandAttributes(command),
+              ...(command === steps ? { 'aria-pressed': mapDrawerVisible, 'aria-controls': ids.mapDrawer } : {}),
+            })} />
         </div>
         <div className="shell-frame__cell studio-window-bar__project" data-separated="">
           <h1 className="min-w-0 truncate text-sm font-semibold">{projectName}</h1>
@@ -377,7 +380,7 @@ export function ProjectWindow({
           {variant}
         </div>
         <div className="studio-window-bar__commands">
-          <WindowButton command={palette} icon={Command} />
+          <WindowButton command={palette} />
           {paletteScope && <StudioCommandPalette
             commands={paletteScope === 'activity' ? paletteCommands.filter((command) => !command.selectionScoped) : paletteCommands}
             close={() => setPaletteScope(null)} />}
@@ -523,7 +526,7 @@ export function ProjectWindow({
       <footer className="shell-frame__footer studio-window-bottom" data-studio-focus-region="bottom" tabIndex={-1}>
         <StudioRegionBoundary name="bottomBar">
           <div className="studio-window-bottom__left">
-            <WindowButton command={drawer} icon={PanelLeft} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
+            <WindowButton command={drawer} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
           </div>
           <div className="studio-window-bottom__clock">{clock}</div>
           <div className="studio-window-bottom__right">
@@ -531,7 +534,7 @@ export function ProjectWindow({
             {failure}
             {problems}
             {activity}
-            <WindowButton command={inspector} icon={PanelRight} pressed={inspectorVisible} controls={ids.inspector} />
+            <WindowButton command={inspector} pressed={inspectorVisible} controls={ids.inspector} />
           </div>
         </StudioRegionBoundary>
       </footer>

@@ -8,7 +8,7 @@ import {
   runProjectFixture, seedManagedProject,
 } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
-import { chooseStepKind } from './fixtures/studioKeyboard';
+import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
 const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
@@ -282,13 +282,13 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     expect(projection.rank_groups?.flatMap(({ ranks }) => ranks)).toEqual(keys);
     expect(ranks.map(({ subject_rank_key }) => subject_rank_key)).toEqual(keys);
     for (const [index, label] of groupLabels.entries()) {
-      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveText(`${label} · Rank 1`);
-      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveText(`${label} · Rank 2`);
+      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveAccessibleName(`${label} · Rank 1`);
+      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveAccessibleName(`${label} · Rank 2`);
     }
   } else {
     expect(keys).toEqual(['rank-1', 'rank-2']);
     for (const [index] of ranks.entries()) {
-      await expect(runs(page).getByRole('row').filter({ hasText: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
+      await expect(runs(page).getByRole('rowheader', { name: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
     }
   }
 
@@ -341,9 +341,9 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     const group = Math.floor(index / 2);
     const position = index % 2;
     await expect(memberLists[group].nth(position)).toHaveText(`Rank ${position + 1} · ${producer.label}`);
-    await expect(runs(page).getByRole('row').filter({ hasText: producer.label })).toHaveCount(1);
+    await expect(runs(page).getByRole('rowheader', { name: new RegExp(producer.label) })).toHaveCount(1);
     if (grouped) await expect(runs(page).getByRole('rowheader').nth(index))
-      .toHaveText(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`);
+      .toHaveAccessibleName(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`);
   }
   await expect(freeze).toBeEnabled();
   await count.fill('1');
@@ -505,7 +505,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await fast.click();
   await slow.click({ modifiers: ['Shift'] });
   const second = responseFor(page, projectPath + '/files');
-  await primary(page).getByRole('button', { name: 'New Step', exact: true }).click();
+  await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Evaluate');
   const secondCreated = await second;
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);

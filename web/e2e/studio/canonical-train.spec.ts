@@ -12,6 +12,7 @@ import type {
   StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { pick } from './fixtures/controls';
+import { palette } from './fixtures/studioKeyboard';
 
 test.use({ trace: 'off', launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] } });
 
@@ -545,9 +546,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await captureStudioWindow(page, info, '01-map-runs');
 
   await mapStep(page, 'train').click();
-  await table.getByRole('row').filter({ hasText: selected[0].label }).getByRole('button').click();
+  await table.getByRole('button', { name: selected[0].label, exact: true }).click();
   const explicit = submitted(page, filesPath);
-  await runs.getByRole('button', { name: 'New Step', exact: true }).click();
+  await palette(page, 'newStep', 'New Step');
   await chooseTrainSuccessor(page);
   const rowSaved = await explicit;
   expect(rowSaved.status(), await rowSaved.text()).toBe(201);
@@ -588,7 +589,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
       },
     });
     const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-    const selectedRow = table.getByRole('row').filter({ hasText: selected[index].label }).getByRole('button');
+    const selectedRow = table.getByRole('button', { name: selected[index].label, exact: true });
     await selectedRow.click();
     await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
     await expect(runs.getByRole('region', { name: 'Made From' })).toContainText('train');

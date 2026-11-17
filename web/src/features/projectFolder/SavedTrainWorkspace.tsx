@@ -942,7 +942,6 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       runCommands.push(bindStudioCommand(id, () => stop(eligible, mode), { enabled: !busy && eligible.length > 0 }));
     }
   }
-  if (step) runCommands.push(...validity.commands(selectedRuns(step, state.selection)));
   if (step?.kind === 'train') {
     if (resumable && jobAllowsCommand(resumable, 'resume')) {
       runCommands.push(bindStudioCommand('resume', () => {
@@ -950,7 +949,6 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       }, { enabled: !busy }));
     }
     runCommands.push(bindStudioCommand('openRun', () => { if (exactRow) showRun(exactRow.key); }, { enabled: !!exactJob }));
-    if (nextStep) runCommands.push(nextStep);
   }
   function pivotCommand(slot: ProjectWindowSlot) {
     if (!step || step.sweeps.length < 2) return undefined;
@@ -973,7 +971,8 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     }, {
       enabled: !busy && !outside,
     }),
-    ...runCommands.filter(({ id }) => id !== 'newStep'),
+    ...runCommands,
+    ...(step ? validity.commands(selectedRuns(step, state.selection)) : []),
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep ? stoppedNewStep : nextStep,
     ...(focusedDetail?.commands ?? []),
     ...analyze.commands,

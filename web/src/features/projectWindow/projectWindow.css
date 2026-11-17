@@ -11,7 +11,7 @@
 
 .studio-window-bar {
   display: grid;
-  grid-template-columns: minmax(max-content, var(--studio-map-drawer-edge)) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(min-content, var(--studio-map-drawer-edge)) minmax(0, 1fr) auto;
   align-items: center;
   position: relative;
   z-index: 3;

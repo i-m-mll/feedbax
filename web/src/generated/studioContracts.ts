@@ -2635,10 +2635,13 @@ export type CodeReason = {
   "kind"?: "code";
   "basis": "source" | "computation" | "unverifiable";
   "differences": Array<CodeDifference>;
+  "changes"?: Array<ComputationChange>;
   "detail"?: string | null;
 };
 
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
+
+export type ComputationChange = DriverChanged | StartsChanged | ProgramsChanged | StepCountChanged;
 
 export type ContentRef = {
   "sha256": string;
@@ -2725,6 +2728,17 @@ export type DrawValue = {
   "per"?: "run" | "trial";
 };
 
+export type DriverChanged = {
+  "kind"?: "driver";
+  "previous": DriverIdentity;
+  "present": DriverIdentity;
+};
+
+export type DriverIdentity = {
+  "name": string;
+  "revision": number;
+};
+
 export type DuplicateDocument = {
   "kind": "duplicate";
   "document": string;
@@ -2737,6 +2751,8 @@ export type EnsureDocumentCollection = {
   "collection": "object" | "array";
 };
 
+export type EnvironmentChange = "arguments" | "rejected_update" | "output_shape_or_dtype" | "numerical_drift" | "nonfinite_outputs";
+
 export type EnvironmentDifference = {
   "distribution": string;
   "before": string;
@@ -2746,12 +2762,16 @@ export type EnvironmentDifference = {
 export type EnvironmentNotice = {
   "differences": Array<EnvironmentDifference>;
   "check": "pending" | "confirmed" | "different" | "not_checked";
+  "change"?: EnvironmentChange | null;
+  "drift"?: PrefixDrift | null;
   "detail"?: string | null;
 };
 
 export type EnvironmentReason = {
   "kind"?: "environment";
   "differences": Array<EnvironmentDifference>;
+  "change"?: EnvironmentChange | null;
+  "drift"?: PrefixDrift | null;
   "detail"?: string | null;
 };
 
@@ -3072,6 +3092,11 @@ export type Payload = Record<string, JsonValue>;
 
 export type Pointer = string;
 
+export type PrefixDrift = {
+  "max_relative_loss": number | null;
+  "relative_parameter_l2": number | null;
+};
+
 export type PresentationCamera = {
   "x": number;
   "y": number;
@@ -3098,6 +3123,11 @@ export type Problem = {
 };
 
 export type ProblemCode = "parse" | "unknown_name" | "duplicate_name" | "unknown_function" | "plugin_missing" | "arity" | "type_mismatch" | "unit_mismatch" | "level_too_fine" | "out_of_scope" | "cycle" | "unbounded_length" | "length_budget" | "missing_limit" | "list_count" | "structure";
+
+export type ProgramsChanged = {
+  "kind"?: "program";
+  "slots": Array<string>;
+};
 
 export type Project = {
   "documents"?: Record<string, Document>;
@@ -3291,6 +3321,11 @@ export type SourcePath = {
   "path": string;
 };
 
+export type StartsChanged = {
+  "kind"?: "arguments";
+  "slots": Array<string>;
+};
+
 export type StateReset = "trial" | "epoch";
 
 export type Step = {
@@ -3309,6 +3344,12 @@ export type Step = {
 export type StepBase = {
   "step": string;
   "row"?: string | null;
+};
+
+export type StepCountChanged = {
+  "kind"?: "steps";
+  "previous": number;
+  "present": number;
 };
 
 export type StepInput = {
@@ -8709,6 +8750,7 @@ export const CodeReasonSchema: z.ZodType<CodeReason> = z.lazy(() =>
     "kind": z.literal("code").optional(),
     "basis": z.union([z.literal("source"), z.literal("computation"), z.literal("unverifiable")]),
     "differences": z.array(CodeDifferenceSchema),
+    "changes": z.array(ComputationChangeSchema).optional(),
     "detail": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<CodeReason>;
@@ -8716,6 +8758,10 @@ export const CodeReasonSchema: z.ZodType<CodeReason> = z.lazy(() =>
 export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
   z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
 ) as unknown as z.ZodType<Combination>;
+
+export const ComputationChangeSchema: z.ZodType<ComputationChange> = z.lazy(() =>
+  z.union([DriverChangedSchema, StartsChangedSchema, ProgramsChangedSchema, StepCountChangedSchema])
+) as unknown as z.ZodType<ComputationChange>;
 
 export const ContentRefSchema: z.ZodType<ContentRef> = z.lazy(() =>
   z.object({
@@ -8832,6 +8878,21 @@ export const DrawValueSchema: z.ZodType<DrawValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DrawValue>;
 
+export const DriverChangedSchema: z.ZodType<DriverChanged> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("driver").optional(),
+    "previous": DriverIdentitySchema,
+    "present": DriverIdentitySchema,
+  }).strict()
+) as unknown as z.ZodType<DriverChanged>;
+
+export const DriverIdentitySchema: z.ZodType<DriverIdentity> = z.lazy(() =>
+  z.object({
+    "name": z.string().min(1),
+    "revision": z.number().int().safe().gt(0),
+  }).strict()
+) as unknown as z.ZodType<DriverIdentity>;
+
 export const DuplicateDocumentSchema: z.ZodType<DuplicateDocument> = z.lazy(() =>
   z.object({
     "kind": z.literal("duplicate"),
@@ -8848,6 +8909,10 @@ export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection>
   }).strict()
 ) as unknown as z.ZodType<EnsureDocumentCollection>;
 
+export const EnvironmentChangeSchema: z.ZodType<EnvironmentChange> = z.lazy(() =>
+  z.union([z.literal("arguments"), z.literal("rejected_update"), z.literal("output_shape_or_dtype"), z.literal("numerical_drift"), z.literal("nonfinite_outputs")])
+) as unknown as z.ZodType<EnvironmentChange>;
+
 export const EnvironmentDifferenceSchema: z.ZodType<EnvironmentDifference> = z.lazy(() =>
   z.object({
     "distribution": z.string().min(1),
@@ -8860,6 +8925,8 @@ export const EnvironmentNoticeSchema: z.ZodType<EnvironmentNotice> = z.lazy(() =
   z.object({
     "differences": z.array(EnvironmentDifferenceSchema),
     "check": z.union([z.literal("pending"), z.literal("confirmed"), z.literal("different"), z.literal("not_checked")]),
+    "change": z.union([EnvironmentChangeSchema, z.null()]).optional(),
+    "drift": z.union([PrefixDriftSchema, z.null()]).optional(),
     "detail": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<EnvironmentNotice>;
@@ -8868,6 +8935,8 @@ export const EnvironmentReasonSchema: z.ZodType<EnvironmentReason> = z.lazy(() =
   z.object({
     "kind": z.literal("environment").optional(),
     "differences": z.array(EnvironmentDifferenceSchema),
+    "change": z.union([EnvironmentChangeSchema, z.null()]).optional(),
+    "drift": z.union([PrefixDriftSchema, z.null()]).optional(),
     "detail": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<EnvironmentReason>;
@@ -9301,6 +9370,13 @@ export const PointerSchema: z.ZodType<Pointer> = z.lazy(() =>
   z.string().regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
 ) as unknown as z.ZodType<Pointer>;
 
+export const PrefixDriftSchema: z.ZodType<PrefixDrift> = z.lazy(() =>
+  z.object({
+    "max_relative_loss": z.union([z.number().finite(), z.null()]),
+    "relative_parameter_l2": z.union([z.number().finite(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<PrefixDrift>;
+
 export const PresentationCameraSchema: z.ZodType<PresentationCamera> = z.lazy(() =>
   z.object({
     "x": z.number().finite(),
@@ -9337,6 +9413,13 @@ export const ProblemSchema: z.ZodType<Problem> = z.lazy(() =>
 export const ProblemCodeSchema: z.ZodType<ProblemCode> = z.lazy(() =>
   z.union([z.literal("parse"), z.literal("unknown_name"), z.literal("duplicate_name"), z.literal("unknown_function"), z.literal("plugin_missing"), z.literal("arity"), z.literal("type_mismatch"), z.literal("unit_mismatch"), z.literal("level_too_fine"), z.literal("out_of_scope"), z.literal("cycle"), z.literal("unbounded_length"), z.literal("length_budget"), z.literal("missing_limit"), z.literal("list_count"), z.literal("structure")])
 ) as unknown as z.ZodType<ProblemCode>;
+
+export const ProgramsChangedSchema: z.ZodType<ProgramsChanged> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("program").optional(),
+    "slots": z.array(z.string().min(1)),
+  }).strict()
+) as unknown as z.ZodType<ProgramsChanged>;
 
 export const ProjectSchema: z.ZodType<Project> = z.lazy(() =>
   z.object({
@@ -9600,6 +9683,13 @@ export const SourcePathSchema: z.ZodType<SourcePath> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SourcePath>;
 
+export const StartsChangedSchema: z.ZodType<StartsChanged> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("arguments").optional(),
+    "slots": z.array(z.string().min(1)),
+  }).strict()
+) as unknown as z.ZodType<StartsChanged>;
+
 export const StateResetSchema: z.ZodType<StateReset> = z.lazy(() =>
   z.union([z.literal("trial"), z.literal("epoch")])
 ) as unknown as z.ZodType<StateReset>;
@@ -9625,6 +9715,14 @@ export const StepBaseSchema: z.ZodType<StepBase> = z.lazy(() =>
     "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepBase>;
+
+export const StepCountChangedSchema: z.ZodType<StepCountChanged> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("steps").optional(),
+    "previous": z.number().int().safe().gt(0),
+    "present": z.number().int().safe().gt(0),
+  }).strict()
+) as unknown as z.ZodType<StepCountChanged>;
 
 export const StepInputSchema: z.ZodType<StepInput> = z.lazy(() =>
   z.object({
