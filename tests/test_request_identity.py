@@ -38,9 +38,8 @@ from feedbax.contracts.request_specs import (
     DocumentTrainingConfig,
     DocumentTrainingRequestSpec,
 )
-from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import compile_project
-from tests.test_document_train_pair import authored_documents, document_project
+from tests.support.managed_train_fixture import managed_train_project
 
 _CORPUS = Path(__file__).parent / "fixtures" / "request_identity_corpus.json"
 
@@ -50,7 +49,7 @@ def _read_corpus():
 
 
 def _managed_train():
-    plan = compile_project(Project.model_validate(document_project(authored_documents())))
+    plan = compile_project(managed_train_project())
     (data,) = plan.requests.values()
     spec = decode_request(data, plan.documents.__getitem__).spec
     assert isinstance(spec, DocumentTrainingRequestSpec)
@@ -73,7 +72,7 @@ def test_downstream_identity_corpus_round_trips():
 
 def test_factored_document_reuse_keeps_current_values_and_input_bindings():
     spec = _managed_train()
-    spec.method_payload.payload["typed_value"] = True
+    spec.settings["typed_value"] = True
     memo = RequestDocumentMemo()
     first = encode_request(spec, {}, document_memo=memo)
     assert first == encode_request(spec, {})
@@ -93,7 +92,7 @@ def test_factored_document_reuse_keeps_current_values_and_input_bindings():
     assert bound == encode_request(spec, inputs)
     assert bound.id != seeded.id and bound.documents == seeded.documents
 
-    spec.method_payload.payload["typed_value"] = 1
+    spec.settings["typed_value"] = 1
     changed = encode_request(spec, inputs, document_memo=memo)
     assert changed == encode_request(spec, inputs)
     assert changed.id != bound.id and len(changed.documents.keys() - bound.documents.keys()) == 1
@@ -115,14 +114,14 @@ def test_inline_trial_memo_preserves_canonical_requests_and_window_facts():
     inputs = {"checkpoint": (
         InputMember(key="first", reference=ProductRef(request_id=first.id, role="checkpoint")),
     )}
-    spec.method_payload.payload["optimizer"]["params"]["learning_rate"] = 0.007
+    spec.settings["optimizer"]["params"]["learning_rate"] = 0.007
     assert compare(spec, inputs).id != first.id
-    spec.method_payload.metadata["wide"] = 1e20
+    spec.settings["wide"] = 1e20
     wide = compare(spec, inputs)
     assert wide.train_task is None
     with pytest.raises(CanonicalJsonError, match="unsafe_integer"):
         decode_request(wide.data, wide.documents.__getitem__)
-    del spec.method_payload.metadata["wide"]
+    del spec.settings["wide"]
     assert compare(spec, inputs).train_task == first.train_task
 
     for document in ("model", "task", "objective"):
@@ -184,17 +183,17 @@ def test_absent_values_and_retired_spellings_contract():
 
     model = "feedbax.contracts.request_specs.DocumentTrainingConfig"
     changed = deepcopy(checked)
-    changed["fields"][model]["grad_clip"]["absent"] = None
+    changed["fields"][model]["replicates"]["absent"] = None
     with pytest.raises(ValueError, match="absent value changed"):
         validate_identity_transition(checked, changed)
 
     changed = deepcopy(checked)
     changed["retired"]["fields"].append(
-        {"model": model, "field": "grad_clip", "migration": "training-v2"}
+        {"model": model, "field": "replicates", "migration": "training-v2"}
     )
     with pytest.raises(ValueError, match="field reused"):
         validate_identity_contract(changed)
-    del changed["fields"][model]["grad_clip"]
+    del changed["fields"][model]["replicates"]
     with pytest.raises(ValueError, match="no registered migration"):
         validate_identity_transition(checked, changed)
     validate_identity_transition(checked, changed, migrations={"training-v2"})
@@ -206,12 +205,12 @@ def test_author_default_move_keeps_nested_stored_absence():
     original = original.model_copy(update={"training_config": config})
     old = encode_request(original, {})
 
-    field = DocumentTrainingConfig.model_fields["grad_clip"]
+    field = DocumentTrainingConfig.model_fields["replicates"]
     default = field.default
     precision = NumericalSettings.model_fields["matmul_precision"]
     old_precision = precision.default
     try:
-        field.default = None
+        field.default = 2
         precision.default = "high"
         DocumentTrainingConfig.model_rebuild(force=True)
         NumericalSettings.model_rebuild(force=True)
@@ -224,11 +223,11 @@ def test_author_default_move_keeps_nested_stored_absence():
         )
         new = encode_request(author, {})
         assert new.id != old.id
-        assert json.loads(new.data)["spec"]["training_config"]["grad_clip"] is None
+        assert json.loads(new.data)["spec"]["training_config"]["replicates"] == 2
 
         stored = decode_request(old.data, old.documents.__getitem__)
         assert isinstance(stored.spec, DocumentTrainingRequestSpec)
-        assert stored.spec.training_config.grad_clip == default
+        assert stored.spec.training_config.replicates == default
         assert stored.spec.numerical_settings.matmul_precision == old_precision
         assert json.loads(new.data)["spec"]["numerical_settings"]["matmul_precision"] == "high"
         assert stored.id == old.id
@@ -245,17 +244,17 @@ def test_cached_absence_preserves_canonical_number_and_boolean_distinctions():
     memo = RequestDocumentMemo()
     baseline = encode_request(spec, {}, document_memo=memo)
 
-    def with_clip(value):
+    def with_replicas(value):
         # A validated model can be changed by model_copy without another validation.
-        config = spec.training_config.model_copy(update={"grad_clip": value})
+        config = spec.training_config.model_copy(update={"replicates": value})
         return spec.model_copy(update={"training_config": config})
 
-    assert encode_request(with_clip(1), {}, document_memo=memo) == baseline
-    changed = encode_request(with_clip(True), {}, document_memo=memo)
+    assert encode_request(with_replicas(1), {}, document_memo=memo) == baseline
+    changed = encode_request(with_replicas(True), {}, document_memo=memo)
     assert changed.id != baseline.id
-    assert json.loads(changed.data)["spec"]["training_config"]["grad_clip"] is True
+    assert json.loads(changed.data)["spec"]["training_config"]["replicates"] is True
     with pytest.raises(ValueError, match="unsafe_integer"):
-        encode_request(with_clip(2**53), {}, document_memo=memo)
+        encode_request(with_replicas(2**53), {}, document_memo=memo)
 
 
 def test_request_references_and_runtime_settings_are_typed_identity():
