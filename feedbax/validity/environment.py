@@ -72,7 +72,7 @@ class InstalledInventory:
         if not isinstance(path, Path):
             # Non-filesystem providers own their metadata access and have no individual file stamps.
             return _distribution_version(entry)
-        entries = (path, path / "METADATA") if path.name.endswith(".dist-info") else (path, path / "PKG-INFO")
+        entries = (path, path / "METADATA", path / "PKG-INFO")
         stamp = tuple(occurrence(item) for item in entries)
         if not fresh and (parsed := self._parsed.get(path)) is not None and parsed[0] == stamp:
             return parsed[1]
