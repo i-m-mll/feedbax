@@ -4,18 +4,17 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
-from feedbax.contracts.method_checkpoint import CheckpointLatestPointer, method_checkpoint_extra_path
-from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
+from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
+from feedbax.persistence.method_checkpoint import method_checkpoint_files
 from tests.support.store_damage import writable_store_object
 
 
 @contextmanager
-def damaged_method_state(checkpoint):
+def damaged_checkpoint_model(checkpoint):
     root = Path(checkpoint["checkpoint_root"])
     pointer = CheckpointLatestPointer.model_validate(checkpoint["pointer"])
-    manifest = read_method_checkpoint_manifest(root, pointer)
-    directory = (root / pointer.manifest_relative_path).parent
-    path = directory / method_checkpoint_extra_path(manifest.extra)
+    files = method_checkpoint_files(root, pointer, include_extra=False)
+    path = root / next(relative for relative in files if relative != Path(pointer.manifest_relative_path))
     original = path.read_bytes()
     with writable_store_object(path):
         path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
@@ -56,6 +55,17 @@ def wrapped(self, state, *, completed, count):
     if not resumed and completed < stop_at:
         count = min(count, stop_at - completed)
     result = run_block(self, state, completed=completed, count=count)
+    factor_file = root / "resume-model-factor"
+    if resumed and factor_file.is_file():
+        import equinox as eqx
+        import jax
+
+        factor = float(factor_file.read_text())
+        model = jax.tree.map(
+            lambda value: value * factor if eqx.is_inexact_array(value) else value,
+            result.state.model,
+        )
+        result = result._replace(state=result.state._replace(model=model))
     if not resumed and result.completed == stop_at:
         (root / "before-stop").touch()
         wait(stop)

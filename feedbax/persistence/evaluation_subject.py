@@ -87,7 +87,7 @@ def terminal_train_provenance(
 def _verify_terminal(
     store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, checkpoint: CheckpointPublicationSource,
     completed_updates: int | None,
-) -> None:
+) -> TrainingRunManifest:
     receipt = load_manifest_bytes(store.get_object(ref))
     occurrence = checkpoint.occurrence
     if not isinstance(receipt, TrainingRunManifest) or receipt.job_id is None:
@@ -101,6 +101,7 @@ def _verify_terminal(
         or (receipt.inherited_terminal_checkpoint is None and receipt.job_id != occurrence.run_id)
     ):
         raise ValueError("Evaluate terminal evidence differs from its exact checkpoint")
+    return receipt
 
 
 def subject_tree(
@@ -152,16 +153,11 @@ def evaluation_subject_objects(
                 manifest_id=training_run_manifest_id(claim.attempt), manifest_sha256=claim.receipt.sha256,
             ), claim.attempt, reference.metric))
             transaction, spec = read_retained_checkpoint(store, checkpoint, claim.producer)
-            _verify_terminal(store, claim.receipt, checkpoint, spec.target_total)
-            receipt = load_manifest_bytes(raw)
-            launch = BoundStudioTrainingJobInput.model_validate_json(store.get_object(checkpoint.train_binding))
-            if (
-                not isinstance(receipt, TrainingRunManifest) or receipt.training_spec is None
-                or DocumentTrainingRequestSpec.model_validate(receipt.training_spec.inline) != spec
-                or transaction.clock.completed_updates != spec.target_total
-            ):
+            receipt = _verify_terminal(store, claim.receipt, checkpoint, spec.target_total)
+            if transaction.clock.completed_updates != spec.target_total:
                 raise ValueError("Best score is detached from its admitted Train execution")
             if receipt.inherited_terminal_checkpoint is not None:
+                launch = BoundStudioTrainingJobInput.model_validate_json(store.get_object(checkpoint.train_binding))
                 resume = launch.resume
                 if (
                     resume is None or resume.completed_updates != spec.target_total

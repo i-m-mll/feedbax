@@ -485,15 +485,21 @@ class ProjectPlanService:
 
     def read(
         self, project_id: str, *, revision: str, source_runs: Iterable[RunKey] = (),
-        stopped_checkpoint_jobs: Sequence[str] = (),
+        stopped_checkpoint_jobs: Sequence[str] = (), maintain_validity: bool = False,
     ) -> ProjectPlanRead:
         """Read one saved revision and its request-scoped attempt evidence."""
         settled = self.folders.read_plan(project_id, revision=revision, source_runs=source_runs)
-        return read_settled_project_plan(
-            settled, self.jobs, stopped_checkpoint_jobs=stopped_checkpoint_jobs,
-            remote_attempts=self._remote_attempts(settled) if self._remote_attempts is not None else (),
-            openings=self._remote_openings(settled) if self._remote_openings is not None else None,
+        remote = self._remote_attempts(settled) if self._remote_attempts is not None else ()
+        openings = self._remote_openings(settled) if self._remote_openings is not None else None
+        view = read_settled_project_plan(
+            settled, self.jobs, stopped_checkpoint_jobs=stopped_checkpoint_jobs, remote_attempts=remote, openings=openings,
         )
+        if maintain_validity and self.jobs.maintain_plan_validity(self.folders, settled, view.jobs):
+            view = read_settled_project_plan(
+                settled, self.jobs, stopped_checkpoint_jobs=stopped_checkpoint_jobs,
+                remote_attempts=remote, openings=openings,
+            )
+        return view
 
     def response(self, view: ProjectPlanRead, *, include_window_map: bool) -> StudioSavedTrainRuns:
         evaluation_tasks = self.jobs.registries.python_tasks
@@ -693,7 +699,7 @@ def read_settled_project_plan(
     jobs = reader.read_plan_attempts(
         project=settled.project_id, store=settled.store_path, requests=requests,
         stopped_checkpoint_jobs=stopped_checkpoint_jobs,
-        light_addresses={plan_attempt_key(key) for key in light},
+        light_addresses={plan_attempt_key(key) for key in light}, project_root=settled.project_root,
     )
     if remote_attempts:
         by_request = dict(jobs.by_request)
@@ -778,7 +784,8 @@ def _light_result(settled: SettledProjectPlan, attempt: PlanJobAttempt | None) -
         if role in success.products:
             products[role] = f"{base}/{role}/{entry}"
     return StudioSavedLightResult(
-        job_id=attempt.job_id, request_id=success.request.id, receipt=attempt.successful_receipt, products=products,
+        job_id=attempt.job_id, request_id=success.request.id, receipt=attempt.successful_receipt,
+        products=products, validity=attempt.validity, provenance=attempt.provenance,
     )
 
 
@@ -806,9 +813,13 @@ def _evaluation_row(
     try:
         params, subject = reader.evaluation_parameters(settled.plan, run)
         trials = list(params.trials)
-        producers = (subject.request_id,) if isinstance(subject, ProductRef) else tuple(
-            candidate.reference.request_id for candidate in subject.candidates
-        )
+        match subject:
+            case ProductRef(request_id=request) if planned is None or planned.terminal is None:
+                producers = (request,)
+            case BestRank(candidates=candidates):
+                producers = tuple(candidate.reference.request_id for candidate in candidates)
+            case _:
+                producers = ()
         if not set(producers) <= jobs.checkpoint_producers:
             raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
         if isinstance(subject, ProductRef) and isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
@@ -834,7 +845,7 @@ def _evaluation_row(
             checkpoint_sources=list(success.checkpoint_sources) or None,
             checkpoint_gaps=list(success.checkpoint_gaps) if success.checkpoint_gaps is not None else None,
             placement=success.evaluation_placement if series is not None else None,
-            bound_subject=success.bound_subject,
+            bound_subject=success.bound_subject, validity=success.validity, provenance=success.provenance,
         )
     retained = bool(attempts and attempts[-1].collected_evaluate) or (
         success is not None and success.collected_evaluate
@@ -941,6 +952,7 @@ def _result(
     return StudioSavedTrainResult(
         request_id=pointer["request_id"], job_id=attempt.job_id,
         receipt=attempt.successful_receipt, progress=attempt.progress,
+        validity=attempt.validity, provenance=attempt.provenance,
     )
 
 

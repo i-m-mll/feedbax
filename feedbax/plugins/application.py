@@ -12,6 +12,7 @@ from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 
 from .bootstrap import RegistryKey
+from .declarations import DeclarationRegistry
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,13 @@ class ApplicationRegistryBundle:
     expression_functions: FunctionRegistry
     python_tasks: PythonTaskRegistry
     figure_templates: FigureTemplateRegistry
+
+    def declaration_registries(self) -> tuple[DeclarationRegistry, ...]:
+        return (
+            self.components._components, self.python_tasks._declarations,
+            self.training_methods._declarations, self.operations._entries,
+            self.figure_templates._declarations,
+        )
 
     def seal(self) -> None:
         self.components.seal()

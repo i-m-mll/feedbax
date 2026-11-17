@@ -246,6 +246,35 @@ _Events.append = append
     assert first.receipt.products == second.receipt.products
     assert first.receipt.evaluation_manifest != second.receipt.evaluation_manifest
     assert second.receipt.supersedes == first.ref
+    assert first.receipt.trace is not None and second.receipt.trace is not None
+    accepted_points = points(evaluation)
+    assert [ref.model_dump(mode="json") for ref in first.receipt.trace.prefixes] == [
+        point["result"]["evidence"] for point in accepted_points
+    ]
+    assert second.receipt.trace.prefixes == ()
+    from feedbax.contracts.live_evaluate import BoundLiveEvaluationPoint
+    from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
+    from feedbax.persistence.content_retention import require_active_root
+    from feedbax.persistence.live_evaluate import read_live_evaluation_evidence
+    from feedbax.training.evaluate_worker import check_evaluate
+    from feedbax.validity.evidence import StagedEvidenceMissing, read_staged_evidence
+
+    for raw in accepted_points:
+        accepted = BoundLiveEvaluationPoint.model_validate(raw)
+        assert isinstance(accepted.result, ScoredEvaluationPoint)
+        with pytest.raises(StagedEvidenceMissing):
+            read_staged_evidence(store, evaluation, accepted.result.evidence, scope=accepted.root_id)
+        previous_view = require_active_root(store, accepted.root_id)
+        adopted = read_live_evaluation_evidence(store, accepted, active_root=previous_view)
+        assert adopted.attempt == evaluation
+
+    checked = check_evaluate(ValidityCheckDelivery(
+        project_root=folders.root / project, store_root=plan.store_path,
+        request_id=rows["baseline"].request_id, receipt=first.ref, checks=("code", "environment"),
+        conditions=CheckConditions(code=(), environment=()),
+    ))
+    assert checked.code is not None and checked.code.outcome == "equal"
+    assert checked.environment is not None and checked.environment.outcome == "unavailable"
 
 
 def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypatch):

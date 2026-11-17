@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .io import TOKEN_ENV, append
+from .io import EVIDENCE_FILE, TOKEN_ENV, append, read_worker_result
 from .python import python_argv
 
 BOOTSTRAP = """\
@@ -30,24 +30,7 @@ def command(interpreter: str, role: str, *args: str) -> list[str]:
 
 
 def _outcome(log: Path, status: int, require_result: bool) -> dict:
-    result = None
-    with log.open("r+b") as stream:
-        # The child's final append can be torn. Remove only the incomplete final line
-        # before appending our terminal event so both records remain independently framed.
-        tail_start = max(0, stream.seek(0, os.SEEK_END) - 2 * 1024 * 1024)
-        stream.seek(tail_start)
-        tail = stream.read()
-        end = tail.rfind(b"\n")
-        if end >= 0 and end != len(tail) - 1:
-            stream.truncate(tail_start + end + 1)
-        for raw in reversed(tail[:end].split(b"\n")):
-            try:
-                event = json.loads(raw)
-            except (ValueError, UnicodeError):
-                continue
-            if isinstance(event, dict) and event.get("kind") == "result":
-                result = event.get("data")
-                break
+    result = read_worker_result(log, truncate_incomplete=True)
     if status < 0:
         signum = signal.Signals(-status)
         interrupted = signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGKILL)
@@ -93,7 +76,10 @@ def _terminal(log: Path, status: int, require_result: bool) -> None:
         accepted.get("kind") == "accepted"
         and accepted["data"].get("token") == os.environ[TOKEN_ENV]
     ):
-        append(log, "terminal", _outcome(log, status, require_result), sync=True)
+        outcome = _outcome(log, status, require_result)
+        if outcome["outcome"] == "succeeded" and (evidence := log.with_name(EVIDENCE_FILE)).is_file():
+            outcome["execution_evidence"] = json.loads(evidence.read_bytes())
+        append(log, "terminal", outcome, sync=True)
 
 
 def main(control_fd: str, profile_path: str) -> int:

@@ -14,7 +14,7 @@ import numpy as np
 from feedbax.analysis.operation_runtime import run_operation
 from feedbax.contracts.artifact_custody import ContentRootRecord
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
-from feedbax.contracts.effective_success import Bindings, Product, success_content_ref
+from feedbax.contracts.effective_success import Bindings, Product, Products, success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_identity import DecodedRequest
@@ -119,6 +119,8 @@ def _compute(
         assert isinstance(spec, AnalysisRequestSpec)
         registry = operation_application()
         parameters = operation.value.parameter_model.model_validate(spec.params)
+        if parameters.model_dump(mode="json") != spec.params:
+            raise ValueError(f"Operation {operation.key!r} settings differ from their validated values")
         dataset_bindings = {
             name: bindings[name]
             for name, port in operation.value.definition.inputs.items()
@@ -163,6 +165,25 @@ def _compute(
             ),
         )
     raise ValueError("Expected a managed light request")
+
+
+def check_light_environment(
+    store: ImmutableArtifactBlobProvider,
+    request: DecodedRequest,
+    bindings: Bindings,
+    products: Products,
+    attempt: str,
+) -> bool:
+    """Replay the ordinary operation without publishing a successful receipt."""
+    from feedbax.validity.light_products import light_product_matches
+
+    role, operation = validate_light_request(request)
+    (retained,) = products[role]
+    candidate = _compute(store, request, bindings, attempt, role, operation)
+    try:
+        return light_product_matches(store, retained, candidate)
+    finally:
+        store.release_root(light_staging_id(attempt))
 
 
 def main(_argv: list[str]) -> int:

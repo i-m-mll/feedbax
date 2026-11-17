@@ -10,8 +10,9 @@ import time
 import traceback
 from pathlib import Path
 
-from .io import TOKEN_ENV, append, encode, receive, write_json
-from .protocol import MAX_RPC_BYTES
+from .io import EVIDENCE_FILE, TOKEN_ENV, append, encode, read_worker_result, receive, write_json
+from .protocol import MANAGED_ENTRYPOINTS, MAX_RPC_BYTES, VALIDITY_CHECK_ENTRYPOINT
+from .source_roster import SourceRoster
 
 
 def _redirect(paths: dict) -> None:
@@ -53,6 +54,19 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
     profile = json.loads(Path(profile_path).read_text())
     control = socket.socket(fileno=int(control_fd))
     report = int(report_fd)
+    if profile["warm_entrypoint"] in MANAGED_ENTRYPOINTS | {VALIDITY_CHECK_ENTRYPOINT}:
+        boot_ns = time.time_ns()
+        with SourceRoster(3, "Feedbax executed source") as entered:
+            entered.enable()
+            from feedbax.validity.recording import WorkerRecorder
+
+            recorder = WorkerRecorder(entered.names, boot_ns=boot_ns)
+            with recorder.monitor():
+                return _serve(profile, control, report, recorder)
+    return _serve(profile, control, report, None)
+
+
+def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
     entrypoint, import_error = None, None
     try:
         for module in profile["preload"]:
@@ -62,7 +76,9 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
             entrypoint = getattr(importlib.import_module(module_name), function)
     except Exception as error:  # noqa: BLE001 -- foreign executor boundary
         import_error = (error, traceback.format_exc())
-    snapshots = _sources()
+    snapshots = _sources() if recorder is None else None
+    if recorder is not None:
+        recorder.observe_new_sources()
     reusable = profile.get("light_affinity") is not None
     with control:
         while True:
@@ -71,22 +87,36 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
                 message = receive(control, MAX_RPC_BYTES)
             except (OSError, EOFError):
                 return 0
-            if _sources_changed(snapshots):
+            if (recorder.changed() if recorder is not None else _sources_changed(snapshots)):
                 return 0
+            source_error = None
+            if recorder is not None:
+                try:
+                    if (project := message.get("project_root")) is not None:
+                        environment = message.get("environment_root")
+                        recorder.bind_project(Path(project), environment_root=Path(environment) if environment else None)
+                    recorder.start_delivery()
+                except (OSError, ValueError) as error:
+                    source_error = error
             if not reusable:
                 control.close()
-            status = _execute(message, report, entrypoint, import_error, reusable=reusable)
+            status = _execute(
+                message, report, entrypoint, import_error, reusable=reusable, recorder=recorder, source_error=source_error,
+            )
             if not reusable:
                 return status
+            # Failed deliveries can load code without publishing a snapshot.
+            source_changed = recorder is not None and recorder.observe_new_sources()
             sys.stdout.flush()
             sys.stderr.flush()
             os.write(report, encode({"status": status}))
-            if import_error is not None:
+            if import_error is not None or source_changed:
                 return status
-            snapshots |= {path: info for path, info in _sources().items() if path not in snapshots}
+            if snapshots is not None:
+                snapshots |= {path: info for path, info in _sources().items() if path not in snapshots}
 
 
-def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: bool) -> int:
+def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: bool, recorder, source_error) -> int:
     paths = message["paths"]
     log = Path(paths["event_log"])
     os.write(report, encode({"event_log": str(log)}))
@@ -151,10 +181,14 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
                 sync=True,
             )
             return 1
+        if source_error is not None:
+            raise source_error
         argv = message["argv"]
         if entrypoint is None:
             os.execvpe(argv[0], argv, os.environ)
-        return int(entrypoint(argv[1:]) or 0)
+        if recorder is None or message.get("project_root") is None:
+            return int(entrypoint(argv[1:]) or 0)
+        return _record_execution(message, recorder, log, entrypoint, argv[1:])
     except Exception as error:  # noqa: BLE001 -- foreign executor boundary
         traceback.print_exc()
         append(
@@ -167,6 +201,35 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
                     "message": str(error),
                 },
             },
+            sync=True,
+        )
+        return 1
+
+
+def _record_execution(message, recorder, log: Path, entrypoint, argv) -> int:
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.validity.environment import EnvironmentMismatch
+    from feedbax.validity.evidence import release_staged_evidence, stage_evidence
+
+    root = Path(message["store_root"])
+    try:
+        with recorder.delivery(message["job_id"], root, log.parent):
+            status = int(entrypoint(argv) or 0)
+            if (
+                message["entrypoint"] != VALIDITY_CHECK_ENTRYPOINT
+                and status == 0 and (read_worker_result(log) or {}).get("outcome") == "succeeded"
+            ):
+                store = ImmutableArtifactBlobProvider(root)
+                ref = stage_evidence(store, lambda: recorder.snapshot(store))
+                try:
+                    write_json(log.with_name(EVIDENCE_FILE), ref.model_dump(mode="json"))
+                except OSError:
+                    release_staged_evidence(store, message["job_id"])
+                    raise
+            return status
+    except EnvironmentMismatch as error:
+        append(
+            log, "result", {"outcome": "failed", "error": {"code": "environment_lock_mismatch", "message": str(error)}},
             sync=True,
         )
         return 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from copy import copy
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,21 @@ class ResolvedDeclaration[T]:
     source: DistributionSource
     defining_object: Callable[..., object]
     value: T
+
+
+type DeclarationObserver = Callable[[str, str, ResolvedDeclaration[Any]], None]
+_observer: DeclarationObserver | None = None
+
+
+@contextmanager
+def observe_declarations(observer: DeclarationObserver) -> Iterator[None]:
+    """Scope the resolution observer to one delivery in a managed process."""
+    global _observer
+    previous, _observer = _observer, observer
+    try:
+        yield
+    finally:
+        _observer = previous
 
 
 class DeclarationRegistry[T]:
@@ -57,7 +73,15 @@ class DeclarationRegistry[T]:
         declaration = self._entries.get(self._renames.get(key, key))
         if declaration is None:
             raise KeyError(missing_declaration(self._kind, key))
+        if _observer is not None:
+            _observer(self._kind, key, declaration)
         return declaration
+
+    def bindings(self) -> Iterator[tuple[str, str, ResolvedDeclaration[T]]]:
+        for key, declaration in sorted(self._entries.items()):
+            yield self._kind, key, declaration
+        for alias, key in sorted(self._renames.items()):
+            yield self._kind, alias, self._entries[key]
 
     def keys(self) -> tuple[str, ...]:
         return tuple(sorted(self._entries))

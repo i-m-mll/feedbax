@@ -1,6 +1,7 @@
 """Reconstructed graphs, rollout trajectories, and task inputs in saved Analyze jobs."""
 
 import asyncio
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
@@ -14,13 +15,16 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ElementKey, RunKey
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
-from feedbax.jobs import JobService
+from feedbax.contracts.jobs import JobStatus
+from feedbax.jobs import JobService, plan_attempt_key
 from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.composition import compose_application
+from feedbax.validity.environment import installed_versions
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.support import derivative_witness as witness
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import host as host_fixture, restart, wait_until
@@ -246,7 +250,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     _save_project(folders, project, _project())
     review = folders.read_plan(project, revision=None)
     assert not review.plan.diagnostics, review.plan.diagnostics
-    jobs = JobService(host, registry)
+    jobs = JobService(host, registry, quick_duration=timedelta(seconds=60))
     selected = tuple(RunKey("default", step, "default") for step in ("rollout", "fixed", "gain"))
     launch = jobs.admit_plan(folders, review, run_keys=selected, token="derivative-witness")
     assert len(launch.items) == 5, launch
@@ -298,3 +302,149 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
         estimate = dataset.data("gain")
         assert estimate.dtype == np.dtype("float64")
         assert estimate.item() == pytest.approx(3.0 * (1 + np.sqrt(2)), rel=1e-10)
+
+    gain_key = ElementKey(selected[2], "gain")
+
+    def retained():
+        return read_settled_project_plan(review, jobs).light[gain_key]
+
+    initial = retained()
+    assert initial.status is JobStatus.SUCCEEDED
+    assert initial.result.validity.state == "current"
+    source = tmp_path / "installed" / witness.PACKAGE / "__init__.py"
+    original = source.read_text()
+    body = "    def forward(disturbance):"
+    assert body in original
+    source.write_text(original.replace(body, "    scale = 2\n" + body, 1))
+    stale = retained()
+    assert stale.status is JobStatus.STALE
+    assert stale.result.receipt == initial.result.receipt
+    (reason,) = stale.result.validity.reasons
+    assert reason.kind == "code"
+    assert any("power_iteration" in change.functions for change in reason.differences)
+
+    judgement = jobs.result_validity_action(
+        review, gain, stale.result.validity.receipt,
+        judgement=(reason.differences, "Scientist", "Reviewed an unused local."),
+    )
+    assert judgement.state == "current"
+    assert retained().result.receipt == initial.result.receipt
+    source.write_text(original.replace(body, "    scale = 3\n" + body, 1))
+    assert retained().status is JobStatus.STALE
+    assert set(row["id"] for row in host.jobs(project=review.project_id)) == job_ids
+
+    source.write_text(original)
+    assert retained().status is JobStatus.SUCCEEDED
+    versions = installed_versions() | {"numpy": "0.0"}
+    lock = review.project_root / "uv.lock"
+    lock.write_text("".join(
+        f'[[package]]\nname = "{name}"\nversion = "{version}"\n'
+        for name, version in versions.items()
+    ))
+    observed = retained().result.validity
+    assert observed.state == "current"
+    assert observed.environment.check == "pending"
+    jobs.result_validity_action(review, gain, observed.receipt)
+
+    def completed_check():
+        return next((row for row in host.jobs(project=review.project_id) if (
+            row["request"].startswith("validity-check:") and row["outcome"] is not None
+        )), None)
+
+    check = wait_until(completed_check, timeout=15)
+    assert "store_success" not in check["outcome"]
+    decided = jobs.result_validity_action(review, gain, observed.receipt)
+    assert decided.state == "current" and decided.environment.check == "not_checked"
+    assert "numpy" in decided.environment.detail
+    assert set(row["id"] for row in host.jobs(project=review.project_id)) == job_ids | {check["id"]}
+
+    lock.unlink()
+    settings = registry.operations.resolve(f"{witness.PACKAGE}.power_iteration").value.parameter_model
+
+    def unexpected_settings_validation(*args, **kwargs):
+        pytest.fail("Unchanged Run executed the plugin's settings validation.")
+
+    with monkeypatch.context() as unchanged:
+        unchanged.setattr(settings, "model_validate", unexpected_settings_validation)
+        acknowledged = folders.read_plan(project, revision=review.revision)
+        unchanged_run = jobs.submit_plan(
+            folders, acknowledged, run_keys=(selected[2],), token="reuse-unchanged-gain", reuse_completed=True,
+        )
+    assert {item.disposition for item in unchanged_run.items} == {"reused"}
+
+    old_system = view.authored(assemble).receipt.products["system"]
+    old_gain = view.authored(gain)
+    retained_id = old_gain.receipt.attempt
+    data_file = review.project_root / "assemble-calibration.txt"
+    data_file.write_text("first calibration")
+    marker = "    ((actuation,),) = task.parameters.disturbance_matrix"
+    assert marker in original
+    same_output = original.replace(
+        marker, f"    with open({str(data_file)!r}) as calibration:\n        calibration.read()\n{marker}", 1,
+    )
+    source.write_text(same_output)
+
+    assemble_key = ElementKey(selected[2], "assemble")
+    changed_assemble = read_settled_project_plan(review, jobs).light[assemble_key].result
+    assert changed_assemble.validity.state == "stale"
+    assert any(
+        "assemble" in difference.functions
+        for reason in changed_assemble.validity.reasons if reason.kind == "code"
+        for difference in reason.differences
+    )
+    assert retained().status is JobStatus.SUCCEEDED
+
+    def run_together(token):
+        submission = jobs.submit_plan(
+            folders, review, run_keys=(selected[2],), token=token, reuse_completed=True,
+        )
+        items = {item.run_key: item for item in submission.items}
+        producer = items[plan_attempt_key(assemble_key)]
+        assert producer.disposition == "admitted"
+        assert items[plan_attempt_key(gain_key)].disposition != "rejected"
+
+        def settled_jobs():
+            rows = [row for row in host.jobs(project=review.project_id) if row["request"] in (assemble, gain)]
+            if all(row["state"] not in {"queued", "assigned", "running", "stopping"} for row in rows):
+                return rows
+
+        rows = wait_until(settled_jobs, timeout=20)
+        rebuilt = next(row for row in rows if row["id"] == producer.job_id)
+        assert rebuilt["state"] == "succeeded", rebuilt["outcome"]
+        return producer.job_id, [row for row in rows if row["request"] == gain]
+
+    producer_id, gain_attempts = run_together("refresh-assemble-same-output")
+    equal = SuccessView(store)
+    unchanged_system = equal.authored(assemble).receipt
+    assert unchanged_system.attempt == producer_id
+    assert unchanged_system.products["system"] == old_system
+    assert {row["id"] for row in gain_attempts if row["delivery"]} == {retained_id}
+    assert {row["id"] for row in gain_attempts if equal.attempt_ref(row["id"])} == {retained_id}
+    assert equal.authored_ref(gain) == old_gain.ref
+    still_current = retained()
+    assert still_current.status is JobStatus.SUCCEEDED
+    assert still_current.result.job_id == retained_id
+    assert still_current.result.receipt == initial.result.receipt
+
+    source.write_text(same_output.replace(marker, f"{marker}\n    actuation *= 2", 1))
+    assert read_settled_project_plan(review, jobs).light[assemble_key].status is JobStatus.STALE
+    assert retained().status is JobStatus.SUCCEEDED
+    producer_id, gain_attempts = run_together("refresh-assemble-changed-output")
+    changed = SuccessView(store)
+    changed_system = changed.authored(assemble).receipt
+    rebuilt_gain = changed.authored(gain).receipt
+    assert changed_system.attempt == producer_id
+    assert changed_system.products["system"] != unchanged_system.products["system"]
+    assert rebuilt_gain.attempt != retained_id
+    assert {row["id"] for row in gain_attempts if row["delivery"]} == {retained_id, rebuilt_gain.attempt}
+    current = retained()
+    assert current.status is JobStatus.SUCCEEDED
+    assert current.result.job_id == rebuilt_gain.attempt
+    (product,) = rebuilt_gain.products["gain"]
+    with open_stored_dataset(store, dataset_member(product)) as dataset:
+        assert dataset.data("gain").item() == pytest.approx(6.0 * (1 + np.sqrt(2)), rel=1e-10)
+
+    data_file.write_text("second calibration")
+    file_change = read_settled_project_plan(review, jobs).light[assemble_key].result.validity
+    assert file_change.state == "stale"
+    assert {(reason.kind, reason.path.path) for reason in file_change.reasons} == {("file", data_file.name)}

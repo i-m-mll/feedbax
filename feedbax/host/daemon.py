@@ -18,8 +18,8 @@ from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.host import live_evaluate
-from feedbax.host.checkpoint_selection import requested_checkpoint_selection, verify_dependency_files
-from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
+from feedbax.host.checkpoint_selection import requested_checkpoint_selection
+from feedbax.host.completion import CompletionFileError
 from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
@@ -36,7 +36,8 @@ POLL_SECONDS = 0.20
 TERM_GRACE = 2
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
-    "ping", "events", "jobs_snapshot", "stopped_checkpoint", "jobs", "submissions", "record_get", "record_get_many",
+    "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
+    "record_get", "record_get_many",
 }
 
 
@@ -359,28 +360,7 @@ class Host:
         try:
             if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                 origins = self.store.light_origins(row)
-            train_slots = train_source_slots(launch)
-            payload = launch["payload"]
-            request = payload.get("canonical_request") or {}
-            terminal = request.get("terminal")
-            for binding in bindings if terminal is None else ({"terminal": terminal},):
-                if "terminal" in binding:
-                    from feedbax.contracts.effective_success import TerminalTrainSubject
-                    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-                    from feedbax.persistence.evaluation_subject import read_terminal_train_subject
-
-                    try:
-                        read_terminal_train_subject(
-                            ImmutableArtifactBlobProvider(Path(payload["manifest_root"])),
-                            TerminalTrainSubject.model_validate(binding["terminal"]),
-                            request["checkpoint"]["request_id"],
-                        )
-                    except (OSError, TypeError, ValueError, KeyError) as error:
-                        raise CompletionFileError(str(error)) from error
-                elif train_slots is None:
-                    verify_dependency_files(binding)
-                elif row["continues"] is None:
-                    verify_completion_files(binding["completion"], train_slots=train_slots)
+            self.store.verify_completion_bindings(row, launch, bindings)
         except CompletionFileError as error:
             with self.store.db:
                 self.store.finished(
@@ -480,6 +460,10 @@ class Host:
                 "job_id": row["id"],
                 "paths": {name: str(path) for name, path in paths.items()},
                 "argv": launch["argv"],
+                "store_root": json.loads(row["data"]).get("manifest_root"),
+                "project_root": launch.get("project_root"),
+                "environment_root": launch["cwd"] if self.session is not None else None,
+                "entrypoint": launch["warm_entrypoint"],
                 "completion_bindings_sha256": completion_bindings_sha256,
                 "live_evaluate_sha256": live_evaluate_sha256,
                 "startup_log": str(worker.profile_dir / "startup.log"),
@@ -749,6 +733,8 @@ class Host:
                     self._close_control(worker)
         self.store.resolve_completions()
         self.store.settle_blocked()
+        if self.session is None or self.session.accepts_work:
+            self.store.deferred.settle()
         for row in self.store.ready():
             self._assign(row)
         running = self.store.active()
@@ -851,7 +837,7 @@ class Host:
             "SELECT id FROM jobs WHERE state IN (?, ?, ?, ?) ORDER BY seq", LIVE_STATES,
         )]
         idle = self.store.db.execute(
-            "SELECT time FROM events WHERE kind IN ('terminal', 'blocked') ORDER BY cursor DESC LIMIT 1",
+            "SELECT time FROM events WHERE kind IN ('terminal', 'blocked', 'reused') ORDER BY cursor DESC LIMIT 1",
         ).fetchone() if not live else None
         return {
             "session_id": state.session_id, "stream_id": self.stream_id,
@@ -931,6 +917,8 @@ class Host:
                 return await self._events(**message)
             case "jobs_snapshot":
                 return self.store.jobs_snapshot(**message)
+            case "checkpoint_producer":
+                return self.store.checkpoint_producer(**message)
             case "stopped_checkpoint":
                 return self.store.stopped_checkpoint(**message)
             case "admit" | "admit_with_completion":

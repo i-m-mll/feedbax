@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, NamedTuple
 
 import equinox as eqx
@@ -179,6 +180,14 @@ class BlockResult(NamedTuple):
     completed: int
     metrics: TrainingMetrics
     rejected: bool
+    sampled_model: Graph | None = None
+
+
+@dataclass(frozen=True)
+class LoweredBlock:
+    traced: jax.stages.Traced
+    execution: jax.stages.Lowered
+    platform: str
 
 
 def _metric_array(value):
@@ -194,7 +203,7 @@ class TrainingLoop:
     def __init__(
         self, method: RegisteredTrainingMethod, settings: BaseModel, *, execution: TrialExecution,
         objective: ObjectiveExecutor, batch_size: int, seed: int, replica_ids: tuple[str, ...],
-        start_step: int = 0, parameters: TaskParameters = TaskParameters(),
+        start_step: int = 0, parameters: TaskParameters = TaskParameters(), sample_at: int = 0,
     ) -> None:
         _check_replicas(replica_ids)
         if batch_size < 1 or not 0 <= start_step < 2**32:
@@ -204,10 +213,7 @@ class TrainingLoop:
         step_keys = jnp.stack([_replica_key(seed, replica, "update") for replica in replica_ids])
         run_keys = jnp.stack([_replica_key(seed, replica, "task-run") for replica in replica_ids])
 
-        @eqx.filter_jit
-        def block(state: TrainingState, completed: jax.Array, count: int):
-            arrays, static = eqx.partition(state, eqx.is_array)
-
+        def block(static, arrays, completed, update_keys, task_keys, sample_update, active_count, count):
             @jax.vmap
             def single_update(replica_arrays, key_root, run_key, step):
                 key = derive_key(key_root, "step", index=step)
@@ -222,40 +228,92 @@ class TrainingLoop:
 
             @jax.jit
             def propose(current, step):
-                return single_update(current, step_keys, run_keys, jnp.broadcast_to(step, (len(replica_ids),)))
+                return single_update(current, update_keys, task_keys, jnp.broadcast_to(step, (len(replica_ids),)))
 
             _, metrics_shape = jax.eval_shape(propose, arrays, completed)
             # Rejected and unattempted metric rows are sliced away at the host boundary.
             no_metrics = jax.tree.map(lambda shape: jnp.zeros(shape.shape, shape.dtype), metrics_shape)
 
             def advance(carry, offset):
-                current, accepted, active = carry
+                current, accepted, active, witness = carry
 
                 def attempt(value):
                     candidate, metrics = propose(value, completed + offset)
                     finite = _all_finite(candidate)
                     next_value = jax.lax.cond(finite, lambda: candidate, lambda: value)
-                    return (next_value, accepted + finite, finite), metrics
+                    capture = finite & (completed + offset + jnp.uint32(1) == sample_update)
+                    next_witness = jax.lax.cond(capture, lambda: candidate.model, lambda: witness)
+                    return (next_value, accepted + finite, finite, next_witness), metrics
 
-                return jax.lax.cond(active, attempt, lambda value: ((value, accepted, active), no_metrics), current)
-
+                return jax.lax.cond(
+                    active & (offset < active_count), attempt,
+                    lambda value: ((value, accepted, active, witness), no_metrics), current,
+                )
             carry, metrics = jax.lax.scan(
-                advance, (arrays, jnp.int32(0), jnp.array(True)), jnp.arange(count, dtype=jnp.uint32),
+                advance, (arrays, jnp.int32(0), jnp.array(True), arrays.model), jnp.arange(count, dtype=jnp.uint32),
             )
-            arrays, accepted, _ = carry
-            return eqx.combine(arrays, static), accepted, metrics
+            arrays, accepted, _, witness = carry
+            return arrays, accepted, metrics, witness
 
         self._block = block
+        self._keys = step_keys, run_keys
+        self._sample_at = sample_at
+        self._static: TrainingState | None = None
+        self._kernel: jax.stages.Wrapped | None = None
+        self._lowered: dict[tuple, LoweredBlock] = {}
+        self._compiled: dict[tuple, jax.stages.Compiled] = {}
+        self.observe_lowering: Callable[[TrainingState, tuple[jax.Array, ...], int, LoweredBlock], None] | None = None
 
-    def run_block(self, state: TrainingState, *, completed: int, count: int) -> BlockResult:
-        """Run a bounded compiled block and return the contiguous committed prefix."""
+    def _operands(self, state: TrainingState, completed: int, count: int, limit: int):
         if not self._start_step <= completed < completed + count <= 2**32:
             raise ValueError("The block must contain updates within the training clock")
+        if not 0 < limit <= count:
+            raise ValueError("Train replay limit must be inside the actual block")
         _check_state(state)
-        if any(leaf.ndim < 1 or leaf.shape[0] != self._replica_count
-               for leaf in jax.tree.leaves(eqx.filter(state, eqx.is_array))):
+        arrays, static = eqx.partition(state, eqx.is_array)
+        leaves = jax.tree.leaves(arrays)
+        if any(leaf.ndim < 1 or leaf.shape[0] != self._replica_count for leaf in leaves):
             raise ValueError("Training state arrays must share the declared leading replica axis")
-        updated, accepted, metrics = self._block(state, jnp.uint32(completed), count)
+        if self._static is None:
+            self._static = static
+            self._kernel = jax.jit(partial(self._block, static), static_argnums=6)
+        elif not eqx.tree_equal(self._static, static):
+            raise ValueError("Training state changed its fixed structure or metadata between blocks")
+        controls = self.block_arguments(completed, limit)
+        signature = count, tuple(
+            (_array_signature(leaf), leaf.sharding, leaf.committed) for leaf in (*leaves, *controls)
+        )
+        return signature, (arrays, *controls)
+
+    def _lower(self, signature: tuple, operands, count: int) -> LoweredBlock:
+        from jax.export import default_export_platform
+
+        if signature not in self._lowered:
+            assert self._kernel is not None
+            traced = self._kernel.trace(*operands, count)
+            self._lowered[signature] = LoweredBlock(traced, traced.lower(), default_export_platform())
+        return self._lowered[signature]
+
+    def lower_block(self, state: TrainingState, *, completed: int, count: int) -> LoweredBlock:
+        """Lower the same block and operand types that execution would compile."""
+        signature, operands = self._operands(state, completed, count, count)
+        return self._lower(signature, operands, count)
+
+    def block_arguments(self, completed: int, limit: int) -> tuple[jax.Array, ...]:
+        return jnp.uint32(completed), *self._keys, jnp.uint32(self._sample_at), jnp.uint32(limit)
+
+    def run_block(self, state: TrainingState, *, completed: int, count: int, limit: int | None = None) -> BlockResult:
+        """Run a bounded compiled block and return the contiguous committed prefix."""
+        limit = count if limit is None else limit
+        signature, operands = self._operands(state, completed, count, limit)
+        if signature not in self._compiled:
+            lowered = self._lower(signature, operands, count)
+            if self.observe_lowering is not None:
+                self.observe_lowering(state, operands[1:], count, lowered)
+            self._compiled[signature] = lowered.execution.compile()
+        updated, accepted, metrics, witness = self._compiled[signature](*operands)
         accepted, metrics = jax.device_get((accepted, metrics))
         n = int(accepted)
-        return BlockResult(updated, completed + n, jax.tree.map(lambda values: values[:n], metrics), n < count)
+        updated = eqx.combine(updated, self._static)
+        sampled = eqx.combine(witness, self._static.model) if completed < self._sample_at <= completed + n else None
+        return BlockResult(updated, completed + n, jax.tree.map(lambda values: values[:n], metrics), n < limit, sampled)

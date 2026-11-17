@@ -603,6 +603,7 @@ def live_objective_series(
     from feedbax.job_completion import read_training_binding
     from feedbax.persistence.content_retention import read_active_roots
     from feedbax.persistence.dataset import open_stored_dataset
+    from feedbax.persistence.live_evaluate import read_live_evaluation_evidence
     from feedbax.training.method_checkpoint import read_method_checkpoint_manifest
 
     objective_hash = rollout_objective_sha256(objective)
@@ -638,8 +639,7 @@ def live_objective_series(
         checkpoint = point.checkpoint
         pointer = checkpoint.pointer
         update = checkpoint.completed_updates
-        if len(root.targets) != 1 or root.targets[0].object != result.states.object_ref:
-            raise ValueError("Live objective lacks its exact active dataset.")
+        read_live_evaluation_evidence(store, point, active_root=root)
         if selected.binding_sha256 not in launches:
             launches[selected.binding_sha256] = read_training_binding(
                 store.root, selected.producer_job_id, selected.binding_sha256,

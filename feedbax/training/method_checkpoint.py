@@ -20,7 +20,7 @@ from jaxtyping import PyTree
 import numpy as np
 
 from feedbax._atomic import sync_parent_directories, write_bytes_atomic
-from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef, ContentTreeRef
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.method_checkpoint import (
@@ -212,6 +212,8 @@ def write_method_checkpoint(
     state: TrainingState, model_writer: SemanticModelWriter,
     model_templates: Sequence[Graph], replica_ids: tuple[str, ...], final: bool = False,
     content_provider: ImmutableArtifactBlobProvider | None = None,
+    validity: ContentTreeRef | None = None,
+    metrics_prefix: ContentObjectRef | None = None,
 ) -> MethodCheckpointWrite:
     from feedbax.training.method_runtime import replica_value
 
@@ -237,7 +239,8 @@ def write_method_checkpoint(
         write_bytes_atomic(staged / method_checkpoint_extra_path(extra), encoded.data)
         manifest = MethodCheckpointManifest(
             transaction_id=transaction_id, run_id=run_id, final=final,
-            identity=identity, clock=clock, model=model, extra=extra,
+            identity=identity, clock=clock, model=model, extra=extra, validity=validity,
+            metrics_prefix=metrics_prefix,
         )
         raw = canonical_json_v2_bytes(manifest.model_dump(mode="json"))
         write_bytes_atomic(staged / manifest_path.name, raw)
