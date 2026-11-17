@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { StudioProjectDocument } from '../../../src/generated/studioContracts';
-import { activate, number } from './studioKeyboard';
+import { activate, activateMenuItem, number } from './studioKeyboard';
 
 const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 const run = promisify(execFile);
@@ -79,7 +79,7 @@ export async function enter(field: Locator, value: string) {
 export async function authorLearningRateSweep(rate: Locator) {
   const page = rate.page();
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
-  await activate(page, rate.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   const text = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await expect(text).toHaveValue('0.001,');
   await expect(text).toBeEditable();

@@ -27,6 +27,15 @@ export async function tabTo(page: Page, target: Locator, limit = 100) {
   await expect(target).toBeFocused();
 }
 
+export async function activateMenuItem(page: Page, item: Locator) {
+  await expect(item).toBeEnabled();
+  for (let index = 0; index < 20 && !await item.evaluate((element) => element === document.activeElement); index += 1) {
+    await page.keyboard.press('ArrowDown');
+  }
+  await expect(item).toBeFocused();
+  await page.keyboard.press('Enter');
+}
+
 export async function activate(page: Page, target: Locator, key = 'Enter') {
   await expect(target).toBeEnabled();
   await tabTo(page, target);

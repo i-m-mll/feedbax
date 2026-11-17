@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
-import { activate, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
+import { activate, activateMenuItem, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
 import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
 
 test.use({
@@ -153,7 +153,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const train = page.getByRole('article', { name: 'Train train', exact: true });
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
-  await activate(page, rate.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await expect(rateText).toHaveValue('0.001,');
   await number(page, rateText, '0.001, 0.002, 0.003');
@@ -495,7 +495,10 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(region(page, 'drawer')).toHaveCount(0);
   await palette(page, 'showDrawer', 'Show Drawer');
   await expect(region(page, 'drawer')).toBeFocused();
-  await activate(page, region(page, 'drawer').getByRole('button', { name: 'Outline', exact: true }));
+  await tabTo(page, region(page, 'drawer').getByRole('button', { name: 'Library', exact: true }));
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Enter');
+  await expect(region(page, 'drawer').getByRole('button', { name: 'Outline', exact: true })).toHaveAttribute('aria-pressed', 'true');
   const plant = region(page, 'drawer').getByRole('button', { name: 'Point mass', exact: true });
   await activate(page, plant);
   await expect(plant).toHaveAttribute('aria-pressed', 'true');
@@ -574,7 +577,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
-  await activate(page, rate.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   await expect(rateText).toHaveValue('0.001,');
   await number(page, rateText, '0.001, 0.002, 0.003');
   await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');

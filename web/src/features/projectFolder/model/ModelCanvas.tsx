@@ -13,6 +13,8 @@ import { studioAccessibleName, studioName } from '@/components/activity/studioVo
 import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
+import { Button, IconButton } from '@/components/ui/Button';
+import { TextField } from '@/components/ui/TextField';
 import { portId, portTypeLabel, type Port } from './modelGraph';
 import './modelCanvas.css';
 
@@ -101,12 +103,12 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
     aria-labelledby={nameId}>
     <header className="studio-model-card-header">
       <strong id={nameId} className={data.renaming ? 'sr-only' : undefined}>{data.name}</strong>
-      {data.renaming && <form className="nodrag" onSubmit={(event) => {
+      {data.renaming && <form className="nodrag min-w-0 flex-1" onSubmit={(event) => {
         event.preventDefault();
         const name = input.current?.value.trim();
         if (name) data.rename?.(name);
       }}>
-        <input ref={input} autoFocus defaultValue={data.name} aria-label={studioName('name')}
+        <TextField ref={input} autoFocus defaultValue={data.name} aria-label={studioName('name')}
           onBlur={data.endRename} onKeyDown={(event) => {
             if (event.key === 'Escape') { event.stopPropagation(); data.endRename?.(); }
           }} />
@@ -168,8 +170,8 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
-    {data.addPort && <button className="nodrag studio-model-add-port" type="button" aria-label={studioName('addPort')}
-      onClick={(event) => { event.stopPropagation(); data.addPort?.(); }}>+</button>}
+    {data.addPort && <IconButton className="nodrag studio-model-add-port" size="mark" label={studioName('addPort')} icon={<Plus />}
+      onClick={(event) => { event.stopPropagation(); data.addPort?.(); }} />}
   </article>;
 });
 
@@ -231,8 +233,8 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
       style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3,
         strokeDasharray: delayed ? dash : undefined }} />
     {data?.attachments?.length || data?.bundleCount || data?.problem || data?.selected && waypoints?.length ? <EdgeLabelRenderer>
-      {data.selected && waypoints?.map((point, index) => <button key={index} type="button" aria-label={studioAccessibleName('waypoint', index + 1)}
-        className="studio-model-waypoint nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)` }}
+      {data.selected && waypoints?.map((point, index) => <Button key={index} size="mark" aria-label={studioAccessibleName('waypoint', index + 1)}
+        className="studio-model-waypoint nodrag nopan aspect-square" style={{ transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)` }}
         disabled={!data.moveWaypoint}
         onPointerDown={(event) => {
           event.stopPropagation();
@@ -248,15 +250,15 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
         }} onPointerCancel={() => setMoving(undefined)} />)}
       <div className="studio-model-attachments nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${mid.x}px, ${mid.y}px)` }}>
         {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
-        {data.bundleCount && <span className="rounded border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
+        {data.bundleCount && <span className="rounded-row border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
         {data.attachments?.map(({ id, label, description, mark, select, drag }) =>
-          <button key={id} type="button" aria-label={studioAccessibleName('attachment', label)}
+          <Button key={id} size="mark" aria-label={studioAccessibleName('attachment', label)}
             aria-description={description}
             {...appTip(studioAccessibleName('attachment', label))}
             draggable={!!drag} onDragStart={(event) => {
               if (drag) event.dataTransfer.setData('application/x-feedbax-attachment', JSON.stringify(drag));
             }}
-            onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</button>)}
+            onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</Button>)}
       </div>
     </EdgeLabelRenderer> : null}
   </>;
@@ -328,12 +330,15 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
   useEffect(() => { setEdges(edges); }, [edges, setEdges]);
   return <div className="studio-model-canvas">
     <div className="studio-model-strip">
-      <button type="button" {...commandAttributes(collapse)} aria-pressed={collapsed} disabled={!collapse.enabled} onClick={collapse.invoke}><ChevronsDownUp /></button>
-      <button type="button" {...commandAttributes(lock)} aria-pressed={locked} disabled={!lock.enabled} onClick={lock.invoke}>{locked ? <Lock /> : <Unlock />}</button>
+      <IconButton label={collapse.label} icon={<ChevronsDownUp />} {...commandAttributes(collapse, 'right')} pressed={collapsed}
+        disabled={!collapse.enabled} onClick={collapse.invoke} />
+      <IconButton label={lock.label} icon={locked ? <Lock /> : <Unlock />} {...commandAttributes(lock, 'right')} pressed={locked}
+        disabled={!lock.enabled} onClick={lock.invoke} />
       <div />
       {viewportCommands.map((command) => {
         const Icon = viewportIcons[command.id];
-        return <button key={command.id} type="button" {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}><Icon /></button>;
+        return <IconButton key={command.id} label={command.label} icon={<Icon />} {...commandAttributes(command, 'right')}
+          disabled={!command.enabled} onClick={command.invoke} />;
       })}
     </div>
     <div className="studio-model-surface" onPointerMove={(event) => onCanvasPoint(point(event))}

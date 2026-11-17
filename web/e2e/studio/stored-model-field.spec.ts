@@ -64,8 +64,8 @@ test('edits and reopens a stored Model field sweep through project history', asy
 
   const valueMenu = inspector.getByRole('button', { name: 'Hidden size kind: Value' });
   await valueMenu.click();
-  await expect(inspector.getByRole('menuitem')).toHaveText(['Value', 'Sweep', 'Formula']);
-  await inspector.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  await expect(page.getByRole('menuitem')).toHaveText(['Value', 'Sweep', 'Formula']);
+  await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   await expect(hidden).toHaveValue('64,');
   await enter(hidden, '64, 96, 128');
   await expect(inspector.getByRole('textbox', { name: 'Hidden size value 3', exact: true })).toHaveValue('128');

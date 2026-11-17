@@ -3,7 +3,7 @@ import type {
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
-import { activate, number, openView } from './studioKeyboard';
+import { activate, activateMenuItem, number, openView } from './studioKeyboard';
 
 /** Create a shared Evaluate from the current Train selection and author its numeric condition axis. */
 export async function authorEvaluateConditions({
@@ -61,7 +61,7 @@ export async function authorEvaluateConditions({
 
   await expect(value).toBeEditable();
   await activate(page, control.getByRole('button', { name: field + ' kind: Value', exact: true }));
-  await edit(() => activate(page, control.getByRole('menuitem', { name: 'Sweep', exact: true })));
+  await edit(() => activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true })));
   await expect(control.getByRole('button', { name: field + ' kind: Sweep', exact: true })).toBeVisible();
   await expect(value).toBeEditable();
   let authored = await edit(() => number(page, value, conditions.map(({ value }) => value).join(', ')));

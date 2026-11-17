@@ -11,18 +11,24 @@ export const ContextMenuTrigger = BaseContextMenu.Trigger;
 
 type Side = 'top' | 'bottom' | 'left' | 'right' | 'inline-start' | 'inline-end';
 
+type PositionerProps = ComponentPropsWithoutRef<typeof BaseMenu.Positioner>;
+type PopupProps = ComponentPropsWithoutRef<typeof BaseMenu.Popup>;
+
 export interface MenuContentProps {
   children: ReactNode;
   side?: Side;
   align?: 'start' | 'center' | 'end';
+  anchor?: PositionerProps['anchor'];
+  finalFocus?: PopupProps['finalFocus'];
+  'aria-label'?: string;
   className?: string;
 }
 
-export function MenuContent({ children, side = 'bottom', align = 'start', className }: MenuContentProps) {
+export function MenuContent({ children, side = 'bottom', align = 'start', anchor, finalFocus, className, ...aria }: MenuContentProps) {
   return (
     <BaseMenu.Portal>
-      <BaseMenu.Positioner className="z-50 outline-none" side={side} align={align} sideOffset={4}>
-        <BaseMenu.Popup className={clsx(popupSurface, 'min-w-[10rem]', className)}>{children}</BaseMenu.Popup>
+      <BaseMenu.Positioner className="z-50 outline-none" side={side} align={align} sideOffset={4} anchor={anchor}>
+        <BaseMenu.Popup className={clsx(popupSurface, 'min-w-[10rem]', className)} finalFocus={finalFocus} {...aria}>{children}</BaseMenu.Popup>
       </BaseMenu.Positioner>
     </BaseMenu.Portal>
   );

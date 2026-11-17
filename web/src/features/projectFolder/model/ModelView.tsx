@@ -7,7 +7,13 @@ import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, re
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { ChevronRight, House, Search } from 'lucide-react';
+import { Button, IconButton } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
+import { Menu, MenuContent, MenuItem } from '@/components/ui/Menu';
+import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { Select } from '@/components/ui/Select';
+import { TextField } from '@/components/ui/TextField';
 import { StudioFieldControl } from '@/components/values/StudioFieldControl';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
@@ -46,8 +52,7 @@ type Props = {
   path: readonly string[];
   setPath(path: string[]): void;
 };
-const button = 'rounded px-2 py-1 text-left hover:bg-shell-hover disabled:opacity-50';
-const panel = 'grid max-h-[70vh] w-[min(28rem,90vw)] gap-2 overflow-auto rounded border border-shell-divider bg-shell-chrome p-3 shadow-xl';
+const sourceAttachment = '@source';
 const emptyPath: string[] = [];
 const inputCard = '@inputs';
 const outputCard = '@outputs';
@@ -117,7 +122,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   }
   return <>{[...groups].map(([category, items], index) => <section key={category} aria-labelledby={`${categoryId}-${index}`} className="space-y-0.5">
     <h3 id={`${categoryId}-${index}`} className="px-2 pt-1 text-xs text-shell-muted">{category}</h3>
-    {items.map((definition) => <button key={definition.name} className={`${button} block w-full`} type="button"
+    {items.map((definition) => <Button key={definition.name} variant="ghost" align="start" className="w-full"
       aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled && !browse}
       draggable={browse && !disabled} onDragStart={(event) => {
         event.dataTransfer.setData('application/x-feedbax-component', definition.name);
@@ -125,7 +130,7 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
       onDoubleClick={() => { if (browse && !disabled) choose(definition); }}
       onKeyDown={(event) => {
         if (browse && !disabled && event.key === 'Enter') { event.preventDefault(); choose(definition); }
-      }}>{shortName(definition.name)}</button>)}
+      }}>{shortName(definition.name)}</Button>)}
   </section>)}</>;
 }
 
@@ -711,10 +716,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     {list.map((item) => {
       const itemAddress = attachmentAddress(address, item.id);
       return <li key={item.id} className="flex gap-1">
-        <button className={button} type="button" aria-pressed={selectedIds.has(addressKey(itemAddress))}
+        <Button variant="ghost" pressed={selectedIds.has(addressKey(itemAddress))}
           onClick={() => select(itemAddress)}>
           {stepCount(item, model?.value.step_seconds ?? 0.01)} · {attachmentName(item)}{isAuthored(itemAddress) ? ' ◇' : ''}
-        </button>
+        </Button>
       </li>;
     })}
   </ul>;
@@ -814,7 +819,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const inspector = libraryItem ? <section className="grid gap-2 p-2 text-sm">
     <strong>{shortName(libraryItem.name)}</strong><p>{libraryItem.description}</p>
     <ul>{[...(libraryItem.input_ports ?? []), ...(libraryItem.output_ports ?? [])].map((name, index) => <li key={index}>{name}</li>)}</ul>
-    {editTopology && <button className={button} type="button" onClick={() => add(libraryItem)}>{studioAccessibleName('add', shortName(libraryItem.name))}</button>}
+    {editTopology && <Button className="justify-self-start" onClick={() => add(libraryItem)}>{studioAccessibleName('add', shortName(libraryItem.name))}</Button>}
   </section> : model && <section className="grid gap-2 p-2 text-sm">
     {fieldBody && <StudioRegion state={studioReadState(
       'field', fields.data, fields.error, () => { void fields.refetch(); },
@@ -841,16 +846,16 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         change={editTopology || canEvaluate && !busy ? (item) => updateAttachment(selection, item) : undefined}
         arm={attachment.kind === 'delay' && editTopology ? () => armInitial(selection, attachment) : undefined}
         linkLabel={labelOfPort} />
-      {(editTopology || canEvaluate && !busy) && <button className={button} type="button"
-        onClick={() => removeAttachment(selection)}>{studioName('removeAttachment')}</button>}
-      {canEvaluate && chain && chain.length > 1 && isAuthored(selection) && <label>{studioName('after')}
-        <select value={chain[chain.indexOf(attachment) - 1]?.id ?? ''} onChange={(event) => void applyEvaluate(
-          'Move Attachment', { op: 'change', address: selection, attachment, after: event.currentTarget.value || null },
-        )}>
-          <option value="">{studioName('source')}</option>
-          {chain.filter((item) => item.id !== attachment.id).map((item) => <option key={item.id} value={item.id}>{attachmentName(item)}</option>)}
-        </select>
-      </label>}
+      {(editTopology || canEvaluate && !busy) && <Button className="justify-self-start"
+        onClick={() => removeAttachment(selection)}>{studioName('removeAttachment')}</Button>}
+      {canEvaluate && chain && chain.length > 1 && isAuthored(selection) && <div className="grid gap-1">{studioName('after')}
+        <Select aria-label={studioName('after')} value={chain[chain.indexOf(attachment) - 1]?.id ?? sourceAttachment}
+          items={[{ value: sourceAttachment, label: studioName('source') },
+            ...chain.filter((item) => item.id !== attachment.id).map((item) => ({ value: item.id, label: attachmentName(item) }))]}
+          onValueChange={(after) => void applyEvaluate(
+            'Move Attachment', { op: 'change', address: selection, attachment, after: after === sourceAttachment ? null : after },
+          )} />
+      </div>}
     </> : ownerAddress ? <strong>{studioName('wire')}</strong>
       : projectedFields.length ? fieldControls
       : <ModelFields model={model.value} change={editTopology && !fieldBody && !currentPath.length ? (path, value) => void apply(studioName('step'), {
@@ -859,8 +864,8 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     {ownerAddress && !attachment && chain && <div className="border-t border-shell-divider pt-1">
       {shownAttachments(ownerAddress, chain)}
       {attachmentsForSelection.length > 0 && <div className="flex flex-wrap gap-1">
-        {attachmentsForSelection.map((command) => <button key={command.id} className={button} type="button"
-          {...commandAttributes(command)} onClick={command.invoke}>{command.label}</button>)}
+        {attachmentsForSelection.map((command) => <Button key={command.id}
+          {...commandAttributes(command)} onClick={command.invoke}>{command.label}</Button>)}
       </div>}
     </div>}
   </section>;
@@ -870,10 +875,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       const address = at(graph, { kind: 'component', id });
       const enter = component.kind === 'composite' ? enterComposite(id, component.name) : undefined;
       return <li key={id} className="flex">
-        {enter && <button className={button} type="button"
-          {...commandAttributes(enter)} onClick={enter.invoke}>›</button>}
-        <button className={button} type="button" aria-pressed={selectedIds.has(addressKey(address))}
-          onClick={(event) => select(address, event.shiftKey)}>{component.name}</button>
+        {enter && <IconButton label={enter.label} icon={<ChevronRight />}
+          {...commandAttributes(enter)} onClick={enter.invoke} />}
+        <Button variant="ghost" align="start" className="min-w-0 flex-1" pressed={selectedIds.has(addressKey(address))}
+          onClick={(event) => select(address, event.shiftKey)}>{component.name}</Button>
       </li>;
     })}
     {wires.map(([id, wire]) => {
@@ -881,7 +886,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       const title = [wire.source, wire.target].map((end) =>
         `${end.owner === 'component' ? interior?.components?.[end.component]?.name ?? end.component : end.owner}.${end.port}`).join(' → ');
       return <li key={id}>
-        <button type="button" className={button} aria-pressed={selectedIds.has(addressKey(address))} onClick={() => select(address)}>{title}</button>
+        <Button variant="ghost" align="start" className="w-full" pressed={selectedIds.has(addressKey(address))} onClick={() => select(address)}>{title}</Button>
         {shownAttachments(address, effective.get(addressKey(address)) ?? [])}
       </li>;
     })}
@@ -893,11 +898,11 @@ export function useStoredModelView({ model, saved, editor, window: state, active
 
   return {
     documentId: model?.id,
-    header: model && <button type="button" className={button} onClick={() => go([])}>{model.id}</button>,
+    header: model && <Button variant="ghost" onClick={() => go([])}>{model.id}</Button>,
     path: model && !!resolved?.entries.length && <nav className="flex min-w-0 items-center gap-1" aria-label={studioName('modelPath')}>
-      <button type="button" className={button} aria-label={studioName('modelRoot')} onClick={() => go([])}>⌂</button>
-      {resolved?.entries.map(({ id, name }, index) => <button key={id} type="button" className={button}
-        onClick={() => go(currentPath.slice(0, index + 1))}>› {name}</button>)}
+      <IconButton label={studioName('modelRoot')} icon={<House />} onClick={() => go([])} />
+      {resolved?.entries.map(({ id, name }, index) => <Button key={id} variant="ghost"
+        onClick={() => go(currentPath.slice(0, index + 1))}>› {name}</Button>)}
     </nav>,
     body: model ? <div className="flex h-full min-h-0 flex-col" onKeyDown={(event) => {
       if (event.key === 'Escape' && (state.getState().pick || keyboardReview.current && !keyboardReview.current.signal.aborted)) {
@@ -957,13 +962,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       </div>
     </div> : null,
     drawer: model && <section className="space-y-2 p-1 text-sm">
-      <div className="flex" role="group" aria-label={studioName('modelDrawer')}>
-        <button className={button} type="button" aria-pressed={drawer === 'library'} onClick={() => setDrawer('library')}>{studioName('library')}</button>
-        <button className={button} type="button" aria-pressed={drawer === 'outline'} onClick={() => setDrawer('outline')}>{studioName('outline')}</button>
-      </div>
+      <SegmentedControl<typeof drawer> aria-label={studioName('modelDrawer')} value={drawer} onValueChange={setDrawer}
+        items={[{ value: 'library', label: studioName('library') }, { value: 'outline', label: studioName('outline') }]} />
       {drawer === 'library' ? <>
-        <input aria-label={studioName('searchLibrary')} className="w-full border border-shell-divider px-1 py-0.5"
-          value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
+        <TextField aria-label={studioName('searchLibrary')} leading={<Search />} value={query} onValueChange={setQuery} />
         <StudioRegion state={studioReadState(
           'library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); },
         )}>
@@ -973,17 +975,19 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     </section>,
     inspector,
     commands,
-    overlay: search ? <Dialog ariaLabel={studioName('addComponent')} onClose={() => setSearch(undefined)} manageFocus panelClassName={panel}>
-      <input data-dialog-autofocus aria-label={studioName('components')} className="border border-shell-divider px-2 py-1"
-        value={searchText} onChange={(event) => setSearchText(event.currentTarget.value)} />
+    overlay: search ? <Dialog ariaLabel={studioName('addComponent')} onClose={() => setSearch(undefined)} manageFocus
+      panelClassName="grid max-h-[70vh] w-[min(28rem,90vw)] gap-2 overflow-auto">
+      <TextField data-dialog-autofocus aria-label={studioName('components')} leading={<Search />}
+        value={searchText} onValueChange={setSearchText} />
       {searchSource ? searchLibrary?.flatMap(({ component, target_port: port }) => {
         const item = registry.get(component);
         return item && searchable(item, searchText) ?
-          <button key={JSON.stringify([item.name, port])} type="button" className={button} disabled={!editTopology}
-            onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</button> : [];
+          <Button key={JSON.stringify([item.name, port])} variant="ghost" align="start" disabled={!editTopology}
+            onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</Button> : [];
       })
         : <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />}
-    </Dialog> : addPort ? <Dialog ariaLabel={studioName('addPort')} onClose={() => setAddPort(undefined)} manageFocus panelClassName={panel}>
+    </Dialog> : addPort ? <Dialog ariaLabel={studioName('addPort')} onClose={() => setAddPort(undefined)} manageFocus
+      panelClassName="grid max-h-[70vh] w-[min(28rem,90vw)] gap-2 overflow-auto">
       <Field label={studioName('name')} value="" parse={(raw) => raw.trim() || undefined} commit={(name) => {
         void apply(studioName('addPort'), { op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name: String(name), type: {} } }, false)
           .then((ok) => { if (ok) setAddPort(undefined); });
@@ -999,21 +1003,22 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         return candidates.map((port) => {
           const source = wireEnd(port);
           if (source.owner !== 'inputs' && source.owner !== 'component') return null;
-          return <button key={`${depth}:${endKey(source)}`} className={button} type="button" onClick={() => {
+          return <Button key={`${depth}:${endKey(source)}`} variant="ghost" align="start" onClick={() => {
             void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(graph.document, outerPath),
               source, destination: graph }, false).then((ok) => { if (ok) setAddPort(undefined); });
-          }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</button>;
+          }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</Button>;
         });
       })}
-    </Dialog> : menu && <Dialog ariaLabel={studioName('modelCommands')} onClose={() => setMenu(undefined)} manageFocus className="fixed inset-0">
-      <div role="menu" className="fixed grid rounded border border-shell-divider bg-shell-chrome p-1 text-sm shadow-lg"
-        style={{ left: Math.min(menu.x, window.innerWidth - 160), top: Math.min(menu.y, window.innerHeight - 240) }}>
+    </Dialog> : menu && <Menu open onOpenChange={(open) => { if (!open) setMenu(undefined); }}>
+      <MenuContent aria-label={studioName('modelCommands')} anchor={{
+        getBoundingClientRect: () => DOMRect.fromRect({ x: menu.x, y: menu.y, width: 0, height: 0 }),
+      }}>
         {[...commands.filter((command) => command.id.startsWith('model')),
           ...topologyCommands(menu.address, menu.point), ...attachmentCommands(menu.address)]
           .filter((command) => command.enabled).map((command) =>
-          <button className={button} role="menuitem" type="button" key={command.id} {...commandAttributes(command)}
-            onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</button>)}
-      </div>
-    </Dialog>,
+          <MenuItem key={command.id} {...commandAttributes(command)}
+            onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</MenuItem>)}
+      </MenuContent>
+    </Menu>,
   };
 }

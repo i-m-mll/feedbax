@@ -94,6 +94,9 @@ export function Gallery() {
           <State name="glyph"><Button><Plus />Add</Button></State>
           <State name="disabled"><Button disabled>Train</Button></State>
           <State name="primary disabled"><Button variant="primary" disabled>Run</Button></State>
+          <State name="pressed"><Button variant="ghost" pressed>Outline</Button></State>
+          <State name="start"><Button variant="ghost" align="start" className="w-40">GRU</Button></State>
+          <State name="mark"><Button size="mark">3</Button></State>
         </Section>
 
         <Section name="IconButton">
@@ -101,6 +104,7 @@ export function Gallery() {
           <State name="default"><IconButton variant="default" label="Settings" icon={<Settings />} /></State>
           <State name="pressed"><IconButton label="Zoom in" icon={<ZoomIn />} pressed /></State>
           <State name="disabled"><IconButton label="Zoom out" icon={<ZoomOut />} disabled /></State>
+          <State name="mark"><IconButton size="mark" label="Add Port" icon={<Plus />} /></State>
         </Section>
 
         <Section name="TextField">
