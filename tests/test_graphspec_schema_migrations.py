@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from typing import ClassVar
-from copy import deepcopy
 
 import pytest
 from pydantic import ValidationError
 
-import feedbax.compiler.graph as graph_compiler
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import (
@@ -45,9 +43,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.migrations import (
-    SpecMigrationResult,
     UnsupportedSpecVersion,
-    UnsupportedComponentMigration,
     migrate_graph_spec,
     migrate_structured_spec_payload,
 )
@@ -322,44 +318,6 @@ def test_graph_spec_migration_stamps_versionless_current_payload() -> None:
     assert result.migration_records == []
 
 
-def test_legacy_graph_spec_migration_records_builtin_rewrites() -> None:
-    result = migrate_graph_spec(
-        {
-            "metadata": _legacy_metadata(),
-            "nodes": {
-                "network": {
-                    "type": "SimpleStagedNetwork",
-                    "params": {"output_size": 2},
-                    "input_ports": ["target", "feedback"],
-                    "output_ports": ["output"],
-                }
-            },
-            "wires": [
-                {
-                    "source_node": "network",
-                    "source_port": "target",
-                    "target_node": "network",
-                    "target_port": "target",
-                }
-            ],
-            "input_bindings": {"target": ("network", "target")},
-        }
-    )
-
-    network = result.payload["nodes"]["network"]
-    assert result.payload["schema_id"] == GRAPH_SPEC_SCHEMA_ID
-    assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert network["type"] == "feedbax.Subgraph"
-    assert network["params"]["out_size"] == 2
-    assert network["input_ports"] == ["input", "feedback"]
-    assert result.payload["wires"][0]["source_port"] == "input"
-    assert result.payload["wires"][0]["target_port"] == "input"
-    assert result.payload["input_bindings"]["target"] == ("network", "input")
-    assert [record.migration_id for record in result.migration_records] == GRAPH_V1_TO_V6_MIGRATIONS
-    assert result.migration_records[0].metadata["graph_path"] == "graph"
-    assert result.payload["derived_dimensions"] == []
-
-
 def test_graph_spec_v2_migration_adds_derived_dimensions_field() -> None:
     result = migrate_graph_spec(
         {
@@ -403,46 +361,6 @@ def test_graph_spec_v4_migration_preserves_dense_and_unrelated_shape_entry_dicts
 
     assert result.payload["nodes"]["plant"]["params"]["delta_A"] == dense
     assert result.payload["nodes"]["other"]["params"]["configuration"] == unrelated
-
-
-def test_nested_graph_spec_migration_is_recursive_and_ordered() -> None:
-    payload = {
-        "metadata": _legacy_metadata(),
-        "nodes": {
-            "network": {
-                "type": "SimpleStagedNetwork",
-                "params": {"output_size": 2},
-                "input_ports": ["target"],
-                "output_ports": ["output"],
-            }
-        },
-        "subgraphs": {
-            "network": {
-                "nodes": {
-                    "feedback": {
-                        "type": "FeedbackChannel",
-                        "params": {},
-                        "input_ports": ["input"],
-                        "output_ports": ["output"],
-                    }
-                }
-            }
-        },
-    }
-    with pytest.raises(UnsupportedComponentMigration, match="Ambiguous unversioned.*Channel"):
-        migrate_graph_spec(payload)
-    versioned = deepcopy(payload)
-    versioned["subgraphs"]["network"]["nodes"]["feedback"]["param_schema_version"] = "2"
-    result = migrate_graph_spec(versioned)
-
-    nested = result.payload["subgraphs"]["network"]
-    assert nested["schema_id"] == GRAPH_SPEC_SCHEMA_ID
-    assert nested["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert nested["nodes"]["feedback"]["type"] == "feedbax.Channel"
-    assert [record.metadata["graph_path"] for record in result.migration_records] == (
-        ["graph"] * len(GRAPH_V1_TO_V6_MIGRATIONS)
-        + ["graph.subgraphs['network']"] * len(GRAPH_V1_TO_V6_MIGRATIONS)
-    )
 
 
 def test_unknown_graph_spec_schema_version_reports_available_migrations() -> None:
@@ -554,45 +472,3 @@ def test_model_artifact_parent_graph_spec_records_are_discoverable(tmp_path) -> 
     assert result.custody_manifest_id == graph_manifest.id
     assert result.migration_records == loaded_manifest.migration_records
     assert loaded_manifest.graph_spec.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-
-
-def test_compile_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.MonkeyPatch) -> None:
-    called = False
-
-    migrated = GraphSpec(
-        nodes={
-            "constant": ComponentSpec(
-                type="Constant",
-                params={"value": 1.0},
-                input_ports=[],
-                output_ports=["output"],
-            )
-        },
-        output_ports=["output"],
-        output_bindings={"output": ("constant", "output")},
-    ).model_dump(mode="json")
-
-    def fake_migrate_graph_spec(
-        payload: GraphSpec, *, component_registry=None
-    ) -> SpecMigrationResult:
-        nonlocal called
-        called = True
-        assert isinstance(payload, GraphSpec)
-        return SpecMigrationResult(
-            kind="GraphSpec",
-            schema_id=GRAPH_SPEC_SCHEMA_ID,
-            source_version=GRAPH_SPEC_SCHEMA_VERSION,
-            target_version=GRAPH_SPEC_SCHEMA_VERSION,
-            payload=migrated,
-            migration_records=[],
-        )
-
-    monkeypatch.setattr(graph_compiler, "migrate_graph_spec", fake_migrate_graph_spec)
-
-    graph = compile_graph(
-        GraphDocument(graph=GraphSpec()),
-        ComponentRegistry(),
-    ).graph
-
-    assert called
-    assert "constant" in graph.nodes

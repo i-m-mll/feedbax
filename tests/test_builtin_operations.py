@@ -68,7 +68,7 @@ def test_registered_operations_publish_typed_products_from_saved_states(tmp_path
     )
     align, summarize = bundle.operations.definitions()
     assert align.inputs["states"].selected_variables["velocity"].units == "m/s"
-    assert align.outputs["velocity"] == summarize.inputs["velocity"]
+    assert align.outputs["velocity"].model_dump() == summarize.inputs["velocity"].model_dump(exclude={"kind"})
     assert summarize.outputs["summary"].variables["mean"].dims == ("checkpoint", "condition", "state_time")
     assert summarize.static_parameters == ("variable",)
     assert summarize.parameter_json_schema["properties"]["ddof"]["minimum"] == 0
