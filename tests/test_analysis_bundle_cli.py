@@ -1,10 +1,4 @@
-"""File-authored analysis bundle execution through `feedbax-analysis bundle`.
-
-These cover the two halves of the same gap: a path-accepting bundle entrypoint
-that needs no registered experiment package, and staged execution bindings on
-`execute_analysis_bundle` so a template whose recipe needs checkpoint custody
-can run at all.
-"""
+"""File-authored analysis bundle execution through `feedbax-analysis bundle`."""
 
 from __future__ import annotations
 
@@ -121,9 +115,6 @@ def _template_bundle_payload(
             )
         ],
     ).model_dump(mode="json", exclude_none=True)
-
-
-# --- Half one: a path-accepting bundle entrypoint -------------------------------------
 
 
 def test_bundle_subcommand_executes_json_bundle_file_without_registered_package(
@@ -321,6 +312,3 @@ def test_existing_bundle_registry_key_form_is_unchanged() -> None:
     args = parser.parse_args(["--bundle", "rlrmp/standard_matrix", "--manifest-root", "/m"])
     assert args.bundle == "rlrmp/standard_matrix"
     assert args.manifest_root == "/m"
-
-
-# --- Half two: staged execution bindings on `execute_analysis_bundle` -----------------
