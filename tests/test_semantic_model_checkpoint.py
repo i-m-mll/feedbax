@@ -218,4 +218,4 @@ if __name__ == "__main__":
     pointer = CheckpointLatestPointer.model_validate_json(pointer_path.read_bytes())
     selected = open_published_model_slot(root, pointer)
     assert selected is not None
-    output.write_text(json.dumps(_spatial_step(selected.restore())))
+    output.write_text(json.dumps(_spatial_step(selected.restore(selected.template(ComponentRegistry())))))

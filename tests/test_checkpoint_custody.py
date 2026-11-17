@@ -120,7 +120,7 @@ def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_pat
 
     changed_override = with_readout(replace(readout, trainable_override=True))
     changed_optimizer = standard_train_optimizer_template(
-        written.manifest, written.transaction_dir, changed_override,
+        written.manifest, written.transaction_dir, changed_override, registries.components,
     )
     for name, slot in (("model", changed_override), ("optimizer", changed_optimizer)):
         with pytest.raises(CheckpointIntegrityError, match=f"{name}.*component bindings differ"):

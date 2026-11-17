@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import FunctionType, MappingProxyType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote, urlsplit
 
 import equinox as eqx
@@ -161,6 +161,9 @@ from feedbax.training.standard_train_checkpoint import (
     standard_train_scalar_template,
 )
 from feedbax.training.worker_validation import resolve_execution_mapping
+
+if TYPE_CHECKING:
+    from feedbax.component_registry import ComponentRegistry
 
 
 LATEST_POINTER_NAME = "latest.json"
@@ -942,6 +945,7 @@ def resolve_checkpoint_custody_ref(
     *,
     allowed_root: str | Path,
     slot_names: Collection[str] | None = None,
+    components: ComponentRegistry | None = None,
 ) -> ResolvedCheckpointTransaction:
     """Resolve an emitted checkpoint-custody reference without resume semantics.
 
@@ -956,6 +960,7 @@ def resolve_checkpoint_custody_ref(
             ref,
             allowed_root=allowed_root,
             slot_names=slot_names,
+            components=components,
         )
     except CheckpointReferenceResolutionError:
         raise
@@ -1293,6 +1298,7 @@ def _resolve_checkpoint_custody_ref(
     *,
     allowed_root: str | Path,
     slot_names: Collection[str] | None,
+    components: ComponentRegistry | None,
 ) -> ResolvedCheckpointTransaction:
     (
         root_path,
@@ -1315,7 +1321,7 @@ def _resolve_checkpoint_custody_ref(
         try:
             value = _deserialize_checkpoint_slot(
                 slot, transaction_dir, manifest, blob_path=blob_path,
-                loaded_model=loaded_slots.get("model"),
+                loaded_model=loaded_slots.get("model"), components=components,
             )
         except (CheckpointIntegrityError, CheckpointCompatibilityError, OSError) as exc:
             raise CheckpointReferenceResolutionError(str(exc)) from exc
@@ -5312,20 +5318,32 @@ def _supported_slot_serializer(slot: CheckpointSlotBlobRef) -> str:
     )
 
 
+def _checkpoint_components(components: ComponentRegistry | None) -> ComponentRegistry:
+    from feedbax.component_registry import ComponentRegistry
+
+    return components if components is not None else ComponentRegistry()
+
+
 def _deserialize_checkpoint_slot(
     slot: CheckpointSlotBlobRef, transaction_dir: Path, manifest: CheckpointTransactionManifest, *,
     blob_path: Path | None = None, template: Any = None, loaded_model: Any = None,
+    components: ComponentRegistry | None = None,
 ) -> Any:
     """Deserialize one hash-verified slot blob without resume transformations."""
     codec = _supported_slot_serializer(slot)
     if codec == MODEL_TREE_SERIALIZER:
-        value = SemanticModelSlot.open(transaction_dir, slot).restore(template)
+        semantic_model = SemanticModelSlot.open(transaction_dir, slot)
+        if template is None:
+            template = semantic_model.template(_checkpoint_components(components))
+        value = semantic_model.restore(template)
         _validate_decoded_slot_integrity(slot, value)
         return value
     blob_bytes = _read_blob(slot, blob_path or transaction_dir / slot.relative_path)
     if template is None:
         template = (
-            standard_train_optimizer_template(manifest, transaction_dir, loaded_model)
+            standard_train_optimizer_template(
+                manifest, transaction_dir, loaded_model, _checkpoint_components(components),
+            )
             if slot.slot == "optimizer" else standard_train_scalar_template(slot.slot)
         )
     value = decode_standard_train_slot(

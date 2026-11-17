@@ -188,6 +188,8 @@ class SemanticModelSlot:
         try:
             members = {file.relative_path: file.object for file in provider.get_tree(tree).files}
             graph = GraphSpec.model_validate_json(_read(provider, members[_GRAPH], "/graph"))
+            if not graph.nodes:
+                raise ModelCheckpointError("/graph", "semantic model has no component occurrences")
             for path, asset in model_tree_assets(graph, members):
                 _read(provider, asset, path)
             return cls(provider, graph, members[_ARRAY], encoding, tree)
@@ -198,22 +200,19 @@ class SemanticModelSlot:
         except (ValueError, KeyError, OSError) as exc:
             raise ModelCheckpointError("/v1/model", str(exc)) from exc
 
-    def template(self, components: ComponentRegistry | None = None) -> Graph:
+    def template(self, components: ComponentRegistry) -> Graph:
         from feedbax.compiler import GraphDocument, compile_graph
-        from feedbax.component_registry import ComponentRegistry
 
+        if problem := model_owner_problem(self.graph, "checkpoint", components):
+            raise ModelCheckpointError("/" + "/".join(problem.path), problem.reason)
         return compile_graph(
-            GraphDocument(graph=self.graph), components if components is not None else ComponentRegistry(),
-            artifact_provider=self.provider,
+            GraphDocument(graph=self.graph), components, artifact_provider=self.provider,
         ).graph
 
     def restore(
-        self, template: Graph | None = None, *, target: ModelRestoreTarget | None = None,
-        components: ComponentRegistry | None = None,
+        self, template: Graph, *, target: ModelRestoreTarget | None = None,
     ) -> Graph:
         """Verify the source slot, then bind compatible retained values to the target."""
-        if template is None:
-            template = self.template(components)
         try:
             decoded = decode_array_container(
                 _read(self.provider, self.arrays, "/v1/model"),
@@ -239,7 +238,7 @@ class SemanticModelSlot:
                 if is_generated_attachment_node(path[-1], source_leaves[path].type)
                 and not any(
                     value.kind == "learned"
-                    for value in template.get_node(".".join(path[:-1])).component_bindings[path[-1]].model_facts.values
+                    for value in template.get_node(path[:-1]).component_bindings[path[-1]].model_facts.values
                 )
             }
             retained -= removed

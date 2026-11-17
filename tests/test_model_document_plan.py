@@ -1148,7 +1148,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     checkpoint = PublishedTrainingCheckpoint.model_validate(trained["outcome"]["completion"]["checkpoint"])
     slot = open_published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     assert slot is not None
-    restored = slot.restore()
+    restored = slot.restore(slot.template(ComponentRegistry()))
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")
