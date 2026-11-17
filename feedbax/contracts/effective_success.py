@@ -34,6 +34,7 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
+from feedbax.plugins.declarations import DistributionSource
 
 
 INDEX_REF = "proof/effective-successes-v1"
@@ -167,6 +168,7 @@ class Success(ReferenceValue):
     inputs: Bindings
     products: Products = Field(min_length=1)
     supersedes: ContentObjectRef | None
+    provider: DistributionSource | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_manifest: ContentObjectRef | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
