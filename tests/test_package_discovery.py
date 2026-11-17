@@ -114,7 +114,8 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
             ),),
         },
     )
-    request = store_request(store, encode_request(AnalysisRequestSpec(analysis_type=_ANALYSIS), {
+    spec = AnalysisRequestSpec(analysis_type=_ANALYSIS, params={"increments": [3, 4], "unit": "test"})
+    request = store_request(store, encode_request(spec, {
         "source": (InputMember(key="source", reference=ProductRef(request_id=producer.id, role="source")),),
     }))
     delivery = LightDelivery(project_id="fixture", manifest_root=store.root, request=request)
@@ -145,7 +146,7 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
     with open_stored_dataset(store, DatasetProductRef(
         content=shifted.content, descriptor_sha256=shifted.descriptor["descriptor_sha256"],
     )) as data:
-        np.testing.assert_array_equal(data.data("value"), [7, 9])
+        np.testing.assert_array_equal(data.data("value"), [9, 11])
 
 
 def test_describe_fails_if_an_installed_package_cannot_import(installed_site, tmp_path):
