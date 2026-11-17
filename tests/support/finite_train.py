@@ -55,6 +55,17 @@ def wrapped(self, state, *, completed, count):
     if not resumed and completed < stop_at:
         count = min(count, stop_at - completed)
     result = run_block(self, state, completed=completed, count=count)
+    factor_file = root / "resume-model-factor"
+    if resumed and factor_file.is_file():
+        import equinox as eqx
+        import jax
+
+        factor = float(factor_file.read_text())
+        model = jax.tree.map(
+            lambda value: value * factor if eqx.is_inexact_array(value) else value,
+            result.state.model,
+        )
+        result = result._replace(state=result.state._replace(model=model))
     if not resumed and result.completed == stop_at:
         (root / "before-stop").touch()
         wait(stop)
