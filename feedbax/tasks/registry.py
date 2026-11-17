@@ -77,9 +77,10 @@ class PythonTaskRegistry:
     ) -> None:
         if self._sealed:
             raise RuntimeError("Python task registry is sealed")
+        metadata = vars(task)
         declaration = CallableDeclaration(
-            key=key, label=task.label, settings_model=task.settings_model,
-            revision=task.revision, renamed_from=task.renamed_from,
+            key=key, label=metadata.get("label"), settings_model=task.settings_model,
+            revision=metadata.get("revision", 1), renamed_from=metadata.get("renamed_from", ()),
         )
         for name in (key, *declaration.renamed_from):
             if name in self._entries or name in self._renames:

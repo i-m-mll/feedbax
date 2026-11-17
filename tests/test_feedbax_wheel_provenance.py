@@ -273,7 +273,7 @@ def test_wheel_inside_science_checkout_preserves_science_ownership_and_pin(
     monkeypatch.syspath_prepend(str(tmp_path))
 
     resolved = revision.resolve_science_repo_import_revisions(
-        (SimpleNamespace(entry_point_value="science_provider:register"),)
+        (SimpleNamespace(source=SimpleNamespace(package="science_provider")),)
     )
 
     assert resolved == {str(tmp_path.resolve()): science_revision}

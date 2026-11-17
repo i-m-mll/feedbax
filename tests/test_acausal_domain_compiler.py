@@ -16,7 +16,8 @@ from feedbax.builtins.acausal.translational import (
     PositionSensor,
     PrescribedMotion,
 )
-from feedbax.component_registry import ComponentPack, ComponentRegistry
+from feedbax.component_registry import ComponentRegistry
+from tests.support.component_owners import register_owners
 from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
@@ -117,7 +118,7 @@ def test_registered_custom_mass_preserves_independent_prescribed_inputs() -> Non
         solver={"solver_type": "euler", "dt": 0.1},
     )
     registry = _registry()
-    registry.ingest(ComponentPack(namespace="test", components=(CustomMass,)))
+    register_owners(registry, "test", CustomMass)
     report = compile_acausal_authoring_report(
         spec, node_path=["plant"], component_registry=registry
     )

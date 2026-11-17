@@ -1,6 +1,6 @@
-"""External, immutable component histories and exact historical wire evidence."""
+"""Class-owned component histories across current integer revisions."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from pathlib import Path
@@ -9,7 +9,6 @@ import inspect
 from feedbax.contracts.migrations import ComponentMigration
 
 Transform = Callable[[dict[str, Any]], dict[str, Any]]
-Recognizer = Callable[[Mapping[str, Any]], bool]
 
 
 def require_revision(value: Any) -> int:
@@ -37,41 +36,22 @@ class Change:
             raise ValueError("renamed_from must be an old local class name")
 
 
-@dataclass(frozen=True)
-class LegacyEndpoint:
-    """An exact published wire identity/token, with optional unversioned evidence."""
-
-    type_id: str
-    token: str | None
-    revision: int
-    matches_unversioned: Recognizer | None = None
-
-    def __post_init__(self):
-        require_revision(self.revision)
-        if not self.type_id:
-            raise ValueError("Legacy endpoint type must be nonempty")
-
-
 @dataclass(frozen=True, init=False)
 class History:
     changes: tuple[Change, ...]
-    legacy: tuple[LegacyEndpoint, ...]
     source: Path | None
 
-    def __init__(self, *changes: Change, legacy: tuple[LegacyEndpoint, ...] = ()):
+    def __init__(self, *changes: Change):
         if tuple(change.destination for change in changes) != tuple(range(2, len(changes) + 2)):
             raise ValueError(
                 "Change destinations must be consecutive explicit integers starting at 2"
             )
-        if any(endpoint.revision > len(changes) + 1 for endpoint in legacy):
-            raise ValueError("Legacy endpoint refers to an unknown revision")
         frame = inspect.currentframe().f_back
         filename = frame.f_code.co_filename
         object.__setattr__(
             self, "source", None if filename.startswith("<") else Path(filename).resolve()
         )
         object.__setattr__(self, "changes", changes)
-        object.__setattr__(self, "legacy", legacy)
 
     @property
     def revision(self):
@@ -105,19 +85,6 @@ class History:
                     target_param_schema_version=target_revision,
                     migration_id=f"{namespace}.{current_name}.revision.{change.destination}",
                     migrate_params=change.migrate,
-                )
-            )
-        for endpoint in self.legacy:
-            target_type, target_revision = endpoints[endpoint.revision]
-            edges.append(
-                ComponentMigration(
-                    source_type=endpoint.type_id,
-                    target_type=target_type,
-                    owner=namespace,
-                    source_param_schema_version=endpoint.token,
-                    target_param_schema_version=target_revision,
-                    migration_id=f"{namespace}.{current_name}.legacy.{endpoint.type_id}.{endpoint.token}",
-                    matches_unversioned=endpoint.matches_unversioned,
                 )
             )
         return tuple(edges)

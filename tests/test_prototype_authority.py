@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from feedbax.component_registry import ComponentPack
+from tests.support.component_owners import register_owners
 
 import jax
 import jax.numpy as jnp
@@ -33,7 +33,7 @@ def test_custom_nested_prototype_drives_compiler_and_studio_dimensions(declared_
         def __call__(self, inputs, state, *, key):
             return {"output": jnp.zeros(self.width)}, state
 
-    components.ingest(ComponentPack(namespace="test", components=(VectorSource,)))
+    register_owners(components, "test", VectorSource)
     child = GraphSpec(
         nodes={"source": ComponentSpec(type="test.VectorSource", output_ports=["output"])},
         output_ports=["output"],
@@ -372,7 +372,7 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
         def __call__(self, inputs, state, *, key):
             return {"output": jnp.ones(self.width)}, state
 
-    registry.ingest(ComponentPack(namespace="test", components=(NormalizedSource,)))
+    register_owners(registry, "test", NormalizedSource)
 
     class DerivedRelay(Component):
         config = RelayParams
@@ -388,7 +388,7 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
         def __call__(self, inputs, state, *, key):
             return {"output": inputs["input"]}, state
 
-    registry.ingest(ComponentPack(namespace="test", components=(DerivedRelay,)))
+    register_owners(registry, "test", DerivedRelay)
     typed = SourceParams(width=2)
     direct = NormalizedSource.from_config(typed)
     assert typed.width == direct.width == direct.configuration().width == 3
@@ -496,7 +496,7 @@ def test_parameter_normalizer_cannot_contradict_derived_dimension() -> None:
         def __call__(self, inputs, state, *, key):
             return {"output": inputs["input"]}, state
 
-    registry.ingest(ComponentPack(namespace="test", components=(ContradictoryRelay,)))
+    register_owners(registry, "test", ContradictoryRelay)
     spec = GraphSpec(
         nodes={
             "relay": ComponentSpec(
