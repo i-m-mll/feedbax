@@ -24,7 +24,6 @@ from feedbax.contracts.figure_document import (
     FigureDocument,
     FigureTemplateRef,
     PlotlyFigurePort,
-    ResolvedFigureTemplate,
     is_figure_document_pin,
     validate_figure_bindings,
 )
@@ -255,7 +254,6 @@ class _Lowerer:
                     code=ResolutionCode.INVALID_DOCUMENT, document_path="schema",
                 )
                 return
-        template = None
         validation_path = figure_path
         try:
             if isinstance(element.figure, dict) and "template" in element.figure:
@@ -276,11 +274,6 @@ class _Lowerer:
                     return
                 validation_path = figure_path + ".settings"
                 settings = registration.settings_model.model_validate(reference.settings)
-                template = ResolvedFigureTemplate(
-                    key=registration.key,
-                    settings=settings.model_dump(mode="json"),
-                    revision=registration.revision,
-                )
                 validation_path = figure_path
                 figure = registration.function(settings)
             else:
@@ -307,7 +300,7 @@ class _Lowerer:
             validate_figure_bindings(figure, schemas)
             self._record(
                 name,
-                RenderRequestSpec(figure=None, document=figure, template=template),
+                RenderRequestSpec(figure=None, document=figure),
                 inputs,
                 {PLOTLY_FIGURE_ROLE: PlotlyFigurePort()},
             )

@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
                     "key": item.key,
                     "label": item.label,
                     "description": item.description,
-                    "revision": item.revision,
+                    "renamed_from": list(item.renamed_from),
                     "settings_schema": item.settings_model.model_json_schema(),
                     "source": asdict(item.source),
                 }
