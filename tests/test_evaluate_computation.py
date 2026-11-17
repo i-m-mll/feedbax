@@ -1,20 +1,24 @@
 """Observable computation and driver evidence for managed rollout scoring."""
 
+from contextlib import ExitStack
 from hashlib import sha256
 
 import jax
+import numpy as np
 import pytest
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.computation_validity import ComputationDifferent, ComputationEqual, EvaluatePrefix
-from feedbax.contracts.live_evaluate import EVALUATE_DRIVER
+from feedbax.contracts.live_evaluate import EVALUATE_DRIVER, ScoredEvaluationPoint
 from feedbax.contracts.model_input import InitialModelSource, encode_document_input
-from feedbax.contracts.rollout import RolloutParameters
+from feedbax.contracts.rollout import ResolvedRolloutMember, RolloutParameters
+from feedbax.dataset import Dataset, Variable
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.dataset import publish_dataset
 from feedbax.plugins.composition import load_application
 from feedbax.runtime.trial_execution import TrialExecution
 from feedbax.training.evaluate_computation import EvaluationComputation, RolloutExecutables, drive_replicas
-from feedbax.training.evaluate_worker import _lower_rollouts, _prepare_initial_rollout, _rollouts
+from feedbax.training.evaluate_worker import _lower_rollouts, _prepare_initial_rollout, _rollouts, _scored_product
 from feedbax.validity.computation import compare_computation
 from tests.test_document_train_pair import authored_documents
 
@@ -99,3 +103,28 @@ def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(
     difference = recheck()
     assert isinstance(difference, ComputationDifferent)
     assert [(item.kind, item.slots) for item in difference.changes] == [("program", ("/initial/0",))]
+
+
+def test_live_checkpoint_preserves_the_replica_coordinate_and_mean(tmp_path):
+    store = ImmutableArtifactBlobProvider(tmp_path)
+    params = RolloutParameters(trials=("0",), seed=17, trial_policy="paired", variation=())
+    dataset = Dataset.from_arrays(
+        {"objective/total": Variable(np.asarray([[[1.0], [3.0]]]), ("update", "replicate", "condition"))},
+        coords={
+            "update": Variable(np.array([4]), ("update",)),
+            "replicate": Variable(np.array(["A", "B"]), ("replicate",)),
+            "trial": Variable(np.array(["0"]), ("trial",)),
+        }, schema_id=params.states_schema,
+    )
+    states = publish_dataset(store, dataset)
+    member = ResolvedRolloutMember(
+        coordinate=4, model_tree="1" * 64, model="2" * 64, task="3" * 64, trials=params.trials,
+        replica_ids=("A", "B"),
+    )
+    point = ScoredEvaluationPoint(
+        states=states, member=member, objective="4" * 64, total=2.0, evidence=states.object_ref,
+    )
+    with ExitStack() as opened:
+        retained, mean = _scored_product(opened, store, point, 4, params)
+        assert retained.data("replicate").tolist() == ["A", "B"]
+        assert mean == 2.0

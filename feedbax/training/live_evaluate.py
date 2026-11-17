@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.artifact_custody import ContentRootRecord
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.live_evaluate import (
     LIVE_EVALUATE_POINT, FailedEvaluationPoint, LiveEvaluationPoint, ScoredEvaluationPoint,
 )
@@ -121,7 +122,7 @@ def live_evaluation_callback(
             evidence = snapshot_execution(store)
             if evidence is None:
                 raise ValueError("Live Evaluate completed outside managed execution.")
-            evidence_ref = store.store_object(evidence.model_dump_json().encode())
+            evidence_ref = store.store_object(canonical_json_v2_bytes(evidence.model_dump(mode="json")))
             point = LiveEvaluationPoint(
                 evaluation_job_id=assignment["evaluation_job_id"], checkpoint=checkpoint,
                 result=ScoredEvaluationPoint(

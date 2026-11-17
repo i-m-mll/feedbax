@@ -251,12 +251,15 @@ _Events.append = append
         point["result"]["evidence"] for point in points(evaluation)
     ]
     assert second.receipt.trace.prefixes == ()
-    from feedbax.contracts.computation_validity import ComputationEqual
-    from feedbax.validity.computation import compare_computation
+    from feedbax.contracts.receipt_validity import ValidityCheckDelivery
+    from feedbax.training.evaluate_worker import check_evaluate
 
-    captured, replayed = first.receipt.trace.computation, second.receipt.trace.computation
-    assert captured is not None and replayed is not None
-    assert isinstance(compare_computation(captured, replayed), ComputationEqual)
+    checked = check_evaluate(ValidityCheckDelivery(
+        project_root=folders.root / project, store_root=plan.store_path,
+        request_id=rows["baseline"].request_id, receipt=first.ref, checks=("code", "environment"),
+    ))
+    assert checked.code is not None and checked.code.outcome == "equal"
+    assert checked.environment is not None and checked.environment.outcome == "unavailable"
 
 
 def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypatch):

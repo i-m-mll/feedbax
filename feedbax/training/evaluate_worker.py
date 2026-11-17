@@ -546,6 +546,8 @@ def _series_dataset(
 
 
 def _scored_product(opened, store, point, coordinate, params):
+    from feedbax.dataset_replicates import replicate_ids
+
     store.verify_object(point.states.object_ref)
     dataset = opened.enter_context(open_stored_dataset(store, point.states))
     if (
@@ -554,9 +556,13 @@ def _scored_product(opened, store, point, coordinate, params):
         or dataset.descriptor.schema_id != params.states_schema
         or dataset.data("update").tolist() != [coordinate]
         or dataset.data("trial").tolist() != list(params.trials)
+        or (replicate_ids(dataset) or ()) != point.member.replica_ids
     ):
         raise ValueError("Live Evaluate dataset differs from its resolved inputs.")
-    summary = float(dataset.data("objective/total").item())
+    totals = dataset.data("objective/total").reshape(-1).tolist()
+    if len(totals) != (len(point.member.replica_ids) or 1):
+        raise ValueError("Live Evaluate dataset differs from its expected replica count.")
+    summary = sum(totals) / len(totals)
     if summary != point.total:
         raise ValueError("Live Evaluate summary differs from its durable dataset.")
     return dataset, summary
