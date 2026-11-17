@@ -267,7 +267,9 @@ TrainingLoop.run_block = execute
         local_jobs = _jobs(host_fixture)
 
         def collect(attempt):
-            result = local_jobs.collect_session_attempt(source, attempt, project=project_id, store=destination_store)
+            result = local_jobs.collect_session_attempt(
+                source, attempt, project=project_id, store=destination_store, project_root=local_plan.project_root,
+            )
             assert result.activity.target == state.placement
             return CollectedAttempt(result.activity.job_id, result.evidence_sha256)
 

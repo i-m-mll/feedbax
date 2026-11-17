@@ -201,7 +201,9 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
     local_plan = _write_project(folders, project, tmp_path / "local-results")
     destination = ImmutableArtifactBlobProvider(local_plan.store_path)
     local_jobs = JobService(local, registries)
-    collected = local_jobs.collect_train_attempt(source, stopped, project=plan.project_id, store=destination.root)
+    collected = local_jobs.collect_train_attempt(
+        source, stopped, project=local_plan.project_id, store=destination.root, project_root=local_plan.project_root,
+    )
     assert collected.can_resume and collected.job_id == stopped_id
     stopped_entry = read_train_job(destination, stopped_id)
     assert stopped_entry.metrics is not None
@@ -221,7 +223,9 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
     provider = resumed_success.receipt.provider
     assert provider is not None
     assert (provider.distribution, provider.version) == ("managed-method-probe", "0.1")
-    assert uninterrupted_metrics == prefix_metrics + _retained_metrics(destination, resumed_success)
+    resumed_metrics = _retained_metrics(destination, resumed_success)
+    assert resumed_metrics.startswith(prefix_metrics)
+    assert resumed_metrics == uninterrupted_metrics
     history = [json.loads(line) for line in uninterrupted_metrics.splitlines()]
     assert [row["update"] for row in history] == list(range(1, _TOTAL + 1))
     initial_prices = np.asarray(history[0]["metrics"]["price"])
