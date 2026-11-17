@@ -101,7 +101,7 @@ class StudioTaskChoice(StrictModel):
 class StudioTrialAuthoring(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
-    model: ProjectName
+    model: ProjectName | None
     task_document: ProjectName | None
     objective_document: ProjectName | None
     task: TaskDocument | PythonTaskSelection

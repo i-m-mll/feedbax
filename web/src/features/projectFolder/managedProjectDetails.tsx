@@ -271,9 +271,9 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
-    problem: reveal?.problem.model_address && reveal.problem.model_address.document === storedId
+    problem: reveal?.problem.model_address && reveal.problem.document === storedId
       ? { address: reveal.problem.model_address, reason: reveal.problem.detail } : undefined,
-    problems: input.modelProblems?.flatMap((item) => item.model_address?.document === storedId
+    problems: input.modelProblems?.flatMap((item) => item.model_address && item.document === storedId
       ? [{ address: item.model_address, reason: item.detail }] : []),
     path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
     setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },

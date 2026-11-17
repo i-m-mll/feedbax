@@ -14,6 +14,7 @@ import { StudioCanvas, type CanvasViewport, type CanvasViewportCommand } from '@
 import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { portId, portTypeLabel, type Port } from './modelGraph';
+import type { ModelLocation } from './modelSelection';
 import './modelCanvas.css';
 
 export type ModelCardData = {
@@ -47,7 +48,7 @@ export type ModelEdgeData = {
   address: ModelAddress;
   selected?: boolean;
   waypoints?: readonly ModelPosition[];
-  attachments?: readonly { id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelAddress }[];
+  attachments?: readonly { id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelLocation }[];
   self?: number;
   bundleCount?: number;
   moveWaypoint?: (index: number, point: ModelPosition) => void;
