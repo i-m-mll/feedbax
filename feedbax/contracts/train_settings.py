@@ -21,6 +21,7 @@ def normalize_train_method(
     settings = method.settings_model.model_validate(request.settings, extra="forbid")
     return request.model_copy(update={
         "method": method.key,
+        "seed": 0 if request.seed is None else request.seed,
         "method_revision": method.revision,
         "settings": settings.model_dump(mode="json"),
     }), method, settings
