@@ -17,7 +17,6 @@
   z-index: 3;
 }
 
-.studio-window-bar__controls,
 .studio-window-bar__project,
 .studio-window-bar__commands {
   display: flex;
@@ -26,7 +25,7 @@
 }
 
 .studio-window-bar__controls {
-  padding-inline: calc(var(--studio-native-controls) + var(--space-2)) var(--space-1);
+  padding-inline-end: var(--space-1);
 }
 
 .studio-window-bar__project {

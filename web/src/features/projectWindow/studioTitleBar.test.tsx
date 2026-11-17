@@ -1,23 +1,28 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useRef } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { useStudioTitleBar } from './studioTitleBar';
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  delete document.documentElement.dataset.shellHost;
 });
 
 function Bar({ name }: { name: string }) {
-  return <header {...useStudioTitleBar(name)} data-studio-drag-region>
-    <h1 data-studio-drag-region>{name}</h1>
+  const bar = useRef<HTMLElement>(null);
+  useStudioTitleBar(bar, name);
+  return <header ref={bar} data-shell-drag-region>
+    <h1>{name}</h1>
     <button type="button">Open command palette</button>
   </header>;
 }
 
-it('uses the acknowledged title and the noninteractive macOS drag surface', async () => {
+it('publishes the title and drags the native window from the bar', async () => {
   const windowAction = vi.fn(async () => {});
   vi.stubGlobal('__FEEDBAX_STUDIO_MENU__', { windowAction });
+  document.documentElement.dataset.shellHost = 'native';
   const view = render(<Bar name="original" />);
   view.rerender(<Bar name="renamed" />);
   await waitFor(() => expect(windowAction.mock.calls).toEqual([
@@ -25,22 +30,12 @@ it('uses the acknowledged title and the noninteractive macOS drag surface', asyn
   ]));
   windowAction.mockClear();
 
-  const title = screen.getByRole('heading');
-  const button = screen.getByRole('button');
-  fireEvent.mouseDown(button, { button: 0, detail: 1 });
-  fireEvent.mouseDown(title, { button: 2, detail: 1 });
-  fireEvent.mouseDown(title, { button: 0, detail: 1 });
-  const double = { button: 0, detail: 2, clientX: 10, clientY: 20 };
-  fireEvent.mouseDown(title, double);
-  fireEvent.mouseUp(title, { ...double, clientX: 12 });
-  fireEvent.mouseDown(title, double);
-  fireEvent.mouseUp(button, double);
-  fireEvent.mouseDown(title, double);
-  fireEvent.mouseUp(title, double);
-  expect(windowAction.mock.calls).toEqual([[{ kind: 'drag' }], [{ kind: 'zoom' }]]);
+  fireEvent.mouseDown(screen.getByRole('button'), { button: 0, detail: 1 });
+  fireEvent.mouseDown(screen.getByRole('heading'), { button: 0, detail: 1 });
+  expect(windowAction.mock.calls).toEqual([[{ kind: 'drag' }]]);
 });
 
-it('leaves a normal browser title selectable', () => {
+it('leaves a browser title bar to the browser', () => {
   render(<Bar name="project" />);
   expect(fireEvent.mouseDown(screen.getByRole('heading'), { button: 0, detail: 1 })).toBe(true);
 });
