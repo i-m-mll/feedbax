@@ -122,6 +122,11 @@ class ReceiptClosure:
         while pending:
             root, consumer = pending.pop()
             add(root.receipt)
+            for ref in root.validity_records:
+                from feedbax.persistence.receipt_validity import read_validity_record
+
+                add(ref)
+                read_validity_record(self.store, ref, receipt=root.receipt)
             receipt = self.receipt_at(root.receipt)
             if admitted is not None and root.receipt.sha256 not in admitted:
                 admitted[root.receipt.sha256] = root.receipt, receipt

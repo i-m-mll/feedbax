@@ -4,8 +4,10 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
+from datetime import timedelta
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +17,7 @@ from feedbax.host import HostClient
 from feedbax.jobs import JobService, SessionSubmission
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.plugins.composition import compose_application
+from feedbax.validity.admission import QUICK_RECEIPT_DURATION
 
 from feedbax.web.api import (
     analysis,
@@ -59,6 +62,8 @@ def create_app(
     targets: TargetRegistry | None = None,
     submit_session: SessionSubmission | None = None,
     remote_runs: StudioRemoteRuns | None = None,
+    automatic_run: Literal["all", "no_train", "off"] = "all",
+    quick_duration: timedelta = QUICK_RECEIPT_DURATION,
 ) -> FastAPI:
     project_root = projects_dir if projects_dir is not None else BASE_DIR / "projects"
 
@@ -75,6 +80,7 @@ def create_app(
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle,
             targets=targets, submit_session=submit_session,
+            automatic_run=automatic_run, quick_duration=quick_duration,
         )
         app.state.remote_runs = remote_runs
         app.state.project_plan = ProjectPlanService(
