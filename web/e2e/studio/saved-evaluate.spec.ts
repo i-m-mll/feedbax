@@ -6,7 +6,9 @@ import type {
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
+import { pick } from './fixtures/controls';
 
 test.use({
   channel: 'chrome',
@@ -65,7 +67,7 @@ test('authors named Evaluate conditions from one authenticated Train checkpoint'
   };
   const variants = page.getByRole('combobox', { name: 'Variant', exact: true });
   await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded', timeout: 10_000 });
-  await expect(variants).toHaveValue('base');
+  await expect(variants).toHaveText('base');
   const initial = await snapshot();
   expect(Object.keys(initial.project.steps)).toEqual(['train']);
   await chooseStep(page, 'train');
@@ -125,7 +127,7 @@ test('authors named Evaluate conditions from one authenticated Train checkpoint'
   expect(complete.rows.find(({ key }) => key.variant === 'base')).toEqual(trained);
 
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 10_000 });
-  await expect(variants).toHaveValue('base');
+  await expect(variants).toHaveText('base');
   await chooseStep(page, stepId);
   await expect(plans(page).getByText('Done', { exact: true })).toHaveCount(2);
   expect((await snapshot()).project.steps[stepId]).toEqual(step);
@@ -552,7 +554,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
   const creating = posted(page, projectPath + '/files');
   await page.getByRole('article', { name: 'Train train', exact: true })
     .getByRole('button', { name: 'New Step train', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Evaluate' }).click();
+  await chooseStepKind(page, 'Evaluate');
   const created = await creating;
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: initial } = await created.json() as StudioProjectDocument;
@@ -696,7 +698,7 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   const before = await plan(initial.revision);
   await page.goto(`/?project=${project}`);
   await chooseStep(page, 'evaluate');
-  await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('comparison');
+  await pick(page, page.getByRole('combobox', { name: 'Variant', exact: true }), 'comparison');
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   if (!await drawer.isVisible()) await footer(page).getByRole('button', { name: 'Show Drawer' }).click();
   const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
@@ -718,7 +720,7 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   expect(comparison.checkpoint_series?.requested).toEqual([4]);
   expect(revised.rows.map(({ request_id }) => request_id)).toEqual(before.rows.map(({ request_id }) => request_id));
   await expect(field).toHaveValue('every 2 from 3');
-  await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('base');
+  await pick(page, page.getByRole('combobox', { name: 'Variant', exact: true }), 'base');
   await expect(field).toHaveValue('last');
 });
 
@@ -812,10 +814,8 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
 
   const creating = posted(page, projectPath + '/files');
   await checkpoint.getByRole('button', { name: 'New Step', exact: true }).click();
-  const chooser = page.getByRole('dialog', { name: 'New Step', exact: true });
-  await expect(chooser).toContainText(label);
-  await expect(chooser.getByRole('button', { name: 'Train', exact: true })).toHaveCount(0);
-  await chooser.getByRole('button', { name: 'Evaluate', exact: true }).click();
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toHaveAttribute('aria-disabled', 'true');
+  await chooseStepKind(page, 'Evaluate');
   const created = await creating;
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: saved } = await created.json() as StudioProjectDocument;

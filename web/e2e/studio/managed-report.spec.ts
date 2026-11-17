@@ -3,6 +3,8 @@ import type {
   ReportDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
+import { chooseStepKind } from './fixtures/studioKeyboard';
 
 test.use({
   trace: 'off',
@@ -59,12 +61,13 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
 
   await page.goto(mounted);
   const variants = page.getByRole('combobox', { name: 'Variant', exact: true });
-  await expect(variants).toHaveValue('base');
+  await expect(variants).toHaveText('base');
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
   await expect(figures.getByText('Reach-aligned velocity', { exact: true })).toBeVisible();
   await figures.getByRole('button', { name: 'profile', exact: true }).click();
-  await palette('Report');
+  await palette('New Step');
+  await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');
   const created = await snapshot();
   expect(report(created)).toMatchObject({ completeness: 'complete', blocks: [{ figure: 'figure-profile' }] });
@@ -84,12 +87,12 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   expect(original.report.base).toMatch(/^report:/);
   expect(original.report.compare).toBe(original.report.base);
 
-  await variants.selectOption('compare');
+  await pick(page, variants, 'compare');
   await mapStep(page, 'report').click();
   await page.getByRole('tab', { name: 'Document', exact: true }).click();
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toBeDisabled();
-  await variants.selectOption('base');
+  await pick(page, variants, 'base');
   await mapStep(page, 'report').click();
   await page.getByRole('tab', { name: 'Document', exact: true }).click();
 

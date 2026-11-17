@@ -3,7 +3,7 @@ import type {
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
-import { activate, number, openView } from './studioKeyboard';
+import { activate, chooseStepKind, number, openView } from './studioKeyboard';
 
 /** Create a shared Evaluate from the current Train selection and author its numeric condition axis. */
 export async function authorEvaluateConditions({
@@ -34,8 +34,7 @@ export async function authorEvaluateConditions({
     response.request().postDataJSON()?.file?.step?.kind === 'evaluate');
   const card = page.locator(`[data-map-step="${train.step}"]:visible`).first();
   await activate(page, card.locator('button[data-command-id="newStep"]'));
-  await activate(page, page.getByRole('dialog', { name: 'New Step', exact: true })
-    .getByRole('button', { name: 'Evaluate', exact: true }));
+  await chooseStepKind(page, 'Evaluate', true);
   const creation = await created;
   expect(creation.status(), await creation.text()).toBe(201);
   const stepId: string = creation.request().postDataJSON().file.id;

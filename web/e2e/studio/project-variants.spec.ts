@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
 test.use({
   trace: 'off',
@@ -37,7 +38,7 @@ test('a Model value edit changes only its authored variant and keeps exact share
   const plant = page.getByRole('tabpanel', { name: 'Model', exact: true }).getByRole('article', { name: 'Point mass', exact: true });
   const selectPlant = () => plant.locator('header').click();
   await page.goto(url);
-  await expect(variants).toHaveValue('base');
+  await expect(variants).toHaveText('base');
   await mapStep(page, 'train').click();
   const admission = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === trainPath);
@@ -53,12 +54,12 @@ test('a Model value edit changes only its authored variant and keeps exact share
     expect(initial[variant].result).toEqual(initial.base.result);
   }
 
-  await variants.selectOption('compare');
+  await pick(page, variants, 'compare');
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
-  await expect(variants).toHaveValue('base');
+  await expect(variants).toHaveText('base');
   await page.getByRole('button', { name: 'Forward', exact: true }).click();
-  await expect(variants).toHaveValue('compare');
+  await expect(variants).toHaveText('compare');
 
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
@@ -114,8 +115,8 @@ test('a Model value edit changes only its authored variant and keeps exact share
   await expect(mass).toHaveValue(/^2(?:\.0)?$/);
 
   await page.reload();
-  await expect(variants).toHaveValue('base');
-  await variants.selectOption('compare');
+  await expect(variants).toHaveText('base');
+  await pick(page, variants, 'compare');
   await mapStep(page, 'train').click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
   await selectPlant();

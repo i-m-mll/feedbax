@@ -48,7 +48,8 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   const create = page.getByRole('button', { name: 'New Step', exact: true });
   await expect(create).toBeEnabled();
   await create.press('Enter');
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toBeFocused();
+  await page.keyboard.press('Enter');
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
   const panel = (name: string) => page.getByRole('tabpanel', { name, exact: true });
   const model = panel('Model');

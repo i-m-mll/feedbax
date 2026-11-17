@@ -3,6 +3,7 @@ import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { chooseStepKind } from './fixtures/studioKeyboard';
 
 test.use({
   trace: 'off',
@@ -72,8 +73,9 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   await page.getByRole('article', { name: 'Evaluate baseline', exact: true }).locator('.studio-map-run-mark').click();
   await page.keyboard.press('Meta+K');
   const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
-  await palette.getByRole('combobox').fill('Analyze');
-  await palette.getByRole('option', { name: 'Analyze', exact: true }).press('Enter');
+  await palette.getByRole('combobox').fill('New Step');
+  await palette.getByRole('option', { name: 'New Step', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Analyze', true);
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({

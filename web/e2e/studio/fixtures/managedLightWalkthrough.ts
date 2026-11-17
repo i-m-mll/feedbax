@@ -4,7 +4,8 @@ import type {
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { authorLearningRateSweep, mapStep } from './canonicalTrain';
-import { activate, chooseOption, number, openView, palette } from './studioKeyboard';
+import { activate, chooseOption, chooseStepKind, number, openView, palette } from './studioKeyboard';
+import { pick } from './controls';
 
 type Walkthrough = {
   page: Page;
@@ -58,7 +59,7 @@ function mutation({ page, projectPath }: Walkthrough, method: string, suffix = '
 
 export async function authorWalkthroughSweep(context: Walkthrough) {
   const { page } = context;
-  await expect(variant(page)).toHaveValue('base');
+  await expect(variant(page)).toHaveText('base');
   await openRuns(page, 'train');
   await authorLearningRateSweep(drawer(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
   const sweepRows = (value: StudioSavedTrainRuns) =>
@@ -96,7 +97,7 @@ export async function verifyWalkthroughVariant(context: Walkthrough, plantId: st
   expect(compare.edges.every(({ from_key }) => from_key.variant === 'compare')).toBe(true);
   const originalAttempts = await attempts();
 
-  await chooseOption(page, variant(page), 'compare');
+  await pick(page, variant(page), 'compare');
   await activate(page, mapStep(page, 'train'));
   await openView(page, 'model');
   await selectModelComponent(page, plantId);
@@ -117,7 +118,7 @@ export async function verifyWalkthroughVariant(context: Walkthrough, plantId: st
   expect(delta.receipts.every((receipt) => receipt == null)).toBe(true);
   expect(await attempts()).toEqual(originalAttempts);
   await page.reload();
-  await expect(variant(page)).toHaveValue('base');
+  await expect(variant(page)).toHaveText('base');
   expect(scoped(await plan(context), 'compare')).toEqual(delta);
 }
 
@@ -150,8 +151,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       new URL(response.url()).pathname === context.projectPath + '/files' && response.request().postDataJSON().file.id === id);
     const card = page.getByRole('article', { name: 'Train ' + producer, exact: true });
     await activate(page, card.locator('button[data-command-id="newStep"]'));
-    await activate(page, page.getByRole('dialog', { name: 'New Step', exact: true })
-      .getByRole('button', { name: kind, exact: true }));
+    await chooseStepKind(page, kind, true);
     const response = await saved;
     expect(response.status(), await response.text()).toBe(201);
     await expect(mapStep(page, id)).toHaveAttribute('aria-pressed', 'true');

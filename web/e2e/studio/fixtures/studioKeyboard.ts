@@ -33,6 +33,18 @@ export async function activate(page: Page, target: Locator, key = 'Enter') {
   await page.keyboard.press(key);
 }
 
+/** Chooses a kind in the open step menu; by keyboard, from the item the menu starts on. */
+export async function chooseStepKind(page: Page, kind: string, keyboard = false) {
+  const item = page.getByRole('menu').getByRole('menuitem', { name: kind, exact: true });
+  await expect(item).not.toHaveAttribute('aria-disabled', 'true');
+  if (!keyboard) return item.click();
+  for (let step = 0; step < 4 && !await item.evaluate((element) => element === document.activeElement); step += 1) {
+    await page.keyboard.press('ArrowDown');
+  }
+  await expect(item).toBeFocused();
+  await page.keyboard.press('Enter');
+}
+
 export async function palette(page: Page, id: string, label: string) {
   await page.keyboard.press('Meta+K');
   const dialog = page.getByRole('dialog', { name: 'Command Palette' });

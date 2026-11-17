@@ -51,8 +51,7 @@ export async function authorFirstTrain(
 
   await expect(page.getByRole('button', { name: 'New Step', exact: true })).toBeEnabled();
   await palette(page, 'newStep', 'New Step');
-  const chooser = page.getByRole('dialog', { name: 'New Step', exact: true });
-  await expect(chooser.getByRole('button', { name: 'Train', exact: true })).toBeFocused();
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(model).toBeFocused();
   await page.keyboard.press('Meta+3');

@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from '@
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
-import { activate, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
+import { activate, chooseStepKind, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
 import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
 
 test.use({
@@ -45,12 +45,11 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
 
   const add = page.getByRole('button', { name: 'New Step', exact: true });
   await expect(add).toBeEnabled();
-  await expect(add).toHaveText('');
   await add.click();
-  const chooser = page.getByRole('dialog', { name: 'New Step', exact: true });
-  const train = chooser.getByRole('button', { name: 'Train', exact: true });
-  await expect(chooser.getByRole('button')).toHaveCount(1);
-  await expect(train).toBeFocused();
+  const chooser = page.getByRole('menu');
+  const train = chooser.getByRole('menuitem', { name: 'Train', exact: true });
+  await expect(chooser.getByRole('menuitem')).toHaveText(['Train', 'Evaluate', 'Analyze', 'Report']);
+  await expect(chooser.getByRole('menuitem', { name: 'Evaluate', exact: true })).toHaveAttribute('aria-disabled', 'true');
   const replayPath = `${projectPath}/history/replay`;
   const creation = post(page, replayPath);
   await train.click();
@@ -246,8 +245,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await expect(train).toContainText('1 of 3');
   const creating = post(page, projectPath + '/files');
   await activate(page, train.getByRole('button', { name: 'New Step train', exact: true }));
-  const choice = page.getByRole('dialog', { name: 'New Step', exact: true });
-  await activate(page, choice.getByRole('button', { name: 'Evaluate', exact: true }));
+  await chooseStepKind(page, 'Evaluate', true);
   const createdEvaluate = await creating;
   expect(createdEvaluate.status(), await createdEvaluate.text()).toBe(201);
   const { snapshot: evaluated }: StudioProjectDocument = await createdEvaluate.json();
@@ -611,7 +609,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(card.getByRole('button', { name: 'New Step train' })).toHaveAttribute('data-command-id', 'newStep');
   const create = post(page, `${projectPath}/files`);
   await palette(page, 'newStep', 'New Step');
-  const train = page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true });
+  const train = page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true });
   await expect(train).toBeFocused();
   await page.keyboard.press('Enter');
   const created = await create;
