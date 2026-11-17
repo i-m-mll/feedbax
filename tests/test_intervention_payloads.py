@@ -9,7 +9,7 @@ from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.migrations import migrate_graph_spec
-from feedbax.runtime.signal_transforms import (
+from feedbax.builtins.runtime.signal_transforms import (
     ConstantInput,
     ConstantInputParams,
     NetworkClamp,

@@ -1,5 +1,5 @@
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.runtime.signal_transforms import AddNoise, AddNoiseParams
+from feedbax.builtins.runtime.signal_transforms import AddNoise, AddNoiseParams
 
 
 def test_init_state_collects_param_indices():

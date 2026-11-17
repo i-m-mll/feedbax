@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -740,7 +739,6 @@ def main(
     )
     parser.add_argument("--manifest-root", required=True)
     parser.add_argument("--repo-root")
-    parser.add_argument("--plugin", action="append")
     parser.add_argument("--escape-hatch-reason")
     parser.add_argument("--parent-manifest-root")
     parser.add_argument("--execution-descriptor")
@@ -778,9 +776,9 @@ def main(
     )
     args = parser.parse_args(argv)
     if bootstrap_state is None:
-        from feedbax.plugins.composition import compose_application
+        from feedbax.plugins.composition import load_application
 
-        bootstrap_state = asyncio.run(compose_application(modules=tuple(args.plugin or ())))
+        bootstrap_state = load_application()
     from feedbax.analysis.evaluation import (
         EvaluationBatchExecution,
         execute_evaluation_run_matrix,

@@ -7,14 +7,14 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from feedbax.builtins.components import equinox, penzai
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
-from feedbax.components import penzai
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
-from feedbax.models.networks import PopulationStructure, recurrent_controller
+from feedbax.builtins.models.networks import PopulationStructure, recurrent_controller
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -25,7 +25,7 @@ def _registry_cases() -> list[str]:
         for component_type in registry.executable_names()
         if required_interior_domain(component_type, registry) is None
         and registry.get(component_type).domain == CAUSAL_DOMAIN_ID
-        and not component_type.startswith("feedbax.equinox.")
+        and registry.get(component_type).owner_class.__module__ != equinox.__name__
     ]
 
 

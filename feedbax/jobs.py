@@ -760,7 +760,6 @@ class JobService(PlanJobReader):
                 checkpoint=subject if not isinstance(subject, ContentRef) else None,
                 initial_model=subject if isinstance(subject, ContentRef) else None,
                 terminal=terminal,
-                bootstrap_modules=self.bootstrap_modules,
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))

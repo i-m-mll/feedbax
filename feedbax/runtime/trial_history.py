@@ -8,9 +8,9 @@ from typing import cast
 
 from equinox.nn import State
 
-from feedbax.runtime.channel import SignalChannel
-from feedbax.runtime.components import Ravel
-from feedbax.runtime.feedback import StateSelection
+from feedbax.builtins.runtime.channel import SignalChannel
+from feedbax.builtins.runtime.components import Ravel
+from feedbax.builtins.runtime.feedback import StateSelection
 from feedbax.runtime.graph import Component, Graph, Wire
 
 

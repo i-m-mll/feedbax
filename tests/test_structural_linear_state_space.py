@@ -9,8 +9,6 @@ import pytest
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphCompilationError
 from feedbax.contracts.graph import (
-    GRAPH_SPEC_SCHEMA_ID,
-    GRAPH_SPEC_SCHEMA_VERSION_V4,
     ComponentSpec,
     GraphSpec,
 )
@@ -20,14 +18,11 @@ from feedbax.contracts.array_values import (
 )
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
-from feedbax.contracts.migrations import UnsupportedComponentMigration, migrate_graph_spec
-from feedbax.mechanics import (
+from feedbax.contracts.migrations import UnsupportedComponentMigration
+from feedbax.builtins.mechanics.linear_state_space import (
     StructuralLinearDynamicsPerturbation,
     StructuralLinearStateSpace,
     structural_linear_transition,
-)
-from feedbax.component_migrations.mechanics import (
-    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
 )
 from feedbax.runtime.graph import init_state_from_component
 
@@ -322,59 +317,44 @@ def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> Non
     )
 
 
-def test_nested_v4_sparse_migration_materializes_losslessly_and_preserves_envelope() -> None:
+def test_nested_component_revision_migration_preserves_sparse_precision() -> None:
     high_precision = 1.0000000000000002
-    legacy = {
-        "schema_id": GRAPH_SPEC_SCHEMA_ID,
-        "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V4,
-        "nodes": {
-            "wrapper": {
-                "type": "Subgraph",
-                "params": {},
-                "input_ports": [],
-                "output_ports": [],
-            }
-        },
-        "wires": [],
-        "subgraphs": {
-            "wrapper": {
-                "schema_id": GRAPH_SPEC_SCHEMA_ID,
-                "schema_version": GRAPH_SPEC_SCHEMA_VERSION_V4,
-                "nodes": {
-                    "plant": {
-                        "type": "StructuralLinearStateSpace",
-                        "params": {
+    nested_delta = {
+        "schema_id": ARRAY_VALUE_SCHEMA_ID,
+        "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
+        "encoding": "sparse_coo",
+        "shape": [2, 2],
+        "dtype": "float64",
+        "nonfinite": "forbid",
+        "fill": 0.0,
+        "entries": [{"coordinate": [0, 1], "value": high_precision}],
+    }
+    spec = GraphSpec(
+        nodes={"wrapper": ComponentSpec(type="feedbax.Subgraph")},
+        subgraphs={
+            "wrapper": GraphSpec(
+                nodes={
+                    "plant": ComponentSpec(
+                        type="feedbax.StructuralLinearStateSpace",
+                        revision=2,
+                        params={
                             "A": [[1.0, 0.0], [0.0, 1.0]],
                             "B": [[0.0], [0.0]],
                             "B_w": [[0.0], [0.0]],
-                            "delta_A": {
-                                "shape": [2, 2],
-                                "entries": [{"row": 0, "column": 1, "value": high_precision}],
-                            },
+                            "delta_A": nested_delta,
                             "initial_state": [0.0, 0.0],
                             "pos_slice": [0, 1],
                             "vel_slice": [1, 2],
                         },
-                        "param_schema_version": (
-                            STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION
-                        ),
-                        "input_ports": ["force", "epsilon"],
-                        "output_ports": ["effector", "state"],
-                    }
-                },
-                "wires": [],
-            }
+                        input_ports=["force", "epsilon"],
+                        output_ports=["effector", "state"],
+                    )
+                }
+            )
         },
-    }
-
-    migration = migrate_graph_spec(legacy)
-    nested_delta = migration.payload["subgraphs"]["wrapper"]["nodes"]["plant"]["params"]["delta_A"]
-    assert nested_delta["dtype"] == "float64"
+    )
     with jax.experimental.enable_x64():
-        graph = spec_to_graph(
-            GraphSpec.model_validate(migration.payload),
-            ComponentRegistry(),
-        )
+        graph = spec_to_graph(spec, ComponentRegistry())
         component = graph.nodes["wrapper"].nodes["plant"]
 
     assert (
@@ -386,8 +366,10 @@ def test_nested_v4_sparse_migration_materializes_losslessly_and_preserves_envelo
         == high_precision
     )
     round_tripped = graph_to_spec(graph)
-    round_trip_delta = round_tripped.subgraphs["wrapper"].nodes["plant"].params["delta_A"]
-    assert round_trip_delta == nested_delta
+    node = round_tripped.subgraphs["wrapper"].nodes["plant"]
+    assert node.revision == 3
+    assert node.params["delta_A"] == nested_delta
+    assert node.params["dt"] == 0.01
 
 
 @pytest.mark.parametrize(

@@ -27,7 +27,7 @@ def cde_controller(
 ) -> Graph:
     """Compile and initialize a native neural CDE controller."""
     from feedbax.compiler import GraphDocument, compile_graph
-    from feedbax.compiler.cde_templates import cde_controller_spec
+    from feedbax.builtins.templates.cde_templates import cde_controller_spec
     from feedbax.component_registry import ComponentRegistry
 
     spec = cde_controller_spec(

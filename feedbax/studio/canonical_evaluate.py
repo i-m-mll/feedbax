@@ -80,7 +80,6 @@ class EvaluationRequestBinding(StrictModel):
     checkpoint: ProductRef | BestRank | None = Field(default=None, exclude_if=lambda value: value is None)
     initial_model: ContentRef | None = Field(default=None, exclude_if=lambda value: value is None)
     terminal: TerminalTrainSubject | None = Field(default=None, exclude_if=lambda value: value is None)
-    bootstrap_modules: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
 
     @model_validator(mode="after")
     def _one_model_source(self) -> EvaluationRequestBinding:
@@ -687,13 +686,11 @@ def live_objective_series(
 
 
 def _unchanged_rollout_semantics(source: BoundStudioTrainingJobInput) -> tuple[str, str]:
-    import asyncio
-
     from feedbax.compiler.graph import resolve_graph_schedule
-    from feedbax.plugins.composition import compose_application
+    from feedbax.plugins.composition import load_application
     from feedbax.studio.canonical_train import resolve_training_request_binding
 
-    registry = asyncio.run(compose_application(modules=source.bootstrap_modules)).bundle
+    registry = load_application().bundle
     trial = resolve_training_request_binding(source, registries=registry).trial
     graph = trial.graph.graph
     _, key_schedule = resolve_graph_schedule(graph)

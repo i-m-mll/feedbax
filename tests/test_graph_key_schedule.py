@@ -21,7 +21,7 @@ from feedbax.compiler import (
     ResolvedGraph,
     compile_graph,
 )
-from feedbax.compiler.templates import recurrent_node_output_initializer
+from feedbax.builtins.templates.templates import recurrent_node_output_initializer
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
 from feedbax.runtime._graph_key_schedule import (
@@ -33,7 +33,7 @@ from feedbax.runtime._graph_key_schedule import (
     step_key,
     step_keys,
 )
-from feedbax.runtime.components import Noise
+from feedbax.builtins.runtime.components import Noise
 from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.runtime.iteration import iterate_component
 

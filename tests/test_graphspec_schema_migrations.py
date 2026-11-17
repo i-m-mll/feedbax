@@ -214,7 +214,7 @@ def test_nested_acausal_reader_preserves_source_context_through_containers(tmp_p
         def __call__(self, inputs, state, *, key):
             return {}, state
 
-    from feedbax.acausal.translational import Mass
+    from feedbax.builtins.acausal.translational import Mass
 
     class ReaderMass(Mass):
         def __init__(self, name: str, value: int = 0):

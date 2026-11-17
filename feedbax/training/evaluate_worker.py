@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
-from functools import lru_cache, partial
+from functools import partial
 import os
 from collections.abc import Sequence
 from hashlib import sha256
@@ -39,6 +38,7 @@ from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
+from feedbax.plugins.composition import load_application
 from feedbax.runtime.model_input import prepare_model_task, reconstruct_model
 from feedbax.studio.canonical_evaluate import (
     ROLLOUT_TYPE,
@@ -136,13 +136,6 @@ def score_paired_validation(
     return task_execution.validation(graph, objective, parameters, key=key)
 
 
-@lru_cache(maxsize=1)
-def _registry(bootstrap_modules: tuple[str, ...]) -> ApplicationRegistryBundle:
-    from feedbax.plugins.composition import compose_application
-
-    return asyncio.run(compose_application(modules=bootstrap_modules)).bundle
-
-
 def resolve_rollout(
     initial: InitialModelSource, task: TaskDocument | PythonTaskSelection,
     objective: ObjectiveDocument | None, source_graph: GraphSpec | None, params: RolloutParameters,
@@ -199,7 +192,7 @@ def prepare_rollout(
     transaction, model_slot = _published_model_slot(checkpoint.checkpoint_root, checkpoint.pointer)
     if model_slot is None:
         raise CannotRun("/inputs/subject/checkpoint/model", "requires a semantic model")
-    registry = _registry(source.bootstrap_modules)
+    registry = load_application().bundle
     slot = SemanticModelSlot.open(transaction, model_slot, components=registry.components)
     store = ImmutableArtifactBlobProvider(source.manifest_root)
     authored = read_success_request(
@@ -302,7 +295,7 @@ def rollout_dataset(
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.dataset import Dataset, Variable
     from feedbax.runtime.raw_state import scene_position_key
-    from feedbax.tasks.reaching import is_world_target
+    from feedbax.builtins.reaching import is_world_target
 
     paired, variant, graph = prepared.paired, prepared.variant, prepared.graph
     effective_graph = paired.executable.resolved.graph
@@ -537,7 +530,7 @@ def main(argv: Sequence[str]) -> int:
             raise ValueError("Launch subject differs from the canonical Evaluate request.")
         events.phase("restoring")
         launch = request.canonical_request
-        registry = _registry(launch.bootstrap_modules)
+        registry = load_application().bundle
         if isinstance(subject, ContentRef):
             binding = {}
             decoded = decode_request(store.get_object(launch.request), store.get_object)

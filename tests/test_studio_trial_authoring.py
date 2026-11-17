@@ -17,7 +17,8 @@ from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_proj
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.jobs import JobService
 from feedbax.contracts.request_identity import decode_request
-from feedbax.tasks.reaching import REACHING_TASK, ReachingParameters, builtin_python_tasks, reaching_document
+from feedbax.builtins.reaching import REACHING_TASK, ReachingParameters, reaching_document
+from feedbax.tasks.registry import application_python_tasks
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
 from feedbax.web.services import project_plan as window_service
@@ -280,7 +281,7 @@ def test_memoized_plan_uses_supplied_python_tasks():
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
-    declaration = builtin_python_tasks().resolve(REACHING_TASK)
+    declaration = application_python_tasks().resolve(REACHING_TASK)
     assert declaration is not None
     registry = PythonTaskRegistry()
     registry.register(replace(declaration, key="test.reaching"))
@@ -315,7 +316,7 @@ def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp
         tasks.seal()
         return tasks
 
-    declaration = builtin_python_tasks().resolve(REACHING_TASK)
+    declaration = application_python_tasks().resolve(REACHING_TASK)
     assert declaration is not None
     compiler_tasks, window_tasks = registry("compiler"), registry("window")
     raw = _python_project()

@@ -181,7 +181,7 @@ def test_stateful_dtype_survives_scan_and_serialization(component_type, nested) 
 
 def test_stateful_prototype_declarations_and_schema_migration() -> None:
     from feedbax.compiler.prototypes import infer_node_input_prototypes, validate_or_add_input_shape
-    from feedbax.runtime.components import DelayLine
+    from feedbax.builtins.runtime.components import DelayLine
 
     components = ComponentRegistry()
     for kind in ("feedbax.DelayLine", "feedbax.Channel", "feedbax.FirstOrderFilter"):
@@ -247,7 +247,7 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
 
 
 def test_direct_filter_preserves_structured_signal_dtypes() -> None:
-    from feedbax.runtime.filters import LowPassFilter
+    from feedbax.builtins.runtime.filters import LowPassFilter
     from feedbax.runtime.graph import init_state_from_component
 
     with jax.experimental.enable_x64():
@@ -281,7 +281,7 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
 
 @pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_, jnp.complex64])
 def test_filter_rejects_non_real_floating_state_leaves(dtype) -> None:
-    from feedbax.runtime.filters import LowPassFilter
+    from feedbax.builtins.runtime.filters import LowPassFilter
 
     registry = ComponentRegistry()
     invalid = jnp.zeros(2, dtype=dtype)

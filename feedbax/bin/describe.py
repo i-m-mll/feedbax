@@ -1,23 +1,19 @@
 """Render the shared authoring catalog and its individual entries as JSON."""
 
 import argparse
-import asyncio
 import json
 
 from pydantic import BaseModel
 
 from feedbax.bin.project_commands import CommandOutput
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog
-from feedbax.plugins.composition import compose_application
+from feedbax.plugins.composition import load_application
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "selector", nargs="?",
         help="Family, step kind or registry. Qualify with family:, step: or registry: as needed.",
-    )
-    parser.add_argument(
-        "--plugin", action="append", help="Load a plugin module's declarations. May be repeated.",
     )
 
 
@@ -56,9 +52,9 @@ def run(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.studio.authoring import authoring_surface
 
     try:
-        state = asyncio.run(compose_application(modules=tuple(args.plugin or ())))
+        state = load_application()
     except BootstrapError as error:
-        output.failure(error, path="--plugin")
+        output.failure(error, path="installed packages")
         return 2
     catalog = authoring_surface(state, catalog=True)
     result = catalog

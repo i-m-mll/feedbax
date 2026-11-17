@@ -16,8 +16,8 @@ from equinox import Module
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.mechanics import Mechanics, MechanicsState
-from feedbax.runtime.channel import Channel, ChannelSpec, ChannelState, SignalChannel, _noise_model
-from feedbax.runtime.feedback import (
+from feedbax.builtins.runtime.channel import Channel, ChannelSpec, ChannelState, SignalChannel, _noise_model
+from feedbax.builtins.runtime.feedback import (
     FEEDBACK_INPUT,
     FEEDBACK_OUTPUT,
     AssembleFeedback,
@@ -27,7 +27,7 @@ from feedbax.runtime.feedback import (
     feedback_node_names,
     feedback_wires,
 )
-from feedbax.runtime.filters import FilterState, FirstOrderFilter, LowPassFilter
+from feedbax.builtins.runtime.filters import FilterState, FirstOrderFilter, LowPassFilter
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.runtime.noise import Normal
 from feedbax.runtime.trial_history import trial_history_plan
@@ -217,7 +217,7 @@ def _component_bindings(net: Component) -> dict[str, ComponentBinding]:
     if not isinstance(net, Graph):
         return {}
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.runtime.graph import Subgraph
+    from feedbax.builtins.templates.subgraph import Subgraph
 
     owner = ComponentRegistry().get(f"feedbax.{Subgraph.__name__}")
     if owner is None:

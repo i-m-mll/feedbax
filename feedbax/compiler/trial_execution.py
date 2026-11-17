@@ -33,7 +33,8 @@ from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, Ob
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.trial_execution import TrialExecution
 from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task
-from feedbax.tasks.reaching import builtin_python_tasks
+from feedbax.tasks.registry import application_python_tasks
+from feedbax.plugins.declarations import missing_declaration
 from feedbax.tasks.registry import PythonTaskDefinition, PythonTaskRegistry, PythonTaskTemplate
 
 
@@ -92,7 +93,7 @@ def validate_python_task(
     definition = registry.resolve(selection.type)
     if definition is None:
         return (Problem(code=ProblemCode.UNKNOWN_NAME, path=("python_task", "type"),
-                        reason=f"Python task {selection.type!r} is not registered."),)
+                        reason=missing_declaration("Python task", selection.type)),)
     try:
         params = definition.parameters.model_validate(selection.params)
     except ValidationError as error:
@@ -115,7 +116,7 @@ def resolve_python_task(
 def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: PythonTaskRegistry | None) -> tuple[str, ...]:
     if isinstance(task, TaskDocument):
         return task.condition_ids
-    template = resolve_python_task(task, registry or builtin_python_tasks())
+    template = resolve_python_task(task, registry or application_python_tasks())
     if isinstance(template, tuple):
         raise ValueError(template[0].reason)
     return template.condition_ids
@@ -150,7 +151,7 @@ def pair_trial_source(
 ) -> TrialPair | tuple[Problem, ...]:
     overrides = input_overrides or {}
     if isinstance(task, PythonTaskSelection):
-        resolved = validate_python_task(task, python_tasks or builtin_python_tasks())
+        resolved = validate_python_task(task, python_tasks or application_python_tasks())
         if isinstance(resolved[0], Problem):
             return resolved
         definition, parameters = resolved
