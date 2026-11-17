@@ -135,11 +135,15 @@ def _project(schema: dict[str, Any], path: str) -> _Projection:
                 "exclusiveMaximum": "lt",
             },
         }.get(kind, {})
-        check("type", *constraints, *(("pattern",) if kind == "string" else ()))
+        check("type", *constraints, *(("pattern", "format") if kind == "string" else ()))
         typescript, zod = _SCALARS[kind]
         zod = _bounds(zod, schema, constraints)
         if "pattern" in schema:
             zod += f".regex(new RegExp({json.dumps(schema['pattern'])}))"
+        if "format" in schema:
+            if schema["format"] != "date-time":
+                raise ValueError(f"Unsupported Studio JSON Schema format at {path}: {schema['format']}")
+            zod += ".datetime({ offset: true })"
         return _Projection(typescript, zod)
 
     raise ValueError(f"Unsupported Studio JSON Schema at {path}: {schema!r}")
