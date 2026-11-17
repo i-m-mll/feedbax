@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import BinaryIO
@@ -124,6 +124,16 @@ def publish_jax_cache(host_root: Path, shared: Path) -> None:
                 pass
 
 
+def stop_host_workers(host_root: Path) -> None:
+    """Stop the workers a stopped Host leaves running, which may still write to the home."""
+    found = subprocess.run(["pgrep", "-f", str(host_root / "workers")], capture_output=True, text=True)
+    pids = [int(pid) for pid in found.stdout.split()]
+    for pid in pids:
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+    wait_until(lambda: not any(process_exists(pid) for pid in pids), f"Studio workers did not exit in {host_root}")
+
+
 def finish_test_home(
     home: Path, host_root: Path, lease: BinaryIO, *, remove: bool, jax_cache: Path | None
 ) -> None:
@@ -133,6 +143,7 @@ def finish_test_home(
         timeout=6,
     )
     stop_isolated_host(host_root)
+    stop_host_workers(host_root)
     if jax_cache is not None and (host_root / "jax").is_dir():
         publish_jax_cache(host_root, jax_cache)
     if remove:
