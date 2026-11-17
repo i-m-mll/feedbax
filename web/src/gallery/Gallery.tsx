@@ -22,9 +22,12 @@ import { Slider } from '@/components/ui/Slider';
 import { Select, type Option } from '@/components/ui/Select';
 import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
 import { TextField } from '@/components/ui/TextField';
+import { ValueFieldGallery } from './ValueFieldGallery';
 
 type Theme = 'light' | 'dark';
 type Density = 'compact' | 'regular';
+type Labels = 'beside' | 'above';
+type ValueMark = 'hover' | 'quiet';
 
 const kinds = [
   { value: 'train', label: 'Train', glyph: <Box /> },
@@ -59,6 +62,8 @@ export function Gallery() {
   useLayoutEffect(() => installTooltips(), []);
   const theme = useRootAttribute<Theme>('data-theme');
   const density = useRootAttribute<Density>('data-density');
+  const labels = useRootAttribute<Labels>('data-inspector-labels');
+  const valueMark = useRootAttribute<ValueMark>('data-value-mark');
   const [text, setText] = useState('policy');
   const [number, setNumber] = useState<number | null>(0.001);
   const [position, setPosition] = useState(0.6);
@@ -80,6 +85,12 @@ export function Gallery() {
         <SegmentedControl<Density> aria-label="Density" value={density}
           onValueChange={(value) => setAppearance(window, 'density', value)}
           items={[{ value: 'compact', label: 'Compact' }, { value: 'regular', label: 'Regular' }]} />
+        <SegmentedControl<Labels> aria-label="Inspector labels" value={labels}
+          onValueChange={(value) => setAppearance(window, 'inspector-labels', value)}
+          items={[{ value: 'beside', label: 'Beside' }, { value: 'above', label: 'Above' }]} />
+        <SegmentedControl<ValueMark> aria-label="Value mark" value={valueMark}
+          onValueChange={(value) => setAppearance(window, 'value-mark', value)}
+          items={[{ value: 'hover', label: 'Hover' }, { value: 'quiet', label: 'Quiet' }]} />
       </header>
       <div className="grid max-w-5xl gap-6 p-6">
         <Section name="Button">
@@ -214,6 +225,8 @@ export function Gallery() {
             </> : null}
           </div>
         </Section>
+
+        <ValueFieldGallery />
 
         <Section name="Table">
           <div className="w-full max-w-xl overflow-hidden rounded-control border border-shell-divider">

@@ -7,11 +7,12 @@ export interface TextFieldProps extends Omit<ComponentPropsWithoutRef<typeof Inp
   onValueChange?: (value: string) => void;
   invalid?: boolean;
   leading?: ReactNode;
+  trailing?: ReactNode;
   className?: string;
 }
 
 export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function TextField(
-  { onValueChange, invalid, leading, className, ...props }, ref,
+  { onValueChange, invalid, leading, trailing, className, ...props }, ref,
 ) {
   return (
     <div className={clsx(fieldBox, className)}>
@@ -23,6 +24,7 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function T
         onValueChange={onValueChange && ((value) => onValueChange(value))}
         {...props}
       />
+      {trailing ? <span className={clsx('flex pr-control-inline text-shell-muted', glyph)}>{trailing}</span> : null}
     </div>
   );
 });

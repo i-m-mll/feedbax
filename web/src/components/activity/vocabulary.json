@@ -358,7 +358,13 @@
     "newValue": "New Value",
     "spacing": "Spacing",
     "keepValue": "Keep Value",
-    "reload": "Reload"
+    "reload": "Reload",
+    "mixed": "Mixed",
+    "completions": "Completions",
+    "inspectorLabelsBeside": "Labels Beside",
+    "inspectorLabelsAbove": "Labels Above",
+    "valueMarkHover": "Hover Marks",
+    "valueMarkQuiet": "Quiet Marks"
   },
   "unit": {
     "second": "s",
@@ -442,7 +448,9 @@
     "positiveUpdates": "{value} contains a nonpositive or invalid update",
     "reversedUpdates": "{value} ends before it begins",
     "invalidUpdateList": "{value} has repeated or out-of-range updates",
-    "invalidCheckpointRule": "{value} has invalid syntax"
+    "invalidCheckpointRule": "{value} has invalid syntax",
+    "takesNumber": "{value} takes a number",
+    "takesInteger": "{value} takes a whole number"
   },
   "format": {
     "bestSubset": "{order} {metric} · {count}",

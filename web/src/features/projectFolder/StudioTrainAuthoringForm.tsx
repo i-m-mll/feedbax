@@ -11,7 +11,8 @@ import {
   type StudioFieldCommand,
 } from '@/components/pipeline/StudioDefinitionForm';
 import { StudioSweepPicker } from '@/components/pipeline/StudioSweepOverview';
-import { StudioFieldControl } from '@/components/values/StudioFieldControl';
+import { ValueField } from '@/components/values/ValueField';
+import { fromFieldView } from '@/components/values/adapters/fieldView';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
 import type {
@@ -239,14 +240,19 @@ export function StudioTrainAuthoringForm(props: Props) {
         'definition', numeric.data, numeric.error, () => { void numeric.refetch(); },
       )} />}
       {shared.length > 0 && <div ref={numericRegion} className="grid gap-2 px-3 py-2">
-        {shared.map((field) => <StudioFieldControl key={JSON.stringify([projectId, stepId, props.fieldRows, field.id])} field={field}
-          commit={!numeric.isPlaceholderData && !pending && !outside ? (edit) => editNumeric(field.id, edit) : undefined}
-          rowSelection={!!props.fieldRows?.length}
-          multipleRows={(props.fieldRows?.length ?? 0) > 1}
-          selectedValues={new Set(props.step && field.sweep && selection.kind !== 'steps'
-            ? selectedRuns(props.step, selection).map((row) => row.values[field.sweep!.id]).filter(Boolean) : [])}
-          onChooseValue={field.sweep && onChooseSweepValue
-            ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined} />)}
+        {shared.map((field) => {
+          const id = JSON.stringify([projectId, stepId, props.fieldRows, field.id]);
+          return <ValueField key={id} model={fromFieldView(field, {
+            id,
+            commit: !numeric.isPlaceholderData && !pending && !outside ? (edit) => editNumeric(field.id, edit) : undefined,
+            rowSelection: !!props.fieldRows?.length,
+            multipleRows: (props.fieldRows?.length ?? 0) > 1,
+            selectedMembers: new Set(props.step && field.sweep && selection.kind !== 'steps'
+              ? selectedRuns(props.step, selection).map((row) => row.values[field.sweep!.id]).filter(Boolean) : []),
+            chooseMember: field.sweep && onChooseSweepValue
+              ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined,
+          })} />;
+        })}
       </div>}
       <StudioRegion state={studioReadState(
         'definition', shown, definition.error, () => { void definition.refetch(); },
