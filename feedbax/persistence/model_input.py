@@ -7,12 +7,19 @@ from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSou
 from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.checkpoint_publication import model_product, read_retained_checkpoint
 
 
 def checkpoint_model_source(
     bound: BoundMember, *, artifacts: ImmutableArtifactBlobProvider,
 ) -> CheckpointModelSource:
     """Read the authored Model and exact semantic product selected by a frozen binding."""
+    if (source := bound.checkpoint_model) is not None:
+        checkpoint, spec = read_retained_checkpoint(artifacts, source.publication, source.producer)
+        model = model_product(checkpoint)
+        if (bound.content, bound.descriptor) != (model.content, model.descriptor):
+            raise ValueError("Bound model differs from its checkpoint publication")
+        return _model_source(checkpoint.model.tree, checkpoint.model.encoding, spec)
     if bound.selection is None or bound.content.media_type != MODEL_TREE_MEDIA_TYPE:
         raise ValueError("Model input requires a bound semantic model product")
     receipt = read_success_object(bound.selection.receipt, artifacts.get_object)
@@ -27,9 +34,15 @@ def checkpoint_model_source(
     tree = success_content_ref(model.content)
     if not isinstance(tree, ContentTreeRef):
         raise ValueError("Semantic model requires a content tree")
+    return _model_source(tree, SemanticModelEncoding.model_validate(model.descriptor), spec)
+
+
+def _model_source(
+    tree: ContentTreeRef, encoding: SemanticModelEncoding, spec: DocumentTrainingRequestSpec,
+) -> CheckpointModelSource:
     documents = spec.trial_documents
     return CheckpointModelSource(
-        tree=tree, encoding=SemanticModelEncoding.model_validate(model.descriptor),
+        tree=tree, encoding=encoding,
         initial=InitialModelSource(
             model_name=documents.model_name, document=documents.model, seed=spec.seed or 0,
         ),

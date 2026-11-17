@@ -16,14 +16,17 @@ from feedbax.contracts.artifact_custody import (
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef, ContinuationOccurrence
 from feedbax.contracts.execution_target import AttemptTarget
+from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE
 from feedbax.contracts.rollout import ResolvedRolloutBinding
 from feedbax.contracts.request_identity import DecodedRequest, decode_request, effective_binding_id
 from feedbax.contracts.request_refs import (
+    BatchMember,
     ContentRef,
     EffectiveBindingId,
     EffectiveInputMember,
+    InputMember,
     LastMember,
     Name,
     NamedMember,
@@ -33,6 +36,7 @@ from feedbax.contracts.request_refs import (
     Sha256,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.plugins.declarations import DistributionSource
 
 
 INDEX_REF = "proof/effective-successes-v1"
@@ -97,21 +101,28 @@ class EvaluationSubjectValue(ReferenceValue):
         return self
 
 
-class EvaluationCheckpointSource(ReferenceValue):
-    occurrence: CheckpointOccurrenceRef
+class CheckpointPublicationSource(ReferenceValue):
+    pointer: CheckpointLatestPointer
     transaction: ContentObjectRef
     train_binding: ContentObjectRef
 
+    @property
+    def occurrence(self) -> CheckpointOccurrenceRef:
+        return CheckpointOccurrenceRef(
+            run_id=self.pointer.run_id, transaction_id=self.pointer.transaction_id,
+            manifest_sha256=self.pointer.manifest_sha256,
+        )
+
     @model_validator(mode="after")
-    def _exact_transaction(self) -> EvaluationCheckpointSource:
-        if self.transaction.sha256 != self.occurrence.manifest_sha256:
-            raise ValueError("Evaluate checkpoint occurrence differs from its retained transaction")
+    def _exact_transaction(self) -> CheckpointPublicationSource:
+        if self.transaction.sha256 != self.pointer.manifest_sha256:
+            raise ValueError("Checkpoint publication differs from its retained transaction")
         return self
 
 
 class EvaluationClosure(ReferenceValue):
     kind: Literal["completion", "recovery"]
-    checkpoint: EvaluationCheckpointSource
+    checkpoint: CheckpointPublicationSource
     receipt: ContentObjectRef | None = None
 
     @model_validator(mode="after")
@@ -125,12 +136,12 @@ class BestCandidateEvidence(ReferenceValue):
     attempt: Name
     producer: RequestObject
     receipt: ContentObjectRef
-    checkpoint: EvaluationCheckpointSource
+    checkpoint: CheckpointPublicationSource
 
 
 class EvaluationSubjectSource(ReferenceValue):
     producer: RequestObject
-    checkpoints: tuple[EvaluationCheckpointSource, ...]
+    checkpoints: tuple[CheckpointPublicationSource, ...]
     closure: EvaluationClosure | None = None
     terminal_receipt: ContentObjectRef | None = None
     terminal_checkpoint: CheckpointOccurrenceRef | None = Field(
@@ -139,20 +150,45 @@ class EvaluationSubjectSource(ReferenceValue):
     ranked_candidates: tuple[BestCandidateEvidence, ...] = Field(default=(), exclude_if=lambda items: not items)
 
 
+class CheckpointModelSourceEvidence(ReferenceValue):
+    producer: RequestObject
+    publication: CheckpointPublicationSource
+
+
 class BoundMember(EffectiveInputMember):
     selection: Selection | None = None
     evaluation_subject: EvaluationSubjectSource | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    checkpoint_model: CheckpointModelSourceEvidence | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _one_source(self) -> BoundMember:
-        if self.evaluation_subject is not None and self.selection is not None:
-            raise ValueError("Evaluate subject has conflicting source evidence")
+        if sum(value is not None for value in (self.selection, self.evaluation_subject, self.checkpoint_model)) > 1:
+            raise ValueError("Input has conflicting source evidence")
         return self
 
 
 type Bindings = dict[Name, tuple[BoundMember, ...]]
+
+
+def exact_model_checkpoint_input(
+    request: DecodedRequest,
+) -> tuple[str, InputMember, ProductRef] | None:
+    if request.kind != "analyze":
+        return None
+    matches = [
+        (role, member, reference)
+        for role, members in request.inputs.items()
+        for member in members
+        if isinstance(reference := member.reference, ProductRef)
+        and reference.role == "checkpoint" and isinstance(reference.select, BatchMember)
+    ]
+    if len(matches) > 1:
+        raise ValueError("Analyze requires at most one exact model checkpoint input")
+    return matches[0] if matches else None
 
 
 class Success(ReferenceValue):
@@ -166,6 +202,7 @@ class Success(ReferenceValue):
     inputs: Bindings
     products: Products = Field(min_length=1)
     supersedes: ContentObjectRef | None
+    provider: DistributionSource | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_manifest: ContentObjectRef | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )

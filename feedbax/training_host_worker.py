@@ -204,11 +204,11 @@ def _run(
     from feedbax.contracts.base import ArtifactRef, Provenance, sha256_file, utc_now
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.manifest import (
-        InheritedTerminalCheckpoint, SpecPayload, TrainingRunCertification, TrainingRunManifest,
+        InheritedTerminalCheckpoint, TrainingRunCertification, TrainingRunManifest,
         canonical_manifest_path, load_manifest_bytes, training_run_manifest_id, write_manifest,
     )
     from feedbax.contracts.method_checkpoint import MethodCheckpointClock, MethodCheckpointIdentity
-    from feedbax.contracts.model_input import CheckpointModelSource
+    from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource
     from feedbax.contracts.strict_json import strict_json_loads
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.host.completion import CompletionFileError, read_completion_bindings
@@ -249,7 +249,7 @@ def _run(
     policy = spec.continuation
     config = spec.training_config
     target = spec.target_total
-    seed = spec.seed or 0
+    seed = spec.seed
     replica_ids = tuple(map(str, range(config.replicates)))
     checkpoint_root = _attempt_root(manifest_root, job_id)
     binding_path = training_binding_path(manifest_root, job_id)
@@ -260,6 +260,7 @@ def _run(
         read_completion_bindings()["bindings"] if "FEEDBAX_HOST_COMPLETION_BINDINGS" in os.environ else []
     )
     resume = launch.resume
+    source_launch = None
     checkpoint_ref = launch.canonical_request.checkpoint
     if launch.collected_resume is not None:
         if dependencies or launch.collected_resume == job_id:
@@ -286,7 +287,7 @@ def _run(
             raise CompletionFileError("Bound Train checkpoint differs from its canonical input.")
         if resume is None:
             scope = "full" if policy is not None and policy.state == "preserve" else "model_only"
-            verify_bound_training_completion(product, scope=scope)
+            source_launch = verify_bound_training_completion(product, scope=scope)
         launch = launch.model_copy(update={"checkpoint_input": PinnedTrainCheckpoint(
             producer_job_id=product["producer_job_id"],
             receipt=product["receipt"],
@@ -318,7 +319,7 @@ def _run(
     latest_metrics = {}
     history = checkpoint_root / "metrics.jsonl"
     method_provenance = asdict(method.source) | {"key": method.key, "revision": method.revision}
-    provenance = {"method": method_provenance}
+    provenance = {"method": method_provenance, "request_id": launch.request_id, "binding_sha256": binding_sha256}
     if launch.checkpoint_input is not None:
         provenance["checkpoint_initialization"] = checkpoint_reference(launch.checkpoint_input.checkpoint).model_dump(mode="json")
     if resume is not None:
@@ -344,7 +345,6 @@ def _run(
             id=manifest_id, job_id=job_id, status=status, completed_batches=events.completed_updates,
             completed_at=utc_now(), stopped=status != "completed",
             failure_kind="nan_guard" if kind == "diverged" else None,
-            training_spec=SpecPayload(kind="DocumentTrainingRequestSpec", inline=spec.model_dump(mode="json")),
             checkpoint_custody=committed, artifacts=metrics,
             summary_metrics=latest_metrics, metadata={"error": error} if error else {},
             provenance=Provenance(metadata=provenance),
@@ -397,7 +397,7 @@ def _run(
         paired = []
         for replica_id in replica_ids:
             result = trial.realize(
-                initialization_key=model_initialization_key(spec.seed or 0, replica_id),
+                initialization_key=model_initialization_key(spec.seed, replica_id),
                 artifact_provider=model_assets,
             )
             if isinstance(result, tuple):
@@ -407,9 +407,23 @@ def _run(
         templates = tuple(result.executable.graph for result in paired)
         models = templates
         if restored is not None:
-            model_source = CheckpointModelSource(tree=restored.model.tree, encoding=restored.model.encoding)
+            source_spec = source_launch.spec if source_launch is not None else spec
+            documents = source_spec.trial_documents
+            source_graph = trial.graph
+            variant = None
+            if documents != spec.trial_documents or source_spec.seed != spec.seed:
+                from feedbax.studio.canonical_train import _resolve_trial
+
+                source_graph = _resolve_trial(source_spec, registries).graph
+                variant = trial.graph
+            model_source = CheckpointModelSource(
+                tree=restored.model.tree,
+                encoding=restored.model.encoding,
+                initial=InitialModelSource(model_name=documents.model_name, document=documents.model, seed=source_spec.seed),
+            )
             reconstructed = reconstruct_model(
-                model_source, registry=registries, artifacts=model_assets, template=paired[0].executable,
+                model_source, registry=registries, artifacts=model_assets,
+                template=source_graph, variant=variant, variant_seed=spec.seed, slot=restored.model,
             )
             if isinstance(reconstructed, tuple):
                 problem = reconstructed[0]
@@ -420,9 +434,9 @@ def _run(
             raise ValueError("Managed Train requires a graph with semantic checkpoint model owners.")
         execution, objective = paired[0].execution, paired[0].objective
         assert objective is not None
-        state = initialize_method(method, settings, models=models, seed=spec.seed or 0, replica_ids=replica_ids)
+        state = initialize_method(method, settings, models=models, seed=spec.seed, replica_ids=replica_ids)
         if resume is not None or (policy is not None and policy.state == "preserve"):
-            state = state._replace(model=state.model if resume is None else stack_replicas(models),
+            state = state._replace(model=stack_replicas(models),
                                    extra=restored.restore_extra(state.extra))
 
         validate_method_extra(state.extra, replicas=len(replica_ids))
@@ -445,7 +459,7 @@ def _run(
             from feedbax.training.live_evaluate import live_evaluation_callback
 
             try:
-                evaluate_checkpoint = live_evaluation_callback(launch, events)
+                evaluate_checkpoint = live_evaluation_callback(launch, events, registry=registries)
             except (OSError, ValueError) as error:
                 events.append("live_evaluate_error", _error(error, "live_evaluate"), sync=True)
 
@@ -492,7 +506,7 @@ def _run(
             events.checkpoint = checkpoint
             checkpoints.append(checkpoint)
             if evaluate_checkpoint is not None:
-                evaluate_checkpoint(checkpoint, replica_value(state.model, 0))
+                evaluate_checkpoint(checkpoint, tuple(replica_value(state.model, i) for i in range(len(replica_ids))))
 
         def publish_frame() -> None:
             nonlocal last_frame
@@ -523,6 +537,14 @@ def _run(
         stopping = False
         with history.open("x", encoding="utf-8") as stream:
             while completed < target:
+                if completed > start_boundary and stop_file.exists():
+                    stopping = True
+                    if not checkpoints or checkpoints[-1].completed_updates != completed:
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                        publish_checkpoint(final=True)
+                        publish_frame()
+                    break
                 local = completed - segment_start
                 next_interval = completed + config.snapshot_interval - local % config.snapshot_interval
                 boundary = min(next_interval, next_requested, target)

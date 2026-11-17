@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Literal
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.method_checkpoint import MethodCheckpointIdentity
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.effective_success import Product
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
@@ -20,7 +19,7 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.checkpoint_selection import selected_coordinates, verify_dependency_files
-from feedbax.host.completion import CompletionFileError, completion_file, read_completion_bindings
+from feedbax.host.completion import CompletionFileError, completion_file, read_completion_bindings, verify_completion_files
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
     verify_training_request_binding,
@@ -146,10 +145,9 @@ def verify_training_completion(
             or manifest.completed_batches != target
         ):
             raise CompletionFileError("Receipt does not certify this attempt at its authored target.")
-        if manifest.training_spec is None or DocumentTrainingRequestSpec.model_validate(
-            manifest.training_spec.inline
-        ) != launch.spec:
-            raise CompletionFileError("Receipt does not bind the admitted Train execution payload.")
+        provenance = manifest.provenance.metadata
+        if (provenance.get("request_id"), provenance.get("binding_sha256")) != (launch.request_id, binding_sha256):
+            raise CompletionFileError("Receipt does not bind the admitted Train request and launch.")
         if launch.collected_resume == producer_job_id or (
             launch.collected_resume is None and (launch.canonical_request.checkpoint is None) != (launch.checkpoint_input is None)
         ):
@@ -205,7 +203,7 @@ def verify_training_completion(
                     if size != artifact.size_bytes or file_digest(stream, "sha256").hexdigest() != artifact.sha256:
                         raise CompletionFileError("Train metric history differs from its receipt.")
             metrics = _file(root, history, artifact.sha256, artifact.size_bytes)
-        return {
+        completion = {
             "producer_job_id": producer_job_id,
             "project_id": launch.project_id,
             "request_id": launch.request_id,
@@ -216,6 +214,8 @@ def verify_training_completion(
             "files": files,
             "metrics": metrics,
         }
+        verify_completion_files(completion, checkpoint_model=scope == "model_only")
+        return completion
     except (CompletionFileError, CompletionUnavailable):
         raise
     except (ValueError, KeyError, OSError) as error:
