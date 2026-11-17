@@ -39,6 +39,7 @@ const shortcuts = {
   addComponent: { key: 'A', shift: true },
   modelSelectAll: primary('A'),
   modelRemove: { key: 'Backspace' },
+  renameStep: { key: 'F2' },
   modelRename: { key: 'F2' },
   modelDuplicate: primary('D'),
   modelGroup: primary('G'),
@@ -63,7 +64,7 @@ export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | Appea
   'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
-  'fitView' | 'zoomIn' | 'zoomOut' | 'rename' | 'renameStep';
+  'fitView' | 'zoomIn' | 'zoomOut' | 'rename';
 
 const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
@@ -148,9 +149,9 @@ export function studioCommandContext(target: EventTarget | null, paletteOpen: bo
   };
 }
 
-/** Commands that act on the Model canvas's selection; a focused text field keeps their keys. */
+/** Commands that act on a canvas's selection; a focused text field keeps their keys. */
 const canvasCommands = new Set<StudioCommandId>([
-  'addComponent', 'leave', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup',
+  'renameStep', 'addComponent', 'leave', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup',
   'modelUngroup', 'modelCopy', 'modelCut', 'modelPaste',
 ]);
 
