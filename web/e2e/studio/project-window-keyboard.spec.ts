@@ -155,7 +155,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const slow = train.getByRole('listitem').getByRole('button', { name: 'Select learning-rate 0.001', exact: true });
   await activate(page, slow);
   await expect(slow).toHaveAttribute('aria-pressed', 'true');
-  await expect(train).toContainText('1 of 3');
+  await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
 
   async function submit(keys: StudioSavedTrainKey[], revision: string) {
     const response = post(page, runsPath);
@@ -231,7 +231,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   if (!(await slow.isVisible())) await activate(page, sweep);
   await activate(page, slow);
   await expect(slow).toHaveAttribute('aria-pressed', 'true');
-  await expect(train).toContainText('1 of 3');
+  await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
   const creating = post(page, projectPath + '/files');
   await activate(page, train.getByRole('button', { name: 'New Step train', exact: true }));
   await chooseStepKind(page, 'Evaluate', true);
@@ -586,10 +586,10 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(value('0.001')).toHaveAttribute('aria-pressed', 'true');
   await expect(value('0.003')).toHaveAttribute('aria-pressed', 'true');
   await expect(value('0.002')).toHaveAttribute('aria-pressed', 'false');
-  await expect(card).toContainText('2 of 3');
+  await expect(card.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(2);
   const marks = card.getByRole('grid', { name: 'Runs' });
   await tabTo(page, marks.getByRole('rowheader').first().getByRole('button'));
-  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowDown');
   await expect(marks.getByRole('gridcell').first().getByRole('button')).toBeFocused();
 
   const prefix = post(page, runsPath);
@@ -599,8 +599,8 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const sourceKeys = sourceRun.request().postDataJSON().run_keys as StudioSavedTrainRuns['rows'][number]['key'][];
   expect(sourceKeys).toHaveLength(2);
   const producer = (await sourceRun.json() as StudioJobSubmission).items[0].job_id;
-  await expect(card.getByText('2 Done', { exact: true })).toBeVisible({ timeout: firstJobTimeout });
-  await expect(card.getByText('1 Not run', { exact: true })).toBeVisible();
+  await expect(card.locator('[data-status-mark="succeeded"]')).toHaveCount(2, { timeout: firstJobTimeout });
+  await expect(card.locator('[data-status-mark="not_run"]')).toHaveCount(1);
 
   await expect(card.getByRole('button', { name: 'New Step train' })).toHaveAttribute('data-command-id', 'newStep');
   const create = post(page, `${projectPath}/files`);
