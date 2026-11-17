@@ -293,7 +293,7 @@ def power_iteration(
 
         return jax.lax.scan(step, jnp.zeros((), dtype=state.dtype), (state, actuation, disturbance))[1]
 
-    adjoint = jax.linear_transpose(forward, initial)
+    _, adjoint = jax.vjp(forward, jnp.zeros_like(initial))
 
     def iterate(_index, vector):
         (next_vector,) = adjoint(forward(vector))
