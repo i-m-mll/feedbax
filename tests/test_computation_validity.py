@@ -1,6 +1,9 @@
 """Behavioral witnesses for exact and environment-only validity evidence."""
 
 from hashlib import sha256
+import os
+import subprocess
+import sys
 
 import equinox as eqx
 import jax
@@ -176,6 +179,27 @@ def test_argument_identity_includes_values_tree_weak_type_and_placement():
     assert argument_signature(arrays, static=static) != argument_signature(
         arrays, static=other_static
     )
+
+
+def test_equinox_argument_digest_survives_a_new_worker_hash_seed():
+    snippet = """
+import equinox as eqx
+import jax
+from feedbax.validity.computation import capture_arguments, pytree_operands
+
+linear = eqx.nn.Linear(2, 1, key=jax.random.key(7))
+arrays, static = pytree_operands(linear)
+print(capture_arguments(arrays, static=static).sha256)
+"""
+    digests = [
+        subprocess.check_output(
+            [sys.executable, "-c", snippet],
+            env={**os.environ, "PYTHONHASHSEED": str(seed), "JAX_PLATFORMS": "cpu"},
+            timeout=20,
+        ).strip()
+        for seed in (19, 271)
+    ]
+    assert len(digests[0]) == 64 and digests[0] == digests[1]
 
 
 def test_old_normalization_requires_retained_program_for_exact_comparison():
