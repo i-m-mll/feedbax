@@ -434,7 +434,7 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
   const { snapshot, projectPath } = await seedManagedProject(request, [
     modelFile,
     { kind: 'document', id: 'profile-task', document: {
-      schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.task.reaching.v1', params: {} },
+      schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
     } },
     { kind: 'document', id: 'profile-objective', document: {
       schema: 'feedbax.spec.objective_document', payload: { id: 'profile-objective', terms: [] },
