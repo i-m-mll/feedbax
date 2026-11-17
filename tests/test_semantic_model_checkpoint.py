@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from feedbax.builtins.training import StandardTrainingSettings, _init_supervised
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.component_registry import ComponentRegistry
@@ -24,6 +25,7 @@ from feedbax.contracts.method_checkpoint import (
     MethodCheckpointIdentity,
     method_checkpoint_extra_path,
 )
+from feedbax.contracts.training import OptimizerSpec
 from feedbax.dataset import Dataset, Variable
 from feedbax.mechanics.muscles import RigidTendonHillMuscleThelen
 from feedbax.persistence.array_container import ArrayContainerReader
@@ -135,6 +137,29 @@ def test_recover_replicated_method_state_and_read_model_without_extra(tmp_path):
         np.testing.assert_array_equal(right.nodes["linear"].layer.weight, [[-0.75]])
         with pytest.raises(CheckpointCustodyError):
             selected.restore_extra(fresh)
+
+
+def test_stateful_graph_adam_checkpoint_preserves_the_optimizer_abi(tmp_path):
+    graph = GraphSpec(nodes={
+        "cell": ComponentSpec(
+            type="feedbax.GRU",
+            input_ports=["input", "hidden"], output_ports=["output", "hidden"],
+        ),
+    })
+    model = compile_graph(GraphDocument(graph=graph), ComponentRegistry()).graph
+
+    def optimizer_state(**params):
+        settings = StandardTrainingSettings(
+            optimizer=OptimizerSpec(type="adam", params={"learning_rate": 0.001, **params}),
+        )
+        return stack_replicas((_init_supervised(settings, model, jax.random.key(0)).extra,))
+
+    source = optimizer_state()
+    written = _publish(tmp_path / "adam", graph, (model,), (model,), extra=source)
+    selected = _open(written.root, written.latest_pointer)
+    assert eqx.tree_equal(selected.restore_extra(optimizer_state(learning_rate=0.01)), source)
+    with pytest.raises(CheckpointCustodyError):
+        selected.restore_extra(optimizer_state(b1=0.8))
 
 
 def _thelen_graph(params):

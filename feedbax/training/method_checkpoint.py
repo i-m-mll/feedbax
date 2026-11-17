@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -87,19 +87,26 @@ def _extra_layout(extra: PyTree, count: int):
     )
     try:
         fingerprint = fingerprint_semantic_values(
-            specs, header=(_EXTRA_SCHEMA,),
-            project_leaf=lambda leaf: (
-                (leaf.shape, str(leaf.dtype), leaf.weak_type)
-                if isinstance(leaf, jax.ShapeDtypeStruct)
-                else _unsupported_metadata(leaf)
-            ),
+            specs, header=(_EXTRA_SCHEMA,), project_leaf=_checkpoint_metadata,
         )
     except UnsupportedSemanticValue as error:
         raise CheckpointCustodyError(f"Method extra state structure has no durable identity: {error}") from error
     return named, structure, {"schema": _EXTRA_SCHEMA, "structure_sha256": fingerprint}
 
 
-def _unsupported_metadata(value):
+def _checkpoint_metadata(value):
+    if isinstance(value, jax.ShapeDtypeStruct):
+        return value.shape, str(value.dtype), value.weak_type
+    if isinstance(value, type) and "<locals>" not in value.__qualname__:
+        return value.__module__, value.__qualname__
+    if isinstance(value, jax.tree_util.GetAttrKey):
+        return value.name
+    if isinstance(value, jax.tree_util.SequenceKey):
+        return value.idx
+    if isinstance(value, (jax.tree_util.DictKey, jax.tree_util.FlattenedIndexKey)):
+        return value.key
+    if is_dataclass(value) and not isinstance(value, type):
+        return tuple((field.name, getattr(value, field.name)) for field in fields(value) if field.compare)
     raise UnsupportedSemanticValue(f"{type(value).__module__}.{type(value).__qualname__}")
 
 
