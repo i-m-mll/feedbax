@@ -6,6 +6,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import type { Plugin } from 'vite';
+import { buildSync } from 'esbuild';
 
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
@@ -68,6 +69,20 @@ function desktopResources(): Plugin {
   };
 }
 
+// The theme and density must be on the root before the first paint, so the boot script is inlined into the page.
+function appearanceBoot(): Plugin {
+  return {
+    name: 'appearance-boot',
+    transformIndexHtml() {
+      const { outputFiles } = buildSync({
+        entryPoints: [path.join(__dirname, 'src/appearance/boot.ts')],
+        bundle: true, write: false, minify: true, format: 'iife', target: 'es2020',
+      });
+      return [{ tag: 'script', children: outputFiles[0].text, injectTo: 'head' }];
+    },
+  };
+}
+
 export default defineConfig({
   cacheDir: process.env.FEEDBAX_VITE_CACHE_DIR,
   // The standalone folder controller can load before a shell imports it.
@@ -80,6 +95,7 @@ export default defineConfig({
     exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],
   },
   plugins: [
+    appearanceBoot(),
     react(),
     isDesktop ? desktopResources() : VitePWA({
       registerType: 'autoUpdate',
@@ -134,9 +150,6 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('/node_modules/recharts/')) {
-            return 'recharts';
-          }
           if (id.includes('/node_modules/@xyflow/')) {
             return 'xyflow';
           }

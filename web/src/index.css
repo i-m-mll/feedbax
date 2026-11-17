@@ -1,5 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Work+Sans:wght@400;500;600&display=swap');
-
+@import "@fontsource-variable/work-sans/wght.css";
+@import "@fontsource-variable/space-grotesk/wght.css";
 @import "@window-shell/browser/tokens.css";
 @import "@window-shell/browser/frame.css";
 @import "@window-shell/browser/titlebar.css";
@@ -27,26 +27,44 @@
   --studio-scene-guide: #917967;
   --studio-scene-outline: var(--text-muted);
   --studio-scene-grid: color-mix(in srgb, var(--app-divider) 60%, var(--surface-main));
-  --gray-50: #fafafa;
-  --gray-100: #f4f4f5;
-  --gray-200: #e4e4e7;
-  --gray-300: #d4d4d8;
-  --gray-400: #a1a1aa;
-  --gray-500: #71717a;
-  --gray-600: #52525b;
-  --gray-700: #3f3f46;
-  --gray-800: #27272a;
-  --gray-900: #18181b;
-  --blue-500: #3b82f6;
-  --blue-600: #2563eb;
-  --green-500: #22c55e;
-  --red-500: #ef4444;
-  --yellow-500: #eab308;
-  --purple-500: #a855f7;
 }
 
 :root[data-theme='dark'] {
   --studio-shell-accent: #c1aedf;
+}
+
+:root[data-face='work-sans'] { --font-ui: 'Work Sans Variable', system-ui, sans-serif; }
+:root[data-face='space-grotesk'] { --font-ui: 'Space Grotesk Variable', system-ui, sans-serif; }
+
+:root[data-size='12'] { --text-base: 12px; }
+:root[data-size='13'] { --text-base: 13px; }
+:root[data-size='14'] { --text-base: 14px; }
+
+:root {
+  --text-xs: calc(var(--text-base) - 2px);
+  --text-sm: calc(var(--text-base) - 1px);
+  --text-md: var(--text-base);
+  --text-lg: calc(var(--text-base) + 1px);
+  --text-xl: calc(var(--text-base) + 3px);
+  --font-ui-size: var(--text-md);
+}
+
+:root[data-density='compact'] {
+  --control-height: 24px;
+  --control-padding-inline: var(--space-2);
+  --row-height: 24px;
+  --row-padding-inline: var(--space-1);
+  --panel-header-height: 32px;
+  --panel-header-padding-inline: var(--space-2);
+}
+
+:root[data-density='regular'] {
+  --control-height: 28px;
+  --control-padding-inline: var(--space-3);
+  --row-height: 28px;
+  --row-padding-inline: var(--space-2);
+  --panel-header-height: 36px;
+  --panel-header-padding-inline: var(--space-3);
 }
 
 .studio-running-progress {
@@ -70,9 +88,10 @@ body {
   width: 100%;
   min-height: 100vh;
   overflow-x: hidden;
-  font-family: 'Work Sans', 'Segoe UI', sans-serif;
-  color: #0f1115;
-  background: radial-gradient(circle at top left, #fefefe 0%, #f4f5f7 40%, #eef1f6 100%);
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  background: var(--surface-main);
 }
 
 #root {
@@ -82,7 +101,7 @@ body {
 }
 
 .react-flow__node {
-  font-family: 'Work Sans', 'Segoe UI', sans-serif;
+  font-family: var(--font-ui);
 }
 
 .react-flow__handle {
@@ -114,16 +133,16 @@ body {
 }
 
 .local-x-scrollbar::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: var(--surface-toolbar);
   border-radius: 999px;
 }
 
 .local-x-scrollbar::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border: 2px solid #f1f5f9;
+  background: var(--app-divider);
+  border: 2px solid var(--surface-toolbar);
   border-radius: 999px;
 }
 
 .local-x-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--text-muted);
 }

@@ -19,7 +19,7 @@ export function StudioCommandPalette({ commands, close }: {
           {commands.map((command) => (
             <Command.Item key={command.id} value={command.id} keywords={[command.label]} disabled={!command.enabled}
               {...commandAttributes(command)} aria-label={undefined}
-              className="flex cursor-default items-center justify-between gap-3 rounded px-2 py-1.5 aria-selected:bg-shell-hover aria-disabled:opacity-50"
+              className="flex h-row cursor-default items-center justify-between gap-3 rounded px-row-inline aria-selected:bg-shell-hover aria-disabled:opacity-50"
               onSelect={() => { flushSync(close); command.invoke(); }}>
               {command.label}{' '}
               {command.shortcut && <kbd aria-hidden="true" className="text-shell-muted">{shortcutLabel(command.shortcut)}</kbd>}
