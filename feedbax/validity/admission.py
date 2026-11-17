@@ -46,13 +46,15 @@ def observe_differences(
     versions = []
     files = []
     for trace in traces:
-        indeterminate = frozenset(trace.indeterminate)
+        indeterminate = set(trace.indeterminate)
+        indeterminate_files = set(trace.indeterminate_files)
         for source in trace.sources:
             difference = catalog.compare_source(
                 source.path, source.content.sha256,
                 lambda: read_object(source.content), source.entered,
             )
             if source.path in indeterminate:
+                indeterminate.discard(source.path)
                 difference = SourceDifference(
                     path=source.path, before=source.content.sha256,
                     after=_file_digest(catalog, source.path), status="indeterminate",
@@ -65,14 +67,25 @@ def observe_differences(
                     or not set(difference.functions).isdisjoint(source.host_product)
                 )
                 (outside_computation if packaging else code).append(difference)
+        outside_computation.extend(SourceDifference(
+            path=path, before=None, after=_file_digest(catalog, path), status="indeterminate",
+        ) for path in indeterminate)
         for binding in trace.registry:
             current = registry.get((binding.family, binding.requested_key))
             if current is None or _registry_identity(binding) != _registry_identity(current):
                 code.append(RegistryDifference(before=binding, after=current))
         for recorded in trace.files:
-            current_digest = catalog.file_digest(recorded.path)
-            if current_digest != recorded.sha256 or recorded.path in trace.indeterminate_files:
-                files.append(FileDifference(path=recorded.path, before=recorded.sha256, after=current_digest))
+            current_digest = _file_digest(catalog, recorded.path)
+            unsettled = recorded.path in indeterminate_files
+            indeterminate_files.discard(recorded.path)
+            if current_digest != recorded.sha256 or unsettled:
+                files.append(FileDifference(
+                    path=recorded.path, before=recorded.sha256, after=current_digest,
+                    status="indeterminate" if unsettled else "changed",
+                ))
+        files.extend(FileDifference(
+            path=path, before=None, after=_file_digest(catalog, path), status="indeterminate",
+        ) for path in indeterminate_files)
         versions.extend(
             EnvironmentDifference(distribution=name, before=version, after=environment.get(name))
             for name, version in trace.environment.items()
@@ -86,10 +99,9 @@ def observe_differences(
 
 def _file_digest(catalog: SourceCatalog, path: SourcePath) -> str | None:
     try:
-        file = catalog.read(path)
+        return catalog.file_digest(path)
     except OSError:
         return None
-    return file.sha256 if file is not None else None
 
 
 def decide_validity(
@@ -166,8 +178,9 @@ def validity_reason(validity: ReceiptValidity) -> str | None:
         match reason:
             case InputDifference(role=role, member=member, detail=detail):
                 descriptions.append(f"Input {role}/{member} changed." if detail is None else detail)
-            case FileDifference(path=path):
-                descriptions.append(f"File {path.scope}/{path.path} changed.")
+            case FileDifference(path=path, status=status):
+                detail = "could not be authenticated" if status == "indeterminate" else "changed"
+                descriptions.append(f"File {path.scope}/{path.path} {detail}.")
             case EnvironmentReason(differences=changes, detail=detail):
                 descriptions.append(detail or f"Numerical environment changed ({_versions(changes)}).")
             case CodeReason(differences=changes, detail=detail):

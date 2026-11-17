@@ -45,6 +45,9 @@ class ProjectValidity:
         self.registries = registries
         self.quick_duration = quick_duration
 
+    def refresh(self) -> ProjectValidity:
+        return ProjectValidity(self.root, self.registries, quick_duration=self.quick_duration)
+
     @cached_property
     def _registry(self):
         return {
@@ -77,9 +80,9 @@ class ProjectValidity:
         visited = set()
         while pending:
             ref = pending.pop()
-            if ref in visited:
+            if ref.sha256 in visited:
                 continue
-            visited.add(ref)
+            visited.add(ref.sha256)
             evidence = read_execution_evidence(view.store, ref)
             traces.append(evidence.trace)
             pending.extend(evidence.trace.prefixes)
