@@ -5,18 +5,15 @@ import os
 
 from feedbax.contracts.receipt_validity import CheckOutcome, ValidityCheckDelivery, ValidityCheckEvidence
 from feedbax.host.io import append
-from feedbax.validity.environment import read_environment
-
-
-VALIDITY_ENTRYPOINT = "feedbax.validity.check_worker:main"
+from feedbax.validity.recording import assert_execution_unchanged
 
 
 def main(argv: list[str]) -> int:
     delivery = ValidityCheckDelivery.model_validate_json(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes())
     log = Path(os.environ["FEEDBAX_HOST_EVENT_LOG"])
     try:
-        read_environment(delivery.project_root, verify_installation=True)
         evidence = _check(delivery)
+        assert_execution_unchanged()
     except (OSError, ValueError) as error:
         evidence = ValidityCheckEvidence(**{
             domain: CheckOutcome(outcome="unavailable", detail=str(error) or type(error).__name__)

@@ -18,7 +18,10 @@ class ReceiptRoot(ReferenceValue):
 
     @model_validator(mode="after")
     def _whole_receipt_validity(self) -> "ReceiptRoot":
-        if self.validity_records and (self.product is not None or len(set(self.validity_records)) != len(self.validity_records)):
+        if self.validity_records and (
+            self.product is not None
+            or len({ref.sha256 for ref in self.validity_records}) != len(self.validity_records)
+        ):
             raise ValueError("Validity records must be distinct and name a whole receipt")
         return self
 

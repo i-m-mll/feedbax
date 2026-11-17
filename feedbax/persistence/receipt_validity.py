@@ -61,6 +61,13 @@ def record_validity(
         index = decode_success_index(store.read_ref(INDEX_REF))
         if root is None or root.receipt != record.receipt or index.authored.get(request) != record.receipt:
             raise PublicationConflict("The latest successful receipt changed during the validity check")
+        if record.basis == "computation":
+            for existing_ref in root.validity_records:
+                existing = read_validity_record(store, existing_ref, receipt=root.receipt)
+                if existing.basis == "computation" and (
+                    existing.conditions, existing.evidence
+                ) == (record.conditions, record.evidence):
+                    return existing_ref
         ref = store.store_object(canonical_json_v2_bytes(record.model_dump(mode="json")))
         if ref in root.validity_records:
             return ref

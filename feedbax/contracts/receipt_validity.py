@@ -37,8 +37,9 @@ class EnvironmentDifference(ReferenceValue):
 class FileDifference(ReferenceValue):
     kind: Literal["file"] = "file"
     path: SourcePath
-    before: Sha256
+    before: Sha256 | None
     after: Sha256 | None
+    status: Literal["changed", "indeterminate"] = "changed"
 
 
 class InputDifference(ReferenceValue):
