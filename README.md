@@ -81,7 +81,7 @@ my_project = "my_project.declarations"
 
 Feedbax imports the named package and its submodules and collects concrete component and Python task classes and functions decorated with `@operation`, `@training_method`, or `@figure_template`. Define declarations inside the scanned package. Keep optional imports inside the functions that use them so every declaration can load with the package's base dependencies.
 
-The default key is the top-level import package followed by the class or function name, such as `my_project.Scale`. Declare any custom key, settings, computation revision, and current rename history on the class or decorator. The catalog records the installed distribution's name and version. Run `feedbax describe` to see the declarations available in the active environment.
+The default key is the top-level import package followed by the class or function name, such as `my_project.Scale`. Declare any custom key, settings and current rename history on the class or decorator. The catalog records the installed distribution's name and version. Run `feedbax describe` to see the declarations available in the active environment.
 
 ## Development
 

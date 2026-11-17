@@ -172,7 +172,6 @@ async def list_figure_templates(request: Request) -> list[RegistryItem]:
             description=template.description,
             metadata={
                 "label": template.label,
-                "revision": template.revision,
                 "renamed_from": list(template.renamed_from),
                 "settings_schema": template.settings_model.model_json_schema(),
                 "package": template.source.package,

@@ -69,9 +69,19 @@ def test_installed_package_appears_in_cli_and_studio_catalogs(installed_site, mo
             "distribution": "feedbax-discovery-fixture",
             "version": "2.7.1",
         }
+        if family != "components":
+            assert "revision" not in entry
         if family == "operations":
             assert entry["static_parameters"] == ["unit"]
             assert "default" not in entry["parameter_json_schema"]["properties"]["increments"]
+
+    resolved = state.bundle.operations.resolve("entry_point_provider.offset_series")
+    from entry_point_provider.declarations.examples import shift_series
+
+    assert resolved.key == _ANALYSIS
+    assert resolved.source.distribution == "feedbax-discovery-fixture"
+    assert resolved.source.version == "2.7.1"
+    assert resolved.defining_object is shift_series
 
 
 def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch, tmp_path):
