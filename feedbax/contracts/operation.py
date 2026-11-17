@@ -29,6 +29,7 @@ class ModelPort(StrictModel):
 
 class TaskPort(StrictModel):
     kind: Literal["task"] = "task"
+    task_key: str | None = None
 
 
 OperationInputPort = Annotated[DatasetInputPort | ModelPort | TaskPort, Field(discriminator="kind")]
@@ -39,6 +40,19 @@ class JaxOperation(StrictModel):
 
     backend: Literal["cpu", "gpu"]
     floating_point_bits: Literal[32, 64]
+
+    def environment(self) -> dict[str, str]:
+        return {
+            "JAX_PLATFORMS": "cuda" if self.backend == "gpu" else "cpu",
+            "JAX_ENABLE_X64": str(int(self.floating_point_bits == 64)),
+        }
+
+
+class OperationComputation(StrictModel):
+    distribution: str
+    version: str
+    revision: int = Field(ge=1)
+    numerical: JaxOperation | None = None
 
 
 class OperationDefinition(StrictModel):
@@ -57,6 +71,12 @@ class OperationDefinition(StrictModel):
     inputs: dict[str, OperationInputPort]
     outputs: dict[str, DatasetPort]
     numerical: JaxOperation | None = None
+
+    def computation(self) -> OperationComputation:
+        return OperationComputation(
+            distribution=self.owner, version=self.owner_version,
+            revision=self.revision, numerical=self.numerical,
+        )
 
 
 def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> None:
