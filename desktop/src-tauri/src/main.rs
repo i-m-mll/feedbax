@@ -367,6 +367,8 @@ fn show_studio(
         let origin_text = json!(origin.ascii_serialization());
         let generation = json!(ticket.generation);
         let script = format!("{menu_script}; if (location.origin === {origin_text}) window.__FEEDBAX_STUDIO_GENERATION__ = {generation};");
+        #[cfg(target_os = "macos")]
+        let script = format!("{script}; {}", frame.host_script());
         let available = app.primary_monitor()?.map(|monitor| {
             let work = monitor
                 .work_area()
@@ -404,9 +406,9 @@ fn show_studio(
                 .on_page_load(move |window, page| {
                     if page.event() == tauri::webview::PageLoadEvent::Started {
                         studio_menu::clear(window.app_handle(), window.label(), false);
-                    }
-                    if load_frame.matches(page.url()) {
-                        load_frame.refresh(&window);
+                        if load_frame.matches(page.url()) {
+                            load_frame.page_committed();
+                        }
                     }
                 })
         };

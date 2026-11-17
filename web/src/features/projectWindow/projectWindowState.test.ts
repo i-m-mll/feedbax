@@ -6,7 +6,10 @@ import {
   defaultProjectWindowState, projectWindowSlotView, showProjectWindowView, useProjectWindowState,
 } from './projectWindowState';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  delete document.documentElement.dataset.shellHost;
+});
 
 describe('Studio window arrangement', () => {
   it('folds a slot under space pressure while preserving its preferred width and the drawer', () => {
@@ -30,7 +33,7 @@ describe('Studio window arrangement', () => {
 
   it('restores independent native preferences without persisting focus or authored fields', async () => {
     const preferences = new Map<string, unknown>();
-    vi.stubGlobal('__FEEDBAX_STUDIO_MENU__', {});
+    document.documentElement.dataset.shellHost = 'native';
     const fetch = vi.fn(async (path: string, init?: RequestInit) => {
       if (init?.method === 'PUT') {
         preferences.set(path, JSON.parse(String(init.body)));
@@ -79,7 +82,7 @@ describe('Studio window arrangement', () => {
   });
 
   it('acknowledges the latest arrangement when close follows an in-flight write', async () => {
-    vi.stubGlobal('__FEEDBAX_STUDIO_MENU__', {});
+    document.documentElement.dataset.shellHost = 'native';
     let finishFirst: () => void = () => {};
     const first = new Promise<Response>((resolve) => {
       finishFirst = () => resolve(new Response(null, { status: 204 }));
@@ -108,7 +111,7 @@ describe('Studio window arrangement', () => {
   });
 
   it('retries a failed preference save when the native session reconnects', async () => {
-    vi.stubGlobal('__FEEDBAX_STUDIO_MENU__', {});
+    document.documentElement.dataset.shellHost = 'native';
     const report = vi.spyOn(console, 'error').mockImplementation(() => {});
     const writes: number[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_path: string, init?: RequestInit) => {
