@@ -77,7 +77,8 @@ def publish_evaluate_success(
             return existing.ref
         if execution_evidence is None:
             raise ValueError("Managed Evaluate success lacks its execution evidence")
-        computation = read_execution_evidence(store, execution_evidence).trace.computation
+        trace = read_execution_evidence(store, execution_evidence).trace
+        computation = trace.computation or trace.computation_unavailable
         if isinstance(subject, ContentRef):
             from feedbax.studio.canonical_evaluate import initial_evaluation_references
 

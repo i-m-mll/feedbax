@@ -26,7 +26,7 @@ def live_evaluation_targets(
     slots = tuple(rollout_slot(result.member.coordinate, replica) for replica in result.member.replica_ids or ("0",))
     if evidence.attempt != point.evaluation_job_id or result.member.coordinate != point.checkpoint.completed_updates:
         raise ValueError("Live Evaluate evidence differs from its scored checkpoint and replica slots")
-    require_evaluation_coverage(evidence.trace.computation, slots)
+    require_evaluation_coverage(evidence.trace.computation or evidence.trace.computation_unavailable, slots)
     return evidence, (
         ContentRetentionTarget(ref_kind="object", object=result.states.object_ref),
         *execution_evidence_targets(store, result.evidence, evidence),

@@ -1,6 +1,7 @@
 """Observable computation and driver evidence for managed rollout scoring."""
 
 from contextlib import ExitStack
+from dataclasses import replace
 from hashlib import sha256
 
 import jax
@@ -8,8 +9,9 @@ import numpy as np
 import pytest
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.code_validity import ComputationUnavailable
 from feedbax.contracts.computation_validity import ComputationDifferent, ComputationEqual, EvaluatePrefix
-from feedbax.contracts.live_evaluate import EVALUATE_DRIVER, ScoredEvaluationPoint
+from feedbax.contracts.live_evaluate import EVALUATE_DRIVER, ScoredEvaluationPoint, require_evaluation_coverage
 from feedbax.contracts.model_input import InitialModelSource, encode_document_input
 from feedbax.contracts.rollout import ResolvedRolloutMember, RolloutParameters
 from feedbax.dataset import Dataset, Variable
@@ -99,10 +101,28 @@ def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(
         assert result.objective is not None
         return result._replace(objective=result.objective._replace(loss=result.objective.loss + 1))
 
-    monkeypatch.setattr(TrialExecution, "evaluate", changed_score)
-    difference = recheck()
+    with monkeypatch.context() as probe:
+        probe.setattr(TrialExecution, "evaluate", changed_score)
+        difference = recheck()
     assert isinstance(difference, ComputationDifferent)
     assert [(item.kind, item.slots) for item in difference.changes] == [("program", ("/initial/0",))]
+
+    class OpaqueStateView:
+        def __call__(self, state):
+            return state
+
+    prepared = prepare()
+    graph = replace(prepared.graph, state_view_fn=OpaqueStateView())
+    opaque = EvaluationComputation(store)
+    outcome = _rollouts(
+        replace(prepared, graph=graph), params, lambda: False, update_axis=None,
+        computation=opaque, executables=RolloutExecutables(),
+    )
+    assert outcome is not None and outcome[1] == total
+    unavailable = opaque.snapshot()
+    assert isinstance(unavailable, ComputationUnavailable)
+    assert unavailable.reason == "arguments"
+    require_evaluation_coverage(unavailable, ("/initial/0",))
 
 
 def test_live_checkpoint_preserves_the_replica_coordinate_and_mean(tmp_path):
