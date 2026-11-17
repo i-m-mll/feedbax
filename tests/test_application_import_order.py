@@ -13,8 +13,8 @@ import pytest
 @pytest.mark.parametrize(
     "module_name",
     (
-        "feedbax.analysis.evaluation",
-        "feedbax.bin.analysis",
+        "feedbax.analysis.operation_runtime",
+        "feedbax.light_host_worker",
         "feedbax.orchestration.runpod",
         "feedbax.web.app",
     ),

@@ -8,7 +8,6 @@ from typing import NamedTuple
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from feedbax.analysis.bundles import ManifestPredicate, _equals_all, _get_path
 from feedbax.contracts.expressions import (
     MAX_EXPR_DEPTH,
     PATH_EXPRESSION_SCHEMA_ID,
@@ -150,19 +149,6 @@ def _hash_corpus_expressions() -> dict[str, object]:
             coerce=Coerce(to="float", scale=2.0),
         ),
     }
-
-
-def test_path_ref_matches_manifest_get_path_for_dict_and_attribute_walks() -> None:
-    payload = {
-        "metadata": {"group": "control"},
-        "object": SimpleNamespace(nested={"score": 7}),
-    }
-    ctx = _ctx(payload)
-
-    for path in ("metadata.group", "object.nested.score"):
-        assert evaluate_query(ValueQuery(item="manifest", path=path), ctx) == _get_path(
-            payload, path
-        )
 
 
 @pytest.mark.parametrize(
@@ -735,39 +721,6 @@ def test_map_object_list_depth_includes_its_items_query() -> None:
 
     with pytest.raises(ValidationError, match="exceeds max supported depth"):
         MapObjectList(items=items, template={}, item_output_path="value")
-
-
-def test_manifest_predicate_expressibility_without_bundle_behavior_change() -> None:
-    predicate = ManifestPredicate(
-        metadata_equals={"group.name": "control"},
-        params_equals={"model.width": 32},
-    )
-    metadata = {"group": {"name": "control"}}
-    params = {"model": {"width": 32}}
-    expr = AllOf(
-        exprs=[
-            *[
-                Compare(item="metadata", path=path, op="eq", value=value)
-                for path, value in predicate.metadata_equals.items()
-            ],
-            *[
-                Compare(item="params", path=path, op="eq", value=value)
-                for path, value in predicate.params_equals.items()
-            ],
-        ]
-    )
-    ctx = ExpressionContext(
-        items={
-            "metadata": ContextItem(kind="metadata", payload=metadata),
-            "params": ContextItem(kind="params", payload=params),
-        }
-    )
-
-    assert evaluate_expr(expr, ctx) is True
-    assert evaluate_expr(expr, ctx) == (
-        _equals_all(metadata, predicate.metadata_equals)
-        and _equals_all(params, predicate.params_equals)
-    )
 
 
 def test_path_expression_schema_registry_family_and_old_version_rejection() -> None:

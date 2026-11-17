@@ -61,21 +61,6 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
     ("feedbax/contracts/portable.py", "validate_configuration"): (
         "Field validation consumes json.dumps of the current in-memory runtime value."
     ),
-    ("feedbax/contracts/evaluation_states.py", "_encode_mixed_leaves"): (
-        "Round-trip of ``_canonical_metadata_leaf_bytes`` output for an "
-        "in-memory leaf; canonical serialization emits each member once."
-    ),
-    ("feedbax/analysis/evaluation_compaction.py", "_callback_parameters"): (
-        "Round-trip of canonical bytes serialized from the in-memory declaration parameters."
-    ),
-    (
-        "feedbax/analysis/evaluation_compaction.py",
-        "_normalize_legacy_reclamation_checkpoint",
-    ): "Deep copy of an already-parsed mapping through its canonical serialization.",
-    ("feedbax/analysis/evaluation_inputs.py", "_validate_training_manifest"): (
-        "Pydantic re-validates candidate.raw_bytes only after those exact bytes were admitted by "
-        "strict_json_loads in _load_candidate."
-    ),
 }
 
 _PERMISSIVE_JSON_ATTRS = frozenset({"loads", "load"})

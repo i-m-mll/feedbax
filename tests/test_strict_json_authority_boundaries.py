@@ -19,33 +19,12 @@ These tests state the boundary in three parts:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from feedbax.analysis.evaluation_inputs import (
-    EvaluationInputResolutionError,
-    resolve_evaluation_inputs,
-)
-from feedbax.contracts.base import (
-    ParentRef,
-    Provenance,
-)
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
-    AnalysisRunSpec,
-    EvaluationRunSpec,
-    TrainingRunManifest,
-    load_manifest_bytes,
-    spec_payload,
-)
-from feedbax.contracts.row_index import (
-    AuthenticatedRowIndex,
-    build_row_index_custody_bindings,
-    load_row_index_custody_bindings,
-    write_row_index_custody_bindings,
-)
+from feedbax.contracts.base import Provenance
+from feedbax.contracts.manifest import TrainingRunManifest, load_manifest_bytes
 from feedbax.contracts.strict_json import (
     DuplicateJsonKeyError,
     StrictJsonError,
@@ -53,9 +32,6 @@ from feedbax.contracts.strict_json import (
 )
 
 pytestmark = [pytest.mark.feedbax_contract]
-
-
-DIGEST = "c" * 64
 
 
 # -- well-formed documents parse exactly as they did -------------------------
@@ -160,14 +136,10 @@ def test_a_duplicate_the_standard_parser_would_silently_collapse_refuses() -> No
 # -- the real loaders reach the refusal -------------------------------------
 
 
-def _analysis_manifest(manifest_id: str = "feedbax-analysis:strict-json") -> AnalysisRunManifest:
-    spec = AnalysisRunSpec(analysis_type="feedbax.test.strict_json", inputs=[], params={})
-    return AnalysisRunManifest(
+def _training_manifest(manifest_id: str) -> TrainingRunManifest:
+    return TrainingRunManifest(
         id=manifest_id,
         status="completed",
-        analysis_spec=spec_payload(
-            "AnalysisRunSpec", spec.model_dump(mode="json", exclude_none=True)
-        ),
         provenance=Provenance(parents=[]),
     )
 
@@ -180,11 +152,11 @@ def _with_duplicated_member(raw: bytes, member: str, value: Any) -> bytes:
 
 
 def test_load_manifest_bytes_refuses_a_manifest_that_states_its_id_twice() -> None:
-    manifest = _analysis_manifest()
+    manifest = _training_manifest("train:strict-json")
     raw = manifest.model_dump_json(exclude_none=True).encode("utf-8")
     assert load_manifest_bytes(raw).id == manifest.id
 
-    duplicated = _with_duplicated_member(raw, "id", "feedbax-analysis:decoy")
+    duplicated = _with_duplicated_member(raw, "id", "train:decoy")
     # Standard parsing answers, and the decoy simply disappears.
     assert json.loads(duplicated)["id"] == manifest.id
     with pytest.raises(DuplicateJsonKeyError) as excinfo:
@@ -193,7 +165,7 @@ def test_load_manifest_bytes_refuses_a_manifest_that_states_its_id_twice() -> No
 
 
 def test_load_manifest_bytes_refuses_a_duplicate_nested_in_provenance() -> None:
-    manifest = _analysis_manifest("feedbax-analysis:strict-json-nested")
+    manifest = _training_manifest("train:strict-json-nested")
     raw = manifest.model_dump_json(exclude_none=True).encode("utf-8")
     document = json.loads(raw)
     text = json.dumps(document)
@@ -203,82 +175,3 @@ def test_load_manifest_bytes_refuses_a_duplicate_nested_in_provenance() -> None:
     with pytest.raises(DuplicateJsonKeyError) as excinfo:
         load_manifest_bytes(nested.encode("utf-8"))
     assert excinfo.value.json_path == "$.provenance.parents"
-
-
-def _row_index() -> AuthenticatedRowIndex:
-    return AuthenticatedRowIndex.model_validate(
-        {
-            "index_id": "strict-json-index",
-            "rows": [{"row_id": row, "label": row} for row in ("r0", "r1")],
-        }
-    )
-
-
-def _row_parent(manifest_id: str) -> dict[str, Any]:
-    return {
-        "kind": "AnalysisRunManifest",
-        "id": manifest_id,
-        "role": "observations",
-        "metadata": {
-            "ref_schema_id": "feedbax.ref.authenticated_manifest",
-            "ref_schema_version": "feedbax.ref.authenticated_manifest.v1",
-            "manifest_sha256": DIGEST,
-            "size_bytes": 128,
-        },
-    }
-
-
-def test_row_index_custody_sidecar_refuses_a_duplicated_binding_key(tmp_path: Path) -> None:
-    index = _row_index()
-    custody = build_row_index_custody_bindings(
-        index,
-        {row_id: {"observations": _row_parent(f"run-{row_id}")} for row_id in index.row_ids},
-    )
-    path = write_row_index_custody_bindings(custody, tmp_path / "custody.json", index=index)
-    assert load_row_index_custody_bindings(path).index_id == index.index_id
-
-    text = path.read_text(encoding="utf-8")
-    duplicated = "{" + json.dumps({"index_id": "some-other-index"})[1:-1] + "," + text[1:]
-    assert json.loads(duplicated)["index_id"] == index.index_id
-    duplicated_path = tmp_path / "custody-duplicated.json"
-    duplicated_path.write_text(duplicated, encoding="utf-8")
-    with pytest.raises(DuplicateJsonKeyError) as excinfo:
-        load_row_index_custody_bindings(duplicated_path)
-    assert excinfo.value.json_path == "$.index_id"
-
-
-STRICT_JSON_TRAINING_ID = "feedbax-training-run:strict-json"
-STRICT_JSON_TRAINING_URI = "manifests/training_runs/strict-json.json"
-
-
-def test_evaluation_input_resolution_refuses_a_manifest_that_states_a_member_twice(
-    tmp_path: Path,
-) -> None:
-    manifest = TrainingRunManifest(id=STRICT_JSON_TRAINING_ID, status="completed")
-    path = tmp_path / STRICT_JSON_TRAINING_URI
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = (manifest.model_dump_json(indent=2, exclude_none=True) + "\n").encode("utf-8")
-    path.write_bytes(raw)
-    run_spec = EvaluationRunSpec(
-        evaluation_type="tests.strict_json_boundary",
-        inputs=[
-            ParentRef(
-                kind="TrainingRunManifest",
-                id=STRICT_JSON_TRAINING_ID,
-                role="training_run",
-            )
-        ],
-    )
-    (resolved,) = resolve_evaluation_inputs(run_spec, manifest_root=tmp_path)
-    assert resolved.id == STRICT_JSON_TRAINING_ID
-
-    duplicated = _with_duplicated_member(raw, "status", "failed")
-    assert json.loads(duplicated)["status"] == "completed"
-    path.write_bytes(duplicated)
-    # The census cannot decide a candidate it cannot parse, so the refusal
-    # surfaces as the uniqueness refusal that quotes it. Either way the bytes
-    # never resolve.
-    with pytest.raises(EvaluationInputResolutionError) as excinfo:
-        resolve_evaluation_inputs(run_spec, manifest_root=tmp_path)
-    assert "states a member twice" in str(excinfo.value)
-    assert "$.status" in str(excinfo.value)
