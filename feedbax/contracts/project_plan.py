@@ -1705,7 +1705,7 @@ class _Compiler:
         from feedbax.compiler.model_attachment import resolve_effective_model
         from feedbax.compiler.trial_execution import pair_trial_source, validate_python_task
         from feedbax.studio.canonical_evaluate import CannotRun
-        from feedbax.tasks.reaching import builtin_python_tasks
+        from feedbax.tasks.registry import application_python_tasks
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         resolved = self.resolve_row(template, key, row, None)
@@ -1722,7 +1722,7 @@ class _Compiler:
             payload, differences = _model_differences(resolved.payload)
             components = self.components or _builtin_model_registry()
             functions = self.functions or _builtin_expression_registry()
-            tasks = self.python_tasks or builtin_python_tasks()
+            tasks = self.python_tasks or application_python_tasks()
             if differences:
                 edited = resolve_effective_model(
                     source.model_name, source.document, components, differences, functions=functions,
