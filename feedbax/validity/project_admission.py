@@ -18,8 +18,8 @@ from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
 from feedbax.persistence.receipt_validity import read_validity_records
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION, decide_validity, observe_differences
 from feedbax.validity.admission_projection import AdmissionProjection
-from feedbax.validity.environment import installed_versions, read_environment
-from feedbax.validity.evidence import read_execution_evidence
+from feedbax.validity.environment import InstalledInventory, read_environment
+from feedbax.validity.evidence import execution_evidence_identity, read_execution_evidence
 from feedbax.validity.registry import snapshot_registry
 from feedbax.validity.source import SourceCatalog, source_catalog
 
@@ -90,17 +90,21 @@ class ProjectValidity:
         return source_catalog(self.root)
 
     @cached_property
-    def _installed(self) -> dict[str, str] | None:
+    def _inventory(self) -> InstalledInventory | None:
         if isinstance(self.registries, AdmissionProjection):
-            return installed_versions(paths=self.registries.search_paths)
+            return InstalledInventory([str(path) for path in self.registries.search_paths])
         return None
+
+    @cached_property
+    def _installed(self) -> dict[str, str] | None:
+        return self._inventory.versions() if self._inventory is not None else None
 
     def installation_current(self, traces: tuple[CodeTrace, ...]) -> bool:
         names = {name for trace in traces for name in trace.environment}
         if not names:
             return True
-        assert isinstance(self.registries, AdmissionProjection) and self._installed is not None
-        current = installed_versions(paths=self.registries.search_paths)
+        assert self._inventory is not None and self._installed is not None
+        current = self._inventory.versions(fresh=True)
         return all(self._installed.get(name) == current.get(name) for name in names)
 
     @cached_property
@@ -173,9 +177,10 @@ def _prefixes(store: ImmutableArtifactBlobProvider, trace: CodeTrace) -> Iterato
     visited = set()
     while pending:
         ref = pending.pop()
-        if ref.sha256 in visited:
+        identity = execution_evidence_identity(ref)
+        if identity in visited:
             continue
-        visited.add(ref.sha256)
+        visited.add(identity)
         evidence = read_execution_evidence(store, ref)
         yield evidence
         pending.extend(evidence.trace.prefixes)

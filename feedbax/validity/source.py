@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from hashlib import file_digest, sha256
 from importlib import metadata
-from os import path as os_path, stat_result
+from os import path as os_path
 from pathlib import Path
 import stat
 import symtable
@@ -21,6 +21,7 @@ from types import ModuleType
 from packaging.utils import canonicalize_name
 
 from feedbax.contracts.code_validity import SourceDifference, SourcePath
+from feedbax.validity.occurrence import FileStamp, file_stamp
 
 
 @dataclass(frozen=True)
@@ -28,13 +29,6 @@ class SourceFile:
     data: bytes
     sha256: str
     modified_ns: int
-
-
-type FileStamp = tuple[int, int, int, int, int]
-
-
-def file_stamp(metadata: stat_result) -> FileStamp:
-    return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns
 
 
 class SourceCatalog:

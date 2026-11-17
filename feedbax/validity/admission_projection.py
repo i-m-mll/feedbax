@@ -12,21 +12,21 @@ from packaging.utils import canonicalize_name
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import CodeTrace, RegistryBinding
-from feedbax.validity.source import file_stamp, plugin_packages
+from feedbax.validity.occurrence import FileStamp, occurrence
+from feedbax.validity.source import plugin_packages
 
 
 class FileObservation(StrictModel):
     path: Path
     resolved: Path | None = None
-    identity: tuple[int, int, int, int, int] | Literal["unreadable"] | None = None
+    identity: FileStamp | Literal["unreadable"] | None = None
 
     @classmethod
     def read(cls, path: Path) -> FileObservation:
         try:
             resolved = path.resolve()
-            return cls(path=path, resolved=resolved, identity=file_stamp(resolved.stat()))
-        except FileNotFoundError:
-            return cls(path=path)
+            identity = occurrence(resolved)
+            return cls(path=path, resolved=resolved, identity=identity)
         except OSError:
             return cls(path=path, identity="unreadable")
 

@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field, JsonValue, StrictBool, model_validator
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
+from feedbax.contracts.code_validity import CheckpointEvidenceRoot
 from feedbax.contracts.request_refs import ProductRef, ReferenceValue
 
 
@@ -28,7 +29,7 @@ class ReceiptRoot(ReferenceValue):
 
 class StoreClosureRef(ReferenceValue):
     schema_version: Literal["feedbax.store_closure_ref.v1"] = STORE_CLOSURE_REF_SCHEMA
-    roots: tuple[ReceiptRoot | ContentObjectRef | ContentTreeRef, ...] = Field(min_length=1)
+    roots: tuple[ReceiptRoot | CheckpointEvidenceRoot | ContentObjectRef | ContentTreeRef, ...] = Field(min_length=1)
     include_ancestry: StrictBool = False
 
 
