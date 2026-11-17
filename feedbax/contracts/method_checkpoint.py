@@ -1,6 +1,6 @@
 """Exact persisted state and progress of a managed training method."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -11,6 +11,7 @@ from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.request_refs import Name, ReferenceValue, RequestId, Sha256
 
 METHOD_EXTRA_MEDIA_TYPE = "application/vnd.feedbax.method-extra+safetensors"
+TransactionId = Annotated[str, Field(pattern=r"^tx-[0-9a-f]{32}$")]
 
 
 class MethodCheckpointIdentity(ReferenceValue):
@@ -51,8 +52,8 @@ class MethodCheckpointExtra(ReferenceValue):
 
 
 class MethodCheckpointManifest(ReferenceValue):
-    schema: Literal["feedbax.method_checkpoint.v1"] = "feedbax.method_checkpoint.v1"
-    transaction_id: str = Field(pattern=r"^tx-[0-9a-f]{32}$")
+    schema_version: Literal["feedbax.method_checkpoint.v1"] = "feedbax.method_checkpoint.v1"
+    transaction_id: TransactionId
     run_id: Name
     final: bool
     identity: MethodCheckpointIdentity
@@ -64,6 +65,22 @@ class MethodCheckpointManifest(ReferenceValue):
     def state_sha256(self) -> str:
         state = self.model_dump(mode="json", exclude={"transaction_id", "run_id", "final"})
         return sha256_bytes(canonical_json_v2_bytes(state))
+
+
+class CheckpointLatestPointer(ReferenceValue):
+    """Published occurrence and authenticated state at one completed update."""
+
+    schema_version: Literal["feedbax.method_checkpoint_pointer.v1"] = "feedbax.method_checkpoint_pointer.v1"
+    run_id: Name
+    transaction_id: TransactionId
+    manifest_sha256: Sha256
+    transaction_root_sha256: Sha256
+    completed_updates: int = Field(ge=0, strict=True)
+    final: bool
+
+    @property
+    def manifest_relative_path(self) -> str:
+        return method_checkpoint_manifest_path(self.transaction_id)
 
 
 def method_checkpoint_manifest_path(transaction_id: str) -> str:

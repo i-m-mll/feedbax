@@ -22,14 +22,12 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.checkpoints import CheckpointLatestPointer
 from feedbax.contracts.method_checkpoint import (
+    CheckpointLatestPointer,
     MethodCheckpointManifest,
     method_checkpoint_extra_path,
-    method_checkpoint_manifest_path,
 )
 from feedbax.contracts.strict_json import strict_model_validate_json
-from feedbax.contracts.worker import ProgressCoordinate
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.content_materialization import (
     acquire_content_projection_lease,
@@ -59,22 +57,13 @@ def _checkpoint_ref(raw: bytes) -> ContentObjectRef:
 
 
 def method_checkpoint_pointer(manifest: MethodCheckpointManifest, raw: bytes) -> CheckpointLatestPointer:
-    clock = manifest.clock
     return CheckpointLatestPointer(
         run_id=manifest.run_id,
         transaction_id=manifest.transaction_id,
-        manifest_relative_path=method_checkpoint_manifest_path(manifest.transaction_id),
         manifest_sha256=sha256_bytes(raw),
         transaction_root_sha256=manifest.state_sha256,
-        completed_training_batches=clock.completed_updates,
-        completed_coordinate=ProgressCoordinate(
-            run_id=manifest.run_id,
-            phase="train",
-            program_step=clock.completed_updates,
-            completed_batches=clock.completed_updates,
-            completed_barrier="after_train_batch",
-            schedule_origin_step=clock.schedule_origin,
-        ),
+        completed_updates=manifest.clock.completed_updates,
+        final=manifest.final,
     )
 
 
@@ -121,13 +110,7 @@ def _manifest_from_bytes(raw: bytes, pointer: CheckpointLatestPointer) -> Method
 def _local_manifest(
     root: Path, pointer: CheckpointLatestPointer,
 ) -> tuple[Path, MethodCheckpointManifest, ContentObjectRef]:
-    relative = Path(method_checkpoint_manifest_path(pointer.transaction_id))
-    if (
-        relative.as_posix() != pointer.manifest_relative_path
-        or len(relative.parts) != 3
-        or relative.parts[1] in {".", ".."}
-    ):
-        raise CheckpointCustodyError("Invalid method checkpoint manifest path")
+    relative = Path(pointer.manifest_relative_path)
     raw = read_checkpoint_file(root / relative)
     return relative, _manifest_from_bytes(raw, pointer), _checkpoint_ref(raw)
 

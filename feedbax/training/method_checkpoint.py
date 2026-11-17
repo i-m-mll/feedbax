@@ -21,6 +21,7 @@ from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, Conten
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.method_checkpoint import (
+    CheckpointLatestPointer,
     MethodCheckpointClock,
     MethodCheckpointExtra,
     MethodCheckpointIdentity,
@@ -51,7 +52,6 @@ from feedbax.training.model_checkpoint import SemanticModelSlot
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentBinding
-    from feedbax.contracts.checkpoints import CheckpointLatestPointer
     from feedbax.runtime.graph import Graph
     from feedbax.training.methods import TrainingState
     from feedbax.training.model_checkpoint import SemanticModelWriter
