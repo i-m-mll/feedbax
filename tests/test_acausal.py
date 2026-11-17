@@ -14,9 +14,9 @@ import jax.random as jr
 import equinox as eqx
 
 from feedbax.runtime.graph import init_state_from_component
-from feedbax.acausal import (
-    AcausalConnection,
-    AcausalSystem,
+from feedbax.acausal import AcausalConnection
+from feedbax.builtins.acausal.system import AcausalSystem
+from feedbax.builtins.acausal.translational import (
     ForceSensor,
     ForceSource,
     Ground,
@@ -26,7 +26,7 @@ from feedbax.acausal import (
     PositionSensor,
     VelocitySensor,
 )
-from feedbax.acausal.rotational import (
+from feedbax.builtins.acausal.rotational import (
     GearRatio,
     Inertia,
     RotationalGround,

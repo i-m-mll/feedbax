@@ -379,11 +379,11 @@ class ComponentOwner:
     config_bindings: ClassVar[tuple[ConfigBinding, ...]] = ()
     ports: ClassVar[Ports | None] = None
     component_options: ClassVar[ComponentOptions | None] = None
-    model_facts: ClassVar[ModelFacts | None] = None
     component_key: ClassVar[str | None] = None
     component_history: ClassVar[History | None] = None
     component_presentation: ClassVar[PresentationOverride | None] = None
     component_sources: ClassVar[tuple[Path, ...]] = ()
+    model_facts: ClassVar[ModelFacts | None] = None
 
     @classmethod
     def from_config(cls, config, **context):

@@ -27,7 +27,7 @@ from feedbax.contracts.studio_project import StudioProjectPatchBatch
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.task_document import Cell, Signal
 from feedbax.jobs import JobService
-from feedbax.mechanics.muscles import RigidTendonHillMuscleThelen
+from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.training.checkpoint_custody import open_published_model_slot

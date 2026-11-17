@@ -6,15 +6,15 @@ import jax.numpy as jnp
 from feedbax.runtime.graph import init_state_from_component
 
 # Control components
-from feedbax.control.continuous import Derivative, Integrator, StateSpace, TransferFunction
-from feedbax.control.discrete import IntegratorDiscrete, UnitDelay, ZeroOrderHold
-from feedbax.control.pid import PID, PIDDiscrete
+from feedbax.builtins.control.continuous import Derivative, Integrator, StateSpace, TransferFunction
+from feedbax.builtins.control.discrete import IntegratorDiscrete, UnitDelay, ZeroOrderHold
+from feedbax.builtins.control.pid import PID, PIDDiscrete
 
 # Signal components in components.py
-from feedbax.runtime.components import DeadZone, Demux, Mux, RateLimiter, Switch
+from feedbax.builtins.runtime.components import DeadZone, Demux, Mux, RateLimiter, Switch
 
 # Filter components
-from feedbax.runtime.filters import BandPassFilter, HighPassFilter
+from feedbax.builtins.runtime.filters import BandPassFilter, HighPassFilter
 
 
 KEY = jax.random.PRNGKey(0)

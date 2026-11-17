@@ -122,7 +122,7 @@ class AcausalEquation:
 
 
 @dataclass
-class AcausalElement(ComponentOwner):
+class AcausalElement:
     """Base for acausal element descriptors (construction-time only).
 
     Subclasses populate ``ports``, ``equations``, and ``params`` during
@@ -149,6 +149,9 @@ class AcausalElement(ComponentOwner):
         import functools
         import inspect
         from feedbax.contracts.portable import configuration_model, validate_authoring
+
+        if not issubclass(cls, ComponentOwner):
+            return
 
         init = vars(cls).get("__init__")
         if init is None:

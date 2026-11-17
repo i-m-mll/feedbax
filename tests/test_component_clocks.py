@@ -9,7 +9,7 @@ import pytest
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.runtime.components import Constant, Pulse, Ramp, Sine
+from feedbax.builtins.runtime.components import Constant, Pulse, Ramp, Sine
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.compiler.trainability import compile_trainability

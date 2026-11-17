@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 
-from feedbax.runtime.components import Sum
+from feedbax.builtins.runtime.components import Sum
 from feedbax.contracts.graph import (
     AdditiveGraphChannelAdapterSpec,
     ComponentSpec,

@@ -7,7 +7,7 @@ wrappers that can be used as leaf nodes in feedbax computation graphs.
 Usage:
     uv run scripts/generate_eqx_components.py
 
-The generated file will be written to feedbax/components/equinox.py
+The generated file will be written to feedbax/builtins/components/equinox.py
 """
 
 from __future__ import annotations
@@ -276,123 +276,6 @@ COMPONENT_SPECS: list[ComponentSpec] = [
 ]
 
 
-# Published revision-1 field evidence; independent of future constructor changes.
-LEGACY_CONFIG_FIELDS = {
-    "Linear": ("in_features", "out_features", "use_bias", "dtype"),
-    "Identity": (),
-    "Conv1d": (
-        "in_channels",
-        "out_channels",
-        "kernel_size",
-        "stride",
-        "padding",
-        "dilation",
-        "groups",
-        "use_bias",
-        "padding_mode",
-        "dtype",
-    ),
-    "Conv2d": (
-        "in_channels",
-        "out_channels",
-        "kernel_size",
-        "stride",
-        "padding",
-        "dilation",
-        "groups",
-        "use_bias",
-        "padding_mode",
-        "dtype",
-    ),
-    "Conv3d": (
-        "in_channels",
-        "out_channels",
-        "kernel_size",
-        "stride",
-        "padding",
-        "dilation",
-        "groups",
-        "use_bias",
-        "padding_mode",
-        "dtype",
-    ),
-    "ConvTranspose1d": (
-        "in_channels",
-        "out_channels",
-        "kernel_size",
-        "stride",
-        "output_padding",
-        "padding",
-        "dilation",
-        "groups",
-        "use_bias",
-        "padding_mode",
-        "dtype",
-    ),
-    "ConvTranspose2d": (
-        "in_channels",
-        "out_channels",
-        "kernel_size",
-        "stride",
-        "output_padding",
-        "padding",
-        "dilation",
-        "groups",
-        "use_bias",
-        "padding_mode",
-        "dtype",
-    ),
-    "ConvTranspose3d": (
-        "in_channels",
-        "out_channels",
-        "kernel_size",
-        "stride",
-        "output_padding",
-        "padding",
-        "dilation",
-        "groups",
-        "use_bias",
-        "padding_mode",
-        "dtype",
-    ),
-    "GRUCell": ("input_size", "hidden_size", "use_bias", "dtype"),
-    "LSTMCell": ("input_size", "hidden_size", "use_bias", "dtype"),
-    "LayerNorm": ("shape", "eps", "use_weight", "use_bias", "dtype", "elementwise_affine"),
-    "RMSNorm": ("shape", "eps", "use_weight", "use_bias", "dtype"),
-    "GroupNorm": ("groups", "channels", "eps", "channelwise_affine", "dtype"),
-    "MaxPool1d": ("kernel_size", "stride", "padding", "use_ceil"),
-    "MaxPool2d": ("kernel_size", "stride", "padding", "use_ceil"),
-    "MaxPool3d": ("kernel_size", "stride", "padding", "use_ceil"),
-    "AvgPool1d": ("kernel_size", "stride", "padding", "use_ceil"),
-    "AvgPool2d": ("kernel_size", "stride", "padding", "use_ceil"),
-    "AvgPool3d": ("kernel_size", "stride", "padding", "use_ceil"),
-    "AdaptiveMaxPool1d": ("target_shape",),
-    "AdaptiveMaxPool2d": ("target_shape",),
-    "AdaptiveMaxPool3d": ("target_shape",),
-    "AdaptiveAvgPool1d": ("target_shape",),
-    "AdaptiveAvgPool2d": ("target_shape",),
-    "AdaptiveAvgPool3d": ("target_shape",),
-    "MultiheadAttention": (
-        "num_heads",
-        "query_size",
-        "key_size",
-        "value_size",
-        "output_size",
-        "qk_size",
-        "vo_size",
-        "use_query_bias",
-        "use_key_bias",
-        "use_value_bias",
-        "use_output_bias",
-        "dropout_p",
-        "inference",
-        "dtype",
-    ),
-    "RotaryPositionalEmbedding": ("embedding_size", "theta", "dtype"),
-    "Dropout": ("p", "inference", "deterministic"),
-}
-
-
 def get_init_signature(eqx_class) -> inspect.Signature:
     """Get the __init__ signature of an Equinox class."""
     return inspect.signature(eqx_class.__init__)
@@ -628,6 +511,12 @@ def generate_component_class(spec: ComponentSpec) -> str:
             f"trainable={trainable!r})\n"
         )
 
+    source_declaration = "    component_sources = (_GENERATOR_SOURCE,)\n" if portable else ""
+    # The built-in runtime Linear owns the default feedbax.Linear key.
+    key_declaration = (
+        '    component_key = "feedbax.equinox.Linear"\n' if spec.eqx_class_name == "Linear" else ""
+    )
+
     # Build the class
     docstring = spec.docstring or f"Component wrapper for eqx.nn.{spec.eqx_class_name}."
     if portable:
@@ -650,7 +539,7 @@ class {spec.eqx_class_name}({"Component" if portable else "GraphNode"}):
     """{docstring}"""
 
 {ports}
-    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
+{key_declaration}{source_declaration}    generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {contract_expr}
 
@@ -693,6 +582,7 @@ To regenerate:
 from __future__ import annotations
 
 from collections.abc import Hashable, Mapping
+from pathlib import Path
 from typing import Any, Callable, Literal, Optional, Sequence, Union
 
 import equinox as eqx
@@ -703,13 +593,14 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.contracts.component import PortType
 from feedbax.contracts.portable import ComponentOptions, ConfigBinding, MissingPrototypeInput, Ports
-from feedbax.runtime.components import identity_activation, relu
+from feedbax.builtins.runtime.components import identity_activation, relu
 from feedbax.runtime.graph import Component, GraphNode
 
 
 EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v3"
 EQUINOX_WRAPPER_GENERATOR = "scripts/generate_eqx_components.py"
 EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
+_GENERATOR_SOURCE = Path(__file__).resolve().parents[3] / EQUINOX_WRAPPER_GENERATOR
 
 
 '''
@@ -863,44 +754,16 @@ def _call_multihead_attention_layer(
     return header + all_str + contracts + helpers + "".join(body_parts)
 
 
-def generate_histories() -> str:
-    """Render frozen legacy evidence for the current wrapper owners."""
-    imports = ", ".join(LEGACY_CONFIG_FIELDS)
-    records = "\n".join(
-        f"    {name}: History(legacy=(LegacyEndpoint('feedbax.equinox.{name}', '1', 1, "
-        f"partial(_revision_one_fields, fields=frozenset({fields!r}))),)),"
-        for name, fields in LEGACY_CONFIG_FIELDS.items()
-    )
-    return f'''"""Generated frozen Equinox wire evidence; regenerate with generate_eqx_components.py."""
-
-from functools import partial
-
-from feedbax.component_registry.history import History, LegacyEndpoint
-from feedbax.components.equinox import {imports}
-
-
-def _revision_one_fields(params, *, fields):
-    return set(params) <= fields
-
-
-HISTORIES = {{
-{records}
-}}
-'''
-
-
 def main():
     """Generate and write the components file."""
-    output_path = Path(__file__).parent.parent / "feedbax" / "components" / "equinox.py"
+    output_path = Path(__file__).parent.parent / "feedbax" / "builtins" / "components" / "equinox.py"
 
     print("Generating Equinox component wrappers...")
     content = generate_all_components()
 
     output_path.write_text(content)
-    history_path = output_path.parent.parent / "component_migrations" / "equinox.py"
-    history_path.write_text(generate_histories())
     try:
-        subprocess.run(["ruff", "format", str(output_path), str(history_path)], check=True)
+        subprocess.run(["ruff", "format", str(output_path)], check=True)
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         print(f"Warning: could not format generated file with ruff: {exc}")
     print(f"Written to: {output_path}")
