@@ -18,7 +18,7 @@ from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
 from feedbax.persistence.receipt_validity import read_validity_records
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION, decide_validity, observe_differences
 from feedbax.validity.environment import read_environment
-from feedbax.validity.evidence import read_execution_evidence
+from feedbax.validity.evidence import execution_evidence_identity, read_execution_evidence
 from feedbax.validity.registry import snapshot_registry
 from feedbax.validity.source import source_catalog
 
@@ -122,9 +122,10 @@ def _prefixes(store: ImmutableArtifactBlobProvider, trace: CodeTrace) -> Iterato
     visited = set()
     while pending:
         ref = pending.pop()
-        if ref.sha256 in visited:
+        identity = execution_evidence_identity(ref)
+        if identity in visited:
             continue
-        visited.add(ref.sha256)
+        visited.add(identity)
         evidence = read_execution_evidence(store, ref)
         yield evidence
         pending.extend(evidence.trace.prefixes)

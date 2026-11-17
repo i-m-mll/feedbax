@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import AwareDatetime, Field, PositiveInt, UUID4, field_validator, model_validator
+from pydantic import AwareDatetime, Field, NonNegativeInt, PositiveInt, UUID4, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.computation_validity import ComputationTrace, DriverIdentity
+from feedbax.contracts.computation_validity import ComputationPrefix, ComputationTrace, DriverIdentity
 from feedbax.contracts.request_refs import Name, ReferenceValue, Sha256
 
 
@@ -132,3 +132,49 @@ class ReceiptEvidence(ReferenceValue):
     attempt: Name
     trace: CodeTrace
     provenance: AttemptProvenance
+
+
+class ObservationGeneration(ReferenceValue):
+    store_id: UUID4
+    attempt: Name
+    index: NonNegativeInt
+    previous: ContentObjectRef | None = Field(default=None, exclude_if=lambda value: value is None)
+    sources: tuple[SourceSnapshot, ...] = Field(default=(), exclude_if=lambda value: not value)
+    registry: tuple[RegistryBinding, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
+    files: tuple[FileSnapshot, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
+    environment: dict[Name, Name] | None = Field(default=None, exclude_if=lambda value: value is None)
+    indeterminate: tuple[SourcePath, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
+    indeterminate_files: tuple[SourcePath, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def _shape(self) -> ObservationGeneration:
+        fields = (self.registry, self.files, self.environment, self.indeterminate, self.indeterminate_files)
+        if self.previous is None and (self.index != 0 or any(value is None for value in fields)):
+            raise ValueError("An initial observation generation requires complete evidence")
+        if self.previous is not None and (self.index == 0 or not self.sources and all(value is None for value in fields)):
+            raise ValueError("A successor observation generation requires actual changes")
+        if len({item.path for item in self.sources}) != len(self.sources):
+            raise ValueError("An observation generation names a source more than once")
+        return self
+
+
+class CheckpointComputation(ReferenceValue):
+    programs: ContentObjectRef
+    completed_steps: PositiveInt
+    prefix: ComputationPrefix | None = None
+
+
+class CheckpointEvidence(ReferenceValue):
+    store_id: UUID4
+    attempt: Name
+    completed_updates: PositiveInt
+    generation: ContentObjectRef
+    provenance: AttemptProvenance
+    prefixes: tuple[ExecutionEvidenceRef, ...] = Field(default=(), exclude_if=lambda value: not value)
+    computation: CheckpointComputation | ComputationUnavailable | None = None
+
+    @model_validator(mode="after")
+    def _scope(self) -> CheckpointEvidence:
+        if self.computation is not None and self.computation.completed_steps > self.completed_updates:
+            raise ValueError("Checkpoint evidence exceeds its completed update coordinate")
+        return self

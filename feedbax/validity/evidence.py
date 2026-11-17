@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.code_validity import CodeTrace, ReceiptEvidence
+from feedbax.contracts.code_validity import (
+    CheckpointComputation, CheckpointEvidence, CheckpointEvidenceRoot, CodeTrace, ComputationUnavailable,
+    ExecutionEvidenceRef, ObservationGeneration, ReceiptEvidence,
+)
+from feedbax.contracts.computation_validity import ComputationPrograms, ComputationTrace
 from feedbax.contracts.store_closure import StoreClosureRef, read_store_closure_ref
 
 if TYPE_CHECKING:
@@ -20,29 +24,115 @@ class StagedEvidenceMissing(ValueError):
     """An exact execution scope no longer has provisional Store custody."""
 
 
-def read_execution_evidence(store: ImmutableArtifactBlobProvider, ref: ContentObjectRef) -> ReceiptEvidence:
-    return ReceiptEvidence.model_validate_json(store.get_object(ref))
+_OBSERVED_FIELDS = ("registry", "files", "environment", "indeterminate", "indeterminate_files")
+
+
+def execution_evidence_identity(ref: ExecutionEvidenceRef) -> tuple:
+    if isinstance(ref, CheckpointEvidenceRoot):
+        return ref.evidence.sha256, ref.store_id, ref.attempt, ref.completed_updates
+    return (ref.sha256,)
+
+
+def _resolve_checkpoint(
+    store: ImmutableArtifactBlobProvider, root: CheckpointEvidenceRoot,
+) -> tuple[CheckpointEvidence, list[tuple[ContentObjectRef, ObservationGeneration]], ComputationTrace | None]:
+    endpoint = CheckpointEvidence.model_validate_json(store.get_object(root.evidence))
+    if (endpoint.store_id, endpoint.attempt, endpoint.completed_updates) != (
+        root.store_id, root.attempt, root.completed_updates,
+    ):
+        raise ValueError("Checkpoint evidence differs from the exact Store, attempt or coordinate")
+    generations = []
+    index = None
+    ref = endpoint.generation
+    while ref is not None:
+        generation = ObservationGeneration.model_validate_json(store.get_object(ref))
+        if (generation.store_id, generation.attempt) != (root.store_id, root.attempt) or (
+            index is not None and generation.index != index
+        ):
+            raise ValueError("Observation generation differs from its checkpoint ancestry")
+        generations.append((ref, generation))
+        index = generation.index - 1
+        ref = generation.previous
+
+    computation = None
+    if isinstance(proof := endpoint.computation, CheckpointComputation):
+        programs = ComputationPrograms.model_validate_json(store.get_object(proof.programs))
+        computation = ComputationTrace(
+            **dict(programs), completed_steps=proof.completed_steps, prefix=proof.prefix,
+        )
+    return endpoint, generations, computation
+
+
+def read_execution_evidence(store: ImmutableArtifactBlobProvider, ref: ExecutionEvidenceRef) -> ReceiptEvidence:
+    if isinstance(ref, ContentObjectRef):
+        return ReceiptEvidence.model_validate_json(store.get_object(ref))
+    endpoint, generations, computation = _resolve_checkpoint(store, ref)
+    sources = {}
+    observations = {}
+    for _, generation in reversed(generations):
+        sources.update((item.path, item) for item in generation.sources)
+        observations.update((key, value) for key in _OBSERVED_FIELDS if (value := getattr(generation, key)) is not None)
+    return ReceiptEvidence(attempt=endpoint.attempt, provenance=endpoint.provenance, trace=CodeTrace(
+        sources=tuple(sorted(sources.values(), key=lambda item: (item.path.scope, item.path.path))),
+        **observations,
+        computation=computation,
+        computation_unavailable=endpoint.computation if isinstance(endpoint.computation, ComputationUnavailable) else None,
+        prefixes=endpoint.prefixes,
+    ))
 
 
 def evidence_objects(store: ImmutableArtifactBlobProvider, trace: CodeTrace) -> Iterator[ContentObjectRef]:
+    yield from (source.content for source in trace.sources)
+    yield from _computation_objects(store, trace.computation)
+    yield from _prefix_objects(store, trace.prefixes)
+
+
+def checkpoint_evidence_objects(
+    store: ImmutableArtifactBlobProvider, root: CheckpointEvidenceRoot,
+) -> Iterator[ContentObjectRef]:
+    yield from _prefix_objects(store, (root,))
+
+
+def _computation_objects(
+    store: ImmutableArtifactBlobProvider, computation: ComputationTrace | None,
+) -> Iterator[ContentObjectRef]:
     from feedbax.persistence.receipt_content import tree_objects
 
-    pending = [trace]
-    seen_prefixes: set[str] = set()
+    if computation is not None:
+        for reference in computation.content_references():
+            if isinstance(reference, ContentTreeRef):
+                yield from tree_objects(store, reference)
+            else:
+                yield reference
+
+
+def _prefix_objects(
+    store: ImmutableArtifactBlobProvider, prefixes: tuple[ExecutionEvidenceRef, ...],
+) -> Iterator[ContentObjectRef]:
+    pending = list(prefixes)
+    seen_prefixes = set()
     while pending:
-        segment = pending.pop()
-        yield from (source.content for source in segment.sources)
-        if (computation := segment.computation) is not None:
-            for reference in computation.content_references():
-                if isinstance(reference, ContentTreeRef):
-                    yield from tree_objects(store, reference)
-                else:
-                    yield reference
-        for prefix in segment.prefixes:
-            if prefix.sha256 not in seen_prefixes:
-                seen_prefixes.add(prefix.sha256)
-                yield prefix
-                pending.append(read_execution_evidence(store, prefix).trace)
+        ref = pending.pop()
+        identity = execution_evidence_identity(ref)
+        if identity in seen_prefixes:
+            continue
+        seen_prefixes.add(identity)
+        if isinstance(ref, CheckpointEvidenceRoot):
+            yield ref.evidence
+            endpoint, generations, computation = _resolve_checkpoint(store, ref)
+            for generation_ref, generation in generations:
+                yield generation_ref
+                yield from (source.content for source in generation.sources)
+            if isinstance(endpoint.computation, CheckpointComputation):
+                yield endpoint.computation.programs
+            yield from _computation_objects(store, computation)
+            pending.extend(endpoint.prefixes)
+        else:
+            yield ref
+            segment = read_execution_evidence(store, ref).trace
+            yield from (source.content for source in segment.sources)
+            yield from _computation_objects(store, segment.computation)
+            pending.extend(segment.prefixes)
 
 
 def _staged_ref(attempt: str) -> str:

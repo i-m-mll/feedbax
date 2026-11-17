@@ -117,17 +117,14 @@ class EvaluatePrefix(ReferenceValue):
 type ComputationPrefix = Annotated[TrainPrefix | EvaluatePrefix, Field(discriminator="kind")]
 
 
-class ComputationTrace(ReferenceValue):
+class ComputationPrograms(ReferenceValue):
     normalization_version: PositiveInt = NORMALIZATION_VERSION
     reference_platform: Literal["cpu"] = REFERENCE_PLATFORM
     driver: DriverIdentity
     starts: tuple[ComputationStart, ...] = Field(min_length=1)
     programs: tuple[ProgramIdentity, ...] = Field(min_length=1)
-    completed_steps: PositiveInt
-    prefix: ComputationPrefix | None = None
-
     @model_validator(mode="after")
-    def _coverage(self) -> ComputationTrace:
+    def _coverage(self) -> ComputationPrograms:
         slots = [start.slot for start in self.starts]
         signatures = [(program.slot, program.specialization) for program in self.programs]
         if len(set(slots)) != len(slots) or set(slots) != {slot for slot, _ in signatures}:
@@ -136,10 +133,19 @@ class ComputationTrace(ReferenceValue):
             )
         if len(set(signatures)) != len(signatures):
             raise ValueError("Each computation specialization must occur once per slot")
+        return self
+
+
+class ComputationTrace(ComputationPrograms):
+    completed_steps: PositiveInt
+    prefix: ComputationPrefix | None = None
+
+    @model_validator(mode="after")
+    def _prefix_coverage(self) -> ComputationTrace:
         if isinstance(self.prefix, TrainPrefix) and self.completed_steps < len(self.prefix.losses):
             raise ValueError("The training prefix must consist of completed updates")
         if isinstance(self.prefix, EvaluatePrefix) and (
-            [output.slot for output in self.prefix.outputs] != slots[: len(self.prefix.outputs)]
+            [output.slot for output in self.prefix.outputs] != [start.slot for start in self.starts[:len(self.prefix.outputs)]]
             or self.completed_steps < len(self.prefix.outputs)
         ):
             raise ValueError("The evaluation prefix must name the first completed slots")
