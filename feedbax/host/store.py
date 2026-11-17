@@ -310,6 +310,7 @@ class Store:
                     }
             if json.loads(row["launch"])["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                 outcome.pop("products", None)
+            outcome.pop("execution_evidence", None)
             if staged := outcome.pop("stopped_checkpoints", None):
                 if outcome["outcome"] != "stopped" or not self._is_managed_launch(row, "feedbax.training_host_worker:main"):
                     raise ValueError("Only a managed Train checkpoint stop may publish a job entry")
@@ -338,6 +339,7 @@ class Store:
         ref = publish_train_success(
             root, row["id"], row["request"], payload, outcome, predecessor, collected=collected,
             target=attempt_target(json.loads(row["data"]).get("target")),
+            execution_evidence=self._execution_evidence(row, outcome),
         )
         return outcome | {"store_success": ref}
 
@@ -556,13 +558,14 @@ class Store:
             attempt=row["id"], request_id=row["request"], project=row["project"],
             payload=payload, receipt=outcome["receipt"], binding=binding,
             target=attempt_target(json.loads(row["data"]).get("target")),
+            execution_evidence=self._execution_evidence(row, outcome),
         )
         return outcome | {"store_success": ref.model_dump(mode="json")}
 
     def _publish_light_result(self, row: sqlite3.Row, outcome: dict) -> dict:
         from feedbax.light_jobs import publish_light_success
 
-        if outcome.keys() not in ({"outcome", "products"}, {"outcome", "products", "provider"}):
+        if not {"outcome", "products"} <= outcome.keys() <= {"outcome", "products", "provider", "execution_evidence"}:
             raise ValueError("Managed success must supply draft products and optional provider provenance.")
         payload = json.loads(row["launch"])["payload"]
         ref = publish_light_success(
@@ -570,12 +573,21 @@ class Store:
             checkpoint_bindings=tuple(self.completion_bindings(row["id"])),
             provider=outcome.get("provider"),
             target=attempt_target(json.loads(row["data"]).get("target")),
+            execution_evidence=self._execution_evidence(row, outcome),
         )
         return {
             "outcome": "succeeded",
             "receipt": {"manifest_id": row["id"], "manifest_sha256": ref["sha256"]},
             "store_success": ref,
         }
+
+    @staticmethod
+    def _execution_evidence(row: sqlite3.Row, outcome: dict) -> ContentObjectRef | None:
+        if "execution_evidence" in outcome:
+            return ContentObjectRef.model_validate(outcome["execution_evidence"])
+        if json.loads(row["launch"]).get("project_root") is not None:
+            raise ValueError("The managed worker did not publish its execution evidence")
+        return None
 
     @staticmethod
     def _light_requests(launch: dict, project: str, request_id: str, slot: str) -> frozenset[str]:
@@ -679,6 +691,10 @@ class Store:
                 raise HostError("invalid_request", "Invalid launch environment variable.")
         if launch["warm_entrypoint"] and ":" not in launch["warm_entrypoint"]:
             raise HostError("invalid_request", "Warm entrypoint must be module:function.")
+        if (source_root := launch.get("project_root")) is not None and (
+            not isinstance(source_root, str) or not Path(source_root).is_absolute() or "\0" in source_root
+        ):
+            raise HostError("invalid_request", "Managed project root must be an absolute path.")
         if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT and (
             job["continues"] is not None
             or any(edge["publication"] is not None for edge in job["edges"])

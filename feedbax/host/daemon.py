@@ -151,6 +151,7 @@ class Host:
             "warm_entrypoint": launch["warm_entrypoint"],
             "slot": slot,
             "runtime_owner": runtime_owner,
+            "project_root": launch.get("project_root"),
         }
         if slot == "light" and launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
             payload = launch["payload"]
@@ -480,6 +481,7 @@ class Host:
                 "job_id": row["id"],
                 "paths": {name: str(path) for name, path in paths.items()},
                 "argv": launch["argv"],
+                "store_root": launch["payload"].get("manifest_root"),
                 "completion_bindings_sha256": completion_bindings_sha256,
                 "live_evaluate_sha256": live_evaluate_sha256,
                 "startup_log": str(worker.profile_dir / "startup.log"),

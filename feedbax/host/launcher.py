@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .io import TOKEN_ENV, append
+from .io import EVIDENCE_FILE, TOKEN_ENV, append
 from .python import python_argv
 
 BOOTSTRAP = """\
@@ -93,7 +93,10 @@ def _terminal(log: Path, status: int, require_result: bool) -> None:
         accepted.get("kind") == "accepted"
         and accepted["data"].get("token") == os.environ[TOKEN_ENV]
     ):
-        append(log, "terminal", _outcome(log, status, require_result), sync=True)
+        outcome = _outcome(log, status, require_result)
+        if outcome["outcome"] == "succeeded" and (evidence := log.with_name(EVIDENCE_FILE)).is_file():
+            outcome["execution_evidence"] = json.loads(evidence.read_bytes())
+        append(log, "terminal", outcome, sync=True)
 
 
 def main(control_fd: str, profile_path: str) -> int:
