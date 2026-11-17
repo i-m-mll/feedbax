@@ -47,7 +47,9 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdits';
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
-import { isModelAddress, selectElement, useElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import {
+  choosePick, isModelAddress, selectElement, useElementSelectionStore, usePick, type PickTarget,
+} from '@/features/projectWindow/elementSelection';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
@@ -57,9 +59,9 @@ import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, type SavedTrainRow as SavedRow } from './projectWindowPlan';
 import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
-import { CheckpointRuleEditor, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
+import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
 import { StudioEvaluationAttemptDetails, StudioEvaluationResults } from './StudioEvaluationResults';
-import { RunRemovalContext, useRunRemovalDialog } from './runRemoval';
+import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
 import { StudioTrainAuthoringForm, SweepFieldItems } from './StudioTrainAuthoringForm';
 import { TrialObjectiveInspector, TrialObjectiveTable, TrialTaskForm, useTrialAuthoring } from './StudioTrialAuthoring';
 import { useProjectDocuments, type DocumentRole } from './useProjectDocuments';
@@ -203,6 +205,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
   const drawerSections = useDrawerSections(windowState, setWindowState);
   const elements = useElementSelectionStore();
+  const armedPick = usePick(elements);
+  const mapPick = useMemo(() => armedPick && {
+    accepts: armedPick.accepts, choose: (target: PickTarget) => { choosePick(elements, target); },
+  }, [armedPick, elements]);
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
@@ -283,8 +289,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const linked = wholeStep && authored?.kind === 'train' &&
     'step' in authored.base && authored.base.row == null && checkpoint &&
     'step' in checkpoint && checkpoint.step === authored.base.step && checkpoint.checkpoint === 'last';
-  const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null || linked) && state.selection ? {
-    editor, stepId: step.id, step, selection: state.selection,
+  const started = wholeStep && authored?.kind === 'train' && 'inline' in authored.base && !authored.deltas?.length &&
+    Object.keys(authored.inputs ?? {}).join() === 'checkpoint' && StepReferenceSchema.safeParse(checkpoint).success;
+  const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null || linked || started) &&
+    state.selection ? {
+    editor, stepId: step.id, step, selection: state.selection, picking: elements,
+    trains: plan.steps.filter(({ kind }) => kind === 'train'),
     onChooseSweepValue: (sweepId: string, valueId: string, extend: boolean) => {
       selection.select(selectSweepValue(latestState.current, step.id, sweepId, valueId, extend));
     },
@@ -457,7 +467,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const trialEditable = documentEditable && Boolean(evaluateScope ||
     wholeStep && !authored?.sweep && !authored?.deltas?.length && step?.kind === 'train');
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
-    trialEditable, evaluateScope || undefined);
+    trialEditable, evaluateScope || undefined, runRemoval.confirm);
   const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: evaluateScope || undefined,
@@ -524,6 +534,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
+    steps: plan.steps,
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: data, variant, stepId: step?.kind === 'report' ? step.id : undefined,
@@ -796,13 +807,45 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       data, stoppedSubject),
   }), { enabled: canAuthorContinuation && !busy });
 
+  const evaluateInputs = authored?.kind === 'evaluate' ? authored : undefined;
+  const trainSteps = plan.steps.filter(({ kind }) => kind === 'train');
+  const subjectInput = evaluateInputs && step?.inputs.find(({ id }) => id === 'subject');
+  const listedInputs = step?.inputs.filter(({ id }) => !evaluateInputs || !['subject', 'task', 'objective'].includes(id)) ?? [];
+  function inputDetail({ id, subset }: PlanStepView['inputs'][number]) {
+    return <>
+      {id === 'subject' && subjectCheckpoint !== undefined &&
+        <dd className="text-shell-muted">{checkpointLabel(subjectCheckpoint)}</dd>}
+      {subset && <dd className="text-shell-muted">
+        {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
+        {subset.memberGroups?.map(({ label, members }) => <div key={members[0]?.id} className="mt-1">
+          {label && <div className="font-medium">{label}</div>}
+          <ol aria-label={label ? studioAccessibleName('members', label) : studioName('members')}
+            className="list-decimal space-y-0.5 ps-5">
+            {members.map(({ id, label }) => <li key={id}>{label}</li>)}
+          </ol>
+        </div>)}
+      </dd>}
+    </>;
+  }
+
+  function editEvaluateSubject(name: string, patches: ProjectValueEdit[], reads: readonly string[]) {
+    if (!step || !ready) return;
+    const files = [{ address: { kind: 'step' as const, id: step.id }, patches }];
+    const dependencies = reads.map((id) => ({ kind: saved.project.steps[id] ? 'step' as const : 'document' as const, id }));
+    void perform(async () => {
+      if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
+      editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies });
+      await editor.flush();
+    });
+  }
+
   function editEvaluation(name: string, patch: ProjectValueEdit) {
     if (!step || !evaluationEditor || !ready) return;
     const source = evaluationEditor.source.id;
+    const files = [{ address: { kind: 'step' as const, id: step.id }, patches: [patch] }];
     void perform(async () => {
-      editor.editFiles(name, [{ address: { kind: 'step', id: step.id }, patches: [patch] }], {
-        reviewedRevision: saved.revision, dependencies: [{ kind: 'step', id: source }],
-      });
+      if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
+      editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies: [{ kind: 'step', id: source }] });
       await editor.flush();
     });
   }
@@ -849,6 +892,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const reviewed = await prepareSubsetToRows(saved.project_id, {
         revision: saved.revision, variant, step: step.id, attempts: freezeAttempts,
       }, editor.signal);
+      if (!await runRemoval.confirm(filesRemoval(saved.project_id, reviewed.revision, reviewed.files, editor.signal))) return;
       editor.editFiles(studioName('toRows'), reviewed.files, {
         reviewedRevision: reviewed.revision, dependencies: [{ kind: 'step', id: subject.source_step_id }],
       });
@@ -878,8 +922,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         ? { op: key in row.patches ? 'replace' : 'add', path: authoredPointer(['patches', key]), value: { value: rule } }
         : { op: 'add', path: '/patches', value: { [key]: { value: rule } } };
     }
+    const files = [{ address, patches: [patch] }];
     void perform(async () => {
-      editor.editFiles(name, [{ address, patches: [patch] }], { reviewedRevision: saved.revision, dependencies });
+      if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
+      editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies });
       await editor.flush();
     });
   }
@@ -890,6 +936,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const reviewed = await prepareCheckpointRuleEdit(saved.project_id, {
         revision: saved.revision, run: namedRun, edit,
       }, editor.signal);
+      if (!await runRemoval.confirm(filesRemoval(saved.project_id, reviewed.revision, reviewed.files, editor.signal))) return;
       editor.editFiles(edit.kind === 'to_sweep' ? 'Sweep Evaluate checkpoints' : 'Set Evaluate checkpoints',
         reviewed.files, { reviewedRevision: reviewed.revision,
           dependencies: [{ kind: 'step', id: subject.source_step_id }] });
@@ -1090,7 +1137,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         focusRequest={focusRequest}
         onBack={selection.back} onForward={selection.forward}
         map={renderMap(<StudioPipelineMap {...mapProps}
-          activeStepId={selection.stepId} viewportRef={mapViewport} fitReady={!!data} sweepMenu={sweepMenu}
+          activeStepId={selection.stepId} viewportRef={mapViewport} fitReady={!!data} sweepMenu={sweepMenu} pick={mapPick}
           presentation={presentation} onPresentationChange={changePresentation} />)}
         mapDrawer={renderMap(<StudioPipelineMapDrawer {...mapProps} />)}
         compactMap={renderMap(<StudioPipelineMap {...mapProps} mode="line" />)}
@@ -1228,30 +1275,23 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   disabled={busy || machineCatalog.isPending}
                   onChange={(value) => setMachines((current) => ({ ...current, [step.id]: value }))} />}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
-              drawer: (authoring || step.inputs.length > 0 || exceptions.length > 0) ? <div className="space-y-3 text-sm">
+              drawer: (authoring || evaluateInputs || step.inputs.length > 0 || exceptions.length > 0) ? <div className="space-y-3 text-sm">
                 {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
                     focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
                     onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
                 {exceptions.length > 0 && <SweepExceptions exceptions={exceptions}
                   onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />}
-                {step.inputs.length > 0 && <section aria-label={studioName('inputs')} className="space-y-1">
+                {(evaluateInputs || listedInputs.length > 0) && <section aria-label={studioName('inputs')} className="space-y-1">
                   <h3 className="font-semibold">{studioName('inputs')}</h3>
-                  <dl>{step.inputs.map(({ id, label, sourceStepId, subset }) => <div key={id} className="border-t border-shell-divider py-1">
-                    <dt>{label}</dt>
-                    <dd className="text-shell-muted">{plan.steps.find((item) => item.id === sourceStepId)?.label}</dd>
-                    {id === 'subject' && subjectCheckpoint !== undefined &&
-                      <dd className="text-shell-muted">{checkpointLabel(subjectCheckpoint)}</dd>}
-                    {subset && <dd className="text-shell-muted">
-                      {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
-                      {subset.memberGroups?.map(({ label, members }) => <div key={members[0]?.id} className="mt-1">
-                        {label && <div className="font-medium">{label}</div>}
-                        <ol aria-label={label ? studioAccessibleName('members', label) : studioName('members')}
-                          className="list-decimal space-y-0.5 ps-5">
-                          {members.map(({ id, label }) => <li key={id}>{label}</li>)}
-                        </ol>
-                      </div>)}
-                    </dd>}
-                  </div>)}</dl>
+                  {evaluateInputs && <EvaluateSubjectFields step={evaluateInputs} project={saved.project} trains={trainSteps}
+                    picking={elements} subset={subjectInput && <dl>{inputDetail(subjectInput)}</dl>}
+                    onEdit={ready && !busy && wholeStep ? editEvaluateSubject : undefined} />}
+                  {listedInputs.length > 0 && <dl>{listedInputs.map((input) => <div key={input.id} className="border-t border-shell-divider py-1">
+                    <dt>{input.label}</dt>
+                    {!(step.kind === 'train' && input.id === 'checkpoint') &&
+                      <dd className="text-shell-muted">{plan.steps.find((item) => item.id === input.sourceStepId)?.label}</dd>}
+                    {inputDetail(input)}
+                  </div>)}</dl>}
                 </section>}
                 {evaluationCheckpointRule &&
                   <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, saved.revision, checkpointScope])}

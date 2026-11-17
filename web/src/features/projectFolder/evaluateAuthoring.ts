@@ -3,7 +3,8 @@ import { studioFormat, studioName, studioReason } from '@/components/activity/st
 import type { PlanRunView, PlanView } from '@/features/pipeline/planView';
 import {
   BatchCheckpointSchema, StepReferenceSchema, UpdateRuleSchema,
-  type Axis, type BatchCheckpoint, type CheckpointRule, type Step, type StepReference, type StudioSavedTrainRuns,
+  type Axis, type BatchCheckpoint, type CheckpointRule, type JsonValue, type ProjectValueEdit, type Step, type StepReference,
+  type StudioSavedTrainRuns,
   type SubsetTerms, type UpdateRule,
 } from '@/generated/studioContracts';
 import { trainSourceSubset } from './createCheckpointTrain';
@@ -179,4 +180,77 @@ export async function createEvaluation(
     },
   }, projection.revision);
   return id;
+}
+
+/** What an Evaluate step's subject reads: an initial Model document, or a Train step's checkpoint. */
+export type EvaluateSubject =
+  | { kind: 'document'; document: string; task?: string; objective?: string }
+  | { kind: 'step'; step: string };
+
+export function evaluateSubject(step: Step): EvaluateSubject | undefined {
+  const inputs = step.inputs ?? {};
+  const subject = inputs.subject;
+  const source = (binding: unknown, kind: string) => {
+    const parsed = binding as { kind?: string; source?: { document?: unknown } } | null | undefined;
+    return parsed?.kind === kind && typeof parsed.source?.document === 'string' ? parsed.source.document : undefined;
+  };
+  const document = source(subject, 'initial_model');
+  if (document !== undefined) {
+    return { kind: 'document', document, task: source(inputs.task, 'task'), objective: source(inputs.objective, 'objective') };
+  }
+  const reference = StepReferenceSchema.safeParse(subject);
+  return reference.success ? { kind: 'step', step: reference.data.step } : undefined;
+}
+
+const documentReference = (kind: 'initial_model' | 'task' | 'objective', document: string) =>
+  ({ kind, source: { document } }) as const;
+
+/**
+ * The edits that point an Evaluate step's subject at `next`. A checkpoint subject reads its Task and Objective from
+ * its Train step and fans out over the subject's members; an initial Model subject declares its Task and Objective
+ * and has no subject or checkpoint axis.
+ */
+export function evaluateSubjectEdits(step: Step, next: EvaluateSubject): ProjectValueEdit[] {
+  const current = evaluateSubject(step);
+  const inputs = step.inputs ?? {};
+  const set = (path: string, present: boolean, value: JsonValue): ProjectValueEdit =>
+    ({ op: present ? 'replace' : 'add', path, value });
+  if (next.kind === 'step') {
+    if (current?.kind === 'step') {
+      if (current.step === next.step) return [];
+      const checkpoint = StepReferenceSchema.parse(inputs.subject).checkpoint ?? 'last';
+      return [set('/inputs/subject', true, { step: next.step, checkpoint })];
+    }
+    const axes = step.sweep?.axes;
+    return [
+      set('/inputs/subject', 'subject' in inputs, { step: next.step, checkpoint: 'last' }),
+      ...Object.keys(inputs).filter((role) => role === 'task' || role === 'objective').reverse()
+        .map((role) => ({ op: 'remove', path: `/inputs/${role}` }) as const),
+      step.sweep
+        ? axes ? set('/sweep/axes/subject', 'subject' in axes, { input: 'subject' })
+          : set('/sweep/axes', false, { subject: { input: 'subject' } })
+        : set('/sweep', false, { axes: { subject: { input: 'subject' } } }),
+    ];
+  }
+  const edits: ProjectValueEdit[] = [];
+  if (current?.kind === 'document') {
+    if (current.document !== next.document) edits.push(set('/inputs/subject/source/document', true, next.document));
+  } else {
+    edits.push(set('/inputs/subject', 'subject' in inputs, documentReference('initial_model', next.document)));
+    const axes = Object.entries(step.sweep?.axes ?? {});
+    const kept = axes.filter(([, axis]) => !axis || !('input' in axis && axis.input === 'subject') && !('checkpoint_rule' in axis));
+    const { axes: _axes, ...rest } = step.sweep ?? {};
+    if (!kept.length && !Object.values(rest).some((value) => value != null && Object.keys(value).length)) {
+      if (step.sweep) edits.push({ op: 'remove', path: '/sweep' });
+    } else if (kept.length !== axes.length) {
+      edits.push(set('/sweep/axes', true, Object.fromEntries(kept) as JsonValue));
+    }
+  }
+  for (const role of ['task', 'objective'] as const) {
+    const document = next[role];
+    if (document !== undefined && (current?.kind !== 'document' || current[role] !== document)) {
+      edits.push(set(`/inputs/${role}`, role in inputs, documentReference(role, document)));
+    }
+  }
+  return edits;
 }

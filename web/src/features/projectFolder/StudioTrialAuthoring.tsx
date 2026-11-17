@@ -21,9 +21,11 @@ import type {
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import type { ProjectEditController } from './projectEditController';
+import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
-type Commit = (name: string, change: Change) => Promise<string | undefined>;
+/** Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. */
+type Commit = (name: string, change: Change, removes?: boolean) => Promise<string | undefined>;
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
 
 function write(path: string, value: JsonValue, present: boolean): ProjectValueEdit {
@@ -32,7 +34,7 @@ function write(path: string, value: JsonValue, present: boolean): ProjectValueEd
 
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
-  enabled: boolean, editable: boolean, scope?: StudioTrialAuthoringRequest['scope'],
+  enabled: boolean, editable: boolean, scope: StudioTrialAuthoringRequest['scope'] | undefined, confirmRemoval: ConfirmRunRemoval,
 ) {
   const writing = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -41,13 +43,14 @@ export function useTrialAuthoring(
     queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
     enabled: enabled && !!run,
   });
-  const commit: Commit | undefined = editable && !busy && run && query.data ? async (name, change) => {
+  const commit: Commit | undefined = editable && !busy && run && query.data ? async (name, change, removes) => {
     if (writing.current) return studioReason('saving', studioName('project'));
     writing.current = true;
     setBusy(true);
     try {
       const result = await readStudioTrialAuthoring(project, { revision, run, change, scope }, editor.signal);
       if (result.files.length) {
+        if (removes && !await confirmRemoval(filesRemoval(project, revision, result.files, editor.signal))) return;
         const documents = [result.model, result.task_document, result.objective_document];
         editor.editFiles(name, result.files, {
           reviewedRevision: revision,
@@ -161,8 +164,8 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
   const sources = [...view.outputs.map(({ value }) => value), ...view.variables, ...view.signals]
     .filter(({ type }) => type.base === 'real' || type.base === 'integer');
   const chosen = sources.find(({ id }) => id === source) ?? sources[0];
-  const save = async (name: string, edit: ProjectValueEdit) =>
-    setError(await commit?.(name, { kind: 'objective', edits: [edit] }));
+  const save = async (name: string, edit: ProjectValueEdit, removes?: boolean) =>
+    setError(await commit?.(name, { kind: 'objective', edits: [edit] }, removes));
   return <div className="grid gap-3 overflow-auto p-3 text-sm">
     <div className="flex items-center gap-2">
       <Select className="min-w-0" aria-label={studioName('measureSource')} value={chosen?.id ?? null} disabled={!commit || !sources.length}
@@ -219,7 +222,7 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
               void save(studioName('moveEarlier'), write('/terms', reordered as unknown as JsonValue, true));
             }} />
             <Button variant="ghost" disabled={!commit} onClick={() => {
-              void save(studioAccessibleName('remove', studioName('term')), { op: 'remove', path });
+              void save(studioAccessibleName('remove', studioName('term')), { op: 'remove', path }, true);
             }}>{studioName('remove')}</Button>
           </TableCell>
         </tr>;

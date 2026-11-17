@@ -51,6 +51,12 @@ export interface ProjectDocumentInputs {
   readonly onError: (message: string) => void;
 }
 
+/** The project's documents a step can read in `role`, by name. */
+export function documentsOfRole(project: { documents?: Readonly<Record<string, Document>> | null }, role: DocumentRole) {
+  const all = project.documents ?? {};
+  return Object.keys(all).filter((id) => schemas[role].includes(all[id].schema)).sort();
+}
+
 export function freeDocumentName(taken: readonly string[], base: string) {
   let name = base;
   for (let number = 2; taken.includes(name); number += 1) name = `${base}-${number}`;
@@ -95,8 +101,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
   return (role: DocumentRole, document: string | undefined, sharing?: { lit: ReadonlySet<string>; users: ReadonlySet<string> }): DocumentPickerModel | undefined => {
     if (!document) return undefined;
     const count = sharing && { lit: sharing.lit.size, users: sharing.users.size };
-    const all = saved.project.documents ?? {};
-    const documents = Object.keys(all).filter((id) => schemas[role].includes(all[id].schema)).sort();
+    const documents = documentsOfRole(saved.project, role);
     const kind = studioName(role);
     const repoint = editable && !!stepId && selectable.has(role);
     return {

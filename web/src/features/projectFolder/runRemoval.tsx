@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type {
-  StudioProjectWindowMapRow, StudioSavedTrainKey, StudioSavedTrainRuns, AttemptProvenance,
+  StudioProjectFilePatch, StudioProjectWindowMapRow, StudioSavedTrainKey, StudioSavedTrainRuns, AttemptProvenance,
 } from '@/generated/studioContracts';
+import { reviewRemovedRuns } from '@/api/studioAuthoring';
 import { studioFormat, studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
@@ -66,7 +67,22 @@ export function removalCost(plan: StudioSavedTrainRuns | undefined, removes: Rem
   return { count: rows.length, training: rows.length > 0 && training.every(Boolean), costly };
 }
 
-export type ConfirmRunRemoval = (removes: RemovedRuns | undefined) => Promise<boolean>;
+/** The rows of the runs the files would remove, as the server's Plan reads the edited project. */
+export function filesRemoval(
+  projectId: string, revision: string, files: readonly StudioProjectFilePatch[], signal: AbortSignal,
+): RemovalReview {
+  return { review: async () => {
+    const runs = new Set((await reviewRemovedRuns(projectId, { revision, files: [...files] }, signal))
+      .map((key) => JSON.stringify([key.variant, key.step, key.row])));
+    return ({ key }) => runs.has(JSON.stringify([key.variant, key.step, key.row]));
+  } };
+}
+
+export interface RemovalReview { review(): Promise<RemovedRuns> }
+
+/** What a command removes: the rows, or a review that finds them, asked only when some run could cost a confirmation. */
+export type Removal = RemovedRuns | RemovalReview | undefined;
+export type ConfirmRunRemoval = (removes: Removal) => Promise<boolean>;
 export const RunRemovalContext = createContext<ConfirmRunRemoval | null>(null);
 
 /**
@@ -78,11 +94,14 @@ export function useRunRemovalDialog(plan: StudioSavedTrainRuns | undefined) {
   const [asking, setAsking] = useState<{ count: number; training: boolean; answer(remove: boolean): void }>();
   const current = useRef(plan);
   current.current = plan;
-  const confirm = useCallback<ConfirmRunRemoval>((removes) => {
-    if (!removes) return Promise.resolve(true);
-    const cost = removalCost(current.current, removes, removalThreshold());
-    if (!cost.costly) return Promise.resolve(true);
-    return new Promise((resolve) => setAsking({ ...cost, answer: (remove) => { setAsking(undefined); resolve(remove); } }));
+  const confirm = useCallback<ConfirmRunRemoval>(async (removal) => {
+    if (!removal) return true;
+    const threshold = removalThreshold();
+    if (!removalCost(current.current, () => true, threshold).costly) return true;
+    const removes = typeof removal === 'function' ? removal : await removal.review();
+    const cost = removalCost(current.current, removes, threshold);
+    if (!cost.costly) return true;
+    return new Promise<boolean>((resolve) => setAsking({ ...cost, answer: (remove) => { setAsking(undefined); resolve(remove); } }));
   }, []);
   const title = asking && studioFormat(asking.training
     ? asking.count === 1 ? 'removeTrainingRun' : 'removeTrainingRuns'

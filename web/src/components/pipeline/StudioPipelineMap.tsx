@@ -26,6 +26,7 @@ import {
   type StudioResultState,
 } from '@/components/activity/studioVocabulary';
 import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
+import type { ReferencePick } from '@/features/projectWindow/elementSelection';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button, IconButton } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -114,6 +115,8 @@ export interface StudioPipelineMapProps {
   viewportRef?: Ref<CanvasViewport>;
   fitReady?: boolean;
   runMenu?: RunMenu;
+  /** An armed reference pick: a card it accepts fills the reference when its head is chosen. */
+  pick?: ReferencePick | null;
   rename?: MapStepRename;
 }
 
@@ -384,6 +387,7 @@ const StepCard = memo(function StepCard({
   downstream,
   runMenu,
   rename,
+  pick,
 }: {
   step: PlanStepView;
   selection: PipelineSelection | null;
@@ -402,8 +406,11 @@ const StepCard = memo(function StepCard({
   downstream?: ReadonlySet<string>;
   runMenu?: RunMenu;
   rename?: MapStepRename;
+  pick?: ReferencePick | null;
 }) {
   const id = useId();
+  const picked = { kind: 'step', step: step.id } as const;
+  const pickable = pick ? pick.accepts(picked) : undefined;
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
   const folded = foldedMapSweep(step, sweeps, presentation);
   const level = documentLevel(documentScope, step.id);
@@ -413,7 +420,11 @@ const StepCard = memo(function StepCard({
   const related = (upstream?.size ?? 0) + (downstream?.size ?? 0) -
     (upstream && downstream ? [...upstream].filter((id) => downstream.has(id)).length : 0);
   const problem = onProblems && ((opener: HTMLButtonElement) => onProblems(step.id, opener));
-  const headSelection = selectionButton((extend) => chooseStep(step.id, extend));
+  const headSelection = selectionButton((extend) => {
+    if (pick) {
+      if (pickable) pick.choose(picked);
+    } else chooseStep(step.id, extend);
+  });
   return (
     <Card
       data-map-card
@@ -424,6 +435,7 @@ const StepCard = memo(function StepCard({
       data-map-related={related || undefined}
       data-map-dimmed={dimmed || undefined}
       data-document-scope={level}
+      data-pick={pickable === undefined ? undefined : pickable ? 'allowed' : 'refused'}
       selected={selection?.kind === 'steps'}
       status={cardStatus(step.statusCounts)}
       role="article"
@@ -450,7 +462,7 @@ const StepCard = memo(function StepCard({
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
           aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
           {...headSelection}
-          onKeyDown={renameOnReturn(rename, step.id, 'card', selection?.kind === 'steps', headSelection.onKeyDown)}
+          onKeyDown={renameOnReturn(rename, step.id, 'card', selection?.kind === 'steps' && !pick, headSelection.onKeyDown)}
         >
           <StepName step={step} />
         </Button>}
@@ -778,6 +790,7 @@ export function StudioPipelineMap({
   fitReady,
   runMenu,
   rename,
+  pick,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
@@ -883,6 +896,7 @@ export function StudioPipelineMap({
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                     runMenu={runMenu}
                     rename={rename}
+                    pick={pick}
                   />
                 ))}
               </div>

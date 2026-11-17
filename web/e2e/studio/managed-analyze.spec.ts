@@ -96,33 +96,24 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => pick(select, label));
   }
-  const dialog = page.getByRole('dialog', { name: 'Connect Ports', exact: true });
-  async function chooseSource(label: string) {
-    await drawer.getByRole('button', { name: 'Connect Ports', exact: true }).click();
-    await pick(dialog.getByRole('combobox', { name: 'Source Port' }), label);
-  }
-  const connect = () => dialog.getByRole('button', { name: 'Connect Ports', exact: true }).click();
-  await chooseSource('states');
-  await edit(connect);
+  const role = (name: string) => inspector.getByRole('combobox', { name, exact: true });
+  await edit(() => pick(role('States'), 'states'));
 
   await edit(() => drawer.getByRole('button', { name: 'Add Trial summary', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
   const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
-  await chooseSource('states');
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
     Boolean(response.request().postDataJSON()?.wire));
-  await connect();
+  await pick(role('Velocity'), 'states');
   expect((await refusal).status()).toBe(422);
-  await expect(dialog.getByRole('alert')).toContainText('Requires dataset schemas');
+  await expect(analysis.getByRole('alert')).toContainText('Requires dataset schemas');
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
-  await pick(dialog.getByRole('combobox', { name: 'Source Port' }), 'aligned_velocity.velocity');
-  await edit(connect);
+  await edit(() => pick(role('Velocity'), 'aligned_velocity.velocity'));
 
   await edit(() => drawer.getByRole('button', { name: 'Add Figure', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
-  await chooseSource('summarize_velocity.summary');
-  const wired = await edit(connect);
+  const wired = await edit(() => pick(role('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(

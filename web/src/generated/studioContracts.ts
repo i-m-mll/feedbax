@@ -3776,6 +3776,16 @@ export type StudioProjectWindowMapSubset = {
   "rank_groups"?: Array<StudioBestRankGroup>;
 };
 
+export type StudioRemovedRuns = {
+  "revision": string;
+  "runs": Array<StudioSavedTrainKey>;
+};
+
+export type StudioRemovedRunsRequest = {
+  "revision": string;
+  "files": Array<StudioProjectFilePatch>;
+};
+
 export type StudioReplayFile = {
   "address": ReplayFileAddress | ReplayDeclarationAddress;
   "before": Sha256 | null;
@@ -10237,6 +10247,20 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 
+export const StudioRemovedRunsSchema: z.ZodType<StudioRemovedRuns> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "runs": z.array(StudioSavedTrainKeySchema),
+  }).strict()
+) as unknown as z.ZodType<StudioRemovedRuns>;
+
+export const StudioRemovedRunsRequestSchema: z.ZodType<StudioRemovedRunsRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioRemovedRunsRequest>;
+
 export const StudioReplayFileSchema: z.ZodType<StudioReplayFile> = z.lazy(() =>
   z.object({
     "address": z.union([ReplayFileAddressSchema, ReplayDeclarationAddressSchema]),
@@ -10756,6 +10780,8 @@ export const contractSchemas = {
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
   StudioSubsetToRowsEdit: StudioSubsetToRowsEditSchema,
   StudioSubsetToRowsRequest: StudioSubsetToRowsRequestSchema,
+  StudioRemovedRuns: StudioRemovedRunsSchema,
+  StudioRemovedRunsRequest: StudioRemovedRunsRequestSchema,
   FieldTextResult: FieldTextResultSchema,
   Problem: ProblemSchema,
   RangeValues: RangeValuesSchema,
@@ -10909,6 +10935,8 @@ export interface ContractTypeMap {
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
   StudioSubsetToRowsEdit: StudioSubsetToRowsEdit;
   StudioSubsetToRowsRequest: StudioSubsetToRowsRequest;
+  StudioRemovedRuns: StudioRemovedRuns;
+  StudioRemovedRunsRequest: StudioRemovedRunsRequest;
   FieldTextResult: FieldTextResult;
   Problem: Problem;
   RangeValues: RangeValues;

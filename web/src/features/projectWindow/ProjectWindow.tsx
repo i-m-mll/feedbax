@@ -67,7 +67,8 @@ export interface ProjectWindowProps {
   activity?: ReactNode;
 }
 
-const views = {
+/** The glyph of each view, and of the document kind a view shows. */
+export const viewGlyphs = {
   runs: List,
   model: GitBranch,
   task: Crosshair,
@@ -450,7 +451,7 @@ export function ProjectWindow({
               const view = command.id;
               const selected = shownViews[focusedSlot] === view;
               return (
-                <WindowButton key={view} command={command} icon={views[view]} controls={selected ? ids[focusedSlot] : undefined}
+                <WindowButton key={view} command={command} icon={viewGlyphs[view]} controls={selected ? ids[focusedSlot] : undefined}
                   pressed={selected} tab={{ id: tabId(view), tabbable: tabView === view }} />
               );
             })}
@@ -497,7 +498,7 @@ export function ProjectWindow({
                     pointerTransition.current = undefined;
                     focusSlot(slot);
                   }}>
-                  <SlotHeader view={view} icon={views[view]} picker={region.picker}
+                  <SlotHeader view={view} icon={viewGlyphs[view]} picker={region.picker}
                     trailing={split ? <WindowButton command={closeCommand(slot)} icon={X} />
                       : <WindowButton command={splitCommand} icon={Columns2} />}>
                     {region.header}

@@ -163,6 +163,19 @@
   outline-offset: calc(var(--card-selected-outset) + 2px);
 }
 
+/* While a reference is being picked, the cards and elements it accepts are outlined and the rest recede. */
+.studio-card[data-pick='allowed'],
+.react-flow__node[data-pick='allowed'] {
+  outline: var(--card-selected-width) dashed var(--card-focus);
+  outline-offset: calc(var(--card-selected-outset) + 2px);
+  cursor: crosshair;
+}
+
+.studio-card[data-pick='refused'],
+.react-flow__node[data-pick='refused'] {
+  opacity: .45;
+}
+
 .studio-card__head {
   border-radius: calc(var(--card-radius) - 1px) calc(var(--card-radius) - 1px) 0 0;
   background: var(--card-head-fill);

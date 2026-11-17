@@ -14,6 +14,7 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
+from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemovedRunsRequest
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
@@ -165,6 +166,15 @@ def prepare_subset_to_rows(
     project_id: ProjectName, body: StudioSubsetToRowsRequest, request: Request, response: Response,
 ) -> StudioSubsetToRowsEdit:
     return _project_response(response, lambda: request.app.state.project_plan.subset_to_rows(project_id, body))
+
+
+@router.post("/{project_id}/authoring/removed-runs")
+def review_removed_runs(
+    project_id: ProjectName, body: StudioRemovedRunsRequest, request: Request, response: Response,
+) -> StudioRemovedRuns:
+    from feedbax.web.services.removed_runs import removed_runs
+
+    return _project_response(response, lambda: removed_runs(request.app.state.project_folders, project_id, body))
 
 
 @router.post("/{project_id}/authoring/trials")

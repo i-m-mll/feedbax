@@ -35,7 +35,7 @@ import {
   accepts, addressKey, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
   holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Component, type Port,
 } from './modelGraph';
-import { selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import { choosePick, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
 import { modelOutline } from './modelOutline';
@@ -150,7 +150,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
 
 export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems }: Props) {
   const selected = useModelSelection(state, model?.id);
-  const pick = useStore(state, (current) => current.pick?.document === model?.id ? current.pick : null);
+  const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
   const cursor = useRef<ModelPosition>();
@@ -448,13 +448,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       if (request.signal.aborted) return;
       const verdicts = new Map(targets.map(({ target, reason }) => [endKey(target), reason]));
       state.setState({ pick: {
-        document: model.id,
-        accepts: (address, candidate) => inGraph(address, graph) && candidate.direction === 'input' &&
-          !(port.taskSignal && candidate.growing) &&
-          verdicts.get(endKey(wireEnd(candidate))) === null,
-        choose: (address) => {
-          if (address.element.kind !== 'port') return;
-          const { end } = address.element;
+        accepts: (target) => target.kind === 'port' && target.document === model.id && inGraph(target.address, graph) && target.port.direction === 'input' &&
+          !(port.taskSignal && target.port.growing) &&
+          verdicts.get(endKey(wireEnd(target.port))) === null,
+        choose: (picked) => {
+          if (picked.kind !== 'port' || picked.address.element.kind !== 'port') return;
+          const { end } = picked.address.element;
           const id = idFor(end);
           const target = portMap.get(id)?.find((item) => item.direction === 'input' && item.end.port === end.port);
           if (target) connect(idFor(port.end), portId(port), id, portId(target));
@@ -619,9 +618,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         problem,
         onPort: (port) => { if (!port.taskSignal && !port.growing) select(at(graph, { kind: 'port', end: port.end })); },
         keyboardConnect,
-        canPick: pick ? (port) => pick.accepts(at(graph, { kind: 'port', end: port.end }), port) : undefined,
+        canPick: pick ? (port) => pick.accepts({ kind: 'port', document: model.id, address: at(graph, { kind: 'port', end: port.end }), port }) : undefined,
         cancelPick: pick ? clear : undefined,
-        pickPort: pick ? (port) => { pick.choose(at(graph, { kind: 'port', end: port.end })); state.setState({ pick: null }); } : undefined,
+        pickPort: pick ? (port) => { choosePick(state, { kind: 'port', document: model.id, address: at(graph, { kind: 'port', end: port.end }), port }); } : undefined,
         portReasons: verdict && new Map(ports.filter((port) => port.direction === 'input').map((port) =>
           [portId(port), verdict.get(endKey(wireEnd(port)))]).filter((entry): entry is [string, string | null] => entry[1] !== undefined)),
         portProblems: new Map(ports.flatMap((port) => {
@@ -729,14 +728,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function armInitial(address: ModelAddress, item: Attachment) {
     if (!model || item.kind !== 'delay') return;
     state.setState({ pick: {
-      document: model.id,
-      accepts: (candidate, port) => {
-        if (!inGraph(candidate, address) || port.direction !== 'output' || port.end.owner !== 'component') return false;
+      accepts: (target) => {
+        if (target.kind !== 'port' || target.document !== model.id) return false;
+        const { port } = target;
+        if (!inGraph(target.address, address) || port.direction !== 'output' || port.end.owner !== 'component') return false;
         const component = interior?.components?.[port.end.component];
         return component?.kind === 'leaf' && component.fields?.stateful !== false &&
           !!registry.get(component.type)?.reset_outputs?.includes(port.end.port);
       },
-      choose: (candidate) => { void updateAttachment(address, { ...item, initial: { kind: 'name', reference: addressKey(candidate) } }); },
+      choose: (target) => {
+        if (target.kind === 'port') void updateAttachment(address, { ...item, initial: { kind: 'name', reference: addressKey(target.address) } });
+      },
     } });
   }
   function labelOfPort(address: ModelAddress) {

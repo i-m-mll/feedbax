@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useRef, useState, useSyncExternalStore } from 'react';
+import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { apiErrorMessage } from '@/api/request';
 import { studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
@@ -8,21 +8,24 @@ import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
-import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { SettingsForm } from '@/components/values/SettingsForm';
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { fromParamSchema } from '@/components/values/adapters/paramSchema';
-import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
+import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
-  AnalysisDocumentSchema, type AnalysisDocument, type JsonPrimitive, type JsonValue, type OperationElement,
+  AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
   type ParamSchema, type PresentationPosition, type StudioProjectFilePatch,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { ManagedDocumentCanvas } from './ManagedDocumentCanvas';
-import { useNamedSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import {
+  choosePick, useNamedSelection, usePick, type ElementSelectionStore,
+} from '@/features/projectWindow/elementSelection';
+import type { PlanStepView } from '@/features/pipeline/planView';
+import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 import { problemReason, type ProblemReveal } from './projectWindowProblems';
@@ -31,10 +34,12 @@ import { SavedFigureResult } from './SavedLightProducts';
 type Source = OperationElement['inputs'][string];
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection,
+  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection, steps,
 }: {
   editor: ProjectEditController;
   selection: ElementSelectionStore;
+  /** The project's steps, whose outputs the step's input roles can be bound to. */
+  steps: readonly PlanStepView[];
   key?: StudioSavedTrainKey;
   projection?: StudioSavedTrainRuns;
   wholeStep: boolean;
@@ -55,10 +60,8 @@ export function useManagedAnalyze({
   liveScope.current = scope;
   const element = useNamedSelection(selection, document, reveal, reveal?.target.element?.kind === 'analysisElement'
     ? reveal.target.element.id : undefined);
-  const [dialog, setDialog] = useState<{ scope: string; mode: 'add' | 'wire'; point?: PresentationPosition }>();
+  const [dialog, setDialog] = useState<{ scope: string; mode: 'add'; point?: PresentationPosition }>();
   const [query, setQuery] = useState('');
-  const [sourceIndex, setSourceIndex] = useState('');
-  const [role, setRole] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ scope: string; message: string }>();
   const inFlight = useRef(false);
@@ -70,8 +73,9 @@ export function useManagedAnalyze({
     staleTime: 30_000,
   });
   const catalog = authoring.data;
-  const canEdit = !!analysis && !!document && !!key && !!catalog && catalog.document === document &&
-    catalog.revision === saved.revision && wholeStep && !pending && !outside && !busy;
+  const canBind = !!step && wholeStep && !pending && !outside && !busy;
+  const canEdit = canBind && !!analysis && !!document && !!catalog && catalog.document === document &&
+    catalog.revision === saved.revision;
   const opened = dialog?.scope === scope ? dialog : undefined;
   const operations = analysis?.operations ?? {};
   const figures = analysis?.views ?? {};
@@ -87,12 +91,18 @@ export function useManagedAnalyze({
   }
   const selectedFigure = selected && figure ? figureDefinition(selected, figure.figure) : undefined;
   const definition = operation && definitions.get(operation.operation);
-  const roles = selectedFigure?.data ?? Object.keys(definition?.inputs ?? {});
-  const sources: { label: string; source: Source; schemas: string[] }[] = [
-    { label: 'states', source: { input: 'states' }, schemas: catalog?.states.schema_ids ?? [] },
-    ...Object.entries(operations).flatMap(([name, value]) => Object.entries(definitions.get(value.operation)?.outputs ?? {})
-      .map(([product, port]) => ({ label: name + '.' + product, source: { element: name, product }, schemas: port.schema_ids }))),
-  ];
+  const declarations = analysis?.inputs ?? {};
+  const roles = selectedFigure ? selectedFigure.data.map((name) => ({ name, kind: 'dataset' as const }))
+    : Object.entries(definition?.inputs ?? {}).map(([name, port]) => ({ name, kind: port.kind ?? 'dataset' }));
+  const outputs = Object.entries(operations).map(([name, value]) => ({
+    element: name, products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
+  }));
+  const selectedInput = selected ? declarations[selected] : undefined;
+  const armed = usePick(selection);
+  const canvasPick = useMemo(() => armed && document ? {
+    accepts: (id: string) => armed.accepts({ kind: 'element', address: { document, element: { kind: 'named', id } } }),
+    choose: (id: string) => { choosePick(selection, { kind: 'element', address: { document, element: { kind: 'named', id } } }); },
+  } : null, [armed, document, selection]);
   const diagnostics = (projection?.window_map?.problems ?? []).filter((problem) => id &&
     problem.variant === key?.variant && problem.step === key?.step && problem.row === key?.row);
   const planned = new Map(projection?.window_map?.analysis_elements?.filter(({ key }) => savedRunId(key) === id)
@@ -102,17 +112,15 @@ export function useManagedAnalyze({
     ? { kind: 'failed', issue: studioRegionIssue('operations', authoring.error), retry: () => { void authoring.refetch(); } }
     : authoring.isLoading ? { kind: 'loading' } : { kind: 'result', missing: [] };
 
-  function open(mode: 'add' | 'wire', point?: PresentationPosition) {
+  function open(mode: 'add', point?: PresentationPosition) {
     if (!canEdit) return;
     setError(undefined);
     setQuery('');
-    setSourceIndex('');
-    setRole(roles.length === 1 ? roles[0] : '');
     setDialog({ scope, mode, point });
   }
 
-  async function perform(work: () => Promise<void>) {
-    if (!canEdit || inFlight.current) return;
+  async function perform(work: () => Promise<void>, allowed = canEdit) {
+    if (!allowed || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     setError(undefined);
@@ -165,22 +173,31 @@ export function useManagedAnalyze({
     if (focusedView === 'figures') addFigure();
     else open('add', cursor.current?.scope === scope ? cursor.current.point : undefined);
   }, { name: focusedView === 'figures' ? 'addFigure' : 'addOperation', enabled: canEdit });
-  const connect = bindStudioCommand('connectPorts', () => open('wire'), { enabled: canEdit && roles.length > 0 });
-  function connectSelected() {
-    const source = sourceIndex === '' ? undefined : sources[Number(sourceIndex)];
-    if (!source || !selected || !role || !key) return;
+  function wire(element: string, role: string, source: Source) {
+    if (!key) return;
     void perform(async () => {
       const review = await readStudioAnalyze(saved.project_id, {
-        revision: saved.revision, key, wire: { element: selected, role, source: source.source },
+        revision: saved.revision, key, wire: { element, role, source },
       });
       if (review.document !== document || review.files?.length !== 1) throw new ProjectEditConflictError();
-      await save(studioName('connectPorts'), review.files);
-      setDialog(undefined);
+      await save(humanizeLabel(role), review.files);
     });
+  }
+  function bind(role: string, binding: InputBinding) {
+    if (!key) return;
+    void perform(async () => {
+      if (liveScope.current !== scope || editor.getSnapshot().saved.revision !== saved.revision) {
+        throw new ProjectEditConflictError();
+      }
+      editor.editFiles(humanizeLabel(role), [{ address: { kind: 'step', id: key.step }, patches: [{
+        op: step?.inputs && role in step.inputs ? 'replace' : 'add', path: authoredPointer(['inputs', role]), value: binding as JsonValue,
+      }] }], { reviewedRevision: saved.revision });
+      await editor.flush();
+    }, canBind);
   }
 
   const items = [
-    { id: 'states', selectionId: 'states', label: 'states' },
+    ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, label: name })),
     ...Object.entries(operations).map(([name, value]) => ({
       id: name, selectionId: name, label: <>{name}<br />{definitions.get(value.operation)?.label ?? value.operation}</>,
       problem: diagnostics.find((item) => item.element === name)?.detail,
@@ -208,6 +225,11 @@ export function useManagedAnalyze({
       : file(['operations', selected, 'params'], { [name]: next })]));
   }
   const inspector = <div className="space-y-2 p-2">
+    {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
+      project={saved.project} steps={steps} picking={selection} onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
+    {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
+      inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
+      onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
     {selectedProblems.map((problem) => <p key={problem.path + problem.detail} role="status">{problemReason(problem)}</p>)}
     {selectedPlan && <p role="status">{studioRunStatus(selectedPlan.status)}
       {selectedPlan.reason && <span className="block text-shell-muted">{selectedPlan.reason}</span>}
@@ -242,9 +264,6 @@ export function useManagedAnalyze({
       {entry.label}
     </Button>)}
     <Button disabled={!canEdit} onClick={addFigure}>{studioName('addFigure')}</Button>
-    <Button {...commandAttributes(connect)} disabled={!connect.enabled} onClick={connect.invoke}>
-      {connect.label}
-    </Button>
   </div>;
   const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => {
     const caption = figureDefinition(name, view.figure)?.caption;
@@ -262,7 +281,7 @@ export function useManagedAnalyze({
     analysis: {
       body: <CanvasStrip viewport={viewport}>{alert}<div className="min-h-0 flex-1">
         <ManagedDocumentCanvas key={scope} {...element} items={items} connections={connections} viewportRef={canvas}
-          positions={document ? saved.presentation?.documents?.[document]?.positions : undefined}
+          positions={document ? saved.presentation?.documents?.[document]?.positions : undefined} pick={canvasPick}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
           rememberPoint={(point) => { cursor.current = point ? { scope, point } : undefined; }} />
       </div></CanvasStrip>,
@@ -272,31 +291,17 @@ export function useManagedAnalyze({
       {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
         history={selectedPlan} name={selected} />}
     </>, drawer, inspector: figure ? inspector : undefined },
-    commands: document && focusedView === 'analysis' ? [addCommand, connect, ...viewport]
-      : document && focusedView === 'figures' ? [addCommand, connect] : [],
-    overlay: opened && <Dialog ariaLabel={studioName(opened.mode === 'add' ? 'addOperation' : 'connectPorts')}
+    commands: document && focusedView === 'analysis' ? [addCommand, ...viewport]
+      : document && focusedView === 'figures' ? [addCommand] : [],
+    overlay: opened && <Dialog ariaLabel={studioName('addOperation')}
       manageFocus panelClassName="grid w-[min(26rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
       {issue && <p role="alert">{issue}</p>}
-      {opened.mode === 'add' ? <>
-        <TextField data-dialog-autofocus aria-label={studioName('operations')} value={query} onValueChange={setQuery} />
-        {catalog?.operations.filter(({ label }) => label.toLowerCase().includes(query.toLowerCase()))
-          .map((entry) => <Button key={entry.key} variant="ghost" align="start" disabled={!canEdit}
-            onClick={() => addOperation(entry.key, opened.point)}>
-            {entry.label}
-          </Button>)}
-      </> : <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); connectSelected(); }}>
-        <label className="grid gap-1">{studioName('sourcePort')}
-          <Select aria-label={studioName('sourcePort')} value={sourceIndex === '' ? null : sourceIndex} onValueChange={setSourceIndex}
-            items={sources.map(({ label }, index) => ({ value: String(index), label }))} />
-        </label>
-        <label className="grid gap-1">{studioName('inputPort')}
-          <Select aria-label={studioName('inputPort')} value={role || null} onValueChange={setRole}
-            items={roles.map((name) => ({ value: name, label: selected + '.' + name }))} />
-        </label>
-        <Button type="submit" className="justify-self-end" disabled={!canEdit || sourceIndex === '' || !role}>
-          {studioName('connectPorts')}
-        </Button>
-      </form>}
+      <TextField data-dialog-autofocus aria-label={studioName('operations')} value={query} onValueChange={setQuery} />
+      {catalog?.operations.filter(({ label }) => label.toLowerCase().includes(query.toLowerCase()))
+        .map((entry) => <Button key={entry.key} variant="ghost" align="start" disabled={!canEdit}
+          onClick={() => addOperation(entry.key, opened.point)}>
+          {entry.label}
+        </Button>)}
     </Dialog>,
   };
 }
