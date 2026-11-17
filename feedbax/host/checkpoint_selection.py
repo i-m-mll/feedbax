@@ -70,14 +70,15 @@ def verify_selected_publication(
 ) -> dict:
     try:
         checkpoint = publication["checkpoint"]
-        pointer = checkpoint["pointer"]
+        from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
+
+        pointer = CheckpointLatestPointer.model_validate(checkpoint["pointer"])
         update = checkpoint["completed_updates"]
         product = publication["checkpoint_product"]
         if (
             publication["key"] != f"checkpoint:{update}"
-            or pointer["run_id"] != attempt
-            or pointer["completed_training_batches"] != update
-            or pointer["completed_coordinate"]["completed_barrier"] != "after_train_batch"
+            or pointer.run_id != attempt
+            or pointer.completed_updates != update
             or checkpoint["checkpoint_root"] != str(PurePosixPath(root) / "checkpoints" / attempt)
             or product["manifest_root"] != root
             or product["producer_job_id"] != attempt
@@ -93,8 +94,8 @@ def verify_selected_publication(
         relative = PurePosixPath("checkpoints") / attempt
         if (
             files.get(str(relative / "binding.json")) != binding_sha256
-            or files.get(str(relative / pointer["manifest_relative_path"]))
-            != pointer["manifest_sha256"]
+            or files.get(str(relative / pointer.manifest_relative_path))
+            != pointer.manifest_sha256
         ):
             raise CompletionFileError("Publication lacks its exact binding or transaction bytes.")
         verify_completion_files(product, checkpoint_model=True)

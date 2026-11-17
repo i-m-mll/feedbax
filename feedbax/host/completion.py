@@ -37,29 +37,34 @@ def train_source_slots(launch: dict) -> frozenset[str] | None:
     payload = launch["payload"]
     if not (payload.get("canonical_request") or {}).get("checkpoint"):
         return None
-    value = payload["spec"]["method_payload"]["payload"].get("checkpoint_initialization")
-    if not isinstance(value, dict):
-        return None
-    from feedbax.contracts.studio_training import StudioTrainContinuation
+    value = payload["spec"].get("checkpoint_initialization")
+    if value == "initialize_from":
+        return frozenset({"model"})
+    from feedbax.contracts.request_specs import TrainContinuation
 
     try:
-        return StudioTrainContinuation.model_validate(value).source_slots
+        policy = TrainContinuation.model_validate(value)
     except ValueError as error:
         raise CompletionFileError("Invalid Train checkpoint carryover policy") from error
+    return frozenset({"model", "extra"} if policy.state == "preserve" else {"model"})
 
 
 def _checkpoint_slot_paths(binding: dict) -> dict[str, Path]:
+    from feedbax.contracts.method_checkpoint import CheckpointLatestPointer, MethodCheckpointManifest, method_checkpoint_extra_path
+    from feedbax.persistence.model_tree import checkpoint_model_object_path
+
     root = Path(binding["manifest_root"])
     checkpoint = binding["checkpoint"]
-    pointer = checkpoint["pointer"]
-    manifest = Path(checkpoint["checkpoint_root"]) / pointer["manifest_relative_path"]
+    pointer = CheckpointLatestPointer.model_validate(checkpoint["pointer"])
+    manifest = Path(checkpoint["checkpoint_root"]) / pointer.manifest_relative_path
     with completion_file(root, manifest.relative_to(root).as_posix()) as (stream, _):
         data = stream.read()
-    if hashlib.sha256(data).hexdigest() != pointer["manifest_sha256"]:
+    if hashlib.sha256(data).hexdigest() != pointer.manifest_sha256:
         raise CompletionFileError("Train checkpoint manifest changed before source verification")
+    decoded = MethodCheckpointManifest.model_validate_json(data)
     return {
-        slot["slot"]: (manifest.parent / slot["relative_path"]).relative_to(root)
-        for slot in strict_json_loads(data)["slots"]
+        "model": (manifest.parent / checkpoint_model_object_path(decoded.model.tree.descriptor)).relative_to(root),
+        "extra": (manifest.parent / method_checkpoint_extra_path(decoded.extra)).relative_to(root),
     }
 
 
@@ -117,7 +122,7 @@ def verify_completion_files(
         selected = train_slots if train_slots is not None else frozenset({"model"})
         ignored = {
             path.as_posix() for name, path in slots.items()
-            if train_slots is not None and name not in selected
+            if name not in selected
         }
         retained = {path.as_posix() for name, path in slots.items() if name in selected}
         model_path = slots.get("model")

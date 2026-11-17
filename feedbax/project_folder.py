@@ -26,6 +26,7 @@ from feedbax._secure_fs import (
 )
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
+from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
@@ -260,13 +261,14 @@ def compile_saved_project(
     operations: OperationRegistry | None = None, components: ComponentRegistry | None = None,
     functions: FunctionRegistry | None = None, python_tasks: PythonTaskRegistry | None = None,
     source_runs: Iterable[RunKey] = (), memo: ProjectPlanMemo | None = None,
+    training_methods: TrainingMethodRegistry | None = None,
 ) -> SettledProjectPlan:
     """Compile a snapshot against the Store of its resolved local or delegated project."""
     readers = replace(readers, terminal_train=terminal_train_reader(store))
     plan = compile_project(
         text.project, source_runs=source_runs, memo=memo,
         operations=operations, components=components, functions=functions,
-        python_tasks=python_tasks, readers=readers,
+        python_tasks=python_tasks, readers=readers, training_methods=training_methods,
     )
     return SettledProjectPlan(
         project_id, text.revision, project_semantic_root(text.project), text.configuration, store, plan, readers,
@@ -667,6 +669,7 @@ class ProjectFolder:
         functions: FunctionRegistry | None = None,
         python_tasks: PythonTaskRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
+        training_methods: TrainingMethodRegistry | None = None,
     ) -> None:
         self.root = root.resolve()
         self._local_folder = local_folder
@@ -674,6 +677,7 @@ class ProjectFolder:
         self.components = components
         self.functions = functions
         self.python_tasks = python_tasks
+        self.training_methods = training_methods
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: ProjectPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
         self._known_locations_lock = Lock()
@@ -841,6 +845,7 @@ class ProjectFolder:
             text, project_id=project_id, store=text.store_path, readers=self._base_readers(location, text),
             source_runs=source_runs, memo=self._plan_memo(project_id),
             operations=self.operations, components=self.components, functions=self.functions, python_tasks=self.python_tasks,
+            training_methods=self.training_methods,
         )
 
     def _base_readers(self, location: ProjectFolderLocation, text: TextProject) -> BaseReaders:

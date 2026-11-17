@@ -72,6 +72,7 @@ def create_app(
             components=app.state.bootstrap_state.bundle.components,
             functions=app.state.bootstrap_state.bundle.expression_functions,
             python_tasks=app.state.bootstrap_state.bundle.python_tasks,
+            training_methods=app.state.bootstrap_state.bundle.training_methods,
         )
         app.state.job_service = JobService(
             HostClient(), app.state.bootstrap_state.bundle, bootstrap_modules=bootstrap_modules,

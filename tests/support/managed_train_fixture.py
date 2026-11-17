@@ -19,7 +19,6 @@ def managed_train_project(*, batches: int = 2, scenario: str = "simple-reaches")
     assert isinstance(step.base, InlineBase)
     payload = step.base.inline
     payload["training_config"]["n_batches"] = batches
-    payload["method_payload"]["payload"]["target_total"] = batches
     trial = payload["trial_documents"]
     names = {trial[field]["document"] for field in ("model", "task", "objective")}
     model = example.documents[trial["model"]["document"]].payload
@@ -77,13 +76,11 @@ def managed_evaluation_step(subject: str) -> dict:
 
 def managed_train_spec(*, batches: int = 2):
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-    from feedbax.plugins.application import new_application_registry_bundle
-    from feedbax.studio.canonical_train import lower_canonical_train
+    from feedbax.contracts.train_settings import normalize_train_method
+    from feedbax.plugins.composition import load_application
 
-    registries = new_application_registry_bundle()
-    spec = lower_canonical_train(
-        DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=batches)),
-        registries.training_programs,
-        registries=registries,
+    registries = load_application().bundle
+    spec, _, _ = normalize_train_method(
+        DocumentTrainingRequestSpec.model_validate(managed_train_payload(batches=batches)), registries.training_methods,
     )
     return spec, registries

@@ -2,53 +2,34 @@
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
 import os
 import re
-import sys
 import time
 import traceback
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentObjectRef
+    from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-    from feedbax.contracts.worker import ProgressCoordinate
-    from feedbax.training.checkpoint_custody import CheckpointWriteResult
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 
-BOOTSTRAP_ENV = "FEEDBAX_HOST_TRAIN_BOOTSTRAP_MODULES"
-_warm_registries: tuple[tuple[str, ...], ApplicationRegistryBundle] | None = None
+_warm_registries: ApplicationRegistryBundle | None = None
 
 
-def _compose_registries(modules: tuple[str, ...]) -> ApplicationRegistryBundle:
-    from feedbax.plugins.composition import compose_application
-
-    return asyncio.run(compose_application(modules=modules)).bundle
-
-
-def prewarm(encoded_modules: str) -> None:
-    """Prepare only the profile's registry, independent of any delivery."""
+def prewarm() -> None:
+    """Discover installed declarations before accepting a delivery."""
     global _warm_registries
 
-    modules = tuple(json.loads(encoded_modules))
-    _warm_registries = modules, _compose_registries(modules)
+    from feedbax.plugins.composition import load_application
 
-
-def _training_registries(modules: tuple[str, ...]) -> ApplicationRegistryBundle:
-    if BOOTSTRAP_ENV not in os.environ:
-        # Saved launches from before profile bootstrap carry the modules only in their payload.
-        return _compose_registries(modules)
-    if _warm_registries is None or _warm_registries[0] != modules:
-        raise ValueError("Train launch bootstrap modules differ from the worker profile.")
-    return _warm_registries[1]
+    _warm_registries = load_application().bundle
 
 
 @dataclass(frozen=True)
@@ -196,7 +177,7 @@ def main(argv: Sequence[str]) -> int:
         if argv:
             events.current_phase = "binding"
             raise ValueError("Studio training accepts its request from the host input document")
-        if "feedbax.training.managed_studio" not in sys.modules:
+        if _warm_registries is None:
             events.phase("importing")
         with ExitStack() as recovery_views:
             result = _run(
@@ -215,286 +196,250 @@ def main(argv: Sequence[str]) -> int:
 def _run(
     events: _Events, *, job_id: str, input_path: Path, stop_file: Path, recovery_views: ExitStack,
 ) -> _Result:
+    from math import isfinite
+
+    import jax.random as jr
+
     from feedbax._atomic import write_bytes_atomic
-    from feedbax.contracts.base import ParentRef, sha256_file
+    from feedbax.contracts.base import ArtifactRef, Provenance, sha256_file, utc_now
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-    from feedbax.contracts.checkpoint_initialization import CheckpointInitializationRequest
-    from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.manifest import (
-        TrainingRunManifest,
-        canonical_manifest_path,
-        load_manifest_bytes,
-        training_run_manifest_id,
-        write_manifest,
+        InheritedTerminalCheckpoint, SpecPayload, TrainingRunCertification, TrainingRunManifest,
+        canonical_manifest_path, load_manifest_bytes, training_run_manifest_id, write_manifest,
     )
+    from feedbax.contracts.method_checkpoint import MethodCheckpointClock, MethodCheckpointIdentity
+    from feedbax.contracts.model_input import CheckpointModelSource
     from feedbax.contracts.strict_json import strict_json_loads
-    from feedbax.contracts.studio_training import (
-        STUDIO_GRAPH_METHOD,
-        PublishedTrainingCheckpoint,
-        StudioGraphMethodPayload,
-    )
-    from feedbax.host.completion import CompletionFileError
+    from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
+    from feedbax.host.completion import CompletionFileError, read_completion_bindings
     from feedbax.job_completion import (
-        attest_checkpoint_publication,
-        training_binding_path,
-        verify_bound_training_completion,
-        verify_training_completion,
-        verify_training_model_product,
+        attest_checkpoint_publication, checkpoint_reference, training_binding_path,
+        verify_bound_training_completion, verify_training_completion, verify_training_model_product,
     )
-    from feedbax.training.metrics import normalize_serialized_metrics
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-    from feedbax.runtime._graph_key_schedule import derive_key
-    from feedbax.studio.canonical_train import (
-        BoundStudioTrainingJobInput,
-        PinnedTrainCheckpoint,
-        read_collected_train_job,
-        resolve_training_request_binding,
-    )
-    from feedbax.training.checkpoint_custody import (
-        CheckpointCustodyError,
-        bind_published_checkpoint_content,
-        materialize_checkpoint_content,
-        open_published_model_slot,
-    )
-    from feedbax.training.executor import execute_managed_training_run
-    from feedbax.training.manifest_preflight import build_training_run_manifest_spec_payloads
-    from feedbax.training.model_checkpoint import (
-        ModelCheckpointError,
-        SemanticModelWriter,
-        effective_model_graph,
-    )
-    from feedbax.training.preparation import ExecutionPreparationResult
-    from feedbax.training.studio_checkpoint_fork import plan_studio_checkpoint_fork
-    from feedbax.training.managed_studio import prepare_resolved_training
-    from feedbax.training.studio_executor import StudioUpdateKernel, studio_training_key
+    from feedbax.persistence.method_checkpoint import bind_method_checkpoint_content, materialize_checkpoint_content
     from feedbax.persistence.model_assets import model_artifact_provider
+    from feedbax.runtime._graph_key_schedule import derive_key, model_initialization_key
+    from feedbax.runtime.model_input import reconstruct_model
+    from feedbax.studio.canonical_train import (
+        BoundStudioTrainingJobInput, PinnedTrainCheckpoint, read_collected_train_job, resolve_training_request_binding,
+    )
+    from feedbax.tasks.document import TaskParameters
+    from feedbax.training.method_checkpoint import read_method_checkpoint, validate_method_extra, write_method_checkpoint
+    from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value, stack_replicas
+    from feedbax.training.model_checkpoint import SemanticModelWriter
 
     events.current_phase = "binding"
-    launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_text()))
-    if launch.spec.method_ref != STUDIO_GRAPH_METHOD:
-        raise ValueError("Studio training jobs require the registered Studio graph method")
-    method = StudioGraphMethodPayload.model_validate(launch.spec.method_payload.payload)
-    method.require_supported_launch(resume=launch.resume is not None or launch.collected_resume is not None)
-    if not launch.manifest_root.is_absolute():
-        raise ValueError("manifest_root must be absolute")
-    manifest_root = launch.manifest_root.resolve()
-    if launch.manifest_root != manifest_root:
+    launch = BoundStudioTrainingJobInput.model_validate(strict_json_loads(input_path.read_bytes()))
+    manifest_root = launch.manifest_root
+    if not manifest_root.is_absolute() or manifest_root != manifest_root.resolve():
         raise ValueError("Canonical Train store must be absolute and canonical")
-    checkpoint_store = cast("ArtifactBlobProvider", ImmutableArtifactBlobProvider(manifest_root))
-    registries = _training_registries(launch.bootstrap_modules)
-    trial = resolve_training_request_binding(launch, registries=registries).trial
-    if launch.checkpoint_input is not None:
-        raise ValueError("The Host delivery owns the resolved Train checkpoint input.")
+    store = ImmutableArtifactBlobProvider(manifest_root)
+    if _warm_registries is None:
+        prewarm()
+    assert _warm_registries is not None
+    registries = _warm_registries
+    trial_binding = resolve_training_request_binding(launch, registries=registries)
+    trial, method, settings = trial_binding.trial, trial_binding.method, trial_binding.settings
+    identity = MethodCheckpointIdentity(
+        request_id=launch.request_id, method_key=method.key, method_revision=method.revision,
+        distribution=method.source.distribution, distribution_version=method.source.version,
+    )
+    spec = launch.spec
+    policy = spec.continuation
+    config = spec.training_config
+    target = spec.target_total
+    seed = spec.seed or 0
+    replica_ids = tuple(map(str, range(config.replicates)))
     checkpoint_root = _attempt_root(manifest_root, job_id)
     binding_path = training_binding_path(manifest_root, job_id)
-    dependencies = []
-    if sidecar := os.environ.get("FEEDBAX_HOST_COMPLETION_BINDINGS"):
-        try:
-            raw_dependencies = Path(sidecar).read_bytes()
-        except OSError as error:
-            raise CompletionFileError("Host completion bindings are unavailable.") from error
-        if sha256(raw_dependencies).hexdigest() != os.environ.get(
-            "FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256"
-        ):
-            raise CompletionFileError("Host completion bindings changed after assignment.")
-        dependencies = strict_json_loads(raw_dependencies)["bindings"]
-    checkpoint_ref = launch.canonical_request.checkpoint
-    stateful = method.continuation
-    source_scope = stateful.source_slots if stateful is not None else "model_only"
-    collected = None
+    if launch.checkpoint_input is not None:
+        raise ValueError("The Host delivery owns the resolved Train checkpoint input.")
+
+    dependencies = (
+        read_completion_bindings()["bindings"] if "FEEDBAX_HOST_COMPLETION_BINDINGS" in os.environ else []
+    )
     resume = launch.resume
+    checkpoint_ref = launch.canonical_request.checkpoint
     if launch.collected_resume is not None:
         if dependencies or launch.collected_resume == job_id:
             raise CompletionFileError("Collected Resume has conflicting recovery authority.")
         events.current_phase = "restoring"
         collected = read_collected_train_job(launch)
         pointer = collected.recovery.pointer
-        updates = pointer.completed_training_batches
-        if updates is None or updates >= method.target_total or pointer.run_id == job_id:
+        updates = pointer.completed_updates
+        if updates is None or updates >= target or pointer.run_id == job_id:
             raise CompletionFileError("Collected Resume requires a checkpoint before the authored target.")
         source = recovery_views.enter_context(materialize_checkpoint_content(
-            collected.recovery.content, checkpoint_store, owner=job_id,
+            collected.recovery.content, store, owner=job_id,
         ))
         resume = PublishedTrainingCheckpoint(checkpoint_root=source, completed_updates=updates, pointer=pointer)
-    else:
-        if resume is None or stateful is None:
-            for dependency in dependencies:
-                verify_bound_training_completion(dependency["completion"], scope=source_scope)
-        if checkpoint_ref is not None:
-            if len(dependencies) != 1:
-                raise CompletionFileError("Train requires one bound predecessor checkpoint.")
-            product = dependencies[0]["completion"]
-            if (
-                product["project_id"] != launch.project_id
-                or product["request_id"] != checkpoint_ref.request_id
-                or product["manifest_root"] != str(manifest_root)
-            ):
-                raise CompletionFileError("Bound Train checkpoint differs from its canonical input.")
-            launch = launch.model_copy(update={"checkpoint_input": PinnedTrainCheckpoint(
-                producer_job_id=product["producer_job_id"],
-                receipt=product["receipt"],
-                checkpoint=PublishedTrainingCheckpoint.model_validate(product["checkpoint"]),
-            )})
-        elif method.checkpoint_initialization is not None:
-            raise ValueError("Checkpoint initialization requires a canonical Train input.")
-    if resume is not None and collected is None:
+    elif checkpoint_ref is not None:
+        if len(dependencies) != 1:
+            raise CompletionFileError("Train requires one bound predecessor checkpoint.")
+        product = dependencies[0]["completion"]
+        if (
+            product["project_id"] != launch.project_id
+            or product["request_id"] != checkpoint_ref.request_id
+            or product["manifest_root"] != str(manifest_root)
+        ):
+            raise CompletionFileError("Bound Train checkpoint differs from its canonical input.")
+        if resume is None:
+            scope = "full" if policy is not None and policy.state == "preserve" else "model_only"
+            verify_bound_training_completion(product, scope=scope)
+        launch = launch.model_copy(update={"checkpoint_input": PinnedTrainCheckpoint(
+            producer_job_id=product["producer_job_id"],
+            receipt=product["receipt"],
+            checkpoint=PublishedTrainingCheckpoint.model_validate(product["checkpoint"]),
+        )})
+    elif dependencies:
+        raise CompletionFileError("Train delivery has an undeclared predecessor.")
+
+    if resume is not None and launch.collected_resume is None:
         events.current_phase = "restoring"
         parent_root = _attempt_root(manifest_root, resume.pointer.run_id)
         if resume.checkpoint_root != parent_root or parent_root == checkpoint_root:
-            raise ValueError("resume source is outside the original attempt's custody")
-        if resume.completed_updates != resume.pointer.completed_training_batches:
-            raise ValueError("resume coordinate disagrees with its checkpoint pointer")
-        parent_binding = BoundStudioTrainingJobInput.model_validate_json(
-            (parent_root / "binding.json").read_bytes()
-        )
+            raise ValueError("Resume source lies outside the original attempt's custody.")
+        parent_binding = BoundStudioTrainingJobInput.model_validate_json((parent_root / "binding.json").read_bytes())
         if launch.model_dump(exclude={"resume"}) != parent_binding.model_dump(exclude={"resume"}):
-            raise ValueError("resume inputs differ from the original attempt's binding")
-    if resume is not None:
-        events.completed_updates = resume.completed_updates
-
-    start_boundary = (
-        resume.completed_updates if collected is not None and resume is not None
-        else stateful.progress.source_completed_batches if stateful and resume is None
-        else 0
-    )
+            raise ValueError("Resume inputs differ from the original attempt's binding.")
 
     events.current_phase = "binding"
     write_bytes_atomic(binding_path, launch.model_dump_json(exclude_none=True).encode(), replace=False)
     binding_sha256 = sha256_file(binding_path)
-    events.append(
-        "binding",
-        {
-            "binding_path": str(binding_path),
-            "binding_sha256": binding_sha256,
-            "resume": resume.model_dump(mode="json") if resume is not None else None,
-        },
-        sync=True,
-    )
+    events.append("binding", {
+        "binding_path": str(binding_path), "binding_sha256": binding_sha256,
+        "resume": resume.model_dump(mode="json") if resume is not None else None,
+    }, sync=True)
+
     manifest_id = training_run_manifest_id(job_id)
     manifest_path = canonical_manifest_path("TrainingRunManifest", manifest_id, root=manifest_root)
+    checkpoints = []
+    latest_metrics = {}
+    history = checkpoint_root / "metrics.jsonl"
+    method_provenance = asdict(method.source) | {"key": method.key, "revision": method.revision}
+    provenance = {"method": method_provenance}
+    if launch.checkpoint_input is not None:
+        provenance["checkpoint_initialization"] = checkpoint_reference(launch.checkpoint_input.checkpoint).model_dump(mode="json")
+    if resume is not None:
+        provenance["recovery"] = checkpoint_reference(resume).model_dump(mode="json")
 
-    def receipt(expected_status: str) -> dict[str, str]:
+    def finish_manifest(status: Literal["completed", "cancelled", "failed"], *, error: dict | None = None) -> dict:
+        kind = "diverged" if error and error["code"] == "numerical_failure" else "crashed" if error else status
+        inherited = None
+        terminal = None
+        if status == "completed" and not checkpoints and resume is not None:
+            terminal = checkpoint_reference(resume)
+            inherited = InheritedTerminalCheckpoint(checkpoint=terminal)
+        committed = [checkpoint_reference(checkpoint) for checkpoint in checkpoints]
+        metrics = []
+        if history.is_file() and history.stat().st_size:
+            metrics = [ArtifactRef(
+                role="training_metrics", logical_name="updates", media_type="application/x-ndjson",
+                sha256=sha256_file(history), size_bytes=history.stat().st_size,
+                uri=history.relative_to(manifest_root).as_posix(),
+                metadata={"replicas": replica_ids},
+            )]
+        write_manifest(TrainingRunManifest(
+            id=manifest_id, job_id=job_id, status=status, completed_batches=events.completed_updates,
+            completed_at=utc_now(), stopped=status != "completed",
+            failure_kind="nan_guard" if kind == "diverged" else None,
+            training_spec=SpecPayload(kind="DocumentTrainingRequestSpec", inline=spec.model_dump(mode="json")),
+            checkpoint_custody=committed, artifacts=metrics,
+            summary_metrics=latest_metrics, metadata={"error": error} if error else {},
+            provenance=Provenance(metadata=provenance),
+            inherited_terminal_checkpoint=inherited,
+            terminal_certification=TrainingRunCertification(
+                schema_id="feedbax.manifest.training_run_certification",
+                schema_version="feedbax.manifest.training_run_certification.v1",
+                termination_reason=kind, certified_artifacts=committed if terminal is None else [terminal],
+            ),
+        ), root=manifest_root)
         raw = manifest_path.read_bytes()
         manifest = load_manifest_bytes(raw)
-        if (
-            not isinstance(manifest, TrainingRunManifest)
-            or manifest.id != manifest_id
-            or manifest.status != expected_status
-        ):
-            raise ValueError("published training receipt has the wrong identity or status")
+        if not isinstance(manifest, TrainingRunManifest) or manifest.id != manifest_id or manifest.status != status:
+            raise ValueError("Published Train receipt has the wrong identity or status.")
         return {"manifest_id": manifest_id, "manifest_sha256": sha256(raw).hexdigest()}
 
     try:
-        graph = GraphSpec.model_validate(launch.spec.graph.inline)
+        producer = resume or (launch.checkpoint_input.checkpoint if launch.checkpoint_input is not None else None)
+        restored = None
+        if producer is not None:
+            events.phase("restoring")
+            restored = read_method_checkpoint(producer.checkpoint_root, producer.pointer, components=registries.components)
+            if restored.clock.completed_updates != producer.completed_updates:
+                raise ValueError("Checkpoint coordinate differs from its pinned binding.")
+            if restored.model.replica_ids != replica_ids:
+                raise ValueError("/training_config/replicates: checkpoint replica IDs differ from the target.")
+            if resume is not None and restored.identity != identity:
+                raise ValueError("Resume requires the exact admitted method, revision and installed distribution.")
+        completed = segment_start = schedule_origin = 0
         if resume is not None:
-            events.current_phase = "restoring"
-        source_model = (
-            open_published_model_slot(resume.checkpoint_root, resume.pointer)
-            if resume is not None else None
-        )
-        model_assets = (
-            source_model.provider if source_model is not None else model_artifact_provider(graph)
-        )
-        semantic_model = SemanticModelWriter.for_graph(graph, model_assets)
-        if semantic_model is None:
-            raise ModelCheckpointError("/graph", "Managed Train requires a typed model checkpoint owner")
+            completed = restored.clock.completed_updates
+            segment_start = restored.clock.segment_start
+            schedule_origin = restored.clock.schedule_origin
+            seed = restored.clock.seed
+        elif policy is not None:
+            clock = restored.clock
+            if clock.completed_updates != policy.source_completed_updates:
+                raise ValueError("/checkpoint_initialization/source_completed_updates: bound predecessor differs.")
+            if policy.state == "preserve" and (
+                restored.identity.method_key, restored.identity.method_revision, restored.identity.distribution,
+            ) != (identity.method_key, identity.method_revision, identity.distribution):
+                raise ValueError("/checkpoint_initialization/state: carrying state requires the same method and revision.")
+            completed = segment_start = clock.completed_updates
+            schedule_origin = clock.schedule_origin if policy.schedule == "continue" else completed
+            seed = clock.seed if policy.rng == "carry" else seed
+
         events.phase("building")
+        graph = trial.graph.graph
+        model_assets = restored.model.provider if restored is not None else model_artifact_provider(graph)
+        paired = []
+        for replica_id in replica_ids:
+            result = trial.realize(
+                initialization_key=model_initialization_key(spec.seed or 0, replica_id),
+                artifact_provider=model_assets,
+            )
+            if isinstance(result, tuple):
+                problem = result[0]
+                raise ValueError("/trial_documents/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
+            paired.append(result)
+        templates = tuple(result.executable.graph for result in paired)
+        models = templates
+        if restored is not None:
+            model_source = CheckpointModelSource(tree=restored.model.tree, encoding=restored.model.encoding)
+            reconstructed = reconstruct_model(
+                model_source, registry=registries, artifacts=model_assets, template=paired[0].executable,
+            )
+            if isinstance(reconstructed, tuple):
+                problem = reconstructed[0]
+                raise ValueError("/inputs/checkpoint/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
+            models = reconstructed.graphs
+        writer = SemanticModelWriter.for_graph(graph, model_assets, registries.components)
+        if writer is None:
+            raise ValueError("Managed Train requires a graph with semantic checkpoint model owners.")
+        execution, objective = paired[0].execution, paired[0].objective
+        assert objective is not None
+        state = initialize_method(method, settings, models=models, seed=spec.seed or 0, replica_ids=replica_ids)
+        if resume is not None or (policy is not None and policy.state == "preserve"):
+            state = state._replace(model=state.model if resume is None else stack_replicas(models),
+                                   extra=restored.restore_extra(state.extra))
+
+        validate_method_extra(state.extra, replicas=len(replica_ids))
         events.phase("compiling")
-        preparation = prepare_resolved_training(launch.spec, trial, model_assets=model_assets)
-        if not isinstance(preparation, ExecutionPreparationResult):
-            raise ValueError("Studio graph training requires scalar execution preparation")
-        if source_model is not None and source_model.graph != effective_model_graph(
-            graph, preparation.initial_slots["model"],
-        ):
-            events.current_phase = "restoring"
-            raise ModelCheckpointError("/graph", "Exact Resume graph differs from the bound model graph")
-        kernel = preparation.kernel_context["studio_graph_update"]
-        if not isinstance(kernel, StudioUpdateKernel):
-            raise ValueError("Studio graph training requires the registered numerical update")
-        spec = launch.spec
-        target = method.target_total
-        snapshot_interval = spec.training_config.snapshot_interval
-        if snapshot_interval <= 0:
-            raise ValueError("snapshot_interval must be positive")
-        observation_key = studio_training_key(method.seed, "observation")
-        last_progress = float("-inf")
-        interval_start = start_boundary or events.completed_updates
-        reductions: _MetricReductions = {}
-        pending: tuple[dict[str, Any], float] | None = None
-        last_frame = -1
-        latest_model: Any = None
-        stop_requested = False
-        checkpoints: dict[str, PublishedTrainingCheckpoint] = {}
-
-        def publish_progress() -> None:
-            nonlocal pending, interval_start, last_progress
-            if pending is None:
-                return
-            metrics, observed_at = pending
-            events.append(
-                "progress",
-                {
-                    "completed_updates": events.completed_updates,
-                    "total_updates": target,
-                    "elapsed_seconds": observed_at,
-                    "metrics": metrics,
-                    "metric_interval": {
-                        "start_exclusive": interval_start,
-                        "end_inclusive": events.completed_updates,
-                        "metrics": _serialize_reductions(reductions),
-                    },
-                },
-            )
-            pending = None
-            interval_start = events.completed_updates
-            reductions.clear()
-            last_progress = observed_at
-
-        def publish_frame() -> None:
-            nonlocal last_frame
-            completed = events.completed_updates
-            if latest_model is not None and completed != last_frame:
-                frame_key = derive_key(observation_key, "trajectory", index=completed)
-                events.append(
-                    "frame",
-                    {
-                        "completed_updates": completed,
-                        "trajectory": kernel.trajectory_snapshot(latest_model, frame_key),
-                    },
-                )
-                last_frame = completed
-
-        def on_start(completed: int) -> None:
-            if completed != (start_boundary or events.completed_updates):
-                raise ValueError("restored state disagrees with the bound checkpoint coordinate")
-            events.completed_updates = completed
+        loop = TrainingLoop(
+            method, settings, execution=execution, objective=objective, batch_size=config.batch_size,
+            seed=seed, replica_ids=replica_ids, start_step=schedule_origin,
+        )
+        observation_key = derive_key(jr.PRNGKey(seed), "training-observation")
+        start_boundary = interval_start = completed
+        events.completed_updates = completed
+        if resume is not None and launch.collected_resume is None:
             events.checkpoint = resume
-            events.phase("running")
-            events.append(
-                "progress",
-                {
-                    "completed_updates": completed,
-                    "total_updates": target,
-                    "elapsed_seconds": events.elapsed(),
-                    "metrics": {},
-                },
-            )
-
-        def on_update(
-            coordinate: ProgressCoordinate, completed: int, slots: Mapping[str, Any]
-        ) -> None:
-            nonlocal pending, latest_model
-            events.completed_updates = completed
-            latest_model = slots["model"]
-            now = events.elapsed()
-            _, metrics = normalize_serialized_metrics(coordinate, coordinate.metrics, {})
-            _accumulate_metrics(reductions, metrics)
-            pending = metrics, now
-            if now - last_progress >= 0.4:
-                publish_progress()
-            if completed % snapshot_interval == 0:
-                publish_frame()
-
+        events.phase("running")
+        events.append("progress", {
+            "completed_updates": completed, "total_updates": target, "elapsed_seconds": events.elapsed(), "metrics": {},
+        })
         evaluate_checkpoint = None
         if "FEEDBAX_HOST_LIVE_EVALUATE" in os.environ:
             from feedbax.training.live_evaluate import live_evaluation_callback
@@ -504,175 +449,136 @@ def _run(
             except (OSError, ValueError) as error:
                 events.append("live_evaluate_error", _error(error, "live_evaluate"), sync=True)
 
-        def on_checkpoint(write: CheckpointWriteResult) -> None:
-            completed = write.latest_pointer.completed_training_batches
-            if completed is None:
-                raise ValueError("published checkpoint does not carry its completed-update count")
+        reduction_start = interval_start
+        reductions: _MetricReductions = {}
+        last_progress = float("-inf")
+        last_frame = -1
+        pending = False
+
+        def publish_progress() -> None:
+            nonlocal pending, last_progress, reduction_start
+            if pending:
+                last_progress = events.elapsed()
+                events.append("progress", {
+                    "completed_updates": completed, "total_updates": target,
+                    "elapsed_seconds": last_progress, "metrics": latest_metrics,
+                    "metric_interval": {
+                        "start_exclusive": reduction_start, "end_inclusive": completed,
+                        "metrics": _serialize_reductions(reductions),
+                    },
+                })
+                pending = False
+                reductions.clear()
+                reduction_start = completed
+
+        def publish_checkpoint(*, final: bool) -> None:
+            write = write_method_checkpoint(
+                checkpoint_root, run_id=job_id, identity=identity,
+                clock=MethodCheckpointClock(completed_updates=completed, segment_start=segment_start,
+                                            schedule_origin=schedule_origin, seed=seed),
+                state=state, model_writer=writer, model_templates=templates, replica_ids=replica_ids, final=final,
+            )
             checkpoint = PublishedTrainingCheckpoint(
-                checkpoint_root=write.root,
-                completed_updates=completed,
-                pointer=write.latest_pointer,
+                checkpoint_root=write.root, completed_updates=completed, pointer=write.latest_pointer,
             )
             publication = {
-                "key": f"checkpoint:{completed}",
-                "checkpoint": checkpoint.model_dump(mode="json"),
+                "key": f"checkpoint:{completed}", "checkpoint": checkpoint.model_dump(mode="json"),
                 "elapsed_seconds": events.elapsed(),
+                "checkpoint_product": attest_checkpoint_publication(
+                    launch=launch, binding_sha256=binding_sha256, checkpoint=checkpoint,
+                ),
             }
-            if checkpoint.pointer.completed_coordinate.completed_barrier == "after_train_batch":
-                try:
-                    publication["checkpoint_product"] = attest_checkpoint_publication(
-                        launch=launch, binding_sha256=binding_sha256, checkpoint=checkpoint, write=write,
-                    )
-                except (ValueError, OSError) as exc:
-                    publication["checkpoint_product_error"] = str(exc)
             events.append("publication", publication, sync=True)
             events.checkpoint = checkpoint
-            checkpoints[checkpoint.pointer.transaction_id] = checkpoint
-            if evaluate_checkpoint is not None and "checkpoint_product" in publication and latest_model is not None:
-                try:
-                    evaluate_checkpoint(checkpoint, latest_model)
-                except OSError as error:
-                    print(f"Could not publish live Evaluate point: {error}", file=sys.stderr)
+            checkpoints.append(checkpoint)
+            if evaluate_checkpoint is not None:
+                evaluate_checkpoint(checkpoint, replica_value(state.model, 0))
 
-        def stop_before_update() -> bool:
-            nonlocal stop_requested
-            stop_requested = stop_requested or stop_file.exists()
-            return stop_requested and events.completed_updates > start_boundary
+        def publish_frame() -> None:
+            nonlocal last_frame
+            if completed == last_frame or completed == start_boundary:
+                return
+            frame_key = derive_key(observation_key, "trajectory", index=completed)
+            trial_sample = execution.task.ahead(TaskParameters(), frame_key, frame_key)
+            retained, _ = execution.rollout(replica_value(state.model, 0), trial_sample, frame_key)
+            events.append("frame", {"completed_updates": completed, "trajectory": {
+                "n_steps": execution.task.n_steps, "outputs": {name: value.tolist() for name, value in retained.items()},
+            }})
+            last_frame = completed
 
-        def finalize() -> None:
-            events.phase("finalizing")
-            publish_progress()
-            publish_frame()
+        def metric_value(value):
+            if isinstance(value, list):
+                return [metric_value(item) for item in value]
+            return None if type(value) is float and not isfinite(value) else value
 
-        initialization = None
-        fork_plan = None
-        fork_bindings = None
-        source_content = None
-        provider = None
-        source_root = resume.checkpoint_root if resume is not None else None
-        if resume is not None or launch.checkpoint_input is not None:
-            events.phase("restoring")
-        if resume is None and launch.checkpoint_input is not None:
-            checkpoint = launch.checkpoint_input.checkpoint
-            source_root = checkpoint.checkpoint_root
-            provider = checkpoint_store
-            source, source_content = bind_published_checkpoint_content(
-                source_root, checkpoint.pointer, provider, scope=source_scope,
-            )
-            if stateful is None:
-                initialization = CheckpointInitializationRequest(mode="initialize_from", source=source)
-            else:
-                if semantic_model is None:
-                    raise ModelCheckpointError("/graph", "Stateful Train requires a typed model")
-                fork_plan, fork_bindings = plan_studio_checkpoint_fork(
-                    source_root=source_root,
-                    pointer=checkpoint.pointer,
-                    source=source,
-                    target_root=checkpoint_root,
-                    job_id=job_id,
-                    spec=spec,
-                    method=method,
-                    preparation=preparation,
-                    registry=registries.training_programs,
-                    writer=semantic_model,
-                )
-        result = execute_managed_training_run(
-            spec,
-            run_id=job_id,
-            preparation=preparation,
-            manifest_root=manifest_root,
-            checkpoint_root=checkpoint_root,
-            checkpoint_source_root=source_root,
-            checkpoint_source_pointer=resume.pointer if resume is not None else None,
-            checkpoint_initialization_request=initialization,
-            checkpoint_fork_plan=fork_plan,
-            checkpoint_fork_plan_bindings=fork_bindings,
-            checkpoint_fork_target_id="successor" if fork_plan is not None else None,
-            checkpoint_content_provider=provider,
-            checkpoint_source_content_binding=source_content,
-            semantic_model=semantic_model,
-            resume=resume is not None,
-            registry=registries.training_programs,
-            stop_before_update=stop_before_update,
-            start_callback=on_start,
-            committed_update_callback=on_update,
-            checkpoint_published=on_checkpoint,
-            before_finalize=finalize,
-            retain_history=False,
-            execution_started_at_monotonic=events.started,
-            execution_start_semantics="host_worker_entry",
-        )
-        if result.status == "completed" and result.end_completed_batches == target:
-            terminal_receipt = receipt("completed")
-            completion = verify_training_completion(
-                producer_job_id=job_id, launch=launch, binding_sha256=binding_sha256,
-                receipt=terminal_receipt, checkpoint=events.checkpoint,
-            )
-            product, _ = verify_training_model_product(completion)
-            model_product = product.model_dump(mode="json")
-            return _Result(
-                "succeeded", receipt=terminal_receipt, completion=completion, model_product=model_product,
-            )
-        if result.status == "cancelled" and stop_requested and events.checkpoint is not None:
-            terminal = events.checkpoint
-            checkpoints[terminal.pointer.transaction_id] = terminal
-            custody = []
-            stopped_receipt = receipt("cancelled")
+        def metrics_at(metrics, index):
+            if isinstance(metrics, Mapping):
+                return {name: metrics_at(value, index) for name, value in metrics.items()}
+            value = metrics[index, 0] if config.replicates == 1 else metrics[index]
+            return metric_value(value.tolist())
+
+        planned = iter(sorted({step for step in launch.checkpoint_catalog if completed < step < target}))
+        next_requested = next(planned, target)
+        rejected = False
+        stopping = False
+        with history.open("x", encoding="utf-8") as stream:
+            while completed < target:
+                local = completed - segment_start
+                next_interval = completed + config.snapshot_interval - local % config.snapshot_interval
+                boundary = min(next_interval, next_requested, target)
+                before = completed
+                batch = loop.run_block(state, completed=completed, count=min(16, boundary - completed))
+                state, completed, rejected = batch.state, batch.completed, batch.rejected
+                events.completed_updates = completed
+                for offset in range(completed - before):
+                    latest_metrics = metrics_at(batch.metrics, offset)
+                    _accumulate_metrics(reductions, latest_metrics)
+                    stream.write(json.dumps({"update": before + offset + 1, "metrics": latest_metrics}, allow_nan=False) + "\n")
+                    pending = True
+                if pending and events.elapsed() - last_progress >= 0.4:
+                    publish_progress()
+                stopping = completed < target and stop_file.exists()
+                if completed > before and (completed == boundary or stopping or rejected):
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    publish_checkpoint(final=completed == target or stopping or rejected)
+                    publish_frame()
+                if rejected or stopping:
+                    break
+                if completed == next_requested:
+                    next_requested = next(planned, target)
+
+        events.phase("finalizing")
+        publish_progress()
+        if rejected:
+            raise FloatingPointError("A training update produced non-finite state and was not committed.")
+        if stopping:
+            stopped_receipt = finish_manifest("cancelled")
             try:
-                for checkpoint in checkpoints.values():
-                    pointer = checkpoint.pointer
-                    if collected is not None and pointer == collected.recovery.pointer:
-                        content = collected.recovery.content
-                    else:
-                        _, content = bind_published_checkpoint_content(checkpoint.checkpoint_root, pointer, checkpoint_store)
-                    custody.append({
-                        "pointer": pointer.model_dump(mode="json"), "content": content.model_dump(mode="json"),
-                    })
-                staged = checkpoint_store.store_object(canonical_json_v2_bytes(custody))
-            except (OSError, ValueError) as exc:
+                custody = [{
+                    "pointer": checkpoint.pointer.model_dump(mode="json"),
+                    "content": bind_method_checkpoint_content(checkpoint.checkpoint_root, checkpoint.pointer, store).model_dump(mode="json"),
+                } for checkpoint in checkpoints]
+                staged = store.store_object(canonical_json_v2_bytes(custody))
+            except (OSError, ValueError) as error:
                 return _Result("stopped", receipt=stopped_receipt, store_publication_error={
-                    "code": "publication_failed", "message": str(exc),
+                    "code": "publication_failed", "message": str(error),
                 })
             return _Result("stopped", receipt=stopped_receipt, stopped_checkpoints=staged)
-        if result.status == "failed" and result.manifest.failure_kind == "nan_guard":
-            raise FloatingPointError(result.manifest.stop_reason or "non-finite training update")
-        raise RuntimeError(f"unexpected training outcome {result.status!r}")
+
+        receipt = finish_manifest("completed")
+        completion = verify_training_completion(
+            producer_job_id=job_id, launch=launch, binding_sha256=binding_sha256,
+            receipt=receipt, checkpoint=events.checkpoint,
+        )
+        product, _ = verify_training_model_product(completion)
+        return _Result("succeeded", receipt=receipt, completion=completion, model_product=product.model_dump(mode="json"))
     except Exception as exc:
         traceback.print_exc()
         error = _error(exc, events.current_phase)
-        if isinstance(exc, CheckpointCustodyError) and events.current_phase != "restoring":
-            error["code"] = "publication_failed"
         try:
-            if not manifest_path.exists():
-                payloads = build_training_run_manifest_spec_payloads(launch.spec)
-                checkpoint = events.checkpoint
-                write_manifest(
-                    TrainingRunManifest(
-                        id=manifest_id,
-                        job_id=job_id,
-                        status="failed",
-                        completed_batches=events.completed_updates,
-                        training_spec=payloads.training_spec,
-                        graph_spec=payloads.graph_spec,
-                        checkpoint_custody=(
-                            [
-                                ParentRef(
-                                    kind="TrainingCheckpointTransactionManifest",
-                                    id=checkpoint.pointer.transaction_id,
-                                    uri=checkpoint.pointer.manifest_relative_path,
-                                    role="training_checkpoint_custody",
-                                    metadata={"manifest_sha256": checkpoint.pointer.manifest_sha256},
-                                )
-                            ]
-                            if checkpoint is not None and checkpoint.pointer.run_id == job_id
-                            else []
-                        ),
-                        metadata={"error": error},
-                    ),
-                    root=manifest_root,
-                )
-            reference = receipt("failed")
+            receipt = finish_manifest("failed", error=error) if not manifest_path.exists() else None
         except Exception:
             traceback.print_exc()
-            reference = None
-        return _Result("failed", receipt=reference, error=error)
+            receipt = None
+        return _Result("failed", receipt=receipt, error=error)

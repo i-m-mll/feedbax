@@ -32,7 +32,6 @@ from feedbax.contracts.request_refs import (
     Sha256,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.studio_training import STUDIO_GRAPH_METHOD, StudioGraphMethodPayload
 
 
 INDEX_REF = "proof/effective-successes-v1"
@@ -338,21 +337,18 @@ def select_bound_product(
     """Project the selected occurrence according to the consuming request."""
     product = select_success_product(reference, receipt)
     spec = request.spec
-    if (
-        reference.role != "checkpoint"
-        or not isinstance(spec, DocumentTrainingRequestSpec)
-        or spec.method_ref != STUDIO_GRAPH_METHOD
-    ):
+    if reference.role != "checkpoint" or not isinstance(spec, DocumentTrainingRequestSpec):
         return product, None
-    if not isinstance(spec.method_payload.payload.get("checkpoint_initialization"), dict):
-        occurrence = receipt.continuation
-        return product, occurrence.provenance if occurrence is not None and product.name == "model" else None
-    policy = StudioGraphMethodPayload.model_validate(spec.method_payload.payload).continuation
-    assert policy is not None
     occurrence = receipt.continuation
     if occurrence is None or product.name != "model":
-        raise ValueError("Selected checkpoint has no typed continuation occurrence")
-    if occurrence.clock.completed_batches != policy.progress.source_completed_batches:
+        raise ValueError("Selected Train checkpoint has no authenticated model occurrence")
+    if (policy := spec.continuation) is None:
+        return product, occurrence.provenance
+    if occurrence.clock.completed_updates != policy.source_completed_updates:
         raise ValueError("Selected checkpoint differs from the authored continuation boundary")
+    if policy.state == "preserve" and (
+        occurrence.state.method_key, occurrence.state.method_revision,
+    ) != (spec.method, spec.method_revision):
+        raise ValueError("Carrying training state requires the same method and revision")
     encoding = occurrence.project(SemanticModelEncoding.model_validate(product.descriptor), policy)
     return product.model_copy(update={"descriptor": encoding.model_dump(mode="json")}), occurrence.provenance

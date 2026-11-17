@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from collections import Counter
@@ -66,7 +65,7 @@ from feedbax.contracts.project_plan import (
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.request_refs import BatchSetMember, BestCandidate, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.checkpoint_selection import is_checkpoint_producer
@@ -79,7 +78,6 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.studio.canonical_evaluate import ROLLOUT_JAX_BACKEND, ROLLOUT_JAX_ENABLE_X64
-from feedbax.training_host_worker import BOOTSTRAP_ENV
 from feedbax.studio.canonical_train import (
     BoundStudioTrainingJobInput,
     CanonicalTrainRequestBinding,
@@ -380,11 +378,10 @@ class JobService(PlanJobReader):
                 if key in os.environ
             },
             cwd=str(Path.cwd()),
-            preload=("jax", "feedbax.training.managed_studio"),
+            preload=("jax",),
         )
         self._training_worker = replace(
             base_worker,
-            env=base_worker.env | {BOOTSTRAP_ENV: json.dumps(bootstrap_modules, separators=(",", ":"))},
             warm_entrypoint="feedbax.training_host_worker:main",
             preload=(*base_worker.preload, "feedbax.training.host_prewarm"),
         )
@@ -557,7 +554,6 @@ class JobService(PlanJobReader):
                         run.request_id,
                         current.plan.requests[run.request_id],
                         current.plan.documents,
-                        self.registries.training_programs,
                         store, registries=self.registries,
                     )
                 except (ValueError, KeyError) as error:
@@ -825,11 +821,11 @@ class JobService(PlanJobReader):
         self,
         project: str,
         request_id: str,
-        spec: TrainingRunSpec,
+        spec: DocumentTrainingRequestSpec,
         data: dict[str, Any],
         root: Path,
         *,
-        canonical_request: CanonicalTrainRequestBinding | None = None,
+        canonical_request: CanonicalTrainRequestBinding,
         checkpoint_catalog: tuple[int, ...] = (),
     ) -> AdmissionItem:
         payload = BoundStudioTrainingJobInput(
@@ -837,7 +833,6 @@ class JobService(PlanJobReader):
             project_id=project,
             request_id=request_id,
             manifest_root=root,
-            bootstrap_modules=self.bootstrap_modules,
             canonical_request=canonical_request,
             checkpoint_catalog=checkpoint_catalog,
         ).model_dump(mode="json", exclude_none=True)
@@ -1253,7 +1248,7 @@ class JobService(PlanJobReader):
         spec, binding = bind_canonical_train(
             request_id, destination.get_object(request.object),
             {ref.sha256: destination.get_object(ref) for ref in request.documents},
-            self.registries.training_programs, destination, registries=self.registries,
+            destination, registries=self.registries,
         )
         item = self._training_item(
             project, request_id, spec,
@@ -1724,7 +1719,7 @@ def _collected_train_checkpoint_source(view: SuccessView, result: Success) -> St
             return None
         return StudioTrainCheckpointSource(
             job_id=source.attempt, request_id=source.request.id,
-            completed_updates=source.continuation.clock.completed_batches,
+            completed_updates=source.continuation.clock.completed_updates,
         )
     except (OSError, TypeError, ValueError, KeyError):
         return None
