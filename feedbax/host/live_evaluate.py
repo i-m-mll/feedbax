@@ -108,13 +108,12 @@ def authenticate_point(
         if point.result.member.coordinate != update:
             raise CompletionFileError("Live Evaluate product differs from its update.")
         from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-        from feedbax.persistence.content_retention import require_active_root
+        from feedbax.persistence.live_evaluate import read_live_evaluation_evidence
 
-        store = ImmutableArtifactBlobProvider(Path(root))
-        ref = point.result.states.object_ref
-        custody = require_active_root(store, point.root_id)
-        if len(custody.targets) != 1 or custody.targets[0].object != ref:
-            raise CompletionFileError("Live Evaluate point lacks its exact durable object.")
+        try:
+            read_live_evaluation_evidence(ImmutableArtifactBlobProvider(Path(root)), point)
+        except (OSError, ValueError) as error:
+            raise CompletionFileError(str(error)) from error
     return point, publication["cursor"]
 
 
