@@ -2,20 +2,19 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from feedbax.component_registry import ComponentPack
 from feedbax.contracts.component import DynamicPortPolicy
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
+from feedbax.plugins.declarations import DistributionSource
 
 
 def test_normalization_preserves_revision() -> None:
     graph = GraphSpec(
         nodes={
             "channel": ComponentSpec(
-                type="FeedbackChannel",
-                params={"input_key": "feedback"},
+                type="feedbax.Channel",
                 revision=1,
                 input_ports=["input"],
                 output_ports=["output"],
@@ -28,7 +27,7 @@ def test_normalization_preserves_revision() -> None:
     normalized = normalize_graph_for_studio_authoring(graph)
 
     channel = normalized.nodes["channel"]
-    assert channel.type == "FeedbackChannel"
+    assert channel.type == "feedbax.Channel"
     assert channel.revision == 1
     assert normalized.input_ports == ["target"]
     assert normalized.input_bindings == {"target": ("channel", "input")}
@@ -38,7 +37,7 @@ def test_normalization_preserves_nested_revision() -> None:
     graph = GraphSpec(
         nodes={
             "outer": ComponentSpec(
-                type="PenzaiSubgraph",
+                type="feedbax.Subgraph",
                 params={},
                 revision=1,
             )
@@ -47,8 +46,7 @@ def test_normalization_preserves_nested_revision() -> None:
             "outer": GraphSpec(
                 nodes={
                     "channel": ComponentSpec(
-                        type="FeedbackChannel",
-                        params={"input_key": "feedback"},
+                        type="feedbax.Channel",
                         revision=1,
                     )
                 }
@@ -58,21 +56,17 @@ def test_normalization_preserves_nested_revision() -> None:
 
     normalized = normalize_graph_for_studio_authoring(graph)
 
-    assert normalized.nodes["outer"].type == "PenzaiSubgraph"
+    assert normalized.nodes["outer"].type == "feedbax.Subgraph"
     assert normalized.nodes["outer"].revision == 1
     nested_channel = normalized.subgraphs["outer"].nodes["channel"]
-    assert nested_channel.type == "FeedbackChannel"
+    assert nested_channel.type == "feedbax.Channel"
     assert nested_channel.revision == 1
 
 
 def test_normalization_materializes_external_dynamic_ports_from_explicit_registry() -> None:
-    from types import ModuleType
-
     from feedbax.contracts.component import PortType
     from feedbax.contracts.portable import Ports
     from feedbax.runtime.graph import Component
-
-    module = ModuleType("test_normalization_owners")
 
     class VariableOutputs(Component):
         sizes: list[int]
@@ -92,10 +86,9 @@ def test_normalization_materializes_external_dynamic_ports_from_explicit_registr
         def __call__(self, inputs, state, *, key):
             return {}, state
 
-    VariableOutputs.__module__ = module.__name__
-    module.VariableOutputs = VariableOutputs
-    registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="example", modules=(module,)))
+    registry = ComponentRegistry(
+        [(VariableOutputs, DistributionSource("example", "example-plugin", "1.0"))]
+    )
     graph = GraphSpec(
         nodes={
             "external": ComponentSpec(
