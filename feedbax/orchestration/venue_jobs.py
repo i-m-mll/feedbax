@@ -38,7 +38,9 @@ from feedbax.orchestration.session_jobs import Delegation, admit_saved_delegatio
 from feedbax.persistence.ssh_store import RemoteStore, SSHStoreConnection
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.plugins.composition import load_application
-from feedbax.project_folder import ProjectFolderLocation, SettledProjectPlan, _folder_lock, compile_saved_project
+from feedbax.project_folder import (
+    ProjectFolderLocation, SavedPlanMemo, SettledProjectPlan, _folder_lock, compile_saved_project,
+)
 
 
 _PROJECT_NAME = TypeAdapter(ProjectName)
@@ -144,6 +146,7 @@ class _DelegatedProjectPlans:
     location: ProjectFolderLocation
     store: Path
     bundle: ApplicationRegistryBundle
+    memo: SavedPlanMemo = field(default_factory=SavedPlanMemo, repr=False, compare=False)
 
     @contextmanager
     def _review(self, project_id: str, *, write: bool) -> Iterator[SettledProjectPlan]:
@@ -159,7 +162,7 @@ class _DelegatedProjectPlans:
                 operations=self.bundle.operations, components=self.bundle.components,
                 functions=self.bundle.expression_functions, python_tasks=self.bundle.python_tasks,
                 training_methods=self.bundle.training_methods,
-                figure_templates=self.bundle.figure_templates,
+                figure_templates=self.bundle.figure_templates, memo=self.memo,
             )
 
     def read_plan(self, project_id: str, *, revision: str | None) -> SettledProjectPlan:
