@@ -1,6 +1,7 @@
 """Plan and shared graph compilation for a model document with nested owners."""
 
 from copy import deepcopy
+from unittest.mock import Mock
 
 import jax
 import numpy as np
@@ -15,6 +16,7 @@ from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_tri
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
+from feedbax.contracts import request_identity
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
@@ -564,14 +566,28 @@ def test_generated_delay_and_input_relay_keep_the_authored_source_addresses():
     )
 
 
-def test_nested_evaluate_variation_uses_scoped_wire_ids():
+def test_nested_evaluate_variation_uses_scoped_wire_ids(monkeypatch):
     from tests.test_document_train_pair import authored_documents, document_project
 
     raw = document_project(authored_documents(), evaluation=True)
     owner = _attachment_owner("decode") | {"composites": ["wrapper", "controller"]}
     record = _add_attachment(owner, "scale", None)
     raw["steps"]["baseline"]["model_attachments"] = {"scale": [record]}
-    plan = compile_project(Project.model_validate(raw))
+    memo = ProjectPlanMemo()
+    train_key = RunKey("default", "train", "default")
+    encode = Mock(wraps=request_identity.encode_request)
+    monkeypatch.setattr(request_identity, "encode_request", encode)
+
+    def compile_incrementally():
+        project = Project.model_validate(raw)
+        encode.reset_mock()
+        incremental = compile_project(project, memo=memo, source_runs=(train_key,))
+        calls = encode.call_count
+        assert incremental == compile_project(project, source_runs=(train_key,))
+        return incremental, calls
+
+    plan, calls = compile_incrementally()
+    assert calls == 2
     assert not plan.diagnostics
     train = next(run for run in plan.runs if run.kind == "train")
     request = decode_request(plan.requests[train.request_id], plan.documents.__getitem__).spec
@@ -592,12 +608,72 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids():
         input_prototypes={graph.input_bindings["reach_target"]: jax.ShapeDtypeStruct((2,), jnp.float32)},
     )
     assert executable.graph.nodes["wrapper"].nodes["controller"].nodes[incoming.target_node].scale == 0.5
+
+    trial = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
+    model = raw["documents"].pop("reach-model")
+    raw["documents"]["renamed"] = model
+    trial["model"] = {"document": "renamed"}
+    renamed, calls = compile_incrementally()
+    assert calls == 0
+    assert renamed.requests == plan.requests and renamed.documents == plan.documents
+    source_path = "/payload/trial_documents/model/step_seconds"
+    assert renamed.sources[train_key][source_path].name == "renamed"
+
+    trial["model"] = model["payload"]
+    inlined, calls = compile_incrementally()
+    assert calls == 0
+    assert inlined.requests == plan.requests and inlined.documents == plan.documents
+    assert inlined.sources[train_key][source_path].kind == "step"
+
     record["owner"] = owner | {"composites": ["wrapper", "missing"]}
-    invalid = compile_project(Project.model_validate(raw))
+    invalid, calls = compile_incrementally()
+    assert calls == 0
     assert not any(run.kind == "evaluate" for run in invalid.runs)
     problem, = invalid.diagnostics
+    assert problem.document is None
     assert problem.model_address.composites == ("wrapper", "missing")
     assert "composite no longer exists" in problem.detail
+
+    trial["model"] = {"document": "renamed"}
+    rebound, calls = compile_incrementally()
+    assert calls == 0
+    problem, = rebound.diagnostics
+    assert problem.document == "renamed"
+    assert problem.model_address.composites == ("wrapper", "missing")
+
+
+def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value():
+    raw = _model_project()
+    del raw["steps"]["baseline"]
+    model = raw["documents"]["reach-model"]["payload"]
+    model["interior"]["components"]["plant"]["fields"]["mass"] = model["step_seconds"] = 0.01
+    train = raw["steps"]["train"]
+    optimizer = train["base"]["inline"]["settings"]["optimizer"]["params"]
+    mass = "/interior/components/plant/fields/mass"
+    alias = {"document": "reach-model", "pointer": mass}
+    optimizer["learning_rate"] = alias
+    train["model_attachments"] = {"change-mass": [{
+        "op": "set_field",
+        "address": {"composites": [], "element": {
+            "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
+        }},
+        "value": 0.02,
+    }]}
+    memo = ProjectPlanMemo()
+
+    def train_request(expected_rate):
+        project = Project.model_validate(raw)
+        plan = compile_project(project, memo=memo)
+        assert not plan.diagnostics
+        assert plan == compile_project(project)
+        (run,) = plan.runs
+        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        assert spec.settings["optimizer"]["params"]["learning_rate"] == expected_rate
+        return run.request_id
+
+    before = train_request(0.02)
+    alias["pointer"] = "/step_seconds"
+    assert train_request(0.01) != before
 
 
 @pytest.mark.parametrize(("kind", "scope"), [

@@ -113,7 +113,7 @@ from feedbax.contracts.train_settings import normalize_train_method
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.contracts.effective_success import TerminalTrainSubject
-    from feedbax.contracts.request_specs import TrialDocuments
+    from feedbax.contracts.request_specs import RequestSpec, TrialDocuments
     from feedbax.tasks.registry import PythonTaskRegistry
     from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
@@ -774,15 +774,23 @@ def _integer_train_site(
 
 
 @dataclass(frozen=True)
+class _RowLoweringStamp:
+    kind: StepKind
+    payload_and_sources: str
+    members: bytes
+
+
+@dataclass(frozen=True)
 class _LoweredRow:
     request: EncodedRequest | None
     diagnostics: tuple[ProjectDiagnostic, ...]
-    encoding_stamp: tuple[StepKind, str, bytes] | None = None
+    lowering_stamp: _RowLoweringStamp | None = None
     admission_problem: RunProblem | None = None
     document_ids: Mapping[str, str] = field(default_factory=dict)
     document_uses: frozenset[str] = frozenset()
     model_source: _ModelSource | None = None
     evaluation_source: tuple[str, ...] | bytes | None = None
+    encoded_spec: RequestSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -844,7 +852,7 @@ def _encode_row(
     kind: StepKind,
     payload: Payload,
     inputs: Mapping[str, PlannedInput],
-    encoding_stamp: tuple[StepKind, str, bytes] | None,
+    lowering_stamp: _RowLoweringStamp | None,
     document_memo: RequestDocumentMemo,
     prepare_trial: Callable[[TrialDocuments], _TrainPreparation | tuple[Problem, ...]],
     document_ids: Mapping[str, str],
@@ -853,6 +861,7 @@ def _encode_row(
     prepared_train: _PreparedTrainRow | None = None,
     remember_train: Callable[[_PreparedTrainRow], None] | None = None,
     training_methods: TrainingMethodRegistry | None = None,
+    previous: _LoweredRow | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
     condition_ids = None
@@ -872,7 +881,7 @@ def _encode_row(
                 if isinstance(resolved, tuple):
                     return _LoweredRow(None, tuple(
                         _trial_problem(key, problem, document_ids) for problem in resolved
-                    ), encoding_stamp)
+                    ), lowering_stamp)
                 authored = authored.model_copy(update={"python_task": resolved.selection()})
                 payload = payload | {"trial_documents": authored.model_dump(mode="json")}
             preparation = prepare_trial(authored)
@@ -880,11 +889,11 @@ def _encode_row(
             return _LoweredRow(None, (ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents", str(error), key.step,
                 row=key.row, variant=key.variant,
-            ),), encoding_stamp)
+            ),), lowering_stamp)
         if isinstance(preparation, tuple):
             return _LoweredRow(None, tuple(
                 _trial_problem(key, problem, document_ids) for problem in preparation
-            ), encoding_stamp)
+            ), lowering_stamp)
         checkpoint_problem = preparation.checkpoint_problem
         condition_ids = preparation.condition_ids
         assert model_source is not None
@@ -910,7 +919,7 @@ def _encode_row(
                         ResolutionCode.BAD_REFERENCE, f"inputs.{role}", detail, key.step,
                         row=key.row, variant=key.variant,
                     ) for role, detail in invalid),
-                    encoding_stamp,
+                    lowering_stamp,
                 )
             spec = ReportRequestSpec(document=document)
         else:
@@ -921,12 +930,22 @@ def _encode_row(
             if training_methods is None:
                 raise ValueError("Train requires the installed method catalog.")
             spec, _, _ = normalize_train_method(spec, training_methods)
-        encoded = request_identity.encode_request(
-            spec,
-            {role: (binding.member,) for role, binding in inputs.items()},
-            document_memo=document_memo,
-            capture_train_task=kind == "train",
-        )
+        if (
+            previous is not None and previous.request is not None
+            and previous.lowering_stamp is not None and lowering_stamp is not None
+            and previous.lowering_stamp.members == lowering_stamp.members
+            and same_typed_value(spec, previous.encoded_spec)
+        ):
+            encoded = previous.request
+            encoded_spec = previous.encoded_spec
+        else:
+            encoded = request_identity.encode_request(
+                spec,
+                {role: (binding.member,) for role, binding in inputs.items()},
+                document_memo=document_memo,
+                capture_train_task=kind == "train",
+            )
+            encoded_spec = spec if lowering_stamp is not None else None
     except ValidationError as error:
         problems = tuple(
             (".".join(map(str, failure["loc"])), failure["msg"])
@@ -951,8 +970,8 @@ def _encode_row(
             selection = encoded.train_task.python_selection
             evaluation_source = selection if selection is not None else condition_ids
         return _LoweredRow(
-            encoded, (), encoding_stamp, admission_problem=problem,
-            model_source=model_source, evaluation_source=evaluation_source,
+            encoded, (), lowering_stamp, admission_problem=problem,
+            model_source=model_source, evaluation_source=evaluation_source, encoded_spec=encoded_spec,
         )
     return _LoweredRow(
         None,
@@ -967,7 +986,7 @@ def _encode_row(
             )
             for path, message in problems
         ),
-        encoding_stamp,
+        lowering_stamp,
     )
 
 
@@ -1570,7 +1589,13 @@ class _Compiler:
                 evaluation_graph=evaluation if isinstance(evaluation, GraphSpec) else None,
                 evaluation_problem=evaluation if isinstance(evaluation, ProjectDiagnostic) else None,
             )
-        source_stamp = model_source.stamp if model_source is not None else None
+        source_stamp = (
+            tuple(source.stamp if source is not None else None for source in (
+                self.model_sources.get(producer) for producer in subject.candidates
+            ))
+            if subject is not None and subject.candidates else
+            (model_source.stamp,) if model_source is not None else ()
+        )
         source_problem = model_source.evaluation_problem if model_source is not None else None
 
         def lower(reader=None, previous=None):
@@ -1597,11 +1622,13 @@ class _Compiler:
             prepared_train = None
             remember_train = None
             has_differences = MODEL_ATTACHMENTS in payload
-            encoding_stamp = (
-                (kind, sha256_bytes(to_json((payload, tuple(sorted(document_ids.items())), source_stamp))), member)
+            lowering_stamp = (
+                _RowLoweringStamp(kind, sha256_bytes(to_json((
+                    payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())), source_stamp,
+                ))), member)
                 if basis is not None else None
             )
-            if previous is not None and previous.encoding_stamp == encoding_stamp:
+            if previous is not None and previous.lowering_stamp == lowering_stamp:
                 return replace(
                     previous, document_ids=document_ids, document_uses=document_uses,
                 )
@@ -1613,12 +1640,12 @@ class _Compiler:
                 if managed_subject or (isinstance(params, dict) and "trial_set" in params):
                     if problem := _authored_graph_variation_problem(key, payload):
                         return _LoweredRow(
-                            None, (problem,), encoding_stamp, document_ids=document_ids, document_uses=document_uses,
+                            None, (problem,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
                         )
             if source_problem is not None and payload.get("evaluation_type") == ROLLOUT_TYPE:
                 return _LoweredRow(
                     None, (replace(source_problem, step=key.step, row=key.row, variant=key.variant),),
-                    encoding_stamp, document_ids=document_ids, document_uses=document_uses,
+                    lowering_stamp, document_ids=document_ids, document_uses=document_uses,
                 )
             if kind == "train":
                 trial = payload.get("trial_documents")
@@ -1641,13 +1668,15 @@ class _Compiler:
                 else:
                     payload = self.lower_evaluate_payload(key, payload, model_source, reference, has_differences)
             if isinstance(payload, ProjectDiagnostic):
-                return _LoweredRow(None, (payload,), encoding_stamp, document_ids=document_ids, document_uses=document_uses)
+                return _LoweredRow(
+                    None, (payload,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
+                )
             lowered = _encode_row(
-                key, kind, payload, inputs, encoding_stamp,
+                key, kind, payload, inputs, lowering_stamp,
                 self.work.request_documents, self.prepare_train_trial, document_ids,
                 self.python_tasks, model_source=authored_model,
                 prepared_train=prepared_train, remember_train=remember_train,
-                training_methods=self.training_methods,
+                training_methods=self.training_methods, previous=previous,
             )
             return replace(
                 lowered,
