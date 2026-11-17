@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from feedbax.contracts.artifact_custody import ContentRetentionTarget
+from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
 from feedbax.contracts.live_evaluate import (
     LiveEvaluationPoint, ScoredEvaluationPoint, require_evaluation_coverage, rollout_slot,
 )
@@ -34,9 +34,10 @@ def live_evaluation_targets(
 
 
 def read_live_evaluation_evidence(
-    store: ImmutableArtifactBlobProvider, point: LiveEvaluationPoint,
+    store: ImmutableArtifactBlobProvider, point: LiveEvaluationPoint, *, active_root: ContentRootRecord | None = None,
 ) -> ReceiptEvidence:
     evidence, targets = live_evaluation_targets(store, point)
-    if require_active_root(store, point.root_id).targets != targets:
+    root = require_active_root(store, point.root_id) if active_root is None else active_root
+    if root.root_id != point.root_id or root.targets != targets:
         raise ValueError("Live Evaluate point lacks exact states and worker evidence in Store custody")
     return evidence
