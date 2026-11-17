@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 
 import jax
 import jax.numpy as jnp
-from pydantic import BaseModel, ValidationError
 
 from feedbax.compiler.graph import (
     ExecutableGraph,
@@ -34,7 +33,7 @@ from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.trial_execution import TrialExecution
 from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task
 from feedbax.tasks.reaching import builtin_python_tasks
-from feedbax.tasks.registry import PythonTaskDefinition, PythonTaskRegistry, PythonTaskTemplate
+from feedbax.tasks.registry import PythonTaskRegistry, PythonTaskTemplate, resolve_python_task_instance
 
 
 @dataclass(frozen=True)
@@ -85,30 +84,11 @@ class TrialPair:
     task_source: TaskDocument | PythonTaskSelection
 
 
-def validate_python_task(
-    selection: PythonTaskSelection, registry: PythonTaskRegistry,
-) -> tuple[PythonTaskDefinition, BaseModel] | tuple[Problem, ...]:
-    definition = registry.resolve(selection.type)
-    if definition is None:
-        return (Problem(code=ProblemCode.UNKNOWN_NAME, path=("python_task", "type"),
-                        reason=f"Python task {selection.type!r} is not registered."),)
-    try:
-        params = definition.parameters.model_validate(selection.params)
-    except ValidationError as error:
-        return tuple(Problem(code=ProblemCode.TYPE_MISMATCH,
-                             path=("python_task", "params", *item["loc"]), reason=item["msg"])
-                     for item in error.errors(include_url=False))
-    return definition, params
-
-
 def resolve_python_task(
     selection: PythonTaskSelection, registry: PythonTaskRegistry,
 ) -> PythonTaskTemplate | tuple[Problem, ...]:
-    resolved = validate_python_task(selection, registry)
-    if isinstance(resolved[0], Problem):
-        return resolved
-    definition, params = resolved
-    return definition.template(params)
+    resolved = resolve_python_task_instance(selection, registry)
+    return resolved if isinstance(resolved, tuple) else resolved.template()
 
 
 def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: PythonTaskRegistry | None) -> tuple[str, ...]:
@@ -149,12 +129,11 @@ def pair_trial_source(
 ) -> TrialPair | tuple[Problem, ...]:
     overrides = input_overrides or {}
     if isinstance(task, PythonTaskSelection):
-        resolved = validate_python_task(task, python_tasks or builtin_python_tasks())
-        if isinstance(resolved[0], Problem):
+        resolved = resolve_python_task_instance(task, python_tasks or builtin_python_tasks())
+        if isinstance(resolved, tuple):
             return resolved
-        definition, parameters = resolved
-        template = definition.template(parameters)
-        task = PythonTaskSelection(type=definition.key, params=parameters.model_dump(mode="json"))
+        template = resolved.template()
+        task = resolved.selection()
         signal_types = template.signals
     else:
         template = None

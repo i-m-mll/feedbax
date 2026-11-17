@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.operation import OperationComputation
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity_guard import IdentityWideInteger
 from feedbax.contracts.request_refs import Name
@@ -66,6 +67,7 @@ class EvaluationRequestSpec(RequestSpec):
 
 class AnalysisRequestSpec(RequestSpec):
     analysis_type: Name
+    computation: OperationComputation | None = None
     params: dict[str, JsonValue] = Field(default_factory=dict)
     evaluation_states_policy: Literal["recompute", "require_durable"] = "recompute"
 

@@ -11,11 +11,12 @@ from pydantic import JsonValue, ValidationError
 
 from feedbax.contracts.analysis_document import (
     AnalysisDocument,
+    AnalyzeInput,
     DatasetSource,
     FigureElement,
     OperationDataset,
     OperationElement,
-    StepDataset,
+    StepInput,
 )
 from feedbax.contracts.figure_document import (
     FIGURE_DOCUMENT_SCHEMA,
@@ -35,6 +36,7 @@ from feedbax.contracts.request_refs import InputMember, ProductRef
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     EvaluationRequestSpec,
+    NumericalSettings,
     RenderRequestSpec,
     RequestSpec,
 )
@@ -57,17 +59,18 @@ class _Lowerer:
         document_ids: Mapping[str, str],
         document_pointers: Mapping[str, str],
         documents: Mapping[str, Document],
-        states: tuple[PlannedInput, ...],
-        evaluations: tuple[RequestSpec, ...],
+        step_inputs: Mapping[str, tuple[PlannedInput, ...]],
+        evaluations: Mapping[str, RequestSpec],
         operations: OperationRegistry,
     ):
         self.key = key
         self.document_ids = document_ids
         self.document_pointers = document_pointers
         self.documents = documents
-        self.states = states
+        self.step_inputs = step_inputs
         self.evaluations = evaluations
         self.operations = operations
+        self.declarations: Mapping[str, AnalyzeInput] = {}
         self.elements: dict[str, PlannedElement] = {}
         self.figures: dict[str, FigureDocument] = {}
         self.encoded: list[EncodedRequest] = []
@@ -113,11 +116,13 @@ class _Lowerer:
         source: DatasetSource,
         path: str,
     ) -> tuple[tuple[PlannedInput, ...], DatasetPort]:
-        if isinstance(source, StepDataset):
-            if source.input != "states":
-                raise _ElementIssue(path, f"Unknown Analyze step input {source.input!r}.")
+        if isinstance(source, StepInput):
+            inputs = self._step_input(source, "dataset", path)
             schemas = set()
-            for binding, evaluation in zip(self.states, self.evaluations, strict=True):
+            for binding in inputs:
+                reference = binding.member.reference
+                assert isinstance(reference, ProductRef)
+                evaluation = self.evaluations[reference.request_id]
                 if (
                     not isinstance(evaluation, EvaluationRequestSpec)
                     or evaluation.evaluation_type != ROLLOUT_TYPE
@@ -133,7 +138,7 @@ class _Lowerer:
             # authenticated when the actual saved dataset is read.
             if len(schemas) != 1:
                 raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
-            return self.states, DatasetPort(schema_ids=tuple(schemas))
+            return inputs, DatasetPort(schema_ids=tuple(schemas))
         producer = self.elements.get(source.element)
         if producer is None:
             raise _ElementIssue(path, f"Unknown or unplannable operation {source.element!r}.")
@@ -152,21 +157,37 @@ class _Lowerer:
         )
         return (binding,), output
 
+    def _step_input(
+        self, source: DatasetSource, kind: str, path: str,
+    ) -> tuple[PlannedInput, ...]:
+        if not isinstance(source, StepInput):
+            raise _ElementIssue(path, f"Connect an Analyze {kind} input role.")
+        declaration = self.declarations.get(source.input)
+        if declaration is None or declaration.kind != kind:
+            raise _ElementIssue(path, f"Analyze input {source.input!r} does not declare {kind}.")
+        if not (members := self.step_inputs.get(source.input)):
+            raise _ElementIssue(path, f"Analyze input {source.input!r} has no binding.")
+        return members
+
     def _inputs(
         self,
         sources: Mapping[str, DatasetSource],
         roles: set[str],
     ) -> tuple[dict[str, tuple[PlannedInput, ...]], dict[str, DatasetPort]]:
-        if unknown := sources.keys() - roles:
-            role = min(unknown)
-            raise _ElementIssue(f"inputs.{role}", f"Unknown dataset input {role!r}.")
-        if missing := roles - sources.keys():
-            role = min(missing)
-            raise _ElementIssue(f"inputs.{role}", f"Required dataset input {role!r} is missing.")
+        self._check_roles(sources, roles)
         inputs, schemas = {}, {}
         for role in sorted(roles):
             inputs[role], schemas[role] = self._input(sources[role], f"inputs.{role}")
         return inputs, schemas
+
+    @staticmethod
+    def _check_roles(sources: Mapping[str, DatasetSource], roles: set[str]) -> None:
+        if unknown := sources.keys() - roles:
+            role = min(unknown)
+            raise _ElementIssue(f"inputs.{role}", f"Unknown input {role!r}.")
+        if missing := roles - sources.keys():
+            role = min(missing)
+            raise _ElementIssue(f"inputs.{role}", f"Required input {role!r} is missing.")
 
     def _record(
         self,
@@ -206,26 +227,37 @@ class _Lowerer:
             return
         try:
             definition = operation.definition
-            inputs, schemas = self._inputs(element.inputs, set(definition.inputs))
+            self._check_roles(element.inputs, set(definition.inputs))
+            inputs = {}
             for role, expected in definition.inputs.items():
-                actual = schemas[role]
+                source = element.inputs[role]
+                wire_path = f"inputs.{role}"
+                if not isinstance(expected, DatasetPort):
+                    inputs[role] = self._step_input(source, expected.kind, wire_path)
+                    continue
+                inputs[role], actual = self._input(source, wire_path)
                 try:
                     require_dataset_port(
-                        actual, expected, fields=isinstance(element.inputs[role], OperationDataset)
+                        actual, expected, fields=isinstance(source, OperationDataset)
                     )
-                    if isinstance(element.inputs[role], OperationDataset):
+                    if isinstance(source, OperationDataset):
                         for parameter, requirement in expected.selected_variables.items():
                             require_dataset_fields(
                                 actual.variables, {getattr(params, parameter): requirement}
                             )
                 except ValueError as error:
-                    raise _ElementIssue(f"inputs.{role}", str(error)) from error
+                    raise _ElementIssue(wire_path, str(error)) from error
+            numerical = definition.numerical
             self._record(
                 name,
                 AnalysisRequestSpec(
-                    analysis_type=element.operation,
+                    analysis_type=definition.key,
+                    computation=definition.computation(),
                     params=params.model_dump(mode="json"),
                     evaluation_states_policy="require_durable",
+                    numerical_settings=NumericalSettings(
+                        floating_point_bits=numerical.floating_point_bits if numerical else None,
+                    ),
                 ),
                 inputs,
                 definition.outputs,
@@ -290,13 +322,13 @@ def lower_analyze(
     document_pointers: Mapping[str, str],
     documents: Mapping[str, Document],
     document_problems: tuple[ProjectDiagnostic, ...],
-    states: tuple[PlannedInput, ...],
-    evaluations: tuple[RequestSpec, ...],
+    step_inputs: Mapping[str, tuple[PlannedInput, ...]],
+    evaluations: Mapping[str, RequestSpec],
     operations: OperationRegistry,
 ) -> tuple[
     dict[str, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
 ]:
-    lower = _Lowerer(key, document_ids, document_pointers, documents, states, evaluations, operations)
+    lower = _Lowerer(key, document_ids, document_pointers, documents, step_inputs, evaluations, operations)
     lower.problems.extend(document_problems)
     try:
         # Each figure validates below so a bad figure leaves its siblings plannable.
@@ -312,6 +344,7 @@ def lower_analyze(
             lower.problem(".".join(map(str, ("payload", *location))), item["msg"], element)
         return lower.elements, lower.encoded, lower.problems, lower.figures
 
+    lower.declarations = document.inputs
     graph = TopologicalSorter()
     for name, element in sorted(document.operations.items()):
         graph.add(

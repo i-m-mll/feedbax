@@ -13,9 +13,11 @@ from feedbax.contracts.operation import (
     DatasetInputPort, DatasetPort, JaxOperation, ModelPort, OperationDefinition, OperationInputPort, TaskPort,
 )
 from feedbax.dataset import Dataset
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.plugins.declarations import (
     CallableDeclaration, DistributionSource, mark_callable, settings_schema, validate_declaration_key,
 )
+from feedbax.tasks.registry import PythonTaskInstance
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class RegisteredOperation:
     function: Callable[..., Dataset]
     parameter_model: type[BaseModel]
     definition: OperationDefinition
+    task_parameters: type[BaseModel] | None
 
 
 def _port_annotation(annotation: object) -> tuple[object, object]:
@@ -60,12 +63,25 @@ def _port_annotation(annotation: object) -> tuple[object, object]:
     raise TypeError("expected a type annotation with operation port metadata")
 
 
-def _input_port(annotation: object) -> OperationInputPort:
+def _input_port(annotation: object) -> tuple[OperationInputPort, type[BaseModel] | None]:
     value_type, metadata = _port_annotation(annotation)
     if value_type is Dataset and isinstance(metadata, DatasetPort):
-        return DatasetInputPort(**metadata.model_dump(exclude={"kind"}))
-    if isinstance(metadata, (ModelPort, TaskPort)):
-        return metadata
+        return DatasetInputPort(**metadata.model_dump(exclude={"kind"})), None
+    if isinstance(metadata, ModelPort):
+        from feedbax.runtime.graph import Graph
+
+        if value_type is Graph:
+            return metadata, None
+        raise TypeError("a model input must take a Feedbax Graph")
+    if isinstance(metadata, TaskPort):
+        if metadata.task_key is None and value_type is TaskDocument:
+            return metadata, None
+        if metadata.task_key is not None and get_origin(value_type) is PythonTaskInstance:
+            validate_declaration_key(metadata.task_key)
+            (settings,) = get_args(value_type)
+            if isinstance(settings, type) and issubclass(settings, BaseModel):
+                return metadata, settings
+        raise TypeError("a task input must take a TaskDocument or a declared PythonTaskInstance")
     raise TypeError("expected a Dataset, ModelPort, or TaskPort annotation")
 
 
@@ -91,6 +107,7 @@ class OperationRegistry:
         if "params" not in parameters or annotations.get("params") is not model:
             raise TypeError("operation params annotation must match its declared settings model")
         inputs = {}
+        task_parameters = None
         for name, parameter in parameters.items():
             if (
                 parameter.kind not in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
@@ -98,7 +115,10 @@ class OperationRegistry:
             ):
                 raise TypeError("operation arguments must be required and callable by name")
             if name != "params":
-                inputs[name] = _input_port(annotations.get(name))
+                port, settings = _input_port(annotations.get(name))
+                inputs[name] = port
+                if settings is not None:
+                    task_parameters = settings
         if not inputs:
             raise TypeError("operation requires a named input")
         if sum(isinstance(port, ModelPort) for port in inputs.values()) > 1:
@@ -130,7 +150,9 @@ class OperationRegistry:
             outputs={output.name: output.port},
             numerical=declaration.numerical,
         )
-        self._entries[key] = RegisteredOperation(function, model, definition.model_copy(deep=True))
+        self._entries[key] = RegisteredOperation(
+            function, model, definition.model_copy(deep=True), task_parameters,
+        )
 
     def keys(self) -> tuple[str, ...]:
         return tuple(sorted(self._entries))
@@ -138,7 +160,7 @@ class OperationRegistry:
     def resolve(self, key: str) -> RegisteredOperation:
         entry = self._entries[key]
         return RegisteredOperation(
-            entry.function, entry.parameter_model, entry.definition.model_copy(deep=True)
+            entry.function, entry.parameter_model, entry.definition.model_copy(deep=True), entry.task_parameters,
         )
 
     def definitions(self) -> tuple[OperationDefinition, ...]:
