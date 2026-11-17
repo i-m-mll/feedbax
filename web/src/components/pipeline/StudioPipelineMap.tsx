@@ -12,14 +12,14 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
-import { StudioRunMark } from '@/components/activity/StudioRunStatus';
+import { StatusMark } from '@/components/ui/StatusMark';
 import {
   studioAccessibleName,
   studioCountOf,
   studioName,
   studioRunStatus,
   studioStep,
-  type StudioRunStatusId,
+  type StudioResultState,
 } from '@/components/activity/studioVocabulary';
 import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -42,6 +42,7 @@ import {
   PipelineRunMarks,
   type ApplyMapSelection,
 } from './PipelineRunMarks';
+import type { RunMenu } from './RunContextMenu';
 import {
   foldedMapSweep,
   compactMapCardWidth,
@@ -104,6 +105,7 @@ export interface StudioPipelineMapProps {
   activeStepId?: string | null;
   viewportRef?: Ref<CanvasViewport>;
   fitReady?: boolean;
+  runMenu?: RunMenu;
 }
 
 const emptyPresentation: PipelineCardPresentation = {};
@@ -124,14 +126,14 @@ function StatusCounts({ id, counts, onProblems }: {
   onProblems?: (opener: HTMLButtonElement) => void;
 }) {
   const className = 'inline-flex items-center gap-1 whitespace-nowrap';
-  const statuses = Object.entries(counts) as [StudioRunStatusId, number][];
+  const statuses = Object.entries(counts) as [StudioResultState, number][];
   if (onProblems && counts.cannot_run === undefined) statuses.push(['cannot_run', 0]);
   return (
     <span id={id} className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-shell-muted">
       {statuses.map(([status, count]) => {
         const problem = status === 'cannot_run' && onProblems;
         if (count <= 0 && !problem) return null;
-        const mark = <><StudioRunMark status={status} />
+        const mark = <><StatusMark status={status} />
           {count > 0 ? `${count} ` : ''}{studioRunStatus(status)}</>;
         return problem
           ? <Button variant="bare" size="content" key={status} className={`${className} underline`} aria-haspopup="dialog"
@@ -293,6 +295,7 @@ const StepCard = memo(function StepCard({
   dimmed,
   upstream,
   downstream,
+  runMenu,
 }: {
   step: PlanStepView;
   selection: PipelineSelection | null;
@@ -308,6 +311,7 @@ const StepCard = memo(function StepCard({
   dimmed: boolean;
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
+  runMenu?: RunMenu;
 }) {
   const id = useId();
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
@@ -382,6 +386,7 @@ const StepCard = memo(function StepCard({
         upstream={upstream}
         downstream={downstream}
         applySelection={applySelection}
+        runMenu={runMenu}
       />
       {step.inputs.some((input) => input.subset) && (
         <ul className="-mx-3 divide-y divide-shell-divider border-t border-shell-divider">
@@ -651,6 +656,7 @@ export function StudioPipelineMap({
   activeStepId,
   viewportRef,
   fitReady,
+  runMenu,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
@@ -750,6 +756,7 @@ export function StudioPipelineMap({
                     newStep={newStepCommand?.({ stepId: step.id, selection: stepRunSelection(state.selection, step.id) }, step.label)}
                     newSweep={newSweepCommand?.(step.id, step.label)}
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
+                    runMenu={runMenu}
                   />
                 ))}
               </div>

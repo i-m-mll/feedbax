@@ -4016,6 +4016,21 @@ export type ValidationTrial = {
 
 export type ValidationValue = Scalar | Array<ValidationValue>;
 
+export type ValidityAcceptance = {
+  "revision": string;
+  "request_id": string;
+  "receipt": ContentObjectRef;
+  "differences": Array<CodeDifference>;
+  "who": string;
+  "why": string;
+};
+
+export type ValidityAction = {
+  "revision": string;
+  "request_id": string;
+  "receipt": ContentObjectRef;
+};
+
 export type ValidityReason = CodeReason | EnvironmentReason | FileDifference | InputDifference;
 
 export type ValueBase = "real" | "integer" | "boolean";
@@ -10486,6 +10501,25 @@ export const ValidationValueSchema: z.ZodType<ValidationValue> = z.lazy(() =>
   z.union([ScalarSchema, z.array(ValidationValueSchema)])
 ) as unknown as z.ZodType<ValidationValue>;
 
+export const ValidityAcceptanceSchema: z.ZodType<ValidityAcceptance> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "request_id": z.string().regex(new RegExp("^(train|evaluate|analyze|render|report):[0-9a-f]{64}$")),
+    "receipt": ContentObjectRefSchema,
+    "differences": z.array(CodeDifferenceSchema).min(1),
+    "who": z.string().min(1),
+    "why": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<ValidityAcceptance>;
+
+export const ValidityActionSchema: z.ZodType<ValidityAction> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "request_id": z.string().regex(new RegExp("^(train|evaluate|analyze|render|report):[0-9a-f]{64}$")),
+    "receipt": ContentObjectRefSchema,
+  }).strict()
+) as unknown as z.ZodType<ValidityAction>;
+
 export const ValidityReasonSchema: z.ZodType<ValidityReason> = z.lazy(() =>
   z.union([CodeReasonSchema, EnvironmentReasonSchema, FileDifferenceSchema, InputDifferenceSchema])
 ) as unknown as z.ZodType<ValidityReason>;
@@ -10604,6 +10638,9 @@ export const contractSchemas = {
   EvaluateAttachmentState: EvaluateAttachmentStateSchema,
   EvaluateAttachmentEdit: EvaluateAttachmentEditSchema,
   ModelUndoRequest: ModelUndoRequestSchema,
+  ReceiptValidity: ReceiptValiditySchema,
+  ValidityAction: ValidityActionSchema,
+  ValidityAcceptance: ValidityAcceptanceSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   TaskDocument: TaskDocumentSchema,
   PythonTaskSelection: PythonTaskSelectionSchema,
@@ -10752,6 +10789,9 @@ export interface ContractTypeMap {
   EvaluateAttachmentState: EvaluateAttachmentState;
   EvaluateAttachmentEdit: EvaluateAttachmentEdit;
   ModelUndoRequest: ModelUndoRequest;
+  ReceiptValidity: ReceiptValidity;
+  ValidityAction: ValidityAction;
+  ValidityAcceptance: ValidityAcceptance;
   AnalysisDocument: AnalysisDocument;
   TaskDocument: TaskDocument;
   PythonTaskSelection: PythonTaskSelection;

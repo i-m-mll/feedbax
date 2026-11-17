@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
@@ -11,6 +11,9 @@ import { bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type Pipelin
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/StepInsertMenu';
 import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
+import type { RunMenu } from '@/components/pipeline/RunContextMenu';
+import type { ActivityResultState } from '@/components/activity/StudioActivity';
+import { useResultValidity } from './useResultValidity';
 import { StudioMachineApproval, StudioRunMachine } from '@/components/pipeline/StudioRunMachine';
 import { StudioSweepOverview } from '@/components/pipeline/StudioSweepOverview';
 import { X } from 'lucide-react';
@@ -244,12 +247,23 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
     retry: false,
   });
   const data = projection.data?.revision === saved.revision ? projection.data : undefined;
+  const refetchProjection = projection.refetch;
+  const refreshProjection = useCallback(() => refetchProjection(), [refetchProjection]);
+  const validity = useResultValidity({
+    projectId: saved.project_id, revision: saved.revision, refresh: refreshProjection, onError: setCommandError,
+  });
   const variants = useMemo(() => planVariants(projection.data), [projection.data]);
   const variant = selection.variantId ?? variants[0] ?? null;
   const missingVariant = selection.variantId !== null && !variants.includes(selection.variantId);
   const primaryVariant = variant !== null && variant === variants[0];
-  const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant),
-    [saved.project, projection.data, variant]);
+  const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant, validity.checking),
+    [saved.project, projection.data, variant, validity.checking]);
+  const activityResultState = useMemo<ActivityResultState>(() => {
+    const states = new Map(plan.steps.flatMap(({ runs }) => runs.flatMap(({ state, results }) =>
+      results.map(({ jobId }) => [jobId, state] as const))));
+    return (job) => states.get(job.job_id);
+  }, [plan]);
+  const runMenu: RunMenu = (runs, anchor) => validity.commands(runs, anchor);
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = data ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);
@@ -910,7 +924,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       selection.select(value);
     },
     onProblems: (step: string, opener: HTMLButtonElement) => setPanel({ kind: 'problems', scope: { step, variant }, opener }),
-    newStepCommand, newSweepCommand, onChooseStep: chooseMapStep,
+    newStepCommand, newSweepCommand, onChooseStep: chooseMapStep, runMenu,
     documentScope: activeDocumentScope && activeDocumentScope.users.size > 1 ? activeDocumentScope : undefined,
   };
   const activity = bindStudioCommand('activity', () => setPanel((current) => current?.kind === 'activity' ? null : { kind: 'activity' }));
@@ -930,6 +944,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       runCommands.push(bindStudioCommand(id, () => stop(eligible, mode), { enabled: !busy && eligible.length > 0 }));
     }
   }
+  if (step) runCommands.push(...validity.commands(selectedRuns(step, state.selection)));
   if (step?.kind === 'train') {
     if (resumable && jobAllowsCommand(resumable, 'resume')) {
       runCommands.push(bindStudioCommand('resume', () => {
@@ -1041,6 +1056,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
           </Button>)}
         </Dialog>}
         {insertMenu.menu}
+        {validity.popover}
         {sweepStep && <Dialog ariaLabel={studioName('newSweep')} onClose={() => setSweepStep(undefined)} manageFocus
           panelClassName="grid max-h-[75dvh] w-[min(24rem,90vw)] gap-2 overflow-auto">
           <IconButton className="justify-self-end" label={studioName('close')} icon={<X aria-hidden="true" />}
@@ -1074,7 +1090,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
       </StudioProblems>}
       activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
         onToggle={activity.invoke}
-        onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} />}
+        onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} resultState={activityResultState} />}
       serviceFailure={serviceIssue && { kind: 'failed', issue: serviceIssue, retry: connection.refetch }}
       renderView={(view, slot) => {
         const details = slot === 'primary' ? primary : secondary;
@@ -1197,7 +1213,7 @@ function ManagedProjectWindow({ session, onNewStep, onNewSweep }: { session: Edi
             body: withProblem(<StudioRuns plan={plan} {...runSelection}
               region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
                 ? { kind: 'result', missing: [] } : { kind: 'empty' })}
-              pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} />),
+              pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} runMenu={runMenu} />),
           };
         }
         if (view === 'training' && authoring) {

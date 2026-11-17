@@ -1,7 +1,11 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioAccessibleName, studioCountOf, studioName, studioReason, studioRunStatus } from "@/components/activity/studioVocabulary";
+import {
+  studioAccessibleName, studioCountOf, studioEnvironmentNotice, studioName, studioReason, studioRunStatus, studioValidityReason,
+  type StudioResultState,
+} from "@/components/activity/studioVocabulary";
+import { StatusMark } from "@/components/ui/StatusMark";
 import { commandAttributes, type StudioCommand } from "@/features/projectWindow/studioCommands";
 import type { PlanRunView, PlanView } from "@/features/pipeline/planView";
 import {
@@ -17,12 +21,14 @@ import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Select";
 import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/ui/Table";
 import { StudioRunTable, StudioSelectionSummary, StudioSweepValues, type RunSelectionProps } from "./StudioRunTable";
+import type { RunMenu } from "./RunContextMenu";
 
 interface StudioRunsProps extends RunSelectionProps {
   plan: PlanView;
   region: StudioRegionState;
   pivotActive?: boolean;
   upstreamDetail?: ReactNode;
+  runMenu?: RunMenu;
 }
 
 function StudioRunLineage({
@@ -92,9 +98,10 @@ function groupPivotRows(rows: readonly PlanRunView[], rowAxis: string, columnAxi
   return { groups, unplaced };
 }
 
-function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSelectionProps & {
+function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu }: RunSelectionProps & {
   rows: readonly PlanRunView[];
   related: RunSetsByStep;
+  runMenu?: RunMenu;
 }) {
   const [rowId, setRowId] = useState(step.sweeps[0]?.id);
   const [columnId, setColumnId] = useState(step.sweeps[1]?.id);
@@ -129,8 +136,8 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
                 <TableRowHeader>{row.label}</TableRowHeader>
                 {x.values.map((column) => {
                   const cell: readonly PlanRunView[] = pivot.groups.get(row.id)?.get(column.id) ?? [];
-                  const count = new Map<PlanRunView["status"], number>();
-                  for (const run of cell) count.set(run.status, (count.get(run.status) ?? 0) + 1);
+                  const count = new Map<StudioResultState, number>();
+                  for (const run of cell) count.set(run.state, (count.get(run.state) ?? 0) + 1);
                   const labels = [...count].map(([status, amount]) => cell.length > 1
                     ? `${amount} ${studioRunStatus(status)}`
                     : studioRunStatus(status));
@@ -163,7 +170,8 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related }: RunSe
         </Table>
       </div>
       {pivot.unplaced.length > 0 && (
-        <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={pivot.unplaced} related={related} />
+        <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={pivot.unplaced} related={related}
+          runMenu={runMenu} />
       )}
     </div>
   );
@@ -175,12 +183,24 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
   if (!selected.length) return null;
   const single = selected.length === 1;
-  const counts = new Map<PlanRunView["status"], number>();
+  const counts = new Map<StudioResultState, number>();
   const reasons = new Set<string>();
   const openingErrors = new Set(selected.flatMap((run) => run.openingErrors ?? []));
+  const validity = new Map<string, { state: StudioResultState; parts: string[] }>();
   for (const run of selected) {
-    counts.set(run.status, (counts.get(run.status) ?? 0) + 1);
-    if (run.reason) reasons.add(run.reason);
+    counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
+    if (run.reason && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
+    for (const { validity: { state, reasons: typed = [], environment } } of run.results) {
+      const mark = state === "current" ? "succeeded" : state;
+      for (const reason of typed) {
+        const parts = studioValidityReason(reason);
+        validity.set(JSON.stringify(parts), { state: mark, parts });
+      }
+      if (environment) {
+        const parts = studioEnvironmentNotice(environment);
+        validity.set(JSON.stringify(parts), { state: "environment", parts });
+      }
+    }
   }
   return <section className="space-y-2 text-sm" aria-label={studioName("inspector")}>
     {single && <h3 className="font-semibold">{selected[0].label}</h3>}
@@ -190,6 +210,14 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
         <StudioRunStatus status={status} />
       </li>)}
     </ul>
+    {validity.size > 0 && <ul aria-label={studioName("reason")} className="divide-y divide-shell-divider border-y border-shell-divider">
+      {[...validity].map(([key, { state, parts: [kind, ...parts] }]) => <li key={key}
+        className="flex min-h-row items-start gap-1.5 py-1 text-xs">
+        <StatusMark status={state} label={studioRunStatus(state)} />
+        <span className="shrink-0 font-medium">{kind}</span>
+        <span className="min-w-0 break-words text-shell-muted">{parts.join(" · ")}</span>
+      </li>)}
+    </ul>}
     {single && detail ? detail : reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
       {[...reasons].map((reason) => <li key={reason}>{studioReason("observed", reason)}</li>)}
     </ul>}
@@ -226,7 +254,7 @@ export function StudioRunControls({ commands, machine, pivotCommand, pivotActive
   </div>;
 }
 
-function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstreamDetail }: StudioRunsProps) {
+function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstreamDetail, runMenu }: StudioRunsProps) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
@@ -241,8 +269,8 @@ function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstre
     </div>}
     <div className="min-h-0 flex-1 overflow-auto">
       {pivotActive
-        ? <StudioRunPivot {...selection} rows={step.runs} related={related} />
-        : <StudioRunTable {...selection} rows={step.runs} related={related} fillSlot />}
+        ? <StudioRunPivot {...selection} rows={step.runs} related={related} runMenu={runMenu} />
+        : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} fillSlot />}
     </div>
     {(upstream.size > 0 || downstream.size > 0) && <div className="max-h-36 shrink-0 overflow-auto px-2 pb-2 text-sm">
       <StudioRunLineage plan={plan} upstream={upstream} downstream={downstream} single={selected.length === 1}

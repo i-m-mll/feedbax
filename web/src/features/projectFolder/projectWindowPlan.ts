@@ -1,7 +1,7 @@
 import { studioFormat, studioName, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
-import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
+import { runResultState, type PlanResultView, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
 import type {
-  Project, SelectedRow, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
+  Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
 } from '@/generated/studioContracts';
 
@@ -53,8 +53,22 @@ function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMa
   ];
 }
 
-export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns | undefined, variant: string | null): PlanView {
+function savedResult(result: { request_id: string; job_id: string; validity?: PlanResultView['validity'] | null } | null | undefined) {
+  return result?.validity ? [{ requestId: result.request_id, jobId: result.job_id, validity: result.validity }] : [];
+}
+
+const noChecks: ReadonlySet<string> = new Set();
+
+export function projectWindowPlan(
+  project: Project, saved: StudioSavedTrainRuns | undefined, variant: string | null, checking = noChecks,
+): PlanView {
   const map = saved?.window_map;
+  const elementResults = new Map<string, StudioSavedLightResult[]>();
+  for (const element of map?.analysis_elements ?? []) {
+    if (!element.result) continue;
+    const id = savedRunId(element.key);
+    elementResults.set(id, [...elementResults.get(id) ?? [], element.result]);
+  }
   const scope = variant ?? planVariants(saved)[0] ?? null;
   const evaluations = new Map(map?.evaluations?.map((row) => [savedRunId(row.key), row]));
   const subjectsByStep = new Map<string, Map<string, StudioBoundBestSubject>>();
@@ -133,8 +147,16 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       : openingReason ? openingReason
       : row.opening_step ? [studioOpeningStep(row.opening_step), row.reason].filter(Boolean).join(' · ')
       : row.reason ?? undefined;
+    const evaluation = evaluations.get(id);
+    const results = [...new Map([
+      ...savedResult(training?.result),
+      ...savedResult(evaluation?.result && { ...evaluation.result, request_id: evaluation.request_id }),
+      ...savedResult(row.light?.result),
+      ...(elementResults.get(id) ?? []).flatMap(savedResult),
+    ].map((result) => [result.requestId, result])).values()];
     addRun(row.key.step, {
       id, values, label: producer?.label ?? row.label, status: row.status, reason, variant: row.key.variant,
+      state: runResultState(row.status, results, checking), results,
       openingReason,
       openingErrors: openingErrors.length ? openingErrors : undefined,
       progress: training?.attempts.at(-1)?.progress ?? undefined,
@@ -175,7 +197,7 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       sweeps: [...(sweepsByStep.get(id) ?? [])].map(([id, values]) => ({
         id, label: id, values: [...values].map(([id, label]) => ({ id, label })),
       })),
-      statusCounts: projected?.status_counts ?? {},
+      statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
       runs: groupedLabels.size ? runs.map((run) => {
         const rank = evaluations.get(run.id)?.subject_rank_key;
         const label = rank && groupedLabels.get(rank);
@@ -191,4 +213,14 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
         to: { stepId: to_key.step, runId: savedRunId(to_key) },
       })),
   };
+}
+
+function resultCounts(counts: Readonly<Record<string, number>>, runs: readonly PlanRunView[]): PlanStepView['statusCounts'] {
+  const folded: Record<string, number> = { ...counts };
+  for (const { status, state } of runs) {
+    if (status === state) continue;
+    folded[status] = (folded[status] ?? 0) - 1;
+    folded[state] = (folded[state] ?? 0) + 1;
+  }
+  return Object.fromEntries(Object.entries(folded).filter(([, count]) => count > 0));
 }

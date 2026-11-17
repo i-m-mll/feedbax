@@ -1,6 +1,6 @@
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
-import { appearanceSettings } from './appearance';
+import { appearanceSettings, comparisonSettings } from './appearance';
 
 export function appearanceCommands() {
-  return appearanceSettings().map(({ id, apply }) => bindStudioCommand(id, () => apply(window)));
+  return [...appearanceSettings(), ...comparisonSettings()].map(({ id, apply }) => bindStudioCommand(id, () => apply(window)));
 }

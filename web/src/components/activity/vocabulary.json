@@ -358,7 +358,10 @@
     "newValue": "New Value",
     "spacing": "Spacing",
     "keepValue": "Keep Value",
-    "reload": "Reload"
+    "reload": "Reload",
+    "check": "Check",
+    "uncheckedHollow": "Unchecked Outline",
+    "uncheckedBadge": "Unchecked Dot"
   },
   "unit": {
     "second": "s",
@@ -383,11 +386,20 @@
       "failed": "Failed",
       "stopped": "Stopped",
       "interrupted": "Interrupted",
-      "corrupt": "Damaged"
+      "corrupt": "Damaged",
+      "unchecked": "Unchecked",
+      "checking": "Checking",
+      "environment": "Environment changed"
     },
     "machine": {
       "queued": "Queued", "opening": "Opening", "open": "Open", "closing": "Closing", "unreachable": "Unreachable", "off": "Off",
       "ready": "Ready", "unavailable": "Unavailable"
+    },
+    "validity": {
+      "code": "Code", "environment": "Environment", "file": "File", "input": "Input",
+      "changed": "Changed", "removed": "Removed", "unreadable": "Unreadable", "invalid": "Invalid", "indeterminate": "Undetermined",
+      "source": "Source changed", "computation": "Results differ", "unverifiable": "Can't be checked",
+      "pending": "Not yet checked", "confirmed": "Same results", "different": "Different results", "not_checked": "Not checked"
     },
     "power": { "starting": "Starting", "on": "On", "off": "Off" },
     "openingStep": {
