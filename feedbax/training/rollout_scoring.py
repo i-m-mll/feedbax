@@ -23,7 +23,7 @@ class RolloutScorer:
     """One resolved cohort and Objective, independent of its attempt placement."""
 
     execution: TrialExecution
-    objective: ObjectiveExecutor
+    objective: ObjectiveExecutor | None
     seed: int
     trials: tuple[str, ...]
 

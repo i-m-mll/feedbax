@@ -45,6 +45,7 @@ class PreparedTrialExecution:
     objective: ObjectiveExecutor | None
     lowered: LoweredModelDocument
     task_source: TaskDocument | PythonTaskSelection
+    resolution: GraphResolution
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ class ResolvedTrialExecution:
         except GraphCompilationError as error:
             return _graph_problems(error)
         return PreparedTrialExecution(
-            executable, self.execution, self.objective, self.lowered, self.task_source,
+            executable, self.execution, self.objective, self.lowered, self.task_source, self.graph,
         )
 
 

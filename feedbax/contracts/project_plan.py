@@ -1761,7 +1761,7 @@ class _Compiler:
             )
             if isinstance(paired, tuple) or paired.problems:
                 raise ValueError((paired if isinstance(paired, tuple) else paired.problems)[0].reason)
-            variant = resolve_evaluation_variant(paired.lowered.graph, task, settings.variation)
+            variant = resolve_evaluation_variant(paired.lowered.graph, task, settings.variation, components=components)
             if variant.task != task:
                 paired = pair_trial_source(
                     source.model_name, source.document, variant.task, components, functions,

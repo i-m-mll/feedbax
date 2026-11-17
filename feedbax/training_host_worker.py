@@ -208,7 +208,7 @@ def _run(
         canonical_manifest_path, load_manifest_bytes, training_run_manifest_id, write_manifest,
     )
     from feedbax.contracts.method_checkpoint import MethodCheckpointClock, MethodCheckpointIdentity
-    from feedbax.contracts.model_input import CheckpointModelSource
+    from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource
     from feedbax.contracts.strict_json import strict_json_loads
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.host.completion import CompletionFileError, read_completion_bindings
@@ -249,7 +249,7 @@ def _run(
     policy = spec.continuation
     config = spec.training_config
     target = spec.target_total
-    seed = spec.seed or 0
+    seed = spec.seed
     replica_ids = tuple(map(str, range(config.replicates)))
     checkpoint_root = _attempt_root(manifest_root, job_id)
     binding_path = training_binding_path(manifest_root, job_id)
@@ -397,7 +397,7 @@ def _run(
         paired = []
         for replica_id in replica_ids:
             result = trial.realize(
-                initialization_key=model_initialization_key(spec.seed or 0, replica_id),
+                initialization_key=model_initialization_key(spec.seed, replica_id),
                 artifact_provider=model_assets,
             )
             if isinstance(result, tuple):
@@ -407,22 +407,23 @@ def _run(
         templates = tuple(result.executable.graph for result in paired)
         models = templates
         if restored is not None:
-            model_source = CheckpointModelSource(tree=restored.model.tree, encoding=restored.model.encoding)
-            template = paired[0].executable
+            source_spec = source_launch.spec if source_launch is not None else spec
+            documents = source_spec.trial_documents
+            source_graph = trial.graph
             variant = None
-            if source_launch is not None and source_launch.spec.trial_documents != spec.trial_documents:
+            if documents != spec.trial_documents or source_spec.seed != spec.seed:
                 from feedbax.studio.canonical_train import _resolve_trial
 
-                source_trial = _resolve_trial(source_launch.spec, registries)
-                realization = source_trial.realize(
-                    initialization_key=model_initialization_key(source_launch.spec.seed or 0, replica_ids[0]),
-                    artifact_provider=model_assets,
-                )
-                if isinstance(realization, tuple):
-                    raise ValueError(f"/inputs/checkpoint: {realization[0].reason}")
-                template, variant = realization.executable, template
+                source_graph = _resolve_trial(source_spec, registries).graph
+                variant = trial.graph
+            model_source = CheckpointModelSource(
+                tree=restored.model.tree,
+                encoding=restored.model.encoding,
+                initial=InitialModelSource(model_name=documents.model_name, document=documents.model, seed=source_spec.seed),
+            )
             reconstructed = reconstruct_model(
-                model_source, registry=registries, artifacts=model_assets, template=template, variant=variant,
+                model_source, registry=registries, artifacts=model_assets,
+                template=source_graph, variant=variant, variant_seed=spec.seed, slot=restored.model,
             )
             if isinstance(reconstructed, tuple):
                 problem = reconstructed[0]
@@ -433,7 +434,7 @@ def _run(
             raise ValueError("Managed Train requires a graph with semantic checkpoint model owners.")
         execution, objective = paired[0].execution, paired[0].objective
         assert objective is not None
-        state = initialize_method(method, settings, models=models, seed=spec.seed or 0, replica_ids=replica_ids)
+        state = initialize_method(method, settings, models=models, seed=spec.seed, replica_ids=replica_ids)
         if resume is not None or (policy is not None and policy.state == "preserve"):
             state = state._replace(model=stack_replicas(models),
                                    extra=restored.restore_extra(state.extra))
@@ -458,7 +459,7 @@ def _run(
             from feedbax.training.live_evaluate import live_evaluation_callback
 
             try:
-                evaluate_checkpoint = live_evaluation_callback(launch, events)
+                evaluate_checkpoint = live_evaluation_callback(launch, events, registry=registries)
             except (OSError, ValueError) as error:
                 events.append("live_evaluate_error", _error(error, "live_evaluate"), sync=True)
 
@@ -505,7 +506,7 @@ def _run(
             events.checkpoint = checkpoint
             checkpoints.append(checkpoint)
             if evaluate_checkpoint is not None:
-                evaluate_checkpoint(checkpoint, replica_value(state.model, 0))
+                evaluate_checkpoint(checkpoint, tuple(replica_value(state.model, i) for i in range(len(replica_ids))))
 
         def publish_frame() -> None:
             nonlocal last_frame
