@@ -6,9 +6,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 import json
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from feedbax.checkpoint_coordinates import cadence_coordinates, finite_coordinates
+from feedbax.contracts.effective_success import (
+    RequestObject, exact_model_checkpoint_input, read_success_request,
+)
+from feedbax.contracts.request_refs import BatchMember, RequestId
 from feedbax.host.completion import CompletionFileError, verify_completion_files
 
 
@@ -17,6 +21,8 @@ class CheckpointSelection:
     coordinates: tuple[int, ...]
     requires_catalog: bool
     allows_gaps: bool = False
+    role: str = "subject"
+    producer_request: RequestId | None = None
 
 
 def is_checkpoint_producer(
@@ -34,6 +40,22 @@ def is_checkpoint_producer(
 def requested_checkpoint_selection(request: str, launch: dict) -> CheckpointSelection | None:
     """Read the coordinate demand from the canonical input binding."""
     payload = launch["payload"]
+    if request.startswith("analyze:") and "request" in payload:
+        from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+        reference = RequestObject.model_validate(payload["request"])
+        if reference.id != request:
+            raise ValueError("Analyze checkpoint request differs from its admitted request")
+        store = ImmutableArtifactBlobProvider(Path(payload["manifest_root"]))
+        exact = exact_model_checkpoint_input(read_success_request(reference, store.get_object))
+        if exact is not None:
+            role, _, model = exact
+            assert isinstance(model.select, BatchMember)
+            return CheckpointSelection(
+                finite_coordinates((model.select.batch,)), False,
+                role=role, producer_request=model.request_id,
+            )
+        return None
     if request.startswith("evaluate:"):
         binding = payload.get("canonical_request") or {}
         selector = (binding.get("checkpoint") or {}).get("select")
