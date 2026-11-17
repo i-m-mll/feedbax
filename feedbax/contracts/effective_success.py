@@ -15,6 +15,7 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.checkpoint_projection import CheckpointOccurrenceRef, ContinuationOccurrence
+from feedbax.contracts.code_validity import AttemptProvenance, CodeTrace
 from feedbax.contracts.execution_target import AttemptTarget
 from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
@@ -202,6 +203,8 @@ class Success(ReferenceValue):
     inputs: Bindings
     products: Products = Field(min_length=1)
     supersedes: ContentObjectRef | None
+    trace: CodeTrace | None = Field(default=None, exclude_if=lambda value: value is None)
+    provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
     provider: DistributionSource | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_manifest: ContentObjectRef | None = Field(
         default=None, exclude_if=lambda value: value is None,
@@ -215,6 +218,8 @@ class Success(ReferenceValue):
 
     @model_validator(mode="after")
     def validate_products(self) -> Success:
+        if (self.trace is None) != (self.provenance is None):
+            raise ValueError("Receipt requires both execution trace and attempt provenance")
         projected = [
             role for role, members in self.inputs.items() for member in members
             if member.evaluation_subject is not None

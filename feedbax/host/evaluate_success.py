@@ -25,11 +25,13 @@ from feedbax.studio.canonical_evaluate import (
     exact_evaluation_subject, states_product, states_ref, verify_evaluation_receipt,
 )
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.validity.evidence import verify_execution_replay
 
 
 def publish_evaluate_success(
     *, attempt: str, request_id: str, project: str, payload: dict, receipt: dict, binding: dict,
     target: AttemptTarget = LOCAL_TARGET,
+    execution_evidence: ContentObjectRef | None = None,
 ) -> ContentObjectRef:
     launch = BoundEvaluationJobInput.model_validate(payload)
     if (launch.project_id, launch.request_id) != (project, request_id):
@@ -69,6 +71,7 @@ def publish_evaluate_success(
                 or saved.products != {"states": (product,)}
             ):
                 raise ValueError("Published Evaluate attempt differs from its accepted result")
+            verify_execution_replay(saved, execution_evidence)
             view.ensure_published_run_ref(existing.ref, existing.receipt)
             return existing.ref
         if isinstance(subject, ContentRef):
@@ -79,6 +82,7 @@ def publish_evaluate_success(
             return view.publish_bound(
                 request, attempt=attempt, products={"states": (product,)}, bindings=bindings,
                 evaluation_manifest=manifest_object, target=target,
+                execution_evidence=execution_evidence,
             ).ref
 
         closure = None
@@ -191,6 +195,7 @@ def publish_evaluate_success(
         result = view.publish_bound(
             request, attempt=attempt, products={"states": (product,)}, bindings={"subject": (bound,)},
             evaluation_manifest=manifest_object, target=target,
+            execution_evidence=execution_evidence,
         )
         return result.ref
 

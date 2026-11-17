@@ -11,6 +11,7 @@ from pathlib import Path
 from .protocol import JsonObject
 
 TOKEN_ENV = "FEEDBAX_PROCESS_IDENTITY"
+EVIDENCE_FILE = "execution-evidence.json"
 
 
 def encode(value: JsonObject) -> bytes:

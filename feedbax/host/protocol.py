@@ -75,6 +75,7 @@ class Launch:
     payload: JsonObject = field(default_factory=dict)
     warm_entrypoint: str | None = None
     preload: tuple[str, ...] = ()
+    project_root: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

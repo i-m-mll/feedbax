@@ -1,0 +1,1 @@
+"""Managed result validity."""
