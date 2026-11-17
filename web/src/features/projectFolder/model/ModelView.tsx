@@ -1104,7 +1104,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             if (!last) return;
             setLibraryItem(undefined);
             if (last.composites.join('\u0000') !== currentPath.join('\u0000')) go(last.composites);
-            state.setState({ selection: chosen });
+            setSelection(chosen);
           }}
           onActivate={(id) => {
             const address = outline.addresses.get(id);
