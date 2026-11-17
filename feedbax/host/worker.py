@@ -1,6 +1,5 @@
 """Detached worker that accepts each delivery before touching its payload."""
 
-from contextlib import nullcontext
 import importlib
 import json
 import os
@@ -11,9 +10,9 @@ import time
 import traceback
 from pathlib import Path
 
-from .io import EVIDENCE_FILE, TOKEN_ENV, append, encode, receive, write_json
-from .launcher import _outcome
-from .protocol import MAX_RPC_BYTES
+from .io import EVIDENCE_FILE, TOKEN_ENV, append, encode, read_worker_result, receive, write_json
+from .protocol import MANAGED_ENTRYPOINTS, MAX_RPC_BYTES, VALIDITY_CHECK_ENTRYPOINT
+from .source_roster import SourceRoster
 
 
 def _redirect(paths: dict) -> None:
@@ -55,13 +54,16 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
     profile = json.loads(Path(profile_path).read_text())
     control = socket.socket(fileno=int(control_fd))
     report = int(report_fd)
-    recorder = None
-    if project := profile.get("project_root"):
-        from feedbax.validity.recording import WorkerRecorder
+    if profile["warm_entrypoint"] in MANAGED_ENTRYPOINTS | {VALIDITY_CHECK_ENTRYPOINT}:
+        boot_ns = time.time_ns()
+        with SourceRoster(3, "Feedbax executed source") as entered:
+            entered.enable()
+            from feedbax.validity.recording import WorkerRecorder
 
-        recorder = WorkerRecorder(Path(project))
-    with (recorder.monitor() if recorder is not None else nullcontext()):
-        return _serve(profile, control, report, recorder)
+            recorder = WorkerRecorder(entered.names, boot_ns=boot_ns)
+            with recorder.monitor():
+                return _serve(profile, control, report, recorder)
+    return _serve(profile, control, report, None)
 
 
 def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
@@ -169,7 +171,7 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
         argv = message["argv"]
         if entrypoint is None:
             os.execvpe(argv[0], argv, os.environ)
-        if recorder is None:
+        if recorder is None or message.get("project_root") is None:
             return int(entrypoint(argv[1:]) or 0)
         return _record_execution(message, recorder, log, entrypoint, argv[1:])
     except Exception as error:  # noqa: BLE001 -- foreign executor boundary
@@ -192,18 +194,26 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
 def _record_execution(message, recorder, log: Path, entrypoint, argv) -> int:
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.validity.environment import EnvironmentMismatch
-    from feedbax.validity.evidence import stage_evidence
+    from feedbax.validity.evidence import release_staged_evidence, stage_evidence
 
     root = Path(message["store_root"])
     try:
+        recorder.bind_project(Path(message["project_root"]))
         with recorder.delivery(message["job_id"], root, log.parent):
             status = int(entrypoint(argv) or 0)
-            if status == 0 and _outcome(log, status, require_result=True)["outcome"] == "succeeded":
+            if (
+                message["entrypoint"] != VALIDITY_CHECK_ENTRYPOINT
+                and status == 0 and (read_worker_result(log) or {}).get("outcome") == "succeeded"
+            ):
                 store = ImmutableArtifactBlobProvider(root)
                 with store._exclusive_lock():
                     evidence = recorder.snapshot(store)
                     ref = stage_evidence(store, evidence)
-                write_json(log.with_name(EVIDENCE_FILE), ref.model_dump(mode="json"))
+                try:
+                    write_json(log.with_name(EVIDENCE_FILE), ref.model_dump(mode="json"))
+                except OSError:
+                    release_staged_evidence(store, message["job_id"])
+                    raise
             return status
     except EnvironmentMismatch as error:
         append(

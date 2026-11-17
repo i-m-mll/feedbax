@@ -143,13 +143,20 @@ def loaded_source_roots() -> dict[str, Path]:
 
 
 @lru_cache(maxsize=16)
-def _catalog(project_root: Path) -> SourceCatalog:
-    return SourceCatalog({"project": project_root, **loaded_source_roots()})
+def _catalog(project_root: Path | None) -> SourceCatalog:
+    return SourceCatalog(_catalog_roots(project_root))
 
 
-def source_catalog(project_root: Path) -> SourceCatalog:
+def _catalog_roots(project_root: Path | None) -> dict[str, Path]:
+    roots = loaded_source_roots()
+    if project_root is not None:
+        roots["project"] = project_root.resolve()
+    return roots
+
+
+def source_catalog(project_root: Path | None) -> SourceCatalog:
     result = _catalog(project_root)
-    roots = {"project": project_root, **loaded_source_roots()}
+    roots = _catalog_roots(project_root)
     if result.roots != roots:
         result.set_roots(roots)
     return result

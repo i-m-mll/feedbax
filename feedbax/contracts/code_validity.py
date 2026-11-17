@@ -45,7 +45,7 @@ class SourceSnapshot(ReferenceValue):
 class SourceDifference(ReferenceValue):
     kind: Literal["source"] = "source"
     path: SourcePath
-    before: Sha256
+    before: Sha256 | None
     after: Sha256 | None
     status: Literal["changed", "removed", "unreadable", "invalid", "indeterminate"]
     statements: tuple[str, ...] = ()

@@ -21,6 +21,10 @@ type State = Literal[
 type Disposition = Literal["admitted", "attached", "reused", "rejected"]
 
 LIGHT_ENTRYPOINT = "feedbax.light_host_worker:main"
+VALIDITY_CHECK_ENTRYPOINT = "feedbax.validity.check_worker:main"
+MANAGED_ENTRYPOINTS = frozenset({
+    LIGHT_ENTRYPOINT, "feedbax.training_host_worker:main", "feedbax.training.evaluate_worker:main",
+})
 
 VERSION = 1
 MAX_RPC_BYTES = 32 * 1024 * 1024
