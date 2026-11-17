@@ -18,18 +18,20 @@ from types import ModuleType
 from packaging.utils import canonicalize_name
 
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
-from feedbax.contracts.code_validity import AttemptProvenance, CodeTrace, FileSnapshot, ReceiptEvidence, SourcePath, SourceSnapshot
+from feedbax.contracts.code_validity import (
+    AttemptProvenance, CodeTrace, ComputationUnavailable, FileSnapshot, ReceiptEvidence, SourcePath, SourceSnapshot,
+)
 from feedbax.contracts.computation_validity import ComputationTrace
 from feedbax.host.source_roster import SourceRoster
 from feedbax.orchestration.revision import resolve_feedbax_provenance
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.declarations import ResolvedDeclaration, observe_declarations
-from feedbax.validity.environment import EnvironmentSnapshot, read_environment
+from feedbax.validity.environment import EnvironmentMismatch, EnvironmentSnapshot, installed_versions, read_environment
 from feedbax.validity.registry import registry_binding
 from feedbax.validity.source import SourceFile, plugin_packages, source_catalog
 
 
-type ComputationSnapshot = Callable[[], ComputationTrace | None]
+type ComputationSnapshot = Callable[[], ComputationTrace | ComputationUnavailable | None]
 
 
 @dataclass
@@ -73,6 +75,7 @@ class WorkerRecorder:
         self.project: Path | None = None
         self.catalog = source_catalog(None)
         self.boot_ns = boot_ns
+        self.installed = installed_versions()
         self.entered = entered
         self.host = SourceRoster(4, "Feedbax host product source")
         self.loaded: dict[SourcePath, SourceFile] = {}
@@ -150,6 +153,8 @@ class WorkerRecorder:
             raise ValueError("A managed worker cannot change its project source authority")
 
     def changed(self) -> bool:
+        if installed_versions() != self.installed:
+            return True
         for source, expected in self.loaded.items():
             try:
                 present = self.catalog.read(source)
@@ -162,7 +167,7 @@ class WorkerRecorder:
     @contextmanager
     def delivery(self, job: str, store_root: Path, scratch: Path) -> Iterator[None]:
         assert self.project is not None
-        environment = read_environment(self.project, verify_installation=True)
+        environment = self._current_environment()
         store = ImmutableArtifactBlobProvider(store_root)
         excluded = (store_root.resolve(), scratch.resolve(), *self._interpreter_roots)
         with self._scope(_Attempt(job, store, environment, datetime.now(UTC), excluded)):
@@ -231,6 +236,7 @@ class WorkerRecorder:
             self._audit.reading = False
 
     def _snapshot(self, attempt: _Attempt, store: ImmutableArtifactBlobProvider) -> ReceiptEvidence:
+        self._verify_environment(attempt)
         sources = []
         def order(source: SourcePath) -> tuple[str, str]:
             return source.scope, source.path
@@ -256,6 +262,7 @@ class WorkerRecorder:
             ))
         provenance = resolve_feedbax_provenance()
         self._verify_file_reads(attempt)
+        computation = attempt.computation() if attempt.computation is not None else None
         return ReceiptEvidence(
             attempt=attempt.id,
             trace=CodeTrace(
@@ -269,7 +276,8 @@ class WorkerRecorder:
                 indeterminate=tuple(sorted(attempt.indeterminate, key=order)),
                 indeterminate_files=tuple(sorted(attempt.indeterminate_files, key=order)),
                 prefixes=tuple(attempt.prefixes),
-                computation=attempt.computation() if attempt.computation is not None else None,
+                computation=computation if isinstance(computation, ComputationTrace) else None,
+                computation_unavailable=computation if isinstance(computation, ComputationUnavailable) else None,
             ),
             provenance=AttemptProvenance(
                 feedbax_commit=provenance.revision, feedbax_dirty=provenance.dirty,
@@ -301,6 +309,22 @@ class WorkerRecorder:
             if not stable:
                 attempt.indeterminate_files.add(path)
 
+    def _current_environment(self) -> EnvironmentSnapshot:
+        assert self.project is not None
+        installed = installed_versions()
+        if installed != self.installed:
+            changed = [
+                f"{name} ({self.installed.get(name, 'absent')} to {installed.get(name, 'absent')})"
+                for name in sorted(self.installed.keys() | installed.keys())
+                if self.installed.get(name) != installed.get(name)
+            ]
+            raise EnvironmentMismatch("Installed distributions changed in the live worker: " + ", ".join(changed))
+        return read_environment(self.project, installed=installed, verify_installation=True)
+
+    def _verify_environment(self, attempt: _Attempt) -> None:
+        if self._current_environment() != attempt.environment:
+            raise EnvironmentMismatch("Dependency lock changed during the managed computation")
+
     def ensure_unchanged(self) -> None:
         attempt = self.attempt
         assert attempt is not None and self.project is not None
@@ -311,11 +335,11 @@ class WorkerRecorder:
                 if source is None or source.modified_ns > self.boot_ns:
                     attempt.indeterminate.add(path)
             self._verify_file_reads(attempt)
-            current = read_environment(self.project, verify_installation=True)
+            self._verify_environment(attempt)
         finally:
             self._audit.reading = False
-        if attempt.indeterminate or attempt.indeterminate_files or current != attempt.environment:
-            raise ValueError("Source files, read dependencies, or environment changed during the computation check")
+        if attempt.indeterminate or attempt.indeterminate_files:
+            raise ValueError("Source files or read dependencies changed during the computation check")
 
     def _loaded_environment(self, environment: EnvironmentSnapshot) -> dict[str, str]:
         first_party = {"feedbax", *plugin_packages().values()}
