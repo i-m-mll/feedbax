@@ -78,7 +78,7 @@ def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
         import_error = (error, traceback.format_exc())
     snapshots = _sources() if recorder is None else None
     if recorder is not None:
-        recorder.note_preloaded_sources()
+        recorder.observe_new_sources()
     reusable = profile.get("light_affinity") is not None
     with control:
         while True:
@@ -89,26 +89,34 @@ def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
                 return 0
             if (recorder.changed() if recorder is not None else _sources_changed(snapshots)):
                 return 0
+            source_error = None
             if recorder is not None:
-                if (project := message.get("project_root")) is not None:
-                    environment = message.get("environment_root")
-                    recorder.bind_project(Path(project), environment_root=Path(environment) if environment else None)
-                recorder.start_delivery()
+                try:
+                    if (project := message.get("project_root")) is not None:
+                        environment = message.get("environment_root")
+                        recorder.bind_project(Path(project), environment_root=Path(environment) if environment else None)
+                    recorder.start_delivery()
+                except (OSError, ValueError) as error:
+                    source_error = error
             if not reusable:
                 control.close()
-            status = _execute(message, report, entrypoint, import_error, reusable=reusable, recorder=recorder)
+            status = _execute(
+                message, report, entrypoint, import_error, reusable=reusable, recorder=recorder, source_error=source_error,
+            )
             if not reusable:
                 return status
+            # Failed deliveries can load code without publishing a snapshot.
+            source_changed = recorder is not None and recorder.observe_new_sources()
             sys.stdout.flush()
             sys.stderr.flush()
             os.write(report, encode({"status": status}))
-            if import_error is not None:
+            if import_error is not None or source_changed:
                 return status
             if snapshots is not None:
                 snapshots |= {path: info for path, info in _sources().items() if path not in snapshots}
 
 
-def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: bool, recorder) -> int:
+def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: bool, recorder, source_error) -> int:
     paths = message["paths"]
     log = Path(paths["event_log"])
     os.write(report, encode({"event_log": str(log)}))
@@ -173,6 +181,8 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
                 sync=True,
             )
             return 1
+        if source_error is not None:
+            raise source_error
         argv = message["argv"]
         if entrypoint is None:
             os.execvpe(argv[0], argv, os.environ)

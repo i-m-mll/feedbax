@@ -172,14 +172,18 @@ class WorkerRecorder:
             host.update(self.host.names.get(name, ()))
         return result
 
-    def note_preloaded_sources(self) -> None:
+    def observe_new_sources(self) -> bool:
+        """Capture newly loaded files and report changes after their witness."""
+        changed = False
         for path in self._source_paths():
             if path not in self.loaded:
                 self._current_source(path)
+                changed |= path in self._indeterminate
+        return changed
 
     def start_delivery(self) -> None:
         started = time_ns()
-        self.note_preloaded_sources()
+        self.observe_new_sources()
         self._delivery_started_ns = started
 
     def bind_project(self, project: Path, *, environment_root: Path | None = None) -> None:
@@ -188,7 +192,7 @@ class WorkerRecorder:
         if self.project is None:
             self.project = root
             self._environment_root = lock_root
-            self.note_preloaded_sources()
+            self.observe_new_sources()
         elif self.project != root or self._environment_root != lock_root:
             raise ValueError("A managed worker cannot change its project or environment authority")
 

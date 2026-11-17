@@ -7,6 +7,7 @@ import importlib.util
 import os
 from pathlib import Path
 import re
+import socket
 import sys
 import time
 from types import ModuleType
@@ -21,7 +22,8 @@ from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import StoreClosureRef
-from feedbax.host.io import EVIDENCE_FILE, append
+from feedbax.host import worker
+from feedbax.host.io import EVIDENCE_FILE, TOKEN_ENV, append, read_worker_result
 from feedbax.host.source_roster import SourceRoster
 from feedbax.host.worker import _record_execution
 from feedbax.orchestration.revision import FeedbaxProvenance
@@ -148,7 +150,7 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
         recorder = WorkerRecorder(roster.names, boot_ns=boot_ns)
         with recorder.monitor():
             spec.loader.exec_module(module)
-            recorder.note_preloaded_sources()
+            recorder.observe_new_sources()
             recorder.bind_project(project)
             registry.add(
                 "example.operation", DistributionSource("example", "example", "1"), module.read_input,
@@ -201,6 +203,69 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
     assert captured.content in ReceiptClosure(store).owned_objects(success.ref)
     assert b"return 7" in store.get_object(captured.content)
     assert recorder.catalog.file_digest(named_file) == sha256(b"second contents").hexdigest()
+
+
+def test_reusable_worker_retires_after_edit_to_source_loaded_by_failed_delivery(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "_managed_failed_delivery.py"
+    source.write_text("value = 1\n")
+    monkeypatch.syspath_prepend(str(project))
+    monkeypatch.setitem(sys.modules, source.stem, None)
+    monkeypatch.delitem(sys.modules, source.stem)
+    monkeypatch.setattr(
+        "feedbax.validity.recording.resolve_feedbax_provenance",
+        lambda: FeedbaxProvenance(Path("/example/feedbax"), "a" * 40, False),
+    )
+    monkeypatch.setattr(worker, "_redirect", lambda paths: None)
+    monkeypatch.setattr(worker.os, "environ", {**os.environ, TOKEN_ENV: "worker-token"})
+
+    def execute(_argv):
+        assert importlib.import_module(source.stem).value == 1
+        raise ValueError("Failed after importing project code")
+
+    module = ModuleType("_managed_failure_entrypoint")
+    module.main = execute
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    entrypoint = f"{module.__name__}:main"
+    startup_log = tmp_path / "startup.log"
+    startup_log.touch()
+
+    def delivery(job):
+        directory = tmp_path / job
+        directory.mkdir()
+        return {
+            "job_id": job, "argv": ["python"], "entrypoint": entrypoint, "project_root": str(project),
+            "store_root": str(tmp_path / "store"), "startup_log": str(startup_log),
+            "paths": {name: str(directory / name) for name in (
+                "event_log", "stdout", "stderr", "input", "stop_file", "scratch",
+            )},
+        }
+
+    first = delivery("first")
+    next_job = delivery("next")
+    messages = iter((first, next_job))
+
+    def receive_next(_control, _limit):
+        message = next(messages)
+        if message is next_job:
+            assert read_worker_result(Path(first["paths"]["event_log"]))["error"]["code"] == "worker_exception"
+            before = source.stat()
+            source.write_text("value = 2\n")
+            os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return message
+
+    monkeypatch.setattr(worker, "receive", receive_next)
+    control, peer = socket.socketpair()
+    with peer, (tmp_path / "reports").open("wb") as reports, SourceRoster(3, "test worker source") as roster:
+        roster.enable()
+        recorder = WorkerRecorder(roster.names, boot_ns=time.time_ns())
+        with recorder.monitor():
+            assert worker._serve(
+                {"preload": [], "warm_entrypoint": entrypoint, "light_affinity": ["project", "store"]},
+                control, reports.fileno(), recorder,
+            ) == 0
+    assert not Path(next_job["paths"]["event_log"]).exists()
 
 
 def test_worker_environment_verifies_versions_from_the_active_lock_projection(tmp_path):
