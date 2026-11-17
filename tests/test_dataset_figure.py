@@ -18,7 +18,6 @@ from feedbax.contracts.figure_document import (
     FigureDocument,
     FigureLayerOmission,
     PlotlyFigureProduct,
-    ResolvedFigureTemplate,
     validate_figure_bindings,
 )
 from feedbax.contracts.report_document import ReportDocument
@@ -90,12 +89,7 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
 
     figure_bytes = figure.to_json().encode()
     encoded = encode_request(
-        RenderRequestSpec(
-            figure=None, document=document,
-            template=ResolvedFigureTemplate(
-                key="feedbax.VelocitySummary", settings={"checkpoint_index": 0}, revision=1,
-            ),
-        ),
+        RenderRequestSpec(figure=None, document=document),
         {"summary": (InputMember(
             key="summary", reference=ProductRef(request_id="analyze:" + "a" * 64, role="summary"),
         ),)},
