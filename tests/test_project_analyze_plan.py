@@ -7,6 +7,7 @@ from pathlib import Path
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
 from feedbax.contracts.analysis_document import FigureElement
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Document, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
@@ -30,7 +31,7 @@ from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.plugins.application import new_application_registry_bundle
-from tests.test_canonical_evaluate_admission import managed_evaluation_definition
+from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
 
 _KEY = RunKey("default", "analyze", "default")
@@ -38,12 +39,14 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "web/e2e/studio/fixtures"
 
 
 def _project() -> Project:
-    project = Project.model_validate(managed_evaluation_definition())
-    project.steps = {name: project.steps[name] for name in ("train", "baseline")}
+    project = managed_train_project()
+    project.steps["baseline"] = Step.model_validate(managed_evaluation_step("train"))
     project.documents["velocity-analysis"] = Document.model_validate(
         {
             "schema": "feedbax.analysis_document.v1",
-            "payload": json.loads((_FIXTURES / "velocity-analysis.json").read_bytes()),
+            "payload": json.loads((_FIXTURES / "velocity-analysis.json").read_bytes()) | {
+                "inputs": {"states": {"kind": "dataset"}},
+            },
         }
     )
     project.documents["velocity-figure"] = Document.model_validate(
@@ -60,6 +63,17 @@ def _project() -> Project:
         }
     )
     return project
+
+
+def _conditions() -> Step:
+    mass = ModelAddress.model_validate({
+        "document": "point-mass", "composites": [],
+        "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+    }).to_text()
+    return Step.model_validate(managed_evaluation_step("train") | {"sweep": {"axes": {"mass": {"values": {
+        name: {"value": value, "patches": {mass: {"value": value}}}
+        for name, value in (("nominal", 1), ("heavy", 2))
+    }}}}})
 
 
 def _operations():
@@ -138,7 +152,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     ddof = summary["params"].pop("ddof")
     summary["inputs"].clear()
     (draft_row,) = (row for row in compile_project(project, operations=registry).rows if isinstance(row, PlannedAnalyzeRun))
-    assert draft_row.states[0].producer == RunKey("default", "baseline", "default")
+    assert draft_row.inputs["states"][0].producer == RunKey("default", "baseline", "default")
     states_port = registry.resolve("feedbax.aligned_velocity").value.definition.inputs["states"]
     states = DatasetPort(schema_ids=(states_port.schema_ids[0],))
     with pytest.raises(ValueError, match="Requires dataset schemas"):
@@ -405,7 +419,7 @@ def test_figure_binding_fails_closed():
 
 def test_analyze_collects_static_rows_in_each_named_variant():
     project = _project()
-    project.steps["conditions"] = Project.model_validate(managed_evaluation_definition()).steps["conditions"]
+    project.steps["conditions"] = _conditions()
     project.sweep = Sweep.model_validate({"rows": {"base": {}, "compare": {"from": "base"}}})
     project.steps["analyze"] = Step.model_validate(
         {
@@ -418,7 +432,7 @@ def test_analyze_collects_static_rows_in_each_named_variant():
     plan = compile_project(project, operations=operations)
     assert not plan.diagnostics
     sources = {
-        run.key.variant: tuple(binding.producer for binding in run.states)
+        run.key.variant: tuple(binding.producer for binding in run.inputs["states"])
         for run in plan.rows if isinstance(run, PlannedAnalyzeRun)
     }
     assert sources == {
@@ -436,7 +450,7 @@ def test_analyze_collects_static_rows_in_each_named_variant():
 def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
     project = _project()
     operations = _operations()
-    project.steps["conditions"] = Project.model_validate(managed_evaluation_definition()).steps["conditions"]
+    project.steps["conditions"] = _conditions()
     baseline = compile_project(project, operations=operations)
     conditions = {
         run.coordinates["mass"].value_id: run for run in baseline.runs if run.key.step == "conditions"

@@ -11,15 +11,11 @@ from pydantic import Field, model_validator
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentBinding, ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.checkpoints import CheckpointLatestPointer, CheckpointTransactionManifest
-from feedbax.contracts.effective_success import Bindings, Product, RequestObject
-from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
-from feedbax.contracts.publication import CheckpointSet
-from feedbax.contracts.request_refs import ContentRef
+from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
+from feedbax.contracts.effective_success import Bindings, RequestObject
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider, content_object_relative_path
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.persistence.receipt_content import success_content_objects
 
 if TYPE_CHECKING:
     from feedbax.persistence.store_sync import StoreEndpoint
@@ -35,10 +31,11 @@ class TrainJobEntry(StrictModel):
     request: RequestObject
     inputs: Bindings
     checkpoints: tuple[TrainJobCheckpoint, ...] = Field(min_length=1)
+    metrics: ContentObjectRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def exact_attempt(self) -> TrainJobEntry:
-        coordinates = [checkpoint.pointer.completed_training_batches for checkpoint in self.checkpoints]
+        coordinates = [checkpoint.pointer.completed_updates for checkpoint in self.checkpoints]
         if (
             not self.request.id.startswith("train:")
             or any(checkpoint.pointer.run_id != self.attempt for checkpoint in self.checkpoints)
@@ -83,7 +80,8 @@ def _closure(ref: ContentObjectRef, entry: TrainJobEntry) -> StoreClosureRef:
     return StoreClosureRef(
         roots=(ref, entry.request.object, *entry.request.documents,
                *(ReceiptRoot(receipt=origin) for origin in _origins(entry)),
-               *(checkpoint.content.tree for checkpoint in entry.checkpoints)),
+               *(checkpoint.content.tree for checkpoint in entry.checkpoints),
+               *((entry.metrics,) if entry.metrics is not None else ())),
         include_ancestry=True,
     )
 
@@ -91,51 +89,17 @@ def _closure(ref: ContentObjectRef, entry: TrainJobEntry) -> StoreClosureRef:
 def _verify_entry(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> None:
     SuccessView(store).verify_bindings(entry.request, entry.inputs)
     _verify_checkpoints(store, entry)
+    if entry.metrics is not None:
+        store.verify_object(entry.metrics)
 
 
 def _verify_checkpoints(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> None:
+    from feedbax.persistence.method_checkpoint import verify_method_checkpoint_content
+
     for checkpoint in entry.checkpoints:
-        content, pointer = checkpoint.content, checkpoint.pointer
-        if content.root_kind != "checkpoint-custody" or content.binding_name != pointer.transaction_id:
-            raise ValueError("Train recovery requires the exact full checkpoint binding")
-        files = {file.relative_path: file.object for file in store.get_tree(content.tree).files}
-        saved = CheckpointLatestPointer.model_validate_json(store.get_object(files["latest.json"]))
-        manifest_ref = files[pointer.manifest_relative_path]
-        if saved != pointer or manifest_ref.sha256 != pointer.manifest_sha256:
-            raise ValueError("Train checkpoint tree differs from its exact published pointer")
-        manifest = CheckpointTransactionManifest.model_validate_json(store.get_object(manifest_ref))
-        if (
-            manifest.run_id != pointer.run_id or manifest.transaction_id != pointer.transaction_id
-            or manifest.completed_coordinate != pointer.completed_coordinate
-            or manifest.completed_training_batches != pointer.completed_training_batches
-            or manifest.content_integrity_digest.transaction_root_sha256 != pointer.transaction_root_sha256
-        ):
-            raise ValueError("Train checkpoint manifest differs from its exact published occurrence")
-        parent = pointer.manifest_relative_path.rpartition("/")[0]
-        checkpoint_set = CheckpointSet.model_validate_json(store.get_object(files[f"{parent}/checkpoint-set.json"]))
-        recorded_parent = manifest.metadata.get("checkpoint_segment_parent_ref")
-        if (
-            checkpoint_set.transaction.identity != pointer.transaction_id
-            or checkpoint_set.transaction.bytes.digest != manifest_ref.sha256
-            or checkpoint_set.transaction.bytes.size_bytes != manifest_ref.size_bytes
-            or (recorded_parent is not None and (
-                checkpoint_set.parent is None or recorded_parent != checkpoint_set.parent.model_dump(mode="json")
-            ))
-        ):
-            raise ValueError("Train checkpoint set differs from its authenticated transaction")
-        for slot in manifest.slots:
-            member = files[f"{parent}/{slot.relative_path}"]
-            if (member.sha256, member.size_bytes) != (slot.sha256, slot.size_bytes):
-                raise ValueError("Train checkpoint tree differs from its authenticated slot manifest")
-            if slot.media_type == MODEL_TREE_MEDIA_TYPE:
-                model = Product(name="model", descriptor=slot.metadata["semantic_model"], content=ContentRef(
-                    sha256=member.sha256, size=member.size_bytes, media_type=MODEL_TREE_MEDIA_TYPE, tree=True,
-                ))
-                for ref in success_content_objects(store, model):
-                    if files.get(f"{parent}/semantic-model/{content_object_relative_path(ref.sha256).as_posix()}") != ref:
-                        raise ValueError("Train checkpoint tree omits authenticated model members")
-        for member in files.values():
-            store.verify_object(member)
+        manifest = verify_method_checkpoint_content(store, checkpoint.pointer, checkpoint.content)
+        if manifest.identity.request_id != entry.request.id:
+            raise ValueError("Train checkpoint differs from the retained Train request")
 
 
 def publish_train_job(store: ImmutableArtifactBlobProvider, entry: TrainJobEntry) -> ContentObjectRef:

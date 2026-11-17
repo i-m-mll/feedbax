@@ -18,6 +18,7 @@ from feedbax.contracts.request_refs import ContentRef, ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects, verify_evaluation_success_evidence
+from feedbax.persistence.checkpoint_publication import checkpoint_model_objects
 from feedbax.persistence.receipt_content import ClosureVisitors, continuation_objects, success_content_objects, tree_objects
 
 
@@ -171,7 +172,11 @@ class ReceiptClosure:
                 for member, bound in zip(members, receipt.inputs[role], strict=True):
                     reference = member.reference
                     selection = bound.selection
-                    if bound.evaluation_subject is not None:
+                    if bound.checkpoint_model is not None:
+                        if closure.include_ancestry:
+                            for ref in checkpoint_model_objects(self.store, member, bound, visitors=visitors):
+                                add(ref)
+                    elif bound.evaluation_subject is not None:
                         if closure.include_ancestry:
                             for ref in evaluation_subject_objects(
                                 self.store, decoded, member, bound, visitors=visitors,

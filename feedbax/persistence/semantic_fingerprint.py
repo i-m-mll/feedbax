@@ -1,4 +1,4 @@
-"""Value fingerprinting for nodes in a live analysis graph."""
+"""Address-free fingerprints of typed Python and JAX values."""
 
 from collections import OrderedDict
 from collections.abc import Callable
@@ -15,10 +15,14 @@ import jax.tree_util as jtu
 import numpy as np
 
 
-def _fingerprint_semantic_values(
+class UnsupportedSemanticValue(TypeError):
+    """A value has no defined persistent semantic identity."""
+
+
+def fingerprint_semantic_values(
     *values: Any,
     header: tuple[str, ...] = (),
-    project_leaf: Callable[[Any], Any],
+    project_leaf: Callable[[Any], Any] | None = None,
 ) -> str:
     """Hash framed values with an optional projection for opaque leaves."""
     digest = hashlib.sha256()
@@ -34,7 +38,9 @@ def _fingerprint_semantic_values(
         text(cls.__module__)
         text(cls.__qualname__)
 
-    def encode_opaque_leaf(value: Any) -> None:
+    def encode_opaque_leaf(value: Any, reason: str) -> None:
+        if project_leaf is None:
+            raise UnsupportedSemanticValue(reason)
         frame(b"projected-leaf")
         type_name(type(value))
         encode(project_leaf(value))
@@ -42,7 +48,7 @@ def _fingerprint_semantic_values(
     def array_payload(value: np.ndarray, source: Any) -> None:
         dtype = value.dtype
         if dtype.hasobject or dtype.fields is not None or dtype.metadata is not None:
-            encode_opaque_leaf(source)
+            encode_opaque_leaf(source, f"array dtype {dtype!r}")
             return
         text(dtype.str)
         text(dtype.name)
@@ -82,7 +88,7 @@ def _fingerprint_semantic_values(
             array_payload(np.asarray(value), value)
         elif isinstance(value, jax.Array) and not isinstance(value, jax.core.Tracer):
             if not value.is_fully_addressable:
-                encode_opaque_leaf(value)
+                encode_opaque_leaf(value, "non-addressable JAX array")
             elif jax.dtypes.issubdtype(value.dtype, jax.dtypes.prng_key):
                 frame(b"jax-key")
                 text(str(jax.random.key_impl(value)))
@@ -129,11 +135,11 @@ def _fingerprint_semantic_values(
         try:
             children, definition = jtu.tree_flatten(value, is_leaf=stop_at_child)
         except (TypeError, ValueError):
-            encode_opaque_leaf(value)
+            encode_opaque_leaf(value, f"cannot flatten {type(value).__qualname__}")
             return
         node = definition.node_data()
         if node is None:
-            encode_opaque_leaf(value)
+            encode_opaque_leaf(value, f"{type(value).__module__}.{type(value).__qualname__}")
             return
         _, aux = node
         frame(b"pytree")
@@ -152,5 +158,5 @@ def _fingerprint_semantic_values(
         for value in values:
             encode(value)
     except RecursionError as exc:
-        raise ValueError("cyclic or deeply nested value") from exc
+        raise UnsupportedSemanticValue("cyclic or deeply nested value") from exc
     return digest.hexdigest()

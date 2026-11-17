@@ -100,7 +100,7 @@ def test_velocity_report_references_the_saved_band_with_condition_order_and_phys
         content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
         descriptor={"descriptor_sha256": ref.descriptor_sha256},
     ),)}
-    saved = _compute(store, request, bindings, "render-attempt", validate_light_request(request))
+    saved = _compute(store, request, bindings, "render-attempt", *validate_light_request(request))
     content = saved.content
     document = ReportDocument.model_validate_json(
         (_FIXTURES / "velocity-summary.report.json").read_bytes()

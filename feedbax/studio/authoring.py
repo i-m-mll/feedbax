@@ -14,7 +14,6 @@ from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocu
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocument
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.analysis_document import AnalysisDocument
-from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSource
 from feedbax.contracts.figures import COMPARISON_POLICY_SCHEMA_ID, ComparisonPolicySpec
@@ -27,8 +26,8 @@ from feedbax.contracts.project_plan import ProjectPlan, RunKey
 from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.request_identity import REQUEST_KINDS
-from feedbax.contracts.request_specs import DocumentTrainingConfig
+from feedbax.contracts.request_identity import REQUEST_KINDS, decode_request
+from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, TrainContinuation
 from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_authoring import (
@@ -49,19 +48,6 @@ from feedbax.contracts.studio_authoring import (
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
-from feedbax.contracts.studio_training import (
-    STUDIO_GRAPH_METHOD,
-    STUDIO_INDEPENDENT_KEY_SCHEDULE,
-    StudioGraphMethodPayload,
-    StudioTrainContinuation,
-)
-from feedbax.contracts.training import (
-    MethodPayloadEnvelope,
-    MethodRefSpec,
-    OptimizerSpec,
-    TrainingConfig,
-    TrainingProgramRegistry,
-)
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.plugins.application import (
     COMPONENTS, EXPRESSION_FUNCTIONS, FIGURE_TEMPLATES, OPERATIONS, PYTHON_TASKS, TRAINING_METHODS,
@@ -70,7 +56,7 @@ from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
-from feedbax.training.optimizers import optimizer_types
+from feedbax.training.methods import TrainingMethodRegistry
 
 
 _TRAIN = REQUEST_KINDS["train"].spec_type
@@ -81,14 +67,11 @@ _TRAIN_DOCUMENT_MODELS = {
 }
 _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
 _GRAPH_BATCH_SIZE = 1
-_DEFAULT_OPTIMIZER = "adam"
-_OPTIMIZER_RATE = ("method_payload", "payload", "optimizer", "params", "learning_rate")
+_OPTIMIZER_RATE = ("settings", "optimizer", "params", "learning_rate")
 type _Path = tuple[str, ...]
 type _Scalar = str | int | float
 type _ReadPlan = Callable[[tuple[RunKey, ...]], ProjectPlan]
-_METHOD_PAYLOAD = ("method_payload", "payload")
-_CHECKPOINT_POLICY = (*_METHOD_PAYLOAD, "checkpoint_initialization")
-_METHOD_TOTAL = (*_METHOD_PAYLOAD, "target_total")
+_CHECKPOINT_POLICY = ("checkpoint_initialization",)
 _CHECKPOINT_CHOICES = {"initialize_from": "Initialize model only", "continue_from": "Carry training state"}
 
 
@@ -154,7 +137,7 @@ def authoring_surface(
         name: StudioAuthoredDocumentFamily(schema_id=schema_id, payload_schema=payload)
         for name, (schema_id, payload) in train_documents.items()
     } | {
-        "training-settings": _family(TrainingConfig),
+        "training-settings": _family(DocumentTrainingConfig),
         "analysis": _family(AnalysisDocument, AnalysisDocument.model_fields["schema_version"].default),
         "figure": StudioAuthoredDocumentFamily(
             schema_id=FIGURE_DOCUMENT_SCHEMA,
@@ -256,7 +239,7 @@ def _source(source: ValueSource | None) -> StudioAuthoringSource | None:
 
 
 class _TrainFields:
-    def __init__(self, project: Project, step_id: str, registry: TrainingProgramRegistry, *, field_editor: bool = False) -> None:
+    def __init__(self, project: Project, step_id: str, registry: TrainingMethodRegistry, *, field_editor: bool = False) -> None:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
             raise ValueError(f"Unknown Train step {step_id!r}")
@@ -349,25 +332,13 @@ class _TrainFields:
         reference = _read(DocumentReference, self.payload.get(field))
         return (reference.document,) if reference else ()
 
-    def studio_method(self, payload: dict[str, JsonValue]) -> StudioGraphMethodPayload | None:
-        method_ref = _read(MethodRefSpec, payload.get("method_ref"))
-        envelope = _read(MethodPayloadEnvelope, payload.get("method_payload"))
-        if method_ref != STUDIO_GRAPH_METHOD or envelope is None:
-            return None
-        try:
-            method = self.registry.validate_payload(method_ref, envelope, path="/method_payload")
-        except ValueError:
-            return None
-        return method if isinstance(method, StudioGraphMethodPayload) else None
-
-    def checkpoint_boundary(
-        self, read_plan: _ReadPlan, method: StudioGraphMethodPayload, batches: int,
-    ) -> tuple[int, tuple[str, ...]] | None:
+    def checkpoint_boundary(self, read_plan: _ReadPlan, policy) -> tuple[int, tuple[str, ...]] | None:
         checkpoint = self.step.inputs["checkpoint"]
         assert isinstance(checkpoint, StepReference)
         plan = read_plan(())
         runs = {run.key: run for run in plan.runs}
         pairs = {}
+        counts = set()
         for row in plan.rows:
             if row.key.step != self.step_id:
                 continue
@@ -384,78 +355,56 @@ class _TrainFields:
                 or reference.role != "checkpoint" or reference.request_id != source.request_id
             ):
                 return None
-            pairs[run.key] = source.key
-        if not pairs:
-            return None
-
-        definitions = read_plan(tuple(dict.fromkeys((*pairs, *pairs.values())))).selected_definitions
-        counts: set[int] = set()
-        documents: set[str] = set()
-        editable_paths = tuple("/payload" + pointer(path) for path in (
-            _CHECKPOINT_POLICY, _METHOD_TOTAL, ("training_config", "n_batches"),
-        ))
-        for key, source_key in pairs.items():
-            target = definitions.get(key)
-            source = definitions.get(source_key)
-            if target is None or source is None:
-                return None
-            current = self.studio_method(target.payload)
-            predecessor = self.studio_method(source.payload)
-            target_config = _read(TrainingConfig, target.payload.get("training_config"))
-            source_config = _read(TrainingConfig, source.payload.get("training_config"))
+            target_spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+            source_spec = decode_request(plan.requests[source.request_id], plan.documents.__getitem__).spec
             if (
-                current is None or predecessor is None or target_config is None or source_config is None
-                or current.checkpoint_initialization != method.checkpoint_initialization
-                or current.target_total != method.target_total or target_config.n_batches != batches
-                or current.optimizer != predecessor.optimizer
-                or target_config.grad_clip != source_config.grad_clip
-                or (current.optimizer.lr_schedule is not None and current.optimizer.lr_schedule.kind != "constant")
-                or any(
-                    (origin.kind != "step" or origin.path.startswith("/sweep/")) and any(
-                        path == field or path.startswith(field + "/") for field in editable_paths
-                    ) for path, origin in target.sources.items()
-                )
+                not isinstance(target_spec, DocumentTrainingRequestSpec)
+                or not isinstance(source_spec, DocumentTrainingRequestSpec)
+                or target_spec.checkpoint_initialization != policy
+                or (target_spec.method, target_spec.settings) != (source_spec.method, source_spec.settings)
             ):
                 return None
-            counts.add(predecessor.target_total)
+            counts.add(source_spec.target_total)
+            pairs[run.key] = source.key
+        if not pairs or len(counts) != 1:
+            return None
+        definitions = read_plan(tuple(dict.fromkeys((*pairs, *pairs.values())))).selected_definitions
+        documents: set[str] = set()
+        path = "/payload" + pointer(_CHECKPOINT_POLICY)
+        for key, source_key in pairs.items():
+            target, source = definitions.get(key), definitions.get(source_key)
+            if target is None or source is None or any(
+                (origin.kind != "step" or origin.path.startswith("/sweep/"))
+                and (site == path or site.startswith(path + "/"))
+                for site, origin in target.sources.items()
+            ):
+                return None
             documents.update(target.document_uses | source.document_uses)
             subset = plan.subsets.get((key.variant, key.step, "checkpoint"))
             if subset is not None and subset.document is not None:
                 documents.add(subset.document)
-        return (counts.pop(), tuple(sorted(documents))) if len(counts) == 1 else None
+        return counts.pop(), tuple(sorted(documents))
 
-    def checkpoint_carry(self, method: StudioGraphMethodPayload, read_plan: _ReadPlan | None) -> None:
-        policy = method.checkpoint_initialization
-        stateful = isinstance(policy, StudioTrainContinuation)
-        value = policy.mode if stateful else policy
-        batches = policy.progress.additional_batches if stateful else method.target_total
+    def checkpoint_carry(self, read_plan: _ReadPlan | None) -> None:
+        raw = self.payload.get("checkpoint_initialization")
+        policy = _read(TrainContinuation, raw) if isinstance(raw, dict) else raw
         preset = policy == "initialize_from" or (
-            stateful
-            and (policy.optimizer, policy.schedule, policy.rng, policy.cursor) == (
-                "preserve", "continue", "carry", "carry",
-            )
-            and not policy.progress.self_contained and not policy.progress.schedule_discontinuity_exemptions
+            isinstance(policy, TrainContinuation)
+            and (policy.state, policy.schedule, policy.rng) == ("preserve", "continue", "carry")
         )
-        scope = self.checkpoint_boundary(read_plan, method, batches) if preset and read_plan and batches else None
+        scope = self.checkpoint_boundary(read_plan, policy) if preset and read_plan else None
+        value = policy.mode if isinstance(policy, TrainContinuation) else policy
         if not preset:
-            value = "Authored policy" if value is not None else None
-        elif scope is None and value is not None:
+            value = "Authored policy" if raw is not None else None
+        elif scope is None:
             value = _CHECKPOINT_CHOICES[value]
-        elif stateful and scope is not None and policy.progress.source_completed_batches != scope[0]:
-            value = None
 
         def change(selected: _Scalar) -> list[SetProjectValue]:
-            assert scope is not None and batches is not None
-            if selected == "initialize_from":
-                return [self.set(_CHECKPOINT_POLICY, "initialize_from"), self.set(_METHOD_TOTAL, batches)]
-            continuation = StudioTrainContinuation(
-                mode="continue_from", optimizer="preserve", schedule="continue", rng="carry", cursor="carry",
-                progress=CheckpointContinuationRequest(source_completed_batches=scope[0], additional_batches=batches),
+            assert scope is not None
+            continuation = TrainContinuation(
+                source_completed_updates=scope[0], state="preserve", schedule="continue", rng="carry",
             )
-            return [
-                self.set(_CHECKPOINT_POLICY, continuation.model_dump(mode="json", exclude_unset=True)),
-                self.set(_METHOD_TOTAL, continuation.progress.target_total),
-            ]
+            return [self.set(_CHECKPOINT_POLICY, selected if selected == "initialize_from" else continuation.model_dump(mode="json"))]
 
         self.field(
             _CHECKPOINT_POLICY, "Checkpoint carryover", value,
@@ -464,170 +413,84 @@ class _TrainFields:
             documents=scope[1] if scope is not None else (),
         )
 
-    def task_steps(self) -> int | None:
-        raw = _get(self.payload, ("trial_documents", "task"))
-        if ref := _read(DocumentReference, raw):
-            entry = self.project.documents.get(ref.document)
-            raw = entry.payload if entry is not None and not ref.pointer else None
-        task = _read(TaskDocument, raw)
-        if task is not None:
-            return task.fixed_steps
-        return None
+    def training(self, read_plan: _ReadPlan | None) -> None:
+        key = self.payload.get("method")
+        registrations = {name: self.registry.resolve(name) for name in self.registry.keys()}
+        registration = registrations.get(key) if isinstance(key, str) else None
 
-    def training(self, n_steps: int | None, read_plan: _ReadPlan | None) -> None:
-        raw_config = self.payload.get("training_config")
-        settings_type = DocumentTrainingConfig
-        config = _read(settings_type, raw_config)
-        defaults = settings_type(batch_size=_GRAPH_BATCH_SIZE)
-        if n_steps is not None:
-            defaults.n_reach_steps = n_steps
-        method_ref = _read(MethodRefSpec, self.payload.get("method_ref"))
-        registration = self.registry.resolve(STUDIO_GRAPH_METHOD, path="/method_ref")
-        method = self.studio_method(self.payload)
+        def method_change(selected: _Scalar) -> list[SetProjectValue]:
+            model = registrations[selected].settings_model
+            try:
+                defaults = model.model_validate({}).model_dump(mode="json")
+            except ValidationError:
+                defaults = {}
+            return [self.set(("method",), selected), self.set(("settings",), defaults)]
 
-        def method_change(_value: _Scalar) -> list[SetProjectValue]:
-            settings = config or defaults
-            payload = StudioGraphMethodPayload(
-                optimizer=OptimizerSpec(
-                    type=_DEFAULT_OPTIMIZER, params={"learning_rate": TrainingConfig().learning_rate}
-                ),
-                target_total=settings.n_batches,
-                key_schedule=STUDIO_INDEPENDENT_KEY_SCHEDULE,
-            )
-            candidate = MethodPayloadEnvelope(
-                schema_id=registration.payload_schema_id,
-                schema_version=registration.payload_schema_version,
-                payload=payload.model_dump(mode="json", exclude_defaults=True),
-            )
-            self.registry.validate_payload(STUDIO_GRAPH_METHOD, candidate, path="/method_payload")
-            return [
-                self.set(("method_ref",), STUDIO_GRAPH_METHOD.model_dump(mode="json")),
-                self.set(("method_payload",), candidate.model_dump(mode="json")),
-            ]
-
-        can_define = "method_payload" not in self.payload and (
-            method_ref == STUDIO_GRAPH_METHOD or "method_ref" not in self.payload
-        )
         self.field(
-            ("method_ref", "name"),
-            "Training method",
-            None if can_define else method_ref.key if method_ref else "Authored method",
-            _options({registration.method_ref: "Studio graph"})
-            if can_define or method is not None
-            else None,
+            ("method",), "Training method", key if isinstance(key, str) else None,
+            _options({name: method.label or name for name, method in registrations.items()}),
             method_change,
         )
+        if self.linked:
+            self.checkpoint_carry(read_plan)
+        self.field(
+            ("seed",), "Seed", self.payload.get("seed", 0),
+            StudioAuthoringNumber(kind="number", min=0, max=2**32 - 1, step=1),
+            lambda value: [self.set(("seed",), value)],
+        )
+        raw = self.payload.get("training_config")
+        config = _read(DocumentTrainingConfig, raw)
+        if config is not None or raw is None:
+            defaults = DocumentTrainingConfig(batch_size=_GRAPH_BATCH_SIZE)
+            for name, schema in DocumentTrainingConfig.model_json_schema()["properties"].items():
+                path = ("training_config", name)
 
-        if method is not None:
-            if self.linked:
-                self.checkpoint_carry(method, read_plan)
-            optimizer_path = ("method_payload", "payload", "optimizer", "type")
-            choices = {name: name for name in optimizer_types()}
-            self.field(
-                optimizer_path,
-                "Optimizer",
-                method.optimizer.type,
-                _options(choices)
-                if method.optimizer.type in choices
-                and method.optimizer.params.keys() <= {"learning_rate"}
-                else None,
-                lambda value: [self.set(optimizer_path, value)],
-            )
-            seed_path = ("method_payload", "payload", "seed")
-            seed_schema = registration.payload_model.model_json_schema()["properties"]["seed"]
-            self.field(
-                seed_path,
-                seed_schema["title"],
-                method.seed,
-                StudioAuthoringNumber(
-                    kind="number",
-                    min=seed_schema["minimum"],
-                    max=seed_schema["exclusiveMaximum"] - 1,
-                    step=1,
-                ),
-                lambda value: [self.set(seed_path, value)],
-            )
-            if method.optimizer.lr_schedule is None:
-                rate = _get(self.payload, _OPTIMIZER_RATE)
-                if type(rate) in (int, float):
+                def write(value: _Scalar, *, name=name, path=path) -> list[SetProjectValue]:
+                    if config is not None:
+                        return [self.set(path, value)]
+                    return [self.set(("training_config",), defaults.model_dump(mode="json") | {name: value})]
+
+                self.field(
+                    path, schema["title"], getattr(config or defaults, name),
+                    StudioAuthoringNumber(kind="number", min=1, step=1), write,
+                )
+        if registration is None:
+            return
+        raw = self.payload.get("settings")
+        if not isinstance(raw, dict):
+            return
+        schema = registration.settings_model.model_json_schema()
+
+        def fields(path: _Path, values: dict, shape: dict) -> None:
+            for name, leaf in values.items():
+                props = shape.get("properties", {}).get(name, {})
+                if "$ref" in props:
+                    props = schema["$defs"][props["$ref"].rsplit("/", 1)[-1]]
+                if "anyOf" in props:
+                    props = props | next((member for member in props["anyOf"] if member.get("type") != "null"), {})
+                site = (*path, name)
+                if isinstance(leaf, dict):
+                    fields(site, leaf, props)
+                elif type(leaf) in (int, float):
+                    minimum = props.get("minimum")
+                    if site == _OPTIMIZER_RATE:
+                        minimum = 0
                     self.field(
-                        _OPTIMIZER_RATE, "Learning Rate",
-                        rate, StudioAuthoringNumber(kind="number", min=0),
-                        lambda value: [self.set(_OPTIMIZER_RATE, value)],
+                        site, props.get("title", name.replace("_", " ").title()), leaf,
+                        StudioAuthoringNumber(
+                            kind="number", min=minimum, max=props.get("maximum"),
+                            step=1 if props.get("type") == "integer" else None,
+                        ),
+                        lambda value, site=site: [self.set(site, value)],
                     )
 
-        rate_path = ("method_payload", "payload", "optimizer", "params")
-        raw_params = _get(self.payload, rate_path)
-        params_ref = _read(DocumentReference, raw_params)
-        if not (can_define or method is not None) or (
-            config is None and (n_steps is None or "training_config" in self.payload or params_ref)
-        ):
-            return
-
-        initial_config = defaults.model_dump(
-            mode="json",
-            include={"batch_size", "n_reach_steps"},
-        )
-        if method is not None:
-            initial_config["n_batches"] = (
-                method.continuation.progress.additional_batches
-                if method.continuation is not None else method.target_total
-            )
-
-        def settings_change(
-            name: str, value: _Scalar, mirror: _Path | None
-        ) -> list[SetProjectValue]:
-            path = ("training_config",)
-            patches = (
-                [self.set((*path, name), value)]
-                if config is not None
-                else [self.set(path, {**initial_config, name: value})]
-            )
-            if method is not None and mirror is not None:
-                if name == "n_batches" and method.continuation is not None:
-                    assert type(value) is int
-                    patches.extend((
-                        self.set(_METHOD_TOTAL, method.continuation.progress.source_completed_batches + value),
-                        self.set((*_CHECKPOINT_POLICY, "progress", "additional_batches"), value),
-                    ))
-                else:
-                    patches.append(self.set(("method_payload", "payload", *mirror), value))
-            return patches
-
-        settings = settings_type.model_json_schema()["properties"]
-        names = {
-            "n_batches": ("target_total",),
-            "snapshot_interval": None,
-        }
-        if self.field_editor and config is not None:
-            names.update(batch_size=None, grad_clip=None)
-        for name, mirror in names.items():
-            schema = settings[name]
-            if "anyOf" in schema:
-                schema = schema | schema["anyOf"][0]
-            path = ("training_config", name)
-            integer = schema.get("type") == "integer"
-            value = _get(self.payload, path)
-            if self.field_editor and config is not None and not (name == "grad_clip" and name in raw_config) and value is None:
-                value = getattr(config, name)
-            self.field(
-                path,
-                schema["title"],
-                value,
-                StudioAuthoringNumber(
-                    kind="number",
-                    min=1 if integer else 0,
-                    step=1 if integer else None,
-                ),
-                lambda value, name=name, mirror=mirror: settings_change(name, value, mirror),
-                documents=self.named_documents("task") if config is None else (),
-            )
+        fields(("settings",), raw, schema)
 
 
 def project_train_fields(
     project: Project,
     step_id: str,
-    registry: TrainingProgramRegistry,
+    registry: TrainingMethodRegistry,
     change: StudioAuthoringChange | StudioAuthoringSweepChange | None,
     *,
     read_plan: _ReadPlan | None = None,
@@ -636,7 +499,7 @@ def project_train_fields(
 ]:
     """Project the supported fields and plan one atomic, step-local edit."""
     definition = _TrainFields(project, step_id, registry)
-    definition.training(definition.task_steps(), read_plan)
+    definition.training(read_plan)
 
     sweeps = {}
     for field_id, field in definition.fields.items():
@@ -688,11 +551,11 @@ def project_train_fields(
 
 
 def project_training_numeric_fields(
-    project: Project, step_id: str, registry: TrainingProgramRegistry, functions: FunctionRegistry,
+    project: Project, step_id: str, registry: TrainingMethodRegistry, functions: FunctionRegistry,
     body: TrainFieldRequest, read_plan: _ReadPlan,
 ) -> TrainFieldResponse:
     definition = _TrainFields(project, step_id, registry, field_editor=True)
-    definition.training(definition.task_steps(), read_plan)
+    definition.training(read_plan)
     selected = effective = None
     if body.run is not None:
         key = RunKey(body.run.variant, body.run.step, body.run.row)
@@ -762,8 +625,6 @@ def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
         or (control.max is not None and value > control.max)
     ):
         raise ValueError(f"{field.label} requires a number in the supported range")
-    if field.id in {"/training_config/learning_rate", pointer(_OPTIMIZER_RATE)} and value <= 0:
-        raise ValueError(f"{field.label} requires a positive number")
-    if field.id == "/training_config/grad_clip" and value <= 0:
+    if field.id in {"/settings/grad_clip", pointer(_OPTIMIZER_RATE)} and value <= 0:
         raise ValueError(f"{field.label} requires a positive number")
     return int(value) if control.step == 1 else value

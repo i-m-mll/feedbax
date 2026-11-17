@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
@@ -24,6 +24,7 @@ from feedbax.contracts.effective_success import (
     Success,
     SuccessIndex,
     decode_success_index,
+    exact_model_checkpoint_input,
     read_committed_success,
     read_effective_request,
     read_success_request,
@@ -34,6 +35,7 @@ from feedbax.contracts.request_identity import (
     EncodedRequest,
     effective_binding_id,
 )
+from feedbax.contracts.model_input import DOCUMENT_INPUT_MEDIA_TYPES, decode_document_input, document_input_object
 from feedbax.contracts.request_refs import (
     BestRank,
     ContentRef,
@@ -41,9 +43,11 @@ from feedbax.contracts.request_refs import (
     InputMember,
     ProductRef,
     RequestId,
+    RequestInputs,
 )
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.checkpoint_publication import checkpoint_model_objects
 from feedbax.persistence.receipt_content import continuation_objects, verify_success_content
 from feedbax.persistence.evaluation_subject import (
     evaluation_subject_objects,
@@ -54,6 +58,7 @@ from feedbax.persistence.store_damage import KnownDamage, require_sound
 
 if TYPE_CHECKING:
     from feedbax.contracts.effective_success import TerminalTrainSubject
+    from feedbax.plugins.declarations import DistributionSource
 
 
 class PublicationConflict(ValueError):
@@ -106,6 +111,25 @@ def store_request(store: ImmutableArtifactBlobProvider, request: EncodedRequest)
     )
 
 
+def store_document_inputs(
+    store: ImmutableArtifactBlobProvider, inputs: RequestInputs, read_document: Callable[[str], bytes],
+) -> tuple[ContentObjectRef, ...]:
+    """Pin the authored bytes identified by direct document inputs before admission."""
+    refs = {}
+    for members in inputs.values():
+        for member in members:
+            content = member.reference
+            if not isinstance(content, ContentRef) or content.media_type not in DOCUMENT_INPUT_MEDIA_TYPES:
+                continue
+            exact = document_input_object(content)
+            raw = read_document(exact.sha256)
+            decode_document_input(content, raw)
+            if store.store_rooted_object(raw, namespace="project-document-input") != exact:
+                raise ValueError("Planned document input differs from its immutable reference")
+            refs[exact.sha256] = exact
+    return tuple(refs.values())
+
+
 class SuccessView:
     """One committed index generation, shared by binding and successful-result lookup."""
 
@@ -143,7 +167,14 @@ class SuccessView:
         )
 
     def _verify_bound(self, decoded: DecodedRequest, member: InputMember, bound: BoundMember) -> None:
-        if bound.evaluation_subject is not None:
+        if bound.checkpoint_model is not None:
+            exact = exact_model_checkpoint_input(decoded)
+            if exact is None or exact[1] != member:
+                raise ValueError("Unexpected checkpoint model evidence")
+            for ref in checkpoint_model_objects(self.store, member, bound):
+                require_sound(self.store, ref)
+                self.store.verify_object(ref)
+        elif bound.evaluation_subject is not None:
             for ref in evaluation_subject_objects(self.store, decoded, member, bound):
                 require_sound(self.store, ref)
                 self.store.verify_object(ref)
@@ -154,8 +185,15 @@ class SuccessView:
 
     def bind(
         self, request: RequestObject, *, origins: Mapping[RequestId, ContentObjectRef] | None = None,
+        checkpoint_model: BoundMember | None = None,
     ) -> tuple[EffectiveBindingId, Bindings]:
         decoded = self.read_request(request)
+        checkpoint = exact_model_checkpoint_input(decoded)
+        if (checkpoint is None) != (checkpoint_model is None):
+            raise ValueError("Analyze requires the exact Host checkpoint binding")
+        model_member = checkpoint[1] if checkpoint is not None else None
+        if model_member is not None and checkpoint_model is not None:
+            self._verify_bound(decoded, model_member, checkpoint_model)
         if origins is None:
             origins = self._index.authored
         else:
@@ -163,13 +201,13 @@ class SuccessView:
                 member.reference.request_id
                 for members in decoded.inputs.values()
                 for member in members
-                if isinstance(member.reference, ProductRef)
+                if member != model_member and isinstance(member.reference, ProductRef)
             }
             if origins.keys() != expected:
                 raise ValueError("Explicit origins must cover the exact authored producer requests")
         inputs = {
             role: tuple(
-                self.resolve(
+                checkpoint_model if member == model_member and checkpoint_model is not None else self.resolve(
                     decoded, member,
                     origins.get(member.reference.request_id)
                     if isinstance(member.reference, ProductRef)
@@ -375,12 +413,13 @@ class SuccessView:
         continuation: ContinuationOccurrence | None = None,
         recovery: CheckpointOccurrenceRef | None = None,
         evaluation_manifest: ContentObjectRef | None = None,
+        provider: DistributionSource | None = None,
         target: AttemptTarget = LOCAL_TARGET,
     ) -> PublishedSuccess:
         """Commit an accepted attempt using its pinned bindings, including on replay."""
         return self._publish(
             request, attempt, products, bindings=bindings, continuation=continuation, recovery=recovery,
-            evaluation_manifest=evaluation_manifest, target=target,
+            evaluation_manifest=evaluation_manifest, provider=provider, target=target,
         )
 
     def _publish(
@@ -388,6 +427,7 @@ class SuccessView:
         continuation: ContinuationOccurrence | None = None,
         recovery: CheckpointOccurrenceRef | None = None,
         evaluation_manifest: ContentObjectRef | None = None,
+        provider: DistributionSource | None = None,
         target: AttemptTarget = LOCAL_TARGET,
     ) -> PublishedSuccess:
         with self.store._exclusive_lock():
@@ -398,8 +438,8 @@ class SuccessView:
                 if (
                     published.receipt.request, published.receipt.products, published.receipt.inputs,
                     published.receipt.continuation, published.receipt.recovery, published.receipt.evaluation_manifest,
-                    published.receipt.target,
-                ) != (request, products, bindings, continuation, recovery, evaluation_manifest, target):
+                    published.receipt.provider, published.receipt.target,
+                ) != (request, products, bindings, continuation, recovery, evaluation_manifest, provider, target):
                     raise ValueError("Published attempt has different request, bindings, or products")
                 self.ensure_published_run_ref(existing, published.receipt)
                 return published
@@ -430,6 +470,7 @@ class SuccessView:
                 continuation=continuation,
                 recovery=recovery,
                 evaluation_manifest=evaluation_manifest,
+                provider=provider,
             )
             if evaluation_manifest is not None:
                 verify_evaluation_success_evidence(self.store, receipt)

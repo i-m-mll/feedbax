@@ -7,11 +7,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from feedbax.contracts.expression_values import Problem, Site, ValueType
+from feedbax.contracts.expression_values import Problem, ProblemCode, Site, ValueType
+from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.plugins.declarations import (
-    CallableDeclaration, DeclarationRegistry, DistributionSource, ResolvedDeclaration,
+    CallableDeclaration, DeclarationRegistry, DistributionSource, ResolvedDeclaration, missing_declaration,
 )
 
 if TYPE_CHECKING:
@@ -52,6 +53,18 @@ class PythonTaskDefinition[Settings: BaseModel]:
     renamed_from: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class PythonTaskInstance[Parameters: BaseModel]:
+    definition: PythonTaskDefinition[Parameters]
+    parameters: Parameters
+
+    def selection(self) -> PythonTaskSelection:
+        return PythonTaskSelection(type=self.definition.key, params=self.parameters.model_dump(mode="json"))
+
+    def template(self) -> PythonTaskTemplate:
+        return self.definition.template(self.parameters)
+
+
 class PythonTaskRegistry:
     def __init__(self) -> None:
         self._declarations = DeclarationRegistry[PythonTaskDefinition[Any]]("Python task")
@@ -90,6 +103,22 @@ class PythonTaskRegistry:
 
     def seal(self) -> None:
         self._declarations.seal()
+
+
+def resolve_python_task_instance(
+    selection: PythonTaskSelection, registry: PythonTaskRegistry,
+) -> PythonTaskInstance[BaseModel] | tuple[Problem, ...]:
+    definition = registry.resolve(selection.type)
+    if definition is None:
+        return (Problem(code=ProblemCode.UNKNOWN_NAME, path=("python_task", "type"),
+                        reason=missing_declaration("Python task", selection.type)),)
+    try:
+        parameters = definition.parameters.model_validate(selection.params)
+    except ValidationError as error:
+        return tuple(Problem(code=ProblemCode.TYPE_MISMATCH,
+                             path=("python_task", "params", *item["loc"]), reason=item["msg"])
+                     for item in error.errors(include_url=False))
+    return PythonTaskInstance(definition, parameters)
 
 
 def python_task_parameter_site(path: str, trial_documents, registry: PythonTaskRegistry) -> Site | None:
