@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
-from enum import Enum
 from functools import cache, partial
 from hashlib import sha256
 from math import hypot, isfinite
@@ -12,6 +11,7 @@ import struct
 from types import BuiltinFunctionType, FunctionType, MethodType
 from typing import TYPE_CHECKING
 
+from equinox._module._module import _flatten_sentinel
 import jax
 from jax._src.interpreters.mlir import make_ir_context
 from jaxlib import cpu_sparse, gpu_linalg, gpu_prng, gpu_solver, gpu_sparse, lapack
@@ -50,6 +50,10 @@ from feedbax.contracts.computation_validity import (
     UnidentifiedCall,
 )
 from feedbax.persistence.array_container import decode_array_container, encode_array_container
+from feedbax.persistence.semantic_fingerprint import (
+    UnsupportedSemanticValue,
+    fingerprint_semantic_values,
+)
 
 if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ContentObjectRef
@@ -114,74 +118,66 @@ def _array_bytes(value: Operand) -> memoryview:
     return memoryview(normalized.view(np.uint8))
 
 
-def _static_value(value: object) -> JsonValue:
-    if value is None or type(value) in (str, bool):
-        return value
-    if type(value) is int:
-        return ["int", str(value)]
-    if type(value) is float:
-        return ["float", struct.pack("<d", value).hex()]
-    if type(value) is complex:
-        return ["complex", struct.pack("<dd", value.real, value.imag).hex()]
-    if isinstance(value, bytes):
-        return ["bytes", value.hex()]
-    if isinstance(value, Enum):
-        return ["enum", _type_name(type(value)), _static_value(value.value)]
-    if isinstance(value, np.generic):
-        return ["scalar", str(value.dtype), _array_bytes(np.asarray(value)).hex()]
+def _project_argument_metadata(value: object) -> object:
+    if value is _flatten_sentinel:
+        return "equinox-unset-field"
+    if isinstance(value, jax.tree_util.GetAttrKey):
+        return value.name
+    if isinstance(value, jax.tree_util.SequenceKey):
+        return value.idx
+    if isinstance(value, (jax.tree_util.DictKey, jax.tree_util.FlattenedIndexKey)):
+        return value.key
     if isinstance(value, np.dtype):
-        return ["dtype", str(value)]
-    if isinstance(value, (jax.Array, np.ndarray)):
-        signature = _array_signature(value).model_dump(mode="json")
-        return ["array", signature, sha256(_array_bytes(_array_payload(value))).hexdigest()]
+        return str(value)
     if isinstance(value, type):
-        return ["type", _type_name(value)]
+        return _type_name(value)
     if isinstance(value, Mapping):
-        return [
-            "mapping",
-            _type_name(type(value)),
-            [[_static_value(key), _static_value(item)] for key, item in value.items()],
-        ]
-    if isinstance(value, (tuple, list)):
-        return ["sequence", _type_name(type(value)), [_static_value(item) for item in value]]
+        return tuple(value.items())
     if isinstance(value, (set, frozenset)):
-        items = [_static_value(item) for item in value]
-        return ["set", _type_name(type(value)), sorted(items, key=canonical_json_v2_bytes)]
+        return tuple(sorted(map(_static_fingerprint, value)))
     if isinstance(value, slice):
-        return ["slice", *map(_static_value, (value.start, value.stop, value.step))]
+        return value.start, value.stop, value.step
     if isinstance(value, BaseModel):
-        return ["model", _type_name(type(value)), _static_value(value.model_dump())]
+        return value.model_dump()
     if is_dataclass(value):
-        return [
-            "dataclass",
-            _type_name(type(value)),
-            [[field.name, _static_value(getattr(value, field.name))] for field in fields(value)],
-        ]
+        return tuple((field.name, getattr(value, field.name)) for field in fields(value))
     if isinstance(value, partial):
-        return ["partial", *map(_static_value, (value.func, value.args, value.keywords))]
+        return value.func, value.args, value.keywords
     if isinstance(value, MethodType):
-        return ["method", _static_value(value.__func__), _static_value(value.__self__)]
+        return value.__func__, value.__self__
     if isinstance(value, FunctionType):
         closure = (
             ()
             if value.__closure__ is None
             else tuple(cell.cell_contents for cell in value.__closure__)
         )
-        return [
-            "function",
+        return (
             value.__module__,
             value.__qualname__,
-            *map(_static_value, (value.__defaults__, value.__kwdefaults__, closure)),
-        ]
+            value.__defaults__,
+            value.__kwdefaults__,
+            closure,
+        )
     if isinstance(value, BuiltinFunctionType) and getattr(value, "__module__", None) is not None:
-        return ["builtin", value.__module__, value.__qualname__]
+        return value.__module__, value.__qualname__
     if isinstance(value, np.ufunc):
-        return ["numpy-ufunc", value.__name__]
+        return value.__name__
     if type(value).__module__.startswith(("jax.", "jaxlib.")) and callable(value):
         wrapped = getattr(value, "__wrapped__", None)
         if isinstance(wrapped, FunctionType):
-            return ["wrapped", _type_name(type(value)), _static_value(wrapped)]
-    raise UnrecordableArguments(f"Unsupported static value {_type_name(type(value))}")
+            return wrapped
+    raise UnsupportedSemanticValue(_type_name(type(value)))
+
+
+def _static_fingerprint(value: object) -> str:
+    try:
+        return fingerprint_semantic_values(
+            value,
+            header=("feedbax.computation-static.v1",),
+            project_leaf=_project_argument_metadata,
+        )
+    except UnsupportedSemanticValue as exc:
+        raise UnrecordableArguments(f"Unsupported static operand metadata: {exc}") from exc
 
 
 def pytree_operands(value: object) -> tuple[tuple[Operand, ...], JsonValue]:
@@ -190,26 +186,18 @@ def pytree_operands(value: object) -> tuple[tuple[Operand, ...], JsonValue]:
     cursor = iter(leaves)
     arrays = []
 
-    def encode_node(tree: jax.tree_util.PyTreeDef) -> JsonValue:
+    def encode_node(tree: jax.tree_util.PyTreeDef) -> object:
         node = tree.node_data()
         if node is None:
             leaf = next(cursor)
             if isinstance(leaf, (jax.Array, np.ndarray)):
                 arrays.append(leaf)
-                return ["operand"]
-            return ["static", _static_value(leaf)]
+                return ("operand",)
+            return ("static", leaf)
         cls, metadata = node
-        return [
-            "node",
-            _type_name(cls),
-            _static_value(metadata),
-            [encode_node(child) for child in tree.children()],
-        ]
+        return ("node", _type_name(cls), metadata, tuple(map(encode_node, tree.children())))
 
-    try:
-        static = encode_node(structure)
-    except RecursionError as exc:
-        raise UnrecordableArguments("Cyclic static operand metadata") from exc
+    static = _static_fingerprint(encode_node(structure))
     return tuple(arrays), static
 
 
@@ -229,10 +217,10 @@ def _placement(value: ShapedOperand) -> JsonValue:
             sharding.memory_kind,
             list(mesh.axis_names),
             list(mesh.axis_sizes),
-            _static_value(getattr(mesh, "axis_types", ())),
-            _static_value(tuple(sharding.spec)),
-            _static_value(getattr(sharding.spec, "reduced", ())),
-            _static_value(getattr(sharding.spec, "unreduced", ())),
+            _static_fingerprint(getattr(mesh, "axis_types", ())),
+            _static_fingerprint(tuple(sharding.spec)),
+            _static_fingerprint(getattr(sharding.spec, "reduced", ())),
+            _static_fingerprint(getattr(sharding.spec, "unreduced", ())),
             [[device.process_index, device.id] for device in mesh.devices.flat],
         ]
     raise UnrecordableArguments(f"Unsupported sharding {_type_name(type(sharding))}")
@@ -251,13 +239,9 @@ def argument_signature(
     operands: Sequence[ShapedOperand], *, static: object = None
 ) -> ArgumentSignature:
     """Describe a specialization without transferring dynamic array values."""
-    try:
-        encoded = canonical_json_v2_bytes(_static_value(static))
-    except RecursionError as exc:
-        raise UnrecordableArguments("Cyclic static operand metadata") from exc
     return ArgumentSignature(
         arrays=tuple(map(_array_signature, operands)),
-        static_sha256=sha256(encoded).hexdigest(),
+        static_sha256=_static_fingerprint(static),
     )
 
 

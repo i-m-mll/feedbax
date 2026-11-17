@@ -159,7 +159,16 @@ class ComputationTrace(ReferenceValue):
             refs.append(self.prefix.parameters)
         elif isinstance(self.prefix, EvaluatePrefix):
             refs.extend(output.values for output in self.prefix.outputs)
-        return tuple(refs)
+        return tuple(
+            {
+                (
+                    (ref.tree_id, ref.descriptor.size_bytes)
+                    if isinstance(ref, ContentTreeRef)
+                    else (ref.object_id, ref.size_bytes)
+                ): ref
+                for ref in refs
+            }.values()
+        )
 
 
 class DriverChanged(ReferenceValue):
