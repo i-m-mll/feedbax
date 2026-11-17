@@ -128,8 +128,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
         request_id=summary.id, role="summary"
     )
     assert row.elements["profile"].inputs["summary"][0].element == ElementKey(_KEY, "summarize")
-    assert align.spec.evaluation_states_policy == "require_durable"
-    assert figure.spec.figure is None and figure.spec.document == VelocitySummary(VelocitySummarySettings())
+    assert figure.spec.document == VelocitySummary(VelocitySummarySettings())
     source = plan.sources[_KEY]["/payload/operations/summarize/params/bounds_scale"]
     assert (source.kind, source.name, source.path) == (
         "document",

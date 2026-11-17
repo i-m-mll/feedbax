@@ -21,12 +21,12 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, NamedMember, ProductRef
-from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.persistence.array_container import encode_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView, run_ref_name, store_request
 from tests.test_request_identity import _managed_train
+from scripts.proofs.effective_binding_witness import report_request
 
 
 def test_selected_model_tree_publishes_binds_and_imports(tmp_path, monkeypatch, capsys):
@@ -104,7 +104,7 @@ def test_selected_model_tree_publishes_binds_and_imports(tmp_path, monkeypatch, 
     consumer = store_request(
         source,
         encode_request(
-            ReportRequestSpec(report_type="proof.model-consumer"),
+            report_request("model-consumer"),
             {"model": (InputMember(key="subject", reference=selection),)},
         ),
     )

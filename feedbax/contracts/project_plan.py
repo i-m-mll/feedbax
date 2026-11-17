@@ -884,7 +884,7 @@ def _encode_row(
                     ) for role, detail in invalid),
                     encoding_stamp,
                 )
-            spec = ReportRequestSpec(report_type=None, document=document)
+            spec = ReportRequestSpec(document=document)
         else:
             spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
         if isinstance(spec, DocumentTrainingRequestSpec):
