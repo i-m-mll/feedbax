@@ -93,7 +93,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep seed' })).toHaveText('seed 2');
   await expect(card).toContainText(/learning-rate 3\s*×\s*seed 2/);
-  await expect(table.getByRole('rowheader')).toHaveText(['1', '2', '3', '4', '5', '6']);
+  await expect(table.getByRole('rowheader').locator('[aria-hidden="true"]')).toHaveText(['1', '2', '3', '4', '5', '6']);
   await expect(table.getByRole('columnheader')).toHaveText(['learning-rate', 'seed', 'Status', 'Progress']);
   await expect(page.locator('body')).not.toContainText(/value-\w|=value\b/);
   const runsHeader = page.locator('.studio-window-slot__header').filter({ has: page.getByRole('combobox', { name: 'Machine' }) });

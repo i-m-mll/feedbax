@@ -166,14 +166,14 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                 <TableRowHeader className={gutter}>
                   <Button
                     variant="bare" size="content"
-                    aria-label={run.label}
                     pressed={state.selection?.kind === "rows" && lit}
                     aria-current={focus === run.id ? true : undefined}
                     onClick={selectRow.onClick}
                     onKeyDown={selectRow.onKeyDown}
                     className="w-full justify-end rounded-row tabular-nums text-shell-muted underline-offset-2 aria-[current=true]:underline"
                   >
-                    {ordinals.get(run.id)}
+                    <span aria-hidden="true">{ordinals.get(run.id)}</span>
+                    <span className="sr-only">{run.label}</span>
                   </Button>
                 </TableRowHeader>
                 {named && <TableCell tabIndex={-1} className={cellFocus}>{run.label}</TableCell>}

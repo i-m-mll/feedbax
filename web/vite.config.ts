@@ -92,6 +92,7 @@ export default defineConfig({
     server: { deps: { inline: ['zod'] } },
     globals: true,
     environment: 'node',
+    setupFiles: ['./src/test/setup.ts'],
     exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],
   },
   plugins: [
