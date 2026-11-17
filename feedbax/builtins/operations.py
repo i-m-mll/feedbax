@@ -204,4 +204,3 @@ def summarize_velocity(
         raise ValueError("Trial summary requires finite velocity values.")
     result = _summarize_trials(values, jnp.asarray(params.ddof), jnp.asarray(params.bounds_scale))
     return _product(_SUMMARY, velocity, result)
-

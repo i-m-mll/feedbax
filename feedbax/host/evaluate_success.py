@@ -120,7 +120,7 @@ def publish_evaluate_success(
             producer = train.request
             terminal_receipt = pin.receipt
             terminal_checkpoint = train.continuation.provenance
-            coordinates = (train.continuation.clock.completed_batches,)
+            coordinates = (train.continuation.clock.completed_updates,)
             trees.append(success_content_ref(pin.model.content))
         elif (coordinates := evaluation_checkpoint_coordinates(subject)) is not None:
             selected = binding["checkpoint_selection"]

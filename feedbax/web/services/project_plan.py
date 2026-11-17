@@ -283,7 +283,8 @@ class ProjectPlanRead:
         edge_keys.extend(
             (producer, row.key)
             for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
-            for binding in row.states
+            for members in row.inputs.values()
+            for binding in members
             for producer in binding.sources
         )
 

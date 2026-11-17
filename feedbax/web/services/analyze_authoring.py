@@ -2,7 +2,7 @@
 
 from feedbax.analysis.figure_presets import velocity_summary_figure
 from feedbax.analysis.operations import OperationRegistry
-from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource, StepDataset
+from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource, StepInput
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import validate_figure_bindings
 from feedbax.contracts.operation import (
@@ -36,7 +36,7 @@ def _port(
     registry: OperationRegistry,
     states: DatasetPort,
 ) -> DatasetPort:
-    if isinstance(source, StepDataset):
+    if isinstance(source, StepInput):
         if source.input != "states":
             raise ValueError(f"Unknown Analyze input {source.input!r}.")
         return states
@@ -65,6 +65,8 @@ def review_wire(
         expected = registry.resolve(operation.operation).definition.inputs.get(wire.role)
         if expected is None:
             raise ValueError(f"Unknown operation input {wire.role!r}.")
+        if not isinstance(expected, DatasetPort):
+            raise ValueError(f"Operation input {wire.role!r} does not accept a dataset.")
         require_dataset_port(source, expected)
     elif wire.element not in analysis.views:
         raise ValueError(f"Unknown figure {wire.element!r}.")
@@ -108,7 +110,7 @@ def review_wire(
 def _variable_choices(definition: OperationDefinition, states: DatasetPort) -> dict[str, list[str]]:
     choices: dict[str, list[str]] = {}
     for port in definition.inputs.values():
-        if states.schema_ids[0] not in port.schema_ids:
+        if not isinstance(port, DatasetPort) or states.schema_ids[0] not in port.schema_ids:
             continue
         for parameter, required in port.selected_variables.items():
             matching = []

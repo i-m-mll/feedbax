@@ -561,6 +561,7 @@ class Store:
         payload = json.loads(row["launch"])["payload"]
         ref = publish_light_success(
             payload, row["id"], row["request"], self.light_origins(row), outcome["products"],
+            checkpoint_bindings=tuple(self.completion_bindings(row["id"])),
             target=attempt_target(json.loads(row["data"]).get("target")),
         )
         return {
@@ -570,7 +571,11 @@ class Store:
         }
 
     @staticmethod
-    def _light_requests(payload: dict, project: str, request_id: str) -> frozenset[str]:
+    def _light_requests(launch: dict, project: str, request_id: str, slot: str) -> frozenset[str]:
+        from feedbax.contracts.effective_success import exact_model_checkpoint_input
+        from feedbax.contracts.request_specs import AnalysisRequestSpec
+
+        payload = launch["payload"]
         root = Path(payload["manifest_root"])
         request = RequestObject.model_validate(payload["request"])
         if (
@@ -581,10 +586,23 @@ class Store:
         decoded = Store._success_view(root).read_request(request)
         if decoded.kind not in ("analyze", "render", "report"):
             raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
+        numerical = None
+        if isinstance(decoded.spec, AnalysisRequestSpec):
+            if decoded.spec.computation is None:
+                raise ValueError("Managed Analysis requires a declared computation")
+            numerical = decoded.spec.computation.numerical
+        if slot != ("compute" if numerical else "light") or (
+            numerical and any(launch["env"].get(key) != value for key, value in numerical.environment().items())
+        ):
+            raise ValueError("Managed delivery worker does not match the declared numerical requirements")
         inputs = [member.reference for members in decoded.inputs.values() for member in members]
         if any(not isinstance(ref, (ProductRef, ContentRef)) for ref in inputs):
             raise ValueError("Light jobs require exact Store inputs or terminal products.")
-        return frozenset(ref.request_id for ref in inputs if isinstance(ref, ProductRef))
+        exact = exact_model_checkpoint_input(decoded)
+        return frozenset(
+            ref.request_id for ref in inputs
+            if isinstance(ref, ProductRef) and (exact is None or ref != exact[2])
+        )
 
     def _light_parents(self, project: str, root: str, expected: frozenset[str], parents: Sequence[str]) -> list[sqlite3.Row]:
         rows = []
@@ -623,12 +641,13 @@ class Store:
         return ref.model_dump(mode="json")
 
     def light_origins(self, row: sqlite3.Row) -> dict:
-        payload = json.loads(row["launch"])["payload"]
+        launch = json.loads(row["launch"])
+        payload = launch["payload"]
         root = payload["manifest_root"]
         try:
-            expected = self._light_requests(payload, row["project"], row["request"])
+            expected = self._light_requests(launch, row["project"], row["request"], row["slot"])
             parents = tuple(edge["parent"] for edge in self.db.execute(
-                "SELECT parent FROM edges WHERE job=? ORDER BY parent", (row["id"],)
+                "SELECT parent FROM edges WHERE job=? AND NOT authenticated_completion ORDER BY parent", (row["id"],)
             ))
             sources = self._light_parents(row["project"], root, expected, parents)
             view = self._success_view(root)
@@ -657,8 +676,8 @@ class Store:
         if launch["warm_entrypoint"] and ":" not in launch["warm_entrypoint"]:
             raise HostError("invalid_request", "Warm entrypoint must be module:function.")
         if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT and (
-            job["slot"] != "light" or job["continues"] is not None
-            or any(edge["publication"] is not None or edge.get("authenticated_completion") for edge in job["edges"])
+            job["continues"] is not None
+            or any(edge["publication"] is not None for edge in job["edges"])
         ):
             raise HostError("invalid_request", "Managed light jobs require singleton launches and terminal edges.")
 
@@ -1156,10 +1175,13 @@ class Store:
         if job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT:
             payload = job["launch"]["payload"]
             try:
-                expected = self._light_requests(payload, job["project"], job["request"])
+                expected = self._light_requests(job["launch"], job["project"], job["request"], job["slot"])
                 self._light_parents(
                     job["project"], payload["manifest_root"], expected,
-                    tuple(aliases.get(edge["job_id"], edge["job_id"]) for edge in job["edges"]),
+                    tuple(
+                        aliases.get(edge["job_id"], edge["job_id"])
+                        for edge in job["edges"] if not edge.get("authenticated_completion")
+                    ),
                 )
             except (ValueError, KeyError, TypeError, OSError) as error:
                 raise HostError("invalid_request", str(error)) from error

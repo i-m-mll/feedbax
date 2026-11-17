@@ -9,10 +9,12 @@ from pathlib import Path
 
 import numpy as np
 
+from feedbax.analysis.operation_runtime import run_operation
 from feedbax.contracts.artifact_custody import ContentRootRecord
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import Bindings, Product, success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
+from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.request_specs import (
@@ -25,14 +27,16 @@ from feedbax.dataset import Dataset
 from feedbax.dataset_sweep import join_rollout_conditions
 from feedbax.host.completion import read_completion_bindings
 from feedbax.host.io import append
+from feedbax.host.model_checkpoint_input import bind_managed_inputs
 from feedbax.light_jobs import (
     LightCompletionBindings,
     LightDelivery,
     dataset_member,
-    light_operation,
     light_staging_id,
     light_staging_target,
     report_artifacts,
+    operation_application,
+    resolve_analysis_operation,
     validate_light_request,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -106,11 +110,18 @@ def _compute(
 ) -> Product:
     spec = request.spec
     if isinstance(spec, AnalysisRequestSpec):
-        operation = light_operation(spec.analysis_type)
+        registry = operation_application()
+        operation = resolve_analysis_operation(spec, registry)
         parameters = operation.parameter_model.model_validate(spec.params)
+        dataset_bindings = {
+            name: bindings[name]
+            for name, port in operation.definition.inputs.items()
+            if isinstance(port, DatasetPort)
+        }
         with ExitStack() as stack:
-            dataset = operation.function(
-                params=parameters, **_dataset_inputs(store, bindings, stack)
+            dataset = run_operation(
+                operation, parameters, bindings, _dataset_inputs(store, dataset_bindings, stack),
+                registry=registry, artifacts=store,
             )
             with store._exclusive_lock():
                 ref = publish_dataset(store, dataset)
@@ -158,8 +169,10 @@ def main(_argv: list[str]) -> int:
     view = SuccessView(store)
     request = view.read_request(delivery.request)
     role = validate_light_request(request)
-    _, bindings = view.bind(delivery.request, origins=exact.origins)
-    product = _compute(store, request, bindings, attempt, role)
+    with bind_managed_inputs(
+        view, delivery.request, origins=exact.origins, checkpoint_bindings=exact.bindings, project=delivery.project_id,
+    ) as (_, bindings):
+        product = _compute(store, request, bindings, attempt, role)
     append(
         log,
         "result",
