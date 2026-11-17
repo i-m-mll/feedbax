@@ -146,6 +146,11 @@ export function endKey(end: ReturnType<typeof wireEnd>) {
   return end.owner === 'component' ? `component:${end.component}:${end.port}` : `${end.owner}:${end.port}`;
 }
 
+export function attachmentAddress(owner: ModelAddress, id: string): ModelAddress {
+  if (owner.element.kind !== 'wire' && owner.element.kind !== 'port') throw new Error('Expected an attachment owner');
+  return at(owner, { kind: 'attachment', parent: owner.element, id });
+}
+
 export function fieldAddress(address: ModelAddress, ...path: (string | number)[]): ModelAddress {
   if (address.element.kind === 'field') throw new Error('A field must name its owning element');
   return at(address, { kind: 'field', parent: address.element, path });
@@ -154,4 +159,24 @@ export function fieldAddress(address: ModelAddress, ...path: (string | number)[]
 export function graphKind(component: CompositeComponent) {
   const domain = component.interior.physical_domain;
   return domain === 'planar_multibody' || domain === 'spatial_multibody' ? 'Mechanics' : domain ? 'Equations' : 'Graph';
+}
+
+type Element = ModelAddress['element'];
+
+function owners(element: Element): Element[] {
+  if (element.kind === 'field' || element.kind === 'attachment') return [element, ...owners(element.parent)];
+  if (element.kind === 'port' && element.end.owner === 'component') {
+    return [element, { kind: 'component', id: element.end.component }];
+  }
+  return [element];
+}
+
+/** Whether `address` is `holder` or lies inside it: a field of it, an attachment on it, a port of it, or an element of a composite's interior. */
+export function holds(holder: ModelAddress, address: ModelAddress) {
+  const depth = holder.composites.length;
+  if (!holder.composites.every((id, index) => address.composites[index] === id)) return false;
+  if (holder.element.kind === 'component' && address.composites[depth] === holder.element.id) return true;
+  if (address.composites.length !== depth) return false;
+  const key = canonicalJsonV2(holder.element);
+  return owners(address.element).some((element) => canonicalJsonV2(element) === key);
 }

@@ -22,3 +22,18 @@ export async function reveal(page: Page, panel: 'Drawer' | 'Inspector') {
     await expect(hide).toBeVisible({ timeout: 1_000 });
   }).toPass({ timeout: 5_000 });
 }
+
+const detailsDrawer = (page: Page) => page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+
+/** Places a component from the Model drawer's Library by searching for it and pressing Return on its row. */
+export async function placeFromLibrary(page: Page, name: string) {
+  await detailsDrawer(page).getByRole('textbox', { name: 'Search Library', exact: true }).fill(name);
+  await detailsDrawer(page).getByRole('option', { name, exact: true }).press('Enter');
+}
+
+/** A row of the Model drawer's Outline, by its element's name; a row's Problems count follows the name. */
+export function outlineRow(page: Page, name: string) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return detailsDrawer(page).getByRole('tree', { name: 'Outline', exact: true })
+    .getByRole('treeitem', { name: new RegExp(`^${escaped}( Problems \\d+)?$`) });
+}

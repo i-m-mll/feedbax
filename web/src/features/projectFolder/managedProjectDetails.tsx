@@ -25,6 +25,7 @@ import { modelDocumentId, directTrainStep } from './authoredEdits';
 import type { ProblemReveal } from './projectWindowProblems';
 import type { ProjectEditController } from './projectEditController';
 import { useStoredModelView } from './model/ModelView';
+import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ConfirmRunRemoval } from './runRemoval';
 import { modelSchema } from './model/modelGraph';
 import { elementKey, isModelAddress, type ElementSelectionStore, type ModelLocation } from '@/features/projectWindow/elementSelection';
@@ -73,6 +74,8 @@ interface DetailInputs {
   readonly evaluateScope?: EvaluateAttachmentReadRequest['scope'];
   readonly modelSource?: string;
   readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
+  readonly drawerSections: DrawerSections;
+  readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
 }
 
 const rootModelPath: string[] = [];
@@ -326,6 +329,8 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       ? [{ address: item.model_address, reason: item.detail }] : []),
     path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
     setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
+    sections: input.drawerSections,
+    openProblems: input.openModelProblems,
   });
   return {
     model: stored ? storedView : { body: <DetailReason reason="definitionUnavailable" name="model" /> },

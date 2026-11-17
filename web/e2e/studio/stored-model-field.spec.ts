@@ -2,6 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { ModelFieldResponse, StudioProjectDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
+import { placeFromLibrary } from './fixtures/controls';
 
 test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
 
@@ -16,8 +17,7 @@ test('reopens a Model duration range and an integer sample in their saved forms'
   const tau = inspector.getByRole('region', { name: 'Tau field', exact: true });
   const tauText = tau.getByRole('textbox', { name: 'Tau', exact: true });
   const hidden = inspector.getByRole('textbox', { name: 'Hidden size', exact: true });
-  const rnn = page.getByRole('button', { name: 'Add VanillaRNN', exact: true });
-  await rnn.press('Enter');
+  await placeFromLibrary(page, 'VanillaRNN');
   await expect(tauText).toHaveValue(/ st$/);
   await enter(tauText, '30 ms');
   await expect(tauText).toHaveValue('0.03 s');
@@ -55,7 +55,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const hidden = inspector.getByRole('textbox', { name: 'Hidden size', exact: true });
-  await page.getByRole('button', { name: 'Add GRU', exact: true }).press('Enter');
+  await placeFromLibrary(page, 'GRU');
   await expect(hidden).toHaveValue('4');
   await enter(hidden, '64');
   await expect(inspector.getByRole('button', { name: 'Hidden size kind: Value' })).toBeVisible();
