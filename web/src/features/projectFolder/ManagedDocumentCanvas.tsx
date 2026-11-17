@@ -1,23 +1,9 @@
 import dagre from '@dagrejs/dagre';
 import { ReactFlowProvider, useReactFlow, type Edge, type Node } from '@xyflow/react';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import { StudioCanvas } from '@/components/canvas/StudioCanvas';
 import type { PresentationPosition } from '@/generated/studioContracts';
-
-export function useElementSelection(scope: string, reveal?: object, revealedId?: string) {
-  const [selection, setSelection] = useState<{ scope: string; id: string | null }>();
-  const handled = useRef<object>();
-  useEffect(() => {
-    if (!reveal || revealedId === undefined || handled.current === reveal) return;
-    handled.current = reveal;
-    setSelection({ scope, id: revealedId });
-  }, [scope, reveal, revealedId]);
-  return {
-    selectedId: selection?.scope === scope ? selection.id : null,
-    onSelect: (id: string | null) => setSelection({ scope, id }),
-  };
-}
 
 interface CanvasNode {
   id: string;
@@ -26,7 +12,9 @@ interface CanvasNode {
   problem?: string;
 }
 
-type CanvasProps = ReturnType<typeof useElementSelection> & {
+type CanvasProps = {
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
   items: readonly CanvasNode[];
   connections: readonly Edge[];
   positions?: Record<string, PresentationPosition>;

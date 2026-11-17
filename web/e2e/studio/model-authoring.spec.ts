@@ -68,8 +68,8 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   await mapStep(page, 'train').click();
   await tab('Task').click();
   await expect(task.getByRole('region', { name: 'Signals' })).toContainText('Reach Target');
-  const taskTarget = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
-  const taskSteps = task.getByRole('spinbutton', { name: /N Steps/i });
+  const taskTarget = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
+  const taskSteps = task.getByRole('textbox', { name: /N Steps/i });
   const saved = async () => {
     const response = await request.get(projectPath + '/open');
     expect(response.ok(), await response.text()).toBe(true);

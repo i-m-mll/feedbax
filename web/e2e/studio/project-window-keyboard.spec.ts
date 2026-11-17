@@ -117,7 +117,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(page.getByRole('textbox', { name: 'N Batches', exact: true })).toBeEnabled();
   await tab('Task').click();
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
-  const reach = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
+  const reach = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
   await expect(reach).toHaveValue('0.15');
   await expect(task.getByRole('alert')).toHaveCount(0);
   await enter(reach, '0.6');
@@ -389,7 +389,8 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await expect(count).toHaveText('· 2 of 3');
   await expect(mass).toHaveValue('2');
 
-  const rejected = post(page, `${projectPath}/model/fields`);
+  const rejected = page.waitForResponse((response) => response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === `${projectPath}/model/fields` && !!response.request().postDataJSON()?.edit);
   await enter(mass, '3');
   const refusal = await (await rejected).json() as ModelFieldResponse;
   expect(refusal.problems?.[0].reason).toBe('Select all steps that use this Model to change its document value.');
@@ -416,6 +417,8 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await expect(mass).toHaveValue('2');
 
   await page.reload();
+  await expect(mapStep(page, 'alpha')).toBeVisible();
+  await page.keyboard.press('Meta+2');
   await expect(count).toHaveText('· 3 of 3');
   await component.click();
   await expect(mass).toHaveValue('2');

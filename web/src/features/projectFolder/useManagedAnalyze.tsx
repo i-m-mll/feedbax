@@ -16,7 +16,8 @@ import {
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { ManagedDocumentCanvas, useElementSelection } from './ManagedDocumentCanvas';
+import { ManagedDocumentCanvas } from './ManagedDocumentCanvas';
+import { useNamedSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 import { problemReason, type ProblemReveal } from './projectWindowProblems';
@@ -39,9 +40,10 @@ function scalar(value: unknown): JsonPrimitive {
 }
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, focusedView, reveal, savePosition,
+  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection,
 }: {
   editor: ProjectEditController;
+  selection: ElementSelectionStore;
   key?: StudioSavedTrainKey;
   projection?: StudioSavedTrainRuns;
   wholeStep: boolean;
@@ -60,7 +62,7 @@ export function useManagedAnalyze({
   const scope = JSON.stringify([saved.project_id, id, document]);
   const liveScope = useRef(scope);
   liveScope.current = scope;
-  const element = useElementSelection(scope, reveal, reveal?.target.element?.kind === 'analysisElement'
+  const element = useNamedSelection(selection, document, reveal, reveal?.target.element?.kind === 'analysisElement'
     ? reveal.target.element.id : undefined);
   const [dialog, setDialog] = useState<{ scope: string; mode: 'add' | 'wire'; point?: PresentationPosition }>();
   const [query, setQuery] = useState('');

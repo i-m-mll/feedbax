@@ -15,7 +15,7 @@ import type {
   JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { Field } from './model/ModelInspector';
+import { rawField } from '@/components/values/adapters/raw';
 import type { ProjectEditController } from './projectEditController';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
@@ -103,12 +103,14 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
         const value = selection?.params[key] ?? property.default;
         const number = property.type === 'number' || property.type === 'integer';
         const origin = view.task_field_sources?.[key] ?? view.task_source;
-        return <Field key={key} label={name} value={parameterValue(value)} type={number ? 'number' : 'text'}
-          description={origin ? studioEvaluateValueSource(origin) : undefined}
-          parse={(raw) => number ? raw.trim() && Number.isFinite(Number(raw)) ? Number(raw) : undefined : raw}
-          commit={commit && (async (value) => setError(await commit('Set ' + name, {
-            kind: 'task', edits: [write(authoredPointer(['params', key]), value, !!selection && has(selection.params, key))],
-          })))} />;
+        return <ValueField key={key} model={rawField({
+          id: key, label: name, type: { kind: number ? 'number' : 'string' },
+          value: number ? value as JsonValue : parameterValue(value),
+          origin: origin ? studioEvaluateValueSource(origin) : undefined,
+          change: commit && ((next) => commit('Set ' + name, {
+            kind: 'task', edits: [write(authoredPointer(['params', key]), next, !!selection && has(selection.params, key))],
+          })),
+        })} />;
       })}
     </section>}
     <section aria-label={studioName('signals')}>
@@ -246,8 +248,10 @@ export function TrialObjectiveInspector({ view, commit, selected }: {
     kind: 'objective', edits: [write('/terms/' + index + '/' + field, value, has(term, field))],
   }));
   return <div className="grid gap-2 p-2 text-sm">
-    <Field key={term.id} label={studioName('name')} value={term.name ?? ''} parse={(raw) => raw.trim() || undefined}
-      commit={commit && ((value) => { void save('name', value); })} />
+    <ValueField key={term.id} model={rawField({
+      id: 'name', label: studioName('name'), type: { kind: 'string' }, value: term.name ?? '',
+      change: commit && ((value) => { if (String(value).trim()) void save('name', String(value).trim()); }),
+    })} />
     <label className="grid gap-1">{studioName('reduction')} <Select aria-label={studioName('reduction')} value={term.reduction ?? 'mean'} disabled={!commit}
       items={([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const).map(([value, name]) =>
         ({ value, label: studioName(name) }))}

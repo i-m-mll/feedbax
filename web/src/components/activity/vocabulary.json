@@ -363,7 +363,8 @@
     "inspectorLabelsBeside": "Labels Beside",
     "inspectorLabelsAbove": "Labels Above",
     "valueMarkHover": "Hover Marks",
-    "valueMarkQuiet": "Quiet Marks"
+    "valueMarkQuiet": "Quiet Marks",
+    "addAttachment": "Add Attachment"
   },
   "unit": {
     "second": "s",
@@ -449,7 +450,10 @@
     "invalidUpdateList": "{value} has repeated or out-of-range updates",
     "invalidCheckpointRule": "{value} has invalid syntax",
     "takesNumber": "{value} takes a number",
-    "takesInteger": "{value} takes a whole number"
+    "takesInteger": "{value} takes a whole number",
+    "takesDuration": "{value} takes a duration in s or st",
+    "takesPositive": "{value} takes a positive number",
+    "takesText": "{value} takes text"
   },
   "format": {
     "bestSubset": "{order} {metric} · {count}",
@@ -463,6 +467,7 @@
     "trainedValue": "Trained by {step}",
     "evaluateChangedValue": "Changed by {step}",
     "ofCount": "{count} of {total}",
+    "elementCount": "{count} {name}",
     "lastLossAtUpdate": "Last loss at update {end}",
     "lossIntervalDescription": "Interval mean loss with minimum and maximum bars",
     "lossInterval": "Updates {start}–{end} ({count} samples), {min}–{max}",
