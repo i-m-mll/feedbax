@@ -360,8 +360,7 @@ class _TrainFields:
                 not isinstance(target_spec, DocumentTrainingRequestSpec)
                 or not isinstance(source_spec, DocumentTrainingRequestSpec)
                 or target_spec.checkpoint_initialization != policy
-                or (target_spec.method, target_spec.method_revision, target_spec.settings)
-                != (source_spec.method, source_spec.method_revision, source_spec.settings)
+                or (target_spec.method, target_spec.settings) != (source_spec.method, source_spec.settings)
             ):
                 return None
             counts.add(source_spec.target_total)

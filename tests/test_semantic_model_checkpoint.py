@@ -59,7 +59,6 @@ def _publish(root, graph, models, templates, *, extra=(), assets=None, replica_i
         run_id="selected-model",
         identity=MethodCheckpointIdentity(
             request_id="train:" + "1" * 64, method_key="external.Adversary",
-            method_revision=1, distribution="external-method", distribution_version="1.0",
         ),
         clock=MethodCheckpointClock(completed_updates=2, segment_start=0, schedule_origin=0, seed=81),
         state=TrainingState(stack_replicas(models), extra),

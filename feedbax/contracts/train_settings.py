@@ -22,6 +22,5 @@ def normalize_train_method(
     return request.model_copy(update={
         "method": method.key,
         "seed": 0 if request.seed is None else request.seed,
-        "method_revision": method.revision,
         "settings": settings.model_dump(mode="json"),
     }), method, settings

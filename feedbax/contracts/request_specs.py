@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
@@ -10,7 +10,6 @@ from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.operation import OperationComputation
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.request_identity_guard import IdentityWideInteger
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.training import TrialDocuments as TrialDocuments
 from feedbax.plugins.declarations import validate_declaration_key
@@ -60,10 +59,9 @@ class DocumentTrainingRequestSpec(RequestSpec):
 
     trial_documents: TrialDocuments
     method: str
-    method_revision: int = Field(default=1, gt=0, strict=True)
     settings: dict[str, JsonValue]
     training_config: DocumentTrainingConfig
-    seed: Annotated[int | None, IdentityWideInteger()] = Field(default=None, strict=True, ge=0, lt=2**32)
+    seed: int | None = Field(default=None, strict=True, ge=0, lt=2**32)
     checkpoint_initialization: Literal["initialize_from"] | TrainContinuation | None = None
 
     @field_validator("method")

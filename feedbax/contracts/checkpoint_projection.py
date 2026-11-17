@@ -18,7 +18,6 @@ class CheckpointOccurrenceRef(ReferenceValue):
 
 class CarriedMethodState(ReferenceValue):
     method_key: str
-    method_revision: int
     extra: MethodCheckpointExtra
 
 
