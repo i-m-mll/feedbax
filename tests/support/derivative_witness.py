@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Annotated, ClassVar, NamedTuple
 
 from equinox.nn import StateIndex
@@ -13,17 +14,20 @@ from pydantic import BaseModel, Field
 from feedbax.analysis.eig import eig
 from feedbax.analysis.fp_finder import FixedPointFinder, fp_adam_optimizer
 from feedbax.analysis.operations import DatasetOutput, operation
+from feedbax.builtins.runtime.components import GRU, Linear
 from feedbax.contracts.component import PortType
+from feedbax.contracts.expression_values import CallValue, LiteralValue, ValueType
 from feedbax.contracts.model_values import ModelFacts, StateValue
 from feedbax.contracts.operation import DatasetPort, JaxOperation, ModelPort, TaskPort
 from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.task_document import TaskDocument
+from feedbax.contracts.task_document import Cell, Epoch, Signal, TaskDocument
 from feedbax.dataset import Dataset, Variable
-from feedbax.runtime.components import GRU, Linear
 from feedbax.runtime.graph import Component, Graph
 from feedbax.runtime.prototypes import input_passthrough_output_prototype
+from feedbax.tasks.document import compile_task
+from feedbax.tasks.registry import PythonTask, PythonTaskInstance, PythonTaskTemplate
 
 
 PACKAGE = "feedbax_witness"
@@ -83,6 +87,34 @@ class QuadraticFeedback(Component):
         return {"output": value}, state.set(self.state_index, _FeedbackState(value))
 
 
+class DriveSettings(BaseModel, extra="forbid", frozen=True):
+    nominal: float = 1.0
+    disturbance_matrix: tuple[tuple[float]] = ((1.0,),)
+
+
+class DriveTask(PythonTask[DriveSettings]):
+    settings_model = DriveSettings
+
+    @staticmethod
+    def template(settings: DriveSettings) -> PythonTaskTemplate:
+        vector = ValueType(base="real", shape=(1,))
+        document = TaskDocument(
+            id="drive", variables=(), epochs=(Epoch(id="rollout", name="Rollout"),), fixed_steps=2,
+            signals=(Signal(
+                id="drive", name="drive", type=vector,
+                cells=(Cell(
+                    first_epoch="rollout", last_epoch="rollout",
+                    value=CallValue(function="vector", args=(LiteralValue(value=settings.nominal),)),
+                ),),
+            ),),
+        )
+
+        def prepare(model, functions):
+            return compile_task(document, functions, model=replace(model, inputs=()))
+
+        return PythonTaskTemplate(signals={"drive": vector}, prepare=prepare)
+
+
 class FixedPointSettings(BaseModel, extra="forbid", frozen=True):
     loss_tol: float = 1e-6
     unique_tol: float = 0.025
@@ -116,9 +148,9 @@ def _spectrum(values, accepted, period):
 
 def _fixed_point_products(model: Graph, levels: tuple[float, ...], params: FixedPointSettings):
     key = jax.random.PRNGKey(0)
-    state = model.init_state(key=key)
 
     def step(feedback, hidden):
+        state = model.init_state(key=key)
         outputs, _, _ = model.step({"feedback": feedback, "memory": hidden}, state, key=key)
         return outputs
 
@@ -210,10 +242,10 @@ def linearise(
     points = jnp.asarray(states.data(state_field)).reshape(-1)[:-1, None]
     inputs = jnp.asarray(states.data(input_field)).reshape(-1, 1)
     key = jax.random.PRNGKey(0)
-    state = model.init_state(key=key)
     state_index = model.nodes["feedback"].state_index
 
     def transition(value, drive):
+        state = model.init_state(key=key)
         operating_state = state.set(state_index, _FeedbackState(value))
         output, _, _ = model.step({"drive": drive}, operating_state, key=key)
         return output["value"][0]
@@ -228,11 +260,11 @@ def linearise(
 @operation(settings=NoSettings)
 def assemble(
     jacobians: Annotated[Dataset, DatasetPort(schema_ids=(LINEARISED,))],
-    task: Annotated[TaskDocument, TaskPort()],
+    task: Annotated[PythonTaskInstance[DriveSettings], TaskPort(task_key=f"{PACKAGE}.DriveTask")],
     params: NoSettings,
 ) -> Annotated[Dataset, DatasetOutput("system", DatasetPort(schema_ids=(ASSEMBLED,)))]:
     """Assemble the scalar time-varying system with the task plant's actuation coefficient."""
-    (actuation,) = (variable.value.value for variable in task.variables if variable.id == "actuation")
+    ((actuation,),) = task.parameters.disturbance_matrix
     return Dataset.from_arrays({
         "A": Variable(jacobians.data("feedback"), ("transition",)),
         "B": Variable(jacobians.data("actuation") * actuation, ("transition",)),
