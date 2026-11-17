@@ -73,9 +73,11 @@ class WorkerRecorder:
 
     def __init__(self, entered: dict[str, set[str]], *, boot_ns: int):
         self.project: Path | None = None
+        self._environment_root: Path | None = None
         self.catalog = source_catalog(None)
         self.boot_ns = boot_ns
         self.installed = installed_versions()
+        self.feedbax = resolve_feedbax_provenance()
         self.entered = entered
         self.host = SourceRoster(4, "Feedbax host product source")
         self._source_roots: dict[str, Path] = {}
@@ -156,13 +158,15 @@ class WorkerRecorder:
             if source not in self.loaded and (present := self.catalog.read(source)) is not None:
                 self.loaded[source] = present
 
-    def bind_project(self, project: Path) -> None:
+    def bind_project(self, project: Path, *, environment_root: Path | None = None) -> None:
         root = project.resolve(strict=True)
+        lock_root = environment_root.resolve(strict=True) if environment_root is not None else root
         if self.project is None:
             self.project = root
+            self._environment_root = lock_root
             self.note_preloaded_sources()
-        elif self.project != root:
-            raise ValueError("A managed worker cannot change its project source authority")
+        elif self.project != root or self._environment_root != lock_root:
+            raise ValueError("A managed worker cannot change its project or environment authority")
 
     def changed(self) -> bool:
         if installed_versions() != self.installed:
@@ -178,7 +182,6 @@ class WorkerRecorder:
 
     @contextmanager
     def delivery(self, job: str, store_root: Path, scratch: Path) -> Iterator[None]:
-        assert self.project is not None
         environment = self._current_environment()
         store = ImmutableArtifactBlobProvider(store_root)
         excluded = (store_root.resolve(), scratch.resolve(), *self._interpreter_roots)
@@ -268,7 +271,6 @@ class WorkerRecorder:
             sources.append(SourceSnapshot(
                 path=path, content=ref, entered=tuple(sorted(entered)), host_product=tuple(sorted(host)),
             ))
-        provenance = resolve_feedbax_provenance()
         self._verify_file_reads(attempt)
         computation = attempt.computation() if attempt.computation is not None else None
         return ReceiptEvidence(
@@ -288,7 +290,7 @@ class WorkerRecorder:
                 computation_unavailable=computation if isinstance(computation, ComputationUnavailable) else None,
             ),
             provenance=AttemptProvenance(
-                feedbax_commit=provenance.revision, feedbax_dirty=provenance.dirty,
+                feedbax_commit=self.feedbax.revision, feedbax_dirty=self.feedbax.dirty,
                 lock_sha256=attempt.environment.lock_sha256, platform=platform.platform(),
                 started_at=attempt.started, ended_at=datetime.now(UTC),
             ),
@@ -335,7 +337,7 @@ class WorkerRecorder:
                 attempt.indeterminate_files.add(path)
 
     def _current_environment(self) -> EnvironmentSnapshot:
-        assert self.project is not None
+        assert self._environment_root is not None
         installed = installed_versions()
         if installed != self.installed:
             changed = [
@@ -344,7 +346,7 @@ class WorkerRecorder:
                 if self.installed.get(name) != installed.get(name)
             ]
             raise EnvironmentMismatch("Installed distributions changed in the live worker: " + ", ".join(changed))
-        return read_environment(self.project, installed=installed, verify_installation=True)
+        return read_environment(self._environment_root, installed=installed, verify_installation=True)
 
     def _verify_environment(self, attempt: _Attempt) -> None:
         if self._current_environment() != attempt.environment:

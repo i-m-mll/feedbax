@@ -25,11 +25,13 @@ class EnvironmentMismatch(ValueError):
 
 
 def installed_versions() -> dict[str, str]:
-    return {
-        canonicalize_name(distribution.name): distribution.version
-        for distribution in metadata.distributions()
-        if distribution.name and distribution.version
-    }
+    versions = {}
+    for distribution in metadata.distributions():
+        fields = distribution.metadata
+        name, version = fields.get("Name"), fields.get("Version")
+        if name and version:
+            versions.setdefault(canonicalize_name(name), version)
+    return versions
 
 
 @lru_cache(maxsize=16)

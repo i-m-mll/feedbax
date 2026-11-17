@@ -19,9 +19,11 @@ class SourcePath(ReferenceValue):
     @field_validator("scope")
     @classmethod
     def _portable_scope(cls, value: str) -> str:
+        distribution, separator, portion = value.removeprefix("plugin:").partition(":")
         if value not in {"project", "feedbax"} and not (
-            value.startswith("plugin:") and value[7:].isascii()
-            and value[7:].replace("-", "").isalnum()
+            value.startswith("plugin:") and distribution.isascii()
+            and distribution.replace("-", "").isalnum()
+            and (not separator or (portion.isascii() and portion.isdecimal()))
         ):
             raise ValueError("Expected a project, Feedbax, or installed plugin source scope")
         return value

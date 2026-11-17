@@ -198,7 +198,8 @@ def _record_execution(message, recorder, log: Path, entrypoint, argv) -> int:
 
     root = Path(message["store_root"])
     try:
-        recorder.bind_project(Path(message["project_root"]))
+        environment = message.get("environment_root")
+        recorder.bind_project(Path(message["project_root"]), environment_root=Path(environment) if environment else None)
         with recorder.delivery(message["job_id"], root, log.parent):
             status = int(entrypoint(argv) or 0)
             if (
