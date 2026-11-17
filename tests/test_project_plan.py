@@ -1,3 +1,4 @@
+from feedbax.builtins.training import StandardTrainingSettings
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_inputs import SelectedRow, SubsetTerms, subset_to_rows
 from feedbax.contracts.project_io import (
@@ -39,6 +40,7 @@ def _project_data():
 
 def _expected_train():
     payload = managed_train_payload() | {"seed": 0}
+    payload["settings"] = StandardTrainingSettings.model_validate(payload["settings"]).model_dump(mode="json")
     return encode_request(DocumentTrainingRequestSpec.model_validate(payload), {})
 
 
@@ -289,8 +291,10 @@ def test_chained_train_requires_a_row_match_or_explicit_checkpoint_mapping():
 
 def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
     data = _chained_train_data()
-    data["steps"]["rewarm"]["base"]["step"] = "flat"
-    data["steps"]["rewarm"]["inputs"]["checkpoint"]["step"] = "flat"
+    rewarm_step = data["steps"]["rewarm"]
+    rewarm_step["base"]["step"] = "flat"
+    rewarm_step["inputs"]["checkpoint"]["step"] = "flat"
+    rewarm_step["deltas"] = [layer for layer in rewarm_step["deltas"] if layer["layer_id"] != "initialize"]
     checkpoint = data["steps"]["flat"]["inputs"]["checkpoint"]
     checkpoint["where"] = {"axes": {"seed": ["b"]}}
     memo = ProjectPlanMemo()
