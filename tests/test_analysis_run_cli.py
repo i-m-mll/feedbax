@@ -74,7 +74,7 @@ def analysis_state(application_registry_bundle, monkeypatch):
 def toy_analysis_recipe(analysis_state):
     def recipe(spec: AnalysisRunSpec, _root: Path, _inputs, _execution_context):
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=int(spec.params["value"])),
         )
 
@@ -143,7 +143,7 @@ def test_run_subcommand_loads_installed_plugin_before_recipe_execution(
     def recipe(spec, _root, _inputs, _execution_context):
         calls.append(spec.analysis_type)
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=2),
         )
 
@@ -328,7 +328,7 @@ def test_run_subcommand_delta_binds_nested_manifest_and_checkpoint_without_copy(
         assert execution_context.repo_root == tmp_path.resolve()
         assert execution_context.checkpoint_custody_root("capture-checkpoints") == checkpoint_root
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=int(spec.params["value"])),
         )
 

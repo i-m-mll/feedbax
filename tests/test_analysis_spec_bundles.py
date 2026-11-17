@@ -102,7 +102,7 @@ def _register_toy_analysis_recipe(
             seen_repo_roots.append(execution_context.repo_root)
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=value),
             common_inputs={"presentation": spec.params.get("presentation", {})},
         )
@@ -118,7 +118,7 @@ def _register_toy_artifact_analysis_recipe(application_registry_bundle) -> None:
             if resolved.ref.kind == "EvaluationRunManifest"
         ]
         return AnalysisRecipeResult(
-            analyses={"artifact_producer": ToyArtifactProducer(variant="toy", cache_result=True)},
+            analyses={"artifact_producer": ToyArtifactProducer(variant="toy")},
             data=build_toy_analysis_data(value=sum(values)),
             common_inputs={"presentation": spec.params.get("presentation", {})},
         )
@@ -235,7 +235,7 @@ def _prepare_staged_evaluation_cache_truthfulness_case(
         value = int(inputs[0].states["value"])
         analysis_calls.append(value)
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=value),
         )
 
@@ -520,12 +520,12 @@ def test_analysis_run_spec_reuses_completed_manifest_without_recipe_call(
     def recipe(spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         calls.append(int(inputs[0].states["value"]))
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=int(inputs[0].states["value"])),
         )
 
     application_registry_bundle.analysis_recipes.register(
-        TOY_ANALYSIS_TYPE, recipe, computation_revision="toy-v1"
+        TOY_ANALYSIS_TYPE, recipe
     )
     eval_manifest, eval_path = _execute_toy_eval(
         tmp_path,
@@ -1384,7 +1384,7 @@ def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs
             int(item.states["value"]) for item in inputs if item.ref.kind == "EvaluationRunManifest"
         ]
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=sum(eval_values)),
             common_inputs={"presentation": spec.params.get("presentation", {})},
         )
@@ -1472,13 +1472,13 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(
         value = int(inputs[0].states["value"])
         analysis_calls.append(value)
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=value),
         )
 
     application_registry_bundle.evaluation_recipes.register(TOY_EVALUATION_TYPE, eval_recipe)
     application_registry_bundle.analysis_recipes.register(
-        TOY_ANALYSIS_TYPE, analysis_recipe, computation_revision="toy-v1"
+        TOY_ANALYSIS_TYPE, analysis_recipe
     )
     _write_toy_training(tmp_path, method="minimax")
     bundle = AnalysisBundleSpec(
@@ -1767,7 +1767,7 @@ def test_staged_bundle_runtime_condition_skips_required_outputs_and_optional_rol
     def consumer_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         observed_inputs.append([resolved.ref for resolved in inputs])
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=0),
         )
 
@@ -1974,7 +1974,7 @@ def test_staged_bundle_role_dependency_binds_artifact_input_alias(
     def consumer_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
         observed_inputs.append([resolved.ref for resolved in inputs])
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=0),
         )
 
@@ -2085,7 +2085,7 @@ def test_staged_bundle_materialization_stage_rejects_non_materializer_node(
 
     def recipe(_spec: AnalysisRunSpec, _root: Path, _inputs, _execution_context):
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=0),
         )
 

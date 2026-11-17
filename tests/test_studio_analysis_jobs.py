@@ -63,7 +63,7 @@ def _register_job_eval_recipe(registries) -> None:
     registries.evaluation_recipes.register(TOY_JOB_EVAL_TYPE, recipe)
 
 
-def _register_job_analysis_recipe(registries, *, revision: str | None = None) -> None:
+def _register_job_analysis_recipe(registries) -> None:
     def recipe(
         spec: AnalysisRunSpec,
         _root: Path,
@@ -73,7 +73,7 @@ def _register_job_analysis_recipe(registries, *, revision: str | None = None) ->
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
             analyses={
-                TOY_JOB_ANALYSIS_TYPE: ToyAnalysis(variant="studio", cache_result=True),
+                TOY_JOB_ANALYSIS_TYPE: ToyAnalysis(variant="studio"),
                 UNWIRED_JOB_OUTPUT: IdentityNode(inputs=SinglePort(input="missing_dependency")),
             },
             data=build_toy_analysis_data(value=value),
@@ -81,7 +81,7 @@ def _register_job_analysis_recipe(registries, *, revision: str | None = None) ->
         )
 
     registries.analysis_recipes.register(
-        TOY_JOB_ANALYSIS_TYPE, recipe, computation_revision=revision
+        TOY_JOB_ANALYSIS_TYPE, recipe
     )
 
 
@@ -94,7 +94,7 @@ def _register_mismatched_job_analysis_recipe(registries) -> None:
     ) -> AnalysisRecipeResult:
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
-            analyses={"actual_output": ToyAnalysis(variant="studio", cache_result=True)},
+            analyses={"actual_output": ToyAnalysis(variant="studio")},
             data=build_toy_analysis_data(value=value),
             common_inputs={"studio": spec.params["studio"]},
         )
@@ -184,10 +184,10 @@ def test_studio_analysis_jobs_bound_and_drain_per_app(
         first_app_ready = asyncio.Event()
         stop_first_app = asyncio.Event()
 
-        def run_analysis(spec, _registries, *, computation):
+        def run_analysis(spec, _registries):
             loop.call_soon_threadsafe(analysis_started.set)
             assert release_analysis.wait(15), "test did not release running analysis"
-            return result(analysis_run_manifest_id(spec, computation=computation))
+            return result(analysis_run_manifest_id(spec))
 
         def run_figure(spec, _registries):
             figure_calls.append(spec.name)
@@ -277,7 +277,7 @@ def test_studio_analysis_job_thread_start_failure_closes_admission(
             raise RuntimeError("can't start new thread")
         start_thread(thread)
 
-    def run_analysis(_spec, _registries, *, computation):
+    def run_analysis(_spec, _registries):
         worker_called.set()
         raise AssertionError("rejected work must not execute")
 
@@ -294,16 +294,14 @@ def test_studio_analysis_job_thread_start_failure_closes_admission(
     assert not worker_called.is_set()
 
 
-@pytest.mark.parametrize("revision", ["studio-test-v1", None])
 def test_studio_analysis_job_routes_eval_run_through_executable_spec(
     tmp_path: Path,
     monkeypatch,
     studio_registries,
-    revision: str | None,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
     _register_job_eval_recipe(studio_registries)
-    _register_job_analysis_recipe(studio_registries, revision=revision)
+    _register_job_analysis_recipe(studio_registries)
     eval_manifest, _eval_path = _execute_eval(tmp_path, studio_registries)
     spec = AnalysisRunSpec(
         analysis_type=TOY_JOB_ANALYSIS_TYPE,
@@ -360,9 +358,8 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
     ]
     assert all("artifact:/sha256/" not in uri for uri in status_payload["artifact_paths"])
     assert manifest.kind == "AnalysisRunManifest"
-    assert manifest.computation is not None
     assert manifest.id == payload["manifest_id"]
-    assert manifest.id == analysis_run_manifest_id(spec, computation=manifest.computation)
+    assert manifest.id == analysis_run_manifest_id(spec)
     assert manifest.inputs[0].id == eval_manifest.id
     assert manifest.provenance.parents[0].id == eval_manifest.id
     assert manifest.provenance.issues == []
@@ -377,10 +374,7 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
         fig_dump_formats=("json",),
         experiment_registry=studio_registries.experiment_packages,
     )
-    if revision is None:
-        assert rerun_manifest.id != manifest.id
-    else:
-        assert rerun_manifest.id == manifest.id
+    assert rerun_manifest.id == manifest.id
 
 
 @pytest.mark.parametrize("outputs", [[UNWIRED_JOB_OUTPUT], None])
@@ -435,21 +429,16 @@ def test_run_analysis_sync_preserves_canonical_uri_and_legacy_path_shape(
         artifacts=[canonical, legacy],
     )
     spec = AnalysisRunSpec(analysis_type="test.studio_locations")
-    requested_computation = application_registry_bundle.analysis_recipes.new_computation(
-        spec.analysis_type
-    )
 
     def execute_stub(
         _spec,
         *,
         registry,
-        computation,
         evaluation_registry,
         experiment_registry,
         fig_dump_formats,
     ):
         assert registry is application_registry_bundle.analysis_recipes
-        assert computation == requested_computation
         assert evaluation_registry is application_registry_bundle.evaluation_recipes
         assert experiment_registry is application_registry_bundle.experiment_packages
         assert fig_dump_formats == ("json",)
@@ -458,7 +447,7 @@ def test_run_analysis_sync_preserves_canonical_uri_and_legacy_path_shape(
     monkeypatch.setattr(analysis_specs, "execute_analysis_run_spec", execute_stub)
 
     result = _run_analysis_sync(
-        spec, application_registry_bundle, computation=requested_computation
+        spec, application_registry_bundle
     )
 
     assert canonical.uri == canonical.artifact_id

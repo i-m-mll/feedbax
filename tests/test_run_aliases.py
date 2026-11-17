@@ -312,7 +312,7 @@ def test_analysis_cli_expands_alias_to_durable_pin(
 
     def recipe(spec: AnalysisRunSpec, _root: Path, _inputs, _execution_context):
         return AnalysisRecipeResult(
-            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            analyses={"toy": ToyAnalysis(variant="toy")},
             data=build_toy_analysis_data(value=int(spec.params["value"])),
         )
 

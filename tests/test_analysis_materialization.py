@@ -187,7 +187,7 @@ def test_artifact_group_helper_flows_through_context_custody(
     )
 
     def materialize(run_context):
-        source_path = run_context.results_cache_dir / "source.json"
+        source_path = run_context.artifacts_dir / "source.json"
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_text('{"value": 5}\n', encoding="utf-8")
         return MaterializationResult(

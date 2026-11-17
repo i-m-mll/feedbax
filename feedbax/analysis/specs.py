@@ -7,7 +7,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
-from uuid import uuid4
 
 import jax.tree_util as jtu
 from pydantic import ValidationError
@@ -68,7 +67,6 @@ from feedbax.contracts.base import (
     default_manifest_root,
 )
 from feedbax.contracts.manifest import (
-    AnalysisComputation,
     AnalysisEvaluationStateResolutionCode,
     AnalysisEvaluationStateResolutionDiagnostic,
     AnalysisEvaluationStateSource,
@@ -78,13 +76,8 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
     RegenerationSpecBuilder,
-    canonical_manifest_path,
     evaluation_states_cache_path,
     load_manifest_bytes,
-)
-from feedbax.contracts.computation_revision import (
-    ANALYSIS_ENGINE_REVISION,
-    validate_computation_revision,
 )
 from feedbax.contracts.analysis_composition import (
     AnalysisRunDeltaSpec,
@@ -265,7 +258,6 @@ class AnalysisEvaluationStatesResolutionError(RuntimeError):
 @dataclass(frozen=True)
 class _RegisteredAnalysisRecipe:
     recipe: AnalysisRecipe
-    computation: AnalysisComputation | None
     structure_provider: EvaluationStatesStructureProviderProtocol | None
 
 
@@ -282,35 +274,20 @@ class AnalysisRecipeRegistry:
         recipe: AnalysisRecipe,
         *,
         evaluation_states_structure: EvaluationStatesStructureProviderProtocol | None = None,
-        computation_revision: str | None = None,
     ) -> None:
-        """Register a recipe and optionally authorize durable result reuse.
-
-        Bump the revision whenever changes to the recipe, its structure
-        provider, or any transitive computation or materialization can change
-        its results for the same spec. This includes caller-supplied callbacks
-        and the state they capture. Omitted revisions allow execution only.
-        """
+        """Register a recipe and its optional state structure provider."""
         if self._sealed:
             raise RuntimeError("analysis recipe registry is sealed")
         analysis_type = validate_namespaced_type_key(analysis_type, field="analysis_type")
         if analysis_type in self._recipes:
             raise ValueError(f"Analysis recipe {analysis_type!r} is already registered")
         recipe = validate_analysis_recipe(analysis_type, recipe)
-        revision = validate_computation_revision(computation_revision)
         if evaluation_states_structure is not None:
             evaluation_states_structure = validate_evaluation_states_structure_provider(
                 analysis_type, evaluation_states_structure
             )
         self._recipes[analysis_type] = _RegisteredAnalysisRecipe(
             recipe=recipe,
-            computation=(
-                AnalysisComputation(
-                    engine_revision=ANALYSIS_ENGINE_REVISION, recipe_revision=revision
-                )
-                if revision is not None
-                else None
-            ),
             structure_provider=evaluation_states_structure,
         )
 
@@ -325,17 +302,6 @@ class AnalysisRecipeRegistry:
                 f"Analysis recipe {analysis_type!r} is not registered. "
                 f"Registered analysis recipes: {', '.join(self.keys()) or 'none'}."
             ) from exc
-
-    def computation(self, analysis_type: str) -> AnalysisComputation | None:
-        """Return the registered authority for reusing a completed receipt."""
-        registration = self._recipes.get(analysis_type)
-        return registration.computation if registration is not None else None
-
-    def new_computation(self, analysis_type: str) -> AnalysisComputation:
-        """Resolve execution identity, isolating a recipe without reuse authority."""
-        return self.computation(analysis_type) or AnalysisComputation(
-            engine_revision=ANALYSIS_ENGINE_REVISION, execution_nonce=uuid4()
-        )
 
     def structure_provider(
         self, analysis_type: str
@@ -935,7 +901,6 @@ def _admit_cached_analysis_manifest(
     run_spec: AnalysisRunSpec,
     manifest: AnalysisRunManifest,
     *,
-    computation: AnalysisComputation,
     root: Path,
     path: Path,
     execution_context: StagedExecutionContext,
@@ -974,7 +939,6 @@ def _admit_cached_analysis_manifest(
         )
     return admit_analysis_receipt(
         run_spec,
-        computation=computation,
         root=root,
         manifest=candidate,
         path=path,
@@ -1032,7 +996,6 @@ def execute_analysis_run_spec(
     fig_dump_formats: Sequence[str] = ("html",),
     use_cache: bool = True,
     force: bool = False,
-    computation: AnalysisComputation | None = None,
     build_regeneration_spec: RegenerationSpecBuilder | None = None,
 ) -> tuple[AnalysisRunManifest, Path]:
     """Execute a serialized analysis spec and write an ``AnalysisRunManifest``.
@@ -1040,10 +1003,7 @@ def execute_analysis_run_spec(
     Delta-authored specs are flattened against their content-pinned parents
     (which requires ``repo_root``) before execution.
 
-    ``use_cache=False`` or ``force=True`` disables receipt reuse and analysis-result
-    cache reads and writes for the selected analyses and their dependencies.
-    A recipe without a declared revision always runs uncached. An adapter can
-    reserve the computation identity before execution via the registry.
+    ``use_cache=False`` or ``force=True`` executes the recipe instead of reusing a receipt.
     The optional regeneration builder runs before publishing a newly completed
     receipt. Reusing an existing receipt skips the builder.
     """
@@ -1052,17 +1012,7 @@ def execute_analysis_run_spec(
         repo_root=repo_root,
         run_alias_catalogs=run_alias_catalogs,
     )
-    reusable_computation = registry.computation(run_spec.analysis_type)
-    if computation is None:
-        computation = reusable_computation or registry.new_computation(run_spec.analysis_type)
-    elif reusable_computation is not None:
-        if computation != reusable_computation:
-            raise ValueError("analysis computation differs from the registered recipe authority")
-    elif computation.recipe_revision is not None or (
-        computation.engine_revision != ANALYSIS_ENGINE_REVISION
-    ):
-        raise ValueError("unversioned analysis requires a nonce for the current engine revision")
-    reuse = use_cache and not force and reusable_computation is not None
+    reuse = use_cache and not force
     root_path = Path(root) if root is not None else default_manifest_root()
     explicit_runtime = (
         execution_descriptor is not None
@@ -1110,17 +1060,9 @@ def execute_analysis_run_spec(
         issues=issues,
         metadata=metadata,
         experiment_registry=experiment_registry,
-        use_result_cache=reuse,
-        computation=computation,
         build_regeneration_spec=build_regeneration_spec,
     )
     manifest_id = context.manifest_id
-    if computation.execution_nonce is not None:
-        destination = canonical_manifest_path("AnalysisRunManifest", manifest_id, root=root_path)
-        if destination.exists():
-            raise FileExistsError(
-                f"analysis execution identity is already published at {destination}"
-            )
 
     try:
         authenticated_inputs = _resolve_authenticated_input_authorities(
@@ -1147,7 +1089,6 @@ def execute_analysis_run_spec(
                 outcome = _admit_cached_analysis_manifest(
                     run_spec,
                     existing_manifest,
-                    computation=computation,
                     root=root_path,
                     path=existing_path,
                     execution_context=execution_context,
@@ -1215,7 +1156,6 @@ def execute_analysis_run_spec(
             context.manifest_path,
             requested_spec=run_spec,
             expected_id=manifest_id,
-            computation=computation,
         ),
         context.manifest_path,
     )
@@ -1226,7 +1166,6 @@ def _settled_written_analysis_manifest(
     *,
     requested_spec: AnalysisRunSpec,
     expected_id: str,
-    computation: AnalysisComputation,
 ) -> AnalysisRunManifest:
     """Return the just-written manifest, settled from the bytes now at *manifest_path*.
 
@@ -1247,10 +1186,6 @@ def _settled_written_analysis_manifest(
         raise ValueError(
             f"Analysis execution wrote manifest {manifest.id!r} to {manifest_path}, "
             f"but this spec mints {expected_id!r}"
-        )
-    if manifest.computation != computation:
-        raise ValueError(
-            f"Analysis manifest {expected_id!r} at {manifest_path} records a different computation"
         )
     if manifest.analysis_spec.kind != "AnalysisRunSpec":
         raise ValueError(

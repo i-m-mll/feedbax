@@ -32,8 +32,7 @@ async def _execute(path: Path) -> dict:
         result = _run_figure_sync(FigureSpec.model_validate(operation["spec"]), bootstrap.bundle)
     elif operation["kind"] == "analysis":
         spec = AnalysisRunSpec.model_validate(operation["spec"])
-        computation = bootstrap.bundle.analysis_recipes.new_computation(spec.analysis_type)
-        result = _run_analysis_sync(spec, bootstrap.bundle, computation=computation)
+        result = _run_analysis_sync(spec, bootstrap.bundle)
     else:
         raise ValueError("Unsupported Studio analysis operation")
     return asdict(result)

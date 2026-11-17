@@ -1264,7 +1264,7 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
 
     def recipe(_spec, _root, _inputs, _execution_context):
         return AnalysisRecipeResult(
-            analyses={"provider": _ProviderArtifactAnalysis(variant="provider", cache_result=True)},
+            analyses={"provider": _ProviderArtifactAnalysis(variant="provider")},
             data=build_toy_analysis_data(value=0),
             common_inputs={"artifact": artifact},
         )
@@ -1285,7 +1285,7 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
     bindings = [StagedArtifactProviderRootBinding("certificates", provider.root)]
     root = tmp_path / "outputs"
     application_registry_bundle.analysis_recipes.register(
-        _STAGED_PROVIDER_ANALYSIS_TYPE, recipe, computation_revision="1"
+        _STAGED_PROVIDER_ANALYSIS_TYPE, recipe
     )
     first_execution = execute_staged_analysis_bundle(
         AnalysisBundleSpec(
