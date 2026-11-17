@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useRef, useState, useSyncExternalStore } from 'react';
 import { apiErrorMessage } from '@/api/request';
+import { studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StudioDefinitionForm, type StudioFieldControl } from '@/components/pipeline/StudioDefinitionForm';
@@ -105,7 +106,10 @@ export function useManagedAnalyze({
     problem.variant === key?.variant && problem.step === key?.step && problem.row === key?.row);
   const planned = new Map(projection?.window_map?.analysis_elements?.filter(({ key }) => savedRunId(key) === id)
     .map((item) => [item.name, item]));
-  const issue = error?.scope === scope ? error.message : authoring.error ? apiErrorMessage(authoring.error) : undefined;
+  const issue = error?.scope === scope ? error.message : undefined;
+  const catalogState: StudioRegionState = authoring.error
+    ? { kind: 'failed', issue: studioRegionIssue('operations', authoring.error), retry: () => { void authoring.refetch(); } }
+    : authoring.isLoading ? { kind: 'loading' } : { kind: 'result', missing: [] };
 
   function open(mode: 'add' | 'wire', point?: PresentationPosition) {
     if (!canEdit) return;
@@ -255,6 +259,7 @@ export function useManagedAnalyze({
   })}</ul>;
   const alert = !opened && issue && <p className="p-2" role="alert">{issue}</p>;
   return {
+    catalog: catalogState,
     selectedFigure: figure ? selected : undefined,
     analysis: {
       body: <div className="flex h-full min-h-0 flex-col">{alert}<div className="min-h-0 flex-1">
