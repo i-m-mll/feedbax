@@ -43,7 +43,7 @@ def test_vector_signal_values_change_without_retracing(source, fields, timing, e
 
 @pytest.mark.parametrize("x64", [False, True])
 def test_waveforms_keep_their_own_clocks_across_scanned_rollouts(x64: bool) -> None:
-    with jax.experimental.enable_x64(x64):
+    with jax.enable_x64(x64):
         nodes = {
             "constant": ComponentSpec(
                 type="feedbax.Constant",

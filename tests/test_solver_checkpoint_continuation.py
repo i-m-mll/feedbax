@@ -237,7 +237,7 @@ def test_solver_checkpoint_continuation_survives_cold_and_warm_processes(tmp_pat
         jax.config.update('jax_compilation_cache_dir', sys.argv[1])
         jax.config.update('jax_persistent_cache_min_compile_time_secs', 0)
         jax.config.update('jax_persistent_cache_min_entry_size_bytes', 0)
-        with jax.experimental.enable_x64():
+        with jax.enable_x64(True):
             _exercise_checkpoint_continuation(
                 Path(sys.argv[2]), sys.argv[3], getattr(dfx, sys.argv[4]),
                 publish=sys.argv[5] == 'cold',

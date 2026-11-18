@@ -41,7 +41,7 @@ _PROBE = dedent(
     jax.config.update('jax_compilation_cache_dir', sys.argv[1])
     jax.config.update('jax_persistent_cache_min_compile_time_secs', 0)
     jax.config.update('jax_persistent_cache_min_entry_size_bytes', 0)
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         prototype = {'x': jnp.zeros(2, dtype=jnp.float32),
                      'y': jnp.zeros(3, dtype=jnp.float64)}
         values = {}

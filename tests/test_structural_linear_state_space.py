@@ -137,7 +137,7 @@ def test_sparse_transition_uses_nominal_precision_under_jit() -> None:
         return structural_linear_transition(transition, state, perturbation)[0]
 
     value_and_grad = jax.jit(jax.value_and_grad(step, argnums=(1, 2), allow_int=True))
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         transition = jnp.asarray([[nominal]], dtype=jnp.float64)
         state = jnp.asarray([2.0], dtype=jnp.float64)
         for active in (False, True):
@@ -206,7 +206,7 @@ def test_signed_and_nominal_structural_variants(
     scale: float,
     expected: float,
 ) -> None:
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         tail = 2**-30
         component = StructuralLinearStateSpace(
             A=jnp.asarray([[1.0 + tail, 0.25], [0.0, 1.0]]),
@@ -353,7 +353,7 @@ def test_nested_component_revision_migration_preserves_sparse_precision() -> Non
             )
         },
     )
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         graph = spec_to_graph(spec, ComponentRegistry())
         component = graph.nodes["wrapper"].nodes["plant"]
 

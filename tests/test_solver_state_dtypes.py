@@ -188,7 +188,7 @@ def test_decay_dae_scan_training_gradient_and_precision(solver_type):
 @pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("solver_type", [dfx.Euler, dfx.Heun, dfx.Tsit5])
 def test_homogeneous_f32_filter_scan(x64, solver_type):
-    with jax.experimental.enable_x64(x64):
+    with jax.enable_x64(x64):
         model = LowPassFilter(
             dt=0.001, solver_type=solver_type, input_proto=jnp.zeros(2, dtype=jnp.float32)
         ).prepare()
