@@ -39,7 +39,6 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload, _pair_model, example, expression
-from tests.support.host import private_host as host_fixture  # noqa: F401
 
 
 def authored_documents():
@@ -520,14 +519,13 @@ def document_project(authored, *, evaluation=False):
     return raw
 
 
-def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tmp_path, authored, monkeypatch):  # noqa: F811
-    host = host_fixture
+def test_managed_host_train_and_evaluate_share_document_runtime(host, tmp_path, authored, monkeypatch):
     from feedbax.contracts.project_plan import RunKey
     from feedbax.jobs import JobService
     from feedbax.plugins.composition import load_application
     from feedbax.web.services.project_folder import ProjectFolderService
     from tests.test_canonical_evaluate_admission import _save_project
-    from tests.support.host import job_row, wait_until
+    from tests.support.host import job_row, token, wait_until
 
     registry = load_application().bundle
     jobs = JobService(host, registry)
@@ -541,7 +539,7 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     plan = folders.read_plan(project, revision=None)
     train = RunKey("default", "train", "default")
     evaluate = RunKey("default", "baseline", "default")
-    (train_job,) = jobs.admit_plan(folders, plan, run_keys=(train,), token="paired-train").items
+    (train_job,) = jobs.admit_plan(folders, plan, run_keys=(train,), token=token("paired-train")).items
     assert train_job.disposition == "admitted", train_job
     (accepted,) = host.jobs(job_id=train_job.job_id, include_launch=True)
     prepared = accepted["launch"]["payload"]["spec"]
@@ -552,7 +550,7 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
         venue.setenv("JAX_ENABLE_X64", "1")
         venue_jobs = JobService(host, registry)
     (evaluation_job,) = venue_jobs.admit_plan(
-        folders, plan, run_keys=(evaluate,), token="paired-evaluate"
+        folders, plan, run_keys=(evaluate,), token=token("paired-evaluate")
     ).items
     assert evaluation_job.disposition == "admitted", evaluation_job
     (accepted_evaluation,) = host.jobs(job_id=evaluation_job.job_id, include_launch=True)

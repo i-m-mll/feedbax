@@ -52,9 +52,8 @@ from feedbax.contracts.model_edit import EvaluateAttachmentRequest
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.support.host import private_host as host_fixture, job_row, wait_until
+from tests.support.host import job_row, token, wait_until
 
-host = host_fixture
 
 
 def _prepare_request(request, registry) -> PreparedTrialExecution:
@@ -1168,10 +1167,10 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     if domain == "planar_multibody":
         assert status[evaluate_key] == "cannot_run"
     refused = jobs.admit_plan(
-        folders, snapshot, run_keys=(train_key, evaluate_key), token="unsupported-mechanics",
+        folders, snapshot, run_keys=(train_key, evaluate_key), token=token("unsupported-mechanics"),
     ).items
     assert len(refused) == 2 and all(item.disposition == "rejected" for item in refused)
-    assert not host.jobs()
+    assert not host.jobs(project=snapshot.project_id)
 
 
 def test_serial_mechanics_feedback_reads_start_state_and_refuses_within_step():
@@ -1288,8 +1287,8 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     }
     train = RunKey("default", "train", "default")
     evaluate = RunKey("default", "baseline", "default")
-    (train_job,) = jobs.admit_plan(folders, plan, run_keys=(train,), token="nested-train").items
-    (evaluation_job,) = jobs.admit_plan(folders, plan, run_keys=(evaluate,), token="nested-evaluate").items
+    (train_job,) = jobs.admit_plan(folders, plan, run_keys=(train,), token=token("nested-train")).items
+    (evaluation_job,) = jobs.admit_plan(folders, plan, run_keys=(evaluate,), token=token("nested-evaluate")).items
     assert [train_job.disposition, evaluation_job.disposition] == ["admitted", "admitted"], (
         train_job, evaluation_job,
     )
