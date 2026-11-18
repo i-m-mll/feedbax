@@ -15,7 +15,7 @@ import {
   type Ref,
 } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
-import { Card, CardHead, type CardStatus } from '@/components/ui/Card';
+import { Card, CardHead, cardTint, type CardStatus } from '@/components/ui/Card';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import { StatusMark, worstStatus } from '@/components/ui/StatusMark';
 import {
@@ -450,6 +450,7 @@ const StepCard = memo(function StepCard({
       data-pick={pickable === undefined ? undefined : pickable ? 'allowed' : 'refused'}
       selected={selection?.kind === 'steps'}
       status={cardStatus(step.statusCounts)}
+      tint={studioStep(step.kind).tint}
       role="article"
       aria-label={studioAccessibleName(step.kind, step.label)}
       className={`studio-map-card nopan pointer-events-auto text-sm focus-within:z-20 data-[map-dimmed=true]:border-dashed ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
@@ -755,7 +756,7 @@ function MapLine({
         <div key={index} className="flex shrink-0 items-center gap-2">
           {index > 0 && <ChevronRight aria-hidden="true" className="h-4 w-4 text-shell-muted" />}
           {steps.map((step) => renamingStep(rename, step.id, 'line') ? (
-            <span key={step.id} className="studio-card studio-map-line-step px-2 py-1 text-sm"><StepName step={step} rename={rename} /></span>
+            <span key={step.id} className="studio-card studio-map-line-step px-2 py-1 text-sm" style={cardTint(studioStep(step.kind).tint)}><StepName step={step} rename={rename} /></span>
           ) : (
             <Button
               key={step.id}
@@ -763,6 +764,7 @@ function MapLine({
               size="content"
               className={`studio-card studio-map-line-step px-2 py-1 text-sm ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
               data-map-line-step={step.id}
+              style={cardTint(studioStep(step.kind).tint)}
               data-selected={stepSelection(selection, step.id)?.kind === 'steps' || undefined}
               aria-label={studioAccessibleName('select', stepLabel(step))}
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}

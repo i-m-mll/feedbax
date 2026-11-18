@@ -81,23 +81,23 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
   const [error, setError] = useState<string>();
   const catalog = useAuthoringCatalog();
   const typeLabel = useId();
-  const task = view.task;
-  const selection = 'params' in task ? task : undefined;
-  const type = view.task_types.find((item) => item.type === selection?.type);
+  const task = 'type' in view.task ? view.task : undefined;
+  const params = task?.params ?? {};
+  const type = view.task_types.find((item) => item.type === task?.type);
   const packages = new Map(catalogEntries(catalog.data, 'python_tasks').map((entry) => [entry.key, entry.package]));
   const source = view.task_source && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(view.task_source)}</span>;
   const edit = (name: string, edits: ProjectValueEdit[]) => commit && commit(studioAccessibleName('set', name), { kind: 'task', edits });
   return <div className="grid max-w-2xl gap-4 p-3 text-sm">
-    {!type && source}
-    {type && selection && <section className="grid gap-1" aria-label={studioName('parameters')}>
+    {!task && source}
+    {task && <section className="grid gap-1" aria-label={studioName('parameters')}>
       <FieldRow label={studioName('task')} labelId={typeLabel}>
-        <CatalogPicker aria-labelledby={typeLabel} className="w-full" disabled={!commit} value={type.type}
+        <CatalogPicker aria-labelledby={typeLabel} className="w-full" disabled={!commit} value={task.type}
           entries={view.task_types.map((item) => ({ key: item.type, label: item.label, package: packages.get(item.type) }))}
           onChoose={async (key) => setError(await edit(studioName('task'), [
-            write(authoredPointer(['type']), key, true), write(authoredPointer(['params']), {}, true),
+            write(authoredPointer(['type']), key, true), write(authoredPointer(['params']), {}, has(task, 'params')),
           ]))} />
       </FieldRow>
-      <SettingsForm schema={type.parameter_schema} value={selection.params}
+      {type && <SettingsForm schema={type.parameter_schema} value={params}
         origin={([key]) => {
           const origin = view.task_field_sources?.[key] ?? view.task_source;
           return origin ? studioEvaluateValueSource(origin) : undefined;
@@ -107,9 +107,9 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
           const property = type.parameter_schema.properties;
           const name = isRecord(property) && isRecord(property[key]) && typeof property[key].title === 'string'
             ? property[key].title : humanizeLabel(key);
-          return edit(name, [write(authoredPointer(['params', key]), setIn(selection.params?.[key], rest, value),
-            has(selection.params ?? {}, key))]);
-        })} />
+          const edits = [write(authoredPointer(['params', key]), setIn(params[key], rest, value), has(params, key))];
+          return edit(name, has(task, 'params') ? edits : [write(authoredPointer(['params']), {}, false), ...edits]);
+        })} />}
     </section>}
     {error && <p role="alert">{error}</p>}
   </div>;
@@ -119,6 +119,7 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
 function taskGroups(view: StudioTrialAuthoring) {
   const signal = (name: string) => humanizeLabel(name);
   return [
+    { id: 'variables', nodes: view.variables.map(({ id, name }) => ({ id: 'variable:' + id, name: humanizeLabel(name) })) },
     { id: 'signals', nodes: view.signals.map(({ id, name }) => ({ id: 'signal:' + id, name: signal(name) })) },
     { id: 'epochs', nodes: view.epochs.map(({ id, name }) => ({ id: 'epoch:' + id, name })) },
     { id: 'perTrial', nodes: view.resets.flatMap(({ address }) => address.element.kind === 'field'
@@ -145,9 +146,9 @@ export function TrialTaskInspector({ view, commit, selected }: { view: StudioTri
   if (!selected) return null;
   const [kind, ...rest] = selected.split(':');
   const key = rest.join(':');
-  if (kind === 'signal') {
-    const signal = view.signals.find(({ id }) => id === key);
-    return signal ? <Inspector name={humanizeLabel(signal.name)} type={signal.type.shape?.join(' × ') || signal.type.base} /> : null;
+  if (kind === 'variable' || kind === 'signal') {
+    const value = (kind === 'variable' ? view.variables : view.signals).find(({ id }) => id === key);
+    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base} /> : null;
   }
   if (kind === 'epoch') {
     const epoch = view.epochs.find(({ id }) => id === key);
