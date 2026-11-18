@@ -20,7 +20,7 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.host import live_evaluate
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection
 from feedbax.host.completion import CompletionFileError
-from feedbax.host.io import JAX_CACHE_ENV, TOKEN_ENV, encode, private_directory, socket_path, write_json
+from feedbax.host.io import JAX_CACHE_ENV, JAX_CACHE_MAX_SIZE, TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
@@ -175,7 +175,7 @@ class Host:
                 "JAX_COMPILATION_CACHE_DIR": str(self.cache),
                 "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
                 "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0",
-                "JAX_COMPILATION_CACHE_MAX_SIZE": str(1024**3),
+                "JAX_COMPILATION_CACHE_MAX_SIZE": str(JAX_CACHE_MAX_SIZE),
                 "JAX_RAISE_PERSISTENT_CACHE_ERRORS": "true",
             }
         )
