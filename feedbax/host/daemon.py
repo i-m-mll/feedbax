@@ -100,6 +100,7 @@ class Host:
         self.wake = asyncio.Event()
         self.file_changes = FileChanges(self.loop, self.wake.set)
         self.workers: dict[int, Worker] = {}
+        self.requests: set[asyncio.Task] = set()
         self.profiles: dict[str, dict] = {}
         self.release_owner = os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT")
         self.interpreter = os.path.realpath(sys.executable)
@@ -954,6 +955,9 @@ class Host:
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         exiting = False
+        request = asyncio.current_task()
+        assert request is not None
+        self.requests.add(request)
         try:
             try:
                 raw = await asyncio.wait_for(reader.readline(), 5)
@@ -978,6 +982,7 @@ class Host:
         except (OSError, TimeoutError):
             pass
         finally:
+            self.requests.discard(request)
             writer.close()
             if exiting:
                 self.shutdown_acknowledged = True
@@ -988,11 +993,21 @@ class Host:
         server = await asyncio.start_unix_server(self.serve, str(self.address), limit=MAX_RPC_BYTES)
         try:
             async with server:
-                await self._schedule()
+                try:
+                    await self._schedule()
+                finally:
+                    # The server's exit waits for every open connection, so end the requests
+                    # still waiting, such as event long polls, instead of serving them out.
+                    for request in tuple(self.requests):
+                        request.cancel()
         finally:
             self.file_changes.close()
             for worker in self.workers.values():
                 self._close_control(worker)
+                if worker.job_id is None:
+                    # An idle or still-importing pool worker holds no job; it would otherwise
+                    # outlive this Host until its import finished.
+                    self._signal_group(worker.process.pid, worker.token, escalate=True)
             self._power_assertion(False)
             self.address.unlink(missing_ok=True)
             self.store.db.close()
