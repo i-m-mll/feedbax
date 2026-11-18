@@ -54,6 +54,8 @@ export function ManagedDocumentCanvas(props: CanvasProps) {
   return <ReactFlowProvider><Canvas {...props} /></ReactFlowProvider>;
 }
 
+const labelPlate: [number, number] = [8, 3];
+
 function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing, viewportRef, pick, drop }: CanvasProps) {
   const { screenToFlowPosition } = useReactFlow();
   const { nodes, edges } = useMemo(() => {
@@ -81,7 +83,10 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
       domAttributes: { 'data-pick': pick.accepts(node.data.selectionId) ? 'allowed' : 'refused' } as Node['domAttributes'],
     },
   })), [nodes, selectedId, pick]);
-  const shownEdges = useMemo(() => edges.map((edge) => ({ ...edge, selected: selectedId === edge.id })), [edges, selectedId]);
+  // A label sits on a canvas-coloured plate wide enough that the edge visibly stops short of the text.
+  const shownEdges = useMemo(() => edges.map((edge) => ({
+    ...edge, selected: selectedId === edge.id, labelBgPadding: labelPlate,
+  })), [edges, selectedId]);
   return <div className="h-full min-h-0"
     onPointerMove={(event) => {
       if (openAt) rememberPoint?.(screenToFlowPosition({ x: event.clientX, y: event.clientY }));

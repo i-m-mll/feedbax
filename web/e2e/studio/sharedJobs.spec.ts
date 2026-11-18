@@ -141,8 +141,11 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
     });
     expect(attempt.job_id).not.toBe(first.job_id);
 
-    const sibling = (await jobs()).find((job) => job.status === 'running' && job.run_key !== first.run_key);
-    if (!sibling) throw new Error('Expected another running row to force-stop');
+    const current = await jobs();
+    const sibling = current.find((job) => job.status === 'running' && job.run_key !== first.run_key);
+    if (!sibling) {
+      throw new Error(`Expected another running row to force-stop: ${JSON.stringify(current.map((job) => [job.label, job.status, job.progress?.completed_updates]))}`);
+    }
     const forced = post(second, '/api/jobs/stop');
     await secondAttempt(sibling.label).getByRole('button', { name: 'Force Stop', exact: true }).click();
     expect((await forced).ok()).toBe(true);
