@@ -26,6 +26,19 @@ def load(directory: Path) -> dict[int, list[dict]]:
     return processes
 
 
+def union(intervals: list[tuple[float, float]]) -> float:
+    """Wall time covered by at least one interval."""
+    total, current = 0.0, None
+    for start, stop in sorted(intervals):
+        if current is None or start > current[1]:
+            if current is not None:
+                total += current[1] - current[0]
+            current = [start, stop]
+        else:
+            current[1] = max(current[1], stop)
+    return total + (current[1] - current[0] if current is not None else 0.0)
+
+
 def analyze(directory: Path) -> dict:
     processes = load(directory)
     tests = collections.defaultdict(lambda: collections.defaultdict(float))
@@ -38,6 +51,7 @@ def analyze(directory: Path) -> dict:
                     e["role"] = "host_relay"
                 popens[e["child"]] = e
     jax_in_host = []
+    spans = collections.defaultdict(lambda: collections.defaultdict(list))  # test -> phase -> intervals
     jax_host_paths = collections.Counter()
     # Per-process facts.
     for pid, events in processes.items():
@@ -95,6 +109,7 @@ def analyze(directory: Path) -> dict:
                 covering = [r for r in rpcs if r["start"] <= e["start"] <= r["t"]]
                 if covering:
                     tests[e["test"]]["host_start"] += covering[0]["t"] - e["start"]
+                    spans[e["test"]]["host_start"].append((e["start"], covering[0]["t"]))
                 run = next((h for h in processes.get(e["child"], []) if h["ev"] == "host_run"), None)
                 if run is not None:
                     tests[e["test"]]["host_boot"] += run["t"] - e["start"]
@@ -110,6 +125,7 @@ def analyze(directory: Path) -> dict:
         if ready:
             seconds = min(ready) - launch["start"]
             tests[test]["worker_import"] += seconds
+            spans[test]["worker_import"].append((launch["start"], min(ready)))
             counts[test]["workers_ready"] += 1
             if not used:
                 tests[test]["worker_import_unused"] += seconds
@@ -120,7 +136,7 @@ def analyze(directory: Path) -> dict:
     job_test = {}
     for pid, events in processes.items():
         for e in events:
-            if e["ev"] != "event" or not e.get("test"):
+            if e["ev"] != "event" or not e.get("test") or e.get("won") is False:
                 continue
             path = Path(e["path"])
             key = (path.parent.parent.name, path.parent.name)
@@ -155,10 +171,15 @@ def analyze(directory: Path) -> dict:
             t["train_setup"] += building - accepted
             if running is not None:
                 t["build_compile"] += running - building
+                spans[test]["build_compile"].append((building, running))
                 if end_updates is not None:
                     t["updates"] += end_updates - running
-        elif j.get("terminal") is not None:
+                    spans[test]["updates"].append((running, end_updates))
+        elif j.get("terminal") is not None and j["terminal"] >= accepted:
             t["other_job_body"] += j["terminal"] - accepted
+            spans[test]["other_job_body"].append((accepted, j["terminal"]))
+        if j.get("terminal") is not None and j["terminal"] >= accepted:
+            spans[test]["any_job"].append((accepted, j["terminal"]))
         if (terminal := j.get("terminal")) is not None and end_updates is not None and building is not None:
             t["finalize"] += terminal - end_updates
         if job in finished and job in noticed and noticed[job] >= finished[job]:
@@ -170,6 +191,24 @@ def analyze(directory: Path) -> dict:
         start = events[0]
         if start["ev"] == "process_start" and start.get("jax_cache") and start.get("test"):
             cache_tests[start["jax_cache"]].add(start["test"])
+    # Wall-clock phases are clipped to the test's own window: a job left running past teardown is not its cost.
+    windows = collections.defaultdict(list)
+    for events in processes.values():
+        for e in events:
+            if e["ev"] == "test_phase":
+                windows[e["nodeid"]] += [e["start"], e["stop"]]
+    for test, phases in spans.items():
+        if not windows[test]:
+            continue
+        low, high = min(windows[test]), max(windows[test])
+
+        def clip(intervals):
+            return [(max(a, low), min(b, high)) for a, b in intervals if min(b, high) > max(a, low)]
+
+        for phase, intervals in phases.items():
+            tests[test][f"{phase}_wall"] = union(clip(intervals))
+        tests[test]["host_or_worker_busy_wall"] = union(
+            clip(phases["host_start"] + phases["worker_import"] + phases["any_job"]))
     for test in tests:
         t = tests[test]
         t["wall"] = t["pytest_setup"] + t["pytest_call"] + t["pytest_teardown"]
@@ -181,6 +220,8 @@ def analyze(directory: Path) -> dict:
 
 
 PHASES = [
+    "host_start_wall", "worker_import_wall", "build_compile_wall", "updates_wall", "other_job_body_wall",
+    "any_job_wall", "host_or_worker_busy_wall",
     "host_start", "host_boot", "worker_import", "worker_import_unused", "train_setup", "build_compile", "updates", "finalize", "other_job_body",
     "notice", "poll_rpc_seconds", "stop_rpc", "pytest_setup", "pytest_teardown", "compile_worker", "compile_test",
     "jax_import_test", "jax_import_child", "wall",
