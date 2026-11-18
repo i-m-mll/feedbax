@@ -20,7 +20,7 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.host import live_evaluate
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection
 from feedbax.host.completion import CompletionFileError
-from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
+from feedbax.host.io import JAX_CACHE_ENV, TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
@@ -80,7 +80,7 @@ class Host:
         self.address = socket_path(root)
         self.deliveries = private_directory(root / "deliveries")
         self.worker_root = private_directory(root / "workers")
-        self.cache = private_directory(root / "jax")
+        self.cache = private_directory(Path(os.environ.get(JAX_CACHE_ENV) or root / "jax").expanduser())
         self.store = Store(root / "host.sqlite")
         self.stream_id: str | None = None
         if self.session is not None:

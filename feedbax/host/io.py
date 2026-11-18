@@ -11,6 +11,8 @@ from pathlib import Path
 from .protocol import JsonObject
 
 TOKEN_ENV = "FEEDBAX_PROCESS_IDENTITY"
+# The persistent JAX compilation cache of the Host's workers; `<root>/jax` when unset.
+JAX_CACHE_ENV = "FEEDBAX_HOST_JAX_CACHE_DIR"
 EVIDENCE_FILE = "execution-evidence.json"
 
 

@@ -1,4 +1,10 @@
-"""Scope the JAX compilation cache to one pytest invocation by default."""
+"""Configure the JAX compilation caches of a pytest invocation.
+
+The in-process cache is scoped to one invocation by default. Hosts started by tests share
+one persistent cache for their workers across invocations and worktrees: an entry is keyed
+by the lowered program and the jaxlib version, so it is a function of its inputs, and the
+Host sets a maximum size, under which JAX takes a file lock for every read and write.
+"""
 
 from contextlib import ExitStack
 import os
@@ -8,7 +14,8 @@ import jax
 from jax.experimental.compilation_cache import compilation_cache
 import pytest
 
-from scripts.full_suite import owned_suite_temporary_root
+from feedbax.host.io import JAX_CACHE_ENV
+from scripts.full_suite import owned_suite_temporary_root, shared_cache_root
 
 
 _INVOCATION_CACHE_ROOT = pytest.StashKey[Path]()
@@ -29,6 +36,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
     scope = ExitStack()
     config.add_cleanup(scope.close)
+    if JAX_CACHE_ENV not in os.environ:
+        host_cache = shared_cache_root(Path(config.rootpath)) / "host_jax"
+        scope.enter_context(pytest.MonkeyPatch.context()).setenv(JAX_CACHE_ENV, str(host_cache))
     worker_input = getattr(config, "workerinput", {})
     worker_root = worker_input.get("feedbax_jax_cache_root")
     explicit = os.environ.get("FEEDBAX_JAX_COMPILATION_CACHE_DIR")
