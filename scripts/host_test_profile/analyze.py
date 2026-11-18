@@ -11,6 +11,7 @@ import argparse
 import bisect
 import collections
 import json
+import os
 from pathlib import Path
 
 POLLS = {"jobs", "jobs_snapshot", "events", "submissions"}
@@ -99,7 +100,6 @@ def analyze(processes: dict[int, list[dict]]) -> dict:
                 c[f"rpc_{e['op']}"] += 1
                 if e["op"] in POLLS:
                     c["polls"] += 1
-                    t["poll_rpc_seconds"] += e["t"] - e["start"]
                 if e["op"] == "stop":
                     t["stop_rpc"] += e["t"] - e["start"]
 
@@ -225,9 +225,29 @@ PHASES = [
     "host_start_wall", "worker_import_wall", "build_compile_wall", "updates_wall", "other_job_body_wall",
     "any_job_wall", "host_or_worker_busy_wall",
     "host_start", "host_boot", "worker_import", "worker_import_unused", "train_setup", "build_compile", "updates", "finalize", "other_job_body",
-    "notice", "poll_rpc_seconds", "stop_rpc", "pytest_setup", "pytest_teardown", "compile_worker", "compile_test",
+    "notice", "stop_rpc", "pytest_setup", "pytest_teardown", "compile_worker", "compile_test",
     "jax_import_test", "jax_import_child", "wall",
 ]
+
+
+def pytest_processes(processes: dict[int, list[dict]]) -> list[dict]:
+    """Each pytest process: start to its first test, time in tests and between them, and last test to exit."""
+    rows = []
+    for pid, events in processes.items():
+        start = next((e for e in events if e["ev"] == "process_start"), None)
+        phases = [(e["start"], e["stop"]) for e in events if e["ev"] == "test_phase"]
+        if start is None or not (phases or "pytest" in str(start.get("argv", [""])[0])):
+            continue
+        end = next((e["t"] for e in events if e["ev"] == "process_exit"), events[-1]["t"])
+        row = {"pid": pid, "tests": len({e["nodeid"] for e in events if e["ev"] == "test_phase"}),
+               "wall": end - start["t"]}
+        if phases:
+            first, last = min(a for a, _ in phases), max(b for _, b in phases)
+            row |= {"to_first_test": first - start["t"], "in_tests": union(phases),
+                    "after_last_test": end - last}
+            row["between_tests"] = last - first - row["in_tests"]
+        rows.append(row)
+    return sorted(rows, key=lambda r: r["pid"])
 
 
 def _interval(e: dict) -> tuple[float, float]:
@@ -244,7 +264,7 @@ def host_loops(processes: dict[int, list[dict]]) -> dict:
         end = next((e["t"] for e in events if e["ev"] == "host_run_end"), events[-1]["t"])
         ticks = sorted((e for e in events if e["ev"] == "tick"), key=lambda e: e["start"])
         hosts[pid] = {
-            "pid": pid, "root": runs[0]["root"], "test": runs[0].get("test"), "start": runs[0]["t"], "end": end,
+            "pid": pid, "root": os.path.realpath(runs[0]["root"]), "test": runs[0].get("test"), "start": runs[0]["t"], "end": end,
             "rpcs": sorted((e for e in events if e["ev"] == "host_rpc"), key=lambda e: e["start"]),
             "ticks": ticks, "tick_starts": [e["start"] for e in ticks],
             "holds": sorted((e for e in events if e["ev"] == "loop_hold"), key=lambda e: e["start"]),
@@ -289,10 +309,8 @@ def attribute(processes: dict[int, list[dict]], hosts: dict, slow: float) -> lis
     hosts_started = collections.defaultdict(list)  # root -> Host popen times
     for events in processes.values():
         for e in events:
-            if e["ev"] == "popen" and e["role"] == "host" and "--root" in e["argv"]:
-                index = e["argv"].index("--root")
-                if index + 1 < len(e["argv"]):
-                    hosts_started[e["argv"][index + 1]].append(e["start"])
+            if e["ev"] == "popen" and e["role"] == "host" and e.get("root"):
+                hosts_started[e["root"]].append(e["start"])
     found = []
     for pid, events in processes.items():
         for e in events:
@@ -305,7 +323,7 @@ def attribute(processes: dict[int, list[dict]], hosts: dict, slow: float) -> lis
             low, high = e["start"], e["t"]
             entry = {"test": e.get("test"), "client": pid, "op": e["op"], "seconds": elapsed, "excess": excess,
                      "error": e.get("error"), "root": e["root"], "start": low}
-            root = e["root"]
+            root = os.path.realpath(e["root"])
             if e.get("stdio"):
                 # The relay is not profiled; the venue Host is the one of this test that handled this op meanwhile.
                 served = [h for h in hosts.values() if h["test"] == e.get("test")
@@ -402,6 +420,7 @@ def main() -> None:
     hosts = host_loops(processes)
     result["host_loop"] = loop_summary(hosts)
     result["slow_rpcs"] = attribute(processes, hosts, args.slow)
+    result["pytest_processes"] = pytest_processes(processes)
     selected = {
         test for test, c in result["counts"].items()
         if args.all or c.get("hosts") or c.get("hosts_in_process") or c.get("workers")
@@ -423,6 +442,13 @@ def main() -> None:
         print(f"  {n}x via", " > ".join(stack[-4:]))
     print("summed seconds:", {p: round(totals[p], 1) for p in PHASES})
     print("summed counts:", dict(sorted(count_totals.items())))
+    print("pytest processes (pid: tests, start to first test, in tests, between tests, last test to exit, wall):")
+    for row in result["pytest_processes"]:
+        if "in_tests" in row:
+            print(f"  {row['pid']}: {row['tests']}, {row['to_first_test']:.1f}s, {row['in_tests']:.1f}s, "
+                  f"{row['between_tests']:.1f}s, {row['after_last_test']:.1f}s, {row['wall']:.1f}s")
+        else:
+            print(f"  {row['pid']}: no tests of its own, {row['wall']:.1f}s")
     loop = result["host_loop"]
     print(f"Host loops recorded: {loop['hosts']}")
     for missing in loop["seam_missing"]:

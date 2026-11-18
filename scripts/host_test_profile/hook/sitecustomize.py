@@ -54,6 +54,15 @@ if DIRECTORY:
     atexit.register(lambda: record("process_exit", jax="jax" in sys.modules, feedbax="feedbax" in sys.modules))
 
     STARTED_HOSTS: list = []  # (Popen, test) for each Host this process started; the plugin reaps leaks
+    SESSION_SETUP = [0]  # session-scoped fixture setups now running; the plugin keeps this count
+    SESSION_ROOTS: set = set()  # roots whose Host a session-scoped fixture started; their Hosts are the session's
+    SESSION = "(session)"
+
+    def _root(argv) -> str | None:
+        args = [str(a) for a in argv]
+        if "--root" in args[:-1]:
+            return os.path.realpath(args[args.index("--root") + 1])
+        return None
     _popen_init = subprocess.Popen.__init__
 
     @functools.wraps(_popen_init)
@@ -65,16 +74,28 @@ if DIRECTORY:
         if HOOK not in path.split(os.pathsep) or source.get("FEEDBAX_HOST_PROFILE_DIR") != DIRECTORY:
             kwargs["env"] = dict(source, FEEDBAX_HOST_PROFILE_DIR=DIRECTORY,
                                  PYTHONPATH=os.pathsep.join(p for p in (path, HOOK) if p))
-        start = time.time()
-        _popen_init(self, args, *rest, **kwargs)
         argv = list(args) if isinstance(args, (list, tuple)) else [args]
         role = _role(argv)
         extra = {}
+        root = _root(argv) if role == "host" else None
+        shared = root is not None and (SESSION_SETUP[0] > 0 or root in SESSION_ROOTS)
+        if shared:
+            # A session's Host serves every later test; what it does is the session's, not the starting test's.
+            kwargs["env"] = dict(kwargs.get("env") or os.environ, FEEDBAX_HOST_PROFILE_TEST=SESSION)
+        start = time.time()
+        _popen_init(self, args, *rest, **kwargs)
         if role == "host":
             import threading
             import traceback
 
-            STARTED_HOSTS.append((self, os.environ.get("FEEDBAX_HOST_PROFILE_TEST")))
+            extra["root"] = root
+            if shared:
+                extra["shared"] = True
+                if root not in SESSION_ROOTS:
+                    SESSION_ROOTS.add(root)
+                    extra["test"] = SESSION  # started by the session's fixture, not by the test it set up within
+            else:
+                STARTED_HOSTS.append((self, os.environ.get("FEEDBAX_HOST_PROFILE_TEST")))
             extra["thread"] = threading.current_thread().name
             extra["stack"] = [f"{f.filename.rsplit('/', 2)[-2:][-1]}:{f.lineno}:{f.name}"
                               for f in traceback.extract_stack()[:-1]
