@@ -47,6 +47,7 @@ if DIRECTORY:
            jax_cache=os.environ.get("JAX_COMPILATION_CACHE_DIR"))
     atexit.register(lambda: record("process_exit", jax="jax" in sys.modules, feedbax="feedbax" in sys.modules))
 
+    STARTED_HOSTS: list = []  # (Popen, test) for each Host this process started; the plugin reaps leaks
     _popen_init = subprocess.Popen.__init__
 
     @functools.wraps(_popen_init)
@@ -61,7 +62,19 @@ if DIRECTORY:
         start = time.time()
         _popen_init(self, args, *rest, **kwargs)
         argv = list(args) if isinstance(args, (list, tuple)) else [args]
-        record("popen", start=start, child=self.pid, role=_role(argv), argv=[str(a)[:80] for a in argv[:6]])
+        role = _role(argv)
+        extra = {}
+        if role == "host":
+            import threading
+            import traceback
+
+            STARTED_HOSTS.append((self, os.environ.get("FEEDBAX_HOST_PROFILE_TEST")))
+            extra["thread"] = threading.current_thread().name
+            extra["stack"] = [f"{f.filename.rsplit('/', 2)[-2:][-1]}:{f.lineno}:{f.name}"
+                              for f in traceback.extract_stack()[:-1]
+                              if ("/feedbax/" in f.filename or "/tests/" in f.filename)
+                              and "host_test_profile" not in f.filename][-8:]
+        record("popen", start=start, child=self.pid, role=role, argv=[str(a)[:80] for a in argv[:6]], **extra)
 
     subprocess.Popen.__init__ = _popen
 

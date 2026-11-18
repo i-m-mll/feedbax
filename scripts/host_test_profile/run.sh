@@ -8,4 +8,7 @@ mkdir -p "$record"
 export FEEDBAX_HOST_PROFILE_DIR="$(cd "$record" && pwd)"
 export PYTHONPATH="$here/hook${PYTHONPATH:+:$PYTHONPATH}"
 cd "$here/../.."
-exec .venv/bin/python -m pytest -p host_profile_plugin "$@"
+status=0
+.venv/bin/python -m pytest -p host_profile_plugin "$@" || status=$?
+.venv/bin/python scripts/host_test_profile/reap.py "$FEEDBAX_HOST_PROFILE_DIR"
+exit "$status"

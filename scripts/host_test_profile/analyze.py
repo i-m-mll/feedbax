@@ -34,6 +34,8 @@ def analyze(directory: Path) -> dict:
     for events in processes.values():
         for e in events:
             if e["ev"] == "popen":
+                if e["role"] == "host" and any(op in e["argv"] for op in ("attach", "init-session")):
+                    e["role"] = "host_relay"
                 popens[e["child"]] = e
     jax_in_host = []
     jax_host_paths = collections.Counter()
@@ -69,6 +71,10 @@ def analyze(directory: Path) -> dict:
                 c["hosts_in_process"] += 1
             elif e["ev"] == "popen" and e["role"] == "launcher":
                 c["workers"] += 1
+            elif e["ev"] == "host_leaked":
+                c["hosts_leaked"] += 1
+            elif e["ev"] == "reaped":
+                c[f"reaped_{e['role']}"] += 1
             elif e["ev"] == "test_phase":
                 t[f"pytest_{e['when']}"] += e["stop"] - e["start"]
                 if e["outcome"] == "failed":
@@ -100,10 +106,14 @@ def analyze(directory: Path) -> dict:
         test = launch["test"]
         worker_pids = [p for p, e in popens.items() if e["role"] == "worker" and e["pid"] == launcher_pid]
         ready = [e["t"] for p in worker_pids for e in processes.get(p, []) if e["ev"] == "worker_ready"]
+        used = any(e["ev"] == "event" and e["kind"] == "accepted" for p in worker_pids for e in processes.get(p, []))
         if ready:
-            tests[test]["worker_import"] += min(ready) - launch["start"]
+            seconds = min(ready) - launch["start"]
+            tests[test]["worker_import"] += seconds
             counts[test]["workers_ready"] += 1
-            counts[test]["deliveries"] += len(ready)  # ready is sent before each delivery
+            if not used:
+                tests[test]["worker_import_unused"] += seconds
+        counts[test]["workers_used"] += used
 
     # Jobs, from the event-log appends written by workers and launchers.
     jobs = collections.defaultdict(dict)
@@ -171,7 +181,7 @@ def analyze(directory: Path) -> dict:
 
 
 PHASES = [
-    "host_start", "host_boot", "worker_import", "train_setup", "build_compile", "updates", "finalize", "other_job_body",
+    "host_start", "host_boot", "worker_import", "worker_import_unused", "train_setup", "build_compile", "updates", "finalize", "other_job_body",
     "notice", "poll_rpc_seconds", "stop_rpc", "pytest_setup", "pytest_teardown", "compile_worker", "compile_test",
     "jax_import_test", "jax_import_child", "wall",
 ]
