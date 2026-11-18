@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import signal
+import threading
 import time
 from dataclasses import replace
 from threading import Event
@@ -163,3 +166,16 @@ def test_reads_recover_as_soon_as_a_quiet_host_answers_again(host, tmp_path, mon
         assert wait_until(lambda: studio.get("/api/jobs").status_code == 200)
         # No event wakes the follower here, so recovery within a follow wait means its first page was a probe.
         assert time.monotonic() - started < 1
+
+
+def test_shutdown_ends_the_follower_before_the_host_can_be_restarted(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
+    with TestClient(create_app(projects_dir=tmp_path / "projects")) as studio:
+        assert studio.get("/api/jobs").status_code == 200
+        follower = next(thread for thread in threading.enumerate() if thread.name == "studio-job-activity")
+    assert not follower.is_alive()
+    os.kill(host.ping()["pid"], signal.SIGTERM)
+    wait_until(lambda: not host.address.exists())
+    time.sleep(0.2)
+    assert not host.address.exists()

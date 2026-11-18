@@ -738,7 +738,7 @@ def test_authenticated_completion_reports_definitive_dependency_errors(
 
 
 def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
-    host, tmp_path, monkeypatch
+    host, tmp_path, monkeypatch, request
 ):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -809,6 +809,7 @@ TrainingLoop.run_block = pause_first_update
     app.include_router(projects.router)
     app.state.job_service = service
     app.state.job_activity = JobActivity(service)
+    request.addfinalizer(app.state.job_activity.close)
     app.state.remote_runs = None
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)

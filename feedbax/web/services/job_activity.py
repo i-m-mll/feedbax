@@ -35,7 +35,7 @@ _log = logging.getLogger(__name__)
 
 
 class FollowerStopped(Exception):
-    """The follower met an error it could not apply and is restarting from a full reload."""
+    """The follower cannot answer: it met an error it is reloading after, or it has stopped."""
 
 
 def _project_of(row: StudioActivityJob | InvalidJobRecord) -> str:
@@ -136,16 +136,24 @@ class JobActivity:
                 self._rows[job.job_id] = job
 
     def close(self) -> None:
-        self._stopped.set()
+        """Stop following and return once the follower has made its last host call."""
         with self._changed:
+            self._stopped.set()
+            thread = self._thread
             self._changed.notify_all()
+        if thread is not None:
+            thread.join()
 
     def _await_loaded(self) -> None:
+        if self._stopped.is_set():
+            raise FollowerStopped("Studio has stopped following host jobs.")
         if self._thread is None:
             self._thread = Thread(target=self._follow, name="studio-job-activity", daemon=True)
             self._thread.start()
-        while not self._loaded and self._error is None and self._defect is None:
+        while not self._loaded and self._error is None and self._defect is None and not self._stopped.is_set():
             self._changed.wait()
+        if self._stopped.is_set():
+            raise FollowerStopped("Studio has stopped following host jobs.")
         if self._defect is not None:
             raise FollowerStopped(f"Studio is reloading host jobs after {self._defect!r}.") from self._defect
         if self._error is not None:

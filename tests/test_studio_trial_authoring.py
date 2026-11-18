@@ -15,7 +15,6 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
-from feedbax.jobs import JobService
 from feedbax.contracts.request_identity import decode_request
 from feedbax.builtins.reaching import REACHING_TASK, ReachingParameters, reaching_document
 from feedbax.tasks.registry import application_python_tasks
@@ -23,7 +22,6 @@ from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
 from feedbax.web.services import project_plan as window_service
 from feedbax.web.services.project_folder import ProjectFolderService
-from feedbax.web.services.job_activity import JobActivity
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload
 from tests.test_document_train_pair import authored_documents, document_project
@@ -46,14 +44,12 @@ def _python_project():
     return raw
 
 
-def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  # noqa: F811
+def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     app = create_app(projects_dir=tmp_path / "projects")
     with TestClient(app) as client:
-        registry = app.state.bootstrap_state.bundle
         folders = app.state.project_folders
-        jobs = JobService(host, registry)
-        app.state.job_service = jobs
-        app.state.job_activity = JobActivity(jobs)
+        jobs = app.state.job_service
         project = "trial-authoring"
         raw = _python_project()
         raw["documents"]["test-task"] = {

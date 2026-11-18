@@ -101,7 +101,6 @@ def create_app(
         try:
             yield
         finally:
-            app.state.job_activity.close()
             for task in maintenance:
                 task.cancel()
             for task in maintenance:
@@ -109,6 +108,8 @@ def create_app(
                     await task
             if remote_runs is not None:
                 await asyncio.to_thread(remote_runs.stop_collection)
+            app.state.job_service.host.close()
+            await asyncio.to_thread(app.state.job_activity.close)
 
     app = FastAPI(
         title="Feedbax Web API",
