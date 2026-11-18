@@ -73,7 +73,9 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(host, tmp_path,
     absent_host = tmp_path / "absent-host"
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(absent_host))
 
-    def snapshot_rpc(self, *, project, start_host, record_keys, include_launch, checkpoint_progress_root):
+    def snapshot_rpc(
+        self, *, project, start_host, record_keys, include_launch, checkpoint_progress_root, checkpoint_admission,
+    ):
         assert project == reviewed.project_id
         assert not start_host and record_keys == (plan_key,)
         assert include_launch and checkpoint_progress_root == str(root / "results")
@@ -145,7 +147,7 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     root = tmp_path / "saved"
     _, files = _write_walkthrough(root)
     invalid = json.loads(files["documents/velocity-figure.json"])
-    invalid["payload"]["layers"][0]["style"]["band_alpha"] = -1
+    invalid["payload"]["layers"][0]["style"] = {"band_alpha": -1}
     name = "documents/bad-figure.json"
     files[name] = json.dumps(invalid).encode()
     (root / name).write_bytes(files[name])

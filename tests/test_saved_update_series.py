@@ -118,7 +118,8 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
         tree = store.get_tree(success_content_ref(bound.content))
         if observed:
             assert [member.coordinate for member in value.resolved.members] == observed
-            assert len([file for file in tree.files if file.relative_path.endswith("/model.safetensors")]) == len(observed)
+            models = {file.relative_path.split("/")[1] for file in tree.files if file.relative_path.startswith("models/")}
+            assert len(models) == len(observed)
         else:
             assert value.resolved is None and bound.evaluation_subject.checkpoints == ()
             assert [file.relative_path for file in tree.files] == ["binding.json"]
