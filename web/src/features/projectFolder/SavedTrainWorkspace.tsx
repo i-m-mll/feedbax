@@ -5,7 +5,7 @@ import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSaved
 import { apiErrorMessage, isUnanswered } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
-import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
+import { StudioRegion, studioRegionIssue, useRegionPending, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioCountOf, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -138,6 +138,25 @@ function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResul
     }}>{studioName('copyDetails')}</Button>
     {copyError && <p role="alert">{studioReason('copyFailed', studioName('details'))}</p>}
   </section>;
+}
+
+/**
+ * The run the Results show, read from one plan: the focused row of the step with its chosen or latest attempt, the
+ * step's evaluations among the targeted runs, and the one of them in focus.
+ */
+function focusedResult(source: StudioSavedTrainRuns | undefined, stepId: string | undefined, focusRunId: string | null | undefined,
+  runIds: ReadonlySet<string>, chosen: { runId: string; jobId: string } | undefined) {
+  const row = source?.rows.find(({ key }) => key.step === stepId && savedRunId(key) === focusRunId);
+  const selectedAttempt = row && chosen?.runId === savedRunId(row.key)
+    ? row.attempts.find(({ job_id }) => job_id === chosen.jobId) : undefined;
+  const scene = source?.window_map?.evaluations?.filter(({ key }) => key.step === stepId && runIds.has(savedRunId(key))) ?? [];
+  const evaluation = scene.find(({ key }) => savedRunId(key) === focusRunId) ?? (scene.length === 1 ? scene[0] : undefined);
+  return { row, attempt: selectedAttempt ?? row?.attempts.at(-1), scene, evaluation };
+}
+
+/** The Results of the shown plan, marked pending while the shown revision's plan is read. */
+function ResultsRegion({ pending, children }: { pending: boolean; children: ReactNode }) {
+  return <div {...useRegionPending(pending)}>{children}</div>;
 }
 
 function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTrainResults>[0], 'selection'> & {
@@ -344,22 +363,28 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     setProblemReveal(undefined);
     selection.select(selectStep(state, id, extend));
   }
-  const row = data?.rows.find(({ key }) => key.step === step?.id && savedRunId(key) === state.focus?.runId);
-  const selectedAttempt = row && resultAttempt?.runId === savedRunId(row.key)
-    ? row.attempts.find(({ job_id }) => job_id === resultAttempt?.jobId) : undefined;
-  const attempt = selectedAttempt ?? row?.attempts.at(-1);
+  const runTarget: PipelineSelection = state.selection ?? { kind: 'steps', stepIds: plan.steps.map(({ id }) => id) };
+  const runIds = new Set(plan.steps.flatMap((item) => selectedRuns(item, runTarget).map(({ id }) => id)));
+  const { row, attempt, scene: sceneRows, evaluation: selectedEvaluation } =
+    focusedResult(data, step?.id, state.focus?.runId, runIds, resultAttempt);
+  const shownResult = focusedResult(projection.data, step?.id, state.focus?.runId, runIds, resultAttempt);
   const ready = Boolean(data && !pending && !outside && connected && !projection.error);
   const canAuthorContinuation = ready && primaryVariant;
-  const checkpointAttempt = !saved.project.sweep && windowState.mode !== 'map' &&
+  /** The stopped attempt of a focused single run whose checkpoints an Evaluate can use, in the plan it was read from. */
+  const stoppedAttempt = ({ row, attempt }: ReturnType<typeof focusedResult>, source: StudioSavedTrainRuns | undefined) =>
+    !saved.project.sweep && windowState.mode !== 'map' &&
     state.selection?.kind === 'rows' && state.selection.runIds.length === 1 &&
     (primaryView === 'results' || secondaryView === 'results') && row && attempt?.status === 'stopped' &&
-    data?.window_map?.rows.some(({ key, evaluation_conditions }) =>
+    source?.window_map?.rows.some(({ key, evaluation_conditions }) =>
       evaluation_conditions != null && savedRunId(key) === savedRunId(row.key))
-    ? attempt.job_id : undefined;
+      ? attempt.job_id : undefined;
+  const checkpointAttempt = stoppedAttempt({ row, attempt, scene: sceneRows, evaluation: selectedEvaluation }, data);
+  const shownCheckpoint = stoppedAttempt(shownResult, projection.data);
   const stoppedPlan = useFollowingQuery({
     queryKey: ['saved-stopped-checkpoint', saved.project_id, saved.revision, checkpointAttempt],
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal, checkpointAttempt),
     enabled: ready && checkpointAttempt !== undefined,
+    placeholderData: keepPreviousData,
     gcTime: 0,
   }, jobsVersion);
   useEffect(() => {
@@ -369,13 +394,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }, [ready, focusFirstModel, step?.id]);
   const names = useMemo(() => new Map([[saved.project_id, configuration.project]]), [saved.project_id, configuration.project]);
 
-  const runTarget: PipelineSelection = state.selection ?? { kind: 'steps', stepIds: plan.steps.map(({ id }) => id) };
-  const runIds = new Set(plan.steps.flatMap((item) => selectedRuns(item, runTarget).map(({ id }) => id)));
   const runRows = data?.rows.filter(({ key }) => runIds.has(savedRunId(key))) ?? [];
   const evaluationRows = data?.window_map?.evaluations?.filter(({ key }) => runIds.has(savedRunId(key))) ?? [];
-  const sceneRows = evaluationRows.filter(({ key }) => key.step === step?.id);
-  const selectedEvaluation = sceneRows.find(({ key }) => savedRunId(key) === state.focus?.runId)
-    ?? (sceneRows.length === 1 ? sceneRows[0] : undefined);
   const authoredMap = data?.window_map;
   const lightSteps = new Set(plan.steps.filter(({ kind }) => kind === 'analyze' || kind === 'report').map(({ id }) => id));
   const lightRows = authoredMap?.rows.filter(({ key, status }) =>
@@ -803,15 +823,20 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       [kind, () => { if (latestRevision.current === revision) create(); }])));
   }
 
-  const stoppedCoordinate = row && stoppedPlan.data?.rows.find(({ key }) => savedRunId(key) === savedRunId(row.key))
-    ?.attempts.find(({ job_id }) => job_id === checkpointAttempt)?.stopped_checkpoint;
-  const stoppedSubject = row && checkpointAttempt && stoppedCoordinate
-    ? { runId: savedRunId(row.key), jobId: checkpointAttempt, at: stoppedCoordinate } : undefined;
-  const stoppedNewStep = stoppedSubject && row && data && bindStudioCommand('newStep', () => openStepMenu({
-    evaluate: () => evaluateTrain(
-      { stepId: row.key.step, selection: { kind: 'rows', stepId: row.key.step, runIds: [stoppedSubject.runId] } },
-      data, stoppedSubject),
-  }), { enabled: canAuthorContinuation && !busy });
+  const shownRow = shownResult.row;
+  const stoppedCoordinate = shownRow && stoppedPlan.data?.rows.find(({ key }) => savedRunId(key) === savedRunId(shownRow.key))
+    ?.attempts.find(({ job_id }) => job_id === shownCheckpoint)?.stopped_checkpoint;
+  const stoppedSubject = shownRow && shownCheckpoint && stoppedCoordinate
+    ? { runId: savedRunId(shownRow.key), jobId: shownCheckpoint, at: stoppedCoordinate } : undefined;
+  // Shown from the plan on screen; it authors from the current plan, so it waits for that plan to be the shown one.
+  const stoppedNewStep = stoppedSubject && bindStudioCommand('newStep', () => {
+    if (!data || !row || checkpointAttempt !== stoppedSubject.jobId) return;
+    openStepMenu({
+      evaluate: () => evaluateTrain(
+        { stepId: row.key.step, selection: { kind: 'rows', stepId: row.key.step, runIds: [stoppedSubject.runId] } },
+        data, stoppedSubject),
+    });
+  }, { enabled: Boolean(canAuthorContinuation && !busy && checkpointAttempt === stoppedSubject.jobId) });
 
   const evaluateInputs = authored?.kind === 'evaluate' ? authored : undefined;
   const trainSteps = plan.steps.filter(({ kind }) => kind === 'train');
@@ -1351,28 +1376,31 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             return { body: withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
               fieldRows={detailInputs.fieldRows} />) };
           }
-          const resultsUnavailable = view === 'results' && (planError('results') ?? (!data ? { kind: 'loading' } as const : undefined));
+          const resultsUnavailable = view === 'results' && (planError('results') ?? planUnavailable);
           if (resultsUnavailable) return {
             body: <StudioRegion state={resultsUnavailable} />,
           };
-          if (view === 'results' && selectedEvaluation?.checkpoint_series && ready) return {
-            body: <StudioEvaluationResults evaluation={selectedEvaluation} onReplay={(update) => {
-              evaluationReplay.chooseCheckpoint(update);
-              setWindowState((current) => showProjectWindowView(current, 'scene', slot));
-              requestSlotFocus((count) => count + 1);
-            }} />,
+          const shown = projection.data;
+          const resultsShown = Boolean(shown && !pending && !outside && connected);
+          if (view === 'results' && shownResult.evaluation?.checkpoint_series && resultsShown) return {
+            body: <ResultsRegion pending={planPending}><StudioEvaluationResults evaluation={shownResult.evaluation}
+              replayable={ready && selectedEvaluation === shownResult.evaluation} onReplay={(update) => {
+                evaluationReplay.chooseCheckpoint(update);
+                setWindowState((current) => showProjectWindowView(current, 'scene', slot));
+                requestSlotFocus((count) => count + 1);
+              }} /></ResultsRegion>,
           };
-          if (view === 'results' && row && ready) return { body: <div className="p-3">
+          if (view === 'results' && shownRow && shown && resultsShown) return { body: <ResultsRegion pending={planPending}><div className="p-3">
             {stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}
               className="flex items-center gap-2">
               <h3 id={stoppedCheckpointId} className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
               <Button {...commandAttributes(stoppedNewStep)}
                 disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</Button>
             </section>}
-            <TrainResults key={savedRunId(row.key)} project={saved.project_id} revision={saved.revision}
-              evaluations={data?.window_map?.evaluations ?? []} mapRows={data?.window_map?.rows ?? []}
-              rows={data!.rows} row={row} attempt={attempt} />
-          </div> };
+            <TrainResults key={savedRunId(shownRow.key)} project={saved.project_id} revision={shown.revision}
+              evaluations={shown.window_map?.evaluations ?? []} mapRows={shown.window_map?.rows ?? []}
+              rows={shown.rows} row={shownRow} attempt={shownResult.attempt} />
+          </div></ResultsRegion> };
           return { body: withProblem(noView) };
         }}
       />
