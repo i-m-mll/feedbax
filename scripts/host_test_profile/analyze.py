@@ -95,7 +95,7 @@ def analyze(processes: dict[int, list[dict]]) -> dict:
                 t[f"pytest_{e['when']}"] += e["stop"] - e["start"]
                 if e["outcome"] == "failed":
                     c["failed"] += 1
-            elif e["ev"] == "rpc" and not e.get("relayed"):
+            elif e["ev"] == "rpc":
                 c[f"rpc_{e['op']}"] += 1
                 if e["op"] in POLLS:
                     c["polls"] += 1
@@ -244,7 +244,7 @@ def host_loops(processes: dict[int, list[dict]]) -> dict:
         end = next((e["t"] for e in events if e["ev"] == "host_run_end"), events[-1]["t"])
         ticks = sorted((e for e in events if e["ev"] == "tick"), key=lambda e: e["start"])
         hosts[pid] = {
-            "pid": pid, "root": runs[0]["root"], "start": runs[0]["t"], "end": end,
+            "pid": pid, "root": runs[0]["root"], "test": runs[0].get("test"), "start": runs[0]["t"], "end": end,
             "rpcs": sorted((e for e in events if e["ev"] == "host_rpc"), key=lambda e: e["start"]),
             "ticks": ticks, "tick_starts": [e["start"] for e in ticks],
             "holds": sorted((e for e in events if e["ev"] == "loop_hold"), key=lambda e: e["start"]),
@@ -293,15 +293,10 @@ def attribute(processes: dict[int, list[dict]], hosts: dict, slow: float) -> lis
                 index = e["argv"].index("--root")
                 if index + 1 < len(e["argv"]):
                     hosts_started[e["argv"][index + 1]].append(e["start"])
-    relayed = collections.defaultdict(list)  # op -> the requests stdio relays forwarded to a Host
-    for events in processes.values():
-        for e in events:
-            if e["ev"] == "rpc" and e.get("relayed"):
-                relayed[e["op"]].append(e)
     found = []
     for pid, events in processes.items():
         for e in events:
-            if e["ev"] != "rpc" or e.get("relayed"):
+            if e["ev"] != "rpc":
                 continue
             elapsed = e["t"] - e["start"]
             excess = elapsed - (e.get("wait") or 0)
@@ -312,15 +307,17 @@ def attribute(processes: dict[int, list[dict]], hosts: dict, slow: float) -> lis
                      "error": e.get("error"), "root": e["root"], "start": low}
             root = e["root"]
             if e.get("stdio"):
-                forwarded = [r for r in relayed.get(e["op"], []) if low <= r["start"] and r["t"] <= high
-                             and r.get("test") in (None, e.get("test"))]
-                if not forwarded:
-                    entry["cause"] = "through a stdio relay that recorded no forwarded request"
+                # The relay is not profiled; the venue Host is the one of this test that handled this op meanwhile.
+                served = [h for h in hosts.values() if h["test"] == e.get("test")
+                          and any(r["op"] == e["op"] and low <= r["start"] <= high for r in h["rpcs"])]
+                if len(served) != 1:
+                    entry["cause"] = (
+                        "through a stdio relay; the request reached no Host of this test" if not served else
+                        f"through a stdio relay; {len(served)} Hosts of this test handled {e['op']} during the call")
                     found.append(entry)
                     continue
-                relay = max(forwarded, key=lambda r: r["t"] - r["start"])
-                root = entry["root"] = relay["root"]
-                entry["relay"] = {"pid": relay["pid"], "began": relay["start"] - low, "seconds": relay["t"] - relay["start"]}
+                root = entry["root"] = served[0]["root"]
+                entry["relayed"] = True
             host = next((h for h in by_root.get(root, []) if h["start"] <= high and h["end"] >= low), None)
             if host is None:
                 starting = [s for s in hosts_started.get(root, []) if low <= s <= high]
@@ -365,10 +362,8 @@ def describe(entry: dict) -> list[str]:
              f"{entry['test'] or '(no test)'}  client {entry['client']} host {entry.get('host', '-')}"]
     if "cause" in entry:
         return lines + [f"        {entry['cause']}"]
-    if "relay" in entry:
-        r = entry["relay"]
-        lines.append(f"        through stdio relay {r['pid']}: it began forwarding at +{r['began']:.2f}s "
-                     f"and took {r['seconds']:.2f}s")
+    if entry.get("relayed"):
+        lines.append(f"        through a stdio relay to the Host at {entry['root']}")
     boot = entry.get("host_boot", 0.0)
     if boot:
         lines.append(f"        Host was starting: its loop began {boot:.2f}s into the call")

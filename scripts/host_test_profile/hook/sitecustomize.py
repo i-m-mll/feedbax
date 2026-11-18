@@ -132,7 +132,6 @@ if DIRECTORY:
             record("hook_seam_missing", cls="HostClient", names=["_exchange"])
             return
         exchange = client._exchange
-        relaying = "attach" in sys.argv  # this process is a stdio relay in front of a Host
 
         def wrapped(self, message, *args, **kwargs):
             start = time.time()
@@ -157,8 +156,7 @@ if DIRECTORY:
                 elif isinstance(value, dict) and isinstance(value.get("jobs"), list):
                     states = [[v.get("id"), v.get("state")] for v in value["jobs"] if isinstance(v, dict)]
                 record("rpc", op=request.get("op"), start=start, root=str(self.root), wait=request.get("wait"),
-                       error=error, stdio=getattr(self, "_attachment", None) is not None, relayed=relaying,
-                       states=states)
+                       error=error, stdio=getattr(self, "_attachment", None) is not None, states=states)
 
         client._exchange = wrapped
 
