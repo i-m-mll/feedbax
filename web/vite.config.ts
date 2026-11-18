@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { Agent } from 'node:http';
 import type { Plugin } from 'vite';
 import { buildSync } from 'esbuild';
 import { appearanceBootEntry } from './entries';
@@ -175,6 +176,8 @@ export default defineConfig({
           '/api': {
             target: `http://${apiAddress}`,
             changeOrigin: true,
+            // Reuse backend connections; without an agent every proxied request closes both legs.
+            agent: new Agent({ keepAlive: true }),
             configure(proxy) {
               // A stopped backend answers nothing; the page must see that, not the proxy's 500.
               proxy.on('error', (_error, request) => { request.socket.destroy(); });
