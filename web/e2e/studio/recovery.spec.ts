@@ -1,7 +1,7 @@
 import { expect, firstJobTimeout } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import type { StudioJobSnapshot, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
 import { isolatedTest as test } from './fixtures/studio';
 import { hostPid, processExists } from './fixtures/studioRecovery';
 
@@ -223,7 +223,7 @@ test('reopens the same live run and restores loss after backend and host restart
     );
     if (!row) throw new Error('The reopened Plan does not contain the admitted Train attempt');
     await reopened.locator('[data-slot="primary"]').getByRole('table', { name: 'Runs', exact: true })
-      .getByRole('button', { name: row.label, exact: true }).click();
+      .getByRole('button', { name: runName(row.label) }).click();
     await openResultsSlot(reopened);
     const restored = lossCurve(reopened);
     await expect(restored).toBeVisible();

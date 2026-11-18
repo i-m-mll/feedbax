@@ -5,7 +5,7 @@ import type {
   StudioProjectWindowMap, StudioSavedLightResult, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
-import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { enter, mapStep, runName, runProjectFixture } from './fixtures/canonicalTrain';
 import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
 import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo, typeValue } from './fixtures/studioKeyboard';
@@ -117,7 +117,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     await openView(page, 'runs');
     const table = page.getByRole('table', { name: 'Runs', exact: true });
     for (const [index, label] of selected.entries()) {
-      await activate(page, table.getByRole('button', { name: label, exact: true }), index > 0 ? 'Shift+Enter' : 'Enter');
+      await activate(page, table.getByRole('button', { name: runName(label) }), index > 0 ? 'Shift+Enter' : 'Enter');
     }
     const admitted = mutation('POST', runPath);
     await palette(page, 'run', 'Run');
@@ -143,7 +143,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     expect(producer.result).toEqual(first.trained);
     await runStep('train', 3, otherRows.map(({ key }) => key), otherRows.map(({ label }) => label));
     await activate(page, page.getByRole('table', { name: 'Runs', exact: true })
-      .getByRole('button', { name: producer.label, exact: true }));
+      .getByRole('button', { name: runName(producer.label) }));
     return authorEvaluateConditions({
       page, request, projectPath: path, train: producer.key, field: 'Mass',
       conditions: [1, 2],
@@ -525,8 +525,8 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   }
   async function selectPair() {
     await openRuns('conditions');
-    const nominal = table.getByRole('button', { name: 'mass=nominal', exact: true });
-    const heavy = table.getByRole('button', { name: 'mass=heavy', exact: true });
+    const nominal = table.getByRole('button', { name: runName('mass=nominal') });
+    const heavy = table.getByRole('button', { name: runName('mass=heavy') });
     await nominal.click();
     await heavy.click({ modifiers: ['Shift'] });
     await expect(nominal).toHaveAttribute('aria-pressed', 'true');

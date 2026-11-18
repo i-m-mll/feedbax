@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioMachineApprovalReceipt, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
 test.use({ studioBackend: 'remote' });
@@ -159,7 +159,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   const rowName = (activity: StudioActivityJob) => rows.find(({ key }) =>
     JSON.stringify([key.variant, key.step, key.row]) === activity.run_key)!.label;
   const row = (activity: StudioActivityJob) => runs.getByRole('row').filter({
-    has: page.getByRole('rowheader', { name: rowName(activity), exact: true }),
+    has: page.getByRole('rowheader', { name: runName(rowName(activity)) }),
   });
   const reopen = async () => {
     await page.reload();

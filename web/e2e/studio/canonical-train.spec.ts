@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
-import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
 import type {
@@ -541,7 +541,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await captureStudioWindow(page, info, '01-map-runs');
 
   await mapStep(page, 'train').click();
-  await table.getByRole('button', { name: selected[0].label, exact: true }).click();
+  await table.getByRole('button', { name: runName(selected[0].label) }).click();
   const explicit = submitted(page, filesPath);
   await palette(page, 'newStep', 'New Step');
   await chooseTrainSuccessor(page);
@@ -582,7 +582,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
       },
     });
     const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-    const selectedRow = table.getByRole('button', { name: selected[index].label, exact: true });
+    const selectedRow = table.getByRole('button', { name: runName(selected[index].label) });
     await selectedRow.click();
     await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
     await expect(runs.getByRole('region', { name: 'Made From' })).toContainText('train');

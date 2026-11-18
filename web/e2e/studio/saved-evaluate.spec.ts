@@ -6,7 +6,7 @@ import type {
 } from '../../src/generated/studioContracts';
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
-import { captureStudioWindow, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { captureStudioWindow, enter, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
 import { pick, reveal } from './fixtures/controls';
@@ -80,7 +80,7 @@ test('authors Evaluate conditions from one authenticated Train checkpoint', asyn
   const trained = (await plan(initial.revision)).rows.find(({ key }) => key.variant === 'base')!;
   expect(admitted.run_key).toBe(savedRunId(trained.key));
   expect(trained.result?.job_id).toBe(admitted.job_id);
-  await plans(page).getByRole('button', { name: trained.label, exact: true }).click();
+  await plans(page).getByRole('button', { name: runName(trained.label) }).click();
 
   const conditions = [1.25, 2];
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
@@ -140,7 +140,7 @@ test('authors Evaluate conditions from one authenticated Train checkpoint', asyn
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   for (const [index, condition] of conditions.entries()) {
     await tab(page, 'Runs').click();
-    await plans(page).getByRole('button', { name: rows[index].label, exact: true }).click();
+    await plans(page).getByRole('button', { name: runName(rows[index].label) }).click();
     await tab(page, 'Model').click();
     await model.locator('[data-id="plant"] header').click();
     const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
@@ -158,7 +158,7 @@ function expectPositionSamples(samples: number[][]) {
 async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow, label: string, checkpoint?: number) {
   const trialId = row.trials[trialIndex];
   await chooseStep(page, row.key.step);
-  await plans(page).getByRole('button', { name: label, exact: true }).click();
+  await plans(page).getByRole('button', { name: runName(label) }).click();
   await tab(page, 'Scene').click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
@@ -373,7 +373,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const chooseRow = async (run = selectedKey, extend = false) => {
     const definition = (await plan()).window_map?.rows.find(({ key }) => key.step === run.step && key.row === run.row);
     expect(definition).toBeDefined();
-    await plans(page).getByRole('button', { name: definition!.label, exact: true })
+    await plans(page).getByRole('button', { name: runName(definition!.label) })
       .click(extend ? { modifiers: ['Shift'] } : {});
   };
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -659,7 +659,7 @@ test('authors checkpoint rules and replays covered updates from Results', async 
     .map(({ coordinates }) => coordinates.update.value_id)).toEqual(['4', '3', '2']);
   const gap = points[1];
   const gapRow = split.window_map!.rows.find(({ key }) => key.row === gap.key.row && key.step === 'evaluate')!;
-  await plans(page).getByRole('button', { name: gapRow.label, exact: true }).click();
+  await plans(page).getByRole('button', { name: runName(gapRow.label) }).click();
   const [gapJob] = await submit(page, runsPath);
   expect(gapJob.disposition).toBe('admitted');
   await expect.poll(async () => (await plan(swept.revision)).window_map!.evaluations!

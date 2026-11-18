@@ -172,7 +172,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                     onKeyDown={selectRow.onKeyDown}
                     className="w-full justify-end rounded-row tabular-nums text-shell-muted underline-offset-2 aria-[current=true]:underline"
                   >
-                    <span aria-hidden="true">{ordinals.get(run.id)}</span>
+                    <span data-run-ordinal>{ordinals.get(run.id)}</span>{' '}
                     <span className="sr-only">{run.label}</span>
                   </Button>
                 </TableRowHeader>

@@ -61,14 +61,14 @@ it("identifies runs by ordinal and the fields that differ, and runs the selected
   showRuns(train, perform);
   const table = screen.getByRole("table", { name: "Runs" });
   expect(within(table).getAllByRole("columnheader").map(({ textContent }) => textContent)).toEqual(["Rate", "Seed", "Status", "Progress"]);
-  expect(within(table).getAllByRole("rowheader").map((header) => header.querySelector("[aria-hidden]")?.textContent))
+  expect(within(table).getAllByRole("rowheader").map((header) => header.querySelector("[data-run-ordinal]")?.textContent))
     .toEqual(["1", "2", "3"]);
   expect(within(table).queryByRole("cell", { name: "B" })).toBeNull();
   expect(screen.queryByRole("group", { name: "Rate" })).toBeNull();
 
-  fireEvent.click(within(table).getByRole("button", { name: "B" }));
-  fireEvent.click(within(table).getByRole("button", { name: "C" }), { metaKey: true });
-  expect(within(table).getByRole("button", { name: "C" }).getAttribute("aria-current")).toBe("true");
+  fireEvent.click(within(table).getByRole("button", { name: /^\d+ B$/ }));
+  fireEvent.click(within(table).getByRole("button", { name: /^\d+ C$/ }), { metaKey: true });
+  expect(within(table).getByRole("button", { name: /^\d+ C$/ }).getAttribute("aria-current")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Run" }));
   expect(perform).toHaveBeenLastCalledWith({ kind: "rows", stepId: "train", runIds: ["b", "c"] });
   expect(within(table).queryByText("Learning rate 0.001 → 0.003")).toBeNull();
@@ -93,7 +93,7 @@ it("shows the current opening stage and keeps provider error lines in the inspec
   expect(table.getByText("Opening machine: connecting")).toBeDefined();
   expect(table.getByText(summary)).toBeDefined();
   expect(table.queryByText(line)).toBeNull();
-  fireEvent.click(table.getByRole("button", { name: "B" }));
+  fireEvent.click(table.getByRole("button", { name: /^\d+ B$/ }));
   expect(within(screen.getByRole("region", { name: "Run Inspector" })).getByText(line)).toBeDefined();
 });
 
@@ -102,7 +102,7 @@ it("virtualizes an authoritative 1,000-row result and keeps its full accessible 
   showRuns({ ...train, runs, statusCounts: { succeeded: runs.length } });
   const table = screen.getByRole("table", { name: "Runs" });
   expect(table.getAttribute("aria-rowcount")).toBe("1001");
-  expect(within(table).getByRole("button", { name: "Reach 0" })).toBeDefined();
+  expect(within(table).getByRole("button", { name: /^\d+ Reach 0$/ })).toBeDefined();
   expect(within(table).getAllByRole("row").length).toBeLessThan(50);
   expect(within(table).queryByRole("button", { name: "Reach 999" })).toBeNull();
   const viewport = table.parentElement!;
@@ -111,11 +111,11 @@ it("virtualizes an authoritative 1,000-row result and keeps its full accessible 
     scrollTo: { value: ({ top }: ScrollToOptions) => fireEvent.scroll(viewport, { target: { scrollTop: top } }) },
   });
   fireEvent.scroll(viewport, { target: { scrollTop: 44 * 500 } });
-  const middle = within(table).getByRole("button", { name: "Reach 500" });
+  const middle = within(table).getByRole("button", { name: /^\d+ Reach 500$/ });
   expect(within(table).queryByRole("button", { name: "Reach 0" })).toBeNull();
   middle.focus();
   fireEvent.keyDown(middle, { key: "End" });
-  expect(document.activeElement).toBe(within(table).getByRole("button", { name: "Reach 999" }));
+  expect(document.activeElement).toBe(within(table).getByRole("button", { name: /^\d+ Reach 999$/ }));
 });
 
 it("names pivot cells from both axes and retains explicit rows without coordinates", () => {
@@ -126,7 +126,7 @@ it("names pivot cells from both axes and retains explicit rows without coordinat
   fireEvent.click(run);
   expect(run.getAttribute("aria-pressed")).toBe("true");
   const rows = within(screen.getByRole("table", { name: "Runs" }));
-  expect(rows.getByRole("button", { name: "Custom reach" })).toBeDefined();
+  expect(rows.getByRole("button", { name: /^\d+ Custom reach$/ })).toBeDefined();
 });
 
 it("draws a Results differ reason as one row per change", () => {

@@ -1,7 +1,7 @@
 import { expect, firstJobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
 import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
@@ -263,7 +263,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await activate(page, mapStep(page, 'evaluate'));
   await page.keyboard.press('Meta+1');
   const label = projection.window_map!.rows.find(({ key }) => key.step === pending.key.step && key.row === pending.key.row)!.label;
-  await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: label, exact: true }));
+  await activate(page, runs.getByRole('table', { name: runName('Runs') }).getByRole('button', { name: label, exact: true }));
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
   await expect(runs.getByRole('region', { name: 'Made From', exact: true })).toContainText('1 of 3');
   expect(await evaluatedRow()).toEqual(result);

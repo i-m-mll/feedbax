@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
-import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
 test.use({ headless: true, trace: 'off', viewport: { width: 1440, height: 900 } });
@@ -359,7 +359,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   expect(result?.result?.checkpoint_source?.job_id).toBe(train.job_id);
   const trial = result!.trials[1];
   const row = plan.window_map!.rows.find(({ key }) => key.step === 'baseline')!;
-  await table.getByRole('button', { name: row.label, exact: true }).click();
+  await table.getByRole('button', { name: runName(row.label) }).click();
   await tabs.getByRole('tab', { name: 'Scene', exact: true }).click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const cursor = scene.locator('[data-scene-cursor]');

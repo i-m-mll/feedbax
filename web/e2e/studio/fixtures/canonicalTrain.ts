@@ -35,6 +35,11 @@ export async function appendManagedFiles(
   return { snapshot, projectPath };
 }
 
+/** A Runs table row's accessible name: its ordinal, then the run's label. */
+export function runName(label: string) {
+  return new RegExp(`^\\d+ ${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+}
+
 export function mapStep(page: Page, stepId: string) {
   return page.locator(`[data-map-step="${stepId}"] button[data-canvas-focus]`);
 }

@@ -3,7 +3,7 @@ import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
-import { authorLearningRateSweep, mapStep } from './canonicalTrain';
+import { authorLearningRateSweep, mapStep, runName } from './canonicalTrain';
 import { activate, chooseOption, chooseOutlineRow, chooseStepKind, number, openView, palette, tabTo } from './studioKeyboard';
 import { outlineRow, pick } from './controls';
 
@@ -285,7 +285,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
 
   const producer = children[0];
   const producerTable = await openFocusedRuns(child);
-  await activate(page, producerTable.getByRole('rowheader', { name: producer.label, exact: true }).getByRole('button'));
+  await activate(page, producerTable.getByRole('rowheader', { name: runName(producer.label) }).getByRole('button'));
   const nested = child + '-continuation';
   await addSuccessor('Train', nested, child);
   const nestedTable = await openFocusedRuns(nested);

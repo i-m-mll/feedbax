@@ -4,10 +4,7 @@ import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import {
-  appendManagedFiles, authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot,
-  runProjectFixture, seedManagedProject,
-} from './fixtures/canonicalTrain';
+import { appendManagedFiles, authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 
@@ -281,8 +278,8 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     expect(projection.rank_groups?.flatMap(({ ranks }) => ranks)).toEqual(keys);
     expect(ranks.map(({ subject_rank_key }) => subject_rank_key)).toEqual(keys);
     for (const [index, label] of groupLabels.entries()) {
-      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveAccessibleName(`${label} · Rank 1`);
-      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveAccessibleName(`${label} · Rank 2`);
+      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveAccessibleName(runName(`${label} · Rank 1`));
+      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveAccessibleName(runName(`${label} · Rank 2`));
     }
   } else {
     expect(keys).toEqual(['rank-1', 'rank-2']);
@@ -343,7 +340,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     await expect(memberLists[group].nth(position)).toHaveText(`Rank ${position + 1} · ${producer.label}`);
     await expect(runs(page).getByRole('rowheader', { name: new RegExp(producer.label) })).toHaveCount(1);
     if (grouped) await expect(runs(page).getByRole('rowheader').nth(index))
-      .toHaveAccessibleName(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`);
+      .toHaveAccessibleName(runName(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`));
   }
   await expect(freeze).toBeEnabled();
   await count.fill('1');
@@ -615,7 +612,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   expect(groupStale.map(({ change }) => [change?.before, change?.after])).toEqual([[1, 2], [1, 2]]);
 
   const picked = trainDone.filter(({ key }) => key.row.startsWith('learning-rate=Slow'));
-  const rowButton = (label: string) => runs(page).getByRole('button', { name: label, exact: true });
+  const rowButton = (label: string) => runs(page).getByRole('button', { name: runName(label) });
   await rowButton(picked[0].label).click();
   await rowButton(picked[1].label).click({ modifiers: ['Shift'] });
   await model.focus();
