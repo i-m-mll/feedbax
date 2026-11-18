@@ -336,7 +336,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   async function showReport(url: string) {
     await expect(document.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('**Velocity** by condition.');
     await activate(page, document.locator('summary').filter({ hasText: /^Result$/ }));
-    const frame = document.locator('iframe[title="Report"]');
+    const frame = document.locator('iframe[aria-label="Report"]');
     await expect(frame).toHaveAttribute('src', url);
     const rendered = frame.contentFrame();
     await expect(rendered.getByText('Velocity', { exact: true })).toBeVisible();

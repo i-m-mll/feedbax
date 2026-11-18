@@ -1,5 +1,5 @@
 import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
 import { StudioJobsProvider, useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
@@ -7,7 +7,7 @@ import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegio
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
 import {
-  studioAccessibleName, studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
+  studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
   studioStep, type StudioResultState, type StudioRunStatusId,
 } from './studioVocabulary';
 
@@ -155,6 +155,7 @@ function ActivityRun({
 }
 
 function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
+  const heading = useId();
   const actions = useStudioJobActions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -172,9 +173,9 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
       setBusy(false);
     }
   }
-  return <section aria-label={studioAccessibleName('machine', machine.name)} className="space-y-2 rounded-md border border-shell-divider px-3 py-2 text-sm">
+  return <section aria-labelledby={heading} className="space-y-2 rounded-md border border-shell-divider px-3 py-2 text-sm">
     <header className="flex items-baseline justify-between gap-2">
-      <h3 className="font-medium">{machine.name}</h3>
+      <h3 id={heading} className="font-medium">{machine.name}</h3>
       <span className="text-shell-muted">{studioMachineStatus(machine.state)}</span>
     </header>
     {machine.state === 'opening' && currentStep && <p className="text-shell-muted">{studioOpeningStep(currentStep.step)}</p>}
