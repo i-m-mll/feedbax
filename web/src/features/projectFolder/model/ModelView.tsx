@@ -38,6 +38,7 @@ import {
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
+import { commandQueue } from './commandQueue';
 import { modelOutline } from './modelOutline';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
@@ -158,8 +159,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const connectionReview = useRef<AbortController>();
   const keyboardReview = useRef<AbortController>();
   const libraryReview = useRef<Promise<ModelConnectionReview>>();
-  const requestBusy = useRef(false);
-  const [busy, setBusy] = useState(false);
+  const [run] = useState(commandQueue);
   const [modelIssue, setIssue] = useState<{ document: string; address?: ModelAddress; reason: string }>();
   const issue = modelIssue?.document === model?.id ? modelIssue : undefined;
   const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
@@ -203,7 +203,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const owner = resolved?.owner;
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
-  const editTopology = editable && !busy && !evaluate;
+  const editTopology = editable && !evaluate;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
@@ -213,7 +213,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     : !selection ? [graph] : [];
   const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.editable &&
     attachments.data.revision === saved.revision);
-  const canEditField = evaluate ? !busy && canEvaluate : fieldEditable;
+  const canEditField = evaluate ? canEvaluate : fieldEditable;
   const fieldRun = evaluate?.run ?? projectionRun;
   const fieldBodies = model && shownModel && !libraryItem ? fieldOwners.map((owner) => ({
     document: model.id, owner, revision: saved.revision, run: fieldRun, evaluate_scope: evaluate?.scope,
@@ -351,65 +351,62 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     };
   }, [active, mountKey, projectionRunId, saved.revision, state]);
 
-  /** Applies a Model edit; a refusal is answered with its reason and the element it concerns. */
+  /**
+   * Applies a Model edit after the view's earlier commands; a refusal is answered with its reason and the element it
+   * concerns. Whether the edit is allowed is decided when it is issued, the revision it edits when it runs.
+   */
   async function attempt(name: string, operation: Operation, choose = true): Promise<{ address?: ModelAddress; reason: string } | null> {
-    if (!model || !editTopology || requestBusy.current) return { reason: studioReason('unavailable', name) };
-    requestBusy.current = true;
-    const reviewed = editor.getSnapshot().saved;
-    setBusy(true);
-    setIssue(undefined);
-    try {
-      const result = await editor.editModel(name, model.id, { operation }, reviewed);
-      if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
-      if (result.clipboard) clipboard = result.clipboard;
-      if (choose && result.changed.length) {
-        const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
-          : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
-        setSelection(selection);
+    if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
+    return run(async () => {
+      const reviewed = editor.getSnapshot().saved;
+      setIssue(undefined);
+      try {
+        const result = await editor.editModel(name, model.id, { operation }, reviewed);
+        if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
+        if (result.clipboard) clipboard = result.clipboard;
+        if (choose && result.changed.length) {
+          const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
+            : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
+          setSelection(selection);
+        }
+        return null;
+      } catch (error) {
+        const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
+        return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) };
       }
-      return null;
-    } catch (error) {
-      const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
-      return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) };
-    } finally {
-      requestBusy.current = false;
-      setBusy(false);
-    }
+    });
   }
   async function apply(name: string, operation: Operation, choose = true) {
-    if (!model || !editTopology || requestBusy.current) return false;
+    if (!model) return false;
     const refusal = await attempt(name, operation, choose);
     if (refusal) setIssue({ document: model.id, ...refusal });
     return !refusal;
   }
 
   async function applyEvaluate(name: string, difference: Difference, onField = false): Promise<string | undefined> {
-    if (!model || !readBody || !attachments.data || attachments.data.revision !== saved.revision || requestBusy.current) {
+    if (!model || !readBody || !attachments.data || attachments.data.revision !== saved.revision) {
       return studioReason('unavailable', name);
     }
-    requestBusy.current = true;
-    setBusy(true);
-    setIssue(undefined);
-    try {
-      const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
-      if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
-      editor.editFiles(name, [result.file], {
-        reviewedRevision: saved.revision,
-        dependencies: [{ kind: 'document', id: model.id }],
-      });
-      await editor.flush();
-      if (difference.op !== 'set_field') {
-        selectElement(state, { document: model.id, address: difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed });
+    return run(async () => {
+      setIssue(undefined);
+      try {
+        const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
+        if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
+        editor.editFiles(name, [result.file], {
+          reviewedRevision: saved.revision,
+          dependencies: [{ kind: 'document', id: model.id }],
+        });
+        await editor.flush();
+        if (difference.op !== 'set_field') {
+          selectElement(state, { document: model.id, address: difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed });
+        }
+        return undefined;
+      } catch (error) {
+        if (onField) return apiErrorMessage(error);
+        setIssue({ document: model.id, reason: apiErrorMessage(error) });
+        return undefined;
       }
-      return undefined;
-    } catch (error) {
-      if (onField) return apiErrorMessage(error);
-      setIssue({ document: model.id, reason: apiErrorMessage(error) });
-      return undefined;
-    } finally {
-      requestBusy.current = false;
-      setBusy(false);
-    }
+    });
   }
 
   function route(address: ModelAddress, points: ModelPosition[], name: string) {
@@ -756,7 +753,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const signalPort = address.element.kind === 'port' &&
       (address.element.end.owner !== 'component' || address.element.end.direction !== 'physical') &&
       address.element.end.owner !== 'boundary';
-    if (!(wire || signalPort) || !(editTopology || canEvaluate) || busy) return [];
+    if (!(wire || signalPort) || !(editTopology || canEvaluate)) return [];
     return [
       ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'))] : []),
       ...(wire || source ? [bindStudioCommand('addIntervention', () => addAttachment(address, 'intervention'))] : []),
@@ -815,7 +812,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     bindStudioCommand('modelRemove', () => {
       if (selection?.element.kind === 'attachment') removeAttachment(selection);
       else void apply(studioName('modelRemove'), { op: 'delete', selection: [...selectedHere] });
-    }, { enabled: selectedHere.length > 0 && (editTopology || canEvaluate && !!attachment && !busy) }),
+    }, { enabled: selectedHere.length > 0 && (editTopology || canEvaluate && !!attachment) }),
     bindStudioCommand('modelRename', () => { if (selection) setRename(addressKey(selection)); }, { enabled: editTopology && !!component }),
     bindStudioCommand('modelDuplicate', () => void apply(studioName('modelDuplicate'), { op: 'duplicate', selection: [...selectedHere] }),
       { enabled: editTopology && componentsOnly }),
@@ -842,7 +839,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (!selectedIds.has(addressKey(address))) select(address);
     setMenu({ address, x: event.clientX, y: event.clientY, point });
   }
-  const fieldEditing = editTopology || canEvaluate && !busy;
+  const fieldEditing = editTopology || canEvaluate;
   function rawChange(address: ModelAddress): FieldChange | undefined {
     if (!fieldEditing) return undefined;
     return async (path, value) => {
