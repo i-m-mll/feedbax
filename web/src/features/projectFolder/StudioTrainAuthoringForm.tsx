@@ -194,7 +194,7 @@ export function StudioTrainAuthoringForm(props: Props) {
 
   useLayoutEffect(() => {
     if (!focusFirstField || !current || numeric.fields.isFetching) return;
-    const first = region.current?.querySelector<HTMLElement>('input:not([readonly]):not(:disabled)');
+    const first = region.current?.querySelector<HTMLElement>('input:not([readonly]):not(:disabled):not([aria-hidden="true"])');
     if (!first) return;
     first.focus();
     onFirstFieldFocused?.();
