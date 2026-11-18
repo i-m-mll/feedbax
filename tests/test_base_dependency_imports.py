@@ -35,12 +35,6 @@ OPTIONAL_NAMESPACE_IMPORT_ALLOWLIST = {
     ("feedbax.plot", "pyperclip"): "viz extra module imports pyperclip at module import time",
     ("feedbax.plot", "scikit-learn"): "viz extra module imports sklearn at module import time",
     ("feedbax.plot", "seaborn"): "viz extra module imports seaborn at module import time",
-    ("feedbax.mechanics.warp_qualification", "mujoco-core"): (
-        "mjx extra qualification program, run only through scripts/qualify_mjx_warp.py"
-    ),
-    ("feedbax.mechanics.warp_muscle_qualification", "mujoco-core"): (
-        "mjx extra qualification program, run only through scripts/qualify_mjx_warp_muscles.py"
-    ),
 }
 
 #: Namespaces that are the web runtime: the desktop host serves the same FastAPI transport.
