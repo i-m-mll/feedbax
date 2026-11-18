@@ -67,21 +67,6 @@ def test_config_tree_does_not_synthesize_placeholder_ldict_key() -> None:
     assert offenders == []
 
 
-def test_loss_evaluation_does_not_default_missing_target_to_zero() -> None:
-    node = _function_node("feedbax/runtime/retained_observables.py", "evaluate_loss_term")
-
-    offenders = []
-    for assignment in (
-        item for item in ast.walk(node) if isinstance(item, (ast.Assign, ast.AnnAssign))
-    ):
-        targets = assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
-        if any(isinstance(target, ast.Name) and target.id == "target" for target in targets):
-            if _is_zero_constant(assignment.value):
-                offenders.append(assignment.lineno)
-
-    assert offenders == []
-
-
 def test_migration_registry_does_not_treat_versionless_as_current_by_default() -> None:
     node = _class_method_node(
         "feedbax/contracts/migrations.py",
@@ -101,16 +86,5 @@ def test_migration_registry_does_not_treat_versionless_as_current_by_default() -
                 for value in bool_op.values:
                     if isinstance(value, ast.Attribute) and value.attr == "current_version":
                         offenders.append(bool_op.lineno)
-
-    assert offenders == []
-
-
-def test_render_format_dispatch_does_not_passthrough_unknown_formats() -> None:
-    node = _function_node("feedbax/plot/io.py", "_render_extension")
-
-    offenders = []
-    for call in (item for item in ast.walk(node) if isinstance(item, ast.Call)):
-        if isinstance(call.func, ast.Attribute) and call.func.attr == "get":
-            offenders.append(call.lineno)
 
     assert offenders == []

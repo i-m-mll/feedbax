@@ -35,7 +35,16 @@ OPTIONAL_NAMESPACE_IMPORT_ALLOWLIST = {
     ("feedbax.plot", "pyperclip"): "viz extra module imports pyperclip at module import time",
     ("feedbax.plot", "scikit-learn"): "viz extra module imports sklearn at module import time",
     ("feedbax.plot", "seaborn"): "viz extra module imports seaborn at module import time",
+    ("feedbax.mechanics.warp_qualification", "mujoco-core"): (
+        "mjx extra qualification program, run only through scripts/qualify_mjx_warp.py"
+    ),
+    ("feedbax.mechanics.warp_muscle_qualification", "mujoco-core"): (
+        "mjx extra qualification program, run only through scripts/qualify_mjx_warp_muscles.py"
+    ),
 }
+
+#: Namespaces that are the web runtime: the desktop host serves the same FastAPI transport.
+WEB_NAMESPACES = (("feedbax", "web"), ("feedbax", "desktop"))
 
 
 @dataclass(frozen=True, order=True)
@@ -205,7 +214,7 @@ def _find_unapproved_imports(
         relative_path = path.relative_to(repo_root)
         module = ".".join(relative_path.with_suffix("").parts)
         dependencies = base_dependencies
-        if relative_path.parts[:2] == ("feedbax", "web"):
+        if relative_path.parts[:2] in WEB_NAMESPACES:
             dependencies = base_dependencies | web_dependencies
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         visitor = UnguardedImportVisitor()

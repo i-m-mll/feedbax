@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -19,6 +18,7 @@ from feedbax.orchestration.repo_realization import (
     validate_non_overlapping_remote_roots,
 )
 from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest, RepoSnapshotRecord
+from tests.support.git_fixtures import fixture_git_environment
 
 
 def _record(content: str = "1" * 64) -> RepoSnapshotRecord:
@@ -57,7 +57,7 @@ def _git(root: Path, *args: str) -> None:
         ["git", "-C", str(root), *args],
         check=True,
         capture_output=True,
-        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        env={**fixture_git_environment(), "GIT_OPTIONAL_LOCKS": "0"},
     )
 
 

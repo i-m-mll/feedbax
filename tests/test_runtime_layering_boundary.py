@@ -81,7 +81,6 @@ def test_importing_runtime_does_not_load_studio_models_or_tasks() -> None:
         for module_name in [
             "feedbax.runtime",
             "feedbax.runtime.parameter_constraints",
-            "feedbax.runtime.retained_observables",
             "feedbax.runtime.task_bindings",
             "feedbax.runtime.task_data_roles",
         ]:
