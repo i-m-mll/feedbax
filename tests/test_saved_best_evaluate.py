@@ -22,10 +22,9 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, job_row, restart, run_job, token, wait_until
 from tests.test_saved_update_series import definition
 
-host = host_fixture
 
 
 def authored_best():
@@ -97,10 +96,10 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
         "gate", f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
         project=project,
     )
-    admit(host, "gate", gate)
+    admit(host, token("gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))
     keys = tuple(run.key for run in (*trains.values(), *rankings))
-    admitted = jobs.admit_plan(folders, saved, run_keys=keys, token="train-and-rank")
+    admitted = jobs.admit_plan(folders, saved, run_keys=keys, token=token("train-and-rank"))
     assert [item.disposition for item in admitted.items] == ["admitted"] * 5
     attempts = [item.job_id for item in admitted.items]
     for job_id in attempts[-2:]:
@@ -188,7 +187,7 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
                for fixed_run, measured in zip(fixed, rankings, strict=True))
     after_freeze = jobs.admit_plan(
         folders, folders.read_plan(project, revision=snapshot.revision),
-        run_keys=(fixed[0].key,), token="frozen",
+        run_keys=(fixed[0].key,), token=token("frozen"),
     ).items[0]
     assert after_freeze.disposition == "admitted" and after_freeze.job_id != attempts[-2]
     wait_until(lambda: job_row(host, after_freeze.job_id, "succeeded"))

@@ -21,10 +21,9 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, job_row, restart, run_job, token, wait_until
 from tests.support.finite_train import install_finite_gate
 
-host = host_fixture
 
 
 def definition(rule):
@@ -76,7 +75,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     first = folders.read_plan(project, revision=None)
     train = next(run for run in first.plan.runs if run.kind == "train")
     jobs = JobService(host, registry)
-    (producer,) = jobs.admit_plan(folders, first, run_keys=(train.key,), token="train").items
+    (producer,) = jobs.admit_plan(folders, first, run_keys=(train.key,), token=token("train")).items
     assert producer.disposition == "admitted"
     finished = wait_until(lambda: job_row(host, producer.job_id, "succeeded"))
     assert "checkpoint_catalog" not in host.jobs(job_id=producer.job_id, include_launch=True)[0]["launch"]["payload"]
@@ -92,7 +91,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     assert next(run for run in first.plan.runs if run.kind == "evaluate").request_id != rows["baseline"].request_id
 
     run_keys = (rows["baseline"].key, rows["empty"].key)
-    submission = jobs.admit_plan(folders, plan, run_keys=run_keys, token="evaluation")
+    submission = jobs.admit_plan(folders, plan, run_keys=run_keys, token=token("evaluation"))
     for item, expected, observed in zip(submission.items, ([4, 1, 2, 6], [1, 5]), ([4, 2], []), strict=True):
         assert item.disposition == "admitted"
         row = wait_until(lambda: (
@@ -134,7 +133,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
             if not observed:
                 assert dataset.descriptor.variables == {}
     restart(host)
-    assert jobs.admit_plan(folders, plan, run_keys=run_keys, token="evaluation") == submission
+    assert jobs.admit_plan(folders, plan, run_keys=run_keys, token=token("evaluation")) == submission
     for item in submission.items:
         jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=item.job_id)
     service = ProjectPlanService(folders, jobs)
@@ -185,7 +184,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     original = closure_manifest.read_bytes()
     try:
         closure_manifest.write_bytes(original + b" ")
-        (corrupt,) = jobs.admit_plan(folders, new_plan, run_keys=(empty.key,), token="corrupt-closure").items
+        (corrupt,) = jobs.admit_plan(folders, new_plan, run_keys=(empty.key,), token=token("corrupt-closure")).items
         assert corrupt.disposition == "admitted"
         rejected = wait_until(lambda: job_row(host, corrupt.job_id, "blocked"))
         assert rejected["outcome"]["error"]["code"] == "dependency_corrupt"
@@ -215,7 +214,7 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     wait_until(lambda: job_row(host, blocker.id, "running"))
     try:
         producer, evaluate = jobs.admit_plan(
-            folders, plan, run_keys=(rows["train"].key, rows["evaluate"].key), token="series",
+            folders, plan, run_keys=(rows["train"].key, rows["evaluate"].key), token=token("series"),
         ).items
         assert producer.disposition == evaluate.disposition == "admitted"
         queued = saved_evaluation().checkpoint_attempt
@@ -247,7 +246,7 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     }
     restart(host)
     assert saved_evaluation().checkpoint_attempt.model_dump(mode="json") == attempt
-    resumed = jobs.resume(producer.job_id, "resume")
+    resumed = jobs.resume(producer.job_id, token("resume"))
     try:
         wait_until(lambda: (tmp_path / "resumed-interior").exists())
         pending = saved_evaluation().checkpoint_attempt.pending
