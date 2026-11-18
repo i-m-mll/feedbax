@@ -20,7 +20,7 @@ function submitted(page: Page, path: string) {
     response.request().method() === 'POST' && new URL(response.url()).pathname === path);
 }
 
-test('standalone Activity opens an existing run and hydrates its retained history', async ({ page, request }) => {
+test('standalone Activity opens an existing run and hydrates its retained history', { tag: '@round' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const admission = await request.post(`${projectPath}/train-runs`, { data: {
     token: 'background-activity', revision: snapshot.revision,
@@ -38,6 +38,7 @@ test('standalone Activity opens an existing run and hydrates its retained histor
   await row.getByRole('button', { name: /^Train / }).click();
   const inspector = page.getByRole('region', { name: 'Run Inspector' });
   await expect(inspector.getByRole('region', { name: 'Log', exact: true })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Dismiss', exact: true })).toBeHidden();
   await expect(announcements).toHaveCount(1);
   expect((await request.get('/api/jobs').then((response) => response.json()) as StudioJobSnapshot)
     .jobs.some(({ job_id, seen }) => job_id === attempt.job_id && seen)).toBe(true);

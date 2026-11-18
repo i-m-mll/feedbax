@@ -1,4 +1,4 @@
-import { runPython } from './python';
+import { runPythonProcess } from './python';
 
 function processId(text: string, owner: string): number {
   const pid = Number(text.trim());
@@ -7,7 +7,9 @@ function processId(text: string, owner: string): number {
 }
 
 export async function hostPid(home: string): Promise<number> {
-  const stdout = await runPython({ code: `
+  // The ping starts a Host when none answers, which must not become a child of the worker's
+  // shared fixture runner.
+  const stdout = await runPythonProcess({ code: `
 from pathlib import Path
 import sys
 from feedbax.desktop.release import AppPaths

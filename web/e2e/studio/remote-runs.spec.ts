@@ -217,8 +217,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   await reopen();
   expect(await job(force.job_id)).toMatchObject({ status: expect.stringMatching(/^(stopped|interrupted)$/) });
 
-  await runProjectFixture({ module: 'web.e2e.studio.fixtures.remote_run_process', home: studio.home },
-    session, interrupt.job_id);
+  await runProjectFixture('web.e2e.studio.fixtures.remote_run_process', studio.home, session, interrupt.job_id);
   await expect(row(interrupt).getByText('Interrupted', { exact: true })).toBeVisible({ timeout: 9_000 });
   await reopen();
   await row(interrupt).getByRole('button').click();

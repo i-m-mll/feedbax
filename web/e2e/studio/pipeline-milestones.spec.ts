@@ -5,6 +5,7 @@ import type {
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { appendManagedFiles, authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { runPythonProcess } from './fixtures/python';
 import { pick } from './fixtures/controls';
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 
@@ -128,8 +129,9 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const entries = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
 
-  await runProjectFixture('web.e2e.studio.fixtures.canonical_train',
-    'run-saved-cli', studio.home, configuration.project, label);
+  // The fixture execs the CLI in place of its interpreter, so it cannot run in the shared fixture runner.
+  await runPythonProcess({ module: 'web.e2e.studio.fixtures.canonical_train' },
+    ['run-saved-cli', studio.home, configuration.project, label]);
   const cli = entries.filter({ has: page.getByText('CLI', { exact: true }) });
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
   await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });

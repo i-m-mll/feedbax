@@ -13,9 +13,8 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   const authored = await authorFirstTrain(page, request, totalUpdates, { targetY: 0.22, activation: 'softmax' });
   const { saved, projectPath, plan, savedProject, plantId } = authored;
   const project = saved.project_id;
-  const witness = { module: 'web.e2e.studio.fixtures.managed_lifecycle', home };
   const observe = async (action: string, ...args: string[]) =>
-    JSON.parse(await runProjectFixture(witness, action, home, project, ...args));
+    JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.managed_lifecycle', action, home, project, ...args));
   const declared = await observe('declare-variants', saved.revision);
   await page.reload();
   await expect(page.getByRole('combobox', { name: 'Variant', exact: true })).toHaveText('base');

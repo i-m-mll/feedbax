@@ -12,8 +12,8 @@ from uuid import UUID
 from feedbax.host.process import verify
 
 
-def interrupt(session_id: UUID, attempt: str) -> None:
-    home = Path(os.environ["FEEDBAX_STUDIO_TEST_HOME"]).resolve(strict=True)
+def interrupt(home: Path, session_id: UUID, attempt: str) -> None:
+    home = home.resolve(strict=True)
     venue = home / "state" / "studio-e2e-remote" / "venues" / session_id.hex
     assert venue.resolve(strict=True) == venue and (venue / "resource.json").is_file()
     database = venue / "host" / "host.sqlite"
@@ -34,4 +34,4 @@ def interrupt(session_id: UUID, attempt: str) -> None:
 
 
 if __name__ == "__main__":
-    interrupt(UUID(sys.argv[1]), sys.argv[2])
+    interrupt(Path(sys.argv[1]), UUID(sys.argv[2]), sys.argv[3])
