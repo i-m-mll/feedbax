@@ -16,6 +16,7 @@ from feedbax.persistence.array_container import (
     encode_array_container,
     open_array_container,
 )
+from tests.support.hang import HANG_SECONDS
 
 
 def test_equal_values_encode_identically_across_processes(tmp_path: Path) -> None:
@@ -48,7 +49,7 @@ Path(sys.argv[1]).write_bytes(value.data)
             str(output),
         ],
         check=True,
-        timeout=10,
+        timeout=HANG_SECONDS,
     )
     assert output.read_bytes() == first.data
 

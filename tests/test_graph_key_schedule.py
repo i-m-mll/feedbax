@@ -36,6 +36,7 @@ from feedbax.runtime._graph_key_schedule import (
 from feedbax.builtins.runtime.components import Noise
 from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.runtime.iteration import iterate_component
+from tests.support.hang import HANG_SECONDS
 
 
 @pytest.mark.parametrize("impl", ["threefry2x32", "rbg", "unsafe_rbg"])
@@ -336,7 +337,7 @@ def test_branching_seeded_execution_and_cycle_diagnostics_ignore_hash_seed():
             capture_output=True,
             text=True,
             check=True,
-            timeout=20,
+            timeout=HANG_SECONDS,
         ).stdout
         for seed in ("1", "37")
     ]

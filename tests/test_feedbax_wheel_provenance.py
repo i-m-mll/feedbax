@@ -30,6 +30,7 @@ from feedbax.orchestration.revision import (
 )
 
 from tests.support.git_fixtures import fixture_git_environment
+from tests.support.hang import HANG_SECONDS
 
 pytestmark = pytest.mark.xdist_group(name="wheel_provenance")
 
@@ -47,7 +48,7 @@ def _run(
         check=check,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=HANG_SECONDS,
         env={
             **fixture_git_environment(),
             "GIT_OPTIONAL_LOCKS": "0",

@@ -41,16 +41,16 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue, StudioVenueQuote
-from tests import test_local_job_host
 from tests.support.runpod_native import ACCOUNT_KEY, NativeLoopbackRunPod
 from tests.support.runpod_session import runpod_resources
 from tests.support.session_venue import verify_authorization
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_session_rehearsal import EVALUATE, ISSUER_KEY, PROJECT, TRAIN, _authorization, _jobs, _terminal_without_rpc
+from tests.support.host import private_host, wait_until
+from tests.support.hang import HANG_SECONDS
 
 
-host_fixture = test_local_job_host.host
-wait_until = test_local_job_host.wait_until
+host_fixture = private_host
 
 
 def _loopback_ssh(path, *, gate, lost_reply, trace, resources, login):
@@ -99,7 +99,7 @@ def _terminate_local_venue(venue):
     if not venue.exists():
         return
     (venue / "ready").unlink(missing_ok=True)
-    rows = subprocess.check_output(["ps", "-axo", "pid=,command="], timeout=4, text=True)
+    rows = subprocess.check_output(["ps", "-axo", "pid=,command="], timeout=HANG_SECONDS, text=True)
     for line in rows.splitlines():
         pid, _, command = line.strip().partition(" ")
         watchdog = f"watchdog.py --config {venue / 'watchdog.json'}"
@@ -129,7 +129,7 @@ def native_execution(tmp_path):
     _loopback_ssh(ssh, gate=gate, lost_reply=lost_reply, trace=trace, resources=resources, login=login)
     uv = shutil.which("uv")
     assert uv is not None
-    uv_version = subprocess.check_output([uv, "--version"], text=True, timeout=4).split()[1]
+    uv_version = subprocess.check_output([uv, "--version"], text=True, timeout=HANG_SECONDS).split()[1]
     src = Path(__file__).resolve().parents[1]
     snapshot = seal_repo_snapshot(
         "feedbax", src, snapshot_parent=tmp_path / "snapshots", exclude_gitlinks=("vendor/window-shell",),
@@ -225,11 +225,11 @@ def test_approved_runpod_offer_opens_in_another_region_and_projects_its_stages(
         try:
             accepted = client.post(f"{path}/approve", json={"quote": session_id})
             assert accepted.status_code == 202
-            wait_until(lambda: projected_stage("acquiring"), timeout=8)
+            wait_until(lambda: projected_stage("acquiring"))
             release_create.set()
-            wait_until(lambda: projected_stage("connecting"), timeout=8)
+            wait_until(lambda: projected_stage("connecting"))
             release_ssh.set()
-            machine = wait_until(activity_with_region, timeout=20)
+            machine = wait_until(activity_with_region)
             assert machine["region"] == "EU-TEST-2"
             assert [item["step"] for item in machine["opening_observations"]] == [
                 "acquiring", "connecting", "copying", "installing", "starting_host",
@@ -307,7 +307,7 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     (project_root / changed_file).write_bytes(approved_files[changed_file] + b"\n")
     assert local_folders.read_plan(project_id, revision=None).revision != approved.revision
     gate.touch()
-    rows = wait_until(lambda: _terminal_without_rpc(venue / "host" / "host.sqlite"), timeout=33)
+    rows = wait_until(lambda: _terminal_without_rpc(venue / "host" / "host.sqlite"))
     assert [row[1] for row in rows] == ["succeeded", "succeeded"], rows
     gate.unlink()
 
@@ -405,8 +405,7 @@ def test_runpod_native_cutoff_removes_only_its_pod_after_host_and_controller_det
     (run.venue / "ready").unlink()
     os.kill(pid, signal.SIGKILL)
     fake.controller_attached = False
-    wait_until(lambda: any(method == "GET" and status == 404 for method, _, status, _ in fake.scoped_requests),
-               timeout=22)
+    wait_until(lambda: any(method == "GET" and status == 404 for method, _, status, _ in fake.scoped_requests))
     assert fake.pods == {foreign["id"]: foreign}
     requests = [(status, when) for method, path, status, when in fake.scoped_requests
                 if method == "DELETE" and path == f"/v2/pods/{fake.pod_id}"]

@@ -21,6 +21,7 @@ from feedbax.contracts.artifact_custody import (
     ContentRootRecord,
 )
 from feedbax.persistence import ContentRetentionError, ImmutableArtifactBlobProvider
+from tests.support.hang import HANG_SECONDS
 
 
 pytestmark = pytest.mark.feedbax_contract
@@ -192,7 +193,7 @@ def test_object_publication_serializes_against_destructive_gc_mark(
 
     def blocked_inventory(current_provider):
         inventory_entered.set()
-        assert release_inventory.wait(timeout=5)
+        assert release_inventory.wait(timeout=HANG_SECONDS)
         return original_inventory(current_provider)
 
     monkeypatch.setattr(retention_module, "_inventory", blocked_inventory)
@@ -201,7 +202,7 @@ def test_object_publication_serializes_against_destructive_gc_mark(
             provider.collect_garbage,
             ContentGcRequest(destructive=True, expected_generation=report.generation),
         )
-        assert inventory_entered.wait(timeout=5)
+        assert inventory_entered.wait(timeout=HANG_SECONDS)
         publication = executor.submit(provider.store_object, b"published after mark")
         assert not publication.done()
         release_inventory.set()

@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath
 import sys
 
 from feedbax.persistence.store_sync import RemoteStore, SSHStoreConnection
+from tests.support.hang import HANG_SECONDS
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,7 @@ def loopback_store(root: Path | str, directory: Path, *, download_gate: Path | N
     trace = directory / "trace"
     disconnect = directory / "disconnect"
     ssh = directory / "ssh.py"
-    ssh.write_text("""import os
+    ssh.write_text(f"HANG_SECONDS = {HANG_SECONDS}\n" + """import os
 from pathlib import Path
 import select
 import shlex
@@ -35,7 +36,7 @@ with open(trace, "a") as log:
     log.write(shlex.join(shlex.split(" ".join(args))) + "\\n")
 argv = shlex.split(" ".join(args))
 if download_gate != "-" and "--server" in argv and "--sender" in argv:
-    deadline = time.monotonic() + 14
+    deadline = time.monotonic() + HANG_SECONDS
     while Path(download_gate).exists():
         if time.monotonic() >= deadline:
             raise TimeoutError("The fixture did not release the download gate")
@@ -46,7 +47,7 @@ if "--server" in argv and "--sender" not in argv and fault.exists():
     fault.unlink()
     with subprocess.Popen(argv, stdin=subprocess.PIPE) as receiver:
         while limit:
-            if not select.select([sys.stdin], [], [], 5)[0]:
+            if not select.select([sys.stdin], [], [], HANG_SECONDS)[0]:
                 raise TimeoutError("rsync did not send the expected fixture bytes")
             data = os.read(sys.stdin.fileno(), min(limit, 65536))
             if not data:

@@ -27,11 +27,12 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
+from tests.support.hang import HANG_SECONDS
 from tests.support.managed_train_fixture import managed_train_payload, managed_train_project
 
 
-def _until(read, ready=bool, *, timeout=34):
-    deadline = monotonic() + timeout
+def _until(read, ready=bool):
+    deadline = monotonic() + HANG_SECONDS
     result = None
     while monotonic() < deadline:
         result = read()
@@ -391,6 +392,6 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
         live = [job["id"] for job in host.jobs() if job["outcome"] is None]
         if live:
             host.stop(live, "force")
-            _until(lambda: all(job["outcome"] is not None for job in host.jobs()), timeout=8)
+            _until(lambda: all(job["outcome"] is not None for job in host.jobs()))
         os.kill(pid, signal.SIGTERM)
-        _until(lambda: not host.address.exists(), timeout=8)
+        _until(lambda: not host.address.exists())

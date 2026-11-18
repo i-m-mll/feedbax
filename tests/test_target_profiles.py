@@ -21,7 +21,7 @@ from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
-from tests.test_local_job_host import host as host_fixture, wait_until
+from tests.support.host import private_host as host_fixture, wait_until
 
 host = host_fixture
 
@@ -101,7 +101,7 @@ def test_target_catalog_and_default_saved_submission_share_one_contract(tmp_path
             (job,) = host.jobs(project=before.project_id, job_id=job_id)
             return job if job["outcome"] is not None else None
 
-        job = wait_until(finished, timeout=25)
+        job = wait_until(finished)
         assert job["state"] == "succeeded", job["outcome"]
         assert job["request"] == original and job["data"]["target"] == submission["target"]
         activity = client.get("/api/jobs", params={"project": before.project_id}).json()["jobs"]

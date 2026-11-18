@@ -25,7 +25,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_local_job_host import host, job_row, wait_until  # noqa: F401
+from tests.support.host import private_host as host, job_row, wait_until  # noqa: F401
 
 
 def _python_project():
@@ -214,7 +214,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, mon
         trained, control, evaluated = submit(run, "train"), submit(control_run, "control"), submit(test_run, "probe")
         finished = {}
         for job in (trained, control, evaluated):
-            row = wait_until(lambda: job_row(host, job, "succeeded") or job_row(host, job, "failed"), timeout=24)
+            row = wait_until(lambda: job_row(host, job, "succeeded") or job_row(host, job, "failed"))
             assert row["state"] == "succeeded", row.get("outcome")
             finished[job] = row
         train_receipt = finished[trained]["outcome"]["store_success"]

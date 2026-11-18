@@ -25,7 +25,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
 from tests.test_saved_best_evaluate import authored_best
 
 host = host_fixture
@@ -220,7 +220,7 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
     for run in runs:
         row = wait_until(lambda: (
             current if (current := job_row(host, ids[run.key]))["outcome"] is not None else None
-        ), timeout=28)
+        ))
         assert row["state"] == "succeeded", row["outcome"]
     scores = {}
     for run in trains:
@@ -314,6 +314,6 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
     key = groups[-1].ranks[0]
     evaluated, = jobs.admit_plan(folders, frozen, run_keys=(fixed[key].key,), token="frozen").items
     assert evaluated.disposition == "admitted"
-    wait_until(lambda: job_row(host, evaluated.job_id, "succeeded"), timeout=22)
+    wait_until(lambda: job_row(host, evaluated.job_id, "succeeded"))
     fresh = SuccessView(view.store).read_attempt(evaluated.job_id)
     assert fresh.receipt.effective == view.read_attempt(ids[ranks[key].key]).receipt.effective

@@ -38,11 +38,11 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, evidence, verify_authorization
 from tests.test_canonical_evaluate_admission import managed_evaluation_definition
-from tests import test_local_job_host
+from tests.support.host import private_host, wait_until
+from tests.support.hang import HANG_SECONDS
 
 
-host_fixture = test_local_job_host.host
-wait_until = test_local_job_host.wait_until
+host_fixture = private_host
 
 PROJECT = "reaching"
 TRAIN = RunKey("default", "train", "default")
@@ -201,11 +201,11 @@ TrainingLoop.run_block = execute
         process = subprocess.run(
             [sys.executable, "-m", __name__, str(controller_root), str(provider_root),
              str(folders.root), str(gate), str(request.id)],
-            capture_output=True, text=True, timeout=22,
+            capture_output=True, text=True, timeout=HANG_SECONDS,
         )
         assert process.returncode == 0, process.stdout + process.stderr
         (gate / "release").touch()
-        rows = wait_until(lambda: _terminal_without_rpc(venue / "host" / "host.sqlite"), timeout=31)
+        rows = wait_until(lambda: _terminal_without_rpc(venue / "host" / "host.sqlite"))
         assert [row[1] for row in rows] == ["succeeded", "succeeded"], rows
         train_id, evaluation_id = (row[0] for row in rows)
 
@@ -353,7 +353,7 @@ def test_watchdog_closes_venue_at_cost_ceiling_after_host_dies(tmp_path):
     assert state.launch.ends_at_ms == state.launch.acquired_at_ms + 2_000
     venue = driver.attach(request.id)
     os.kill(venue.ping()["pid"], signal.SIGKILL)
-    wait_until(lambda: not driver.inventory(), timeout=6)
+    wait_until(lambda: not driver.inventory())
     assert driver.close(request.id).remaining == ()
 
 

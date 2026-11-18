@@ -6,6 +6,7 @@ from time import monotonic, perf_counter_ns, sleep
 
 from feedbax.training import live_evaluate
 from feedbax.training_host_worker import _Events
+from tests.support.hang import HANG_SECONDS
 
 
 def install():
@@ -21,7 +22,7 @@ def install():
         reached = gate / f"{name}.reached"
         release = gate / f"{name}.release"
         reached.touch()
-        deadline = monotonic() + 15
+        deadline = monotonic() + HANG_SECONDS
         while not release.exists():
             if monotonic() >= deadline:
                 raise TimeoutError(f"Test did not release {name} gate.")

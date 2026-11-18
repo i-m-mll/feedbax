@@ -27,7 +27,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.support import derivative_witness as witness
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import host as host_fixture, restart, wait_until
+from tests.support.host import private_host as host_fixture, restart, wait_until
 
 host = host_fixture
 _CAPTURE = Path(__file__).parent / "fixtures" / "derivative_fixed_points.json"
@@ -274,7 +274,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
         if any(row["state"] != "succeeded" for row in terminal) or len(terminal) == len(job_ids):
             return terminal
 
-    rows = wait_until(finished, timeout=45)
+    rows = wait_until(finished)
     assert all(row["state"] == "succeeded" for row in rows), {
         row["request"]: row["outcome"] for row in rows if row["state"] != "succeeded"
     }
@@ -377,7 +377,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
             row["request"].startswith("validity-check:") and row["outcome"] is not None
         )), None)
 
-    check = wait_until(completed_check, timeout=15)
+    check = wait_until(completed_check)
     assert "store_success" not in check["outcome"]
     decided = jobs.result_validity_action(review, gain, observed.receipt)
     assert decided.state == "current" and decided.environment.check == "not_checked"
@@ -434,7 +434,7 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
             if all(row["state"] not in {"queued", "assigned", "running", "stopping"} for row in rows):
                 return rows
 
-        rows = wait_until(settled_jobs, timeout=20)
+        rows = wait_until(settled_jobs)
         rebuilt = next(row for row in rows if row["id"] == producer.job_id)
         assert rebuilt["state"] == "succeeded", rebuilt["outcome"]
         return producer.job_id, [row for row in rows if row["request"] == gain]

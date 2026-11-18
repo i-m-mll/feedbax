@@ -16,6 +16,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.models.cde import cde_controller
 from feedbax.runtime.iteration import iterate_component
 from tests.test_solver_checkpoint_continuation import _assert_same_arrays
+from tests.support.hang import HANG_SECONDS
 
 
 def _nonlinear_graph():
@@ -189,6 +190,6 @@ _resume(Path(sys.argv[1]), sys.argv[2])
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
         text=True,
-        timeout=25,
+        timeout=HANG_SECONDS,
     )
     assert process.returncode == 0, process.stdout + process.stderr

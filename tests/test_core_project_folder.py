@@ -24,6 +24,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.project_folder import AppliedModelEdit, ProjectFolder, write_new_project_folder
 from feedbax.studio import model_edit
 from tests.test_document_train_pair import authored_documents, document_project
+from tests.support.hang import HANG_SECONDS
 
 
 def _address(kind="graph", *, scope=(), **fields):
@@ -155,7 +156,7 @@ for module in (project_folder, project_model_selection):
             names.extend(f'{node.module}.{item.name}' for item in node.names)
     assert not any(name == 'feedbax.web' or name.startswith('feedbax.web.') for name in names)
 assert not any(name == 'feedbax.web' or name.startswith('feedbax.web.') for name in sys.modules)
-"""], check=True, timeout=10, env=os.environ | {"PYTHONDONTWRITEBYTECODE": "1"})
+"""], check=True, timeout=HANG_SECONDS, env=os.environ | {"PYTHONDONTWRITEBYTECODE": "1"})
 
 
 def test_cases_cover_the_model_command_contract():

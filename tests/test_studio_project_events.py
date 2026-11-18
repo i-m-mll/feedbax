@@ -14,6 +14,7 @@ from feedbax.contracts.studio_project import StudioProjectRevision
 from feedbax.host import HostError
 from feedbax.web.api import jobs
 from feedbax.web.services.project_folder import ProjectFolderNotFound
+from tests.support.hang import HANG_SECONDS
 
 
 def _job_page(head: int, cursor: int, *event_ids: int) -> tuple[int, StudioJobEventHistory]:
@@ -189,7 +190,7 @@ def test_disconnecting_during_a_folder_notice_stops_the_observation():
             "scheme": "http",
             "server": ("testserver", 80),
         }
-        await asyncio.wait_for(app(scope, receive, send), timeout=2)
+        await asyncio.wait_for(app(scope, receive, send), timeout=HANG_SECONDS)
         assert received_notice.is_set()
 
     asyncio.run(run())

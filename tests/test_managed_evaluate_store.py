@@ -26,7 +26,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import states_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
 from tests.test_saved_update_series import definition
 from tests.support.store_damage import writable_store_object
 
@@ -44,7 +44,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     plan = folders.read_plan(project, revision=None)
     runs = {run.kind: run for run in plan.plan.runs}
     (train,) = jobs.admit_plan(folders, plan, run_keys=(runs["train"].key,), token="train").items
-    wait_until(lambda: job_row(host, train.job_id, "succeeded"), timeout=22)
+    wait_until(lambda: job_row(host, train.job_id, "succeeded"))
     host.policy(compute=1)
     release = tmp_path / "release"
     gate = run_job(
@@ -60,7 +60,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
 
     first = submit("prior")
     release.touch()
-    prior = wait_until(lambda: job_row(host, first.items[0].job_id, "succeeded"), timeout=22)
+    prior = wait_until(lambda: job_row(host, first.items[0].job_id, "succeeded"))
     release.unlink()
     gate = run_job("retry-gate", gate.launch.argv[2], project=project)
     admit(host, "retry-gate", gate)
@@ -111,7 +111,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
         env.setenv("PYTHONPATH", os.pathsep.join((str(probe), str(Path.cwd()), os.environ.get("PYTHONPATH", ""))))
         restart(host)
         release.touch()
-        wait_until(marker.exists, timeout=26)
+        wait_until(marker.exists)
         view = SuccessView(store)
         committed = view.read_attempt(attempt)
         assert committed.ref.sha256 == marker.read_text()
@@ -129,7 +129,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
                     raise
                 return None
 
-        result = wait_until(recovered, timeout=22)
+        result = wait_until(recovered)
     assert result["delivery"] == 1
     assert submit("evaluate") == submission
     assert marker.with_suffix(".pending").exists()
@@ -316,7 +316,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
             pytest.fail("known damaged result was opened")
     (recomputed,) = submit("recompute-damaged").items
     assert recomputed.disposition == "admitted" and recomputed.job_id != attempt
-    verified = wait_until(lambda: job_row(host, recomputed.job_id, "succeeded"), timeout=22)
+    verified = wait_until(lambda: job_row(host, recomputed.job_id, "succeeded"))
     latest = SuccessView(store).read_receipt(ContentObjectRef.model_validate(verified["outcome"]["store_success"]))
     assert latest.supersedes == committed.ref and latest.products == committed.receipt.products
     assert read_damage(store, states.content.sha256) is None

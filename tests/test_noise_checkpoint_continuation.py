@@ -13,6 +13,7 @@ from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.runtime.iteration import iterate_component
+from tests.support.hang import HANG_SECONDS
 
 _NOISE_MODELS = (
     "signal_dependent_gaussian",
@@ -125,6 +126,6 @@ _resume(Path(sys.argv[1]))
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
         text=True,
-        timeout=25,
+        timeout=HANG_SECONDS,
     )
     assert process.returncode == 0, process.stdout + process.stderr

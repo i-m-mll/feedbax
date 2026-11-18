@@ -25,7 +25,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
 from tests.support.finite_train import damaged_checkpoint_model, install_finite_gate
 
 host = host_fixture
@@ -105,7 +105,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     def terminal(job_id, state):
         row = wait_until(lambda: (
             row if (row := job_row(host, job_id)) and row["outcome"] is not None else None
-        ), timeout=22)
+        ))
         assert row["state"] == state, row.get("outcome")
         return row
 
@@ -114,7 +114,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     assert source["launch"]["payload"]["checkpoint_catalog"] == [2, 4]
     admitted = launch("consumers", "ordered", "cadence")
     assert all(item.disposition == "admitted" for item in admitted.items)
-    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    wait_until(lambda: (tmp_path / "before-stop").exists())
     jobs.stop([producer.job_id], "checkpoint")
     stopped = terminal(producer.job_id, "stopped")
     assert stopped["outcome"]["checkpoint"]["completed_updates"] == 3
@@ -125,7 +125,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
         assert row["delivery"] == 0 and not row["edges"][0]["satisfied"]
 
     resumed = jobs.resume(producer.job_id, token="resume")
-    wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+    wait_until(lambda: (tmp_path / "resumed-interior").exists())
     host.policy(compute=2)
     try:
         rows = [terminal(item.job_id, "succeeded") for item in admitted.items]
@@ -311,7 +311,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     def terminal(job_id, state):
         row = wait_until(lambda: (
             row if (row := job_row(host, job_id)) and row["outcome"] is not None else None
-        ), timeout=22)
+        ))
         assert row["state"] == state, row.get("outcome")
         return row
 
@@ -332,7 +332,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     (producer,) = launch("producer", "train")
     last, exact = launch("consumers", "last", "exact")
     assert {last.disposition, exact.disposition} == {"admitted"}
-    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    wait_until(lambda: (tmp_path / "before-stop").exists())
     pending(last)
     pending(exact)
     jobs.stop([producer.job_id], "checkpoint")
@@ -365,7 +365,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     service = ProjectPlanService(folders, jobs)
     assert service.read(project, revision=plan.revision).evaluations[by_step["late"].key].can_run
     resumed = jobs.resume(producer.job_id, token="resume")
-    wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+    wait_until(lambda: (tmp_path / "resumed-interior").exists())
     pending(last)
     try:
         host.policy(compute=2)
@@ -501,7 +501,7 @@ def test_saved_fixed_evaluate_reuses_only_equal_current_train_model(host, tmp_pa
         assert item.disposition == "admitted", item
         row = wait_until(lambda: (
             row if (row := job_row(host, item.job_id)) and row["outcome"] is not None else None
-        ), timeout=22)
+        ))
         assert row["state"] == "succeeded", row.get("outcome")
         return row
 

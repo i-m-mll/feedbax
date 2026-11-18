@@ -41,7 +41,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored, document_project  # noqa: F401
-from tests.test_local_job_host import host, job_row, wait_until  # noqa: F401
+from tests.support.host import private_host as host, job_row, wait_until  # noqa: F401
 from tests.test_model_document_plan import (
     _add_attachment,
     _attachment_address,
@@ -138,7 +138,6 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     for run, job_id in jobs_by_run.items():
         terminal = wait_until(
             lambda: (job_row(host, job_id, "succeeded") or job_row(host, job_id, "failed")),
-            timeout=26,
         )
         assert terminal["state"] == "succeeded", terminal.get("outcome")
         completions[run] = terminal
@@ -293,7 +292,6 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
         assert admission.disposition == "admitted", admission
         done = wait_until(
             lambda: job_row(host, admission.job_id, "succeeded") or job_row(host, admission.job_id, "failed"),
-            timeout=25,
         )
         assert done["state"] == "succeeded", done["outcome"]
         completions[step] = done
@@ -485,7 +483,7 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     assert all(item.disposition == "admitted" for item in evaluations)
 
     def settled(job_id):
-        row = wait_until(lambda: job_row(host, job_id, "succeeded") or job_row(host, job_id, "failed"), timeout=30)
+        row = wait_until(lambda: job_row(host, job_id, "succeeded") or job_row(host, job_id, "failed"))
         assert row["state"] == "succeeded", row["outcome"]
         return row
 

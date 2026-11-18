@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from textwrap import dedent
+from tests.support.hang import HANG_SECONDS
 
 
 _PROBE = dedent(
@@ -91,7 +92,7 @@ def test_solver_response_survives_warm_persistent_cache(tmp_path):
             [sys.executable, "-c", _PROBE, str(tmp_path / "cache")],
             capture_output=True,
             text=True,
-            timeout=25,
+            timeout=HANG_SECONDS,
         )
         assert process.returncode == 0, process.stdout + process.stderr
         results.append(json.loads(process.stdout))

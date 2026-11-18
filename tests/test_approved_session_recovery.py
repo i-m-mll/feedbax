@@ -43,16 +43,16 @@ from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider
 from tests.support.store_transport import loopback_store
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests import test_local_job_host
-from tests.test_local_job_host import wait_until
+from tests.support.host import private_host, wait_until
 from tests.test_session_rehearsal import EVALUATE, PROJECT, TRAIN
+from tests.support.hang import HANG_SECONDS
 
 
 PROFILE = "recovery"
 RUNS = (TRAIN, EVALUATE)
 API = f"/api/projects/{PROJECT}/train-runs"
 REFUSED = "The original machine refused initialization."
-host_fixture = test_local_job_host.host
+host_fixture = private_host
 
 
 def _park(root: Path) -> None:
@@ -140,11 +140,11 @@ def _kill_controller(root: Path, action: str) -> UUID:
             return (root / "boundary").is_file() and (root / "acknowledged").is_file()
 
         try:
-            wait_until(reached_boundary, timeout=15)
+            wait_until(reached_boundary)
         finally:
             if child.poll() is None:
                 child.kill()
-                child.wait(timeout=5)
+                child.wait(timeout=HANG_SECONDS)
         assert child.returncode == -signal.SIGKILL, output.read_text()
     return UUID((root / "quote-id").read_text())
 
@@ -403,7 +403,7 @@ def test_plain_text_runpod_rejection_becomes_a_failed_saved_run(installed_runpod
             row = next(row for row in plan.json()["window_map"]["rows"] if row["key"] == asdict(TRAIN))
             return row if row["status"] == "failed" else None
 
-        row = wait_until(failed_row, timeout=8)
+        row = wait_until(failed_row)
         assert row["reason"] == expected
         assert row["opening_step"] == "acquiring"
         sessions = client.get("/api/sessions")
@@ -444,7 +444,7 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
         assert str(next(run.request_id for run in edited.plan.runs if run.key == TRAIN)) != requests[TRAIN]
 
         with TestClient(app) as client:
-            accepted = wait_until(lambda: _approval_row(restarted, quote_id)[0], timeout=16)
+            accepted = wait_until(lambda: _approval_row(restarted, quote_id)[0])
             submission = StudioJobSubmission.model_validate_json(accepted)
             reply = client.post(f"{API}/approve", json={"quote": str(quote_id)})
             assert reply.status_code == 202 and reply.json() == {"session_id": str(quote_id)}
@@ -462,7 +462,6 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
 
             acknowledged = wait_until(
                 lambda: host.session_status()["collections"] if len(host.session_status()["collections"]) == 2 else None,
-                timeout=28,
             )
             local = SuccessView(ImmutableArtifactBlobProvider(reviewed.store_path))
             for item in submission.items:

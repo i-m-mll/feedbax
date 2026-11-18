@@ -39,7 +39,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload, _pair_model, example, expression
-from tests.test_local_job_host import host as host_fixture  # noqa: F401
+from tests.support.host import private_host as host_fixture  # noqa: F401
 
 
 def authored_documents():
@@ -527,7 +527,7 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     from feedbax.plugins.composition import load_application
     from feedbax.web.services.project_folder import ProjectFolderService
     from tests.test_canonical_evaluate_admission import _save_project
-    from tests.test_local_job_host import job_row, wait_until
+    from tests.support.host import job_row, wait_until
 
     registry = load_application().bundle
     jobs = JobService(host, registry)
@@ -562,7 +562,6 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host_fixture, tm
     def finished(job):
         return wait_until(
             lambda: (job_row(host, job.job_id, "succeeded") or job_row(host, job.job_id, "failed")),
-            timeout=26,
         )
 
     trained = finished(train_job)

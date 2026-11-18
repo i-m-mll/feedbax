@@ -46,7 +46,7 @@ def _wait_for_host_stop(armed: str, step):
         return
     gate.with_suffix(".ready").touch()
     stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + float(os.environ["FEEDBAX_TEST_HANG_SECONDS"])
     while not stop.exists():
         if time.monotonic() > deadline:
             raise TimeoutError("Host did not deliver the checkpoint stop")

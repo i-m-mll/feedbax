@@ -52,7 +52,7 @@ from feedbax.contracts.model_edit import EvaluateAttachmentRequest
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import host as host_fixture, job_row, wait_until
+from tests.support.host import private_host as host_fixture, job_row, wait_until
 
 host = host_fixture
 
@@ -1297,7 +1297,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     def finished(job):
         return wait_until(lambda: (
             job_row(host, job.job_id, "succeeded") or job_row(host, job.job_id, "failed")
-        ), timeout=25)
+        ))
 
     trained = finished(train_job)
     assert trained["state"] == "succeeded", trained.get("outcome")

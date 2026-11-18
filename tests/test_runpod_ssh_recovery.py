@@ -20,8 +20,9 @@ from feedbax.orchestration.runpod import SubprocessRunPodTransport
 from feedbax.orchestration.session_jobs import SessionJobs
 from feedbax.persistence.ssh_store import SSHStoreConnection
 from tests.support.session_venue import LocalVenueProvider
-from tests.test_local_job_host import admit, job_row, run_job, wait_until
+from tests.support.host import admit, job_row, run_job, wait_until
 from tests.test_session_rehearsal import _authorization, _driver, _jobs, _request
+from tests.support.hang import HANG_SECONDS
 
 
 @contextmanager
@@ -32,7 +33,7 @@ def _loopback_sshd(root):
     for key in ("host", "client"):
         subprocess.run(
             ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(root / key)],
-            check=True, timeout=5,
+            check=True, timeout=HANG_SECONDS,
         )
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -59,17 +60,17 @@ AllowTcpForwarding no
                 assert server.poll() is None, contents
                 return f"Server listening on 127.0.0.1 port {port}" in contents
 
-            wait_until(listening, timeout=4)
+            wait_until(listening)
             yield port
         finally:
             server.terminate()
-            server.wait(timeout=5)
+            server.wait(timeout=HANG_SECONDS)
 
 
 def _relay(listener, server_port, stalled, finished) -> bool:
     """Discard traffic after the freeze, leaving both TCP connections open."""
     client, _ = listener.accept()
-    with client, socket.create_connection(("127.0.0.1", server_port), timeout=5) as server:
+    with client, socket.create_connection(("127.0.0.1", server_port), timeout=HANG_SECONDS) as server:
         sockets = {client: server, server: client}
         while not finished.is_set():
             readable, _, _ = select.select(sockets, (), (), 0.2)
@@ -135,13 +136,13 @@ print("finished", flush=True)
             frozen = ssh_client(listener.getsockname()[1], mark_ready=True)
             call = workers.submit(frozen.events, before[1], wait=25)
             try:
-                wait_until(ready.is_file, timeout=4)
+                wait_until(ready.is_file)
                 assert not call.done()
                 started = monotonic()
                 stalled.set()
                 # OpenSSH sends two 5-second probes, then exits on the next timer tick.
                 with pytest.raises(HostError, match="exited with status 255") as error:
-                    call.result(timeout=18)
+                    call.result(timeout=HANG_SECONDS)
                 elapsed = monotonic() - started
                 record_property("ssh_stall_seconds", round(elapsed, 3))
                 assert error.value.code == "disconnected" and 8 < elapsed <= 18

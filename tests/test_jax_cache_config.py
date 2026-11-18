@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.support.hang import HANG_SECONDS
 
 
 _PYTEST_IN_CALLER = r"""
@@ -174,7 +175,7 @@ def test_cache():
     for invocation_index in range(repeats):
         env["CACHE_CALLER_DIR"] = str(tmp_path / f"caller-cache-{invocation_index}")
         result = subprocess.run(
-            command, cwd=corpus, env=env, capture_output=True, text=True, timeout=25, check=False
+            command, cwd=corpus, env=env, capture_output=True, text=True, timeout=HANG_SECONDS, check=False
         )
         assert result.returncode == 0, result.stdout + result.stderr
         observed = {path.stem: json.loads(path.read_text()) for path in records.glob("*.json")}

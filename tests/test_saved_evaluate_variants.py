@@ -24,7 +24,7 @@ from feedbax.builtins.reaching import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
-from tests.test_local_job_host import host as host_fixture, job_row, wait_until
+from tests.support.host import private_host as host_fixture, job_row, wait_until
 from tests.test_model_document_plan import _add_attachment, _attachment_owner
 
 host = host_fixture
@@ -241,7 +241,7 @@ def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, mon
         settled = wait_until(lambda: (
             job_row(host, item.job_id, "succeeded") or job_row(host, item.job_id, "failed")
             or job_row(host, item.job_id, "blocked")
-        ), timeout=30)
+        ))
         assert settled["state"] == "succeeded", settled["outcome"]
         producer = producers[run.inputs["subject"].producer]
         inherited = decode_request(
@@ -317,7 +317,7 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     def settled(job_id):
         return wait_until(lambda: (
             job_row(host, job_id, "succeeded") or job_row(host, job_id, "failed")
-        ), timeout=25)
+        ))
 
     trained = settled(train.job_id)
     assert trained["state"] == "succeeded", trained["outcome"]

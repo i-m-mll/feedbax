@@ -21,7 +21,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.installed_package import install_discovery_fixture
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
+from tests.support.host import private_host as host_fixture, job_row, restart, wait_until
 
 host = host_fixture
 
@@ -87,7 +87,6 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
         assert admission.disposition == "admitted", admission
         row = wait_until(
             lambda: job_row(host, admission.job_id, "succeeded") or job_row(host, admission.job_id, "failed"),
-            timeout=24,
         )
         assert row["state"] == "succeeded", row["outcome"]
         return row

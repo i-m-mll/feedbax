@@ -13,6 +13,7 @@ import sys
 from tempfile import TemporaryDirectory
 
 import pytest
+from tests.support.hang import HANG_SECONDS
 
 
 @pytest.fixture
@@ -86,15 +87,15 @@ def test_bundle_clears_readonly_payload_attributes_without_following_links(
     (app / "outside-link").symlink_to(outside)
     attribute = "com.feedbax.packaging-test"
     for file in (payload, outside):
-        subprocess.run(["/usr/bin/xattr", "-w", attribute, "fixture", file], check=True, timeout=5)
+        subprocess.run(["/usr/bin/xattr", "-w", attribute, "fixture", file], check=True, timeout=HANG_SECONDS)
     payload.chmod(0o444)
     source.chmod(0o555)
     try:
         seal.clear_bundle_attributes(app)
-        attributes = subprocess.check_output(["/usr/bin/xattr", payload], text=True, timeout=5)
+        attributes = subprocess.check_output(["/usr/bin/xattr", payload], text=True, timeout=HANG_SECONDS)
         assert attribute not in attributes.splitlines()
         assert subprocess.check_output(
-            ["/usr/bin/xattr", "-p", attribute, outside], text=True, timeout=5,
+            ["/usr/bin/xattr", "-p", attribute, outside], text=True, timeout=HANG_SECONDS,
         ).strip() == "fixture"
         assert stat.S_IMODE(payload.stat().st_mode) == 0o444
         assert stat.S_IMODE(source.stat().st_mode) == 0o555
@@ -110,13 +111,13 @@ def test_bundled_cold_cli_preserves_bundle_contents(desktop_package, tmp_path):
     from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
     from feedbax.host import HostClient
     from tests.support.managed_train_fixture import managed_train_project
-    from tests.test_local_job_host import wait_until
+    from tests.support.host import wait_until
 
     seal = importlib.import_module("seal")
     with TemporaryDirectory(dir=tmp_path) as scratch:
         root = Path(scratch).resolve()
         app = root / desktop_package.APP_NAME
-        subprocess.run(["/bin/cp", "-cR", Path(bundle).resolve(strict=True), app], check=True, timeout=20)
+        subprocess.run(["/bin/cp", "-cR", Path(bundle).resolve(strict=True), app], check=True, timeout=HANG_SECONDS)
         contents = app / "Contents"
         python = contents / desktop_package.PYTHON
         runtime = contents / "Resources" / "python"
@@ -150,7 +151,7 @@ def test_bundled_cold_cli_preserves_bundle_contents(desktop_package, tmp_path):
         try:
             output = subprocess.check_output(
                 [python, "-I", "-B", "-m", "feedbax.cli", "run", "--json", "."],
-                cwd=project, env=env, timeout=18,
+                cwd=project, env=env, timeout=HANG_SECONDS,
             )
             attempt, = json.loads(output)["items"]
             assert attempt["disposition"] == "admitted", attempt
@@ -159,7 +160,7 @@ def test_bundled_cold_cli_preserves_bundle_contents(desktop_package, tmp_path):
                 row, = host.jobs_snapshot(job_id=attempt["job_id"], start_host=False)["jobs"]
                 return row if row["outcome"] is not None else None
 
-            completed = wait_until(terminal, timeout=27)
+            completed = wait_until(terminal)
             assert completed["state"] == "succeeded", completed["outcome"]
             assert completed["outcome"]["completion"]["checkpoint"]["completed_updates"] == 1
             assert Path(completed["outcome"]["completion"]["checkpoint"]["checkpoint_root"]).is_relative_to(
@@ -168,7 +169,7 @@ def test_bundled_cold_cli_preserves_bundle_contents(desktop_package, tmp_path):
         finally:
             if host.address.exists():
                 os.kill(int(host.ping()["pid"]), signal.SIGTERM)
-                wait_until(lambda: not host.address.exists(), timeout=6)
+                wait_until(lambda: not host.address.exists())
 
         after = inventory()
         additions = sorted(after[0].keys() - before[0].keys())

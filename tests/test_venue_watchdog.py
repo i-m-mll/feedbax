@@ -15,10 +15,11 @@ from feedbax.host import HostClient, HostError
 from feedbax.host import watchdog
 from feedbax.host.protocol import SessionAccess
 from feedbax.host.session import initialize_session
+from tests.support.hang import HANG_SECONDS
 
 
-def until(read, *, seconds=10):
-    deadline = time.monotonic() + seconds
+def until(read):
+    deadline = time.monotonic() + HANG_SECONDS
     while time.monotonic() < deadline:
         if value := read():
             return value
@@ -58,8 +59,8 @@ def test_detached_watchdog_recovers_host_then_retries_termination(tmp_path):
     bootstrap = tmp_path / "venue"
     ends_at_ms = int(time.time() * 1000) + 4500
     argv, calls, confirmation = prepare_watchdog(bootstrap, ends_at_ms=ends_at_ms)
-    subprocess.run([*argv, "--detach"], check=True, timeout=8, capture_output=True)
-    subprocess.run([*argv, "--detach"], check=True, timeout=8, capture_output=True)
+    subprocess.run([*argv, "--detach"], check=True, timeout=HANG_SECONDS, capture_output=True)
+    subprocess.run([*argv, "--detach"], check=True, timeout=HANG_SECONDS, capture_output=True)
     assert not (bootstrap / "host").exists()
     assert not calls.exists()
 
@@ -110,7 +111,7 @@ def test_watchdog_cutoff_does_not_wait_for_ready_marker_or_host(tmp_path):
     bootstrap = tmp_path / "venue"
     ends_at_ms = time.time_ns() // 1_000_000 - 1
     argv, calls, confirmation = prepare_watchdog(bootstrap, ends_at_ms=ends_at_ms)
-    subprocess.run(argv, check=True, timeout=8)
+    subprocess.run(argv, check=True, timeout=HANG_SECONDS)
     assert confirmation.exists()
     assert len(calls.read_text().splitlines()) == 2
     assert not (bootstrap / "host").exists()

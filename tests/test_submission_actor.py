@@ -18,8 +18,9 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_project
-from tests.test_local_job_host import admit, job_row, restart, run_job, wait_until
-from tests.test_local_job_host import host as host_fixture
+from tests.support.host import admit, job_row, restart, run_job, wait_until
+from tests.support.host import private_host as host_fixture
+from tests.support.hang import HANG_SECONDS
 
 
 host = host_fixture
@@ -59,7 +60,7 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
             env["FEEDBAX_ACTOR_LABEL"] = env_label
         result = subprocess.run(
             [sys.executable, "-m", "feedbax.cli", "run", str(projects / project), "train", *flags],
-            cwd=Path(__file__).resolve().parents[1], env=env, text=True, capture_output=True, timeout=12,
+            cwd=Path(__file__).resolve().parents[1], env=env, text=True, capture_output=True, timeout=HANG_SECONDS,
         )
         assert result.returncode == 0, result.stderr
         return result.stdout.splitlines()[0].removeprefix("Submission ")
@@ -125,7 +126,7 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
         assert jobs.jobs(project="legacy").jobs[0].actor is None
 
         release.touch()
-        finished = wait_until(lambda: job_row(host, origin.job_id, "succeeded"), timeout=24)
+        finished = wait_until(lambda: job_row(host, origin.job_id, "succeeded"))
         receipt = finished["outcome"]["receipt"]
         manifest = canonical_manifest_path(
             "TrainingRunManifest", receipt["manifest_id"], root=reviewed.store_path,
@@ -142,4 +143,4 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
         assert [(job["request_id"], job["actor"]) for job in activity] == [
             (planned.request_id, stored["actor"]), (planned.request_id, studio["actor"]),
         ]
-        wait_until(lambda: job_row(host, studio["items"][0]["job_id"], "succeeded"), timeout=24)
+        wait_until(lambda: job_row(host, studio["items"][0]["job_id"], "succeeded"))

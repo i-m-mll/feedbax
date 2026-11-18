@@ -15,6 +15,7 @@ import tomllib
 import pytest
 
 from tests.support.git_fixtures import run_fixture_git
+from tests.support.hang import HANG_SECONDS
 
 
 def load_full_suite_module():
@@ -58,7 +59,7 @@ def test_affected_collection_omits_an_unrelated_failing_test(tmp_path: Path) -> 
         capture_output=True,
         text=True,
         check=False,
-        timeout=25,
+        timeout=HANG_SECONDS,
     )
     reference = subprocess.run(
         [*command, "--no-memo"],
@@ -67,7 +68,7 @@ def test_affected_collection_omits_an_unrelated_failing_test(tmp_path: Path) -> 
         capture_output=True,
         text=True,
         check=False,
-        timeout=25,
+        timeout=HANG_SECONDS,
     )
 
     assert affected.returncode == 0, affected.stdout + affected.stderr
@@ -399,7 +400,7 @@ def test_mjx_slow(): pass
             env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": ""},
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=HANG_SECONDS,
             check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -533,7 +534,7 @@ def test_full_suite_lock_refuses_and_reports_holder(tmp_path: Path, holder_repos
     contender = start_lock_helper(
         script_path, lock_path, Path("/worktrees/contender"), contender_release
     )
-    contender_stdout, contender_stderr = contender.communicate(timeout=5)
+    contender_stdout, contender_stderr = contender.communicate(timeout=HANG_SECONDS)
     assert contender.returncode != 0
     assert contender_stdout == ""
     assert "Full suite already running; active holder:" in contender_stderr
@@ -544,7 +545,7 @@ def test_full_suite_lock_refuses_and_reports_holder(tmp_path: Path, holder_repos
     assert "started_at=" in contender_stderr
 
     holder_release.touch()
-    holder_stdout, holder_stderr = holder.communicate(timeout=5)
+    holder_stdout, holder_stderr = holder.communicate(timeout=HANG_SECONDS)
     assert holder.returncode == 0, holder_stderr
     assert holder_stdout == ""
     released_metadata = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -592,14 +593,14 @@ def test_full_suite_lock_recovers_after_abnormal_holder_exit(tmp_path: Path) -> 
     assert holder.stdout.readline().startswith("acquired ")
 
     os.kill(holder.pid, signal.SIGKILL)
-    holder.wait(timeout=5)
+    holder.wait(timeout=HANG_SECONDS)
     contender = start_lock_helper(
         script_path, lock_path, Path("/worktrees/after-interrupt"), contender_release
     )
     assert contender.stdout is not None
     assert contender.stdout.readline().startswith("acquired ")
     contender_release.touch()
-    _, contender_stderr = contender.communicate(timeout=5)
+    _, contender_stderr = contender.communicate(timeout=HANG_SECONDS)
     assert contender.returncode == 0, contender_stderr
 
     # The kernel releases the advisory lock after SIGKILL. The next holder

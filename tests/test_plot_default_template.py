@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from tests.support.hang import HANG_SECONDS
 
 
 def _run_probe(source: str) -> dict:
@@ -13,7 +14,7 @@ def _run_probe(source: str) -> dict:
         capture_output=True,
         text=True,
         check=False,
-        timeout=30,
+        timeout=HANG_SECONDS,
         cwd=Path(__file__).resolve().parents[1],
     )
     assert result.returncode == 0, result.stderr

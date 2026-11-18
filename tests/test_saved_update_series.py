@@ -21,7 +21,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
 from tests.support.finite_train import install_finite_gate
 
 host = host_fixture
@@ -78,7 +78,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     jobs = JobService(host, registry)
     (producer,) = jobs.admit_plan(folders, first, run_keys=(train.key,), token="train").items
     assert producer.disposition == "admitted"
-    finished = wait_until(lambda: job_row(host, producer.job_id, "succeeded"), timeout=20)
+    finished = wait_until(lambda: job_row(host, producer.job_id, "succeeded"))
     assert "checkpoint_catalog" not in host.jobs(job_id=producer.job_id, include_launch=True)[0]["launch"]["payload"]
 
     raw["steps"]["baseline"]["inputs"]["subject"]["checkpoint"] = [{"at": 4}, {"at": 1}, {"at": 2}, {"at": 6}]
@@ -97,7 +97,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
         assert item.disposition == "admitted"
         row = wait_until(lambda: (
             row if (row := job_row(host, item.job_id))["outcome"] is not None else None
-        ), timeout=20)
+        ))
         assert row["state"] == "succeeded", row["outcome"]
         selection = row["edges"][0]["binding"]["checkpoint_selection"]
         assert selection["requested"] == expected
@@ -225,7 +225,7 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
         assert queued.pending.state == "queued" and queued.pending.next_update == 2
     finally:
         host.stop([blocker.id], "force")
-    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    wait_until(lambda: (tmp_path / "before-stop").exists())
     jobs.stop([producer.job_id], "checkpoint")
     wait_until(lambda: job_row(host, producer.job_id, "stopped"))
     assert job_row(host, evaluate.job_id, "queued") is not None
@@ -249,15 +249,15 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     assert saved_evaluation().checkpoint_attempt.model_dump(mode="json") == attempt
     resumed = jobs.resume(producer.job_id, "resume")
     try:
-        wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+        wait_until(lambda: (tmp_path / "resumed-interior").exists())
         pending = saved_evaluation().checkpoint_attempt.pending
         assert pending.producer_job_id == resumed.job_id
         assert pending.state == "running"
         assert pending.next_update is None
     finally:
         (tmp_path / "finish-train").touch()
-    wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=20)
-    result = wait_until(lambda: job_row(host, evaluate.job_id, "succeeded"), timeout=20)
+    wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
+    result = wait_until(lambda: job_row(host, evaluate.job_id, "succeeded"))
     selection = result["edges"][0]["binding"]["checkpoint_selection"]
     assert selection["lineage"] == [producer.job_id, resumed.job_id]
     assert selection["closure"]["product"]["producer_job_id"] == resumed.job_id

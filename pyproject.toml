@@ -197,9 +197,10 @@ line-length = 88
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers -n auto -m 'not optional_mjx and not slow'"
+addopts = "--strict-markers -n auto -m 'not optional_mjx and not slow and not round'"
 markers = [
     "slow: tests that are too expensive for every local or CI pass",
+    "round(sentence): a test whose subject stays slow, run once per round by `make test-round`; the sentence says what must really happen",
     "optional_mjx: MJX simulation and integration tests run only when explicitly selected",
     "feedbax_contract: Feedbax contract-surface tests for downstream consumers",
     "graph_spec_contract: GraphSpec schema, migration, and runtime contract tests",

@@ -20,6 +20,7 @@ from feedbax.persistence.artifact_custody import (
     open_project_store,
 )
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
+from tests.support.hang import HANG_SECONDS
 
 
 def test_authored_store_retains_identity_refs_and_the_same_object_after_move(tmp_path, monkeypatch):
@@ -126,7 +127,7 @@ print(json.dumps([identity, won]))
             capture_output=True,
             text=True,
             check=True,
-            timeout=10,
+            timeout=HANG_SECONDS,
         )
         identity, won = json.loads(result.stdout)
         return identity, won
@@ -183,7 +184,7 @@ store.compare_and_swap_ref(
     child = subprocess.run(
         [sys.executable, "-c", code, str(store.root), cut],
         capture_output=True,
-        timeout=10,
+        timeout=HANG_SECONDS,
     )
     assert child.returncode == 91, child.stderr.decode()
     visible = old if cut == "before_rename" else new

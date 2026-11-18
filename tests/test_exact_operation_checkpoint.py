@@ -14,7 +14,7 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.composition import load_application
 from feedbax.project_folder import ProjectFolder
 from tests.support.managed_train_fixture import managed_train_project
-from tests.test_local_job_host import host, job_row, wait_until  # noqa: F401 -- pytest fixture
+from tests.support.host import private_host as host, job_row, wait_until  # noqa: F401 -- pytest fixture
 
 
 def test_exact_model_operation_uses_earlier_publication_and_refuses_missing(request, tmp_path, monkeypatch):
@@ -103,7 +103,7 @@ def read_weight(model: Annotated[Graph, ModelPort()], params: Settings) -> Annot
             rows = [job_row(host, item.job_id) for item in result.items]
             return rows if all(row is not None and row["outcome"] is not None for row in rows) else None
 
-        return wait_until(settled, timeout=35)
+        return wait_until(settled)
 
     (trained,) = run(save(), "train")
     assert trained["state"] == "succeeded", trained["outcome"]

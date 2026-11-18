@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from feedbax.host import HostError
 from feedbax.host.protocol import AdmissionItem
 from feedbax.web.app import create_app
-from tests.test_local_job_host import host as host_fixture, run_job, wait_until
+from tests.support.host import private_host as host_fixture, run_job, wait_until
 
 host = host_fixture
 

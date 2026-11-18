@@ -22,6 +22,7 @@ from feedbax.desktop.preferences import register_preferences
 from feedbax.jobs import PlanJobAttempts
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
+from tests.support.hang import HANG_SECONDS
 
 
 def _desktop_clients(app):
@@ -145,7 +146,7 @@ def _write_train(root: Path, *, pinned_base: Path | None = None):
 def _cli_request_id(root: Path) -> str:
     cli = subprocess.run(
         [sys.executable, "-m", "feedbax.cli", "plan"],
-        cwd=root, capture_output=True, text=True, check=False, timeout=20,
+        cwd=root, capture_output=True, text=True, check=False, timeout=HANG_SECONDS,
     )
     assert cli.returncode == 0, cli.stderr
     address, request_id = cli.stdout.split()
@@ -157,8 +158,8 @@ def test_external_git_project_opens_saves_and_reopens_in_place(tmp_path, monkeyp
     projects = tmp_path / "projects"
     repo = tmp_path / "agent checkout"
     _write_train(repo)
-    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True, timeout=8)
-    subprocess.run(["git", "add", "."], cwd=repo, check=True, timeout=8)
+    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True, timeout=HANG_SECONDS)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, timeout=HANG_SECONDS)
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
     app = create_app(projects_dir=projects)
@@ -224,7 +225,7 @@ def test_external_git_project_opens_saves_and_reopens_in_place(tmp_path, monkeyp
         assert new_revision != revision
         assert browser.patch(url, json=patch, headers=origin).status_code == 409
         changed_files = subprocess.run(
-            ["git", "diff", "--name-only"], cwd=repo, check=True, capture_output=True, text=True, timeout=8,
+            ["git", "diff", "--name-only"], cwd=repo, check=True, capture_output=True, text=True, timeout=HANG_SECONDS,
         )
         assert changed_files.stdout.splitlines() == ["steps/train.json"]
         assert read_text_project_snapshot(repo).revision == new_revision

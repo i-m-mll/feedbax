@@ -35,7 +35,7 @@ from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.validity.evidence import stage_evidence
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
 from tests.support.store_damage import writable_store_object
 
 host = host_fixture
@@ -191,7 +191,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         jobs.resume(queued.job_id, "evaluate-resume")
     release.touch()
 
-    trained = wait_until(lambda: job_row(host, source.job_id, "succeeded"), timeout=24)
+    trained = wait_until(lambda: job_row(host, source.job_id, "succeeded"))
     settled_plan = folders.read_plan(project, revision=None).plan
     assert settled_plan.requests == plan.plan.requests
     assert settled_plan.documents == plan.plan.documents
@@ -233,7 +233,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     for key, item in zip(keys, submitted.items, strict=True):
         row = wait_until(lambda: (
             job_row(host, item.job_id, "succeeded") or job_row(host, item.job_id, "failed")
-        ), timeout=22)
+        ))
         assert row["state"] == "succeeded", row.get("outcome")
         assert row["request"] == by_key[key].request_id
         (edge,) = row["edges"]

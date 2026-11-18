@@ -14,67 +14,11 @@ from pathlib import Path
 import pytest
 
 from feedbax.host import AdmissionItem, Edge, HostClient, HostError, Job, Launch
+from tests.support.hang import HANG_SECONDS
+from tests.support.host import admit, job_row, private_host, restart, run_job, wait_until
 
 
-@pytest.fixture
-def host(tmp_path):
-    client = HostClient(tmp_path / "host")
-    client.ping()
-    try:
-        yield client
-    finally:
-        live = [job["id"] for job in client.jobs() if job["outcome"] is None]
-        if live:
-            client.stop(live, "force")
-            wait_until(lambda: all(job["outcome"] is not None for job in client.jobs()))
-        os.kill(client.ping()["pid"], signal.SIGTERM)
-        wait_until(lambda: not client.address.exists())
-
-
-def wait_until(read, *, timeout=12):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        value = read()
-        if value:
-            return value
-        time.sleep(0.02)
-    raise AssertionError("The host did not reach the expected state.")
-
-
-def run_job(name, source, *, project="project", request=None, edges=(), slot="compute"):
-    return Job(
-        name,
-        project,
-        request or name,
-        Launch((sys.executable, "-c", source)),
-        edges=edges,
-        slot=slot,
-    )
-
-
-def admit(host, token, *jobs):
-    return host.admit(token, [AdmissionItem(job.id, job) for job in jobs], record={})
-
-
-def job_row(host, name, state=None):
-    rows = host.jobs(job_id=name)
-    return rows[0] if rows and (state is None or rows[0]["state"] == state) else None
-
-
-def restart(host):
-    before = host.ping()["pid"]
-    os.kill(before, signal.SIGKILL)
-
-    def new_pid():
-        try:
-            pid = host.ping()["pid"]
-        except HostError as error:
-            if error.code != "disconnected":
-                raise
-            return None
-        return pid if pid != before else None
-
-    wait_until(new_pid)
+host = private_host
 
 
 def test_host_keeps_attempt_and_cursor_across_daemon_restart(host, tmp_path):
@@ -347,7 +291,7 @@ time.sleep(120)
     wait_until(lambda: child_pid.exists() and child_pid.read_text())
     start = time.monotonic()
     host.stop([ignores_term.id], "force")
-    wait_until(lambda: job_row(host, ignores_term.id, "stopped"), timeout=5)
+    wait_until(lambda: job_row(host, ignores_term.id, "stopped"))
     assert time.monotonic() - start < 5
 
     crash = run_job("crash", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)")
@@ -892,11 +836,11 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
         f"/api/jobs/{consumer.id}/resume", json={"token": "internal-resume"}
     )
     assert hidden_resume.status_code == 404
-    wait_until(lambda: stop_ready.exists() or job_row(host, producer)["outcome"], timeout=20)
+    wait_until(lambda: stop_ready.exists() or job_row(host, producer)["outcome"])
     assert stop_ready.exists(), job_row(host, producer)
     stopping = client.post("/api/jobs/stop", json={"job_ids": [producer], "mode": "checkpoint"})
     assert stopping.status_code == 202, stopping.text
-    wait_until(lambda: job_row(host, producer)["outcome"], timeout=20)
+    wait_until(lambda: job_row(host, producer)["outcome"])
     stopped = job_row(host, producer)
     assert stopped["state"] == "stopped", stopped
     assert stopped["outcome"]["store_job_entry"]
@@ -941,7 +885,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert continuation["request_id"] == stopped["request"]
     resumed_launch = host.jobs(job_id=continued, include_launch=True)[0]["launch"]
     assert resumed_launch["payload"]["resume"] == checkpoint
-    wait_until(lambda: job_row(host, continued)["outcome"], timeout=20)
+    wait_until(lambda: job_row(host, continued)["outcome"])
     finished = job_row(host, continued)
     assert finished["state"] == "succeeded", finished
     assert finished["outcome"]["store_success"]
@@ -998,7 +942,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     latest = Path(completion["checkpoint"]["checkpoint_root"]) / LATEST_NAME
     latest.write_text("This mutable pointer is outside the pinned completion closure.")
     (tmp_path / "open-gate").touch()
-    terminal = wait_until(lambda: job_row(host, consumer.id)["outcome"], timeout=20)
+    terminal = wait_until(lambda: job_row(host, consumer.id)["outcome"])
     assert terminal["outcome"] == "succeeded", host.events()["events"][-10:]
     assert job_row(host, consumer.id)["delivery"] == 1
     assert json.loads((tmp_path / "verified.json").read_text()) == pinned
@@ -1096,7 +1040,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
                 "scheme": "http",
                 "server": ("testserver", 80),
             }
-            await asyncio.wait_for(app(scope, receive, send), timeout=5)
+            await asyncio.wait_for(app(scope, receive, send), timeout=HANG_SECONDS)
         return notices, replay
 
     notices, replay = asyncio.run(observe_folder())
@@ -1168,10 +1112,10 @@ def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_pat
         time.sleep(0.5)
         os.kill(pid, signal.SIGTERM)
         started = time.monotonic()
-        assert wait_until(lambda: not process_exists(pid), timeout=5)
+        assert wait_until(lambda: not process_exists(pid))
         assert time.monotonic() - started < 2
-        poll.result(timeout=5)
-    assert wait_until(lambda: not alive(str(profiles)), timeout=5)
+        poll.result(timeout=HANG_SECONDS)
+    assert wait_until(lambda: not alive(str(profiles)))
 
 
 

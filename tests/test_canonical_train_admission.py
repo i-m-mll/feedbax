@@ -33,8 +33,8 @@ from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, verify_t
 from feedbax.validity.evidence import evidence_objects
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_payload
-from tests.test_local_job_host import admit, job_row, restart, run_job, wait_until
-from tests.test_local_job_host import host as host_fixture
+from tests.support.host import admit, job_row, restart, run_job, wait_until
+from tests.support.host import private_host as host_fixture
 
 
 host = host_fixture
@@ -203,7 +203,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
                 pytest.fail(str(row["outcome"]))
             return False
 
-        wait_until(interrupted, timeout=26)
+        wait_until(interrupted)
         if not damage_committed_state:
             committed = SuccessView(store).read_attempt(attempt)
             assert committed is not None
@@ -217,7 +217,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
                     raise
                 return None
 
-        finished = wait_until(recovered, timeout=26)
+        finished = wait_until(recovered)
     if damage_committed_state:
         assert finished["delivery"] == 1
         assert finished["outcome"]["error"]["code"] == "publication_failed"
@@ -426,7 +426,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     assert waiting["edges"][0]["job_id"] == prefix_id
 
     jobs.stop([prefix_id], "checkpoint")
-    stopped_prefix = wait_until(lambda: job_row(host, prefix_id, "stopped"), timeout=22)
+    stopped_prefix = wait_until(lambda: job_row(host, prefix_id, "stopped"))
     assert 0 < stopped_prefix["outcome"]["checkpoint"]["completed_updates"] < _CHAIN_UPDATES
     waiting = job_row(host, child_id, "queued")
     assert waiting["delivery"] == 0 and waiting["edges"][0]["binding"] is None
@@ -437,11 +437,11 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     assert prefix_resume.actor == StudioSubmissionActor(client="studio")
     attempts = {job.job_id: job for job in jobs.jobs(project=project).jobs}
     assert attempts[prefix_id].actor == actor
-    succeeded = wait_until(lambda: job_row(host, prefix_resume.job_id, "succeeded"), timeout=22)
+    succeeded = wait_until(lambda: job_row(host, prefix_resume.job_id, "succeeded"))
     producer = succeeded["outcome"]["completion"]
     verify_bound_training_completion(producer)
     assert producer["checkpoint"]["completed_updates"] == _CHAIN_UPDATES
-    child_running = wait_until(lambda: job_row(host, child_id, "running"), timeout=22)
+    child_running = wait_until(lambda: job_row(host, child_id, "running"))
     assert child_running["request"] == plan_rows[child].request_id
     assert child_running["edges"][0]["binding"] == {
         "dependency_job_id": prefix_id,
@@ -449,7 +449,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     }
 
     jobs.stop([child_id], "checkpoint")
-    stopped_child = wait_until(lambda: job_row(host, child_id, "stopped"), timeout=22)
+    stopped_child = wait_until(lambda: job_row(host, child_id, "stopped"))
     child_outcome = stopped_child["outcome"]
     child_checkpoint = _checkpoint(child_outcome)
     assert 0 < child_checkpoint.clock.completed_updates < _CHAIN_UPDATES
@@ -464,7 +464,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     restart(host)
     resumed = jobs.resume(child_id, token="resume-child")
     assert jobs.resume(child_id, token="resume-child").job_id == resumed.job_id
-    child_done = wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=22)
+    child_done = wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
     verify_bound_training_completion(child_done["outcome"]["completion"])
     store = SuccessView(ImmutableArtifactBlobProvider(reviewed.store_path))
     parent_success = store.read_attempt(prefix_resume.job_id)
@@ -485,7 +485,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     assert child_success.receipt.recovery.transaction_id == child_checkpoint.transaction_id
     uninterrupted = jobs.admit_plan(folders, reviewed, run_keys=(child,), token="control")
     (control_item,) = uninterrupted.items
-    control = wait_until(lambda: job_row(host, control_item.job_id, "succeeded"), timeout=22)
+    control = wait_until(lambda: job_row(host, control_item.job_id, "succeeded"))
     assert _checkpoint(control["outcome"]).state_sha256 == resumed_checkpoint.state_sha256
 
 
@@ -539,7 +539,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
             row = job_row(host, job_id)
             return row if row and row["state"] in {"succeeded", "failed", "blocked", "stopped"} else None
 
-        return wait_until(read, timeout=28)
+        return wait_until(read)
 
     finished = settled(child_attempt)
     assert finished["state"] == "succeeded", finished["outcome"]

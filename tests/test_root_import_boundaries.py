@@ -3,6 +3,7 @@ import sys
 import textwrap
 
 import pytest
+from tests.support.hang import HANG_SECONDS
 
 
 @pytest.mark.parametrize(
@@ -31,7 +32,7 @@ def test_analysis_import_does_not_require_persistence_or_viz_extras(module_name:
     result = subprocess.run(
         [sys.executable, "-c", script, module_name],
         check=False,
-        timeout=30,
+        timeout=HANG_SECONDS,
         capture_output=True,
         text=True,
     )
@@ -65,7 +66,7 @@ def test_project_onto_direction_does_not_require_matplotlib():
     result = subprocess.run(
         [sys.executable, "-c", script],
         check=False,
-        timeout=30,
+        timeout=HANG_SECONDS,
         capture_output=True,
         text=True,
     )

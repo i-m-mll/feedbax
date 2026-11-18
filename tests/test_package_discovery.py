@@ -28,6 +28,7 @@ from feedbax.web.api.figures import router as figure_router
 from feedbax.web.api.projects import router
 from feedbax.plugins.composition import load_application
 from tests.support.installed_package import install_discovery_fixture
+from tests.support.hang import HANG_SECONDS
 
 _ANALYSIS = "entry_point_provider.shift_series"
 
@@ -136,7 +137,7 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
             "FEEDBAX_HOST_COMPLETION_BINDINGS": str(bindings),
             "FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256": sha256(raw_bindings).hexdigest(),
         },
-        timeout=45, text=True, capture_output=True,
+        timeout=HANG_SECONDS, text=True, capture_output=True,
     )
     assert worker.returncode == 0, worker.stderr
     result = json.loads(log.read_text())["data"]
@@ -166,7 +167,7 @@ def test_describe_fails_if_an_installed_package_cannot_import(installed_site, tm
     result = subprocess.run(
         [sys.executable, "-m", "feedbax", "describe"],
         env=_child_environment(broken_site),
-        timeout=45, text=True, capture_output=True,
+        timeout=HANG_SECONDS, text=True, capture_output=True,
     )
     assert result.returncode == 2, result.stderr
     assert not result.stdout

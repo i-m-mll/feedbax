@@ -18,6 +18,7 @@ from feedbax.host.client import StdioAttachment
 from feedbax.host.daemon import Host
 from feedbax.host.protocol import VERSION, SessionAccess
 from feedbax.host.session import SessionFence, initialize_session
+from tests.support.hang import HANG_SECONDS
 
 SESSION = "venue-session"
 OPERATOR = "operator"
@@ -51,7 +52,7 @@ def expect_code(code: str, call, /, *args, **kwargs):
 
 
 def until(read):
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + HANG_SECONDS
     while time.monotonic() < deadline:
         if value := read():
             return value

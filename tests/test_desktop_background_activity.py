@@ -22,7 +22,8 @@ from feedbax.host.protocol import AdmissionItem
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_desktop_project_open import _desktop_clients
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.hang import HANG_SECONDS
 
 host = host_fixture
 ACTIVITY = "/_desktop/activity"
@@ -107,7 +108,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert control.get(ACTIVITY).json()["count"] == 1
         browser.close()
         hold.touch()
-        wait_until(lambda: job_row(host, completed, "running"), timeout=20)
+        wait_until(lambda: job_row(host, completed, "running"))
         assert control.get(ACTIVITY).json()["count"] == 1
 
         requested = control.post(f"{ACTIVITY}/open").json()
@@ -126,7 +127,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert {path.name for path in projects.iterdir()} == {"reach", "long"}
         jobs = reopened.get("/api/jobs").json()["jobs"]
         assert any(job["job_id"] == completed for job in jobs)
-        finished = wait_until(lambda: job_row(host, completed, "succeeded"), timeout=25)
+        finished = wait_until(lambda: job_row(host, completed, "succeeded"))
         assert finished["progress"]["completed_updates"] == 160
         terminal = control.get(ACTIVITY, params={"after": initial_cursor}).json()
         while terminal["terminal"] is None:
@@ -141,10 +142,10 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert control.get(ACTIVITY).json()["terminal"] is None
 
         stopping = launch(reopened, "long")
-        wait_until(lambda: job_row(host, stopping, "running"), timeout=20)
+        wait_until(lambda: job_row(host, stopping, "running"))
         reply = control.post(f"{ACTIVITY}/stop", json={"mode": "checkpoint"})
         assert reply.status_code == 200 and reply.json()[0]["error"] is None, reply.text
-        stopped = wait_until(lambda: job_row(host, stopping, "stopped"), timeout=20)
+        stopped = wait_until(lambda: job_row(host, stopping, "stopped"))
         assert stopped["checkpoint"]
         assert control.get(ACTIVITY).json()["count"] == 0
 
@@ -179,7 +180,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
             wait_until(lambda: job_row(host, stubborn.id, "stopping"))
             assert not quitting.done()
             assert control.post(f"{ACTIVITY}/stop", json={"mode": "force"}).status_code == 200
-            quit_service = quitting.result(timeout=12)
+            quit_service = quitting.result(timeout=HANG_SECONDS)
         assert quit_service.status_code == 200 and quit_service.json()["status"] == "ready_to_stop", quit_service.text
         assert server.should_exit and host.ping()["pid"] == initial_host
         assert job_row(host, foreign.id)["state"] == "running"
@@ -286,7 +287,7 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
                 row = job_row(host, attempt, "running")
                 return row if row and row["checkpoint"] else None
 
-            before = wait_until(checkpointed, timeout=20)
+            before = wait_until(checkpointed)
             source = PublishedTrainingCheckpoint.model_validate(before["checkpoint"])
             model = read_method_checkpoint(source.checkpoint_root, source.pointer, components=new_application_registry_bundle().components).model
             assert model is not None
@@ -315,7 +316,7 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
         assert resumed.continues == attempt
         (successor,) = host.jobs(job_id=resumed.job_id, include_launch=True)
         assert successor["launch"]["payload"]["resume"] == before["checkpoint"]
-        done = wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=22)
+        done = wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
         assert done["progress"]["completed_updates"] == 1000
     finally:
         wait_until(lambda: host.retire_runtime(runtime, str(release), "force")["status"] == "absent")
@@ -362,9 +363,9 @@ async def run():
 asyncio.run(run())
 """, str(marker), str(completed)]) as process:
         try:
-            wait_until(marker.exists, timeout=5)
+            wait_until(marker.exists)
             process.terminate()
-            assert process.wait(timeout=5) == 0 and completed.exists()
+            assert process.wait(timeout=HANG_SECONDS) == 0 and completed.exists()
         finally:
             if process.poll() is None:
                 process.kill()

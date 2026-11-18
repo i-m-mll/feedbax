@@ -22,7 +22,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
 from tests.test_saved_update_series import definition
 
 host = host_fixture
@@ -111,7 +111,7 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
     for job_id in attempts:
         row = wait_until(lambda: (
             current if (current := job_row(host, job_id))["outcome"] is not None else None
-        ), timeout=22)
+        ))
         assert row["state"] == "succeeded", row["outcome"]
 
     scores = {}
@@ -191,6 +191,6 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
         run_keys=(fixed[0].key,), token="frozen",
     ).items[0]
     assert after_freeze.disposition == "admitted" and after_freeze.job_id != attempts[-2]
-    wait_until(lambda: job_row(host, after_freeze.job_id, "succeeded"), timeout=22)
+    wait_until(lambda: job_row(host, after_freeze.job_id, "succeeded"))
     updated = SuccessView(ImmutableArtifactBlobProvider(saved.store_path))
     assert updated.read_attempt(after_freeze.job_id).receipt.effective == successes[0].receipt.effective

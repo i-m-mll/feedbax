@@ -11,6 +11,7 @@ from importlib.metadata import packages_distributions
 from pathlib import Path
 
 import pytest
+from tests.support.hang import HANG_SECONDS
 
 
 IMPORT_TO_DISTRIBUTION_OVERRIDES = {
@@ -147,7 +148,7 @@ def test_base_cli_imports_do_not_require_web_runtime_dependencies() -> None:
         check=False,
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=HANG_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr

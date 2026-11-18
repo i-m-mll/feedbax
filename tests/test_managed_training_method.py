@@ -24,9 +24,10 @@ from feedbax.persistence.train_job import read_train_job
 from feedbax.plugins.composition import load_application
 from feedbax.project_folder import ProjectFolder
 from tests.support import external_method_witness
+from tests.support.hang import HANG_SECONDS
 from tests.support.installed_package import install_test_package
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
-from tests.test_local_job_host import host, job_row, wait_until  # noqa: F401 -- pytest fixture
+from tests.support.host import private_host as host, job_row, wait_until  # noqa: F401 -- pytest fixture
 
 
 _TOTAL = 4
@@ -107,7 +108,7 @@ def _terminal(client, job_id, expected):
         (row,) = client.jobs(job_id=job_id, include_launch=True)
         return row if row["outcome"] is not None else None
 
-    row = wait_until(read, timeout=28)
+    row = wait_until(read)
     assert row["state"] == expected, row["outcome"]
     return row
 
@@ -141,7 +142,7 @@ def _await_stop_gate(venue, job_id, gate):
         assert row["outcome"] is None, row["outcome"]
         return gate.with_suffix(".ready").exists()
 
-    wait_until(read, timeout=28)
+    wait_until(read)
 
 
 def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp_path, monkeypatch):
@@ -151,6 +152,7 @@ def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp
     gate = tmp_path / "stop.armed"
     model_only = gate.with_suffix(".model-only")
     monkeypatch.setenv("FEEDBAX_TEST_ADVERSARIAL_STOP", str(gate))
+    monkeypatch.setenv("FEEDBAX_TEST_HANG_SECONDS", str(HANG_SECONDS))
     local = request.getfixturevalue("host")
     registries = load_application().bundle
     folders = ProjectFolder(

@@ -20,7 +20,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
+from tests.support.host import private_host as host_fixture, job_row, restart, wait_until
 from tests.test_saved_update_series import definition
 
 host = host_fixture
@@ -82,7 +82,7 @@ def events(host, project, job_id, kind):
 def terminal(host, job_id, state):
     row = wait_until(lambda: (
         current if (current := job_row(host, job_id)) and current["outcome"] is not None else None
-    ), timeout=24)
+    ))
     assert row["state"] == state, row["outcome"]
     return row
 
@@ -108,7 +108,7 @@ def test_live_evaluate_train_stop_and_independent_cancellation(host, tmp_path, m
         return host.root / "deliveries" / job_id / str(delivery) / "stop"
 
     try:
-        wait_until(lambda: (tmp_path / "stop.reached").exists(), timeout=20)
+        wait_until(lambda: (tmp_path / "stop.reached").exists())
         assert job_row(host, evaluation)["data"]["placement"] == "live"
         assert jobs.stop([producer], "checkpoint")[0].job.status == "stopping"
         wait_until(lambda: stop_signal(producer, 1).exists())
@@ -131,7 +131,7 @@ def test_live_evaluate_train_stop_and_independent_cancellation(host, tmp_path, m
     assert service.evaluation_objective(project, read) == paused_curve
     resumed = jobs.resume(producer, "resume")
     try:
-        wait_until(lambda: (tmp_path / "cancel.reached").exists(), timeout=20)
+        wait_until(lambda: (tmp_path / "cancel.reached").exists())
         continued_curve = service.evaluation_objective(project, read)
         assert continued_curve.lineage == [producer, resumed.job_id]
         assert continued_curve.points == paused_curve.points

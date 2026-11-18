@@ -22,7 +22,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_payload
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
+from tests.support.host import private_host as host_fixture, job_row, restart, wait_until
 from tests.test_saved_update_series import definition
 
 host = host_fixture
@@ -97,7 +97,7 @@ _Events.append = append
             if event["job_id"] == job_id and event["kind"] == "evaluation_point"
         ]
 
-    wait_until(lambda: (tmp_path / "before-point").exists(), timeout=20)
+    wait_until(lambda: (tmp_path / "before-point").exists())
     prefix = wait_until(lambda: found if len(found := points(evaluation)) == 2 else None)
     assert [point["checkpoint"]["completed_updates"] for point in prefix] == [2, 4]
     service = ProjectPlanService(folders, jobs)
@@ -210,9 +210,9 @@ _Events.append = append
     assert jobs.admit_plan(folders, plan, run_keys=run_keys, token="joint") == admission
 
     resumed = jobs.resume(producer, "exact-resume")
-    wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=22)
-    result = wait_until(lambda: job_row(host, evaluation, "succeeded"), timeout=22)
-    wait_until(lambda: job_row(host, ordinary, "succeeded"), timeout=22)
+    wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
+    result = wait_until(lambda: job_row(host, evaluation, "succeeded"))
+    wait_until(lambda: job_row(host, ordinary, "succeeded"))
     bound = result["edges"][0]["binding"]
     assert bound["checkpoint_selection"]["lineage"] == [producer, resumed.job_id]
     assert [point["checkpoint"]["completed_updates"] for point in points(evaluation)] == [2, 4, 8]
@@ -235,7 +235,7 @@ _Events.append = append
     with live.open_states() as dataset:
         assert dataset.data("update").tolist() == [2, 4, 6, 8]
     (late,) = jobs.admit_plan(folders, plan, run_keys=(rows["baseline"].key,), token="late").items
-    wait_until(lambda: job_row(host, late.job_id, "succeeded"), timeout=22)
+    wait_until(lambda: job_row(host, late.job_id, "succeeded"))
     ordinary_result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=late.job_id)
     assert job_row(host, late.job_id)["data"]["placement_detail"]["reason"] == "late"
     assert ordinary_result._manifest().metadata["placement"] == "ordinary"

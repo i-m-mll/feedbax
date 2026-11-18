@@ -21,8 +21,8 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.store_damage import writable_store_object
-from tests.test_local_job_host import admit, job_row, run_job, wait_until
-from tests.test_local_job_host import host as host_fixture
+from tests.support.host import admit, job_row, run_job, wait_until
+from tests.support.host import private_host as host_fixture
 from tests.test_text_project_plan_cli import _edit, _write_walkthrough
 
 host = host_fixture
