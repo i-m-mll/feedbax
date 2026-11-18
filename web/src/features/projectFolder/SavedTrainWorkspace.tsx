@@ -18,6 +18,7 @@ import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pi
 import type { RunMenu } from '@/components/pipeline/RunContextMenu';
 import type { ActivityResultState } from '@/components/activity/StudioActivity';
 import { useResultValidity } from './useResultValidity';
+import { useFollowingQuery } from '@/hooks/useFollowingQuery';
 import { StudioMachineApproval, studioRunMachineControl } from '@/components/pipeline/StudioRunMachine';
 import { SweepExceptions } from '@/components/pipeline/SweepExceptions';
 import { Drawer, DrawerSection, useDrawerSections } from '@/features/projectWindow/DrawerForms';
@@ -253,12 +254,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const inFlight = useRef(false);
   const [sweepStep, setSweepStep] = useState<string>();
   const submission = useRef<{ intent: string; token: string }>();
-  const projection = useQuery({
-    queryKey: ['saved-train-runs', saved.project_id, saved.revision, jobs.data?.cursor, jobs.data?.remote_version],
+  const jobsVersion = `${jobs.data?.cursor}:${jobs.data?.remote_version}`;
+  const projection = useFollowingQuery({
+    queryKey: ['saved-train-runs', saved.project_id, saved.revision],
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal),
     placeholderData: keepPreviousData,
     gcTime: 0,
-  });
+  }, jobsVersion);
   const data = projection.data?.revision === saved.revision ? projection.data : undefined;
   const refetchProjection = projection.refetch;
   const refreshProjection = useCallback(() => refetchProjection(), [refetchProjection]);
@@ -352,12 +354,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     data?.window_map?.rows.some(({ key, evaluation_conditions }) =>
       evaluation_conditions != null && savedRunId(key) === savedRunId(row.key))
     ? attempt.job_id : undefined;
-  const stoppedPlan = useQuery({
-    queryKey: ['saved-stopped-checkpoint', saved.project_id, saved.revision, checkpointAttempt, jobs.data?.cursor, jobs.data?.remote_version],
+  const stoppedPlan = useFollowingQuery({
+    queryKey: ['saved-stopped-checkpoint', saved.project_id, saved.revision, checkpointAttempt],
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal, checkpointAttempt),
     enabled: ready && checkpointAttempt !== undefined,
     gcTime: 0,
-  });
+  }, jobsVersion);
   useEffect(() => {
     if (!ready || !focusFirstModel || step?.id !== focusFirstModel) return;
     requestSlotFocus((count) => count + 1);
