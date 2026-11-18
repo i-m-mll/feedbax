@@ -204,7 +204,7 @@ def test_background_observation_does_not_start_an_idle_host(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("desktop_owned", [False, True], ids=["standalone", "desktop-owned"])
-def test_open_studio_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch, desktop_owned):
+def test_warming_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch, desktop_owned):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
@@ -220,16 +220,16 @@ def test_open_studio_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch
         return set((host.root / "workers").glob("*/profile.json"))
 
     with TestClient(app) as studio:
-        assert studio.get("/api/jobs").status_code == 200
+        assert studio.post("/api/jobs/warm").status_code == 202
         original = wait_until(profiles)
 
         restart(host)
 
-        assert studio.get("/api/jobs").status_code == 200
+        assert studio.post("/api/jobs/warm").status_code == 202
         replacement = wait_until(lambda: profiles() - original)
         assert len(replacement) == 1
 
-        assert studio.get("/api/jobs").status_code == 200
+        assert studio.post("/api/jobs/warm").status_code == 202
         assert profiles() - original == replacement
 
         opened = studio.get("/api/projects/reach/open")

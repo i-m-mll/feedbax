@@ -34,6 +34,7 @@ from feedbax.web.api import (
 )
 from feedbax.web.config import BASE_DIR
 from feedbax.web.services.desktop_jobs import StudioJobLifecycle
+from feedbax.web.services.job_activity import JobActivity
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.services.remote_runs import StudioRemoteRuns
@@ -78,6 +79,7 @@ def create_app(
             targets=targets, submit_session=submit_session,
             automatic_run=automatic_run, quick_duration=quick_duration,
         )
+        app.state.job_activity = JobActivity(app.state.job_service)
         app.state.remote_runs = remote_runs
         app.state.project_plan = ProjectPlanService(
             app.state.project_folders, app.state.job_service,
@@ -98,6 +100,7 @@ def create_app(
         try:
             yield
         finally:
+            app.state.job_activity.close()
             for task in maintenance:
                 task.cancel()
             for task in maintenance:

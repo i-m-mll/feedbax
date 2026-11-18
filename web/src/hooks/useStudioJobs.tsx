@@ -15,6 +15,7 @@ import {
   fetchStudioJobs,
   resumeStudioJob,
   stopStudioJobs,
+  warmStudioWorkers,
 } from '@/api/jobs';
 import type { StudioActivityJob, StudioJobEvent, StudioJobSnapshot } from '@/generated/studioContracts';
 import { studioFormat, studioName, studioRunStatus, studioStep } from '@/components/activity/studioVocabulary';
@@ -192,8 +193,13 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       }
     }
 
+    function warm() {
+      if (ownsSnapshot && projectId !== null) void warmStudioWorkers().catch(() => undefined);
+    }
+
     function open() {
       if (port) return;
+      warm();
       port = new JobsWorker({ name: STUDIO_JOBS_WORKER_NAME }).port;
       activePort.current = port;
       port.onmessage = ({ data }: MessageEvent<StudioJobWorkerMessage>) => {
@@ -254,6 +260,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
     function retryConnection() {
       parentRefresh?.();
+      warm();
       if (!port) open();
       else {
         if (ownsSnapshot) port.postMessage({ type: 'retry' } satisfies StudioJobWorkerCommand);

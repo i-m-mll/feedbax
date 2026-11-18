@@ -758,6 +758,7 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from feedbax.validity.evidence import read_execution_evidence, release_checkpoint_evidence, stage_checkpoint_evidence
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
+    from feedbax.web.services.job_activity import JobActivity
     from feedbax.contracts.project import Project
     from tests.test_canonical_evaluate_admission import _save_project
     from tests.test_document_train_pair import authored_documents, document_project
@@ -806,6 +807,7 @@ TrainingLoop.run_block = pause_first_update
     app.include_router(jobs.router)
     app.include_router(projects.router)
     app.state.job_service = service
+    app.state.job_activity = JobActivity(service)
     app.state.remote_runs = None
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)

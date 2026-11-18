@@ -83,6 +83,10 @@ export function fetchStudioJobs(signal?: AbortSignal) {
   return readContract('/api/jobs', 'StudioJobSnapshot', { signal });
 }
 
+export async function warmStudioWorkers() {
+  await requestResponse('/api/jobs/warm', { method: 'POST' });
+}
+
 export async function closeStudioMachine(id: string) {
   await requestResponse(`/api/sessions/${encodeURIComponent(id)}/close`, { method: 'POST' });
 }

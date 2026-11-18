@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -123,6 +124,48 @@ _ACTIVE_PLAN_STATUSES = frozenset({
 })
 EVALUATION_SUBJECT_REQUIRED = "select an unambiguous admitted Train subject"
 _LIGHT_KINDS = frozenset({"analyze", "render", "report"})
+
+
+_log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityEntry:
+    """One visible host event and the Activity row it leaves, when it is the job's latest in its page."""
+
+    event: Mapping[str, Any]
+    activity: StudioActivityJob | None
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityPage:
+    head: int
+    cursor: int
+    oldest_cursor: int
+    entries: tuple[ActivityEntry, ...]
+
+
+def stream_events(
+    entries: Sequence[ActivityEntry], *, projects: tuple[str, ...], machine: bool,
+) -> list[StudioJobEvent]:
+    """Project visible events for one stream: detail for its projects, Activity rows for every project on a machine stream."""
+    events = []
+    for entry in entries:
+        event = entry.event
+        if not machine and projects and event["project"] not in projects:
+            continue
+        detail = not machine or event["project"] in projects
+        if (detail and event["kind"] not in _HOST_ONLY_EVENTS) or entry.activity is not None:
+            events.append(_project_event(event, activity=entry.activity, detail=detail))
+    return events
+
+
+def history_events(entries: Sequence[ActivityEntry], *, project: str) -> list[StudioJobEvent]:
+    """Project one project's retained history, which omits Activity rows and continuation markers."""
+    return [
+        _project_event(entry.event) for entry in entries
+        if entry.event["project"] == project and entry.event["kind"] != "continued"
+    ]
 
 
 class JobNotFound(LookupError):
@@ -1224,12 +1267,17 @@ class JobService(PlanJobReader):
             return self.host.admit(token, placed, record=record | {"target": placement})
 
     def warm(self) -> None:
+        """Ask the host to keep a training worker ready; a host that cannot leaves the next run to start cold."""
         with self._launch_lock:
-            if self._accepting:
+            if not self._accepting:
+                return
+            try:
                 self.host.warm(
                     self._training_worker,
                     runtime_owner=os.path.realpath(self._training_worker.argv[0]),
                 )
+            except HostError as error:
+                _log.warning("The host could not warm a training worker: %s", error)
 
     def retire_runtime(self, release: str, disposition: str) -> dict:
         """Quiesce installed-runtime admissions and release its owned Host."""
@@ -1613,15 +1661,9 @@ class JobService(PlanJobReader):
         self.host.record_put(_seen_key(job_id), {"seen": True})
         return self._activity_rows(rows)[job_id]
 
-    def events(
-        self,
-        *,
-        after: int,
-        projects: tuple[str, ...],
-        wait: float,
-        machine: bool,
-    ) -> tuple[int, StudioJobEventHistory]:
-        page = self.host.events(after=after, projects=() if machine else projects, wait=wait)
+    def activity_page(self, *, after: int, projects: tuple[str, ...] = (), wait: float) -> ActivityPage:
+        """Read one host event page with the Activity row each job's last activity event leaves."""
+        page = self.host.events(after=after, projects=projects, wait=wait)
         visible, rows = self._visible_events(page["events"], activity=True)
         activity_events = {
             event["job_id"]: event["cursor"]
@@ -1630,19 +1672,30 @@ class JobService(PlanJobReader):
             or (event["kind"] == "dependency_bound" and rows[event["job_id"]]["data"].get("placement_detail"))
         }
         activity = self._activity_rows([rows[job_id] for job_id in activity_events])
-        events = []
-        for event in visible:
-            job_id = event["job_id"]
-            detail = not machine or event["project"] in projects
-            snapshot = (
-                activity.get(job_id) if activity_events.get(job_id) == event["cursor"] else None
-            )
-            if (detail and event["kind"] not in _HOST_ONLY_EVENTS) or snapshot is not None:
-                events.append(_project_event(event, activity=snapshot, detail=detail))
-        return page["head"], StudioJobEventHistory(
-            cursor=page["cursor"],
-            oldest_cursor=page["oldest_cursor"],
-            events=events,
+        return ActivityPage(
+            head=page["head"], cursor=page["cursor"], oldest_cursor=page["oldest_cursor"],
+            entries=tuple(
+                ActivityEntry(
+                    event,
+                    activity.get(event["job_id"]) if activity_events.get(event["job_id"]) == event["cursor"] else None,
+                )
+                for event in visible
+            ),
+        )
+
+    def events(
+        self,
+        *,
+        after: int,
+        projects: tuple[str, ...],
+        wait: float,
+        machine: bool,
+    ) -> tuple[int, StudioJobEventHistory]:
+        page = self.activity_page(after=after, projects=() if machine else projects, wait=wait)
+        return page.head, StudioJobEventHistory(
+            cursor=page.cursor,
+            oldest_cursor=page.oldest_cursor,
+            events=stream_events(page.entries, projects=projects, machine=machine),
         )
 
     def event_history(self, *, after: int, project: str, through: int) -> StudioJobEventHistory:

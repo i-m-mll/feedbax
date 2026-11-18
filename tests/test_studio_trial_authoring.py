@@ -23,6 +23,7 @@ from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
 from feedbax.web.services import project_plan as window_service
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.job_activity import JobActivity
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload
 from tests.test_document_train_pair import authored_documents, document_project
@@ -52,6 +53,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         folders = app.state.project_folders
         jobs = JobService(host, registry)
         app.state.job_service = jobs
+        app.state.job_activity = JobActivity(jobs)
         project = "trial-authoring"
         raw = _python_project()
         raw["documents"]["test-task"] = {

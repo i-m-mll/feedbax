@@ -7,7 +7,7 @@ from time import monotonic
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -44,6 +44,7 @@ from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.orchestration.session import SessionError
 from feedbax.web.api.projects import ProjectRevisionWatch, _project_response
+from feedbax.web.services.job_activity import JobActivity
 from feedbax.web.services.remote_runs import StudioRemoteRuns
 
 
@@ -53,6 +54,10 @@ _FOLDER_OBSERVATION_INTERVAL = 0.5
 
 def _jobs(request: Request) -> JobService:
     return request.app.state.job_service
+
+
+def _activity(request: Request) -> JobActivity:
+    return request.app.state.job_activity
 
 
 def _host_error(exc: HostError) -> HTTPException:
@@ -83,6 +88,7 @@ def saved_train_runs(
 @router.post("/projects/{project_id}/train-runs", status_code=202)
 def run_saved_train(
     project_id: ProjectName, body: StudioSavedTrainRunRequest, request: Request, response: Response,
+    background: BackgroundTasks,
 ) -> StudioJobSubmission:
     if body.target != LOCAL_TARGET_ID:
         raise HTTPException(409, detail="Review and approve the machine quote first.")
@@ -98,11 +104,14 @@ def run_saved_train(
         )
 
     try:
-        return _project_response(response, admit)
+        submission = _project_response(response, admit)
     except JobConflict as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
+    _activity(request).advance()
+    background.add_task(_jobs(request).warm)
+    return submission
 
 
 def _result_validity_action(
@@ -264,56 +273,68 @@ def get_submission(submission_id: str, request: Request) -> StudioJobSubmission:
 @router.get("/jobs")
 def list_jobs(request: Request, project: str | None = None) -> StudioJobSnapshot:
     try:
-        service = _jobs(request)
-        service.warm()
-        snapshot = service.jobs(project=project)
+        snapshot = _activity(request).snapshot(project=project)
         remote = request.app.state.remote_runs
         return remote.snapshot(snapshot, project=project) if remote is not None else snapshot
     except HostError as exc:
         raise _host_error(exc) from exc
 
 
+@router.post("/jobs/warm", status_code=202)
+def warm_workers(request: Request, background: BackgroundTasks) -> None:
+    background.add_task(_jobs(request).warm)
+
+
 @router.post("/jobs/stop", status_code=202)
 def stop_jobs(body: StudioJobStopRequest, request: Request) -> list[StudioJobStopItem]:
     try:
         remote = request.app.state.remote_runs
-        if remote is not None:
-            return remote.stop(_jobs(request), body.job_ids, body.mode)
-        return _jobs(request).stop(body.job_ids, body.mode)
+        stopped = (
+            remote.stop(_jobs(request), body.job_ids, body.mode) if remote is not None
+            else _jobs(request).stop(body.job_ids, body.mode)
+        )
     except SessionError as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
+    _activity(request).advance()
+    return stopped
 
 
 @router.post("/jobs/{job_id}/resume", status_code=202)
 def resume_job(job_id: str, body: StudioJobResumeRequest, request: Request) -> StudioActivityJob:
     try:
         remote = request.app.state.remote_runs
-        if remote is not None:
-            return remote.resume(_jobs(request), job_id, body.token)
-        return _jobs(request).resume(job_id, body.token)
+        resumed = (
+            remote.resume(_jobs(request), job_id, body.token) if remote is not None
+            else _jobs(request).resume(job_id, body.token)
+        )
     except JobNotFound as exc:
         raise HTTPException(404, detail="Unknown job") from exc
     except (JobConflict, SessionError) as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
+    _activity(request).advance()
+    return resumed
 
 
 @router.post("/jobs/{job_id}/seen")
 def acknowledge_job(job_id: str, request: Request) -> StudioActivityJob:
     try:
         remote = request.app.state.remote_runs
-        if remote is not None:
-            return remote.acknowledge(_jobs(request), job_id)
-        return _jobs(request).acknowledge(job_id)
+        seen = (
+            remote.acknowledge(_jobs(request), job_id) if remote is not None
+            else _jobs(request).acknowledge(job_id)
+        )
     except JobNotFound as exc:
         raise HTTPException(404, detail="Unknown job") from exc
     except JobConflict as exc:
         raise HTTPException(409, detail=str(exc)) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
+    _activity(request).put(seen)
+    return seen
 
 
 @router.get("/sessions")
@@ -362,7 +383,7 @@ def job_event_history(
             )
         if venue is not None or stream is not None:
             raise HTTPException(422, detail="Machine history requires both source identifiers.")
-        return _jobs(request).event_history(after=after, project=project, through=through)
+        return _activity(request).history(after=after, project=project, through=through)
     except JobNotFound as exc:
         raise HTTPException(404, detail="Unknown machine history.") from exc
     except SessionError as exc:
@@ -384,7 +405,7 @@ async def job_events(
     machine: bool = False,
     folder: Annotated[list[ProjectName] | None, Query()] = None,
 ) -> StreamingResponse:
-    service = _jobs(request)
+    service = _activity(request)
     remote = request.app.state.remote_runs if machine else None
     projects = tuple(dict.fromkeys(project or ()))
     folders = tuple(dict.fromkeys(folder or ()))
