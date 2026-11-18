@@ -10,6 +10,7 @@ import {
   useState,
   type DragEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type Ref,
 } from 'react';
@@ -118,6 +119,8 @@ export interface StudioPipelineMapProps {
   /** An armed reference pick: a card it accepts fills the reference when its head is chosen. */
   pick?: ReferencePick | null;
   rename?: MapStepRename;
+  /** Go into a step: its views, with the keyboard in the slot that shows its Runs. */
+  onEnterStep?: (stepId: string) => void;
 }
 
 export type MapRenameSurface = 'card' | 'drawer' | 'line';
@@ -158,18 +161,25 @@ function renamingStep(rename: MapStepRename | undefined, stepId: string, surface
   return rename?.editing?.stepId === stepId && rename.editing.surface === surface ? rename : undefined;
 }
 
-/** Return on a selected step's name starts renaming it; otherwise the key selects as usual. */
-function renameOnReturn(
-  rename: MapStepRename | undefined, stepId: string, surface: MapRenameSurface, selected: boolean,
-  onKeyDown: ReturnType<typeof selectionButton>['onKeyDown'],
+/** Return goes into the step and F2 renames it; a double-click on its name renames it, elsewhere goes in. */
+function stepGestures(
+  rename: MapStepRename | undefined, enter: ((stepId: string) => void) | undefined,
+  stepId: string, surface: MapRenameSurface, onKeyDown: ReturnType<typeof selectionButton>['onKeyDown'],
 ) {
-  return (event: KeyboardEvent) => {
-    if (rename && selected && event.key === 'Enter' && !extendsSelection(event)) {
-      event.preventDefault();
-      rename.setEditing({ stepId, surface });
-      return;
-    }
-    onKeyDown(event);
+  return {
+    onKeyDown: (event: KeyboardEvent) => {
+      if (event.key === 'F2' && rename) {
+        event.preventDefault();
+        rename.setEditing({ stepId, surface });
+      } else if (event.key === 'Enter' && enter && !extendsSelection(event)) {
+        event.preventDefault();
+        enter(stepId);
+      } else onKeyDown(event);
+    },
+    onDoubleClick: (event: MouseEvent) => {
+      if (rename && event.target instanceof Element && event.target.closest('[data-step-name]')) rename.setEditing({ stepId, surface });
+      else enter?.(stepId);
+    },
   };
 }
 
@@ -223,7 +233,7 @@ function StepName({ step, rename }: { step: PlanStepView; rename?: MapStepRename
   return (
     <span className="studio-card__title flex min-w-0 items-center gap-1.5">
       <span className="studio-card__glyph" {...appTip(studioName(step.kind))}><Icon aria-hidden="true" className="size-4" /></span>
-      {rename ? <StepNameEdit step={step} rename={rename} /> : <span className="truncate font-medium">{step.label}</span>}
+      {rename ? <StepNameEdit step={step} rename={rename} /> : <span data-step-name className="truncate font-medium">{step.label}</span>}
     </span>
   );
 }
@@ -388,6 +398,7 @@ const StepCard = memo(function StepCard({
   runMenu,
   rename,
   pick,
+  enterStep,
 }: {
   step: PlanStepView;
   selection: PipelineSelection | null;
@@ -407,6 +418,7 @@ const StepCard = memo(function StepCard({
   runMenu?: RunMenu;
   rename?: MapStepRename;
   pick?: ReferencePick | null;
+  enterStep?: (stepId: string) => void;
 }) {
   const id = useId();
   const picked = { kind: 'step', step: step.id } as const;
@@ -462,7 +474,7 @@ const StepCard = memo(function StepCard({
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
           aria-pressed={documentScope ? level === 'lit' : selection?.kind === 'steps'}
           {...headSelection}
-          onKeyDown={renameOnReturn(rename, step.id, 'card', selection?.kind === 'steps' && !pick, headSelection.onKeyDown)}
+          {...stepGestures(rename, pick ? undefined : enterStep, step.id, 'card', headSelection.onKeyDown)}
         >
           <StepName step={step} />
         </Button>}
@@ -620,9 +632,10 @@ interface DrawerProps {
   applySelection: ApplyMapSelection;
   documentScope?: MapDocumentScope;
   rename?: MapStepRename;
+  enterStep?: (stepId: string) => void;
 }
 
-function StepRow({ step, selection, related, focusedStepId, chooseStep, applySelection, documentScope, rename }: DrawerProps & {
+function StepRow({ step, selection, related, focusedStepId, chooseStep, applySelection, documentScope, rename, enterStep }: DrawerProps & {
   step: PlanStepView;
 }) {
   const scope = stepSelection(selection, step.id);
@@ -633,9 +646,11 @@ function StepRow({ step, selection, related, focusedStepId, chooseStep, applySel
   const choose = selectionButton((extend) => chooseStep(step.id, extend));
   const { Icon } = studioStep(step.kind);
   const shown = worst && step.runs.length > 1 ? worst.count : undefined;
+  const gestures = stepGestures(rename, enterStep, step.id, 'drawer', choose.onKeyDown);
   return (
     <ListRow
       selected={!!scope}
+      onDoubleClick={gestures.onDoubleClick}
       data-map-dimmed={Boolean(related && !count && focusedStepId !== step.id) || undefined}
       data-document-scope={level}
       className={`data-[document-scope=faint]:text-shell-muted data-[map-dimmed=true]:text-shell-muted ${!scope ? documentLitStyle : ''}`}
@@ -644,10 +659,11 @@ function StepRow({ step, selection, related, focusedStepId, chooseStep, applySel
       name={renamingStep(rename, step.id, 'drawer') ? <StepNameEdit step={step} rename={rename!} />
         : <Button variant="bare" size="content" align="start" className="block w-full truncate"
           data-map-row={step.id}
+          data-step-name
           aria-current={scope ? 'step' : undefined}
           aria-label={studioAccessibleName('select', stepLabel(step, summary))}
           aria-pressed={documentScope ? level === 'lit' : undefined}
-          onKeyDown={renameOnReturn(rename, step.id, 'drawer', scope?.kind === 'steps', choose.onKeyDown)}>{step.label}</Button>}
+          onKeyDown={gestures.onKeyDown}>{step.label}</Button>}
       trailing={worst && (
         <Button variant="bare" size="content" className="inline-flex items-center gap-1 rounded-sm tabular-nums"
           onClick={(event) => {
@@ -704,14 +720,14 @@ function MapDrawer({ steps, newStep, framed = false, ...props }: DrawerProps & {
   );
 }
 
-export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep, rename }: Pick<
-  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep' | 'rename'
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep, rename, onEnterStep }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep' | 'rename' | 'onEnterStep'
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const applySelection: ApplyMapSelection = (change) => onSelectionChange(change(state));
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
-    chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename}
+    chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename} enterStep={onEnterStep}
     newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })} framed />;
 }
 
@@ -722,6 +738,7 @@ function MapLine({
   chooseStep,
   documentScope,
   rename,
+  enterStep,
 }: {
   plan: PlanView;
   layout: MapLayout;
@@ -729,6 +746,7 @@ function MapLine({
   chooseStep: ChooseStep;
   documentScope?: MapDocumentScope;
   rename?: MapStepRename;
+  enterStep?: (stepId: string) => void;
 }) {
   const selected = plan.steps.filter(({ id }) => stepSelection(selection, id));
   const center = selected.length === 1 ? selected[0] : null;
@@ -737,7 +755,7 @@ function MapLine({
   const groups = documentScope ? [plan.steps] : [before, selected.length ? selected : plan.steps, after].filter((steps) => steps.length);
   const lineSelection = (stepId: string) => {
     const choose = selectionButton((extend) => chooseStep(stepId, extend));
-    return { ...choose, onKeyDown: renameOnReturn(rename, stepId, 'line', stepSelection(selection, stepId)?.kind === 'steps', choose.onKeyDown) };
+    return { ...choose, ...stepGestures(rename, enterStep, stepId, 'line', choose.onKeyDown) };
   };
   return (
     <div className="flex items-center gap-2 overflow-auto p-2">
@@ -791,6 +809,7 @@ export function StudioPipelineMap({
   runMenu,
   rename,
   pick,
+  onEnterStep,
 }: StudioPipelineMapProps) {
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
@@ -855,7 +874,7 @@ export function StudioPipelineMap({
       } : undefined}
     >
       {!plan.steps.length ? null : mode === 'line' ? (
-        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} rename={rename} />
+        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} rename={rename} enterStep={onEnterStep} />
       ) : (
         <>
           {drawDrawer && (
@@ -869,6 +888,7 @@ export function StudioPipelineMap({
               documentScope={documentScope}
               newStep={firstStep}
               rename={rename}
+              enterStep={onEnterStep}
             />
           )}
           <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus}
@@ -897,6 +917,7 @@ export function StudioPipelineMap({
                     runMenu={runMenu}
                     rename={rename}
                     pick={pick}
+                    enterStep={onEnterStep}
                   />
                 ))}
               </div>

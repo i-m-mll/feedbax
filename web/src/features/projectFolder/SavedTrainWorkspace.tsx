@@ -1048,8 +1048,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     focus: stepFocus,
     focused: () => setStepFocus(null),
   } : undefined;
+  /** Going into a step puts the keyboard in the slot that shows its views; a window showing only the map opens Runs. */
+  const enterStep = (stepId: string) => {
+    selection.select(selectStep(state, stepId));
+    if (windowState.mode === 'map') setWindowState((current) => showProjectWindowView(current, 'runs', focusSlot));
+    requestSlotFocus((count) => count + 1);
+  };
   const mapProps = {
-    plan, state, problemSteps, rename: renameStep,
+    plan, state, problemSteps, rename: renameStep, onEnterStep: enterStep,
     onSelectionChange: (value: PipelineSelectionState) => {
       setResultAttempt(undefined);
       setProblemReveal(undefined);
@@ -1105,11 +1111,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, {
       enabled: !busy && !outside,
     }),
-    step && bindStudioCommand('renameStep', () => setRenamingStep({ stepId: step.id, surface: mapSurface }), { subject: step.label, enabled: !!renameStep && !busy }),
     ...runCommands,
     ...(step ? validity.commands(selectedRuns(step, state.selection)) : []),
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep ? stoppedNewStep : nextStep,
     ...(focusedDetail?.commands ?? []),
+    // After the focused view's commands, so its own F2 (a Model component's rename) comes first.
+    step && bindStudioCommand('renameStep', () => setRenamingStep({ stepId: step.id, surface: mapSurface }), { subject: step.label, enabled: !!renameStep && !busy }),
     ...analyze.commands,
     ...report.commands,
     step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),

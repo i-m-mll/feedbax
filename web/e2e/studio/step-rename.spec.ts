@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures/studio';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 
@@ -42,6 +42,16 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
     await expect(runs(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 30_000 });
   }
 
+  /** Return on a step goes into its views: the keyboard moves into the slot, here showing Runs. */
+  async function expectGoesIn(target: Locator) {
+    const details = page.getByRole('tablist', { name: 'Details' });
+    await expect(details.getByRole('tab', { name: 'Runs', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await target.press('Enter');
+    await expect(page.getByRole('tabpanel', { name: 'Runs', exact: true }).and(page.locator(':focus-within'))).toBeVisible();
+    await expect(page.getByRole('textbox', { name: /^Rename / })).toHaveCount(0);
+    await target.focus();
+  }
+
   async function command(name: string) {
     await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
     await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: new RegExp(`^${name}\\b`) }).click();
@@ -54,7 +64,8 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
   expect(await statuses()).toEqual({ train: 'succeeded', baseline: 'succeeded' });
 
   await mapStep(page, 'train').click();
-  await mapStep(page, 'train').press('Enter');
+  await expectGoesIn(mapStep(page, 'train'));
+  await mapStep(page, 'train').press('F2');
   const name = page.locator('[data-map-step="train"]').getByRole('textbox', { name: 'Rename train', exact: true });
   await expect(name).toBeFocused();
   await name.fill('baseline');
@@ -97,7 +108,8 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
   const row = page.locator('[data-map-row="train"]');
   if (!await row.isVisible()) await command('Show Steps');
   await row.click();
-  await row.press('Enter');
+  await expectGoesIn(row);
+  await row.press('F2');
   const drawer = page.getByRole('navigation', { name: 'Steps', exact: true }).getByRole('textbox', { name: 'Rename train', exact: true });
   await expect(drawer).toBeFocused();
   await drawer.press('Escape');

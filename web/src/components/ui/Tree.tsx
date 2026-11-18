@@ -347,7 +347,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
             onClick={(event) => onRowClick(event, node)}
             onDoubleClick={(event) => {
               if (node.disabled) return;
-              if (onRename && event.target instanceof Element && event.target.closest('[data-tree-name]')) setEditing(node.id);
+              if (onRename && renamable(node) && event.target instanceof Element && event.target.closest('[data-tree-name]')) setEditing(node.id);
               else onActivate?.(node.id);
             }}
             onContextMenu={() => onContextMenu(node)}
