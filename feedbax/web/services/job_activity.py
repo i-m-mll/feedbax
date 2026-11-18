@@ -208,8 +208,10 @@ class JobActivity:
         with self._changed:
             if self._cursor != after:
                 return
+            # Rows are kept in the order of their latest change, so Activity can order projects by recency.
             for entry in page.entries:
                 if entry.activity is not None:
+                    self._rows.pop(entry.activity.job_id, None)
                     self._rows[entry.activity.job_id] = entry.activity
             for snapshot in refreshed:
                 self._rows.update((row.job_id, row) for row in snapshot.rows)

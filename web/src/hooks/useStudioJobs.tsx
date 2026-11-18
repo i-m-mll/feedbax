@@ -101,9 +101,8 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
           if (!snapshot || event.cursor <= snapshot.cursor) return snapshot;
           const others = snapshot.jobs.filter((job) => job.job_id !== event.job_id);
           const known = others.length < snapshot.jobs.length;
-          const jobs = !activity ? others : known
-            ? snapshot.jobs.map((job) => job.job_id === activity.job_id ? activity : job)
-            : [...snapshot.jobs, activity];
+          // Jobs are listed in the order of their latest change, as the held snapshot lists them.
+          const jobs = activity ? [...others, activity] : others;
           const unread = snapshot.unreadable.filter((record) => record.job_id !== event.job_id);
           return { ...snapshot, cursor: event.cursor, jobs, unreadable: unreadable ? [...unread, unreadable] : unread };
         });
@@ -308,6 +307,11 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
 export function useStudioJobs() {
   return useQuery<StudioJobSnapshot>({ queryKey: jobsKey, queryFn: skipToken });
+}
+
+/** The project whose window this is, or null in the standalone Activity window. */
+export function useStudioJobsProject() {
+  return useStudioJobsContext().projectId;
 }
 
 export function useStudioUnreadableJobs() {

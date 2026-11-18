@@ -81,7 +81,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
 
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
-    const attempt = activity.getByRole('list', { name: 'Runs' }).getByRole('listitem').filter({ hasText: configuration.project });
+    const attempt = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
     const stopping = responseFor(page, '/api/jobs/stop');
     await attempt.getByRole('button', { name: 'Stop', exact: true }).click();
     expect((await stopping).status()).toBe(202);
@@ -126,7 +126,7 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   await select(page, 'train');
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
-  const entries = activity.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem').filter({ hasText: configuration.project });
+  const entries = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
 
   await runProjectFixture('web.e2e.studio.fixtures.canonical_train',
     'run-saved-cli', studio.home, configuration.project, label);

@@ -59,7 +59,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
 }, testInfo) => {
   test.setTimeout(50_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '6000', ...rates));
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '6000', ...rates));
   const projectId = snapshot.project_id;
   const observer = await observeJobStreams(baseURL);
   const jobs = () => projectJobs(request, projectId);
@@ -113,14 +113,16 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     await page.reload();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
-    const selected = activity.getByRole('listitem').filter({ hasText: first.label });
+    const selected = activity.getByRole('region', { name: configuration.project, exact: true })
+      .getByRole('listitem').filter({ hasText: first.label });
     const stopping = post(page, '/api/jobs/stop');
     await selected.getByRole('button', { name: 'Stop', exact: true }).click();
     expect((await stopping).ok()).toBe(true);
 
     const secondActivity = second.getByRole('region', { name: 'Activity', exact: true });
     await second.getByRole('button', { name: 'Activity', exact: true }).click();
-    const secondAttempt = (label: string) => secondActivity.getByRole('listitem').filter({ hasText: label }).first();
+    const secondAttempt = (label: string) => secondActivity.getByRole('region', { name: configuration.project, exact: true })
+      .getByRole('listitem').filter({ hasText: label }).first();
     const resume = secondAttempt(first.label).getByRole('button', { name: 'Resume', exact: true });
     await expect(resume).toBeEnabled({ timeout: 10_000 });
     const stopped = (await jobs()).find((job) => job.job_id === first.job_id);

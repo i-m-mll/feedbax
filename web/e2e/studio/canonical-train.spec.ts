@@ -32,10 +32,10 @@ test('standalone Activity opens an existing run and hydrates its retained histor
   await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
   const announcements = page.getByRole('log', { name: 'Status', exact: true });
   await expect(announcements).toHaveCount(1);
-  const row = page.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem')
-    .filter({ hasText: snapshot.project_id });
+  const row = page.getByRole('list', { name: 'Runs', exact: true })
+    .getByRole('region', { name: snapshot.project_id, exact: true }).getByRole('listitem');
   await expect(row.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
-  await row.getByRole('button', { name: new RegExp(snapshot.project_id) }).click();
+  await row.getByRole('button', { name: /^Train / }).click();
   const inspector = page.getByRole('region', { name: 'Run Inspector' });
   await expect(inspector.getByRole('region', { name: 'Log', exact: true })).toBeVisible();
   await expect(announcements).toHaveCount(1);

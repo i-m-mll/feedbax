@@ -1,8 +1,8 @@
 import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
-import { useId, useState } from 'react';
+import { useId, useState, type PropsWithChildren } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
-import { StudioJobsProvider, useStudioJobActions, useStudioJobs, useStudioUnreadableJobs } from '@/hooks/useStudioJobs';
+import { StudioJobsProvider, useStudioJobActions, useStudioJobs, useStudioJobsProject, useStudioUnreadableJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
@@ -34,7 +34,6 @@ function coordinateValue(value: unknown) {
 
 function ActivityRun({
   job,
-  project,
   selected,
   machine,
   resultState,
@@ -42,7 +41,6 @@ function ActivityRun({
   onClose,
 }: {
   job: StudioActivityJob;
-  project?: string;
   selected: boolean;
   machine?: string;
   resultState?: StudioResultState;
@@ -104,7 +102,6 @@ function ActivityRun({
           <span className="flex items-center gap-1.5 text-xs font-medium text-shell-muted">
             <Icon aria-hidden="true" className="size-3.5 shrink-0" />
             {name}
-            {project && <span className="truncate font-normal">{project}</span>}
           </span>
           <span className="block break-words font-medium">{job.label}</span>
         </Button>
@@ -242,6 +239,36 @@ export function StudioActivityPane(props: StudioActivityPaneProps) {
   );
 }
 
+/**
+ * Activity's runs grouped by project: the window's own project first, then the others in the order
+ * of their most recent activity. The snapshot lists jobs in the order of their latest change.
+ */
+function activityGroups(jobs: readonly StudioActivityJob[], visible: readonly StudioActivityJob[], ownProject: string | null) {
+  const latest = new Map<string, number>();
+  jobs.forEach((job, index) => latest.set(job.project_id, index));
+  const runs = new Map<string, StudioActivityJob[]>();
+  for (const job of visible) runs.set(job.project_id, [...(runs.get(job.project_id) ?? []), job]);
+  const rank = (projectId: string) => projectId === ownProject ? Infinity : latest.get(projectId) ?? -1;
+  return [...runs]
+    .sort(([a], [b]) => rank(b) - rank(a))
+    .map(([projectId, group]) => ({
+      projectId,
+      runs: group.sort((a, b) => a.label.localeCompare(b.label) || a.job_id.localeCompare(b.job_id)),
+    }));
+}
+
+function ActivityProject({ name, children }: PropsWithChildren<{ name: string }>) {
+  const heading = useId();
+  return (
+    <li>
+      <section aria-labelledby={heading} className="space-y-2">
+        <h3 id={heading} className="truncate text-xs font-medium text-shell-muted">{name}</h3>
+        <ul className="space-y-2">{children}</ul>
+      </section>
+    </li>
+  );
+}
+
 function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultState }: StudioActivityPaneProps) {
   const snapshot = useStudioJobs();
   const unreadable = useStudioUnreadableJobs();
@@ -249,11 +276,9 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultS
   const [selection, setSelection] = useState<string | null>(null);
   const jobs = snapshot.data?.jobs ?? [];
   const selected = jobs.find((job) => job.job_id === selection);
-  const visible = jobs
-    .filter((job) => isLive(job) || !job.seen || job === selected)
-    .sort((a, b) => (projectNames.get(a.project_id) ?? a.project_id).localeCompare(projectNames.get(b.project_id) ?? b.project_id)
-      || a.label.localeCompare(b.label)
-      || a.job_id.localeCompare(b.job_id));
+  const ownProject = useStudioJobsProject();
+  const visible = jobs.filter((job) => isLive(job) || !job.seen || job === selected);
+  const groups = activityGroups(jobs, visible, ownProject);
   const machine = snapshot.data?.sessions.find((session) => session.id === 'local');
   const remoteMachines = snapshot.data?.sessions.filter((session): session is StudioRemoteSession => 'name' in session) ?? [];
   const machineByJob = new Map(remoteMachines.flatMap((session) => session.job_ids.map((id) => [id, session.name] as const)));
@@ -292,22 +317,25 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultS
     >
       {machineField}
       {remoteMachines.map((session) => <ActivityMachine key={session.id} machine={session} />)}
-      <ul aria-label={studioName('runs')} className="space-y-2">
-        {visible.map((job) => (
-          <ActivityRun
-            key={job.job_id}
-            job={job}
-            project={projectNames.get(job.project_id) ?? job.project_id}
-            selected={job === selected}
-            machine={machineByJob.get(job.job_id)}
-            resultState={resultState?.(job)}
-            onClose={onClose}
-            onOpen={async () => {
-              const opened = await onOpenRun(job);
-              if (!opened) setSelection(job.job_id);
-              return opened;
-            }}
-          />
+      <ul aria-label={studioName('runs')} className="space-y-3">
+        {groups.map(({ projectId, runs }) => (
+          <ActivityProject key={projectId} name={projectNames.get(projectId) ?? projectId}>
+            {runs.map((job) => (
+              <ActivityRun
+                key={job.job_id}
+                job={job}
+                selected={job === selected}
+                machine={machineByJob.get(job.job_id)}
+                resultState={resultState?.(job)}
+                onClose={onClose}
+                onOpen={async () => {
+                  const opened = await onOpenRun(job);
+                  if (!opened) setSelection(job.job_id);
+                  return opened;
+                }}
+              />
+            ))}
+          </ActivityProject>
         ))}
       </ul>
       {selected && (standalone

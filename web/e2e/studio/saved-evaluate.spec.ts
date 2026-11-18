@@ -885,7 +885,10 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await chooseStep(page, 'finite');
   await footer(page).getByRole('button', { name: 'Activity', exact: true }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
-  const openActivityRun = activity.getByRole('button').filter({ has: page.getByText(activityLabel, { exact: true }) });
+  // Activity lists every project's runs, grouped by project, with this window's project first.
+  await expect(activity.getByRole('region').first()).toHaveAccessibleName('saved-evaluate');
+  const ownRuns = activity.getByRole('region', { name: 'saved-evaluate', exact: true });
+  const openActivityRun = ownRuns.getByRole('button').filter({ has: page.getByText(activityLabel, { exact: true }) });
   await expect(openActivityRun).toHaveAccessibleName(/^Evaluate/);
   await scanStudio(page, info, 'evaluate-activity');
   const activityReplay = page.waitForResponse((response) => {

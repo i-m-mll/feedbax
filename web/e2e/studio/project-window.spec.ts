@@ -95,8 +95,8 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   await expect(status).toHaveAttribute('aria-live', 'polite');
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
-  const activityRow = activity.getByRole('listitem').filter({
-    has: page.getByRole('button', { name: `Train ${configuration.project} train`, exact: true }),
+  const activityRow = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem').filter({
+    has: page.getByRole('button', { name: 'Train train', exact: true }),
   });
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
   await expect(runButton).toBeEnabled();
