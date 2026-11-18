@@ -466,7 +466,7 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     plan = compile_project(Project.model_validate(document_project(authored)))
     identity, data = next(iter(plan.requests.items()))
     stored = json.loads(data)
-    assert stored["schema"] == "feedbax.request.train.documents.v2"
+    assert stored["schema"] == "feedbax.request.train.documents.v3"
     model = stored["spec"]["trial_documents"]["model"]
     assert model["ports"]["inputs"][0]["name"] == "reach_target"
     wrapper = model["interior"]["components"]["wrapper"]
@@ -480,7 +480,7 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     assert encode_request(decoded.spec, decoded.inputs).data == data
     assert identity != request_id("train", stored["spec"], decoded.inputs)
 
-    previous = stored | {"schema": "feedbax.request.train.documents.v1"}
+    previous = stored | {"schema": "feedbax.request.train.documents.v2"}
     with pytest.raises(ValueError, match="Unsupported stored request envelope"):
         decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
     wrapper["name"] = "wrapper"
