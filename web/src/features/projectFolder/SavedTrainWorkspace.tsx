@@ -1298,7 +1298,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 evaluationEditor) ? <Drawer>
                 {(authoring || evaluationCheckpointRule || evaluationEditor) && <DrawerSection sections={drawerSections} id="runs.definition"
                   name={studioName(step.kind === 'train' ? 'training' : step.kind)} bodyClassName="grid content-start gap-3 p-1">
-                {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} fieldRows={detailInputs.fieldRows}
+                {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError} fieldRows={detailInputs.fieldRows}
                     focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
                     onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
                 {evaluationCheckpointRule &&

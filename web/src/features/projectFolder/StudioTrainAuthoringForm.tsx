@@ -36,6 +36,8 @@ interface Props {
   readonly stepId: string;
   readonly selection?: PipelineSelection;
   readonly run?: StudioSavedTrainKey;
+  /** The plan of the saved revision is still loading, so `run` is not yet known and the fields wait for it. */
+  readonly runPending?: boolean;
   readonly fieldRows?: readonly string[];
   readonly step?: PlanStepView;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
@@ -76,13 +78,16 @@ function validateRecipe(
 }
 
 /** The step's numeric fields as the server projects them, and the edit that applies one through the run confirmation. */
-function useTrainFields(editor: ProjectEditController, stepId: string, run?: StudioSavedTrainKey, rows: readonly string[] = []) {
+function useTrainFields(
+  editor: ProjectEditController, stepId: string, run?: StudioSavedTrainKey, rows: readonly string[] = [], runPending = false,
+) {
   const { saved, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
   const body = { revision, run, rows: run ? [...rows] : [] };
   const fields = useQuery({
     queryKey: ['train-fields', projectId, stepId, body],
     queryFn: ({ signal }) => projectTrainFields(projectId, stepId, body, signal),
+    enabled: !runPending,
     placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
   });
   const confirmRemoval = useRunRemoval();
@@ -179,7 +184,7 @@ export function StudioTrainAuthoringForm(props: Props) {
     placeholderData: (previous) => previous?.project_id === projectId && previous.step_id === stepId ? previous : undefined,
   });
   const catalog = useAuthoringCatalog();
-  const numeric = useTrainFields(editor, stepId, props.run, props.fieldRows);
+  const numeric = useTrainFields(editor, stepId, props.run, props.fieldRows, props.runPending);
   const active = useRef<AbortController | null>(null);
   const command = useRef<AbortController | null>(null);
   const region = useRef<HTMLElement | null>(null);
