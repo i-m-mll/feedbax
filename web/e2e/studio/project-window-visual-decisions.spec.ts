@@ -45,8 +45,9 @@ test('Studio visual decisions use shell roles and keep the narrow window usable'
   for (const { border, tint } of colors.unselected) expect(border).toBe(tint);
   await captureStudioWindow(page, info, 'visual-map-kinds');
   const greyscale = await page.addStyleTag({ content: 'html { filter: grayscale(1) }' });
-  await expect.poll(async () => (await cards.locator('[data-map-kind-label]').allTextContents()).sort())
-    .toEqual(['Analyze', 'Evaluate', 'Report', 'Train']);
+  for (const kind of ['Train', 'Evaluate', 'Analyze', 'Report']) {
+    await expect(cards.getByRole('img', { name: kind, exact: true })).toHaveCount(1);
+  }
   await captureStudioWindow(page, info, 'visual-map-greyscale');
   await greyscale.evaluate((node) => (node as ChildNode).remove());
 

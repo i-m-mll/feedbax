@@ -229,10 +229,10 @@ function stepLabel(step: PlanStepView, count?: string | number) {
 }
 
 function StepName({ step, rename }: { step: PlanStepView; rename?: MapStepRename }) {
-  const { Icon } = studioStep(step.kind);
+  const { Icon, name } = studioStep(step.kind);
   return (
     <span className="studio-card__title flex min-w-0 items-center gap-1.5">
-      <span className="studio-card__glyph" {...appTip(studioName(step.kind))}><Icon aria-hidden="true" className="size-4" /></span>
+      <span className="studio-card__glyph" role="img" aria-label={name} {...appTip(name)}><Icon aria-hidden="true" className="size-4" /></span>
       {rename ? <StepNameEdit step={step} rename={rename} /> : <span data-step-name className="truncate font-medium">{step.label}</span>}
     </span>
   );
