@@ -40,6 +40,7 @@ from feedbax.compiler.studio_taps import lower_studio_taps
 from feedbax.component_registry.declarations import ComponentParamValidationError
 from feedbax.compiler.serialization import (
     _instantiate_graph,
+    refuse_unbuildable_leaves,
 )
 from feedbax.runtime._graph import instant_execution_order
 from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID
@@ -643,6 +644,11 @@ def resolve_graph(
         action="correct the conflicting port, dimension, parameter, or prototype declarations",
         operation=solve_constraints,
     )
+    def validate_semantics() -> GraphSpec:
+        validated = GraphSpec.model_validate(resolution.graph.model_dump(mode="json", exclude_none=True))
+        refuse_unbuildable_leaves(validated, component_registry)
+        return validated
+
     graph = _compile_phase(
         phase=CompilerPhase.SEMANTIC_VALIDATION,
         code="compiler.semantic_validation.invalid_resolved_semantics",
@@ -650,9 +656,7 @@ def resolve_graph(
         document_sha256=document_sha256,
         expected="the lowered graph satisfies every cross-reference and semantic invariant",
         action="correct the authored semantic reference named by the diagnostic",
-        operation=lambda: GraphSpec.model_validate(
-            resolution.graph.model_dump(mode="json", exclude_none=True)
-        ),
+        operation=validate_semantics,
     )
 
     signal_schedule, key_schedule = _compile_phase(
