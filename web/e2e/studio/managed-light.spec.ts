@@ -204,14 +204,13 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expectAnalyzeSources(await plan(created.revision));
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
 
-  async function addOperation(label: string) {
-    await palette(page, 'addComponent', 'Add Operation');
-    const chooser = page.getByRole('dialog', { name: 'Add Operation', exact: true });
-    await typeValue(page, chooser.getByRole('textbox', { name: 'Operations', exact: true }), label);
-    return edit(() => activate(page, chooser.getByRole('button', { name: label, exact: true })));
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  async function place(label: string) {
+    await typeValue(page, drawer.getByRole('textbox', { name: 'Search Library', exact: true }), label);
+    return edit(() => activate(page, drawer.getByRole('option', { name: label, exact: true })));
   }
   const selectElement = (name: string) => activate(page, analysis.getByRole('group', { name: 'Select ' + name, exact: true }));
-  await addOperation('Aligned velocity');
+  await place('Aligned velocity');
   await selectElement('aligned_velocity');
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', paired ? /reach_target$/ : /target_pos$/],
@@ -222,7 +221,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const roleField = (name: string) => inspector.getByRole('combobox', { name, exact: true });
   await edit(() => chooseOption(page, roleField('States'), 'states'));
 
-  await addOperation('Trial summary');
+  await place('Trial summary');
   await selectElement('summarize_velocity');
   await edit(() => number(page, boundsScale, '1.5'));
   const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
@@ -237,9 +236,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
   await edit(() => chooseOption(page, roleField('Velocity'), 'aligned_velocity.velocity'));
 
-  await openView(page, 'figures');
-  await edit(() => palette(page, 'addComponent', 'Add Figure'));
-  await openView(page, 'analysis');
+  await place('Velocity Summary');
   await selectElement('velocity_summary');
   const wired = await edit(() => chooseOption(page, roleField('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
@@ -593,8 +590,8 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     } } } },
   });
   expect(paired.project.sweep).toEqual(initial.project.sweep);
-  await expect(drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true })).toBeEnabled();
-  await drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click();
+  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Aligned velocity');
+  await drawer.getByRole('option', { name: 'Aligned velocity', exact: true }).dblclick();
   await expect.poll(async () => (await snapshot()).project.documents?.analyze?.payload)
     .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
 

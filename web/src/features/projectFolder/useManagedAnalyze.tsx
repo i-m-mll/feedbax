@@ -1,18 +1,22 @@
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { ChartLine, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { apiErrorMessage } from '@/api/request';
-import { studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
+import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
+import { Inspector } from '@/components/ui/Inspector';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { SettingsForm } from '@/components/values/SettingsForm';
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { fromParamSchema } from '@/components/values/adapters/paramSchema';
+import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
@@ -33,11 +37,15 @@ import { SavedFigureResult } from './SavedLightProducts';
 
 type Source = OperationElement['inputs'][string];
 
+const operationDragType = 'application/x-feedbax-operation';
+const figureItem = 'velocity_summary';
+
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection, steps,
+  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection, sections, steps,
 }: {
   editor: ProjectEditController;
   selection: ElementSelectionStore;
+  sections: DrawerSections;
   /** The project's steps, whose outputs the step's input roles can be bound to. */
   steps: readonly PlanStepView[];
   key?: StudioSavedTrainKey;
@@ -66,16 +74,21 @@ export function useManagedAnalyze({
   const [error, setError] = useState<{ scope: string; message: string }>();
   const inFlight = useRef(false);
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
+  const shape = step?.kind === 'analyze' ? JSON.stringify([
+    step.base, step.sweep, step.deltas, step.document_overrides, step.inputs?.states,
+  ]) : undefined;
   const authoring = useQuery({
-    queryKey: ['studio-analyze', saved.project_id, saved.revision, id],
+    queryKey: ['studio-analyze', saved.project_id, id, shape],
     queryFn: ({ signal }) => readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
     enabled: !!document && !!key && key.row === 'default' && key.variant === projection?.window_map?.variants[0],
+    placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
   const catalog = authoring.data;
   const canBind = !!step && wholeStep && !pending && !outside && !busy;
   const canEdit = canBind && !!analysis && !!document && !!catalog && catalog.document === document &&
-    catalog.revision === saved.revision;
+    !authoring.isPlaceholderData;
+  const [inspected, setInspected] = useState<{ scope: string; id: string }>();
   const opened = dialog?.scope === scope ? dialog : undefined;
   const operations = analysis?.operations ?? {};
   const figures = analysis?.views ?? {};
@@ -159,12 +172,15 @@ export function useManagedAnalyze({
       const collection = analysis?.[kind];
       await save(label, [collection ? file([kind, name], value) : file([kind], { [name]: value })]);
       setDialog(undefined);
-      if (liveScope.current === scope) element.onSelect(name);
+      if (liveScope.current === scope) {
+        setInspected(undefined);
+        element.onSelect(name);
+      }
       if (point) await savePosition(document!, name, point);
     });
   }
-  const addFigure = () => {
-    if (catalog) add('views', 'velocity_summary', { figure: catalog.figure, inputs: {} });
+  const addFigure = (point?: PresentationPosition) => {
+    if (catalog) add('views', figureItem, { figure: catalog.figure, inputs: {} }, point);
   };
   const addOperation = (operation: string, point?: PresentationPosition) => {
     add('operations', operation.split('.').at(-1)!, { operation, params: {}, inputs: {} }, point);
@@ -257,40 +273,63 @@ export function useManagedAnalyze({
         onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
     </label>}
   </div>;
-  const drawer = <div className="flex flex-wrap gap-2 p-2">
-    {catalog?.operations.map((entry) => <Button key={entry.key} disabled={!canEdit}
-      aria-label={studioAccessibleName('add', entry.label)}
-      onClick={() => addOperation(entry.key)}>
-      {entry.label}
-    </Button>)}
-    <Button disabled={!canEdit} onClick={addFigure}>{studioName('addFigure')}</Button>
-  </div>;
+  const library = useMemo((): LibraryItem[] => catalog ? [
+    ...catalog.operations.map((entry) => ({
+      id: entry.key, name: entry.label, group: studioName('operations'), glyph: <Sigma />, terms: entry.key,
+    })),
+    { id: figureItem, name: humanizeLabel(figureItem), group: studioName('figures'), glyph: <ChartLine /> },
+  ] : [], [catalog]);
+  function selectElement(id: string | null) {
+    setInspected(undefined);
+    element.onSelect(id);
+  }
+  const shownItem = inspected?.scope === scope ? library.find((item) => item.id === inspected.id) : undefined;
+  function place(id: string, point?: PresentationPosition) {
+    if (id === figureItem) addFigure(point);
+    else if (definitions.has(id)) addOperation(id, point);
+  }
+  const libraryInspector = shownItem && <Inspector name={shownItem.name} type={shownItem.group}>
+    {definitions.get(shownItem.id)?.description && <p className="text-shell-muted">{definitions.get(shownItem.id)!.description}</p>}
+    {canEdit && <Button className="justify-self-start" onClick={() => place(shownItem.id)}>
+      {studioAccessibleName('add', shownItem.name)}
+    </Button>}
+  </Inspector>;
+  const drawer = <Drawer>
+    <DrawerSection sections={sections} id="analysis.library" name={studioName('library')}>
+      <StudioRegion state={catalogState}>
+        <LibraryList sections={sections} section="analysis.library" searchName="searchLibrary" items={library}
+          selected={shownItem?.id} dragType={canEdit ? operationDragType : undefined}
+          onInspect={(id) => setInspected({ scope, id })}
+          onPlace={canEdit ? (id) => place(id) : undefined} />
+      </StudioRegion>
+    </DrawerSection>
+  </Drawer>;
   const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => {
     const caption = figureDefinition(name, view.figure)?.caption;
     const result = planned.get(name);
     return <li key={name} className="flex items-center gap-2">
-      <Button pressed={selected === name} onClick={() => element.onSelect(name)}>{name}</Button>
+      <Button pressed={selected === name} onClick={() => selectElement(name)}>{name}</Button>
       {caption && <span>{caption}</span>}
       {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
   })}</ul>;
   const alert = !opened && issue && <p className="p-2" role="alert">{issue}</p>;
   return {
-    catalog: catalogState,
     selectedFigure: figure ? selected : undefined,
     analysis: {
       body: <CanvasStrip viewport={viewport}>{alert}<div className="min-h-0 flex-1">
-        <ManagedDocumentCanvas key={scope} {...element} items={items} connections={connections} viewportRef={canvas}
+        <ManagedDocumentCanvas key={scope} selectedId={element.selectedId} onSelect={selectElement} items={items} connections={connections} viewportRef={canvas}
           positions={document ? saved.presentation?.documents?.[document]?.positions : undefined} pick={canvasPick}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
+          drop={canEdit ? { type: operationDragType, place } : undefined}
           rememberPoint={(point) => { cursor.current = point ? { scope, point } : undefined; }} />
       </div></CanvasStrip>,
-      drawer, inspector,
+      drawer, inspector: libraryInspector || inspector,
     },
     figures: { body: <>{alert}{figureList}
       {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
         history={selectedPlan} name={selected} />}
-    </>, drawer, inspector: figure ? inspector : undefined },
+    </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
     commands: document && focusedView === 'analysis' ? [addCommand, ...viewport]
       : document && focusedView === 'figures' ? [addCommand] : [],
     overlay: opened && <Dialog ariaLabel={studioName('addOperation')}

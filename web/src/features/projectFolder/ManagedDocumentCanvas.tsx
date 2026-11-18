@@ -24,13 +24,15 @@ type CanvasProps = {
   viewportRef?: Ref<CanvasViewport>;
   /** An armed reference pick over the items' selection ids: an accepted item fills the reference when clicked. */
   pick?: { accepts(id: string): boolean; choose(id: string): void } | null;
+  /** A library drag of this data type places the dragged item where it is dropped. */
+  drop?: { type: string; place(id: string, point: PresentationPosition): void };
 };
 
 export function ManagedDocumentCanvas(props: CanvasProps) {
   return <ReactFlowProvider><Canvas {...props} /></ReactFlowProvider>;
 }
 
-function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing, viewportRef, pick }: CanvasProps) {
+function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing, viewportRef, pick, drop }: CanvasProps) {
   const { screenToFlowPosition } = useReactFlow();
   const { nodes, edges } = useMemo(() => {
     const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR' }).setDefaultEdgeLabel(() => ({}));
@@ -62,6 +64,15 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
       if (openAt) rememberPoint?.(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
     }}
     onPointerLeave={() => rememberPoint?.(null)}
+    onDragOver={(event) => {
+      if (drop && event.dataTransfer.types.includes(drop.type)) event.preventDefault();
+    }}
+    onDrop={(event) => {
+      const id = drop && event.dataTransfer.getData(drop.type);
+      if (!drop || !id) return;
+      event.preventDefault();
+      drop.place(id, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+    }}
     onDoubleClick={(event) => {
       if (openAt && event.target instanceof Element && event.target.classList.contains('react-flow__pane')) {
         openAt(screenToFlowPosition({ x: event.clientX, y: event.clientY }));

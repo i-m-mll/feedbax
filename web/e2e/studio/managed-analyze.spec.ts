@@ -88,7 +88,19 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   }));
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click());
+  const search = drawer.getByRole('textbox', { name: 'Search Library', exact: true });
+  const item = (name: string) => drawer.getByRole('option', { name, exact: true });
+  await expect(drawer.getByRole('button', { name: /^Add/ })).toHaveCount(0);
+  await search.fill('velocity');
+  await item('Aligned velocity').click();
+  await expect(inspector.getByText('Aligned velocity', { exact: true })).toBeVisible();
+  await edit(() => page.keyboard.press('Enter'));
+  await expect(search).toHaveValue('velocity');
+  await expect(item('Aligned velocity')).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(item('Trial summary')).toBeFocused();
+  await edit(() => page.keyboard.press('Enter'));
+  await expect(item('Trial summary')).toBeFocused();
   await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
@@ -99,7 +111,6 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   const role = (name: string) => inspector.getByRole('combobox', { name, exact: true });
   await edit(() => pick(role('States'), 'states'));
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Trial summary', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
   const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
@@ -111,7 +122,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
   await edit(() => pick(role('Velocity'), 'aligned_velocity.velocity'));
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Figure', exact: true }).click());
+  await edit(() => item('Velocity Summary').dragTo(analysis.locator('.react-flow__pane')));
   await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
   const wired = await edit(() => pick(role('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);

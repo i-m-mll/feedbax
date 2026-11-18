@@ -2,6 +2,7 @@ import { expect, type APIRequestContext, type Locator, type Page } from '@playwr
 import { studioName } from '../../../src/components/activity/studioVocabulary';
 import type { ProjectWindowView } from '../../../src/features/projectWindow/projectWindowState';
 import type { StudioProjectSnapshot } from '../../../src/generated/studioContracts';
+import { popupListbox } from './controls';
 
 export async function tabTo(page: Page, target: Locator, limit = 100) {
   await expect(target).toBeVisible();
@@ -94,7 +95,7 @@ export async function chooseOption(page: Page, select: Locator, label: string | 
   await expect(select).toBeEnabled();
   await tabTo(page, select);
   await page.keyboard.press('ArrowDown');
-  const listbox = page.getByRole('listbox');
+  const listbox = popupListbox(page);
   await expect(listbox).toBeVisible();
   const option = listbox.getByRole('option', { name: label, exact: true });
   await expect(option).toHaveCount(1);

@@ -434,7 +434,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const exactSource = subjectCheckpoint !== undefined && exactSources?.length === 1 ? exactSources[0] : undefined;
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation,
     windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'));
-  const definitionRows = data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
+  const definitionRows = projection.data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
   const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
   const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
     selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
@@ -536,7 +536,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
-    steps: plan.steps,
+    sections: drawerSections, steps: plan.steps,
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: data, variant, stepId: step?.kind === 'report' ? step.id : undefined,
@@ -1232,7 +1232,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const detail = analyze[view];
             return { ...detail, body: withProblem(detail.body),
               picker: view === 'analysis' && authored?.kind === 'analyze' ? pickDocument('analysis', documentBase) : undefined,
-              drawer: <StudioRegion state={analyze.catalog}>{detail.drawer}</StudioRegion> };
+            };
           }
           if ((view === 'task' || view === 'objective') && trialStep) {
             if (!namedRun) return { body: noView };
