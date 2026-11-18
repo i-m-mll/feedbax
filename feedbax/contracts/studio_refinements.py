@@ -500,7 +500,7 @@ CROSS_FIELD_REFINEMENTS.update(
             _typescript_refinement(
                 "representation.identity-graph",
                 "representation ids and anchor references must be valid",
-                "hasDuplicate(value.anchors.map((anchor) => anchor.id)) || hasDuplicate(value.elements.map((element) => element.id)) || (value.reachability != null && !value.anchors.some((anchor) => anchor.id === value.reachability?.origin_anchor)) || value.elements.some((element) => element.anchors.some((anchor) => !value.anchors.some((candidate) => candidate.id === anchor)))",
+                "hasDuplicate(value.anchors.map((anchor) => anchor.id)) || hasDuplicate(value.elements.map((element) => element.id)) || (value.reachability != null && !value.anchors.some((anchor) => anchor.id === value.reachability?.origin_anchor)) || value.elements.some((element) => (element.anchors ?? []).some((anchor) => !value.anchors.some((candidate) => candidate.id === anchor)))",
             ),
         ),
         "DomainMeta": (
