@@ -8,10 +8,10 @@ from pathlib import Path
 
 SCIENTIFIC_CORE_PACKAGES = (
     "acausal",
+    "builtins/components",
+    "builtins/control",
     "compiler",
     "component_registry",
-    "components",
-    "control",
     "intervene",
     "mechanics",
     "models",

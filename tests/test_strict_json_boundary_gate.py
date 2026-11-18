@@ -21,7 +21,7 @@ last-value-wins behavior for a repeated object member name:
 * pydantic's ``Model.model_validate_json`` and ``TypeAdapter(...).validate_json``
   (measured: pydantic 2.12 keeps the last value exactly as ``json.loads`` does).
 
-The audited packages are the contract, envelope, analysis, orchestration, and
+The audited packages are the contract, analysis, orchestration, and
 training layers. Web transport decoding remains outside this gate.
 """
 
@@ -39,7 +39,6 @@ BOUNDARY_PACKAGES = tuple(
     Path(package)
     for package in (
         "feedbax/contracts",
-        "feedbax/envelope",
         "feedbax/analysis",
         "feedbax/orchestration",
         "feedbax/training",

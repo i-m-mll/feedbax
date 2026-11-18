@@ -15,8 +15,13 @@ def test_worktree_sync_preserves_the_full_development_environment() -> None:
         if {"pyproject.toml", "uv.lock"} <= set(hook["paths"])
     ]
     assert len(hooks) == 1
-    setup = shlex.split(config["setup"].split("&&", 1)[0])
-    for command in [setup, *hooks]:
+    setup = [
+        command
+        for command in map(shlex.split, config["setup"].split("&&"))
+        if command[:1] == ["uv"]
+    ]
+    assert len(setup) == 1
+    for command in [*setup, *hooks]:
         assert command[:2] == ["uv", "sync"]
         assert {"--locked", "--dev", "--all-extras"} <= set(command)
         assert not {"--no-dev", "--no-default-groups", "--only-group"} & set(command)
