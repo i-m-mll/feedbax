@@ -64,32 +64,36 @@ def _admit(client, token: str, *jobs) -> None:
     client.admit(token, [AdmissionItem(job.id, job) for job in jobs], record={})
 
 
-def test_an_invalid_record_fails_only_its_own_project(host, tmp_path, monkeypatch):
+def test_an_unreadable_record_is_listed_only_for_its_own_project(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
     sleep = "import time; time.sleep(30)"
     with TestClient(create_app(projects_dir=tmp_path / "projects")) as studio:
         client = studio.app.state.job_service.host
         invalid = replace(_studio_job("invalid", "a", sleep), request="unknown-kind")
-        _admit(client, "invalid", invalid, _studio_job("first", "b", sleep))
+        _admit(client, "invalid", invalid, _studio_job("readable", "a", sleep), _studio_job("first", "b", sleep))
 
-        def project_b():
-            jobs = studio.get("/api/jobs", params={"project": "b"}).json()["jobs"]
-            return jobs or None
+        def read(project):
+            return studio.get("/api/jobs", params={"project": project}).json()
 
-        assert [job["job_id"] for job in wait_until(project_b)] == ["first"]
-        refused = studio.get("/api/jobs", params={"project": "a"})
-        assert refused.status_code == 409
-        assert refused.json()["detail"]["code"] == "invalid_job_record"
-        assert "invalid" in refused.json()["detail"]["message"]
+        def project_a():
+            snapshot = read("a")
+            return snapshot if snapshot["jobs"] and snapshot["unreadable"] else None
 
-        cursor = studio.get("/api/jobs", params={"project": "b"}).json()["cursor"]
+        snapshot = wait_until(project_a)
+        assert [job["job_id"] for job in snapshot["jobs"]] == ["readable"]
+        (record,) = snapshot["unreadable"]
+        assert (record["project_id"], record["job_id"], record["label"]) == ("a", "invalid", "invalid")
+        assert "unknown-kind" in record["reason"]
+        assert read("b")["unreadable"] == []
+        assert [job["job_id"] for job in read("b")["jobs"]] == ["first"]
+        assert [entry["job_id"] for entry in studio.get("/api/jobs").json()["unreadable"]] == ["invalid"]
+
+        cursor = read("b")["cursor"]
         _admit(client, "second", _studio_job("second", "b", sleep))
         _, page = studio.app.state.job_activity.events(after=cursor, projects=("b",), wait=10, machine=True)
         assert "second" in {event.job_id for event in page.events}
-        assert {job["job_id"] for job in studio.get("/api/jobs", params={"project": "b"}).json()["jobs"]} == {
-            "first", "second",
-        }
+        assert {job["job_id"] for job in read("b")["jobs"]} == {"first", "second"}
 
 
 def test_the_follower_recovers_from_one_unexpected_error(host, tmp_path, monkeypatch):

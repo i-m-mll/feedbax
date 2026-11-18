@@ -32,14 +32,6 @@ _PAGE_LIMIT = 256
 _log = logging.getLogger(__name__)
 
 
-class InvalidProjectJobs(Exception):
-    """A project's held jobs include records that do not project to Activity rows."""
-
-    def __init__(self, project: str, failures: list[InvalidJobRecord]) -> None:
-        super().__init__("; ".join(failure.reason for failure in failures))
-        self.project = project
-
-
 class FollowerStopped(Exception):
     """The follower met an error it could not apply and is restarting from a full reload."""
 
@@ -75,12 +67,10 @@ class JobActivity:
         with self._changed:
             self._await_loaded()
             rows = [row for row in self._rows.values() if project is None or _project_of(row) == project]
-            failures = [row for row in rows if isinstance(row, InvalidJobRecord)]
-            if project is not None and failures:
-                raise InvalidProjectJobs(project, failures)
-            jobs = [row for row in rows if isinstance(row, StudioActivityJob)]
             return StudioJobSnapshot(
-                jobs=jobs, cursor=self._cursor, oldest_cursor=self._oldest_cursor,
+                jobs=[row for row in rows if isinstance(row, StudioActivityJob)],
+                unreadable=[row.unreadable() for row in rows if isinstance(row, InvalidJobRecord)],
+                cursor=self._cursor, oldest_cursor=self._oldest_cursor,
                 sessions=[StudioLocalSession()],
             )
 

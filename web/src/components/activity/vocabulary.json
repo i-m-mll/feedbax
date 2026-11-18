@@ -477,6 +477,7 @@
     "canResume": "{value} can resume",
     "changed": "{value} changed",
     "invalidPath": "{value} is invalid",
+    "unreadable": "{value} is unreadable",
     "definitionUnavailable": "{value} definition is unavailable for this selection",
     "definitionReadOnly": "{value} is shared with other definitions",
     "planarSceneUnavailable": "{value} has no planar geometry",

@@ -176,6 +176,7 @@ export interface StudioJobEvent {
   kind: string;
   data: Record<string, JsonValue>;
   activity?: StudioActivityJob | null;
+  unreadable?: StudioUnreadableJob | null;
   venue?: StudioVenueStream | null;
 }
 
@@ -191,12 +192,20 @@ export interface StudioJobResumeRequest {
 
 export interface StudioJobSnapshot {
   jobs: StudioActivityJob[];
+  unreadable: StudioUnreadableJob[];
   cursor: number;
   oldest_cursor: number;
   sessions: Array<StudioLocalSession | StudioRemoteSession>;
   remote_version?: number | null;
   machine_catalog_version?: number | null;
   venue_cursors?: StudioVenueCursor[];
+}
+
+export interface StudioUnreadableJob {
+  project_id: string;
+  job_id: string;
+  label: string | null;
+  reason: string;
 }
 
 export interface StudioJobStopItem {
@@ -4502,6 +4511,7 @@ export const StudioJobEventSchema: z.ZodType<StudioJobEvent> = z.lazy(() =>
       "kind": z.string(),
       "data": z.record(z.string(), jsonValueSchema),
       "activity": StudioActivityJobSchema.nullable().optional(),
+      "unreadable": StudioUnreadableJobSchema.nullable().optional(),
       "venue": StudioVenueStreamSchema.nullable().optional(),
     })
     .strict()
@@ -4529,6 +4539,7 @@ export const StudioJobSnapshotSchema: z.ZodType<StudioJobSnapshot> = z.lazy(() =
   z
     .object({
       "jobs": z.array(StudioActivityJobSchema),
+      "unreadable": z.array(StudioUnreadableJobSchema),
       "cursor": z.number().int().safe().gte(0),
       "oldest_cursor": z.number().int().safe().gte(0),
       "sessions": z.array(z.union([StudioLocalSessionSchema, StudioRemoteSessionSchema])),
@@ -4538,6 +4549,17 @@ export const StudioJobSnapshotSchema: z.ZodType<StudioJobSnapshot> = z.lazy(() =
     })
     .strict()
 ) as unknown as z.ZodType<StudioJobSnapshot>;
+
+export const StudioUnreadableJobSchema: z.ZodType<StudioUnreadableJob> = z.lazy(() =>
+  z
+    .object({
+      "project_id": z.string(),
+      "job_id": z.string(),
+      "label": z.string().nullable(),
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioUnreadableJob>;
 
 export const StudioJobStopItemSchema: z.ZodType<StudioJobStopItem> = z.lazy(() =>
   z
@@ -10744,6 +10766,7 @@ export const contractSchemas = {
   StudioJobEventHistory: StudioJobEventHistorySchema,
   StudioJobResumeRequest: StudioJobResumeRequestSchema,
   StudioJobSnapshot: StudioJobSnapshotSchema,
+  StudioUnreadableJob: StudioUnreadableJobSchema,
   StudioJobStopItem: StudioJobStopItemSchema,
   StudioJobStopRequest: StudioJobStopRequestSchema,
   StudioJobSubmission: StudioJobSubmissionSchema,
@@ -10899,6 +10922,7 @@ export interface ContractTypeMap {
   StudioJobEventHistory: StudioJobEventHistory;
   StudioJobResumeRequest: StudioJobResumeRequest;
   StudioJobSnapshot: StudioJobSnapshot;
+  StudioUnreadableJob: StudioUnreadableJob;
   StudioJobStopItem: StudioJobStopItem;
   StudioJobStopRequest: StudioJobStopRequest;
   StudioJobSubmission: StudioJobSubmission;

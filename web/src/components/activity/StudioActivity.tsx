@@ -2,12 +2,12 @@ import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/featur
 import { useId, useState } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
-import { StudioJobsProvider, useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
+import { StudioJobsProvider, useStudioJobActions, useStudioJobs, useStudioUnreadableJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
 import {
-  studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
+  studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep, studioReason,
   studioStep, type StudioResultState, type StudioRunStatusId,
 } from './studioVocabulary';
 
@@ -244,6 +244,7 @@ export function StudioActivityPane(props: StudioActivityPaneProps) {
 
 function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultState }: StudioActivityPaneProps) {
   const snapshot = useStudioJobs();
+  const unreadable = useStudioUnreadableJobs();
   const actions = useStudioJobActions();
   const [selection, setSelection] = useState<string | null>(null);
   const jobs = snapshot.data?.jobs ?? [];
@@ -266,9 +267,16 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultS
     ? { kind: 'failed', issue: studioRegionIssue('activity', snapshot.error), retry: actions.refresh }
     : snapshot.isPending
       ? { kind: 'loading' }
-      : visible.length > 0
-        ? { kind: 'result', missing: [] }
-        : { kind: 'empty' };
+      : unreadable.length > 0
+        ? {
+          kind: 'partial',
+          unread: unreadable.map((record) => ({
+            key: record.job_id, reason: studioReason('unreadable', record.label ?? record.job_id),
+          })),
+        }
+        : visible.length > 0
+          ? { kind: 'result', missing: [] }
+          : { kind: 'empty' };
 
   return (
     <StudioRegion

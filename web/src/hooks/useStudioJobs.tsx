@@ -33,6 +33,7 @@ const eventSource = (venue: StudioJobEvent['venue']) => venue
   ? JSON.stringify([venue.session_id, venue.stream_id]) : 'local';
 
 const StudioJobsContext = createContext<{
+  projectId: string | null;
   refresh: () => void;
   acknowledge: (jobId: string) => Promise<void>;
 } | null>(null);
@@ -94,17 +95,19 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     }
 
     function apply(event: StudioJobEvent) {
-      const { activity } = event;
-      if (activity && ownsSnapshot && !event.venue) {
+      const { activity, unreadable } = event;
+      if ((activity || unreadable) && ownsSnapshot && !event.venue) {
         cache.setQueryData<StudioJobSnapshot>(jobsKey, (snapshot) => {
           if (!snapshot || event.cursor <= snapshot.cursor) return snapshot;
-          const known = snapshot.jobs.some((job) => job.job_id === activity.job_id);
-          const jobs = known
+          const others = snapshot.jobs.filter((job) => job.job_id !== event.job_id);
+          const known = others.length < snapshot.jobs.length;
+          const jobs = !activity ? others : known
             ? snapshot.jobs.map((job) => job.job_id === activity.job_id ? activity : job)
             : [...snapshot.jobs, activity];
-          return { ...snapshot, cursor: event.cursor, jobs };
+          const unread = snapshot.unreadable.filter((record) => record.job_id !== event.job_id);
+          return { ...snapshot, cursor: event.cursor, jobs, unreadable: unreadable ? [...unread, unreadable] : unread };
         });
-        if (snapshotReady && event.cursor > announcedThrough) {
+        if (activity && snapshotReady && event.cursor > announcedThrough) {
           announcedThrough = event.cursor;
           announce([activity]);
         }
@@ -287,12 +290,13 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
   const refresh = useCallback(() => retry.current?.(), []);
   const context = useMemo(() => ({
+    projectId,
     refresh,
     acknowledge: async (jobId: string) => {
       const result = await acknowledgeStudioJob(jobId);
       activePort.current?.postMessage({ type: 'seen', jobId: result.job_id } satisfies StudioJobWorkerCommand);
     },
-  }), [refresh]);
+  }), [projectId, refresh]);
 
   return <StudioJobsContext.Provider value={context}>
     {children}
@@ -304,6 +308,13 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
 export function useStudioJobs() {
   return useQuery<StudioJobSnapshot>({ queryKey: jobsKey, queryFn: skipToken });
+}
+
+export function useStudioUnreadableJobs() {
+  const { projectId } = useStudioJobsContext();
+  const snapshot = useStudioJobs();
+  return useMemo(() => (snapshot.data?.unreadable ?? [])
+    .filter((record) => projectId === null || record.project_id === projectId), [projectId, snapshot.data]);
 }
 
 export function useStudioJobHistory(projectId: string | null) {

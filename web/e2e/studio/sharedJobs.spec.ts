@@ -265,3 +265,58 @@ test('opens a ninth project window while one stream serves active projects', asy
     }
   }
 });
+
+test('names an unreadable run only in its own project window', async ({
+  context, page, request, baseURL, studio,
+}) => {
+  test.setTimeout(45_000);
+  if (!baseURL) throw new Error('The real Studio origin is required');
+  const files = await fixture('ordinary-files', '12000');
+  const [unreadable, readable] = await Promise.all([0, 1].map(async () =>
+    (await seedManagedProject(request, files)).snapshot.project_id,
+  ));
+  const second = await context.newPage();
+  const windows = [page, second];
+  const open = async (window: Page, projectId: string) => {
+    await window.goto(baseURL + '/?project=' + projectId);
+    await mapStep(window, 'train').click();
+    await window.getByRole('tab', { name: 'Runs', exact: true }).click();
+    await window.getByRole('button', { name: 'Activity', exact: true }).click();
+  };
+  const alert = (window: Page) => window.getByRole('region', { name: 'Activity', exact: true })
+    .getByRole('alert').filter({ hasText: 'Malformed result is unreadable' });
+  try {
+    await Promise.all([open(page, unreadable), open(second, readable)]);
+    await hostCommand(studio.home, `
+from feedbax.host.protocol import AdmissionItem, Job, Launch
+data = {"run_key": "malformed", "stage_id": "train", "scenario_id": "default", "label": "Malformed result", "coordinates": {}}
+job = Job("malformed-result", sys.argv[2], "train:malformed", Launch((sys.executable, "-c", "pass")), data=data)
+host.admit("malformed-result", [AdmissionItem(job.id, job)], record={})
+`, unreadable);
+    await expect(alert(page)).toBeVisible({ timeout: 15_000 });
+    await page.reload();
+    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    await expect(alert(page)).toBeVisible();
+
+    await Promise.all(windows.map(async (window, index) => {
+      const submitted = post(window, '/api/projects/' + [unreadable, readable][index] + '/train-runs');
+      await window.getByRole('button', { name: 'Run', exact: true }).click();
+      expect((await submitted).status()).toBe(202);
+    }));
+    for (const window of windows) {
+      await expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar'))
+        .toHaveAttribute('value', /[1-9]/, { timeout: firstJobTimeout });
+      await expect(window.getByRole('region', { name: 'Activity', exact: true })
+        .getByRole('list', { name: 'Runs', exact: true }).getByRole('button', { name: 'Stop', exact: true }).first())
+        .toBeEnabled();
+    }
+    await expect(alert(page)).toBeVisible();
+    await expect(alert(second)).toHaveCount(0);
+  } finally {
+    try {
+      await drainProjects(request, [unreadable, readable]);
+    } finally {
+      await second.close();
+    }
+  }
+});

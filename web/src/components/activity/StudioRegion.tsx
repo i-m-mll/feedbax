@@ -13,7 +13,8 @@ export type StudioRegionState =
   | { kind: 'loading' }
   | { kind: 'empty' }
   | { kind: 'failed'; issue: StudioRegionIssue; retry: () => void }
-  | { kind: 'result'; missing: ReadonlyArray<{ status: StudioRunStatusId; count: number }> };
+  | { kind: 'result'; missing: ReadonlyArray<{ status: StudioRunStatusId; count: number }> }
+  | { kind: 'partial'; unread: ReadonlyArray<{ key: string; reason: string }> };
 
 export function studioReadState(
   name: StudioNameId, data: unknown, error: unknown, retry: () => void,
@@ -61,6 +62,15 @@ export function StudioRegion({
               ))}
             </ul>
           )}
+        </>
+      );
+    case 'partial':
+      return (
+        <>
+          {children}
+          <ul className="space-y-1 py-1 text-sm text-shell-status-failure">
+            {state.unread.map(({ key, reason }) => <li key={key} role="alert">{reason}</li>)}
+          </ul>
         </>
       );
   }

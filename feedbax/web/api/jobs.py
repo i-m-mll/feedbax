@@ -44,7 +44,7 @@ from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.orchestration.session import SessionError
 from feedbax.web.api.projects import ProjectRevisionWatch, _project_response
-from feedbax.web.services.job_activity import FollowerStopped, InvalidProjectJobs, JobActivity
+from feedbax.web.services.job_activity import FollowerStopped, JobActivity
 from feedbax.web.services.remote_runs import StudioRemoteRuns
 
 
@@ -60,9 +60,7 @@ def _activity(request: Request) -> JobActivity:
     return request.app.state.job_activity
 
 
-def _activity_error(exc: InvalidProjectJobs | FollowerStopped) -> HTTPException:
-    if isinstance(exc, InvalidProjectJobs):
-        return HTTPException(409, detail={"code": "invalid_job_record", "message": str(exc)})
+def _activity_error(exc: FollowerStopped) -> HTTPException:
     return HTTPException(503, detail={"code": "job_activity_stopped", "message": str(exc)})
 
 
@@ -282,7 +280,7 @@ def list_jobs(request: Request, project: str | None = None) -> StudioJobSnapshot
         snapshot = _activity(request).snapshot(project=project)
         remote = request.app.state.remote_runs
         return remote.snapshot(snapshot, project=project) if remote is not None else snapshot
-    except (InvalidProjectJobs, FollowerStopped) as exc:
+    except FollowerStopped as exc:
         raise _activity_error(exc) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
@@ -348,7 +346,7 @@ def acknowledge_job(job_id: str, request: Request) -> StudioActivityJob:
 @router.get("/sessions")
 def list_sessions(request: Request) -> list[StudioLocalSession | StudioRemoteSession]:
     remote = request.app.state.remote_runs
-    local = StudioJobSnapshot(jobs=[], cursor=0, oldest_cursor=0, sessions=[StudioLocalSession()])
+    local = StudioJobSnapshot(jobs=[], unreadable=[], cursor=0, oldest_cursor=0, sessions=[StudioLocalSession()])
     return remote.snapshot(local).sessions if remote is not None else local.sessions
 
 

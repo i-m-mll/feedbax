@@ -44,6 +44,7 @@ from feedbax.contracts.jobs import (
     StudioEvaluationCheckpointAttempt,
     StudioEvaluationCheckpointGap,
     StudioJobEvent,
+    StudioUnreadableJob,
     StudioJobEventHistory,
     StudioJobSnapshot,
     StudioJobStopItem,
@@ -135,11 +136,13 @@ class InvalidJobRecord:
 
     project: str
     job_id: str
+    label: str | None
     error: KeyError | ValueError
 
-    @property
-    def reason(self) -> str:
-        return f"Job {self.job_id} has an invalid record: {self.error!r}"
+    def unreadable(self) -> StudioUnreadableJob:
+        return StudioUnreadableJob(
+            project_id=self.project, job_id=self.job_id, label=self.label, reason=repr(self.error),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,8 +179,10 @@ def stream_events(
             continue
         detail = not machine or event["project"] in projects
         activity = entry.activity if isinstance(entry.activity, StudioActivityJob) else None
-        if (detail and event["kind"] not in _HOST_ONLY_EVENTS) or activity is not None:
-            events.append(_project_event(event, activity=activity, detail=detail))
+        unreadable = entry.activity.unreadable() if isinstance(entry.activity, InvalidJobRecord) else None
+        if (detail and event["kind"] not in _HOST_ONLY_EVENTS) or entry.activity is not None:
+            projected = _project_event(event, activity=activity, detail=detail)
+            events.append(projected.model_copy(update={"unreadable": unreadable}) if unreadable else projected)
     return events
 
 
@@ -1347,6 +1352,7 @@ class JobService(PlanJobReader):
         snapshot = self.host.jobs_snapshot(project=project)
         return StudioJobSnapshot(
             jobs=list(self._activity_rows(snapshot["jobs"], project=project).values()),
+            unreadable=[],
             cursor=snapshot["cursor"],
             oldest_cursor=snapshot["oldest_cursor"],
             sessions=[StudioLocalSession()],
@@ -1946,7 +1952,10 @@ class JobService(PlanJobReader):
                     actor=actors.get(row["id"]),
                 )
             except (KeyError, ValueError) as error:
-                result[row["id"]] = InvalidJobRecord(row["project"], row["id"], error)
+                label = row["data"].get("label")
+                result[row["id"]] = InvalidJobRecord(
+                    row["project"], row["id"], label if isinstance(label, str) else None, error,
+                )
         return result
 
 
