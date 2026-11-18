@@ -651,9 +651,9 @@ def check_evaluate(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
             else:
                 comparison = compare_computation(former, replayed, read_blob=store.get_object)
                 if isinstance(comparison, ComputationDifferent):
-                    code = CheckOutcome(outcome="different", detail=comparison.model_dump_json())
+                    code = CheckOutcome(outcome="different", changes=comparison.changes)
                 elif isinstance(comparison, ComputationUnconfirmable):
-                    code = CheckOutcome(outcome="unavailable", detail=comparison.model_dump_json())
+                    code = CheckOutcome(outcome="unavailable", detail=comparison.reason)
                 else:
                     code = CheckOutcome(outcome="equal")
     environment = (

@@ -1,9 +1,10 @@
 import { Activity, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef } from 'react';
-import { StudioActivityPane, useStudioActivityCount } from '@/components/activity/StudioActivity';
+import { StudioActivityPane, useStudioActivityCount, type ActivityResultState } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { StudioActivityJob } from '@/generated/studioContracts';
+import { Button, IconButton } from '@/components/ui/Button';
 
 export function HeaderActivity({
   open,
@@ -13,6 +14,7 @@ export function HeaderActivity({
   projectNames,
   placement = 'below',
   command,
+  resultState,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -21,6 +23,7 @@ export function HeaderActivity({
   projectNames: ReadonlyMap<string, string>;
   placement?: 'above' | 'below';
   command?: StudioCommand;
+  resultState?: ActivityResultState;
 }) {
   const panelId = useId();
   const trigger = useRef<HTMLButtonElement | null>(null);
@@ -37,20 +40,20 @@ export function HeaderActivity({
 
   return (
     <div className="relative">
-      <button
-        type="button"
+      <Button
+        variant="ghost"
         ref={trigger}
         aria-label={studioName('activity')}
         {...(command && commandAttributes(command))}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={onToggle}
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium text-shell-muted hover:bg-shell-hover"
+        className="font-medium"
       >
-        <Activity aria-hidden="true" className="size-4" />
+        <Activity aria-hidden="true" />
         {studioName('activity')}
         {running > 0 && <span className="tabular-nums">{running}</span>}
-      </button>
+      </Button>
       {open && (
         <section
           id={panelId}
@@ -66,17 +69,9 @@ export function HeaderActivity({
         >
           <header className="flex items-center justify-between">
             <h2 className="font-semibold">{studioName('activity')}</h2>
-            <button
-              type="button"
-              ref={close}
-              aria-label={studioName('close')}
-              onClick={closePanel}
-              className="rounded p-1 hover:bg-shell-hover"
-            >
-              <X aria-hidden="true" className="size-4" />
-            </button>
+            <IconButton ref={close} label={studioName('close')} icon={<X aria-hidden="true" />} onClick={closePanel} />
           </header>
-          <StudioActivityPane projectNames={projectNames} onClose={onClose} onOpenRun={onOpenRun} />
+          <StudioActivityPane projectNames={projectNames} onClose={onClose} onOpenRun={onOpenRun} resultState={resultState} />
         </section>
       )}
     </div>

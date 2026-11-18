@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "./node_modules/.tmp/tsconfig.e2e",
+    "types": ["node"]
+  },
+  "include": ["e2e", "src", "src/**/*.json", "playwright.config.ts", "playwright.studio.config.ts"]
+}

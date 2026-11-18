@@ -187,15 +187,11 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
     for kind in ("feedbax.DelayLine", "feedbax.Channel", "feedbax.FirstOrderFilter"):
         old = {**components.get(kind).default_params, "input_shape": [3]}
         old.pop("input_dtype", None)
-        migrated = components.resolve_component_spec(
-            kind.removeprefix("feedbax."), old, legacy_token="1"
-        )
+        migrated = components.resolve_component_spec(kind, old, revision=1)
         assert {name: migrated.params[name] for name in old} == old
         assert migrated.params.get("input_dtype") is None
-        with pytest.raises(ValueError, match="source_legacy_token"):
-            components.resolve_component_spec(
-                kind.removeprefix("feedbax."), old, legacy_token="unknown"
-            )
+        with pytest.raises(ValueError, match="No component migration"):
+            components.resolve_component_spec(kind, old, revision=99)
         meta = components.get(kind)
         assert meta.params.build(old).input_proto.dtype == DelayLine().input_proto.dtype
         normalized = validate_or_add_input_shape(
@@ -250,7 +246,7 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
     from feedbax.builtins.runtime.filters import LowPassFilter
     from feedbax.runtime.graph import init_state_from_component
 
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         prototype = {
             "position": jnp.zeros(2, dtype=jnp.float16),
             "velocity": (jnp.zeros(1, dtype=jnp.float32),),

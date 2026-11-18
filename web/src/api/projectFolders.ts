@@ -9,6 +9,7 @@ import {
   type ModelFieldRequest,
   type ModelProjectionRequest,
   type ModelUndoRequest,
+  type StudioMemberCommand,
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
   type StudioProjectPatch,
@@ -39,7 +40,7 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
   }
 }
 
-function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectReplay' | 'StudioProjectCreateFile' | ModelRequest>(
+function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectReplay' | 'StudioProjectCreateFile' | 'StudioMemberCommand' | ModelRequest>(
   contract: K, body: ContractTypeMap[K], path: string,
 ) {
   try {
@@ -74,6 +75,21 @@ export function createProjectFile(id: string, body: StudioProjectCreateFile, sig
   return readFolder('StudioProjectDocument', id, path, {
     method: 'POST', body: mutationBody('StudioProjectCreateFile', body, path), signal,
   });
+}
+
+export async function commandProjectMember(id: string, body: StudioMemberCommand, signal?: AbortSignal) {
+  const path = `${projectPath(id)}/members/command`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: mutationBody('StudioMemberCommand', body, path), signal, cache: 'no-store',
+    });
+    const result = parseContract('StudioMemberCommandResult', response);
+    if (result.snapshot.project_id !== id) throw new Error('Response project ID does not match the folder');
+    // Keep authored JSON as received, as readFolder does.
+    return response as typeof result;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The member command response did not match its contract');
+  }
 }
 
 export async function patchProjectFolder(id: string, body: StudioProjectPatch | StudioProjectPatchBatch, signal?: AbortSignal) {

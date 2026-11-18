@@ -2,6 +2,7 @@ import { expect, type APIRequestContext, type Locator, type Page } from '@playwr
 import { studioName } from '../../../src/components/activity/studioVocabulary';
 import type { ProjectWindowView } from '../../../src/features/projectWindow/projectWindowState';
 import type { StudioProjectSnapshot } from '../../../src/generated/studioContracts';
+import { popupListbox } from './controls';
 
 export async function tabTo(page: Page, target: Locator, limit = 100) {
   await expect(target).toBeVisible();
@@ -27,10 +28,27 @@ export async function tabTo(page: Page, target: Locator, limit = 100) {
   await expect(target).toBeFocused();
 }
 
+export async function activateMenuItem(page: Page, item: Locator) {
+  await expect(item).toBeEnabled();
+  for (let index = 0; index < 20 && !await item.evaluate((element) => element === document.activeElement); index += 1) {
+    await page.keyboard.press('ArrowDown');
+  }
+  await expect(item).toBeFocused();
+  await page.keyboard.press('Enter');
+}
+
 export async function activate(page: Page, target: Locator, key = 'Enter') {
   await expect(target).toBeEnabled();
   await tabTo(page, target);
   await page.keyboard.press(key);
+}
+
+/** Chooses a kind in the open step menu; by keyboard, from the item the menu starts on. */
+export async function chooseStepKind(page: Page, kind: string, keyboard = false) {
+  const item = page.getByRole('menu').getByRole('menuitem', { name: kind, exact: true });
+  if (keyboard) return activateMenuItem(page, item);
+  await expect(item).toBeEnabled();
+  await item.click();
 }
 
 export async function palette(page: Page, id: string, label: string) {
@@ -72,23 +90,24 @@ export async function number(page: Page, target: Locator, value: string) {
   await page.keyboard.press('Enter');
 }
 
+/** Chooses `label` in a Select of the control layer by keyboard: open, walk from the first option, Enter. */
 export async function chooseOption(page: Page, select: Locator, label: string | RegExp) {
-  const option = select.getByRole('option', { name: label, exact: true });
-  await expect(option).toHaveCount(1);
-  const { keys, value } = await option.evaluate((element) => {
-    const option = element as HTMLOptionElement;
-    const choices = [...option.closest('select')!.options].filter((item) => !item.disabled);
-    const name = option.label.trim().toLowerCase();
-    let length = 1;
-    while (length < name.length &&
-      choices.filter((item) => item.label.trim().toLowerCase().startsWith(name.slice(0, length))).length > 1) {
-      length += 1;
-    }
-    return { keys: name.slice(0, length), value: option.value };
-  });
+  await expect(select).toBeEnabled();
   await tabTo(page, select);
-  await page.keyboard.type(keys);
-  await expect(select).toHaveValue(value);
+  await page.keyboard.press('ArrowDown');
+  const listbox = popupListbox(page);
+  await expect(listbox).toBeVisible();
+  const option = listbox.getByRole('option', { name: label, exact: true });
+  await expect(option).toHaveCount(1);
+  await page.keyboard.press('Home');
+  const options = await listbox.getByRole('option').count();
+  for (let index = 0; index < options && !await option.evaluate((element) => element.hasAttribute('data-highlighted')); index += 1) {
+    await page.keyboard.press('ArrowDown');
+  }
+  await expect(option).toHaveAttribute('data-highlighted');
+  await page.keyboard.press('Enter');
+  await expect(listbox).toBeHidden();
+  await expect(select).toHaveText(label);
 }
 
 export function post(page: Page, path: string) {
@@ -99,4 +118,12 @@ export async function readSaved(request: APIRequestContext, projectPath: string)
   const response = await request.get(projectPath);
   expect(response.ok(), await response.text()).toBe(true);
   return await response.json() as StudioProjectSnapshot;
+}
+
+/** Selects a row of the Model drawer's Outline by keyboard: Tab into the tree, then type the row's first word. */
+export async function chooseOutlineRow(page: Page, row: Locator, name: string) {
+  const tree = page.getByRole('complementary', { name: 'Details Drawer', exact: true }).getByRole('tree', { name: 'Outline', exact: true });
+  await tabTo(page, tree.locator('[role="treeitem"][tabindex="0"]'));
+  await page.keyboard.type(name.split(' ')[0]);
+  await expect(row).toHaveAttribute('aria-selected', 'true');
 }

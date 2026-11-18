@@ -241,7 +241,7 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
         composed = client.post(
             f"{_URL}/authoring/train/fit", json={"revision": snapshot["revision"]},
         )
-        assert composed.status_code == 422, composed.text
+        assert composed.status_code == 200, composed.text
         assert _folder_state(root) == original
         response = client.post(
             f"{_URL}/files",
@@ -275,7 +275,7 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
 def test_initial_training_settings_retain_the_authored_method_rate_and_batch_count():
     registry = new_application_registry_bundle().training_methods
     project = managed_train_project(batches=25)
-    _, patches, _ = project_train_fields(
+    _, _, patches, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/training_config/snapshot_interval", value=12),
     )
@@ -283,20 +283,45 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
     assert patch.path == "/base/inline/training_config/snapshot_interval"
     assert patch.value == 12
 
-    fields, patches, _ = project_train_fields(project, "train", registry, None)
+    fields, _, patches, _ = project_train_fields(project, "train", registry, None)
     values = {field.id: field.value for field in fields}
     assert values["/training_config/n_batches"] == 25
     assert values["/settings/optimizer/params/learning_rate"] == (
         project.steps["train"].base.inline["settings"]["optimizer"]["params"]["learning_rate"]
     )
 
-    _, patches, _ = project_train_fields(
+    _, _, patches, _ = project_train_fields(
         project, "train", registry,
         StudioAuthoringChange(field="/seed", value=7.0),
     )
     seed, = patches
     assert seed.path == "/base/inline/seed"
     assert type(seed.value) is int and seed.value == 7
+
+
+def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
+    registry = new_application_registry_bundle().training_methods
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["sweep"] = {
+        "axes": {"seed": {"values": {"a": {"patches": {"seed": {"value": 1}}}, "b": {"patches": {"seed": {"value": 2}}}}}},
+        "exceptions": {"wide": {
+            "where": {"axes": {"seed": ["b"]}},
+            "patches": {"training_config.batch_size": {"value": 20}},
+        }},
+    }
+    project = Project.model_validate(raw)
+    fields, settings, _, _ = project_train_fields(project, "train", registry, None)
+    assert {field.id for field in fields} >= {"/method", "/training_config/batch_size"}
+    assert settings["optimizer"]["type"] == "adam"
+
+    _, _, patches, _ = project_train_fields(
+        project, "train", registry, StudioAuthoringChange(field="/settings/optimizer/type", value="sgd"),
+    )
+    assert [(patch.path, patch.value) for patch in patches] == [("/base/inline/settings/optimizer/type", "sgd")]
+    with pytest.raises(ValueError):
+        project_train_fields(
+            project, "train", registry, StudioAuthoringChange(field="/settings/optimizer/type", value=3),
+        )
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
@@ -383,7 +408,7 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
             "revision": widened.json()["revision"], "change": {**change, "value": "initialize_from"},
         })
         assert refused.status_code == 422, refused.text
-        assert "has no supported edit" in refused.text
+        assert "is read-only" in refused.text
 
 
 def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
@@ -1230,7 +1255,7 @@ def test_existing_event_stream_observes_an_external_edit(study, monkeypatch, thr
                 raise HostError("unavailable", "Stream ended")
             return 0, StudioJobEventHistory(cursor=0, oldest_cursor=0, events=[])
 
-    client.app.state.job_service = JobsStream()
+    client.app.state.job_activity = JobsStream()
     response = client.get("/api/events?folder=reach")
     assert response.status_code == 200
     observations = [

@@ -14,6 +14,7 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
+from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemovedRunsRequest
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
@@ -21,6 +22,8 @@ from feedbax.contracts.studio_authoring import (
     StudioTrainAuthoringRequest,
 )
 from feedbax.contracts.studio_project import (
+    StudioMemberCommand,
+    StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectCreateFile,
     StudioProjectDocument,
@@ -112,7 +115,7 @@ def read_train_authoring(
         snapshot = folders.read(project_id, revision=body.revision)
         bundle = request.app.state.bootstrap_state.bundle
         try:
-            fields, patches, documents = project_train_fields(
+            fields, settings, patches, documents = project_train_fields(
                 snapshot.project, step_id, bundle.training_methods, body.change,
                 read_plan=lambda keys: folders.read_plan(project_id, revision=snapshot.revision, source_runs=keys).plan,
             )
@@ -120,7 +123,7 @@ def read_train_authoring(
             raise ProjectFolderInvalid(str(error)) from error
         return StudioTrainAuthoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision,
-            fields=fields, patches=patches, documents=documents,
+            fields=fields, settings=settings, patches=patches, documents=documents,
         )
 
     return _project_response(response, project_fields)
@@ -163,6 +166,15 @@ def prepare_subset_to_rows(
     project_id: ProjectName, body: StudioSubsetToRowsRequest, request: Request, response: Response,
 ) -> StudioSubsetToRowsEdit:
     return _project_response(response, lambda: request.app.state.project_plan.subset_to_rows(project_id, body))
+
+
+@router.post("/{project_id}/authoring/removed-runs")
+def review_removed_runs(
+    project_id: ProjectName, body: StudioRemovedRunsRequest, request: Request, response: Response,
+) -> StudioRemovedRuns:
+    from feedbax.web.services.removed_runs import removed_runs
+
+    return _project_response(response, lambda: removed_runs(request.app.state.project_folders, project_id, body))
 
 
 @router.post("/{project_id}/authoring/trials")
@@ -366,6 +378,15 @@ def create_project_file(
 ) -> StudioProjectDocument:
     return _project_response(
         response, lambda: request.app.state.project_folders.create_file(project_id, body)
+    )
+
+
+@router.post("/{project_id}/members/command", response_model_exclude_unset=True)
+def command_project_member(
+    project_id: ProjectName, body: StudioMemberCommand, request: Request, response: Response
+) -> StudioMemberCommandResult:
+    return _project_response(
+        response, lambda: request.app.state.project_folders.member_command(project_id, body)
     )
 
 

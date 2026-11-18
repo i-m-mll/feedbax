@@ -5,7 +5,10 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { Agent } from 'node:http';
 import type { Plugin } from 'vite';
+import { buildSync } from 'esbuild';
+import { appearanceBootEntry } from './entries';
 
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
@@ -68,6 +71,20 @@ function desktopResources(): Plugin {
   };
 }
 
+// The theme and density must be on the root before the first paint, so the boot script is inlined into the page.
+function appearanceBoot(): Plugin {
+  return {
+    name: 'appearance-boot',
+    transformIndexHtml() {
+      const { outputFiles } = buildSync({
+        entryPoints: [path.join(__dirname, appearanceBootEntry)],
+        bundle: true, write: false, minify: true, format: 'iife', target: 'es2020',
+      });
+      return [{ tag: 'script', children: outputFiles[0].text, injectTo: 'head' }];
+    },
+  };
+}
+
 export default defineConfig({
   cacheDir: process.env.FEEDBAX_VITE_CACHE_DIR,
   // The standalone folder controller can load before a shell imports it.
@@ -77,15 +94,18 @@ export default defineConfig({
     server: { deps: { inline: ['zod'] } },
     globals: true,
     environment: 'node',
+    setupFiles: ['./src/test/setup.ts'],
     exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],
   },
   plugins: [
+    appearanceBoot(),
     react(),
     isDesktop ? desktopResources() : VitePWA({
       registerType: 'autoUpdate',
       workbox: {
         skipWaiting: true,
         navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/gallery\.html/],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         runtimeCaching: [
           {
@@ -132,11 +152,11 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
+      input: isDesktop
+        ? path.resolve(__dirname, 'index.html')
+        : { main: path.resolve(__dirname, 'index.html'), gallery: path.resolve(__dirname, 'gallery.html') },
       output: {
         manualChunks(id) {
-          if (id.includes('/node_modules/recharts/')) {
-            return 'recharts';
-          }
           if (id.includes('/node_modules/@xyflow/')) {
             return 'xyflow';
           }
@@ -156,7 +176,11 @@ export default defineConfig({
           '/api': {
             target: `http://${apiAddress}`,
             changeOrigin: true,
+            // Reuse backend connections; without an agent every proxied request closes both legs.
+            agent: new Agent({ keepAlive: true }),
             configure(proxy) {
+              // A stopped backend answers nothing; the page must see that, not the proxy's 500.
+              proxy.on('error', (_error, request) => { request.socket.destroy(); });
               proxy.on('proxyRes', (upstream, _request, downstream) => {
                 if (!upstream.headers['content-type']?.startsWith('text/event-stream')) return;
                 upstream.once('close', () => {

@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.computation_validity import StepCountChanged
 from feedbax.contracts.code_validity import AttemptProvenance, CodeTrace, ReceiptEvidence, RegistryBinding, SourcePath, SourceSnapshot
 from feedbax.contracts.receipt_validity import (
     CheckConditions,
@@ -83,19 +84,18 @@ def test_environment_confirmation_never_accepts_code_and_joint_proof_expires(tmp
     assert env_only.state == "unchecked" and set(env_only.checks) == {"code"}
     assert env_only.environment.check == "confirmed"
 
-    for outcome, basis in (("different", "computation"), ("unavailable", "source")):
+    steps = (StepCountChanged(previous=2, present=6),)
+    for code, expected in (
+        (CheckOutcome(outcome="different", changes=steps), ("code", "computation", steps, None)),
+        (CheckOutcome(outcome="unavailable", detail="No replay start."), ("code", "source", (), "No replay start.")),
+    ):
         assessed = confirmation.model_copy(update={
-            "evidence": ValidityCheckEvidence(
-                code=CheckOutcome(outcome=outcome, detail="Driver identity changed."),
-                environment=CheckOutcome(outcome="equal"),
-            ),
+            "evidence": ValidityCheckEvidence(code=code, environment=CheckOutcome(outcome="equal")),
         })
         result = decide_validity(receipt, conditions=conditions, records=(assessed,), code_checkable=True)
         assert result.state == "stale" and not result.checks
         assert result.environment.check == "confirmed"
-        assert {(reason.kind, reason.basis, reason.detail) for reason in result.reasons} == {
-            ("code", basis, "Driver identity changed."),
-        }
+        assert {(reason.kind, reason.basis, reason.changes, reason.detail) for reason in result.reasons} == {expected}
 
     both = confirmation.model_copy(update={
         "evidence": ValidityCheckEvidence(

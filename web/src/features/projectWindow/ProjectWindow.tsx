@@ -1,32 +1,44 @@
 import {
-  ArrowLeft, ArrowRight, BarChart3, Columns2, Command, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelLeft, PanelRight, PanelTop, Rows2, Settings2, Target, Workflow, X,
+  BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
+  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
+import { StudioLogo } from '../../components/StudioLogo';
 import {
   useEffect, useId, useLayoutEffect, useRef, useState,
   type CSSProperties, type Dispatch, type ReactNode, type SetStateAction,
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
+import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
+import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
-import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from '@/components/activity/StudioRegion';
+import { Button, IconButton } from '@/components/ui/Button';
+import { CommandBar } from '@/components/ui/CommandBar';
+import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { useElementSize } from '@/hooks/useElementSize';
 import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
 import {
-  projectWindowSlotView, projectWindowViews, showProjectWindowView,
-  type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
+  closeProjectWindowSlot, defaultProjectWindowState, projectWindowSlotView, projectWindowViews, showProjectWindowView,
+  type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
+import type { DocumentPickerModel } from './DocumentPicker';
+import { SlotHeader } from './SlotHeader';
 import { StudioCommandPalette } from './StudioCommandPalette';
-import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
+import { StudioConnectionStatus } from './StudioConnectionStatus';
+import { StudioSettings } from './StudioSettings';
+import { bindStudioCommand, commandAttributes, commandInContext, keyHandled, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
 import { useStudioTitleBar } from './studioTitleBar';
+import { appearanceCommands } from '@/appearance/appearanceCommands';
 import './projectWindow.css';
 
 export interface ProjectWindowViewRegion {
   body: ReactNode;
+  picker?: DocumentPickerModel;
   header?: ReactNode;
   drawer?: ReactNode;
   inspector?: ReactNode;
@@ -45,18 +57,18 @@ export interface ProjectWindowProps {
   onBack?: () => void;
   onForward?: () => void;
   commands: readonly StudioCommand[];
-  mapCommands?: readonly StudioCommand[];
+  mapCommands?: readonly CanvasViewportCommand[];
   focusRequest?: number;
   variant?: ReactNode;
   overlay?: ReactNode;
   clock?: ReactNode;
   failure?: ReactNode;
-  serviceFailure?: Extract<StudioRegionState, { kind: 'failed' }>;
   problems?: ReactNode;
   activity?: ReactNode;
 }
 
-const views = {
+/** The glyph of each view, and of the document kind a view shows. */
+export const viewGlyphs = {
   runs: List,
   model: GitBranch,
   task: Crosshair,
@@ -79,20 +91,19 @@ const slots = ['primary', 'secondary'] as const;
 const regionOrder = ['top', 'map', 'steps', 'rail', 'drawer', ...slots, 'inspector', 'bottom'] as const;
 type WindowRegion = typeof regionOrder[number];
 
-function WindowButton({ command, icon: Icon, pressed, controls, tab }: {
+function WindowButton({ command, icon: Icon = command.glyph!, pressed, controls, tab, placement = tab ? 'right' : 'bottom' }: {
   command: StudioCommand;
-  icon: LucideIcon;
+  icon?: LucideIcon;
   pressed?: boolean;
   controls?: string;
   tab?: { id: string; tabbable: boolean };
+  placement?: 'bottom' | 'right';
 }) {
   return (
-    <button type="button" {...commandAttributes(command, tab ? 'right' : 'bottom')}
+    <IconButton label={command.label} icon={<Icon aria-hidden="true" />} {...commandAttributes(command, placement)}
       role={tab ? 'tab' : undefined} id={tab?.id} tabIndex={tab ? (tab.tabbable ? 0 : -1) : undefined}
-      aria-selected={tab ? pressed : undefined} aria-pressed={!tab ? pressed : undefined}
-      aria-controls={controls} disabled={!command.enabled} onClick={command.invoke} className="studio-window-control">
-      <Icon aria-hidden="true" className="size-4" />
-    </button>
+      aria-selected={tab ? pressed : undefined} pressed={!tab ? pressed : undefined}
+      aria-controls={controls} disabled={!command.enabled} onClick={command.invoke} className="studio-window-control" />
   );
 }
 
@@ -109,7 +120,7 @@ function focusRegion(root: HTMLElement | null, region: WindowRegion) {
 
 export function ProjectWindow({
   state, onStateChange, projectName, saveStatus, availableViews, renderView, map, mapDrawer, compactMap,
-  onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, failure, serviceFailure, problems, activity,
+  onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, failure, problems, activity,
 }: ProjectWindowProps) {
   const id = useId();
   const ids = {
@@ -126,6 +137,7 @@ export function ProjectWindow({
   const [preview, setPreview] = useState<ProjectWindowSizePreview>({});
   const [requestedFocus, setRequestedFocus] = useState<{ region: WindowRegion }>();
   const [paletteScope, setPaletteScope] = useState<'project' | 'activity' | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [railFocus, setRailFocus] = useState<ProjectWindowView | null>(null);
   const [mapHasFocus, setMapHasFocus] = useState(false);
   const pointerTransition = useRef<{ slot: ProjectWindowSlot }>();
@@ -142,20 +154,23 @@ export function ProjectWindow({
     secondary: secondaryView ? renderView(secondaryView, 'secondary') : null,
   };
   const focusedRegion = regions[focusedSlot];
-  const sideRegionsAvailable = shownViews[focusedSlot] !== 'results';
+  const sides = (region: ProjectWindowViewRegion | null) => ({ drawer: !!region?.drawer, inspector: !!region?.inspector });
+  const focusedSides = sides(focusedRegion);
+  const mode = availableViews.length ? state.mode : 'map';
   const fit = fitProjectWindow(width, height, {
     ...state,
+    mode,
     secondaryView,
-    detailsDrawerOpen: sideRegionsAvailable && state.detailsDrawerOpen,
-    inspectorOpen: sideRegionsAvailable && state.inspectorOpen,
-  }, preview, {
-    drawer: Boolean(focusedRegion?.drawer), inspector: Boolean(focusedRegion?.inspector),
-  });
-  const detailsVisible = state.mode !== 'map';
-  const fullMapVisible = state.mode === 'map' || (state.mode === 'both' && fit.mapHeight.open);
+    detailsDrawerOpen: focusedSides.drawer && state.detailsDrawerOpen,
+    inspectorOpen: focusedSides.inspector && state.inspectorOpen,
+  }, preview);
+  const detailsVisible = mode !== 'map';
+  const fullMapVisible = mode === 'map' || (mode === 'both' && fit.mapHeight.open);
   const mapDrawerVisible = fullMapVisible && fit.mapDrawer.open;
-  const detailsDrawerVisible = detailsVisible && fit.detailsDrawer.open;
-  const inspectorVisible = detailsVisible && fit.inspector.open;
+  // Before the panel is measured, its sides follow the saved state rather than a zero-width fit.
+  const measured = width > 0;
+  const detailsDrawerVisible = detailsVisible && (measured ? fit.detailsDrawer.open : focusedSides.drawer && state.detailsDrawerOpen);
+  const inspectorVisible = detailsVisible && (measured ? fit.inspector.open : focusedSides.inspector && state.inspectorOpen);
   const split = secondaryView !== null;
   const folded = split && !fit.secondary.open;
   const slotWidth = (slot: ProjectWindowSlot) => folded
@@ -212,11 +227,15 @@ export function ProjectWindow({
     moveFocus(other);
   }
 
+  function closeSlot(slot: ProjectWindowSlot) {
+    onStateChange((previous) => closeProjectWindowSlot(previous, slot));
+    moveFocus('primary');
+  }
+
   function splitDetails() {
-    onStateChange((previous) => split
-      ? { ...previous, secondaryView: null, focusedSlot: 'primary' }
-      : showProjectWindowView(previous, 'scene', 'secondary'));
-    moveFocus(split ? 'primary' : 'secondary');
+    if (split) return closeSlot(focusedSlot);
+    onStateChange((previous) => showProjectWindowView(previous, 'scene', 'secondary'));
+    moveFocus('secondary');
   }
 
   function cycleRegion(direction: number) {
@@ -241,11 +260,11 @@ export function ProjectWindow({
     onStateChange((previous) => ({ ...previous, [key]: size }));
   }
 
-  const layoutModes = modes.map(({ mode, id, icon }) => ({
-    mode, icon, command: bindStudioCommand(id, () => {
-      onStateChange((previous) => ({ ...previous, mode }));
-      moveFocus(mode === 'details' ? focusedSlot : 'map');
-    }),
+  const layoutModes = modes.map(({ mode: target, id, icon }) => ({
+    mode: target, icon, command: bindStudioCommand(id, () => {
+      onStateChange((previous) => ({ ...previous, mode: target }));
+      moveFocus(target === 'details' ? focusedSlot : 'map');
+    }, { enabled: target === 'map' || availableViews.length > 0 }),
   }));
   const back = bindStudioCommand('back', () => onBack?.(), { enabled: !!onBack });
   const forward = bindStudioCommand('forward', () => onForward?.(), { enabled: !!onForward });
@@ -261,20 +280,25 @@ export function ProjectWindow({
       ...previous, mode: previous.mode === 'map' ? 'both' : previous.mode, [key]: !visible,
     }));
     moveFocus(visible ? focusedSlot : region);
-  }, { name: visible ? (id === 'showDrawer' ? 'hideDrawer' : 'hideInspector') : id, enabled: sideRegionsAvailable });
+  }, { name: visible ? (id === 'showDrawer' ? 'hideDrawer' : 'hideInspector') : id, enabled: focusedSides[region === 'drawer' ? 'drawer' : 'inspector'] });
   const drawer = side('showDrawer', 'detailsDrawerOpen', 'drawer', detailsDrawerVisible);
   const inspector = side('showInspector', 'inspectorOpen', 'inspector', inspectorVisible);
   const splitCommand = bindStudioCommand('splitDetails', splitDetails,
     { name: split ? 'closeSlot' : 'splitDetails', enabled: !!availableViews.length });
+  const closeCommand = (slot: ProjectWindowSlot) => bindStudioCommand('splitDetails', () => closeSlot(slot),
+    { name: 'closeSlot', keyboard: false });
   const switchCommand = bindStudioCommand('switchSlot', switchSlot, { enabled: split });
-  const tabCommands = availableViews.map((view) => bindStudioCommand(view, () => activateView(view)));
-  const tabView = railFocus && availableViews.includes(railFocus) ? railFocus : shownViews[focusedSlot] ?? availableViews[0];
+  const tabCommands = projectWindowViews.map((view) => bindStudioCommand(view, () => activateView(view),
+    { enabled: availableViews.includes(view) }));
+  const tabView = railFocus ?? shownViews[focusedSlot] ?? availableViews[0];
   const tabId = (view: ProjectWindowView) => `${id}-tab-${view}`;
   const palette = bindStudioCommand('commandPalette', () => {
     const scope = document.activeElement?.closest('[data-studio-activity-panel]') ? 'activity' : 'project';
     setPaletteScope((open) => open ? null : scope);
   });
-  const viewportIds = new Set(mapCommands?.map(({ id }) => id));
+  const settings = bindStudioCommand('settings', () => setSettingsOpen((open) => !open), { name: 'openSettings' });
+  const viewportIds = new Set<StudioCommand['id']>(mapCommands?.map(({ id }) => id));
+  const separator = mode === 'map' ? '100%' : `${mode === 'both' ? fit.mapHeight.size : compactMapHeight}px`;
   const viewportCommands = fullMapVisible && (mapHasFocus || !commands.some(({ id }) => viewportIds.has(id)))
     ? mapCommands ?? [] : [];
   const paletteCommands = [
@@ -283,14 +307,16 @@ export function ProjectWindow({
     back, forward, ...tabCommands,
     bindStudioCommand('nextRegion', () => cycleRegion(1)),
     bindStudioCommand('previousRegion', () => cycleRegion(-1)),
+    settings, ...appearanceCommands(),
   ];
   const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
   shortcutCommands.current = { palette, paletteCommands, paletteScope };
   useStudioNativeMenu([palette, ...paletteCommands], paletteScope !== null);
-  const titleBar = useStudioTitleBar(projectName);
+  const bar = useRef<HTMLElement>(null);
+  useStudioTitleBar(bar, projectName);
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      if (keyHandled(event) || event.isComposing || event.repeat) return;
       const { palette, paletteCommands, paletteScope } = shortcutCommands.current;
       const context = studioCommandContext(event.target, paletteScope !== null);
       const command = matchesShortcut(event, palette.shortcut) ? palette
@@ -313,23 +339,20 @@ export function ProjectWindow({
     '--shell-rail-width': `${projectRailWidth}px`,
     '--studio-map-drawer-edge': `${projectRailWidth + (mapDrawerVisible ? fit.mapDrawer.size : 0)}px`,
   } as CSSProperties;
-  const panelRows = state.mode === 'map'
+  const panelRows = mode === 'map'
     ? 'minmax(0, 1fr) 0px 0px'
-    : state.mode === 'details'
+    : mode === 'details'
       ? `${compactMapHeight}px 0px minmax(0, 1fr)`
       : `${fit.mapHeight.size}px 1px minmax(0, 1fr)`;
   const resizeProps = (key: PreferredWindowSize) => ({
     onPreview: (size: number | null) => previewSize(key, size),
     onResize: (size: number) => resize(key, size),
   });
-  const offline = serviceFailure && <StudioRegion state={serviceFailure} />;
-  const regionBody = (name: StudioCommand['name'], body: ReactNode, dataBacked = true) => (
-    <>
-      <div className="studio-window-region-content" hidden={!!offline && dataBacked}>
-        <StudioRegionBoundary name={name}>{body}</StudioRegionBoundary>
-      </div>
-      {dataBacked && offline}
-    </>
+  const focusedOwner = `${focusedSlot}:${shownViews[focusedSlot]}`;
+  const regionBody = (name: StudioCommand['name'], body: ReactNode, owner?: string) => (
+    <div className="studio-window-region-content">
+      <StudioRegionBoundary key={owner} name={name}>{body}</StudioRegionBoundary>
+    </div>
   );
 
   return (
@@ -339,25 +362,32 @@ export function ProjectWindow({
           setMapHasFocus(event.target.closest('[data-studio-focus-region="map"]') !== null);
         }
       }}>
-      <header className="shell-frame__bar studio-window-bar" data-studio-focus-region="top" tabIndex={-1} data-studio-drag-region {...titleBar}>
-        <div className="shell-frame__cell studio-window-bar__controls" data-studio-drag-region>
-          {layoutModes.map(({ mode, icon, command }) => (
-            <WindowButton key={mode} command={command} icon={icon} pressed={state.mode === mode} />
-          ))}
-          <WindowButton command={back} icon={ArrowLeft} />
-          <WindowButton command={forward} icon={ArrowRight} />
-          <WindowButton command={steps} icon={PanelLeft} pressed={mapDrawerVisible} controls={ids.mapDrawer} />
+      <header ref={bar} className="shell-frame__bar studio-window-bar" data-studio-focus-region="top" tabIndex={-1} data-shell-drag-region>
+        <div className="shell-frame__cell shell-titlebar__leading studio-window-bar__controls">
+          <span className="shell-titlebar__logo"><StudioLogo /></span>
+          <SegmentedControl<ProjectWindowMode> aria-label={studioName('layoutMode')} value={mode}
+            onValueChange={(target) => layoutModes.find((item) => item.mode === target)?.command.invoke()}
+            items={layoutModes.map(({ mode: target, icon: Icon, command }) => ({
+              value: target, label: command.label, icon: <Icon aria-hidden="true" />, disabled: !command.enabled,
+              attributes: commandAttributes(command),
+            }))} />
+          <CommandBar entries={[steps, back, forward].map((command) => ({ command, priority: 'normal' }))} moreLabel={studioName('more')} itemClassName="studio-window-control"
+            itemProps={(command) => ({
+              ...commandAttributes(command),
+              ...(command === steps ? { 'aria-pressed': mapDrawerVisible, 'aria-controls': ids.mapDrawer } : {}),
+            })} />
         </div>
-        <div className="shell-frame__cell studio-window-bar__project" data-separated="" data-studio-drag-region>
-          <h1 className="min-w-0 truncate text-sm font-semibold" data-studio-drag-region>{projectName}</h1>
+        <div className="shell-frame__cell studio-window-bar__project" data-separated="">
+          <h1 className="min-w-0 truncate text-sm font-semibold">{projectName}</h1>
           {saveStatus}
           {variant}
         </div>
         <div className="studio-window-bar__commands">
-          <WindowButton command={palette} icon={Command} />
+          <WindowButton command={palette} />
           {paletteScope && <StudioCommandPalette
             commands={paletteScope === 'activity' ? paletteCommands.filter((command) => !command.selectionScoped) : paletteCommands}
             close={() => setPaletteScope(null)} />}
+          {settingsOpen && <StudioSettings close={() => setSettingsOpen(false)} />}
           {overlay}
         </div>
       </header>
@@ -383,17 +413,25 @@ export function ProjectWindow({
           </div>}
         </section>
         <div className="studio-window-panel__divider">
-          {state.mode === 'both' && fit.mapHeight.open && (
+          {mode === 'both' && fit.mapHeight.open && (
             <ResizeSeparator label={studioName('panelHeight')} controls={ids.map} axis="y" direction={1}
               layout={fit.mapHeight} className="studio-window-resize studio-window-resize--row" {...resizeProps('mapHeight')} />
           )}
         </div>
-        <nav className="shell-scroll-rail studio-window-rail" data-axis="y" aria-label={studioName('details')}
-          data-studio-focus-region="rail" tabIndex={-1}>
-          <div role="tablist" aria-label={studioName('details')} aria-orientation="vertical" className="studio-window-tabs"
+        <nav className="shell-rail studio-window-rail" data-separated="" aria-label={studioName('details')}
+          data-studio-focus-region="rail" tabIndex={-1} style={{ '--shell-rail-separator': separator } as CSSProperties}>
+          {fullMapVisible && mapCommands && (
+            <div role="toolbar" aria-label={studioName('pipelineMap')} aria-orientation="vertical" className="studio-window-rail__map">
+              {mapCommands.map((command) => (
+                <WindowButton key={command.id} command={command} icon={canvasViewportIcons[command.id]} placement="right" />
+              ))}
+            </div>
+          )}
+          {detailsVisible && <div role="tablist" aria-label={studioName('details')} aria-orientation="vertical"
+            className="shell-scroll-rail studio-window-tabs" data-axis="y"
             onFocusCapture={(event) => {
               const id = event.target.dataset.commandId;
-              const view = availableViews.find((item) => item === id);
+              const view = projectWindowViews.find((item) => item === id);
               if (view) setRailFocus(view);
             }}
             onBlurCapture={(event) => {
@@ -409,21 +447,21 @@ export function ProjectWindow({
               event.preventDefault();
               tabs[destination]?.focus();
             }}>
-            {projectWindowViews.map((view) => {
-              const command = tabCommands.find(({ id }) => id === view);
-              const selected = detailsVisible && shownViews[focusedSlot] === view;
-              return command ? (
-                <WindowButton key={view} command={command} icon={views[view]} controls={selected ? ids[focusedSlot] : undefined}
+            {tabCommands.map((command) => {
+              const view = command.id;
+              const selected = shownViews[focusedSlot] === view;
+              return (
+                <WindowButton key={view} command={command} icon={viewGlyphs[view]} controls={selected ? ids[focusedSlot] : undefined}
                   pressed={selected} tab={{ id: tabId(view), tabbable: tabView === view }} />
-              ) : <span key={view} className="studio-window-control" aria-hidden="true" />;
+              );
             })}
-          </div>
+          </div>}
         </nav>
         <section id={ids.details} className="studio-window-details" hidden={!detailsVisible} aria-label={studioName('details')}>
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
-              {regionBody('detailsDrawer', focusedRegion?.drawer, Boolean(focusedRegion?.drawer))}
+              {regionBody('detailsDrawer', focusedRegion?.drawer, focusedOwner)}
             </div>
             {detailsDrawerVisible && (
               <ResizeSeparator label={studioName('detailsDrawer')} controls={ids.detailsDrawer} axis="x" direction={1}
@@ -440,36 +478,31 @@ export function ProjectWindow({
             return (
               <div key={slot} className="studio-window-slot" data-slot={slot} style={{ width: slotWidth(slot) }}>
                 {isFolded && (
-                  <button type="button" className="studio-window-slot__strip" aria-label={studioName(view)}
+                  <Button variant="ghost" className="studio-window-slot__strip" aria-label={studioName(view)}
                     onClick={() => { focusSlot(slot); moveFocus(slot); }} {...appTip(studioName(view), 'right')}>
                     {studioName(view)}
-                  </button>
+                  </Button>
                 )}
                 <section id={ids[slot]} role="tabpanel" aria-labelledby={tabId(view)} data-studio-focus-region={slot} className="studio-window-slot__view" tabIndex={0}
                   data-focused={focusedSlot === slot ? '' : undefined} hidden={isFolded}
                   onFocusCapture={() => { if (pointerTransition.current?.slot !== slot) focusSlot(slot); }}
                   onPointerDownCapture={() => {
-                    const crossesResults = slot !== focusedSlot && (view === 'results' || !sideRegionsAvailable);
+                    const own = sides(region);
+                    const relayout = slot !== focusedSlot &&
+                      (own.drawer !== focusedSides.drawer || own.inspector !== focusedSides.inspector);
                     // Keep the clicked control under the pointer until its click is dispatched.
-                    pointerTransition.current = crossesResults ? { slot } : undefined;
-                    if (!crossesResults) focusSlot(slot);
+                    pointerTransition.current = relayout ? { slot } : undefined;
+                    if (!relayout) focusSlot(slot);
                   }}
                   onClickCapture={() => {
                     pointerTransition.current = undefined;
                     focusSlot(slot);
                   }}>
-                  <header className="studio-window-slot__header">
-                    <h2 className="studio-window-slot__name">{studioName(view)}</h2>
-                    <div className="studio-window-slot__controls" hidden={!!offline && view !== 'runs'}>
-                      <StudioRegionBoundary key={view} name={view}>{region.header}</StudioRegionBoundary>
-                    </div>
-                    {slot === 'primary' && !split && (
-                      <WindowButton command={splitCommand} icon={Columns2} />
-                    )}
-                    {slot === 'secondary' && (
-                      <WindowButton command={splitCommand} icon={X} />
-                    )}
-                  </header>
+                  <SlotHeader view={view} icon={viewGlyphs[view]} picker={region.picker}
+                    trailing={split ? <WindowButton command={closeCommand(slot)} icon={X} />
+                      : <WindowButton command={splitCommand} icon={Columns2} />}>
+                    {region.header}
+                  </SlotHeader>
                   <div key={view} className="studio-window-slot__body">
                     {regionBody(view, region.body)}
                   </div>
@@ -484,7 +517,7 @@ export function ProjectWindow({
           <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
             <div className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>
-              {regionBody('windowInspector', focusedRegion?.inspector, Boolean(focusedRegion?.inspector))}
+              {regionBody('windowInspector', focusedRegion?.inspector, focusedOwner)}
             </div>
             {inspectorVisible && (
               <ResizeSeparator label={studioName('windowInspector')} controls={ids.inspector} axis="x" direction={-1}
@@ -496,17 +529,30 @@ export function ProjectWindow({
       <footer className="shell-frame__footer studio-window-bottom" data-studio-focus-region="bottom" tabIndex={-1}>
         <StudioRegionBoundary name="bottomBar">
           <div className="studio-window-bottom__left">
-            <WindowButton command={drawer} icon={PanelLeft} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
+            <WindowButton command={drawer} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
           </div>
-          <div className="studio-window-bottom__clock" hidden={!!offline}>{clock}</div>
+          <div className="studio-window-bottom__clock">{clock}</div>
           <div className="studio-window-bottom__right">
+            <StudioConnectionStatus />
             {failure}
             {problems}
             {activity}
-            <WindowButton command={inspector} icon={PanelRight} pressed={inspectorVisible} controls={ids.inspector} />
+            <WindowButton command={inspector} pressed={inspectorVisible} controls={ids.inspector} />
           </div>
         </StudioRegionBoundary>
       </footer>
     </div>
+  );
+}
+
+const loadingRegion = <StudioRegion state={{ kind: 'loading' }} />;
+
+/** The window before its project has loaded: its regions loading, its bottom bar reporting the connection. */
+export function PendingProjectWindow() {
+  const [state, setState] = useState<ProjectWindowState>(defaultProjectWindowState);
+  return (
+    <ProjectWindow state={state} onStateChange={setState} projectName="" availableViews={[]}
+      renderView={() => ({ body: loadingRegion })} map={loadingRegion} mapDrawer={loadingRegion}
+      compactMap={loadingRegion} commands={[]} />
   );
 }

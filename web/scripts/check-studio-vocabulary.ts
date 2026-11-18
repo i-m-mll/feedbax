@@ -13,7 +13,7 @@ const sources = [
   resolve(src, 'App.tsx'),
   resolve(src, 'main.tsx'),
   resolve(src, 'components/layout/HeaderActivity.tsx'),
-  resolve(src, 'components/values/StudioFieldControl.tsx'),
+  ...new Bun.Glob('components/values/**/*.{ts,tsx}').scanSync({ cwd: src, absolute: true }),
 ].filter((path) => !path.endsWith('.test.tsx'));
 const errors: string[] = [];
 const retired = new RegExp(`\\b(?:${vocabulary.retired.join('|')})s?\\b`, 'i');
@@ -38,7 +38,7 @@ for (const [id, value] of Object.entries(vocabulary.format)) verifyEntry(id, val
 
 const names = new Map<string, readonly number[]>([
   ['studioName', [0]], ['studioAccessibleName', [0]], ['studioFieldLabel', [0]],
-  ['studioFieldValueLabel', []], ['studioFieldKindLabel', [1]], ['studioReplayLabel', []],
+  ['studioFieldValueLabel', []], ['studioFieldKindLabel', [1]], ['studioReplayLabel', []], ['studioRunStatus', [0]],
 ]);
 const vocabKeys = new Map<string, readonly number[]>([
   ...names, ['studioUnit', [0]], ['studioFormat', [0]], ['studioReason', [0]],

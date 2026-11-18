@@ -1,10 +1,16 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseStepKind } from './fixtures/studioKeyboard';
+import { outlineRow, pick, placeFromLibrary } from './fixtures/controls';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
-async function addIntervention(page: Page, projectPath: string, button: Locator, scope: object) {
+async function addIntervention(page: Page, projectPath: string, scope: object) {
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await inspector.getByRole('button', { name: 'Add Attachment', exact: true }).click();
+  const button = page.getByRole('menuitem', { name: 'Add Intervention', exact: true });
   const committed = page.waitForResponse((response) => response.request().method() === 'PATCH' &&
     new URL(response.url()).pathname === projectPath, { timeout: 8_000 });
   // A refused preparation produces no PATCH. Report that refusal first.
@@ -43,7 +49,7 @@ test('authors and reopens an addressed Model through the project history', async
   const card = (id: string) => model.locator(`.react-flow__node[data-id="${id}"]`);
   await page.goto(url);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Train');
   await expect(model.locator('[data-boundary="true"]')).toHaveCount(2);
   await mapStep(page, 'train').click();
   await expect(inspector.getByRole('textbox', { name: 'Step', exact: true })).toBeEnabled();
@@ -53,8 +59,7 @@ test('authors and reopens an addressed Model through the project history', async
   const step = await apply(() => enter(inspector.getByRole('textbox', { name: 'Step', exact: true }), '0.02 s'));
   expect(stored(step.snapshot).step_seconds).toBe(0.02);
   await expect(model.getByRole('button', { name: 'Lock', exact: true })).toBeEnabled();
-  const gru = drawer.getByRole('button', { name: 'Add GRU', exact: true });
-  const added = await apply(() => gru.press('Enter'));
+  const added = await apply(() => placeFromLibrary(page, 'GRU'));
   const component = added.changed[0].element;
   if (component.kind !== 'component') throw new Error('Add did not return a component address');
   const cell = card(component.id);
@@ -123,7 +128,7 @@ test('authors and reopens an addressed Model through the project history', async
   const wirePath = model.locator(`.react-flow__edge[data-id="${wire.id}"] .react-flow__edge-path`);
   await expect(wirePath).toHaveAttribute('d', /^M/);
   const unflippedPath = (await wirePath.getAttribute('d'))!;
-  await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
+  await page.locator('[data-slot="secondary"]').getByRole('button', { name: 'Close Slot', exact: true }).click();
   await cell.locator('header').click();
   await page.keyboard.press('Meta+K');
   const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
@@ -178,11 +183,11 @@ test('authors and reopens an addressed Model through the project history', async
   expect(initial.project.documents?.model.schema).toBe('feedbax.spec.model');
 });
 
-test('edits and reopens an authored Evaluate attachment without changing the Model document', async ({ page, request }, info) => {
+test('edits and reopens an authored Evaluate attachment without changing the Model document', async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const seeded = await seedManagedProject(request, []);
   const { projectPath } = seeded;
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, seeded.configuration.project, 'sweep');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, seeded.configuration.project, 'sweep');
   const opened = await request.get(`${projectPath}/open`);
   expect(opened.ok(), await opened.text()).toBe(true);
   const { snapshot } = await opened.json() as StudioProjectDocument;
@@ -195,10 +200,8 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await model.locator('[data-id="wrapper"] header').dblclick();
   await model.locator('[data-id="controller"] header').dblclick();
-  await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
-  await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  const add = inspector.getByRole('button', { name: 'Add Intervention', exact: true });
-  await addIntervention(page, projectPath, add, { kind: 'step' });
+  await outlineRow(page, 'Cell.output → Readout.input').click();
+  await addIntervention(page, projectPath, { kind: 'step' });
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('1');
   const [changed] = await Promise.all([
     page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
@@ -210,6 +213,8 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   expect(saved.project.steps?.baseline).toMatchObject({ model_attachments: expect.any(Object) });
   await page.reload();
   await mapStep(page, 'baseline').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Controller')).toBeVisible();
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
@@ -217,30 +222,28 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await evaluation.getByRole('button', { name: 'Sweep seed 2', exact: true }).click();
   await evaluation.getByRole('listitem').getByRole('button', { name: 'Select seed control', exact: true }).click();
   await evaluation.getByRole('button', { name: 'Sweep seed 2', exact: true }).click();
-  await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
-  await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  await addIntervention(page, projectPath, add, { kind: 'axis_value', axis: 'seed', value: 'control' });
+  await outlineRow(page, 'Cell.output → Readout.input').click();
+  await addIntervention(page, projectPath, { kind: 'axis_value', axis: 'seed', value: 'control' });
   await mapStep(page, 'baseline').click();
   await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select seed comparison/ })).click();
-  await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  await addIntervention(page, projectPath, add, { kind: 'rows', rows: ['seed=comparison'] });
+  await outlineRow(page, 'Cell.output → Readout.input').click();
+  await addIntervention(page, projectPath, { kind: 'rows', rows: ['seed=comparison'] });
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toHaveCount(2);
 });
 
-test('persists an attachment in the selected project variant', async ({ page, request }, info) => {
+test('persists an attachment in the selected project variant', async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'variant');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'variant');
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
-  await page.getByRole('combobox', { name: 'Variant', exact: true }).selectOption('treated');
+  await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'treated');
   await mapStep(page, 'baseline').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await model.locator('[data-id="wrapper"] header').dblclick();
   await model.locator('[data-id="controller"] header').dblclick();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await drawer.getByRole('button', { name: 'Outline', exact: true }).click();
-  await drawer.getByRole('button', { name: 'Cell.output → Readout.input', exact: true }).click();
-  await addIntervention(page, projectPath, page.getByRole('button', { name: 'Add Intervention', exact: true }),
+  await outlineRow(page, 'Cell.output → Readout.input').click();
+  await addIntervention(page, projectPath,
     { kind: 'variant', variant: 'treated' });
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
 });

@@ -9,7 +9,7 @@ import sys
 import types
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, Literal, TypeAliasType, Union, get_args, get_origin, get_type_hints
 from uuid import UUID
 
 from pydantic import BaseModel, JsonValue
@@ -161,6 +161,7 @@ from feedbax.contracts.training import (
     OptimizerSpec,
 )
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
 from feedbax.contracts.jobs import (
     JobError,
     JobOutcome,
@@ -173,6 +174,7 @@ from feedbax.contracts.jobs import (
     StudioJobEventHistory,
     StudioJobResumeRequest,
     StudioJobSnapshot,
+    StudioUnreadableJob,
     StudioJobStopItem,
     StudioJobStopRequest,
     StudioJobSubmission,
@@ -377,6 +379,8 @@ from feedbax.contracts.studio_project import (
     RemoveProjectValue,
     SetProjectValue,
     StudioAuthoredFileRevision,
+    StudioMemberCommand,
+    StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectCreateFile,
     StudioProjectDocument,
@@ -394,6 +398,7 @@ from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
+from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemovedRunsRequest
 from scripts.studio_json_schema import emit_authored_contracts
 
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
@@ -415,6 +420,7 @@ JOB_MODELS = (
     StudioJobEventHistory,
     StudioJobResumeRequest,
     StudioJobSnapshot,
+    StudioUnreadableJob,
     StudioJobStopItem,
     StudioJobStopRequest,
     StudioJobSubmission,
@@ -453,6 +459,9 @@ JOB_MODELS = (
 )
 
 AUTHORED_CONTRACT_MODELS = (
+    ReceiptValidity,
+    ValidityAction,
+    ValidityAcceptance,
     AnalysisDocument,
     TaskDocument,
     PythonTaskSelection,
@@ -464,6 +473,8 @@ AUTHORED_CONTRACT_MODELS = (
     StudioCheckpointRuleRequest,
     StudioSubsetToRowsEdit,
     StudioSubsetToRowsRequest,
+    StudioRemovedRuns,
+    StudioRemovedRunsRequest,
     FieldTextResult,
     Problem,
     RangeValues,
@@ -480,6 +491,8 @@ AUTHORED_CONTRACT_MODELS = (
     RemoveProjectValue,
     SetProjectValue,
     StudioAuthoredFileRevision,
+    StudioMemberCommand,
+    StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectCreateFile,
     StudioProjectDocument,
@@ -916,17 +929,26 @@ def _literal_value(value: Any) -> str:
     return json.dumps(value)
 
 
+def _alias_value(annotation: Any) -> Any:
+    """The annotation a `type` statement names, which Pydantic validates in its place."""
+    while isinstance(annotation, TypeAliasType):
+        annotation = annotation.__value__
+    return annotation
+
+
 def _unwrap_annotated(annotation: Any) -> Any:
+    annotation = _alias_value(annotation)
     while get_origin(annotation) is Annotated:
-        annotation = get_args(annotation)[0]
+        annotation = _alias_value(get_args(annotation)[0])
     return annotation
 
 
 def _annotation_metadata(annotation: Any) -> tuple[Any, ...]:
     metadata: list[Any] = []
+    annotation = _alias_value(annotation)
     while get_origin(annotation) is Annotated:
         args = get_args(annotation)
-        annotation = args[0]
+        annotation = _alias_value(args[0])
         for item in args[1:]:
             if isinstance(item, FieldInfo):
                 metadata.extend(item.metadata)
@@ -1174,7 +1196,13 @@ def emit_schema(model: type[BaseModel]) -> str:
     )
     refinements = CROSS_FIELD_REFINEMENTS.get(model.__name__, ())
     if refinements:
-        lines.append("    .superRefine((value, ctx) => {")
+        # The rules read a model as Python validates it, so an omitted field holds its default.
+        defaults = _json_defaults(model)
+        if defaults:
+            lines.append("    .superRefine((input, ctx) => {")
+            lines.append(f"      const value = {{ ...{json.dumps(defaults, separators=(', ', ': '))}, ...input }};")
+        else:
+            lines.append("    .superRefine((value, ctx) => {")
         for refinement in refinements:
             lines.extend(
                 [
@@ -1189,6 +1217,22 @@ def emit_schema(model: type[BaseModel]) -> str:
         lines.append("    })")
     lines.append(f") as unknown as z.ZodType<{model.__name__}>;")
     return "\n".join(lines)
+
+
+def _json_defaults(model: type[BaseModel]) -> dict[str, Any]:
+    """The JSON form of each optional field's default, as Python fills it in before validation runs."""
+    defaults = {}
+    for name, field in model.model_fields.items():
+        if field.is_required():
+            continue
+        default = field.get_default(call_default_factory=True, validated_data={})
+        if default is None:
+            continue
+        defaults[name] = default.model_dump(mode="json") if isinstance(default, BaseModel) else (
+            [item.model_dump(mode="json") if isinstance(item, BaseModel) else item for item in default]
+            if isinstance(default, (list, tuple)) else default.value if isinstance(default, Enum) else default
+        )
+    return json.loads(json.dumps(defaults, default=str))
 
 
 def _validate_model_validator_projection(model: type[BaseModel]) -> None:
@@ -1246,6 +1290,7 @@ def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
     dependencies: list[type[BaseModel]] = []
 
     def collect(annotation: Any) -> None:
+        annotation = _alias_value(annotation)
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             if annotation is not model and annotation not in dependencies:
                 dependencies.append(annotation)

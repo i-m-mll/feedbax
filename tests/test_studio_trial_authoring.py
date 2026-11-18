@@ -15,7 +15,6 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
-from feedbax.jobs import JobService
 from feedbax.contracts.request_identity import decode_request
 from feedbax.builtins.reaching import REACHING_TASK, ReachingParameters, reaching_document
 from feedbax.tasks.registry import application_python_tasks
@@ -45,13 +44,12 @@ def _python_project():
     return raw
 
 
-def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  # noqa: F811
+def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     app = create_app(projects_dir=tmp_path / "projects")
     with TestClient(app) as client:
-        registry = app.state.bootstrap_state.bundle
         folders = app.state.project_folders
-        jobs = JobService(host, registry)
-        app.state.job_service = jobs
+        jobs = app.state.job_service
         project = "trial-authoring"
         raw = _python_project()
         raw["documents"]["test-task"] = {
@@ -173,11 +171,10 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         choices = {choice.document: choice.problems for choice in evaluated_task.tasks}
         assert not choices["probe-task"]
         assert any("reach_target" in problem.reason for problem in choices["unbound-task"])
-        incompatible = author(revision, {"kind": "select_task", "document": "unbound-task"},
+        incompatible = author(revision, {"kind": "select_document", "role": "task", "document": "unbound-task"},
                               selected=test_run, scope=scope)
-        assert not incompatible.files
-        assert any("reach_target" in problem.reason for problem in incompatible.problems)
-        revision = save(author(revision, {"kind": "select_task", "document": "test-task"},
+        assert incompatible.files
+        revision = save(author(revision, {"kind": "select_document", "role": "task", "document": "test-task"},
                                selected=test_run, scope=scope))
         chosen = author(revision, selected=test_run)
         assert chosen.task_document == "test-task"
@@ -187,7 +184,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path):  #
         ]}, selected=test_run, scope=scope))
         assert author(revision, selected=test_run).task.params["x"] == 0.38
         assert folders.read(project).project.documents["test-task"].payload["params"]["x"] == 0.31
-        revision = save(author(revision, {"kind": "select_task", "document": "probe-task"},
+        revision = save(author(revision, {"kind": "select_document", "role": "task", "document": "probe-task"},
                                selected=test_run, scope=scope))
         probe = author(revision, selected=test_run)
         assert not probe.problems and probe.objective is None
@@ -281,10 +278,9 @@ def test_memoized_plan_uses_supplied_python_tasks():
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
-    declaration = application_python_tasks().resolve(REACHING_TASK)
-    assert declaration is not None
+    reaching = application_python_tasks().declaration_record(REACHING_TASK)
     registry = PythonTaskRegistry()
-    registry.register(replace(declaration, key="test.reaching"))
+    registry.register_declaration(reaching.defining_object, key="test.reaching", source=reaching.source)
     registry.seal()
     raw["documents"]["task"]["payload"]["type"] = "test.reaching"
     project = Project.model_validate(raw)
@@ -301,23 +297,27 @@ def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp
     class Parameters(ReachingParameters):
         scale: StrictInt | StrictFloat = Field(default=1.0, validation_alias=AliasChoices("gain", "scale"))
 
+    reaching = application_python_tasks().declaration_record(REACHING_TASK)
+
     def registry(prefix):
-        def template(params):
-            base = declaration.template(params)
-            conditions = (f"{prefix}-{type(params.scale).__name__}-{params.scale:.0f}",)
+        class Scaled(reaching.defining_object):
+            settings_model = Parameters
 
-            def prepare(*args):
-                return replace(base.prepare(*args), condition_ids=conditions)
+            @staticmethod
+            def template(params):
+                base = reaching.defining_object.template(params)
+                conditions = (f"{prefix}-{type(params.scale).__name__}-{params.scale:.0f}",)
 
-            return replace(base, prepare=prepare, condition_ids=conditions)
+                def prepare(*args):
+                    return replace(base.prepare(*args), condition_ids=conditions)
+
+                return replace(base, prepare=prepare, condition_ids=conditions)
 
         tasks = PythonTaskRegistry()
-        tasks.register(replace(declaration, key="test.reaching", parameters=Parameters, template=template))
+        tasks.register_declaration(Scaled, key="test.reaching", source=reaching.source)
         tasks.seal()
         return tasks
 
-    declaration = application_python_tasks().resolve(REACHING_TASK)
-    assert declaration is not None
     compiler_tasks, window_tasks = registry("compiler"), registry("window")
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()

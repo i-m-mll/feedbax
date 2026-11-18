@@ -1,8 +1,9 @@
-import { expect, test, type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 function modelFixture(cards: number): ModelDocument {
   const components: NonNullable<ModelDocument['interior']['components']> = {};
@@ -29,7 +30,7 @@ type EventSample = { name: string; duration: number; inputDelay: number; process
 type Samples = { timeOrigin: number; callbacks: number[]; updates: number[]; longTasks: number[]; events: EventSample[] };
 type SampleWindow = Window & {
   finishStudioSample?: () => Samples;
-  settledPlanStatus?: { visibleAt: number; text: string };
+  mapSettledAt?: number;
 };
 
 async function startSamples(target: Locator, kind: 'drag' | 'field' | 'scroll', label: string) {
@@ -167,22 +168,19 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   }, { timeout: 12_000 });
   void projected.catch(() => {});
   const planCard = page.getByRole('article', { name: 'Train train', exact: true });
-  const planStatus = planCard.getByRole('button', { name: /^\d+ Can't run$/ });
-  await expect(planStatus).toBeVisible();
-  await planStatus.evaluate((status) => {
-    const state = window as SampleWindow;
-    const card = status.closest<HTMLElement>('[data-map-step]')!;
-    let pending = false;
+  const cannotRunMarks = planCard.locator(`button[data-result-run][aria-label$=" · Can't run"]`);
+  await expect(cannotRunMarks.first()).toBeVisible();
+  // The map is busy from the new revision until its plan is shown; the time it settles is recorded in the page.
+  await page.getByRole('region', { name: 'Pipeline Map', exact: true }).last().evaluate((map) => {
+    let busy = false;
     const observer = new MutationObserver(() => {
-      const restored = Array.from(card.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]'))
-        .find((button) => /^\d+ Can't run$/.test(button.textContent?.trim() ?? '') && button.checkVisibility());
-      if (!restored) pending = true;
-      if (!pending || !restored) return;
-      state.settledPlanStatus = { visibleAt: performance.timeOrigin + performance.now(), text: restored.textContent!.trim() };
-      performance.mark('studio-commit-plan-status-visible');
-      observer.disconnect();
+      if (map.getAttribute('aria-busy') === 'true') busy = true;
+      else if (busy) {
+        (window as SampleWindow).mapSettledAt = performance.timeOrigin + performance.now();
+        observer.disconnect();
+      }
     });
-    observer.observe(card, { subtree: true, childList: true, characterData: true, attributes: true });
+    observer.observe(map, { attributes: true, attributeFilter: ['aria-busy'] });
   });
   await startSamples(field, 'field', 'commit');
   const beforeCommit = await chromeMetrics(context);
@@ -194,7 +192,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   expect(fields.problems).toHaveLength(0);
   expect(fields.command?.operation.op).toBe('set_field');
   const { snapshot, acknowledgedAt } = await savedEdit;
-  const model = snapshot.project.documents.model.payload as unknown as ModelDocument;
+  const model = snapshot.project.documents!.model.payload as unknown as ModelDocument;
   expect(model.step_seconds).toBe(0.02);
   const plan = await (await settled).json() as StudioSavedTrainRuns;
   expect(plan.revision).toBe(snapshot.revision);
@@ -204,16 +202,15 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   await projected;
   await expect(field).toBeEditable();
   await expect(field).toHaveValue(value);
-  const visibleAt = performance.now();
   const commitWork = chromeWork(beforeCommit, await chromeMetrics(context));
   const commit = await endSamples(page);
-  const planVisible = await page.evaluate(() => (window as SampleWindow).settledPlanStatus);
-  if (!planVisible) throw new Error('The Plan status did not return from the pending state');
-  expect(planVisible.text).toBe(`${cannotRun} Can't run`);
+  await expect(cannotRunMarks).toHaveCount(cannotRun!);
+  await expect(page.getByRole('region', { name: 'Pipeline Map', exact: true }).last()).not.toHaveAttribute('aria-busy', 'true');
+  const mapSettledAt = await page.evaluate(() => (window as SampleWindow).mapSettledAt);
+  if (mapSettledAt === undefined) throw new Error('The map was not busy while the plan of the new revision was read');
   return { keys: value.length, typing, typingWork, commit, commitWork,
     submitToAcknowledgementMs: acknowledgedAt - submittedAt,
-    acknowledgementToEditableFieldMs: visibleAt - acknowledgedAt,
-    acknowledgementToVisiblePlanStatusMs: planVisible.visibleAt - (performance.timeOrigin + acknowledgedAt) };
+    acknowledgementToSettledMapMs: mapSettledAt - (performance.timeOrigin + acknowledgedAt) };
 }
 
 async function measureScroll(page: Page, request: APIRequestContext, context: CDPSession) {
@@ -287,7 +284,7 @@ async function paceInputs(count: number, send: (index: number) => Promise<void>)
 }
 
 test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ page, request, browser, browserName }, info) => {
-  const measureInteractions = process.env.FEEDBAX_STUDIO_MEASURE === '1';
+  const measureInteractions = process.env.FEEDBAX_STUDIO_TIER === 'release';
   test.setTimeout(measureInteractions ? 100_000 : 55_000);
   const result = [];
   const context = await page.context().newCDPSession(page);
@@ -300,7 +297,16 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ 
     for (const cards of [20, 100]) {
       const { snapshot, projectPath } = await seedManagedProject(request, [
         { kind: 'document', id: 'model', document: { schema: 'feedbax.spec.model', payload: modelFixture(cards) } },
-        { kind: 'step', id: 'train', step: { kind: 'train', base: { inline: { graph: { document: 'model' } } } } },
+        { kind: 'document', id: 'task', document: {
+          schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+        } },
+        { kind: 'document', id: 'objective', document: {
+          schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+        } },
+        { kind: 'step', id: 'train', step: { kind: 'train', base: { inline: { trial_documents: {
+          model: { document: 'model' }, python_task: { document: 'task' },
+          objective: { document: 'objective' },
+        } } } } },
       ]);
       await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
       await mapStep(page, 'train').click();

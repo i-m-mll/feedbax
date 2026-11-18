@@ -2,6 +2,7 @@ import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from '
 import { ApiRequestError } from '@/api/request';
 import { reportStudioRenderFailure } from '@/api/studioDiagnostics';
 import { studioName, studioReason, studioRunStatus, type StudioNameId, type StudioRunStatusId } from './studioVocabulary';
+import { Button } from '@/components/ui/Button';
 
 export interface StudioRegionIssue {
   reason: string;
@@ -9,29 +10,48 @@ export interface StudioRegionIssue {
 }
 
 export type StudioRegionState =
+  /** A region that has never had content; one that has keeps it while its next read is pending (`useRegionPending`). */
   | { kind: 'loading' }
   | { kind: 'empty' }
   | { kind: 'failed'; issue: StudioRegionIssue; retry: () => void }
-  | { kind: 'result'; missing: ReadonlyArray<{ status: StudioRunStatusId; count: number }> };
+  | { kind: 'result'; missing: ReadonlyArray<{ status: StudioRunStatusId; count: number }> }
+  | { kind: 'partial'; unread: ReadonlyArray<{ key: string; reason: string }> };
 
 export function studioReadState(
-  name: StudioNameId, data: unknown, error: unknown, retry: () => void, disconnected = false,
+  name: StudioNameId, data: unknown, error: unknown, retry: () => void,
 ): StudioRegionState {
-  if (error || disconnected) return { kind: 'failed', issue: studioRegionIssue(name, error, disconnected), retry };
+  if (error) return { kind: 'failed', issue: studioRegionIssue(name, error), retry };
   return data === undefined ? { kind: 'loading' } : { kind: 'result', missing: [] };
 }
 
-export function studioRegionIssue(name: StudioNameId, error: unknown, disconnected = false): StudioRegionIssue {
+export function studioRegionIssue(name: StudioNameId, error: unknown): StudioRegionIssue {
   const message = error instanceof Error ? error.message : undefined;
-  const serviceUnavailable = disconnected || (error instanceof ApiRequestError && error.kind === 'network');
   return {
-    reason: serviceUnavailable
-      ? studioReason('unreachable', studioName('service'))
-      : message && !(error instanceof ApiRequestError && (error.status ?? 0) >= 500)
-        ? studioReason('observed', message)
-        : studioReason('unavailable', studioName(name)),
+    reason: message && !(error instanceof ApiRequestError && (error.status ?? 0) >= 500)
+      ? studioReason('observed', message)
+      : studioReason('unavailable', studioName(name)),
     detail: message,
   };
+}
+
+/** How long a region's pending read may take before the region's content is dimmed. */
+export const regionPendingMs = 500;
+
+/**
+ * Marks a region whose content is of an earlier revision while its read for the shown revision is pending: it is busy at
+ * once and, once the read has taken longer than `regionPendingMs`, its content is dimmed as a whole until the read arrives.
+ */
+export function useRegionPending(pending: boolean) {
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setTimeout(() => setLate(true), regionPendingMs);
+    return () => {
+      window.clearTimeout(timer);
+      setLate(false);
+    };
+  }, [pending]);
+  return { 'aria-busy': pending || undefined, 'data-region-pending': pending && late ? '' : undefined };
 }
 
 export function StudioRegion({
@@ -49,7 +69,7 @@ export function StudioRegion({
     case 'loading':
       return <RegionLoading>{skeleton ?? studioRegionSkeleton}</RegionLoading>;
     case 'empty':
-      return <>{empty}</>;
+      return <>{empty === undefined ? studioRegionEmpty : empty}</>;
     case 'failed':
       return <RegionFailure issue={state.issue} retry={state.retry} />;
     case 'result':
@@ -65,10 +85,20 @@ export function StudioRegion({
           )}
         </>
       );
+    case 'partial':
+      return (
+        <>
+          {children}
+          <ul className="space-y-1 py-1 text-sm text-shell-status-failure">
+            {state.unread.map(({ key, reason }) => <li key={key} role="alert">{reason}</li>)}
+          </ul>
+        </>
+      );
   }
 }
 
 const studioRegionSkeleton = <div className="h-20 rounded bg-shell-subtle motion-safe:animate-pulse" />;
+const studioRegionEmpty = <p className="p-3 text-sm text-shell-muted" role="status">{studioName('unavailable')}</p>;
 
 function RegionLoading({ children }: { children: ReactNode }) {
   const [showSkeleton, setShowSkeleton] = useState(false);
@@ -85,16 +115,14 @@ function RegionFailure({ issue, retry, recoveryLabel = 'retry' }: {
   return (
     <div className="space-y-2 rounded-md border border-shell-divider bg-shell-subtle p-3 text-sm">
       <p role="alert" className="text-shell-status-failure">{issue.reason}</p>
-      <button
-        type="button"
-        className="rounded-md border border-shell-control bg-shell-surface px-2 py-1 font-medium hover:bg-shell-hover"
+      <Button
         onClick={(event) => {
           event.currentTarget.closest<HTMLElement>('[data-studio-focus-region]')?.focus();
           retry();
         }}
       >
         {studioName(recoveryLabel)}
-      </button>
+      </Button>
       {issue.detail && issue.detail !== issue.reason && (
         <details className="text-xs text-shell-muted">
           <summary className="cursor-pointer">{studioName('details')}</summary>
@@ -110,12 +138,16 @@ export class StudioRegionBoundary extends Component<
   { error: Error | null }
 > {
   state: { error: Error | null } = { error: null };
+  private reported = false;
 
   static getDerivedStateFromError(failure: unknown) {
     return { error: asRenderError(failure) };
   }
 
   componentDidCatch(failure: unknown, info: ErrorInfo) {
+    // Strict Mode's second effect pass throws again within the same failure; report the failure once.
+    if (this.reported) return;
+    this.reported = true;
     const { name } = this.props;
     const error = asRenderError(failure);
     void reportStudioRenderFailure(name, error, info.componentStack ?? '').catch((reportError: unknown) => {
@@ -131,7 +163,10 @@ export class StudioRegionBoundary extends Component<
           reason: studioReason('renderFailed', studioName(this.props.name)),
           detail: this.state.error.message,
         }}
-        retry={() => this.setState({ error: null })}
+        retry={() => {
+          this.reported = false;
+          this.setState({ error: null });
+        }}
         recoveryLabel={this.props.recoveryLabel}
       />
     );

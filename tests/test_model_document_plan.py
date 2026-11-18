@@ -226,6 +226,30 @@ def _rename_components(model):
             _rename_components(component)
 
 
+@pytest.mark.parametrize(("delay", "conversion"), [
+    ({"value": 0.06, "unit": "s"}, "6 st"),
+    ({"value": 3, "unit": "st"}, "0.03 s"),
+])
+def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_path, delay, conversion):
+    raw = _model_project()
+    controller = raw["documents"]["reach-model"]["payload"]["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+    controller["interior"]["wires"]["carry"]["attachments"][0]["delay"] = delay
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "delay", Project.model_validate(raw))
+    url = "/api/projects/delay"
+    owner = {"composites": ["wrapper", "controller"],
+             "element": {"kind": "attachment", "parent": {"kind": "wire", "id": "carry"}, "id": "carry"}}
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        revision = client.get(url).json()["revision"]
+        fields = client.post(url + "/model/fields", json={
+            "revision": revision, "document": "reach-model", "owner": owner,
+            "run": {"variant": "default", "step": "train", "row": "default"},
+        })
+        assert fields.status_code == 200, fields.text
+        (shown,) = [field for field in fields.json()["fields"] if field["label"] == "Delay"]
+        assert shown["conversion"] == conversion
+
+
 def test_addressed_field_range_sample_and_row_provenance(tmp_path):
     raw = _model_project()
     raw["steps"].pop("baseline")
@@ -423,6 +447,20 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
             assert resolved.payload["settings"]["optimizer"]["params"]["learning_rate"] == pytest.approx(expected)
             assert resolved.sources["/payload" + field_path].kind == "sweep_value"
 
+        body = {"revision": reopened["revision"]}
+        edit = lambda text: client.post(endpoint, json=body | {"field": field_path, "edit": {"kind": "text", "text": text}}).json()
+        listed = edit("0.0001, 0.01")
+        assert not listed["problems"], listed
+        assert {axis: len(values) for axis, values in listed["removed_values"].items()} == {"learning-rate": 3}
+        single = edit("0.0001")
+        assert not single["problems"], single
+        assert {axis: len(values) for axis, values in single["removed_values"].items()} == {"learning-rate": 4}
+        updated = client.patch(url, json=body | {"files": single["files"]})
+        assert updated.status_code == 200, updated.text
+        reduced = client.get(url + "/open").json()["snapshot"]
+        assert not any(((reduced["project"]["steps"]["train"].get("sweep") or {}).get("axes") or {}).values())
+        assert len(folders.read_plan("managed-rate", revision=reduced["revision"]).plan.rows) == 1
+
 
 def _group_reaching_pipeline(raw, registry):
     payload = raw["documents"]["reach-model"]["payload"]
@@ -478,7 +516,7 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [item for item in refused.diagnostics if item.step == "train"]
-    assert problem.document == "reach-model" and "needs signal 'unknown'" in problem.detail
+    assert problem.document == "reach-model" and "reads signal 'unknown'" in problem.detail
     assert problem.model_address == ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}},
@@ -515,7 +553,7 @@ def test_unresolved_relative_link_is_reported_at_the_task():
 
 def test_stored_model_plan_uses_the_supplied_component_registry():
     class CustomRelay(Input):
-        pass
+        model_facts = None
 
     raw = _model_project()
     model = raw["documents"]["reach-model"]["payload"]
@@ -1393,3 +1431,79 @@ def test_same_seed_nested_rename_preserves_values_and_batch_loss():
     assert len(values) == len(renamed) and values
     for a, b in zip(values, renamed, strict=True):
         np.testing.assert_array_equal(a, b)
+
+
+def _refuse_realization(monkeypatch):
+    """Makes realizing a graph, or constructing any registered component but an acausal element descriptor, raise."""
+    from feedbax.acausal.base import AcausalElement
+    from feedbax.compiler import graph, trial_execution
+    from feedbax.component_registry.declarations import ComponentParamContract
+    from feedbax.runtime import model_input
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a plan read realized the model")
+
+    for module in (graph, trial_execution, model_input):
+        monkeypatch.setattr(module, "realize_graph", refuse)
+    for name in ("build", "build_resolved"):
+        construct = getattr(ComponentParamContract, name)
+
+        def guarded(contract, *args, construct=construct, **kwargs):
+            if not issubclass(contract.runtime_type, AcausalElement):
+                raise AssertionError(f"a plan read constructed {contract.runtime_type.__name__}")
+            return construct(contract, *args, **kwargs)
+
+        monkeypatch.setattr(ComponentParamContract, name, guarded)
+
+
+@pytest.mark.parametrize("scope", ["plain", "within-step"])
+def test_reading_the_plan_realizes_no_model(monkeypatch, scope):
+    from web.e2e.studio.fixtures.stored_model import add_physical_interior
+
+    raw = _model_project()
+    if scope != "plain":
+        add_physical_interior(raw, scope)
+    project = Project.model_validate(raw)
+    expected = compile_project(project)
+    _refuse_realization(monkeypatch)
+    plan = compile_project(project)
+    assert plan == expected
+    refusals = [problem.detail for problem in plan.diagnostics if "within-step evaluation" in problem.detail]
+    assert bool(refusals) == (scope == "within-step")
+
+
+def test_reading_the_plan_of_a_grounded_network_realizes_no_model(monkeypatch):
+    def leaf(name):
+        return {"kind": "leaf", "type": f"feedbax.{name}", "name": name}
+
+    raw = _model_project()
+    del raw["steps"]["baseline"]
+    raw["documents"]["reach-model"]["payload"]["interior"]["components"]["equations"] = {
+        "kind": "composite", "name": "Mass spring wall", "ports": {},
+        "interior": {
+            "physical_domain": "translational",
+            "components": {"mass": leaf("Mass"), "spring": leaf("LinearSpring"), "wall": leaf("Ground")},
+            "connections": {
+                "end1": {"a": _end("wall", "flange"), "b": _end("spring", "flange_a")},
+                "end2": {"a": _end("spring", "flange_b"), "b": _end("mass", "flange")},
+            },
+        },
+    }
+    _refuse_realization(monkeypatch)
+    plan = compile_project(Project.model_validate(raw))
+    assert len(plan.requests) == 1
+    assert plan.diagnostics == ()
+
+
+def test_reading_the_plan_refuses_an_acausal_leaf_in_a_causal_model(monkeypatch):
+    raw = _model_project()
+    raw["documents"]["reach-model"]["payload"]["interior"]["components"]["mass"] = {
+        "kind": "leaf", "name": "Mass", "type": "feedbax.Mass", "fields": {"mass": 1},
+    }
+    _refuse_realization(monkeypatch)
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.requests
+    assert any(
+        "'feedbax.Mass' for node 'mass' belongs to domain 'feedbax.domain.acausal'" in problem.detail
+        for problem in plan.diagnostics
+    )

@@ -126,6 +126,23 @@ class ModelAddress(StrictModel):
 
         return (*scope, *element_path(self.element))
 
+    def label(self) -> str:
+        """Name the addressed member as a dotted path inside its document, for reasons."""
+
+        def element_label(element: AddressedElement) -> tuple[str, ...]:
+            if isinstance(element, FieldElement):
+                return (*element_label(element.parent), *map(str, element.path))
+            if isinstance(element, PortElement):
+                end = element.end
+                return (end.component if isinstance(end, ComponentPortEnd) else end.owner, end.port)
+            if isinstance(element, AttachmentElement):
+                return (*element_label(element.parent), element.id)
+            if isinstance(element, GraphElement):
+                return ()
+            return (element.id,)
+
+        return ".".join((*self.composites, *element_label(self.element)))
+
     def to_text(self) -> str:
         """Encode the relative address with the shared canonical JSON codec."""
         return canonical_json_v2_bytes(self.model_dump(mode="json")).decode("utf-8")

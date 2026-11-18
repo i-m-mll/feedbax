@@ -92,7 +92,7 @@ def test_fresh_reset_reads_learned_h0_and_continuation_uses_carry():
 
 
 def test_graph_round_trip_preserves_dtype_topology_and_initializer():
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         key = jr.key(3)
         graph = cde_controller(2, 3, 1, vf_width=5, vf_depth=0, dtype=jnp.float64, key=key)
         spec = graph_to_spec(graph)

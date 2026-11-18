@@ -10,6 +10,7 @@ import pytest
 
 from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.code_validity import ReceiptEvidence
 from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.effective_success import INDEX_REF
 from feedbax.contracts.project import Project
@@ -31,6 +32,7 @@ from feedbax.tasks.document import TaskParameters
 from feedbax.training import evaluate_worker
 from feedbax.training.method_checkpoint import read_method_checkpoint
 from feedbax.runtime._graph_key_schedule import model_initialization_key
+from feedbax.validity.evidence import stage_evidence
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
@@ -296,7 +298,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert selected == [carry]
         selected.clear()
         replay = outcomes[baseline].replay_trial(trial_ids[0], anchor_id="effector")
-        assert selected == ["state_time", position]
+        assert selected == ["checkpoint", "state_time", position]
         assert replay.identity.stable_id == trial_ids[0]
         np.testing.assert_array_equal(np.asarray(replay.tracks[0].samples[:3], dtype=first.dtype), first)
     np.testing.assert_allclose(first, reference.history[position][0, :3], atol=1e-7)
@@ -394,12 +396,16 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         "artifacts": observation_result._manifest().artifacts,
     })
     wrong_ref = store.bind_manifest(wrong_manifest.kind, wrong_manifest.id, wrong_manifest.model_dump_json().encode())
+    evidence = stage_evidence(store, ReceiptEvidence(
+        attempt=attempt, trace=raw_success.receipt.trace, provenance=raw_success.receipt.provenance,
+    ))
     before = store.read_ref(INDEX_REF)
     with pytest.raises(ValueError, match="states differ from accepted checkpoint coverage or trials"):
         publish_evaluate_success(
             attempt=attempt, request_id=raw_attempt["request"], project=plan.project_id,
             payload=raw_attempt["launch"]["payload"], binding=binding,
             receipt={"manifest_id": wrong_manifest.id, "manifest_sha256": wrong_ref.object.sha256},
+            execution_evidence=evidence,
         )
     assert store.read_ref(INDEX_REF) == before
     assert SuccessView(store).attempt_ref(attempt) is None

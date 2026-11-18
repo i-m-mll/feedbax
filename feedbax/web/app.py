@@ -34,6 +34,7 @@ from feedbax.web.api import (
 )
 from feedbax.web.config import BASE_DIR
 from feedbax.web.services.desktop_jobs import StudioJobLifecycle
+from feedbax.web.services.job_activity import JobActivity
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.services.remote_runs import StudioRemoteRuns
@@ -42,13 +43,13 @@ STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
 service_log = logging.getLogger("uvicorn.error")
 
 
-async def _maintain_remote_runs(advance: Callable[[], None], failure: str) -> None:
+async def _maintain_remote_runs(advance: Callable[[], None], failure: str, interval: float) -> None:
     while True:
         try:
             await asyncio.to_thread(advance)
         except Exception:
             service_log.exception(failure)
-        await asyncio.sleep(0.75)
+        await asyncio.sleep(interval)
 
 
 def create_app(
@@ -78,6 +79,7 @@ def create_app(
             targets=targets, submit_session=submit_session,
             automatic_run=automatic_run, quick_duration=quick_duration,
         )
+        app.state.job_activity = JobActivity(app.state.job_service)
         app.state.remote_runs = remote_runs
         app.state.project_plan = ProjectPlanService(
             app.state.project_folders, app.state.job_service,
@@ -89,10 +91,11 @@ def create_app(
         maintenance = () if remote_runs is None else (
             asyncio.create_task(_maintain_remote_runs(
                 partial(remote_runs.advance_openings, app.state.project_folders), "Could not advance approved machines.",
+                remote_runs.refresh_seconds,
             )),
             asyncio.create_task(_maintain_remote_runs(
                 partial(remote_runs.observe, app.state.project_folders, app.state.job_service),
-                "Could not refresh the machine activity.",
+                "Could not refresh the machine activity.", remote_runs.refresh_seconds,
             )),
         )
         try:
@@ -105,6 +108,8 @@ def create_app(
                     await task
             if remote_runs is not None:
                 await asyncio.to_thread(remote_runs.stop_collection)
+            app.state.job_service.host.close()
+            await asyncio.to_thread(app.state.job_activity.close)
 
     app = FastAPI(
         title="Feedbax Web API",

@@ -68,7 +68,7 @@ function applyEdit(entry: JsonObject, edit: ProjectValueEdit, checkOrder: boolea
   for (const token of path.slice(0, -1)) {
     const key = keyAt(container, token);
     if (!own(container, key)) throw new Error(`The field at ${edit.path} no longer exists.`);
-    const value = Array.isArray(container) ? container[key as number] : container[key];
+    const value: JsonValue | undefined = Array.isArray(container) ? container[key as number] : container[key];
     container = Array.isArray(value) ? value : object(value);
   }
   const key = keyAt(container, path[path.length - 1]);

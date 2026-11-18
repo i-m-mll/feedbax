@@ -1,0 +1,27 @@
+.node-styles__canvas {
+  position: relative;
+  height: 320px;
+  overflow: hidden;
+  border: 1px solid var(--app-divider);
+  border-radius: var(--radius-md);
+}
+
+.node-styles__canvas .react-flow__node-card {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.node-card__handle.react-flow__handle {
+  opacity: 0;
+}
+
+.node-styles__canvas .studio-map-edge .react-flow__edge-path {
+  stroke: var(--text-muted);
+}
+
+[data-card='turbo'] .node-styles__canvas .studio-map-edge .react-flow__edge-path,
+.node-styles__canvas[data-card='turbo'] .studio-map-edge .react-flow__edge-path {
+  stroke: url(#studio-map-turbo-edge);
+  stroke-width: 2;
+}

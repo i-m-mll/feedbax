@@ -49,6 +49,7 @@ from feedbax.runtime.parameter_constraints import normalize_parameter_constraint
 from feedbax.compiler.builders import (
     _unsupported_component_message,
     build_component,
+    component_refusal,
 )
 from feedbax.compiler.domain_compilers import get_domain_compiler
 from feedbax.compiler.resolution import GraphParameterResolution
@@ -283,6 +284,26 @@ def _subgraph_leaf_keys(
     return keys
 
 
+def refuse_unbuildable_leaves(spec: GraphSpec, component_registry: Any) -> None:
+    """Raise the registry refusal of the first causal leaf that `_instantiate_graph` could not build.
+
+    It follows the same dispatch: interiors of other domains belong to their domain compilers, and causal
+    subgraphs are walked in turn.
+    """
+    for node_name, node_spec in spec.nodes.items():
+        subgraph = (spec.subgraphs or {}).get(node_name)
+        required_domain = required_interior_domain(node_spec.type, component_registry)
+        if required_domain is not None and required_domain != CAUSAL_DOMAIN_ID:
+            continue
+        if subgraph is not None:
+            refuse_unbuildable_leaves(
+                require_causal_subgraph(subgraph, node_name=node_name, node_type=node_spec.type, consumer="compile_graph"),
+                component_registry,
+            )
+        elif required_domain is None and (refusal := component_refusal(node_name, node_spec.type, component_registry)):
+            raise refusal
+
+
 def _instantiate_graph(
     spec: GraphSpec,
     component_registry: Any,
@@ -480,6 +501,8 @@ def _instantiate_graph(
             params_resolved=True,
             config=config,
         )
+        # Only a constructed component knows its returned ports, so this comparison with its dynamic-port policy
+        # is made when a run realizes the model, never by a plan read; a mismatch fails that run with this reason.
         if (
             tuple(component.input_ports) != declared_input_ports
             or tuple(component.output_ports) != declared_output_ports

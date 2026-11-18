@@ -1,20 +1,19 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Page } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
+import { chooseStepKind } from './fixtures/studioKeyboard';
 
-test.use({
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('authors a managed Analyze graph from one saved Evaluate run', async ({ page, request }, info) => {
+test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(70_000);
-  const home = String(info.config.metadata.home);
+  const home = studio.home;
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', home, 'managed-analyze'));
   const path = '/api/projects/' + project;
   const runPath = path + '/train-runs';
@@ -72,8 +71,9 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   await page.getByRole('article', { name: 'Evaluate baseline', exact: true }).locator('.studio-map-run-mark').click();
   await page.keyboard.press('Meta+K');
   const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
-  await palette.getByRole('combobox').fill('Analyze');
-  await palette.getByRole('option', { name: 'Analyze', exact: true }).press('Enter');
+  await palette.getByRole('combobox').fill('New Step');
+  await palette.getByRole('option', { name: 'New Step', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Analyze', true);
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
@@ -82,45 +82,52 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   expect((await plan(created.revision)).edges).toContainEqual(expect.objectContaining({
     from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }),
   }));
-  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click());
+  const search = drawer.getByRole('textbox', { name: 'Search Library', exact: true });
+  const item = (name: string) => drawer.getByRole('option', { name, exact: true });
+  await expect(drawer.getByRole('button', { name: /^Add/ })).toHaveCount(0);
+  await search.fill('velocity');
+  await item('Aligned velocity').click();
+  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
+  await expect(inspector.getByText('Aligned velocity', { exact: true })).toBeVisible();
+  await edit(() => page.keyboard.press('Enter'));
+  await expect(search).toHaveValue('velocity');
+  await expect(item('Aligned velocity')).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(item('Trial summary')).toBeFocused();
+  await edit(() => page.keyboard.press('Enter'));
+  await expect(item('Trial summary')).toBeFocused();
   await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
   ] as const) {
-    const select = inspector.getByRole('combobox', { name: 'Edit ' + field, exact: true });
-    const option = select.getByRole('option', { name: label });
-    await expect(option).toHaveCount(1);
-    await edit(async () => select.selectOption({ label: await option.innerText() }));
+    const select = inspector.getByRole('combobox', { name: field, exact: true });
+    await edit(() => pick(select, label));
   }
-  const dialog = page.getByRole('dialog', { name: 'Connect Ports', exact: true });
-  async function chooseSource(label: string) {
-    await drawer.getByRole('button', { name: 'Connect Ports', exact: true }).click();
-    await dialog.getByRole('combobox', { name: 'Source Port' }).selectOption({ label });
-  }
-  const connect = () => dialog.getByRole('button', { name: 'Connect Ports', exact: true }).click();
-  await chooseSource('states');
-  await edit(connect);
+  const role = (name: string) => inspector.getByRole('combobox', { name, exact: true });
+  await edit(() => pick(role('States'), 'states'));
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Trial summary', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
-  await edit(() => enter(inspector.getByRole('spinbutton', { name: 'Edit Bounds Scale', exact: true }), '1.5'));
-  const beforeRefusal = await edit(() => enter(inspector.getByRole('spinbutton', { name: 'Edit Ddof', exact: true }), '0'));
-  await chooseSource('states');
+  await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
+  const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
     Boolean(response.request().postDataJSON()?.wire));
-  await connect();
+  await pick(role('Velocity'), 'states');
   expect((await refusal).status()).toBe(422);
-  await expect(dialog.getByRole('alert')).toContainText('Requires dataset schemas');
+  await expect(analysis.getByRole('alert')).toContainText('Requires dataset schemas');
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
-  await dialog.getByRole('combobox', { name: 'Source Port' }).selectOption({ label: 'aligned_velocity.velocity' });
-  await edit(connect);
+  await edit(() => pick(role('Velocity'), 'aligned_velocity.velocity'));
 
-  await edit(() => drawer.getByRole('button', { name: 'Add Figure', exact: true }).click());
+  const pane = analysis.locator('.react-flow__pane');
+  await analysis.getByRole('button', { name: 'Zoom Out', exact: true }).click();
+  const [paneBox, summaryBox] = await Promise.all([
+    pane.boundingBox(), analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).boundingBox(),
+  ]);
+  await edit(() => item('Velocity Summary').dragTo(pane, { targetPosition: {
+    x: summaryBox!.x - paneBox!.x + summaryBox!.width + 100, y: summaryBox!.y - paneBox!.y,
+  } }));
   await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
-  await chooseSource('summarize_velocity.summary');
-  const wired = await edit(connect);
+  const wired = await edit(() => pick(role('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
@@ -131,7 +138,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   expect(original.edges).toContainEqual(expect.objectContaining({ from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }) }));
 
   await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
-  const revised = await edit(() => enter(inspector.getByRole('spinbutton', { name: 'Edit Bounds Scale', exact: true }), '2'));
+  const revised = await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '2'));
   const changed = requests(await plan(revised.revision));
   expect(changed.aligned_velocity).toBe(requests(original).aligned_velocity);
   expect(changed.summarize_velocity).not.toBe(requests(original).summarize_velocity);

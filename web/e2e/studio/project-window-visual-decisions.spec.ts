@@ -1,17 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { captureStudioWindow, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 
-test.use({
-  viewport: { width: 1440, height: 900 },
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
-test('Studio visual decisions use shell roles and keep the narrow window usable', async ({ page }, info) => {
+test('Studio visual decisions use shell roles and keep the narrow window usable', async ({ page, studio }, info) => {
   const id = 'visual-decisions';
-  const folder = join(String(info.config.metadata.home), 'state', 'web', 'projects', id);
+  const folder = join(studio.home, 'state', 'web', 'projects', id);
   await runProjectFixture('tests.fixtures.scene_geometry', 'seed', folder);
   const steps = join(folder, 'steps');
   await mkdir(steps, { recursive: true });
@@ -34,19 +30,22 @@ test('Studio visual decisions use shell roles and keep the narrow window usable'
     });
     const kindTints = variables(elements.map((element) => `studio-kind-${(element as HTMLElement).dataset.mapStep}`));
     const reserved = variables(['studio-shell-accent', ...['warning', 'running', 'success', 'failure'].map((role) => `studio-status-${role}`)]);
-    const borders = elements.map((element) => getComputedStyle(element).borderTopColor);
+    const unselected = elements.flatMap((element, index) => element.hasAttribute('data-selected') ? []
+      : [{ border: getComputedStyle(element).borderTopColor, tint: kindTints[index] }]);
     probe.remove();
-    return { kindTints, reserved, borders };
+    return { kindTints, reserved, unselected };
   });
   expect(new Set(colors.kindTints).size).toBe(4);
   for (const color of colors.kindTints) expect(colors.reserved).not.toContain(color);
-  expect(colors.borders.filter((color) => colors.kindTints.includes(color))).toHaveLength(3);
+  expect(colors.unselected).toHaveLength(3);
+  for (const { border, tint } of colors.unselected) expect(border).toBe(tint);
   await captureStudioWindow(page, info, 'visual-map-kinds');
   const greyscale = await page.addStyleTag({ content: 'html { filter: grayscale(1) }' });
-  await expect.poll(async () => (await cards.locator('[data-map-kind-label]').allTextContents()).sort())
-    .toEqual(['Analyze', 'Evaluate', 'Report', 'Train']);
+  for (const kind of ['Train', 'Evaluate', 'Analyze', 'Report']) {
+    await expect(cards.getByRole('img', { name: kind, exact: true })).toHaveCount(1);
+  }
   await captureStudioWindow(page, info, 'visual-map-greyscale');
-  await greyscale.evaluate((node) => node.remove());
+  await greyscale.evaluate((node) => (node as ChildNode).remove());
 
   await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();

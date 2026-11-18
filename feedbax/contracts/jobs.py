@@ -523,8 +523,18 @@ class StudioVenueCursor(StudioVenueStream):
     cursor: int = Field(ge=0)
 
 
+class StudioUnreadableJob(StrictModel):
+    """A run whose stored record Studio could not read into an Activity row."""
+
+    project_id: str
+    job_id: str
+    label: str | None
+    reason: str
+
+
 class StudioJobSnapshot(StrictModel):
     jobs: list[StudioActivityJob]
+    unreadable: list[StudioUnreadableJob]
     cursor: int = Field(ge=0)
     oldest_cursor: int = Field(ge=0)
     sessions: list[StudioLocalSession | StudioRemoteSession]
@@ -572,6 +582,7 @@ class StudioJobEvent(StrictModel):
     kind: str
     data: dict[str, JsonValue]
     activity: StudioActivityJob | None = None
+    unreadable: StudioUnreadableJob | None = Field(default=None, exclude_if=lambda value: value is None)
     venue: StudioVenueStream | None = Field(default=None, exclude_if=lambda value: value is None)
 
 

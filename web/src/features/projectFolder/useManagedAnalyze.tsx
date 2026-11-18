@@ -1,46 +1,53 @@
-import { useQuery } from '@tanstack/react-query';
-import { useRef, useState, useSyncExternalStore } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { ChartLine, Database, Sigma } from 'lucide-react';
+import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { apiErrorMessage } from '@/api/request';
+import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
-import { StudioDefinitionForm, type StudioFieldControl } from '@/components/pipeline/StudioDefinitionForm';
+import { CanvasStrip } from '@/components/canvas/CanvasStrip';
+import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
+import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
+import { Inspector } from '@/components/ui/Inspector';
+import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
-import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
+import { SettingsForm } from '@/components/values/SettingsForm';
+import { setIn } from '@/components/values/adapters/jsonSchema';
+import { fromParamSchema } from '@/components/values/adapters/paramSchema';
+import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
+import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
-  AnalysisDocumentSchema, type AnalysisDocument, type JsonPrimitive, type JsonValue, type OperationElement,
+  AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
   type ParamSchema, type PresentationPosition, type StudioProjectFilePatch,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { ManagedDocumentCanvas, useElementSelection } from './ManagedDocumentCanvas';
+import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas';
+import {
+  choosePick, useNamedSelection, usePick, type ElementSelectionStore,
+} from '@/features/projectWindow/elementSelection';
+import type { PlanStepView } from '@/features/pipeline/planView';
+import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 import { problemReason, type ProblemReveal } from './projectWindowProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 
 type Source = OperationElement['inputs'][string];
-const control = 'rounded-shell-control border border-shell-divider px-2 py-1 disabled:opacity-50';
-const dialogClass = 'grid w-[min(26rem,90vw)] gap-3 rounded-shell-control border border-shell-divider bg-shell-chrome p-4 text-shell-foreground shadow-xl';
 
-function fieldControl(schema: ParamSchema, variables?: string[]): StudioFieldControl | undefined {
-  const options = variables ?? schema.options;
-  if (options) return { kind: 'choice', options: options.map((value) => ({ value, label: value })) };
-  if (schema.type === 'bool') return { kind: 'boolean' };
-  if (schema.type === 'int' || schema.type === 'float') return {
-    kind: 'number', min: schema.min ?? undefined, max: schema.max ?? undefined,
-    step: schema.step ?? (schema.type === 'int' ? 1 : undefined),
-  };
-}
-
-function scalar(value: unknown): JsonPrimitive {
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null;
-}
+const operationDragType = 'application/x-feedbax-operation';
+const figureItem = 'velocity_summary';
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, focusedView, reveal, savePosition,
+  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection, sections, steps,
 }: {
   editor: ProjectEditController;
+  selection: ElementSelectionStore;
+  sections: DrawerSections;
+  /** The project's steps, whose outputs the step's input roles can be bound to. */
+  steps: readonly PlanStepView[];
   key?: StudioSavedTrainKey;
   projection?: StudioSavedTrainRuns;
   wholeStep: boolean;
@@ -59,26 +66,29 @@ export function useManagedAnalyze({
   const scope = JSON.stringify([saved.project_id, id, document]);
   const liveScope = useRef(scope);
   liveScope.current = scope;
-  const element = useElementSelection(scope, reveal, reveal?.target.element?.kind === 'analysisElement'
+  const element = useNamedSelection(selection, document, reveal, reveal?.target.element?.kind === 'analysisElement'
     ? reveal.target.element.id : undefined);
-  const [dialog, setDialog] = useState<{ scope: string; mode: 'add' | 'wire'; point?: PresentationPosition }>();
+  const [dialog, setDialog] = useState<{ scope: string; mode: 'add'; point?: PresentationPosition }>();
   const [query, setQuery] = useState('');
-  const [sourceIndex, setSourceIndex] = useState('');
-  const [role, setRole] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ scope: string; message: string }>();
   const inFlight = useRef(false);
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
+  const shape = step?.kind === 'analyze' ? JSON.stringify([
+    step.base, step.sweep, step.deltas, step.document_overrides, step.inputs?.states,
+  ]) : undefined;
   const authoring = useQuery({
-    queryKey: ['studio-analyze', saved.project_id, saved.revision, id],
+    queryKey: ['studio-analyze', saved.project_id, id, shape],
     queryFn: ({ signal }) => readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
     enabled: !!document && !!key && key.row === 'default' && key.variant === projection?.window_map?.variants[0],
+    placeholderData: keepPreviousData,
     staleTime: 30_000,
-    retry: false,
   });
   const catalog = authoring.data;
-  const canEdit = !!analysis && !!document && !!key && !!catalog && catalog.document === document &&
-    catalog.revision === saved.revision && wholeStep && !pending && !outside && !busy;
+  const canBind = !!step && wholeStep && !pending && !outside && !busy;
+  const canEdit = canBind && !!analysis && !!document && !!catalog && catalog.document === document &&
+    !authoring.isPlaceholderData;
+  const [inspected, setInspected] = useState<{ scope: string; id: string }>();
   const opened = dialog?.scope === scope ? dialog : undefined;
   const operations = analysis?.operations ?? {};
   const figures = analysis?.views ?? {};
@@ -94,29 +104,36 @@ export function useManagedAnalyze({
   }
   const selectedFigure = selected && figure ? figureDefinition(selected, figure.figure) : undefined;
   const definition = operation && definitions.get(operation.operation);
-  const roles = selectedFigure?.data ?? Object.keys(definition?.inputs ?? {});
-  const sources: { label: string; source: Source; schemas: string[] }[] = [
-    { label: 'states', source: { input: 'states' }, schemas: catalog?.states.schema_ids ?? [] },
-    ...Object.entries(operations).flatMap(([name, value]) => Object.entries(definitions.get(value.operation)?.outputs ?? {})
-      .map(([product, port]) => ({ label: name + '.' + product, source: { element: name, product }, schemas: port.schema_ids }))),
-  ];
+  const declarations = analysis?.inputs ?? {};
+  const roles = selectedFigure ? selectedFigure.data.map((name) => ({ name, kind: 'dataset' as const }))
+    : Object.entries(definition?.inputs ?? {}).map(([name, port]) => ({ name, kind: port.kind ?? 'dataset' }));
+  const outputs = Object.entries(operations).map(([name, value]) => ({
+    element: name, products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
+  }));
+  const selectedInput = selected ? declarations[selected] : undefined;
+  const armed = usePick(selection);
+  const canvasPick = useMemo(() => armed && document ? {
+    accepts: (id: string) => armed.accepts({ kind: 'element', address: { document, element: { kind: 'named', id } } }),
+    choose: (id: string) => { choosePick(selection, { kind: 'element', address: { document, element: { kind: 'named', id } } }); },
+  } : null, [armed, document, selection]);
   const diagnostics = (projection?.window_map?.problems ?? []).filter((problem) => id &&
     problem.variant === key?.variant && problem.step === key?.step && problem.row === key?.row);
   const planned = new Map(projection?.window_map?.analysis_elements?.filter(({ key }) => savedRunId(key) === id)
     .map((item) => [item.name, item]));
-  const issue = error?.scope === scope ? error.message : authoring.error ? apiErrorMessage(authoring.error) : undefined;
+  const issue = error?.scope === scope ? error.message : undefined;
+  const catalogState: StudioRegionState = authoring.error
+    ? { kind: 'failed', issue: studioRegionIssue('operations', authoring.error), retry: () => { void authoring.refetch(); } }
+    : authoring.isLoading ? { kind: 'loading' } : { kind: 'result', missing: [] };
 
-  function open(mode: 'add' | 'wire', point?: PresentationPosition) {
+  function open(mode: 'add', point?: PresentationPosition) {
     if (!canEdit) return;
     setError(undefined);
     setQuery('');
-    setSourceIndex('');
-    setRole(roles.length === 1 ? roles[0] : '');
     setDialog({ scope, mode, point });
   }
 
-  async function perform(work: () => Promise<void>) {
-    if (!canEdit || inFlight.current) return;
+  async function perform(work: () => Promise<void>, allowed = canEdit) {
+    if (!allowed || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     setError(undefined);
@@ -155,12 +172,15 @@ export function useManagedAnalyze({
       const collection = analysis?.[kind];
       await save(label, [collection ? file([kind, name], value) : file([kind], { [name]: value })]);
       setDialog(undefined);
-      if (liveScope.current === scope) element.onSelect(name);
+      if (liveScope.current === scope) {
+        setInspected(undefined);
+        element.onSelect(name);
+      }
       if (point) await savePosition(document!, name, point);
     });
   }
-  const addFigure = () => {
-    if (catalog) add('views', 'velocity_summary', { figure: catalog.figure, inputs: {} });
+  const addFigure = (point?: PresentationPosition) => {
+    if (catalog) add('views', figureItem, { figure: catalog.figure, inputs: {} }, point);
   };
   const addOperation = (operation: string, point?: PresentationPosition) => {
     add('operations', operation.split('.').at(-1)!, { operation, params: {}, inputs: {} }, point);
@@ -169,59 +189,78 @@ export function useManagedAnalyze({
     if (focusedView === 'figures') addFigure();
     else open('add', cursor.current?.scope === scope ? cursor.current.point : undefined);
   }, { name: focusedView === 'figures' ? 'addFigure' : 'addOperation', enabled: canEdit });
-  const connect = bindStudioCommand('connectPorts', () => open('wire'), { enabled: canEdit && roles.length > 0 });
-  function connectSelected() {
-    const source = sourceIndex === '' ? undefined : sources[Number(sourceIndex)];
-    if (!source || !selected || !role || !key) return;
+  function wire(element: string, role: string, source: Source) {
+    if (!key) return;
     void perform(async () => {
       const review = await readStudioAnalyze(saved.project_id, {
-        revision: saved.revision, key, wire: { element: selected, role, source: source.source },
+        revision: saved.revision, key, wire: { element, role, source },
       });
       if (review.document !== document || review.files?.length !== 1) throw new ProjectEditConflictError();
-      await save(studioName('connectPorts'), review.files);
-      setDialog(undefined);
+      await save(humanizeLabel(role), review.files);
     });
   }
+  function bind(role: string, binding: InputBinding) {
+    if (!key) return;
+    void perform(async () => {
+      if (liveScope.current !== scope || editor.getSnapshot().saved.revision !== saved.revision) {
+        throw new ProjectEditConflictError();
+      }
+      editor.editFiles(humanizeLabel(role), [{ address: { kind: 'step', id: key.step }, patches: [{
+        op: step?.inputs && role in step.inputs ? 'replace' : 'add', path: authoredPointer(['inputs', role]), value: binding as JsonValue,
+      }] }], { reviewedRevision: saved.revision });
+      await editor.flush();
+    }, canBind);
+  }
 
-  const items = [
-    { id: 'states', selectionId: 'states', label: 'states' },
-    ...Object.entries(operations).map(([name, value]) => ({
-      id: name, selectionId: name, label: <>{name}<br />{definitions.get(value.operation)?.label ?? value.operation}</>,
-      problem: diagnostics.find((item) => item.element === name)?.detail,
-    })),
-    ...Object.keys(figures).map((name) => ({
-      id: name, selectionId: name, label: <>{name}<br />{studioName('figures')}</>,
-      problem: diagnostics.find((item) => item.element === name)?.detail,
-    })),
+  const problemOf = (name: string) => diagnostics.find((item) => item.element === name)?.detail;
+  const items: CanvasNode[] = [
+    ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, name, glyph: <Database /> })),
+    ...Object.keys(operations).map((name) => ({ id: name, selectionId: name, name, glyph: <Sigma />, problem: problemOf(name) })),
+    ...Object.keys(figures).map((name) => ({ id: name, selectionId: name, name, glyph: <ChartLine />, problem: problemOf(name) })),
   ];
+  const canvas = useRef<CanvasViewport>(null);
+  const viewport = canvasViewportCommands(() => canvas.current, !!document);
   const connections = [...Object.entries(operations), ...Object.entries(figures)].flatMap(([target, value]) =>
-    Object.entries(value.inputs).map(([role, source]) => ({
-      id: JSON.stringify([target, role]), source: 'input' in source ? source.input : source.element, target,
-      label: ('input' in source ? source.input : source.product) + ' → ' + role,
-    })));
+    Object.entries(value.inputs).map(([role, source]) => {
+      const from = 'input' in source ? source.input : source.element;
+      const product = 'input' in source ? source.input : source.product;
+      const label = product === role ? role : product + ' → ' + role;
+      return { id: JSON.stringify([target, role]), source: from, target, label: label === from ? undefined : label };
+    }));
   const selectedProblems = diagnostics.filter((item) => selected && item.element === selected);
   const selectedPlan = selected ? planned.get(selected) : undefined;
-  const inspector = <div className="space-y-2 p-2">
+  function writeParameter(path: readonly string[], value: JsonValue) {
+    if (!operation || !selected) return;
+    const [name, ...rest] = path;
+    const next = setIn(operation.params?.[name], rest, value);
+    void perform(() => save(humanizeLabel(name), [operation.params
+      ? file(['operations', selected, 'params', name], next)
+      : file(['operations', selected, 'params'], { [name]: next })]));
+  }
+  const inspector = selected && (operation || figure || selectedInput) && <Inspector name={selected}
+    type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}>
+    {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
+      project={saved.project} steps={steps} picking={selection} onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
+    {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
+      inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
+      onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
     {selectedProblems.map((problem) => <p key={problem.path + problem.detail} role="status">{problemReason(problem)}</p>)}
     {selectedPlan && <p role="status">{studioRunStatus(selectedPlan.status)}
       {selectedPlan.reason && <span className="block text-shell-muted">{selectedPlan.reason}</span>}
     </p>}
-    {operation && definition && key && <StudioDefinitionForm selection={{ kind: 'steps', stepIds: [key.step] }}
-      fields={definition.param_schema.map((schema) => ({
-        id: schema.name, label: humanizeLabel(schema.name),
-        resolved: [{ id: schema.name, value: scalar(operation.params?.[schema.name] ?? schema.default) }],
-        control: fieldControl(schema, catalog?.variables[definition.key]?.[schema.name]),
-        actions: canEdit ? ['set'] : [],
-      }))}
-      onEdit={({ fieldId, edit }) => {
-        if (edit.kind !== 'set' || !selected) return;
-        void perform(() => save(humanizeLabel(fieldId), [operation.params
-          ? file(['operations', selected, 'params', fieldId], edit.value)
-          : file(['operations', selected, 'params'], { [fieldId]: edit.value })]));
-      }} />}
+    {operation && definition && key && <div className="grid gap-1">
+      <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}
+        projected={(path) => {
+          const schema = path.length === 1 && definition.param_schema.find(({ name }) => name === path[0]);
+          const options = schema && catalog?.variables[definition.key]?.[schema.name];
+          return schema && options ? fromParamSchema(schema, operation.params?.[schema.name], canEdit
+            ? (value) => writeParameter(path, value) : undefined, { options }) : undefined;
+        }}
+        write={canEdit ? writeParameter : undefined} />
+    </div>}
     {figure && selected && selectedFigure && <label className="grid gap-1">
       {studioName('caption')}
-      <input className={control} key={JSON.stringify([saved.revision, selected, selectedFigure.caption])}
+      <TextField key={JSON.stringify([saved.revision, selected, selectedFigure.caption])}
         defaultValue={selectedFigure.caption ?? ''} disabled={!canEdit || !inlineFigure}
         onBlur={({ currentTarget }) => {
           const caption = currentTarget.value;
@@ -231,72 +270,75 @@ export function useManagedAnalyze({
         }}
         onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
     </label>}
-  </div>;
-  const drawer = <div className="space-y-2 p-2">
-    {catalog?.operations.map((entry) => <button key={entry.key} type="button" className={control} disabled={!canEdit}
-      aria-label={studioAccessibleName('add', entry.label)}
-      onClick={() => addOperation(entry.key)}>
-      {entry.label}
-    </button>)}
-    <button type="button" className={control} disabled={!canEdit} onClick={addFigure}>{studioName('addFigure')}</button>
-    <button type="button" className={control} {...commandAttributes(connect)} disabled={!connect.enabled} onClick={connect.invoke}>
-      {connect.label}
-    </button>
-  </div>;
+  </Inspector>;
+  const library = useMemo((): LibraryItem[] => catalog ? [
+    ...catalog.operations.map((entry) => ({
+      id: entry.key, name: entry.label, group: studioName('operations'), glyph: <Sigma />, terms: entry.key,
+    })),
+    { id: figureItem, name: humanizeLabel(figureItem), group: studioName('figures'), glyph: <ChartLine /> },
+  ] : [], [catalog]);
+  function selectElement(id: string | null) {
+    setInspected(undefined);
+    element.onSelect(id);
+  }
+  const shownItem = inspected?.scope === scope ? library.find((item) => item.id === inspected.id) : undefined;
+  function place(id: string, point?: PresentationPosition) {
+    if (id === figureItem) addFigure(point);
+    else if (definitions.has(id)) addOperation(id, point);
+  }
+  const libraryInspector = shownItem && <Inspector name={shownItem.name} type={shownItem.group}>
+    {definitions.get(shownItem.id)?.description && <p className="text-shell-muted">{definitions.get(shownItem.id)!.description}</p>}
+    {canEdit && <Button className="justify-self-start" onClick={() => place(shownItem.id)}>
+      {studioAccessibleName('add', shownItem.name)}
+    </Button>}
+  </Inspector>;
+  const drawer = <Drawer>
+    <DrawerSection sections={sections} id="analysis.library" name={studioName('library')}>
+      <StudioRegion state={catalogState}>
+        <LibraryList sections={sections} section="analysis.library" searchName="searchLibrary" items={library}
+          selected={shownItem?.id} dragType={canEdit ? operationDragType : undefined}
+          onInspect={(id) => setInspected({ scope, id })}
+          onPlace={canEdit ? (id) => place(id) : undefined} />
+      </StudioRegion>
+    </DrawerSection>
+  </Drawer>;
   const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => {
     const caption = figureDefinition(name, view.figure)?.caption;
     const result = planned.get(name);
-    return <li key={name}>
-      <button type="button" className={control} aria-pressed={selected === name} onClick={() => element.onSelect(name)}>
-        {name}
-      </button>
-      {caption && <span className="px-2">{caption}</span>}
-      {result && <span className="px-2">{studioRunStatus(result.status)}</span>}
+    return <li key={name} className="flex items-center gap-2">
+      <Button pressed={selected === name} onClick={() => selectElement(name)}>{name}</Button>
+      {caption && <span>{caption}</span>}
+      {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
   })}</ul>;
   const alert = !opened && issue && <p className="p-2" role="alert">{issue}</p>;
   return {
     selectedFigure: figure ? selected : undefined,
     analysis: {
-      body: <div className="flex h-full min-h-0 flex-col">{alert}<div className="min-h-0 flex-1">
-        <ManagedDocumentCanvas key={scope} {...element} items={items} connections={connections}
-          positions={document ? saved.presentation?.documents?.[document]?.positions : undefined}
+      body: <CanvasStrip viewport={viewport}>{alert}<div className="min-h-0 flex-1">
+        <ManagedDocumentCanvas key={scope} selectedId={element.selectedId} onSelect={selectElement} items={items} connections={connections} viewportRef={canvas}
+          positions={document ? saved.presentation?.documents?.[document]?.positions : undefined} pick={canvasPick}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
+          drop={canEdit ? { type: operationDragType, place } : undefined}
           rememberPoint={(point) => { cursor.current = point ? { scope, point } : undefined; }} />
-      </div></div>,
-      drawer, inspector,
+      </div></CanvasStrip>,
+      drawer, inspector: libraryInspector || inspector,
     },
     figures: { body: <>{alert}{figureList}
       {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
         history={selectedPlan} name={selected} />}
-    </>, drawer, inspector: figure ? inspector : undefined },
-    commands: document && (focusedView === 'analysis' || focusedView === 'figures') ? [addCommand, connect] : [],
-    overlay: opened && <Dialog ariaLabel={studioName(opened.mode === 'add' ? 'addOperation' : 'connectPorts')}
-      manageFocus panelClassName={dialogClass} onClose={() => setDialog(undefined)}>
+    </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
+    commands: document && focusedView === 'analysis' ? [addCommand, ...viewport]
+      : document && focusedView === 'figures' ? [addCommand] : [],
+    overlay: opened && <Dialog ariaLabel={studioName('addOperation')}
+      manageFocus panelClassName="grid w-[min(26rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
       {issue && <p role="alert">{issue}</p>}
-      {opened.mode === 'add' ? <>
-        <input data-dialog-autofocus className={control} aria-label={studioName('operations')} value={query}
-          onChange={(event) => setQuery(event.currentTarget.value)} />
-        {catalog?.operations.filter(({ label }) => label.toLowerCase().includes(query.toLowerCase()))
-          .map((entry) => <button key={entry.key} type="button" className={control} disabled={!canEdit}
-            onClick={() => addOperation(entry.key, opened.point)}>
-            {entry.label}
-          </button>)}
-      </> : <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); connectSelected(); }}>
-        <label className="grid gap-1">{studioName('sourcePort')}
-          <select data-dialog-autofocus className={control} value={sourceIndex} onChange={(event) => setSourceIndex(event.currentTarget.value)}>
-            <option value="" disabled />{sources.map(({ label }, index) => <option key={label} value={index}>{label}</option>)}
-          </select>
-        </label>
-        <label className="grid gap-1">{studioName('inputPort')}
-          <select className={control} value={role} onChange={(event) => setRole(event.currentTarget.value)}>
-            <option value="" disabled />{roles.map((name) => <option key={name} value={name}>{selected}.{name}</option>)}
-          </select>
-        </label>
-        <button type="submit" className={control} disabled={!canEdit || sourceIndex === '' || !role}>
-          {studioName('connectPorts')}
-        </button>
-      </form>}
+      <TextField data-dialog-autofocus aria-label={studioName('operations')} value={query} onValueChange={setQuery} />
+      {catalog?.operations.filter(({ label }) => label.toLowerCase().includes(query.toLowerCase()))
+        .map((entry) => <Button key={entry.key} variant="ghost" align="start" disabled={!canEdit}
+          onClick={() => addOperation(entry.key, opened.point)}>
+          {entry.label}
+        </Button>)}
     </Dialog>,
   };
 }

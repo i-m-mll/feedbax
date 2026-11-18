@@ -1,16 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
-test.use({
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
-test('a Model value edit changes only its authored variant and keeps exact shared Train results', async ({ page, request }, info) => {
+test('a Model value edit changes only its authored variant and keeps exact shared Train results', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(55_000);
-  const id = await fixture('seed-variants', String(info.config.metadata.home), 'model-variants');
+  const id = await fixture('seed-variants', studio.home, 'model-variants');
   const projectPath = `/api/projects/${id}`;
   const trainPath = `${projectPath}/train-runs`;
   async function snapshot(): Promise<StudioProjectSnapshot> {
@@ -35,9 +32,10 @@ test('a Model value edit changes only its authored variant and keeps exact share
   const inspector = page.getByRole('complementary', { name: 'Inspector' });
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
   const plant = page.getByRole('tabpanel', { name: 'Model', exact: true }).getByRole('article', { name: 'Point mass', exact: true });
-  const selectPlant = () => plant.locator('header').click();
+  // After a reload both restored slots can show the Model; either one selects the same element.
+  const selectPlant = () => plant.first().locator('header').click();
   await page.goto(url);
-  await expect(variants).toHaveValue('base');
+  await expect(variants).toHaveText('base');
   await mapStep(page, 'train').click();
   const admission = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === trainPath);
@@ -53,12 +51,12 @@ test('a Model value edit changes only its authored variant and keeps exact share
     expect(initial[variant].result).toEqual(initial.base.result);
   }
 
-  await variants.selectOption('compare');
+  await pick(variants, 'compare');
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
-  await expect(variants).toHaveValue('base');
+  await expect(variants).toHaveText('base');
   await page.getByRole('button', { name: 'Forward', exact: true }).click();
-  await expect(variants).toHaveValue('compare');
+  await expect(variants).toHaveText('compare');
 
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
@@ -116,8 +114,8 @@ test('a Model value edit changes only its authored variant and keeps exact share
   await expect(mass).toHaveValue(/^2(?:\.0)?$/);
 
   await page.reload();
-  await expect(variants).toHaveValue('base');
-  await variants.selectOption('compare');
+  await expect(variants).toHaveText('base');
+  await pick(variants, 'compare');
   await mapStep(page, 'train').click();
   await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
   await selectPlant();

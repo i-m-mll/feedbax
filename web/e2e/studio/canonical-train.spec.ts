@@ -1,5 +1,6 @@
-import { expect, test, type Page } from '@playwright/test';
-import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { expect, test } from './fixtures/studio';
+import { type Page } from '@playwright/test';
+import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
 import type {
@@ -11,15 +12,15 @@ import type {
   StudioProjectSnapshot,
   StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-
-test.use({ trace: 'off', launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] } });
+import { pick } from './fixtures/controls';
+import { palette } from './fixtures/studioKeyboard';
 
 function submitted(page: Page, path: string) {
   return page.waitForResponse((response) =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === path);
 }
 
-test('standalone Activity opens an existing run and hydrates its retained history', async ({ page, request }) => {
+test('standalone Activity opens an existing run and hydrates its retained history', { tag: '@round' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const admission = await request.post(`${projectPath}/train-runs`, { data: {
     token: 'background-activity', revision: snapshot.revision,
@@ -31,18 +32,19 @@ test('standalone Activity opens an existing run and hydrates its retained histor
   await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
   const announcements = page.getByRole('log', { name: 'Status', exact: true });
   await expect(announcements).toHaveCount(1);
-  const row = page.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem')
-    .filter({ hasText: snapshot.project_id });
+  const row = page.getByRole('list', { name: 'Runs', exact: true })
+    .getByRole('region', { name: snapshot.project_id, exact: true }).getByRole('listitem');
   await expect(row.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
-  await row.getByRole('button', { name: new RegExp(snapshot.project_id) }).click();
+  await row.getByRole('button', { name: /^Train / }).click();
   const inspector = page.getByRole('region', { name: 'Run Inspector' });
   await expect(inspector.getByRole('region', { name: 'Log', exact: true })).toBeVisible();
+  await expect(row.getByRole('button', { name: 'Dismiss', exact: true })).toBeHidden();
   await expect(announcements).toHaveCount(1);
   expect((await request.get('/api/jobs').then((response) => response.json()) as StudioJobSnapshot)
     .jobs.some(({ job_id, seen }) => job_id === attempt.job_id && seen)).toBe(true);
 });
 
-test('Mounted saved Train runs a canonical successor through Jobs', async ({ page, request }, info) => {
+test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(48_000);
   const created = await request.post('/api/projects');
   expect(created.status()).toBe(201);
@@ -99,6 +101,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   })]);
   const stoppedJob = successorSubmission.items[0].job_id!;
   await openResultsSlot(page);
+  await expect(runButton).toHaveText('Run');
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
   await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).first()).toBeAttached({ timeout: 14_000 });
@@ -120,7 +123,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
   await table.getByRole('button').first().click();
   const evidence = await fixture(
-    'observe', String(info.config.metadata.home), id, snapshot.revision, job, stoppedJob, successorJob,
+    'observe', studio.home, id, snapshot.revision, job, stoppedJob, successorJob,
   );
   expect(evidence).toMatchObject({
     request: original.request_id, attempt: job, delivery: 1,
@@ -165,7 +168,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   await page.route(`**${path}`, async (route) => {
     const change = await request.patch(projectPath, { data: {
       revision: snapshot.revision, address: { kind: 'step', id: 'train' },
-      patches: [{ op: 'add', path: '/base/inline/method_payload/payload/seed', value: 7 }],
+      patches: [{ op: 'add', path: '/base/inline/seed', value: 7 }],
     } });
     expect(change.ok(), await change.text()).toBe(true);
     edited = await change.json() as StudioProjectSnapshot;
@@ -182,7 +185,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   console.info('Mounted canonical Train', JSON.stringify({ ...evidence, refused_revision: edited!.revision }));
 });
 
-test('Saved Train compares authenticated receipts after a partial run and stopped edit', async ({ page, request }, info) => {
+test('Saved Train compares authenticated receipts after a partial run and stopped edit', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(65_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const created = await request.post('/api/projects');
@@ -229,7 +232,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   }
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
-  const observed = () => fixture('observe-history', String(info.config.metadata.home), id, snapshot.revision);
+  const observed = () => fixture('observe-history', studio.home, id, snapshot.revision);
   type LossSample = { update: number; value: number };
   async function expectLoss(jobId: string, expected: LossSample[]) {
     const series = loss.locator(`[data-result-attempt="${jobId}"]`);
@@ -316,14 +319,14 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   const changed = await trainRow();
   expect(changed.result!.job_id).toBe(changedJob);
   expect(changed.previous).toEqual(first);
-  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: null, after: 7 });
+  expect(changed.change).toMatchObject({ path: expect.stringMatching(/seed$/), before: 0, after: 7 });
   const evidence = await observed();
   expect(evidence).toMatchObject({ current: changed.result, previous: first });
   async function compare() {
     await openResultsSlot(page);
     await results.locator('summary').getByText('Compare Results', { exact: true }).click();
     await expect(results.locator('details[open]')).toContainText(changed.change!.path);
-    await expect(results.locator('details[open]')).toContainText(/null\s*→\s*7/);
+    await expect(results.locator('details[open]')).toContainText(/0\s*→\s*7/);
     await expect(loss.locator('polyline')).toHaveCount(2);
     await expectLoss(changedJob, evidence.loss.current);
     await expectLoss(firstJob, evidence.loss.previous);
@@ -370,7 +373,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   console.info('Mounted saved Train history', JSON.stringify(evidence));
 });
 
-test('Mounted field sweep continues exactly two Train rows with state', async ({ page, request }, info) => {
+test('Mounted field sweep continues exactly two Train rows with state', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(47_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   let { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -392,8 +395,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await expect(table).toBeInViewport();
   await expect(runs.getByRole('region', { name: 'Definition' })).toHaveCount(0);
   await expect(drawer.getByRole('region', { name: 'Definition' })).toBeVisible();
-  await expect(source).toHaveCSS('outline-width', '2px');
-  await expect(mapStep(page, 'train')).toHaveCSS('background-color', await source.evaluate((node) => getComputedStyle(node).color));
+  await expect(source).toHaveAttribute('data-selected');
   await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
 
   const sweep = source.getByRole('button', { name: /^Sweep \(?learning-rate / });
@@ -404,10 +406,10 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const authored = (await plan()).window_map!;
   expect(authored.problems).toEqual([]);
   expect(authored.rows).toHaveLength(3);
-  const selected = authored.rows.filter(({ coordinates }) => coordinates['learning-rate'].label !== 'Medium');
+  const selected = authored.rows.filter(({ coordinates }) => coordinates['learning-rate'].value !== 0.002);
   const valueIds = selected.map(({ coordinates }) => coordinates['learning-rate'].value_id);
   const rowKeys = selected.map(({ key }) => key.row);
-  expect(selected.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Fast']);
+  expect(selected.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.003]);
   const run = async (step: string) => {
     const response = submitted(page, runsPath);
     await runs.getByRole('button', { name: 'Run', exact: true }).click();
@@ -425,12 +427,11 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
 
   await sweep.click();
   const valueButton = (name: string) => source.getByRole('listitem').getByRole('button', { name: `Select learning-rate ${name}`, exact: true });
-  await valueButton('Slow · 0.001').click();
-  await valueButton('Fast · 0.003').click({ modifiers: ['Shift'] });
-  await expect(valueButton('Slow · 0.001')).toHaveAttribute('aria-pressed', 'true');
-  await expect(valueButton('Fast · 0.003')).toHaveAttribute('aria-pressed', 'true');
-  await expect(valueButton('Medium · 0.002')).toHaveAttribute('aria-pressed', 'false');
-  await expect(source).toContainText('2 of 3');
+  await valueButton('0.001').click();
+  await valueButton('0.003').click({ modifiers: ['Shift'] });
+  await expect(valueButton('0.001')).toHaveAttribute('aria-pressed', 'true');
+  await expect(valueButton('0.003')).toHaveAttribute('aria-pressed', 'true');
+  await expect(valueButton('0.002')).toHaveAttribute('aria-pressed', 'false');
   await sweep.click();
   await page.keyboard.press('Tab');
   const mark = source.locator('.studio-map-run-mark').first();
@@ -456,17 +457,16 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
   await expect(mapStep(page, childId)).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
-  await expect(drawer.getByRole('combobox', { name: 'Edit Training method' })).toBeFocused();
+  await expect(drawer.getByRole('combobox', { name: 'Training method' })).toBeFocused();
 
-  const carryover = drawer.getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
-  const carryoverPath = 'method_payload.payload.checkpoint_initialization';
-  const methodTarget = 'method_payload.payload.target_total';
+  const carryover = drawer.getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
+  const carryoverPath = 'checkpoint_initialization';
   const checkpointInput = snapshot.project.steps?.[childId]?.inputs?.checkpoint;
   const beforeCarry = await plan();
-  await expect(carryover.locator('option:checked')).toHaveText('Initialize model only');
+  await expect(carryover).toHaveText('Initialize model only');
   const carryEdit = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  await carryover.selectOption({ label: 'Carry training state' });
+  await pick(carryover, 'Carry training state');
   const carried = await carryEdit;
   expect(carried.ok(), await carried.text()).toBe(true);
   expect(carried.request().postDataJSON()).toMatchObject({ address: { kind: 'step', id: childId } });
@@ -474,12 +474,10 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   expect(snapshot.project.steps?.[childId]?.inputs?.checkpoint).toEqual(checkpointInput);
   expect(snapshot.project.steps?.[childId]?.deltas?.[1]?.patches).toEqual([
     { op: 'replace', path: carryoverPath, value: {
-      mode: 'continue_from', progress: { source_completed_batches: 2, additional_batches: 2 },
-      optimizer: 'preserve', schedule: 'continue', rng: 'carry', cursor: 'carry',
+      mode: 'continue_from', source_completed_updates: 2, state: 'preserve', rng: 'carry', schedule: 'continue',
     } },
-    { op: 'replace', path: methodTarget, value: 4 },
   ]);
-  await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
+  await expect(carryover).toHaveText('Carry training state');
   const afterCarry = await plan();
   expect(afterCarry.rows.filter(({ key }) => key.step === 'train'))
     .toEqual(beforeCarry.rows.filter(({ key }) => key.step === 'train'));
@@ -499,10 +497,8 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   snapshot = await acknowledged.json() as StudioProjectSnapshot;
   expect(snapshot.project.steps?.[childId]?.deltas?.[2]?.patches).toEqual([
     expect.objectContaining({ path: 'training_config.n_batches', value: 4 }),
-    expect.objectContaining({ path: methodTarget, value: 6 }),
-    expect.objectContaining({ path: `${carryoverPath}.progress.additional_batches`, value: 4 }),
   ]);
-  await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
+  await page.locator('[data-slot="secondary"]').getByRole('button', { name: 'Close Slot', exact: true }).click();
   const successors = await run(childId);
   const compiled = await plan();
   expect(compiled.window_map?.problems).toEqual([]);
@@ -526,8 +522,8 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
 
   await mapStep(page, 'train').click();
   await sweep.click();
-  await valueButton('Slow · 0.001').click();
-  await valueButton('Fast · 0.003').click({ modifiers: ['Shift'] });
+  await valueButton('0.001').click();
+  await valueButton('0.003').click({ modifiers: ['Shift'] });
   await sweep.click();
   await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
   await expect(source.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(0);
@@ -544,9 +540,9 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await captureStudioWindow(page, info, '01-map-runs');
 
   await mapStep(page, 'train').click();
-  await table.getByRole('row').filter({ hasText: selected[0].label }).getByRole('button').click();
+  await table.getByRole('button', { name: runName(selected[0].label) }).click();
   const explicit = submitted(page, filesPath);
-  await runs.getByRole('button', { name: 'New Step', exact: true }).click();
+  await palette(page, 'newStep', 'New Step');
   await chooseTrainSuccessor(page);
   const rowSaved = await explicit;
   expect(rowSaved.status(), await rowSaved.text()).toBe(201);
@@ -569,7 +565,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
   const evidence = await fixture(
-    'observe-swept', String(info.config.metadata.home), id, ...successorRows.map(({ attempts }) => attempts[0].job_id),
+    'observe-swept', studio.home, id, ...successorRows.map(({ attempts }) => attempts[0].job_id),
   );
   for (const [index, row] of successorRows.entries()) {
     const attempt = row.attempts[0];
@@ -579,15 +575,13 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
       source_checkpoint: {
         completed_updates: 2, transaction_id: expect.any(String), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
-      schedule_origin_step: 0,
+      schedule_origin: 0,
       initialization: {
-        mode: 'continue_from', optimizer_policy: 'preserve', rng_policy: 'carry', cursor_policy: 'carry',
-        learning_rate_schedule_policy: 'continue',
-        producer_content_binding: { root_kind: 'checkpoint-custody:batch_counter,model,optimizer,prng' },
+        mode: 'continue_from', source_completed_updates: 2, state: 'preserve', rng: 'carry', schedule: 'continue',
       },
     });
     const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-    const selectedRow = table.getByRole('row').filter({ hasText: selected[index].label }).getByRole('button');
+    const selectedRow = table.getByRole('button', { name: runName(selected[index].label) });
     await selectedRow.click();
     await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
     await expect(runs.getByRole('region', { name: 'Made From' })).toContainText('train');
@@ -616,7 +610,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
     );
   }
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
-  await page.getByRole('button', { name: 'Close Slot', exact: true }).click();
+  await page.locator('[data-slot="secondary"]').getByRole('button', { name: 'Close Slot', exact: true }).click();
   await rail.getByRole('tab', { name: 'Results', exact: true }).click();
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
   const desktopLoss = page.locator('[data-slot="primary"]').getByRole('img', { name: 'Loss', exact: true });

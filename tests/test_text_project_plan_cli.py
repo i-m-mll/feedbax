@@ -56,14 +56,15 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
     base = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     steps = base["steps"]
     train = steps["train"]
-    train["base"]["inline"].update(seed=0, on_nan="raise")
+    train["base"]["inline"]["seed"] = 0
+    train["base"]["inline"]["settings"]["grad_clip"] = 1.0
     train["sweep"] = {
         "axes": {"seed": {"values": {
             tag: {"patches": {"seed": {"value": value}}} for tag, value in (("a", 1), ("b", 2))
         }}},
         "exceptions": {"restore": {
             "where": {"rows": ["seed=a"]},
-            "patches": {"on_nan": {"value": "halt_restore_checkpoint"}},
+            "patches": {"settings.grad_clip": {"value": 0.5}},
         }},
     }
     steps["child"] = {"kind": "train", "base": {"step": "train"}}
@@ -88,7 +89,7 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
     mass = ("documents", "point-mass", "payload", "interior", "components", "plant", "fields", "mass")
     batch_size = ("steps", "train", "base", "inline", "training_config", "batch_size")
     swept = ("steps", "train", "sweep", "axes", "seed", "values", "b", "patches", "seed", "value")
-    exception = ("steps", "train", "sweep", "exceptions", "restore", "patches", "on_nan", "value")
+    exception = ("steps", "train", "sweep", "exceptions", "restore", "patches", "settings.grad_clip", "value")
     variant = ("sweep", "rows", "variant", "patches", variant_path, "value")
     subject = ("steps", "evaluate", "inputs", "subject", "row")
     model_source = source("document", "point-mass", "/interior/components/plant/fields/mass")
@@ -97,7 +98,7 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
         "sweep_value", "b", "/sweep/axes/seed/values/b/patches/seed/value",
         step="train", axis="seed", value="b",
     )
-    exception_source = source("exception", "restore", "/sweep/exceptions/restore/patches/on_nan/value", step="train")
+    exception_source = source("exception", "restore", "/sweep/exceptions/restore/patches/settings.grad_clip/value", step="train")
     variant_source = source("variant", "variant", "/steps/train/base/inline/training_config/batch_size", variant="variant")
     def upstream(row):
         return source("upstream", "child", "", step="child", variant="control", row=row)
@@ -106,7 +107,7 @@ def test_cli_review_keeps_managed_source_addresses(tmp_path, capsys):
         (mass, 3, RunKey("control", "child", "seed=a"), model_source, model_source),
         (batch_size, 6, RunKey("control", "child", "seed=a"), step_source, step_source),
         (swept, 7, RunKey("control", "child", "seed=b"), sweep_source, sweep_source),
-        (exception, "raise", RunKey("control", "child", "seed=a"), exception_source, exception_source),
+        (exception, 2.0, RunKey("control", "child", "seed=a"), exception_source, exception_source),
         (variant, 12, RunKey("variant", "child", "seed=a"), variant_source, variant_source),
         (subject, "seed=b", RunKey("control", "evaluate", "default"), upstream("seed=a"), upstream("seed=b")),
     )

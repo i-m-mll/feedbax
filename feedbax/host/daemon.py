@@ -34,6 +34,8 @@ LOG_LINE_LIMIT = 8192
 EVENT_LINE_LIMIT = 2 * 1024 * 1024
 POLL_SECONDS = 0.20
 TERM_GRACE = 2
+# How long a connection may take to send its request, or to take its reply, before the Host drops it.
+REPLY_SECONDS = 5
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
     "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
@@ -100,6 +102,9 @@ class Host:
         self.wake = asyncio.Event()
         self.file_changes = FileChanges(self.loop, self.wake.set)
         self.workers: dict[int, Worker] = {}
+        self.requests: set[asyncio.Task] = set()
+        self.connections: set[asyncio.StreamWriter] = set()
+        self.closing = False
         self.profiles: dict[str, dict] = {}
         self.release_owner = os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT")
         self.interpreter = os.path.realpath(sys.executable)
@@ -952,11 +957,21 @@ class Host:
             case _:
                 raise HostError("invalid_request", f"Unknown host operation: {op}")
 
+    def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        # Registered at the accept itself: a shutdown that begins before the handler first runs still finds it.
+        self.connections.add(writer)
+        return self.serve(reader, writer)
+
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         exiting = False
+        request = asyncio.current_task()
+        assert request is not None
+        self.requests.add(request)
         try:
+            if self.closing:
+                return
             try:
-                raw = await asyncio.wait_for(reader.readline(), 5)
+                raw = await asyncio.wait_for(reader.readline(), REPLY_SECONDS)
                 if not raw.endswith(b"\n"):
                     return
                 message = json.loads(raw)
@@ -974,25 +989,50 @@ class Host:
                     "error": {"code": "disk_full", "message": "The host's state disk is full."}
                 }
             writer.write(encode(reply))
-            await asyncio.wait_for(writer.drain(), 5)
         except (OSError, TimeoutError):
             pass
         finally:
-            writer.close()
+            # The request and its connection stay registered until the transport has closed, buffered reply
+            # included, so a shutdown meanwhile cancels this handler and aborts the transport.
+            try:
+                if self.closing:
+                    writer.transport.abort()
+                else:
+                    writer.close()
+                    await asyncio.wait_for(writer.wait_closed(), REPLY_SECONDS)
+            except (OSError, TimeoutError):
+                writer.transport.abort()
+            finally:
+                self.requests.discard(request)
+                self.connections.discard(writer)
             if exiting:
                 self.shutdown_acknowledged = True
                 self.wake.set()
 
     async def run(self) -> None:
         self.address.unlink(missing_ok=True)
-        server = await asyncio.start_unix_server(self.serve, str(self.address), limit=MAX_RPC_BYTES)
+        server = await asyncio.start_unix_server(self._accept, str(self.address), limit=MAX_RPC_BYTES)
         try:
             async with server:
-                await self._schedule()
+                try:
+                    await self._schedule()
+                finally:
+                    # The server's exit waits for every open connection to close. End them instead of
+                    # serving them out: cancel the requests still waiting, such as event long polls, and
+                    # abort every transport, since closing one waits until a client reads its buffered reply.
+                    self.closing = True
+                    for request in tuple(self.requests):
+                        request.cancel()
+                    for connection in tuple(self.connections):
+                        connection.transport.abort()
         finally:
             self.file_changes.close()
             for worker in self.workers.values():
                 self._close_control(worker)
+                if worker.job_id is None:
+                    # An idle or still-importing pool worker holds no job; it would otherwise
+                    # outlive this Host until its import finished.
+                    self._signal_group(worker.process.pid, worker.token, escalate=True)
             self._power_assertion(False)
             self.address.unlink(missing_ok=True)
             self.store.db.close()

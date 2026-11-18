@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
+import { appearanceBootEntry } from '../entries';
 import ts from 'typescript';
 
 const web = resolve(import.meta.dir, '..');
@@ -30,7 +32,12 @@ function visitModule(path: string) {
   }
 }
 
-visitModule(resolve(src, 'main.tsx'));
+// Every page's module script, and the boot script Vite inlines into each page.
+const pages = [...new Bun.Glob('*.html').scanSync({ cwd: web })];
+const scripts = pages.flatMap((page) => [...readFileSync(resolve(web, page), 'utf8')
+  .matchAll(/<script type="module" src="\/([^"]+)"/g)].map(([, entry]) => entry));
+if (scripts.length !== pages.length) throw new Error(`Each page needs one module script: ${pages.join(', ')}`);
+for (const entry of [...scripts, appearanceBootEntry]) visitModule(resolve(web, entry));
 const unreachable = modules.filter((path) => {
   const source = program.getSourceFile(path);
   return !source || !seen.has(source);

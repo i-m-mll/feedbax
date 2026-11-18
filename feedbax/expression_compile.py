@@ -90,7 +90,7 @@ def compile_expression(
     if period_seconds is not None and (not isfinite(period_seconds) or period_seconds <= 0):
         return (
             Problem(
-                code=ProblemCode.STRUCTURE, reason="The model period must be positive.", path=path
+                code=ProblemCode.STRUCTURE, reason="The model period is not positive.", path=path
             ),
         )
     if discrete_uniform and (

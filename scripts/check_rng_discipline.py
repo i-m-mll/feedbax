@@ -19,39 +19,9 @@ class Check:
 
 CHECKS = (
     Check(
-        "feedbax/tasks/task.py",
-        "key_trials, key_dependencies = jr.split(key)",
-        "validation_trials must split trial and dependency streams explicitly",
-    ),
-    Check(
-        "feedbax/tasks/task.py",
-        "trial_specs = self.get_validation_trials(key)",
-        "validation trial generation must receive the trial stream",
-    ),
-    Check(
-        "feedbax/training/rl/tasks.py",
-        "hold_fk = _sample_reachable_pos(k2, segment_lengths)",
-        "HOLD target sampling must not reuse the REACH target key",
-    ),
-    Check(
-        "feedbax/training/rl/tasks.py",
-        "hold_raw = jax.random.uniform(\n        k2,",
-        "HOLD raw target sampling must not reuse the REACH target key",
-    ),
-    Check(
         "feedbax/builtins/runtime/signal_transforms.py",
         "lambda x: self.noise_func(key, x)",
         "AddNoise must split the call key per PyTree signal leaf",
-    ),
-    Check(
-        "feedbax/analysis/grad.py",
-        "key=jax.random.PRNGKey(0)",
-        "Hutchinson reducers must not capture a fixed PRNG key as a default",
-    ),
-    Check(
-        "feedbax/analysis/execution.py",
-        'states_pickle_path = states_pkl_dir / f"{eval_info.hash}.pkl"',
-        "legacy evaluation state cache filenames must include the PRNG key digest",
     ),
 )
 

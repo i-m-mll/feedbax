@@ -1,5 +1,7 @@
 import { appTip } from '@window-shell/browser/tooltip';
+import { ArrowLeft, ArrowRight, Command, PanelLeft, PanelRight, Play, Square, type LucideIcon } from 'lucide-react';
 import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
+import type { AppearanceCommandId } from '@/appearance/appearance';
 import { projectWindowViews, type ProjectWindowView } from './projectWindowState';
 
 interface Shortcut {
@@ -16,6 +18,7 @@ const primary = (key: string, modifiers: Omit<Shortcut, 'key' | 'primary'> = {})
 
 const shortcuts = {
   commandPalette: primary('K'),
+  settings: primary(','),
   undo: primary('Z'),
   redo: primary('Z', { shift: true }),
   run: primary('R'),
@@ -36,6 +39,7 @@ const shortcuts = {
   addComponent: { key: 'A', shift: true },
   modelSelectAll: primary('A'),
   modelRemove: { key: 'Backspace' },
+  renameStep: { key: 'F2' },
   modelRename: { key: 'F2' },
   modelDuplicate: primary('D'),
   modelGroup: primary('G'),
@@ -46,25 +50,40 @@ const shortcuts = {
   leave: primary('ArrowUp'),
 } satisfies Partial<Record<StudioNameId, Shortcut>>;
 
-export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView |
-  'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
+const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
+  back: ArrowLeft,
+  forward: ArrowRight,
+  showSteps: PanelLeft,
+  commandPalette: Command,
+  showDrawer: PanelLeft,
+  showInspector: PanelRight,
+  run: Play,
+  stop: Square,
+};
+
+export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
+  'check' | 'accept' | 'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
   'fitView' | 'zoomIn' | 'zoomOut' | 'rename';
 
 const selectionCommands = new Set<StudioCommandId>([
-  'run', 'stop', 'forceStop', 'resume', 'openRun', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
+  'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
   'addComponent', 'connectPorts', 'exposeOutput', 'addText', 'addFigure', 'moveEarlier', 'moveLater', 'remove',
   'flip', 'enter', 'leave', 'collapseAll', 'lock', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
-  'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
+  'renameStep', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
   'modelCopy', 'modelCut', 'modelPaste',
 ]);
 
 export interface StudioCommand {
   readonly id: StudioCommandId;
   readonly name: StudioNameId;
+  /** The visible name. */
+  readonly title: string;
+  /** The accessible name, with the command's subject. */
   readonly label: string;
+  readonly glyph?: LucideIcon;
   readonly enabled: boolean;
   readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
@@ -74,15 +93,15 @@ export interface StudioCommand {
 export function bindStudioCommand<Id extends StudioCommandId>(
   id: Id,
   perform: () => void,
-  { enabled = true, name = id, subject, keyboard = true }:
-    { enabled?: boolean; name?: StudioNameId; subject?: string; keyboard?: boolean } = {},
+  { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id] }:
+    { enabled?: boolean; name?: StudioNameId; subject?: string; keyboard?: boolean; glyph?: LucideIcon } = {},
 ): StudioCommand & { readonly id: Id } {
   const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
   const shortcut = (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
     (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
   return {
     id, name, enabled, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
-    label: studioAccessibleName(name, subject),
+    title: studioName(name), label: studioAccessibleName(name, subject), glyph,
     invoke: () => { if (enabled) perform(); },
   };
 }
@@ -110,7 +129,7 @@ export function commandAttributes(command: StudioCommand, placement?: 'bottom' |
 }
 
 const punctuation: Record<string, string> = {
-  Backslash: '\\', BracketLeft: '[', BracketRight: ']', Period: '.',
+  Backslash: '\\', Comma: ',', BracketLeft: '[', BracketRight: ']', Period: '.',
 };
 
 export function matchesShortcut(event: KeyboardEvent, shortcut: Shortcut | undefined) {
@@ -120,6 +139,15 @@ export function matchesShortcut(event: KeyboardEvent, shortcut: Shortcut | undef
     (event.metaKey || event.ctrlKey) === Boolean(shortcut.primary) &&
     (event.metaKey && event.ctrlKey) === Boolean(shortcut.control) &&
     event.altKey === Boolean(shortcut.alt) && event.shiftKey === Boolean(shortcut.shift);
+}
+
+/**
+ * Whether a control took the key for itself. Base UI cancels every key but Tab on a disabled control that keeps
+ * focus, before any handler of ours runs; that cancel does not mean the control used the key.
+ */
+export function keyHandled(event: KeyboardEvent) {
+  if (!event.defaultPrevented) return false;
+  return !(event.target instanceof Element && event.target.matches('[aria-disabled="true"][data-disabled]'));
 }
 
 export function studioCommandContext(target: EventTarget | null, paletteOpen: boolean) {
@@ -132,10 +160,23 @@ export function studioCommandContext(target: EventTarget | null, paletteOpen: bo
   };
 }
 
+/** Commands that act on a canvas's selection; a focused text field keeps their keys. */
+const canvasCommands = new Set<StudioCommandId>([
+  'renameStep', 'addComponent', 'leave', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup',
+  'modelUngroup', 'modelCopy', 'modelCut', 'modelPaste',
+]);
+
+/** ⌘Z, ⇧⌘Z, ⌘A, ⌘C, ⌘V, ⌘X and ⌘-arrows edit or move within text. */
+function editsText(shortcut: Shortcut | undefined) {
+  return !!shortcut?.primary && !shortcut.control && !shortcut.alt &&
+    (['z', 'a', 'c', 'v', 'x'].includes(shortcut.key.toLowerCase()) || shortcut.key.startsWith('Arrow'));
+}
+
+/** Inside a text field, window commands still run from their chords; text-editing chords and canvas commands do not. */
 export function commandInContext(command: StudioCommand, context: ReturnType<typeof studioCommandContext>) {
   if (context.dialog && !(context.paletteOpen && command.id === 'commandPalette')) return false;
-  if (context.editable && (command.id === 'undo' || command.id === 'redo' || command.id === 'run' ||
-      command.id === 'addComponent' || command.id === 'leave' || command.id.startsWith('model'))) return false;
+  if (context.editable && (canvasCommands.has(command.id) ||
+      editsText((shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[command.id]))) return false;
   return !(context.activity && command.selectionScoped);
 }
 

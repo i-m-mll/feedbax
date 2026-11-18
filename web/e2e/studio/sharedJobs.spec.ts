@@ -1,21 +1,18 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { expect, firstJobTimeout, test } from './fixtures/studio';
+import { runPython } from './fixtures/python';
+import { type APIRequestContext, type Page } from '@playwright/test';
 import type {
   StudioActivityJob,
   StudioJobSnapshot,
   StudioJobSubmission,
 } from '../../src/generated/studioContracts';
 import { observeJobStreams } from './observeJobStreams';
-import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
 
-const repo = fileURLToPath(new URL('../../../', import.meta.url));
-const run = promisify(execFile);
 const rates = ['0.0003', '0.0004', '0.0005', '0.0006', '0.0007', '0.0008'];
 
 async function hostCommand(home: string, command: string, ...args: string[]): Promise<string> {
-  const { stdout } = await run('uv', ['run', '--no-sync', 'python', '-B', '-c', `
+  const stdout = await runPython({ code: `
 from pathlib import Path
 import sys
 from feedbax.desktop.release import AppPaths
@@ -24,13 +21,13 @@ from feedbax.host import HostClient
 paths = AppPaths.resolve(instance_root=Path(sys.argv[1]))
 host = HostClient(paths.host)
 ${command}
-`, home, ...args], { cwd: repo, timeout: 8_000 });
+` }, [home, ...args]);
   return stdout.trim();
 }
 
 function row(page: Page, label: string) {
   return page.locator('[data-slot="primary"]').getByRole('table', { name: 'Runs', exact: true }).getByRole('row').filter({
-    has: page.getByRole('button', { name: label, exact: true }),
+    has: page.getByRole('button', { name: runName(label) }),
   });
 }
 
@@ -57,13 +54,12 @@ async function drainProjects(request: APIRequestContext, projects: string[]) {
   await expect.poll(activeIds, { timeout: 10_000 }).toEqual([]);
 }
 
-test('shares live Jobs across windows and observes the four-slot queue', async ({
-  page, context, request, baseURL,
+test('shares live Jobs across windows and observes the four-slot queue', { tag: '@round' }, async ({
+  page, context, request, baseURL, studio,
 }, testInfo) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_PREVIEW !== '1', 'Requires production preview');
   test.setTimeout(50_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '6000', ...rates));
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '6000', ...rates));
   const projectId = snapshot.project_id;
   const observer = await observeJobStreams(baseURL);
   const jobs = () => projectJobs(request, projectId);
@@ -75,7 +71,7 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
       await window.getByRole('tab', { name: 'Runs', exact: true }).click();
     };
     await open(page);
-    const home = testInfo.config.metadata.home as string;
+    const home = studio.home;
     const slots = Number(await hostCommand(home, 'print(host.policy()["compute"])'));
     expect(slots).toBe(4);
 
@@ -110,21 +106,23 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
         await expect(row(window, job.label).getByText('Queued', { exact: true })).toBeVisible();
       }
     }
-    await row(second, first.label).getByRole('button', { name: first.label, exact: true }).click();
+    await row(second, first.label).getByRole('button', { name: runName(first.label) }).click();
     await openResultsSlot(second);
     await expect(second.getByRole('img', { name: 'Loss', exact: true }).locator('line title').first()).toBeAttached();
 
     await page.reload();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
-    const selected = activity.getByRole('listitem').filter({ hasText: first.label });
+    const selected = activity.getByRole('region', { name: configuration.project, exact: true })
+      .getByRole('listitem').filter({ hasText: first.label });
     const stopping = post(page, '/api/jobs/stop');
     await selected.getByRole('button', { name: 'Stop', exact: true }).click();
     expect((await stopping).ok()).toBe(true);
 
     const secondActivity = second.getByRole('region', { name: 'Activity', exact: true });
     await second.getByRole('button', { name: 'Activity', exact: true }).click();
-    const secondAttempt = (label: string) => secondActivity.getByRole('listitem').filter({ hasText: label }).first();
+    const secondAttempt = (label: string) => secondActivity.getByRole('region', { name: configuration.project, exact: true })
+      .getByRole('listitem').filter({ hasText: label }).first();
     const resume = secondAttempt(first.label).getByRole('button', { name: 'Resume', exact: true });
     await expect(resume).toBeEnabled({ timeout: 10_000 });
     const stopped = (await jobs()).find((job) => job.job_id === first.job_id);
@@ -145,8 +143,11 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
     });
     expect(attempt.job_id).not.toBe(first.job_id);
 
-    const sibling = (await jobs()).find((job) => job.status === 'running' && job.run_key !== first.run_key);
-    if (!sibling) throw new Error('Expected another running row to force-stop');
+    // The other admitted rows may still be starting their workers; wait for one to run.
+    const runningSibling = async () =>
+      (await jobs()).find((job) => job.status === 'running' && job.run_key !== first.run_key);
+    await expect.poll(async () => (await runningSibling())?.status, { timeout: firstJobTimeout }).toBe('running');
+    const sibling = (await runningSibling())!;
     const forced = post(second, '/api/jobs/stop');
     await secondAttempt(sibling.label).getByRole('button', { name: 'Force Stop', exact: true }).click();
     expect((await forced).ok()).toBe(true);
@@ -202,10 +203,9 @@ raise TimeoutError("No isolated sibling published a checkpoint")
   }
 });
 
-test('opens a ninth project window while one stream serves active projects', async ({
+test('opens a ninth project window while one stream serves active projects', { tag: '@round' }, async ({
   context, page, request, baseURL,
 }) => {
-  test.skip(process.env.FEEDBAX_STUDIO_E2E_PREVIEW !== '1', 'Requires production preview');
   test.setTimeout(45_000);
   if (!baseURL) throw new Error('The real Studio origin is required');
   const files = await fixture('ordinary-files', '12000');
@@ -244,7 +244,7 @@ test('opens a ninth project window while one stream serves active projects', asy
     ));
     await expect.poll(subscriptions).toEqual([[...runningProjects].sort()]);
     await Promise.all(windows.map((window) =>
-      expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/),
+      expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/, { timeout: firstJobTimeout }),
     ));
     expect(windows).toHaveLength(8);
 
@@ -264,6 +264,61 @@ test('opens a ninth project window while one stream serves active projects', asy
     } finally {
       await Promise.all(windows.map((window) => window.close()));
       await observer.close();
+    }
+  }
+});
+
+test('names an unreadable run only in its own project window', async ({
+  context, page, request, baseURL, studio,
+}) => {
+  test.setTimeout(45_000);
+  if (!baseURL) throw new Error('The real Studio origin is required');
+  const files = await fixture('ordinary-files', '12000');
+  const [unreadable, readable] = await Promise.all([0, 1].map(async () =>
+    (await seedManagedProject(request, files)).snapshot.project_id,
+  ));
+  const second = await context.newPage();
+  const windows = [page, second];
+  const open = async (window: Page, projectId: string) => {
+    await window.goto(baseURL + '/?project=' + projectId);
+    await mapStep(window, 'train').click();
+    await window.getByRole('tab', { name: 'Runs', exact: true }).click();
+    await window.getByRole('button', { name: 'Activity', exact: true }).click();
+  };
+  const alert = (window: Page) => window.getByRole('region', { name: 'Activity', exact: true })
+    .getByRole('alert').filter({ hasText: 'Malformed result is unreadable' });
+  try {
+    await Promise.all([open(page, unreadable), open(second, readable)]);
+    await hostCommand(studio.home, `
+from feedbax.host.protocol import AdmissionItem, Job, Launch
+data = {"run_key": "malformed", "stage_id": "train", "scenario_id": "default", "label": "Malformed result", "coordinates": {}}
+job = Job("malformed-result", sys.argv[2], "train:malformed", Launch((sys.executable, "-c", "pass")), data=data)
+host.admit("malformed-result", [AdmissionItem(job.id, job)], record={})
+`, unreadable);
+    await expect(alert(page)).toBeVisible({ timeout: 15_000 });
+    await page.reload();
+    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    await expect(alert(page)).toBeVisible();
+
+    await Promise.all(windows.map(async (window, index) => {
+      const submitted = post(window, '/api/projects/' + [unreadable, readable][index] + '/train-runs');
+      await window.getByRole('button', { name: 'Run', exact: true }).click();
+      expect((await submitted).status()).toBe(202);
+    }));
+    for (const window of windows) {
+      await expect(window.getByRole('table', { name: 'Runs', exact: true }).getByRole('progressbar'))
+        .toHaveAttribute('value', /[1-9]/, { timeout: firstJobTimeout });
+      await expect(window.getByRole('region', { name: 'Activity', exact: true })
+        .getByRole('list', { name: 'Runs', exact: true }).getByRole('button', { name: 'Stop', exact: true }).first())
+        .toBeEnabled();
+    }
+    await expect(alert(page)).toBeVisible();
+    await expect(alert(second)).toHaveCount(0);
+  } finally {
+    try {
+      await drainProjects(request, [unreadable, readable]);
+    } finally {
+      await second.close();
     }
   }
 });

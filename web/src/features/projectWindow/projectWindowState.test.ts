@@ -3,10 +3,15 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fitProjectWindow } from './projectWindowLayout';
 import {
-  defaultProjectWindowState, projectWindowSlotView, showProjectWindowView, useProjectWindowState,
+  defaultProjectWindowState, projectWindowSlotView, sectionOpen, showProjectWindowView, useProjectWindowState,
+  withSectionOpen,
 } from './projectWindowState';
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  localStorage.clear();
+  vi.unstubAllGlobals();
+  delete document.documentElement.dataset.shellHost;
+});
 
 describe('Studio window arrangement', () => {
   it('folds a slot under space pressure while preserving its preferred width and the drawer', () => {
@@ -30,7 +35,7 @@ describe('Studio window arrangement', () => {
 
   it('restores independent native preferences without persisting focus or authored fields', async () => {
     const preferences = new Map<string, unknown>();
-    vi.stubGlobal('__FEEDBAX_STUDIO_MENU__', {});
+    document.documentElement.dataset.shellHost = 'native';
     const fetch = vi.fn(async (path: string, init?: RequestInit) => {
       if (init?.method === 'PUT') {
         preferences.set(path, JSON.parse(String(init.body)));
@@ -41,7 +46,7 @@ describe('Studio window arrangement', () => {
     vi.stubGlobal('fetch', fetch);
     const first = renderHook(() => useProjectWindowState('one'));
     act(() => first.result.current[1]((state) => ({
-      ...showProjectWindowView(state, 'scene', 'secondary'),
+      ...withSectionOpen(showProjectWindowView(state, 'scene', 'secondary'), 'model.library', false),
       mode: 'details',
       mapHeight: 305,
       mapDrawerOpen: false,
@@ -60,26 +65,31 @@ describe('Studio window arrangement', () => {
       mapDrawerOpen: false,
       detailsDrawerWidth: 193,
     }));
+    expect(sectionOpen(reopened.result.current[0], 'model.library')).toBe(false);
+    expect(sectionOpen(reopened.result.current[0], 'model.outline')).toBe(true);
     expect(preferences.values().next().value).not.toHaveProperty('focusedSlot');
     expect(preferences.values().next().value).not.toHaveProperty('extraProjectData');
     await act(async () => reopened.rerender({ id: 'two' }));
     expect(reopened.result.current[0]).toEqual(defaultProjectWindowState);
   });
 
-  it('keeps ordinary browser arrangements in memory', () => {
+  it('restores a browser arrangement per project from local storage', async () => {
+    localStorage.clear();
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
     const first = renderHook(() => useProjectWindowState('one'));
-    act(() => first.result.current[1]((state) => ({ ...state, mapHeight: 400 })));
-    expect(first.result.current[0].mapHeight).toBe(400);
+    act(() => first.result.current[1]((state) => ({ ...showProjectWindowView(state, 'model', 'primary'), mapHeight: 400 })));
+    await waitFor(() => expect(localStorage.length).toBe(1));
     first.unmount();
-    expect(renderHook(() => useProjectWindowState('one')).result.current[0].mapHeight)
-      .toBe(defaultProjectWindowState.mapHeight);
+    const reopened = renderHook(({ id }) => useProjectWindowState(id), { initialProps: { id: 'one' } });
+    await waitFor(() => expect(reopened.result.current[0]).toMatchObject({ primaryView: 'model', mapHeight: 400 }));
+    await act(async () => reopened.rerender({ id: 'two' }));
+    expect(reopened.result.current[0]).toEqual(defaultProjectWindowState);
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it('acknowledges the latest arrangement when close follows an in-flight write', async () => {
-    vi.stubGlobal('__FEEDBAX_STUDIO_MENU__', {});
+    document.documentElement.dataset.shellHost = 'native';
     let finishFirst: () => void = () => {};
     const first = new Promise<Response>((resolve) => {
       finishFirst = () => resolve(new Response(null, { status: 204 }));
@@ -108,7 +118,7 @@ describe('Studio window arrangement', () => {
   });
 
   it('retries a failed preference save when the native session reconnects', async () => {
-    vi.stubGlobal('__FEEDBAX_STUDIO_MENU__', {});
+    document.documentElement.dataset.shellHost = 'native';
     const report = vi.spyOn(console, 'error').mockImplementation(() => {});
     const writes: number[] = [];
     vi.stubGlobal('fetch', vi.fn(async (_path: string, init?: RequestInit) => {

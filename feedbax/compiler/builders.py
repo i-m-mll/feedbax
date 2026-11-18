@@ -51,6 +51,25 @@ def _unsupported_component_message(
     return message.format(node_name=node_name)
 
 
+def component_refusal(node_name: str, node_type: str, component_registry: Any) -> Exception | None:
+    """The refusal the causal builder makes for a leaf from the registry alone, before any constructor runs."""
+    meta = component_registry.get(node_type)
+    if meta is None:
+        known = ", ".join(component_registry.names())
+        return ValueError(
+            f"Unsupported component type {node_type!r} for node {node_name!r}. "
+            f"Known component types: {known}"
+        )
+    if meta.domain != CAUSAL_DOMAIN_ID:
+        return ValueError(
+            f"Component type {node_type!r} for node {node_name!r} belongs to "
+            f"domain {meta.domain!r} and cannot be built by the causal component builder."
+        )
+    if (message := _unsupported_component_message(node_name, node_type, component_registry)) is not None:
+        return NotImplementedError(message)
+    return None
+
+
 def build_component(
     node_name: str,
     node_type: str,
@@ -61,25 +80,9 @@ def build_component(
     config: Any = None,
 ) -> GraphNode:
     """Build a leaf component from a GraphSpec node."""
+    if (refusal := component_refusal(node_name, node_type, component_registry)) is not None:
+        raise refusal
     meta = component_registry.get(node_type)
-    if meta is None:
-        known = ", ".join(component_registry.names())
-        raise ValueError(
-            f"Unsupported component type {node_type!r} for node {node_name!r}. "
-            f"Known component types: {known}"
-        )
-    if meta.domain != CAUSAL_DOMAIN_ID:
-        raise ValueError(
-            f"Component type {node_type!r} for node {node_name!r} belongs to "
-            f"domain {meta.domain!r} and cannot be built by the causal component builder."
-        )
-    unsupported_message = _unsupported_component_message(
-        node_name,
-        node_type,
-        component_registry,
-    )
-    if unsupported_message is not None:
-        raise NotImplementedError(unsupported_message)
     try:
         return (
             meta.params.build_resolved(params, config=config)

@@ -1,16 +1,28 @@
 // @vitest-environment jsdom
+import userEvent from '@testing-library/user-event';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import type { ResolvedScene } from '@/features/scenario/projections';
 import { WORKSPACE_REPLAY_FIXTURE } from '@/test/workspaceReplay.fixture';
 import { SceneClockControls } from './SceneClockControls';
-import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneHeaderControls } from './SceneRegion';
+import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneLayers } from './SceneRegion';
 import { fittedCamera, sceneTimeline, type SceneOverlay, type SceneView } from './sceneView';
 
 afterEach(cleanup);
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
+const sections: DrawerSections = { isOpen: (_, initially = true) => initially, setOpen: () => {} };
 
 const scene: ResolvedScene = {
   scenario_id: null,
@@ -37,21 +49,23 @@ const scene: ResolvedScene = {
 const noOverlaysHidden = new Set<SceneOverlay>();
 
 describe('Scene regions', () => {
-  it('selects a supplied trial independently of the entity selection', () => {
+  it('selects a supplied trial independently of the entity selection', async () => {
     const chooseTrial = vi.fn();
     const chooseEntity = vi.fn();
-    render(<SceneDrawer scene={scene} selectedId="arm" onSelect={chooseEntity} trials={{
+    render(<><SceneDrawer sections={sections} scene={scene} selectedId="arm" onSelect={chooseEntity} trials={{
       choices: [{ id: 'trial-a', label: 'Straight reach' }, { id: 'trial-b', label: 'Curl reach' }],
       selectedId: 'trial-a',
       onSelect: chooseTrial,
-    }} />);
-    fireEvent.change(screen.getByRole('combobox', { name: 'Trials' }), { target: { value: 'trial-b' } });
+    }} /></>);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('combobox', { name: 'Trials' }));
+    await user.click(await screen.findByRole('option', { name: 'Curl reach' }));
     expect(chooseTrial).toHaveBeenCalledWith('trial-b');
     expect(chooseEntity).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Arm' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('treeitem', { name: 'Arm' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('shares entity selection between separately mounted canvas, drawer and inspector', () => {
+  it('shares entity selection between separately mounted canvas, drawer and inspector', async () => {
     function View() {
       const [selectedId, onSelect] = useState<string | null>(null);
       const [hiddenOverlays, setHidden] = useState<ReadonlySet<SceneOverlay>>(noOverlaysHidden);
@@ -59,23 +73,24 @@ describe('Scene regions', () => {
       const view: SceneView = { kind: 'geometry', scene };
       return (
         <>
-          <SceneHeaderControls view={view} camera={camera} onCameraChange={onCameraChange}
+          <SceneLayers overlays={sceneLayers(view).overlays}
             hiddenOverlays={hiddenOverlays} onToggleOverlay={(overlay) => setHidden(new Set([overlay]))} />
           <SceneCanvas view={view} time={0} selectedId={selectedId} onSelect={onSelect}
             camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} />
-          <SceneDrawer scene={scene} selectedId={selectedId} onSelect={onSelect} />
+          <SceneDrawer sections={sections} scene={scene} selectedId={selectedId} onSelect={onSelect} />
           <SceneElementInspector scene={scene} selectedId={selectedId} />
         </>
       );
     }
     render(<View />);
     const canvas = within(screen.getByRole('group', { name: studioName('scene') }));
-    fireEvent.click(screen.getByRole('button', { name: 'Arm' }));
+    fireEvent.click(screen.getByRole('treeitem', { name: 'Arm' }));
     expect(canvas.getByRole('button', { name: studioAccessibleName('select', 'Arm') }).getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(canvas.getByRole('button', { name: studioAccessibleName('select', 'Far goal') }));
-    expect(screen.getByRole('button', { name: 'Far goal' }).getAttribute('aria-pressed')).toBe('true');
-    expect(within(screen.getByRole('region', { name: studioName('details') })).getByRole('heading').textContent).toBe('Far goal');
-    fireEvent.click(screen.getByRole('button', { name: studioName('objectives') }));
+    expect(screen.getByRole('treeitem', { name: 'Far goal' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('region', { name: 'Far goal' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: studioName('layers') }));
+    await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: studioName('objectives') }));
     expect(canvas.queryByRole('button', { name: studioAccessibleName('select', 'Reaching cost') })).toBeNull();
     expect(canvas.getByRole('button', { name: studioAccessibleName('select', 'Far goal') }).getAttribute('aria-pressed')).toBe('true');
   });

@@ -10,6 +10,7 @@ import pytest
 
 from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError, ContentObjectRef
 from feedbax.contracts.effective_success import success_content_ref
+from feedbax.contracts.model_checkpoint import model_replica_array_path
 from feedbax.contracts.project import Project
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.contracts.store_check import StoreCheckResult
@@ -153,7 +154,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     assert train_success is not None and train_success.receipt.continuation is not None
     assert subject.terminal_receipt == train_success.ref
     assert subject.terminal_checkpoint == train_success.receipt.continuation.provenance
-    train_slot = train_success.receipt.continuation.prng.content
+    train_slot = train_success.receipt.continuation.state.extra.object
     train_path = store.object_path(train_slot)
     train_raw = train_path.read_bytes()
     project_root = folders.root / project
@@ -189,7 +190,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     (model,) = train_success.receipt.products["checkpoint"]
     members = success_content_objects(store, model)
     model_tree = store.get_tree(success_content_ref(model.content))
-    model_array = next(file.object for file in model_tree.files if file.relative_path == "model.safetensors")
+    model_array = next(file.object for file in model_tree.files if file.relative_path == model_replica_array_path(0))
     assert model_array in members
     model_path = store.object_path(model_array)
     model_raw = model_path.read_bytes()
@@ -260,7 +261,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
             assert reads == [(position, (0, 0, 1))]
         reads.clear()
         replayed = original.replay_trial(trial, anchor_id="effector")
-        assert reads == [("state_time", ()), (position, (0, 0, 1))]
+        assert reads == [("checkpoint", ()), ("state_time", ()), (position, (0, 0, 1))]
         assert replayed.time.values == expected_axis
         assert replayed.tracks[0].samples == expected.tolist()
 

@@ -1,14 +1,26 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { MarkerType, type OnConnectStart } from '@xyflow/react';
-import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
 import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
-import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
+import clsx from 'clsx';
+import { Button, IconButton } from '@/components/ui/Button';
+import { focusRing } from '@/components/ui/styles';
 import { Dialog } from '@/components/ui/Dialog';
-import { StudioFieldControl } from '@/components/values/StudioFieldControl';
+import { Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem } from '@/components/ui/Menu';
+import { Inspector, InspectorAddRow } from '@/components/ui/Inspector';
+import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
+import { Select } from '@/components/ui/Select';
+import { TextField } from '@/components/ui/TextField';
+import { ValueField } from '@/components/values/ValueField';
+import { fromFieldView } from '@/components/values/adapters/fieldView';
+import { rawField } from '@/components/values/adapters/raw';
+import type { FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
@@ -18,12 +30,17 @@ import type {
 import { ModelAddressSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
-import { AttachmentFields, ComponentFields, Field, ModelFields, type Attachment } from './ModelInspector';
+import { attachmentFields, componentFields, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
 import {
-  accepts, addressKey, at, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
-  modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Port,
+  accepts, addressKey, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
+  holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Component, type Port,
 } from './modelGraph';
-import { selectModel, type ModelSelectionStore } from './modelSelection';
+import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
+import { awaitedValue, commandQueue } from './commandQueue';
+import { modelOutline } from './modelOutline';
+import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
 type Operation = ModelEditCommand['operation'];
 type Difference = EvaluateAttachmentRequest['difference'];
@@ -31,23 +48,29 @@ type Props = {
   model?: { id: string; value: ModelDocument };
   saved: StudioProjectSnapshot;
   editor: ProjectEditController;
-  window: ModelSelectionStore;
+  elements: ElementSelectionStore;
   active: boolean;
   editable: boolean;
   fieldEditable: boolean;
   fieldLitSteps?: ReadonlySet<string>;
+  /** Whether the plan read is of the shown revision, so that `fieldLitSteps` names the steps it lights. */
+  planCurrent: boolean;
   fieldRows?: readonly string[];
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
+  confirmRunRemoval: ConfirmRunRemoval;
   evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
   projectionRun?: StudioSavedTrainKey;
   path: readonly string[];
   setPath(path: string[]): void;
+  sections: DrawerSections;
+  /** Opens Problems showing only those inside the element. */
+  openProblems?: (element: ModelAddress, opener: HTMLElement) => void;
 };
-const button = 'rounded px-2 py-1 text-left hover:bg-shell-hover disabled:opacity-50';
-const panel = 'grid max-h-[70vh] w-[min(28rem,90vw)] gap-2 overflow-auto rounded border border-shell-divider bg-shell-chrome p-3 shadow-xl';
+const sourceAttachment = '@source';
+const componentDragType = 'application/x-feedbax-component';
 const emptyPath: string[] = [];
 const inputCard = '@inputs';
 const outputCard = '@outputs';
@@ -76,9 +99,14 @@ function positionAt(index: number): ModelPosition {
   return { x: 245 + 235 * (index % 4), y: 38 + 160 * Math.floor(index / 4) };
 }
 
-function attachmentAddress(owner: ModelAddress, id: string): ModelAddress {
-  if (owner.element.kind !== 'wire' && owner.element.kind !== 'port') throw new Error('Expected an attachment owner');
-  return at(owner, { kind: 'attachment', parent: owner.element, id });
+function linkedAddress(value: string) {
+  try {
+    const parsed = ModelAddressSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : undefined;
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
 }
 
 function stepCount(item: Attachment, step: number) {
@@ -104,9 +132,8 @@ function signalFits(source: Port, target: Port) {
     typeof axis !== 'number' || typeof shape[index] !== 'number' || axis === shape[index]));
 }
 
-function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: {
-  definitions: readonly ComponentDefinition[]; query: string; choose(definition: ComponentDefinition): void;
-  disabled: boolean; browse?: boolean; inspect?: (definition: ComponentDefinition) => void;
+function LeafChoices({ definitions, query, choose, disabled }: {
+  definitions: readonly ComponentDefinition[]; query: string; choose(definition: ComponentDefinition): void; disabled: boolean;
 }) {
   const categoryId = useId();
   const groups = new Map<string, ComponentDefinition[]>();
@@ -118,22 +145,15 @@ function LeafChoices({ definitions, query, choose, disabled, browse, inspect }: 
   }
   return <>{[...groups].map(([category, items], index) => <section key={category} aria-labelledby={`${categoryId}-${index}`} className="space-y-0.5">
     <h3 id={`${categoryId}-${index}`} className="px-2 pt-1 text-xs text-shell-muted">{category}</h3>
-    {items.map((definition) => <button key={definition.name} className={`${button} block w-full`} type="button"
-      aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled && !browse}
-      draggable={browse && !disabled} onDragStart={(event) => {
-        event.dataTransfer.setData('application/x-feedbax-component', definition.name);
-      }} onClick={() => browse ? inspect?.(definition) : choose(definition)}
-      onDoubleClick={() => { if (browse && !disabled) choose(definition); }}
-      onKeyDown={(event) => {
-        if (browse && !disabled && event.key === 'Enter') { event.preventDefault(); choose(definition); }
-      }}>{shortName(definition.name)}</button>)}
+    {items.map((definition) => <Button key={definition.name} variant="ghost" align="start" className="w-full"
+      aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled}
+      onClick={() => choose(definition)}>{shortName(definition.name)}</Button>)}
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, window: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, evaluate, problem, problems, projectionRun, path, setPath }: Props) {
-  const storedSelection = useStore(state, (current) => current.selection);
-  const selected = storedSelection?.document === model?.id ? storedSelection?.addresses ?? emptySelection : emptySelection;
-  const pick = useStore(state, (current) => current.pick?.document === model?.id ? current.pick : null);
+export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems }: Props) {
+  const selected = useModelSelection(state, model?.id);
+  const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
   const cursor = useRef<ModelPosition>();
@@ -141,12 +161,13 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const connectionReview = useRef<AbortController>();
   const keyboardReview = useRef<AbortController>();
   const libraryReview = useRef<Promise<ModelConnectionReview>>();
-  const requestBusy = useRef(false);
-  const [busy, setBusy] = useState(false);
+  const [run] = useState(commandQueue);
+  const [plan] = useState(() => awaitedValue<{ revision: string; litSteps: ReadonlySet<string> }>());
+  useEffect(() => {
+    plan.set(planCurrent ? { revision: saved.revision, litSteps: fieldLitSteps ?? new Set() } : undefined);
+  }, [plan, planCurrent, saved.revision, fieldLitSteps]);
   const [modelIssue, setIssue] = useState<{ document: string; address?: ModelAddress; reason: string }>();
   const issue = modelIssue?.document === model?.id ? modelIssue : undefined;
-  const [drawer, setDrawer] = useState<'library' | 'outline'>('library');
-  const [query, setQuery] = useState('');
   const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
   const [search, setSearch] = useState<ModelPosition>();
   const [searchSource, setSearchSource] = useState<Port>();
@@ -167,7 +188,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
-    enabled: active && !!projectionBody && !evaluate, retry: false,
+    enabled: active && !!projectionBody && !evaluate,
   });
   const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   const markedPorts = useMemo(() => new Map([
@@ -177,7 +198,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const attachments = useQuery({
     queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
     queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
-    enabled: active && !!model && !!readBody, retry: false,
+    enabled: active && !!model && !!readBody,
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
   const shownModel = evaluate ? effectiveModel : model?.value;
@@ -188,73 +209,92 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   const owner = resolved?.owner;
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
-  const editTopology = editable && !busy && !evaluate;
+  const editTopology = editable && !evaluate;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
-  const fieldOwner = selection?.element.kind === 'attachment' || selection?.element.kind === 'component'
-    ? selection : !selection ? graph : undefined;
+  const fieldOwners = selectedHere.length > 1
+    ? selectedHere.every((item) => item.element.kind === 'component') ? selectedHere : []
+    : selection?.element.kind === 'attachment' || selection?.element.kind === 'component' ? [selection]
+    : !selection ? [graph] : [];
   const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.editable &&
     attachments.data.revision === saved.revision);
-  const canEditField = evaluate ? !busy && canEvaluate : fieldEditable;
+  const canEditField = evaluate ? canEvaluate : fieldEditable;
   const fieldRun = evaluate?.run ?? projectionRun;
-  const fieldBody = model && shownModel && fieldOwner && !libraryItem
-    ? {
-      document: model.id, owner: fieldOwner, revision: saved.revision, run: fieldRun, evaluate_scope: evaluate?.scope,
-      rows: evaluate ? undefined : [...fieldRows ?? []],
-      axes: evaluate ? undefined : fieldAxes,
-    } : undefined;
-  const fields = useQuery({
+  const fieldBodies = model && shownModel && !libraryItem ? fieldOwners.map((owner) => ({
+    document: model.id, owner, revision: saved.revision, run: fieldRun, evaluate_scope: evaluate?.scope,
+    rows: evaluate ? undefined : [...fieldRows ?? []],
+    axes: evaluate ? undefined : fieldAxes,
+  })) : [];
+  type FieldBody = typeof fieldBodies[number];
+  const fieldQueries = useQueries({ queries: fieldBodies.map((fieldBody) => ({
     queryKey: ['model-fields', saved.project_id, fieldBody],
-    queryFn: ({ signal }) => projectModelFields(saved.project_id, fieldBody!, signal),
-    enabled: active && !!fieldBody, retry: false, placeholderData: (previous, query) => {
-      const previousBody = query?.queryKey[2] as typeof fieldBody;
-      return previousBody && fieldBody && previousBody.document === fieldBody.document && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
+    queryFn: ({ signal }: { signal: AbortSignal }) => projectModelFields(saved.project_id, fieldBody, signal),
+    enabled: active,
+    placeholderData: (previous: Awaited<ReturnType<typeof projectModelFields>> | undefined, query?: { queryKey: readonly unknown[] }) => {
+      const previousBody = query?.queryKey[2] as FieldBody | undefined;
+      return previousBody && previousBody.document === fieldBody.document && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
         && JSON.stringify(previousBody.evaluate_scope) === JSON.stringify(fieldBody.evaluate_scope)
         && JSON.stringify(previousBody.rows) === JSON.stringify(fieldBody.rows) ? previous : undefined;
     },
-  });
-  async function editField(address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
-    if (!fieldBody || !canEditField || fields.isPlaceholderData) return studioReason('unavailable', studioName('field'));
-    try {
-      const result = await projectModelFields(saved.project_id, {
-        ...fieldBody, address, edit, lit_steps: [...fieldLitSteps ?? []],
-      }, editor.signal);
-      if (result.problems.length) return result.problems[0].reason;
-      if (result.command) {
-        const applied = await editor.editModel('Set Value', fieldBody.document, result.command, saved);
-        return applied.status === 'refused' ? applied.problem.detail : undefined;
+  })) });
+  const fieldsPlaceholder = fieldQueries.some((query) => query.isPlaceholderData);
+  const fieldsError = fieldQueries.find((query) => query.error)?.error ?? null;
+  const fieldsData = fieldQueries.every((query) => query.data) ? fieldQueries.map((query) => query.data!) : undefined;
+  /**
+   * Edits a projected field after the view's earlier commands, once the plan of the revision it edits is current: the
+   * edit carries the steps that plan lights.
+   */
+  async function editField(fieldBody: FieldBody, address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
+    if (!canEditField || fieldsPlaceholder) return studioReason('unavailable', studioName('field'));
+    return run(async () => {
+      const { litSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
+      const current = editor.getSnapshot().saved;
+      try {
+        const result = await projectModelFields(saved.project_id, {
+          ...fieldBody, revision: current.revision, address, edit, lit_steps: [...litSteps],
+        }, editor.signal);
+        if (result.problems?.length) return result.problems[0].reason;
+        if (result.command) {
+          const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current);
+          return applied.status === 'refused' ? applied.problem.detail : undefined;
+        }
+        if (result.files?.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
+          const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
+          const dependencies = variant ? current.file_revisions.map(({ address: file }) => file).filter((file) =>
+            (file.kind === 'document' && file.id === fieldBody.document) ||
+            (file.kind === 'step' && litSteps.has(file.id)) ||
+            (file.kind === 'variant' && file.id !== variant))
+            : [{ kind: 'document' as const, id: fieldBody.document },
+              ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
+              ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
+          editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
+        }
+        return undefined;
+      } catch (error) {
+        return apiErrorMessage(error);
       }
-      if (result.files.length) {
-        const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
-        const dependencies = variant ? saved.file_revisions.map(({ address: file }) => file).filter((file) =>
-          (file.kind === 'document' && file.id === fieldBody.document) ||
-          (file.kind === 'step' && fieldLitSteps?.has(file.id)) ||
-          (file.kind === 'variant' && file.id !== variant))
-          : [{ kind: 'document' as const, id: fieldBody.document },
-            ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
-            ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
-        editor.editFiles('Set Field', result.files, { reviewedRevision: fieldBody.revision, dependencies });
-      }
-      return undefined;
-    } catch (error) {
-      return apiErrorMessage(error);
-    }
+    });
   }
-  const projectedFields = fields.data?.fields ?? [];
-  const projectedNames = new Set(projectedFields.flatMap(({ address }) =>
-    address.element.kind === 'field' && typeof address.element.path.at(-1) === 'string' ? [String(address.element.path.at(-1))] : []));
-  const fieldControls = projectedFields.map((field) => <StudioFieldControl
-    key={JSON.stringify([saved.project_id, model?.id, fieldRun?.variant, fieldRun?.step, fieldRows, addressKey(field.address)])}
-    field={field}
-    planSources={field.sources}
-    source={attachments.data?.field_sources?.[addressKey(field.address)] ??
-      (fieldOwner && attachments.data?.field_sources?.[addressKey(fieldOwner)]) ??
-      attachments.data?.source ?? undefined}
-    commit={canEditField && !fields.isPlaceholderData ? (edit) => editField(field.address, edit) : undefined}
-    rowSelection={!!fieldRows?.length}
-    multipleRows={!evaluate && (fieldRows?.length ?? 0) > 1}
-    selectedValues={field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined} />);
+  const fieldName = (address: ModelAddress) => address.element.kind === 'field' ? address.element.path.map(String).join('.') : addressKey(address);
+  const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
+    const model = fromFieldView(field, {
+      id: addressKey(field.address),
+      planSources: field.sources,
+      source: attachments.data?.field_sources?.[addressKey(field.address)] ??
+        attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ??
+        attachments.data?.source ?? undefined,
+      commit: canEditField && !fieldsPlaceholder ? (edit) => editField(fieldBody, field.address, edit) : undefined,
+      rowSelection: !!fieldRows?.length,
+      multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,
+      selectedMembers: field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined,
+    });
+    return { ...model, id: fieldName(field.address) };
+  }));
+  const projectedFields = sharedFields(projectedLists);
+  const fieldScope = JSON.stringify([saved.project_id, model?.id, fieldRows, fieldOwners.map(addressKey)]);
+  const ownNames = projectedLists.map((list) => new Set(list.map(({ id }) => id.split('.').at(-1)!)));
+  const projectedNames = new Set([...ownNames[0] ?? []].filter((name) => ownNames.every((names) => names.has(name))));
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...(problems ?? []), { address: issue.address, reason: issue.reason }] : problems ?? []) {
     let address = item.address;
@@ -287,6 +327,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     return map;
   }, [owner, interior, registry, graph, projectedPorts, markedPorts, currentPath.length, projection.data]);
   const definitions = useMemo(() => (registryQuery.data ?? []).filter((definition) => accepts(definition, physical)), [registryQuery.data, physical]);
+  const libraryItems = useMemo(() => definitions.map((definition): LibraryItem => ({
+    id: definition.name, name: shortName(definition.name), group: definition.category, glyph: <Box />,
+  })), [definitions]);
   const persisted = model && positionsOf(saved, model.id);
   const presentation = model && saved.presentation?.documents?.[model.id];
   const collapsed = presentation?.collapsed;
@@ -311,7 +354,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     if (!model || !active || !problemAddress) return;
     const address = problemAddress.element.kind === 'field' ? at(problemAddress, problemAddress.element.parent) : problemAddress;
     setPath(address.composites);
-    selectModel(state, model.id, address);
+    selectElement(state, { document: model.id, address });
   }, [model?.id, active, problemAddress, state]);
   useEffect(() => () => connectionReview.current?.abort(), [mountKey]);
   useEffect(() => {
@@ -322,58 +365,62 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     };
   }, [active, mountKey, projectionRunId, saved.revision, state]);
 
+  /**
+   * Applies a Model edit after the view's earlier commands; a refusal is answered with its reason and the element it
+   * concerns. Whether the edit is allowed is decided when it is issued, the revision it edits when it runs.
+   */
+  async function attempt(name: string, operation: Operation, choose = true): Promise<{ address?: ModelAddress; reason: string } | null> {
+    if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
+    return run(async () => {
+        const reviewed = editor.getSnapshot().saved;
+        setIssue(undefined);
+        try {
+          const result = await editor.editModel(name, model.id, { operation }, reviewed);
+          if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
+          if (result.clipboard) clipboard = result.clipboard;
+          if (choose && result.changed.length) {
+            const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
+              : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
+            setSelection(selection);
+          }
+          return null;
+        } catch (error) {
+          const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
+          return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) };
+        }
+    });
+  }
   async function apply(name: string, operation: Operation, choose = true) {
-    if (!model || !editTopology || requestBusy.current) return false;
-    requestBusy.current = true;
-    const reviewed = editor.getSnapshot().saved;
-    setBusy(true);
-    setIssue(undefined);
-    try {
-      const result = await editor.editModel(name, model.id, { operation }, reviewed);
-      if (result.status === 'refused') {
-        setIssue({ document: model.id, address: result.problem.address, reason: result.problem.detail });
-        return false;
-      }
-      if (result.clipboard) clipboard = result.clipboard;
-      if (choose && result.changed.length) {
-        const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
-          : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
-        setSelection(selection);
-      }
-      return true;
-    } catch (error) {
-      const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
-      setIssue(problem.success ? { document: model.id, address: problem.data.address, reason: problem.data.detail }
-        : { document: model.id, reason: apiErrorMessage(error) });
-      return false;
-    } finally {
-      requestBusy.current = false;
-      setBusy(false);
-    }
+    if (!model) return false;
+    const refusal = await attempt(name, operation, choose);
+    if (refusal) setIssue({ document: model.id, ...refusal });
+    return !refusal;
   }
 
-  async function applyEvaluate(name: string, difference: Difference) {
-    if (!model || !readBody || !attachments.data || attachments.data.revision !== saved.revision || requestBusy.current) return;
-    requestBusy.current = true;
-    setBusy(true);
-    setIssue(undefined);
-    try {
-      const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
-      if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
-      editor.editFiles(name, [result.file], {
-        reviewedRevision: saved.revision,
-        dependencies: [{ kind: 'document', id: model.id }],
-      });
-      await editor.flush();
-      if (difference.op !== 'set_field') {
-        selectModel(state, model.id, difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed);
-      }
-    } catch (error) {
-      setIssue({ document: model.id, reason: apiErrorMessage(error) });
-    } finally {
-      requestBusy.current = false;
-      setBusy(false);
+  async function applyEvaluate(name: string, difference: Difference, onField = false): Promise<string | undefined> {
+    if (!model || !readBody || !attachments.data || attachments.data.revision !== saved.revision) {
+      return studioReason('unavailable', name);
     }
+    return run(async () => {
+        setIssue(undefined);
+        try {
+          const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
+          if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
+          editor.editFiles(name, [result.file], {
+            reviewedRevision: saved.revision,
+            dependencies: [{ kind: 'document', id: model.id }],
+          });
+          await editor.flush();
+          if (difference.op !== 'set_field') {
+            selectElement(state, { document: model.id, address: difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed });
+          }
+          return undefined;
+        } catch (error) {
+          if (onField) return apiErrorMessage(error);
+          setIssue({ document: model.id, reason: apiErrorMessage(error) });
+          return undefined;
+        }
+    });
   }
 
   function route(address: ModelAddress, points: ModelPosition[], name: string) {
@@ -382,13 +429,14 @@ export function useStoredModelView({ model, saved, editor, window: state, active
 
   function select(address: ModelAddress, extend = false) {
     setLibraryItem(undefined);
-    if (model) selectModel(state, model.id, address, extend);
+    if (model) selectElement(state, { document: model.id, address }, extend);
   }
   function setSelection(addresses: readonly ModelAddress[]) {
-    if (model) state.setState({ selection: { document: model.id, addresses } });
+    if (model) state.setState({ selection: addresses.map((address) => ({ document: model.id, address })) });
   }
   function clear() {
-    state.setState(pick ? { pick: null } : { selection: null });
+    if (pick) state.setState({ pick: null });
+    else clearSelection(state);
     setLibraryItem(undefined);
   }
   function go(path: string[]) {
@@ -412,13 +460,12 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       if (request.signal.aborted) return;
       const verdicts = new Map(targets.map(({ target, reason }) => [endKey(target), reason]));
       state.setState({ pick: {
-        document: model.id,
-        accepts: (address, candidate) => inGraph(address, graph) && candidate.direction === 'input' &&
-          !(port.taskSignal && candidate.growing) &&
-          verdicts.get(endKey(wireEnd(candidate))) === null,
-        choose: (address) => {
-          if (address.element.kind !== 'port') return;
-          const { end } = address.element;
+        accepts: (target) => target.kind === 'port' && target.document === model.id && inGraph(target.address, graph) && target.port.direction === 'input' &&
+          !(port.taskSignal && target.port.growing) &&
+          verdicts.get(endKey(wireEnd(target.port))) === null,
+        choose: (picked) => {
+          if (picked.kind !== 'port' || picked.address.element.kind !== 'port') return;
+          const { end } = picked.address.element;
           const id = idFor(end);
           const target = portMap.get(id)?.find((item) => item.direction === 'input' && item.end.port === end.port);
           if (target) connect(idFor(port.end), portId(port), id, portId(target));
@@ -530,11 +577,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   for (const [id, wire] of Object.entries(effectiveInterior?.wires ?? {})) {
     effective.set(addressKey(at(graph, { kind: 'wire', id })), wire.attachments ?? []);
   }
-  const portOwners = new Map<string, ModelAddress>();
   for (const ports of portMap.values()) for (const port of ports) {
     if (port.direction === 'physical' || port.taskSignal || port.growing) continue;
     const address = at(graph, { kind: 'port', end: port.end });
-    portOwners.set(addressKey(address), address);
     const end = port.end;
     const store = end.owner === 'component' ? effectiveInterior?.components?.[end.component]?.attachments : effectiveInterior?.attachments;
     effective.set(addressKey(address), (port.direction === 'output' ? store?.sources : store?.sinks)?.[end.port] ?? []);
@@ -564,7 +609,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       id, type: 'modelCard', ariaLabel: name,
       domAttributes: {
         'aria-description': [caption, problem].filter(Boolean).join(' · ') || undefined,
-        ...(enter && { onKeyDownCapture: (event) => {
+        ...(enter && { onKeyDownCapture: (event: KeyboardEvent<HTMLElement>) => {
           if (event.target !== event.currentTarget || event.key !== 'Enter') return;
           event.preventDefault();
           event.stopPropagation();
@@ -585,9 +630,9 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         problem,
         onPort: (port) => { if (!port.taskSignal && !port.growing) select(at(graph, { kind: 'port', end: port.end })); },
         keyboardConnect,
-        canPick: pick ? (port) => pick.accepts(at(graph, { kind: 'port', end: port.end }), port) : undefined,
+        canPick: pick && model ? (port) => pick.accepts({ kind: 'port', document: model.id, address: at(graph, { kind: 'port', end: port.end }), port }) : undefined,
         cancelPick: pick ? clear : undefined,
-        pickPort: pick ? (port) => { pick.choose(at(graph, { kind: 'port', end: port.end })); state.setState({ pick: null }); } : undefined,
+        pickPort: pick && model ? (port) => { choosePick(state, { kind: 'port', document: model.id, address: at(graph, { kind: 'port', end: port.end }), port }); } : undefined,
         portReasons: verdict && new Map(ports.filter((port) => port.direction === 'input').map((port) =>
           [portId(port), verdict.get(endKey(wireEnd(port)))]).filter((entry): entry is [string, string | null] => entry[1] !== undefined)),
         portProblems: new Map(ports.flatMap((port) => {
@@ -673,13 +718,10 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   function isAuthored(address: ModelAddress) {
     return authored.some((record) => addressKey(record.op === 'add' ? attachmentAddress(record.owner, record.attachment.id) : record.address) === addressKey(address));
   }
-  function updateAttachment(address: ModelAddress, item: Attachment) {
+  async function updateAttachment(address: ModelAddress, item: Attachment) {
     const difference = { op: 'change', address, attachment: item } as const;
-    if (evaluate) {
-      void applyEvaluate(attachmentName(item), difference);
-      return;
-    }
-    void apply(attachmentName(item), { op: 'set_attachment', difference }, false);
+    if (evaluate) return applyEvaluate(attachmentName(item), difference, true);
+    return (await attempt(attachmentName(item), { op: 'set_attachment', difference }, false))?.reason;
   }
   function addAttachment(address: ModelAddress, kind: 'delay' | 'intervention' | 'probe') {
     const list = effective.get(addressKey(address)) ?? [];
@@ -698,14 +740,17 @@ export function useStoredModelView({ model, saved, editor, window: state, active
   function armInitial(address: ModelAddress, item: Attachment) {
     if (!model || item.kind !== 'delay') return;
     state.setState({ pick: {
-      document: model.id,
-      accepts: (candidate, port) => {
-        if (!inGraph(candidate, address) || port.direction !== 'output' || port.end.owner !== 'component') return false;
+      accepts: (target) => {
+        if (target.kind !== 'port' || target.document !== model.id) return false;
+        const { port } = target;
+        if (!inGraph(target.address, address) || port.direction !== 'output' || port.end.owner !== 'component') return false;
         const component = interior?.components?.[port.end.component];
         return component?.kind === 'leaf' && component.fields?.stateful !== false &&
           !!registry.get(component.type)?.reset_outputs?.includes(port.end.port);
       },
-      choose: (candidate) => updateAttachment(address, { ...item, initial: { kind: 'name', reference: addressKey(candidate) } }),
+      choose: (target) => {
+        if (target.kind === 'port') void updateAttachment(address, { ...item, initial: { kind: 'name', reference: addressKey(target.address) } });
+      },
     } });
   }
   function labelOfPort(address: ModelAddress) {
@@ -715,17 +760,6 @@ export function useStoredModelView({ model, saved, editor, window: state, active
       addressKey(at(graph, { kind: 'port', end: item.end })) === addressKey(address));
     return [end.owner === 'component' ? interior?.components?.[end.component]?.name : end.owner, candidate?.name].filter(Boolean).join('.');
   }
-  const shownAttachments = (address: ModelAddress, list: readonly Attachment[]) => <ul>
-    {list.map((item) => {
-      const itemAddress = attachmentAddress(address, item.id);
-      return <li key={item.id} className="flex gap-1">
-        <button className={button} type="button" aria-pressed={selectedIds.has(addressKey(itemAddress))}
-          onClick={() => select(itemAddress)}>
-          {stepCount(item, model?.value.step_seconds ?? 0.01)} · {attachmentName(item)}{isAuthored(itemAddress) ? ' ◇' : ''}
-        </button>
-      </li>;
-    })}
-  </ul>;
   function attachmentCommands(address: ModelAddress) {
     const wire = address.element.kind === 'wire';
     const source = address.element.kind === 'port' &&
@@ -733,7 +767,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     const signalPort = address.element.kind === 'port' &&
       (address.element.end.owner !== 'component' || address.element.end.direction !== 'physical') &&
       address.element.end.owner !== 'boundary';
-    if (!(wire || signalPort) || !(editTopology || canEvaluate) || busy) return [];
+    if (!(wire || signalPort) || !(editTopology || canEvaluate)) return [];
     return [
       ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'))] : []),
       ...(wire || source ? [bindStudioCommand('addIntervention', () => addAttachment(address, 'intervention'))] : []),
@@ -792,7 +826,7 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     bindStudioCommand('modelRemove', () => {
       if (selection?.element.kind === 'attachment') removeAttachment(selection);
       else void apply(studioName('modelRemove'), { op: 'delete', selection: [...selectedHere] });
-    }, { enabled: selectedHere.length > 0 && (editTopology || canEvaluate && !!attachment && !busy) }),
+    }, { enabled: selectedHere.length > 0 && (editTopology || canEvaluate && !!attachment) }),
     bindStudioCommand('modelRename', () => { if (selection) setRename(addressKey(selection)); }, { enabled: editTopology && !!component }),
     bindStudioCommand('modelDuplicate', () => void apply(studioName('modelDuplicate'), { op: 'duplicate', selection: [...selectedHere] }),
       { enabled: editTopology && componentsOnly }),
@@ -819,93 +853,191 @@ export function useStoredModelView({ model, saved, editor, window: state, active
     if (!selectedIds.has(addressKey(address))) select(address);
     setMenu({ address, x: event.clientX, y: event.clientY, point });
   }
-  const inspector = libraryItem ? <section className="grid gap-2 p-2 text-sm">
-    <strong>{shortName(libraryItem.name)}</strong><p>{libraryItem.description}</p>
-    <ul>{[...(libraryItem.input_ports ?? []), ...(libraryItem.output_ports ?? [])].map((name, index) => <li key={index}>{name}</li>)}</ul>
-    {editTopology && <button className={button} type="button" onClick={() => add(libraryItem)}>{studioAccessibleName('add', shortName(libraryItem.name))}</button>}
-  </section> : model && <section className="grid gap-2 p-2 text-sm">
-    {fieldBody && <StudioRegion state={studioReadState(
-      'field', fields.data, fields.error, () => { void fields.refetch(); },
-    )} />}
-    {component && selection ? <>
-      <strong>{component.name}</strong>
-      {fieldControls}
-      <ComponentFields component={component} definition={component.kind === 'leaf' ? registry.get(component.type) : undefined}
-        projected={projectedNames}
-        change={editTopology || canEvaluate && !busy ? (path, value) => {
-          const difference = { op: 'set_field', address: fieldAddress(selection, ...path), value } as const;
-          if (evaluate) void applyEvaluate(studioName('setValue'), difference);
-          else void apply(studioName('setValue'), difference, false);
-        } : undefined} />
-    </> : port ? <>
-      <strong>{port.name}</strong><span>{portTypeLabel(port)}</span>
-      {selection && editTopology && port.end.owner !== 'component' && <Field label={studioName('name')} value={port.name}
-        parse={(raw) => raw.trim() || undefined} commit={(name) => void apply(studioName('rename'), { op: 'rename', address: selection, name: String(name) }, false)} />}
-    </> : attachment && selection ? <>
-      <strong>{attachmentName(attachment)}</strong>
-      {fieldControls}
-      <AttachmentFields item={attachment} step={model.value.step_seconds}
-        projected={projectedNames}
-        change={editTopology || canEvaluate && !busy ? (item) => updateAttachment(selection, item) : undefined}
-        arm={attachment.kind === 'delay' && editTopology ? () => armInitial(selection, attachment) : undefined}
-        linkLabel={labelOfPort} />
-      {(editTopology || canEvaluate && !busy) && <button className={button} type="button"
-        onClick={() => removeAttachment(selection)}>{studioName('removeAttachment')}</button>}
-      {canEvaluate && chain && chain.length > 1 && isAuthored(selection) && <label>{studioName('after')}
-        <select value={chain[chain.indexOf(attachment) - 1]?.id ?? ''} onChange={(event) => void applyEvaluate(
-          'Move Attachment', { op: 'change', address: selection, attachment, after: event.currentTarget.value || null },
-        )}>
-          <option value="">{studioName('source')}</option>
-          {chain.filter((item) => item.id !== attachment.id).map((item) => <option key={item.id} value={item.id}>{attachmentName(item)}</option>)}
-        </select>
-      </label>}
-    </> : ownerAddress ? <strong>{studioName('wire')}</strong>
-      : projectedFields.length ? fieldControls
-      : <ModelFields model={model.value} change={editTopology && !fieldBody && !currentPath.length ? (path, value) => void apply(studioName('step'), {
-        op: 'set_field', address: fieldAddress(graph, ...path), value,
-      }, false) : undefined} />}
-    {ownerAddress && !attachment && chain && <div className="border-t border-shell-divider pt-1">
-      {shownAttachments(ownerAddress, chain)}
-      {attachmentsForSelection.length > 0 && <div className="flex flex-wrap gap-1">
-        {attachmentsForSelection.map((command) => <button key={command.id} className={button} type="button"
-          {...commandAttributes(command)} onClick={command.invoke}>{command.label}</button>)}
-      </div>}
-    </div>}
-  </section>;
+  const fieldEditing = editTopology || canEvaluate;
+  function rawChange(address: ModelAddress): FieldChange | undefined {
+    if (!fieldEditing) return undefined;
+    return async (path, value) => {
+      const difference = { op: 'set_field', address: fieldAddress(address, ...path), value } as const;
+      if (evaluate) return applyEvaluate(studioName('setValue'), difference, true);
+      return (await attempt(studioName('setValue'), difference, false))?.reason;
+    };
+  }
+  function endLabel(end: { owner: string; component?: string; port: string }) {
+    const port = portMap.get(idFor(end))?.find((candidate) => candidate.end.port === end.port);
+    const name = end.owner === 'component' ? interior?.components?.[end.component!]?.name
+      : studioName(end.owner === 'outputs' ? 'outputs' : 'inputs');
+    return [name, port?.name ?? end.port].filter(Boolean).join('.');
+  }
+  const selectionKeys = selectedHere.map(addressKey);
+  function attachmentRows(rows: readonly { owner: ModelAddress; item: Attachment; port?: string }[]) {
+    if (!rows.length) return null;
+    const byKey = new Map(rows.map((row) => [addressKey(attachmentAddress(row.owner, row.item.id)), row]));
+    const nodes: TreeNode[] = [...byKey].map(([id, { owner, item, port }]) => ({
+      id, name: attachmentName(item) + (isAuthored(attachmentAddress(owner, item.id)) ? ' ◇' : ''),
+      trailing: <>{port && <span>{port}</span>}<span>{stepCount(item, model?.value.step_seconds ?? 0.01)}</span></>,
+    }));
+    return <Tree aria-label={studioName('attachment')} nodes={nodes} selected={selectionKeys.filter((key) => byKey.has(key))}
+      onSelectedChange={(ids) => {
+        const row = ids.length ? byKey.get(ids.at(-1)!) : undefined;
+        if (row) select(attachmentAddress(row.owner, row.item.id));
+      }} />;
+  }
+  function addRow(groups: readonly { label?: string; commands: ReturnType<typeof attachmentCommands> }[]) {
+    const shown = groups.filter(({ commands }) => commands.length);
+    if (!shown.length) return null;
+    const items = (commands: ReturnType<typeof attachmentCommands>) => commands.map((command) =>
+      <MenuItem key={command.id} {...commandAttributes(command)} onClick={command.invoke}>{command.label}</MenuItem>);
+    return <InspectorAddRow label={studioName('addAttachment')}>
+      {shown.map(({ label, commands }, index) => label
+        ? <MenuGroup key={index}><MenuGroupLabel>{label}</MenuGroupLabel>{items(commands)}</MenuGroup>
+        : items(commands))}
+    </InspectorAddRow>;
+  }
+  // A field is keyed by the field it shows, never by where its value came from: when the projection takes over a
+  // field first drawn from the raw document, the same instance stays, with any draft typed meanwhile.
+  const rows = (scope: string, models: readonly FieldModel[]) =>
+    models.map((field) => <ValueField key={JSON.stringify([scope, field.id.split('.').at(-1)])} model={field} />);
+  const fields = (raw: readonly FieldModel[]) => rows(fieldScope, [...projectedFields, ...raw]);
+  const fieldRegion = fieldBodies.length > 0 && <StudioRegion state={studioReadState(
+    'field', fieldsData, fieldsError, () => { for (const query of fieldQueries) void query.refetch(); },
+  )} />;
+  const definitionOf = (item: Component | undefined) => item?.kind === 'leaf' ? registry.get(item.type) : undefined;
+  const typeOf = (item: Component) => item.kind === 'composite' ? graphKind(item)
+    : shortName(definitionOf(item)?.name ?? item.type);
+  const shownType = (name: string, type: string) => type === name ? undefined : type;
+  const components = componentsOnly ? selectedHere.flatMap((address) => {
+    const item = address.element.kind === 'component' ? interior?.components?.[address.element.id] : undefined;
+    return item ? [{ address, item }] : [];
+  }) : [];
 
-  const outline = <ul className="space-y-0.5">
-    {objects.map(([id, component]) => {
-      const address = at(graph, { kind: 'component', id });
-      const enter = component.kind === 'composite' ? enterComposite(id, component.name) : undefined;
-      return <li key={id} className="flex">
-        {enter && <button className={button} type="button"
-          {...commandAttributes(enter)} onClick={enter.invoke}>›</button>}
-        <button className={button} type="button" aria-pressed={selectedIds.has(addressKey(address))}
-          onClick={(event) => select(address, event.shiftKey)}>{component.name}</button>
-      </li>;
-    })}
-    {wires.map(([id, wire]) => {
-      const address = at(graph, { kind: 'wire', id });
-      const title = [wire.source, wire.target].map((end) =>
-        `${end.owner === 'component' ? interior?.components?.[end.component]?.name ?? end.component : end.owner}.${end.port}`).join(' → ');
-      return <li key={id}>
-        <button type="button" className={button} aria-pressed={selectedIds.has(addressKey(address))} onClick={() => select(address)}>{title}</button>
-        {shownAttachments(address, effective.get(addressKey(address)) ?? [])}
-      </li>;
-    })}
-    {[...portOwners].map(([key, address]) => {
-      const items = effective.get(key);
-      return items?.length ? <li key={key}>{shownAttachments(address, items)}</li> : null;
-    })}
-  </ul>;
+  function componentInspector(address: ModelAddress, item: Component) {
+    const signalPorts = (portMap.get(address.element.kind === 'component' ? address.element.id : '') ?? [])
+      .filter((candidate) => candidate.direction !== 'physical' && !candidate.taskSignal && !candidate.growing);
+    const ports = signalPorts.map((candidate) => ({ port: candidate, address: at(graph, { kind: 'port', end: candidate.end }) }));
+    const attached = ports.flatMap(({ port: candidate, address: owner }) =>
+      (effective.get(addressKey(owner)) ?? []).map((entry) => ({ owner, item: entry, port: candidate.name })));
+    const add = addRow(ports.map(({ port: candidate, address: owner }) => ({ label: candidate.name, commands: attachmentCommands(owner) })));
+    return <Inspector name={item.name} type={shownType(item.name, typeOf(item))}
+      attachments={(attached.length || add) && <>{attachmentRows(attached)}{add}</>}>
+      {fieldRegion}
+      {fields(componentFields(item, definitionOf(item), rawChange(address), projectedNames))}
+    </Inspector>;
+  }
+
+  function attachmentInspector(address: ModelAddress, item: Attachment) {
+    const change = fieldEditing ? (next: Attachment) => updateAttachment(address, next) : undefined;
+    const initial = item.kind === 'delay' ? (() => {
+      const value = item.initial;
+      const reference = value && typeof value === 'object' && !Array.isArray(value) &&
+        value.kind === 'name' && typeof value.reference === 'string' ? value.reference : null;
+      const projected = !reference && projectedNames.has('initial');
+      const parsed = reference ? linkedAddress(reference) : undefined;
+      const label = reference ? parsed ? labelOfPort(parsed) || addressKey(parsed) : reference : undefined;
+      const arm = editTopology ? () => armInitial(address, item) : undefined;
+      return <div className="flex min-w-0 items-start gap-1">
+        <div className="min-w-0 flex-1">{!projected &&
+          <ValueField key={JSON.stringify([addressKey(address), label])} model={initialField(item, label, change)} />}</div>
+        {arm && <IconButton label={studioName('pickInitial')} icon={<Crosshair />} onClick={arm} />}
+        {reference && change && <IconButton label={studioName('clearLink')} icon={<X />} onClick={() => void change({ ...item, initial: 0 })} />}
+      </div>;
+    })() : null;
+    const order = canEvaluate && chain && chain.length > 1 && isAuthored(address) ? [rawField({
+      id: 'after', label: studioName('after'), value: chain[chain.indexOf(item) - 1]?.id ?? sourceAttachment,
+      type: { kind: 'choice', options: [{ value: sourceAttachment, label: studioName('source') },
+        ...chain.filter((entry) => entry.id !== item.id).map((entry) => ({ value: entry.id, label: attachmentName(entry) }))] },
+      change: (after) => applyEvaluate('Move Attachment',
+        { op: 'change', address, attachment: item, after: after === sourceAttachment ? null : String(after) }, true),
+    })] : [];
+    return <Inspector name={attachmentName(item)}>
+      {fieldRegion}
+      {fields(attachmentFields(item, change, projectedNames))}
+      {initial}
+      {rows(addressKey(address), order)}
+    </Inspector>;
+  }
+
+  function ownerInspector(address: ModelAddress) {
+    const list = effective.get(addressKey(address)) ?? [];
+    const add = addRow([{ commands: attachmentCommands(address) }]);
+    const attachmentsShown = (list.length || add) && <>{attachmentRows(list.map((item) => ({ owner: address, item })))}{add}</>;
+    if (address.element.kind === 'port' && port) {
+      const rename = editTopology && port.end.owner !== 'component' ? rawField({
+        id: 'name', label: studioName('name'), type: { kind: 'string' }, value: port.name,
+        change: async (name) => String(name).trim()
+          ? (await attempt(studioName('rename'), { op: 'rename', address, name: String(name).trim() }, false))?.reason
+          : studioReason('takesText', studioName('name')),
+      }) : undefined;
+      return <Inspector name={port.name} type={portTypeLabel(port)} attachments={attachmentsShown}>
+        {rename && rows(addressKey(address), [rename])}
+      </Inspector>;
+    }
+    const wire = address.element.kind === 'wire' ? interior?.wires?.[address.element.id] : undefined;
+    return <Inspector name={wire ? `${endLabel(wire.source)} → ${endLabel(wire.target)}` : studioName('wire')}
+      type={wire ? studioName('wire') : undefined} attachments={attachmentsShown} />;
+  }
+
+  const inspector = libraryItem ? <Inspector name={shortName(libraryItem.name)} type={libraryItem.category}>
+    {libraryItem.description && <p className="text-shell-muted">{libraryItem.description}</p>}
+    {editTopology && <Button className="justify-self-start" onClick={() => add(libraryItem)}>{studioAccessibleName('add', shortName(libraryItem.name))}</Button>}
+  </Inspector> : !model ? null
+    : components.length > 1 ? <Inspector name={studioFormat('elementCount', { count: components.length, name: studioName('components').toLowerCase() })}>
+      {fieldRegion}
+      {fields(sharedFields(components.map(({ address, item }) =>
+        componentFields(item, definitionOf(item), rawChange(address), projectedNames))))}
+    </Inspector>
+    : component && selection ? componentInspector(selection, component)
+    : attachment && selection ? attachmentInspector(selection, attachment)
+    : ownerAddress ? ownerInspector(ownerAddress)
+    : <Inspector name={currentPath.length ? owner && 'name' in owner ? String(owner.name) : model.id : model.id}
+      type={currentPath.length ? undefined : studioName('model')}>
+      {fieldRegion}
+      {fields(projectedFields.length ? [] : modelFields(model.value,
+        editTopology && !fieldBodies.length && !currentPath.length
+          ? async (path, value) => (await attempt(studioName('step'), {
+            op: 'set_field', address: fieldAddress(graph, ...path), value,
+          }, false))?.reason : undefined))}
+    </Inspector>;
+
+  const outlineTree = useRef<TreeHandle>(null);
+  const problemCount = (address: ModelAddress) => (problems ?? []).filter((item) => holds(address, item.address)).length;
+  const outline = shownModel && model && modelOutline({
+    model: shownModel, effective: effectiveModel ?? undefined, registry,
+    attachmentName: (item, address) => attachmentName(item) + (isAuthored(address) ? ' ◇' : ''),
+    trailing: (address) => {
+      const count = problemCount(address);
+      return count > 0 && <Button variant="ghost" size="mark" className="gap-0.5 text-shell-status-failure"
+        aria-label={studioAccessibleName('problems', count)} onClick={(event) => {
+          event.stopPropagation();
+          openProblems?.(address, event.currentTarget);
+        }}><TriangleAlert aria-hidden /><span className="tabular-nums">{count}</span></Button>;
+    },
+  });
+  const outlineRow = (address: ModelAddress): string | undefined => {
+    const key = addressKey(address);
+    if (outline?.addresses.has(key)) return key;
+    const element = address.element;
+    if (element.kind === 'field' || element.kind === 'attachment') return outlineRow(at(address, element.parent));
+    if (element.kind === 'port' && element.end.owner === 'component') return outlineRow(at(address, { kind: 'component', id: element.end.component }));
+    const parent = address.composites.at(-1);
+    return parent ? outlineRow({ ...address, composites: address.composites.slice(0, -1), element: { kind: 'component', id: parent } }) : undefined;
+  };
+  const pathKey = currentPath.join('\u0000');
+  useEffect(() => {
+    const id = currentPath.at(-1);
+    if (id) outlineTree.current?.open(addressKey({ ...graph, composites: currentPath.slice(0, -1), element: { kind: 'component', id } }));
+  }, [pathKey, !!outline]);
+  const outlineCommands = (address: ModelAddress) => [
+    ...commands.filter((command) => command.id.startsWith('model')).map((command) => command.id === 'modelRename'
+      ? { ...command, invoke: () => outlineTree.current?.rename(addressKey(address)) } : command),
+    ...topologyCommands(address), ...attachmentCommands(address),
+  ].filter((command) => command.enabled);
 
   return {
     documentId: model?.id,
-    header: model && <button type="button" className={button} onClick={() => go([])}>{model.id}</button>,
     path: model && !!resolved?.entries.length && <nav className="flex min-w-0 items-center gap-1" aria-label={studioName('modelPath')}>
-      <button type="button" className={button} aria-label={studioName('modelRoot')} onClick={() => go([])}>⌂</button>
-      {resolved?.entries.map(({ id, name }, index) => <button key={id} type="button" className={button}
-        onClick={() => go(currentPath.slice(0, index + 1))}>› {name}</button>)}
+      <IconButton label={studioName('modelRoot')} icon={<House />} onClick={() => go([])} />
+      {resolved?.entries.map(({ id, name }, index) => <Button key={id} variant="ghost"
+        onClick={() => go(currentPath.slice(0, index + 1))}>› {name}</Button>)}
     </nav>,
     body: model ? <div className="flex h-full min-h-0 flex-col" onKeyDown={(event) => {
       if (event.key === 'Escape' && (pick || keyboardReview.current && !keyboardReview.current.signal.aborted)) {
@@ -965,38 +1097,77 @@ export function useStoredModelView({ model, saved, editor, window: state, active
           }} />
       </div>
     </div> : null,
-    drawer: model && <section className="space-y-2 p-1 text-sm">
-      <div className="flex" role="group" aria-label={studioName('modelDrawer')}>
-        <button className={button} type="button" aria-pressed={drawer === 'library'} onClick={() => setDrawer('library')}>{studioName('library')}</button>
-        <button className={button} type="button" aria-pressed={drawer === 'outline'} onClick={() => setDrawer('outline')}>{studioName('outline')}</button>
-      </div>
-      {drawer === 'library' ? <>
-        <input aria-label={studioName('searchLibrary')} className="w-full border border-shell-divider px-1 py-0.5"
-          value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
+    drawer: model && <Drawer>
+      <DrawerSection sections={sections} id="model.library" name={studioName('library')}>
         <StudioRegion state={studioReadState(
           'library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); },
         )}>
-          <LeafChoices definitions={definitions} query={query} choose={add} inspect={setLibraryItem} disabled={!editTopology} browse />
+          <LibraryList sections={sections} section="model.library" searchName="searchLibrary"
+            items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
+            onInspect={(name) => setLibraryItem(registry.get(name))}
+            onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
         </StudioRegion>
-      </> : outline}
-    </section>,
+      </DrawerSection>
+      <DrawerSection sections={sections} id="model.outline" name={studioName('outline')}>
+        {outline && <Tree ref={outlineTree} aria-label={studioName('outline')} nodes={outline.nodes}
+          selected={selected.flatMap((address) => outlineRow(address) ?? [])}
+          onSelectedChange={(ids) => {
+            const chosen = ids.flatMap((id) => outline.addresses.get(id) ?? []);
+            const last = chosen.at(-1);
+            if (!last) return;
+            setLibraryItem(undefined);
+            if (last.composites.join('\u0000') !== currentPath.join('\u0000')) go(last.composites);
+            setSelection(chosen);
+          }}
+          onActivate={(id) => {
+            const address = outline.addresses.get(id);
+            const element = address?.element;
+            if (!address || !element) return;
+            if (element.kind === 'component' && modelPath(shownModel!, [...address.composites, element.id]).entries.length > address.composites.length) {
+              go([...address.composites, element.id]);
+            } else if (!outline.parents.has(id)) {
+              focusInspectorField();
+            }
+          }}
+          onRename={editTopology ? (id, name) => {
+            const address = outline.addresses.get(id);
+            if (!address || !name.trim()) return false;
+            void apply(studioName('rename'), { op: 'rename', address, name: name.trim() });
+          } : undefined}
+          menu={(node) => {
+            const address = outline.addresses.get(node.id);
+            return address && outlineCommands(address).map((command) =>
+              <MenuItem key={command.id} {...commandAttributes(command)} onClick={command.invoke}>{command.label}</MenuItem>);
+          }} />}
+      </DrawerSection>
+    </Drawer>,
     inspector,
     commands,
-    overlay: search ? <Dialog ariaLabel={studioName('addComponent')} onClose={() => setSearch(undefined)} manageFocus panelClassName={panel}>
-      <input data-dialog-autofocus aria-label={studioName('components')} className="border border-shell-divider px-2 py-1"
-        value={searchText} onChange={(event) => setSearchText(event.currentTarget.value)} />
+    overlay: search ? <Dialog ariaLabel={studioName('addComponent')} onClose={() => setSearch(undefined)} manageFocus
+      panelClassName="grid max-h-[70vh] w-[min(28rem,90vw)] gap-2 overflow-auto">
+      <TextField data-dialog-autofocus aria-label={studioName('components')} leading={<Search />}
+        value={searchText} onValueChange={setSearchText} />
       {searchSource ? searchLibrary?.flatMap(({ component, target_port: port }) => {
         const item = registry.get(component);
         return item && searchable(item, searchText) ?
-          <button key={JSON.stringify([item.name, port])} type="button" className={button} disabled={!editTopology}
-            onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</button> : [];
+          <Button key={JSON.stringify([item.name, port])} variant="ghost" align="start" disabled={!editTopology}
+            onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</Button> : [];
       })
         : <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />}
-    </Dialog> : addPort ? <Dialog ariaLabel={studioName('addPort')} onClose={() => setAddPort(undefined)} manageFocus panelClassName={panel}>
-      <Field label={studioName('name')} value="" parse={(raw) => raw.trim() || undefined} commit={(name) => {
-        void apply(studioName('addPort'), { op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name: String(name), type: {} } }, false)
-          .then((ok) => { if (ok) setAddPort(undefined); });
-      }} />
+    </Dialog> : addPort ? <Dialog ariaLabel={studioName('addPort')} onClose={() => setAddPort(undefined)} manageFocus
+      panelClassName="grid max-h-[70vh] w-[min(28rem,90vw)] gap-2 overflow-auto">
+      <ValueField model={rawField({
+        id: 'name', label: studioName('name'), type: { kind: 'string' }, value: '',
+        change: async (raw) => {
+          const name = String(raw).trim();
+          if (!name) return studioReason('takesText', studioName('name'));
+          const refusal = await attempt(studioName('addPort'), {
+            op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name, type: {} },
+          }, false);
+          if (!refusal) setAddPort(undefined);
+          return refusal?.reason;
+        },
+      })} />
       {addPort === 'input' && model && currentPath.flatMap((excluded, depth) => {
         const outerPath = currentPath.slice(0, depth);
         const outer = modelPath(model.value, outerPath).owner;
@@ -1008,21 +1179,22 @@ export function useStoredModelView({ model, saved, editor, window: state, active
         return candidates.map((port) => {
           const source = wireEnd(port);
           if (source.owner !== 'inputs' && source.owner !== 'component') return null;
-          return <button key={`${depth}:${endKey(source)}`} className={button} type="button" onClick={() => {
+          return <Button key={`${depth}:${endKey(source)}`} variant="ghost" align="start" onClick={() => {
             void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(outerPath),
               source, destination: graph }, false).then((ok) => { if (ok) setAddPort(undefined); });
-          }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</button>;
+          }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</Button>;
         });
       })}
-    </Dialog> : menu && <Dialog ariaLabel={studioName('modelCommands')} onClose={() => setMenu(undefined)} manageFocus className="fixed inset-0">
-      <div role="menu" className="fixed grid rounded border border-shell-divider bg-shell-chrome p-1 text-sm shadow-lg"
-        style={{ left: Math.min(menu.x, window.innerWidth - 160), top: Math.min(menu.y, window.innerHeight - 240) }}>
+    </Dialog> : menu && <Menu open onOpenChange={(open) => { if (!open) setMenu(undefined); }}>
+      <MenuContent aria-label={studioName('modelCommands')} anchor={{
+        getBoundingClientRect: () => DOMRect.fromRect({ x: menu.x, y: menu.y, width: 0, height: 0 }),
+      }}>
         {[...commands.filter((command) => command.id.startsWith('model')),
           ...topologyCommands(menu.address, menu.point), ...attachmentCommands(menu.address)]
           .filter((command) => command.enabled).map((command) =>
-          <button className={button} role="menuitem" type="button" key={command.id} {...commandAttributes(command)}
-            onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</button>)}
-      </div>
-    </Dialog>,
+          <MenuItem key={command.id} {...commandAttributes(command)}
+            onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</MenuItem>)}
+      </MenuContent>
+    </Menu>,
   };
 }

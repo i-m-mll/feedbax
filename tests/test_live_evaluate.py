@@ -20,6 +20,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.training.validation_placement import ValidationBudget, ValidationQualification, validation_runtime
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from tests.support.managed_train_fixture import managed_train_payload
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
 from tests.test_saved_update_series import definition
@@ -284,8 +285,9 @@ def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypa
 
     store = Store(tmp_path / "host.sqlite")
     checkpoint = {"completed_updates": 2}
-    parent_launch = {"payload": {}, "warm_entrypoint": "feedbax.training_host_worker:main"}
-    resume_launch = parent_launch | {"payload": {"resume": checkpoint}}
+    train = {"spec": managed_train_payload(batches=4)}
+    parent_launch = {"payload": train, "warm_entrypoint": "feedbax.training_host_worker:main"}
+    resume_launch = parent_launch | {"payload": train | {"resume": checkpoint}}
     selector = {"kind": "update_series", "updates": [4]}
     evaluate_launch = {"payload": {"canonical_request": {"checkpoint": {"select": selector}}}}
     with store.db:
@@ -323,6 +325,6 @@ def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypa
         "producer_job_id": "resumed",
         "producer_request_id": "train:request",
         "state": "resumable",
-        "next_update": None,
+        "next_update": 4,
         "recovery_update": 2,
     }

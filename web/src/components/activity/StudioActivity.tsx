@@ -1,15 +1,19 @@
 import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
-import { useState } from 'react';
+import { useId, useState, type PropsWithChildren } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
-import { StudioJobsProvider, useStudioJobActions, useStudioJobConnection, useStudioJobs } from '@/hooks/useStudioJobs';
+import { StudioJobsProvider, useStudioJobActions, useStudioJobs, useStudioJobsProject, useStudioUnreadableJobs } from '@/hooks/useStudioJobs';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
 import {
-  studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
-  studioStep, type StudioRunStatusId,
+  studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep, studioReason,
+  studioStep, type StudioResultState, type StudioRunStatusId,
 } from './studioVocabulary';
+
+/** The state a finished job's result is in, where the window knows its validity. */
+export type ActivityResultState = (job: StudioActivityJob) => StudioResultState | undefined;
+import { Button } from '@/components/ui/Button';
 
 const liveStatuses = new Set<StudioRunStatusId>([
   'queued',
@@ -30,16 +34,16 @@ function coordinateValue(value: unknown) {
 
 function ActivityRun({
   job,
-  project,
   selected,
   machine,
+  resultState,
   onOpen,
   onClose,
 }: {
   job: StudioActivityJob;
-  project?: string;
   selected: boolean;
   machine?: string;
+  resultState?: StudioResultState;
   onOpen: () => Promise<boolean>;
   onClose: () => void;
 }) {
@@ -87,21 +91,21 @@ function ActivityRun({
       style={{ borderLeftColor: tint }}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <button
-          type="button"
+        <Button
+          variant="bare"
+          size="content"
           aria-current={selected ? 'true' : undefined}
           onClick={() => void open()}
           disabled={pending}
-          className="min-w-0 flex-1 rounded-sm text-left hover:underline disabled:opacity-60"
+          className="min-w-0 flex-1 rounded-sm text-left hover:[&:not([data-disabled])]:underline"
         >
           <span className="flex items-center gap-1.5 text-xs font-medium text-shell-muted">
             <Icon aria-hidden="true" className="size-3.5 shrink-0" />
             {name}
-            {project && <span className="truncate font-normal">{project}</span>}
           </span>
           <span className="block break-words font-medium">{job.label}</span>
-        </button>
-        <StudioRunStatus status={job.status} />
+        </Button>
+        <StudioRunStatus status={resultState ?? job.status} />
       </div>
       {(coordinates.length > 0 || actor || machine) && (
         <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-shell-muted">
@@ -148,6 +152,7 @@ function ActivityRun({
 }
 
 function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
+  const heading = useId();
   const actions = useStudioJobActions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -165,9 +170,9 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
       setBusy(false);
     }
   }
-  return <section aria-label={machine.name} className="space-y-2 rounded-md border border-shell-divider px-3 py-2 text-sm">
+  return <section aria-labelledby={heading} className="space-y-2 rounded-md border border-shell-divider px-3 py-2 text-sm">
     <header className="flex items-baseline justify-between gap-2">
-      <h3 className="font-medium">{machine.name}</h3>
+      <h3 id={heading} className="font-medium">{machine.name}</h3>
       <span className="text-shell-muted">{studioMachineStatus(machine.state)}</span>
     </header>
     {machine.state === 'opening' && currentStep && <p className="text-shell-muted">{studioOpeningStep(currentStep.step)}</p>}
@@ -197,8 +202,7 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
       </ol>
     </details>}
     {error && <p role="alert">{error}</p>}
-    <button type="button" disabled={!machine.can_close || busy} onClick={() => void close()}
-      className="rounded border border-shell-divider px-2 py-1 disabled:opacity-50">{studioName('close')}</button>
+    <Button disabled={!machine.can_close || busy} onClick={() => void close()}>{studioName('close')}</Button>
   </section>;
 }
 
@@ -213,15 +217,9 @@ function ActivityCommand({
 }) {
   const command = bindStudioCommand(name, onClick, { enabled: !pending, keyboard: false });
   return (
-    <button
-      type="button"
-      {...commandAttributes(command)}
-      disabled={!command.enabled}
-      onClick={command.invoke}
-      className="rounded border border-shell-control bg-shell-surface px-2 py-1 text-xs font-medium hover:bg-shell-hover disabled:opacity-60"
-    >
+    <Button {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}>
       {studioName(name)}
-    </button>
+    </Button>
   );
 }
 
@@ -230,6 +228,7 @@ interface StudioActivityPaneProps {
   onOpenRun: (job: StudioActivityJob) => Promise<boolean>;
   onClose: () => void;
   standalone?: boolean;
+  resultState?: ActivityResultState;
 }
 
 export function StudioActivityPane(props: StudioActivityPaneProps) {
@@ -240,38 +239,69 @@ export function StudioActivityPane(props: StudioActivityPaneProps) {
   );
 }
 
-function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: StudioActivityPaneProps) {
+/**
+ * Activity's runs grouped by project: the window's own project first, then the others in the order
+ * of their most recent activity. The snapshot lists jobs in the order of their latest change.
+ */
+function activityGroups(jobs: readonly StudioActivityJob[], visible: readonly StudioActivityJob[], ownProject: string | null) {
+  const latest = new Map<string, number>();
+  jobs.forEach((job, index) => latest.set(job.project_id, index));
+  const runs = new Map<string, StudioActivityJob[]>();
+  for (const job of visible) runs.set(job.project_id, [...(runs.get(job.project_id) ?? []), job]);
+  const rank = (projectId: string) => projectId === ownProject ? Infinity : latest.get(projectId) ?? -1;
+  return [...runs]
+    .sort(([a], [b]) => rank(b) - rank(a))
+    .map(([projectId, group]) => ({
+      projectId,
+      runs: group.sort((a, b) => a.label.localeCompare(b.label) || a.job_id.localeCompare(b.job_id)),
+    }));
+}
+
+function ActivityProject({ name, children }: PropsWithChildren<{ name: string }>) {
+  const heading = useId();
+  return (
+    <li>
+      <section aria-labelledby={heading} className="space-y-2">
+        <h3 id={heading} className="truncate text-xs font-medium text-shell-muted">{name}</h3>
+        <ul className="space-y-2">{children}</ul>
+      </section>
+    </li>
+  );
+}
+
+function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultState }: StudioActivityPaneProps) {
   const snapshot = useStudioJobs();
+  const unreadable = useStudioUnreadableJobs();
   const actions = useStudioJobActions();
-  const connection = useStudioJobConnection();
   const [selection, setSelection] = useState<string | null>(null);
   const jobs = snapshot.data?.jobs ?? [];
   const selected = jobs.find((job) => job.job_id === selection);
-  const visible = jobs
-    .filter((job) => isLive(job) || !job.seen || job === selected)
-    .sort((a, b) => (projectNames.get(a.project_id) ?? a.project_id).localeCompare(projectNames.get(b.project_id) ?? b.project_id)
-      || a.label.localeCompare(b.label)
-      || a.job_id.localeCompare(b.job_id));
+  const ownProject = useStudioJobsProject();
+  const visible = jobs.filter((job) => isLive(job) || !job.seen || job === selected);
+  const groups = activityGroups(jobs, visible, ownProject);
   const machine = snapshot.data?.sessions.find((session) => session.id === 'local');
   const remoteMachines = snapshot.data?.sessions.filter((session): session is StudioRemoteSession => 'name' in session) ?? [];
   const machineByJob = new Map(remoteMachines.flatMap((session) => session.job_ids.map((id) => [id, session.name] as const)));
   const machineField = machine && (
     <dl className="flex justify-between rounded-md border border-shell-divider px-3 py-2 text-sm">
       <dt className="font-medium">{studioName('thisMac')}</dt>
-      <dd className="text-shell-muted">{studioMachineStatus(machine.state)}</dd>
+      <dd className="text-shell-muted">{studioMachineStatus(machine.state ?? 'open')}</dd>
     </dl>
   );
-  const state: StudioRegionState = connection === 'disconnected' || snapshot.isError
-    ? {
-        kind: 'failed',
-        issue: studioRegionIssue('activity', snapshot.error, connection === 'disconnected'),
-        retry: actions.refresh,
-      }
+  const state: StudioRegionState = snapshot.isError
+    ? { kind: 'failed', issue: studioRegionIssue('activity', snapshot.error), retry: actions.refresh }
     : snapshot.isPending
       ? { kind: 'loading' }
-      : visible.length > 0
-        ? { kind: 'result', missing: [] }
-        : { kind: 'empty' };
+      : unreadable.length > 0
+        ? {
+          kind: 'partial',
+          unread: unreadable.map((record) => ({
+            key: record.job_id, reason: studioReason('unreadable', record.label ?? record.job_id),
+          })),
+        }
+        : visible.length > 0
+          ? { kind: 'result', missing: [] }
+          : { kind: 'empty' };
 
   return (
     <StudioRegion
@@ -287,21 +317,25 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
     >
       {machineField}
       {remoteMachines.map((session) => <ActivityMachine key={session.id} machine={session} />)}
-      <ul aria-label={studioName('runs')} className="space-y-2">
-        {visible.map((job) => (
-          <ActivityRun
-            key={job.job_id}
-            job={job}
-            project={projectNames.get(job.project_id) ?? job.project_id}
-            selected={job === selected}
-            machine={machineByJob.get(job.job_id)}
-            onClose={onClose}
-            onOpen={async () => {
-              const opened = await onOpenRun(job);
-              if (!opened) setSelection(job.job_id);
-              return opened;
-            }}
-          />
+      <ul aria-label={studioName('runs')} className="space-y-3">
+        {groups.map(({ projectId, runs }) => (
+          <ActivityProject key={projectId} name={projectNames.get(projectId) ?? projectId}>
+            {runs.map((job) => (
+              <ActivityRun
+                key={job.job_id}
+                job={job}
+                selected={job === selected}
+                machine={machineByJob.get(job.job_id)}
+                resultState={resultState?.(job)}
+                onClose={onClose}
+                onOpen={async () => {
+                  const opened = await onOpenRun(job);
+                  if (!opened) setSelection(job.job_id);
+                  return opened;
+                }}
+              />
+            ))}
+          </ActivityProject>
         ))}
       </ul>
       {selected && (standalone
@@ -313,6 +347,5 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone }: Studi
 
 export function useStudioActivityCount() {
   const snapshot = useStudioJobs();
-  const connection = useStudioJobConnection();
-  return connection === 'connected' ? snapshot.data?.jobs.filter(isLive).length ?? 0 : 0;
+  return snapshot.data?.jobs.filter(isLive).length ?? 0;
 }

@@ -1,8 +1,8 @@
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
-from jax.experimental import disable_x64, enable_x64
 
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
@@ -111,7 +111,7 @@ def test_intervention_payload_must_fit_the_signal(registry):
 
 
 def test_intervention_payload_preserves_state_dtype_and_precision(registry):
-    with enable_x64():
+    with jax.enable_x64(True):
         signal = jnp.array([2.0, 3.0], dtype=jnp.float64)
         value = 8.00000001
         graph = Graph(
@@ -131,7 +131,7 @@ def test_intervention_payload_preserves_state_dtype_and_precision(registry):
         state = init_state_from_component(rebuilt).get(rebuilt.nodes["intervention"].params_index)
         assert state.unit_spec.dtype == jnp.float64
 
-    with disable_x64(), pytest.raises(GraphCompilationError, match="float64"):
+    with jax.enable_x64(False), pytest.raises(GraphCompilationError, match="float64"):
         _compile(registry, exported)
 
 

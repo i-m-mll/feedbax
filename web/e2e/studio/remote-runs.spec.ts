@@ -1,16 +1,17 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import { readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioMachineApprovalReceipt, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
-test.skip(process.env.FEEDBAX_STUDIO_E2E_REMOTE_FIXTURE !== '1', 'Requires the disposable machine provider');
+test.use({ studioBackend: 'remote' });
 
-test('Machine approval reviews the saved selection and collects the remote result', async ({ page, request }, info) => {
+test('Machine approval reviews the saved selection and collects the remote result', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(50_000);
-  const fixtureRoot = join(String(info.config.metadata.home), 'state', 'studio-e2e-remote');
+  const fixtureRoot = join(studio.home, 'state', 'studio-e2e-remote');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const path = `${projectPath}/train-runs`;
   const key = { variant: 'default', step: 'train', row: 'default' };
@@ -24,15 +25,15 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   const machine = page.getByRole('combobox', { name: 'Machine' });
-  await expect(machine).toHaveValue('local');
-  await machine.selectOption('rehearsal');
+  await expect(machine).toHaveText(/^This Mac/);
+  await pick(machine, /^Rehearsal Machine/);
   const run = page.getByRole('button', { name: 'Run', exact: true });
   await run.click();
   const approval = page.getByRole('dialog', { name: 'Needs approval' });
   await expect(approval.getByText('Cost ceiling', { exact: true })).toBeVisible();
   await expect(approval.getByText('$0.12', { exact: true })).toBeVisible();
   await expect(approval.getByText('Expiry', { exact: true })).toBeVisible();
-  await expect(approval.getByText('Results not downloaded are destroyed', { exact: true })).toBeVisible();
+  await expect(approval.getByText('Results lost', { exact: true })).toBeVisible();
   expect(await attempts()).toEqual([]);
   const activity = await request.get('/api/jobs');
   expect((await activity.json() as StudioJobSnapshot).jobs).toEqual([]);
@@ -96,7 +97,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const card = page.getByRole('region', { name: 'Rehearsal Machine', exact: true });
   await expect(card.getByText('Closes at', { exact: true })).toBeVisible();
-  await expect(card.getByText('Cost so far', { exact: true })).toBeVisible();
+  await expect(card.getByText('Billed cost', { exact: true })).toBeVisible();
   await expect(card.getByText('$0.012345', { exact: true })).toBeVisible();
   await expect(card.getByText('Idle since', { exact: true })).toBeVisible();
   await card.getByText('Opening history', { exact: true }).click();
@@ -135,7 +136,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
     .toBeAttached();
 });
 
-test('A set of six remote rows keeps its Jobs states and commands across reloads', async ({ page, request }, info) => {
+test('A set of six remote rows keeps its Jobs states and commands across reloads', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture(
     'ordinary-files', '20000', '0.001', '0.0011', '0.0012', '0.0013', '0.0014', '0.0015',
@@ -158,7 +159,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   const rowName = (activity: StudioActivityJob) => rows.find(({ key }) =>
     JSON.stringify([key.variant, key.step, key.row]) === activity.run_key)!.label;
   const row = (activity: StudioActivityJob) => runs.getByRole('row').filter({
-    has: page.getByRole('rowheader', { name: rowName(activity), exact: true }),
+    has: page.getByRole('rowheader', { name: runName(rowName(activity)) }),
   });
   const reopen = async () => {
     await page.reload();
@@ -166,7 +167,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   };
   const command = (name: string) => page.getByRole('button', { name, exact: true });
 
-  await page.getByRole('combobox', { name: 'Machine' }).selectOption('rehearsal');
+  await pick(page.getByRole('combobox', { name: 'Machine' }), /^Rehearsal Machine/);
   await command('Run').click();
   const approval = page.getByRole('dialog', { name: 'Needs approval' });
   await expect(approval.getByRole('listitem')).toHaveCount(6);
@@ -216,8 +217,7 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   await reopen();
   expect(await job(force.job_id)).toMatchObject({ status: expect.stringMatching(/^(stopped|interrupted)$/) });
 
-  await runProjectFixture({ module: 'web.e2e.studio.fixtures.remote_run_process', home: String(info.config.metadata.home) },
-    session, interrupt.job_id);
+  await runProjectFixture('web.e2e.studio.fixtures.remote_run_process', studio.home, session, interrupt.job_id);
   await expect(row(interrupt).getByText('Interrupted', { exact: true })).toBeVisible({ timeout: 9_000 });
   await reopen();
   await row(interrupt).getByRole('button').click();
@@ -240,14 +240,14 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   expect(closed.status(), closed.statusText()).toBe(204);
 });
 
-test('Opening refusal survives reload on the exact approved row', async ({ page, request }, info) => {
-  const refusal = join(String(info.config.metadata.home), 'state', 'studio-e2e-remote', 'opening-refusal');
+test('Opening refusal survives reload on the exact approved row', async ({ page, request, studio }, info) => {
+  const refusal = join(studio.home, 'state', 'studio-e2e-remote', 'opening-refusal');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const path = `${projectPath}/train-runs`;
   const runs = page.getByRole('table', { name: 'Runs', exact: true });
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
-  await page.getByRole('combobox', { name: 'Machine' }).selectOption('rehearsal');
+  await pick(page.getByRole('combobox', { name: 'Machine' }), /^Rehearsal Machine/);
   await page.getByRole('button', { name: 'Run', exact: true }).click();
   const approval = page.getByRole('dialog', { name: 'Needs approval' });
   await writeFile(refusal, '');
@@ -273,25 +273,23 @@ test('Opening refusal survives reload on the exact approved row', async ({ page,
   }
 });
 
-test('The Machine picker follows provider failure and recovery without reload', async ({ page, request }, info) => {
-  const outage = join(String(info.config.metadata.home), 'state', 'studio-e2e-remote', 'provider-unreachable');
+test('The Machine picker follows provider failure and recovery without reload', async ({ page, request, studio }, info) => {
+  const outage = join(studio.home, 'state', 'studio-e2e-remote', 'provider-unreachable');
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   const machine = page.getByRole('combobox', { name: 'Machine' });
-  const option = machine.locator('option[value="rehearsal"]');
   const run = page.getByRole('button', { name: 'Run', exact: true });
-  await expect(option).toHaveText('Rehearsal Machine · Ready');
-  await machine.selectOption('rehearsal');
+  await pick(machine, 'Rehearsal Machine · Ready');
   await writeFile(outage, '');
   try {
     await run.click();
-    await expect(option).toHaveText('Rehearsal Machine · Unreachable');
+    await expect(machine).toHaveText('Rehearsal Machine · Unreachable');
     await expect(machine).toHaveAccessibleDescription('The provider did not answer.');
     await expect(run).toBeDisabled();
   } finally {
     await unlink(outage);
   }
-  await expect(option).toHaveText('Rehearsal Machine · Ready', { timeout: 12_000 });
+  await expect(machine).toHaveText('Rehearsal Machine · Ready', { timeout: 12_000 });
   await expect(run).toBeEnabled();
 });

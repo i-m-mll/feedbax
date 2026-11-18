@@ -266,7 +266,7 @@ def model_fields(
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         fields.append(project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
-            address=field.address,
+            period=(effective_model or model).step_seconds, address=field.address,
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
         ))
         targets[field_key] = replace(field, numeric=numeric), axis
@@ -301,16 +301,17 @@ def model_fields(
             for source in field_view.sources
         ):
             raise ProjectFolderInvalid("A selected row already writes this field through a sweep value.")
-    result = prepare_numeric_field(
+    prepared = prepare_numeric_field(
         field.numeric, axis, body.edit, functions, period=(effective_model or model).step_seconds,
         rows=tuple(body.rows) if evaluate is None else (),
         selection=SweepExceptionTerms(axes=body.axes) if evaluate is None and body.axes else None,
         keep_value=axis.target.writes if axis is not None else None,
     )
+    result = prepared.result
     if isinstance(result, tuple):
         return ModelFieldResponse(problems=list(result))
     if isinstance(result, list):
-        return ModelFieldResponse(files=[step_file(result)])
+        return ModelFieldResponse(files=[step_file(result)], removed_values=prepared.removed)
     value = result
     if isinstance(result, LiteralValue):
         if field.address.element.parent.kind == "attachment":

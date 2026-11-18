@@ -1,9 +1,35 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { z } from 'zod';
-import { apiErrorMessage, requestJson } from '@/api/request';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { requestJson } from '@/api/request';
+import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
+import { useRootAttribute } from '@/appearance/useRootAttribute';
+import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import type { StudioSavedLightHistory } from '@/generated/studioContracts';
+import { Button } from '@/components/ui/Button';
+
+type Fields = Record<string, unknown>;
+
+function themedLayout(layout: Fields | undefined): Fields {
+  const style = getComputedStyle(document.documentElement);
+  const token = (name: string) => style.getPropertyValue(name).trim();
+  const [text, muted, divider] = [token('--text-primary'), token('--text-muted'), token('--app-divider')];
+  const template = (layout?.template ?? {}) as { layout?: Fields };
+  const base = template.layout ?? {};
+  const axis = (key: string) => ({
+    ...(base[key] as Fields | undefined), color: muted, gridcolor: divider, linecolor: divider, zerolinecolor: divider,
+  });
+  return {
+    ...layout,
+    template: {
+      ...template,
+      layout: {
+        ...base, paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+        font: { ...(base.font as Fields | undefined), color: text }, xaxis: axis('xaxis'), yaxis: axis('yaxis'),
+      },
+    },
+  };
+}
 
 const figureProduct = z.object({
   data: z.array(z.record(z.unknown())),
@@ -14,11 +40,11 @@ const figureProduct = z.object({
 function SavedPlot({ url, name }: { url: string; name: string }) {
   const target = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
-  const [plotError, setPlotError] = useState<unknown>();
+  const [plot, setPlot] = useState<{ attempt: number; error?: unknown }>({ attempt: 0 });
+  const theme = useRootAttribute('data-theme');
   const figure = useQuery({
     queryKey: ['saved-plotly-figure', url],
     queryFn: async ({ signal }) => figureProduct.parse(await requestJson(url, { signal })),
-    retry: false,
   });
   useEffect(() => {
     const node = target.current;
@@ -31,23 +57,29 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
         const Plotly = await import('plotly.js-dist-min');
         if (!active) return;
         purge = () => Plotly.purge(node);
-        await Plotly.newPlot(node, { ...structuredClone({ data, layout, frames }), config: { responsive: true } });
+        await Plotly.newPlot(node, {
+          ...structuredClone({ data, layout: themedLayout(layout), frames }), config: { responsive: true },
+        });
         if (active) setReady(true);
       } catch (error) {
-        if (active) setPlotError(error);
+        if (active) setPlot((current) => ({ ...current, error }));
       }
     })();
     return () => {
       active = false;
       purge?.();
     };
-  }, [figure.data]);
-  const error = figure.error ?? plotError;
-  return <div>
-    {Boolean(error) && <p role="alert">{apiErrorMessage(error)}</p>}
-    <div ref={target} role="img" aria-label={name} className="min-h-64 w-full"
-      aria-busy={!ready && !error || undefined} />
-  </div>;
+  }, [figure.data, theme, plot.attempt]);
+  const error = figure.error ?? plot.error;
+  const state: StudioRegionState = error
+    ? { kind: 'failed', issue: studioRegionIssue('figures', error), retry: () => {
+      setPlot(({ attempt }) => ({ attempt: attempt + 1 }));
+      if (figure.error) void figure.refetch();
+    } }
+    : figure.data ? { kind: 'result', missing: [] } : { kind: 'loading' };
+  return <StudioRegion state={state} skeleton={<div className="min-h-64 rounded bg-shell-subtle motion-safe:animate-pulse" />}>
+    <div ref={target} role="img" aria-label={studioAccessibleName('figure', name)} className="min-h-64 w-full" aria-busy={!ready || undefined} />
+  </StudioRegion>;
 }
 
 export function SavedFigureResult({ history, name }: { history: StudioSavedLightHistory; name: string }) {
@@ -59,10 +91,8 @@ export function SavedFigureResult({ history, name }: { history: StudioSavedLight
   if (!url) return null;
   return <section aria-label={studioName(showPrevious ? 'previousResult' : 'currentResult')} className="space-y-2 p-2">
     {current && previous && <div className="flex gap-2">
-      <button type="button" className="rounded-shell-control border border-shell-divider px-2 py-1"
-        aria-pressed={!showPrevious} onClick={() => setPreviousSelected(false)}>{studioName('currentResult')}</button>
-      <button type="button" className="rounded-shell-control border border-shell-divider px-2 py-1"
-        aria-pressed={showPrevious} onClick={() => setPreviousSelected(true)}>{studioName('previousResult')}</button>
+      <Button pressed={!showPrevious} onClick={() => setPreviousSelected(false)}>{studioName('currentResult')}</Button>
+      <Button pressed={showPrevious} onClick={() => setPreviousSelected(true)}>{studioName('previousResult')}</Button>
     </div>}
     <SavedPlot key={url} url={url} name={name} />
   </section>;
@@ -72,7 +102,7 @@ export function SavedReportResult({ url }: { url: string }) {
   const [open, setOpen] = useState(false);
   return <details onToggle={({ currentTarget }) => setOpen(currentTarget.open)}>
     <summary className="cursor-pointer">{studioName('result')}</summary>
-    {open && <iframe title={studioName('report')} src={url} sandbox="allow-scripts allow-same-origin"
+    {open && <iframe aria-label={studioName('report')} src={url} sandbox="allow-scripts allow-same-origin"
       className="h-[28rem] w-full rounded-shell-control border border-shell-divider" />}
   </details>;
 }

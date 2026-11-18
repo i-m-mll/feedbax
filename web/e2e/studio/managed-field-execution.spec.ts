@@ -1,18 +1,18 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
-test('saves and runs managed optimizer and attachment sweeps', async ({ page, request }, info) => {
+test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(50_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   const id = snapshot.project_id;
   const url = '/?project=' + encodeURIComponent(id);
   const runsPath = projectPath + '/train-runs';
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'managed-fields');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'managed-fields');
   const save = async () => {
     const response = await request.get(projectPath + '/open');
     expect(response.ok(), await response.text()).toBe(true);
@@ -31,7 +31,7 @@ test('saves and runs managed optimizer and attachment sweeps', async ({ page, re
   await expect(rate).toHaveValue('0.001');
   await enter(rate, 'geomspace(0.001, 0.004, 2)');
   await expect.poll(async () => (await save()).project.steps?.train.sweep?.axes?.['learning-rate']).toMatchObject({
-    path: 'method_payload.payload.optimizer.params.learning_rate',
+    path: 'settings.optimizer.params.learning_rate',
     range: { start: 0.001, stop: 0.004, count: 2, scale: 'log' },
   });
 
@@ -64,6 +64,9 @@ test('saves and runs managed optimizer and attachment sweeps', async ({ page, re
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await expect(rate).toHaveValue('geomspace(0.001, 0.004, 2)');
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  // The reloaded window reopens the Model where it was left, inside the controller.
+  await expect(model.getByRole('navigation', { name: 'Model Path', exact: true }).getByRole('button'))
+    .toHaveText(['', '› Wrapper', '› Controller']);
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(factor).toHaveValue('linspace(0.5, 1, 2)');
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();

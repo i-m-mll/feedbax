@@ -5,9 +5,11 @@ import { SceneCanvas, SceneDrawer, SceneElementInspector } from '@/components/sc
 import type { PlanarScenePose } from '@/components/scene/planarModel';
 import { fittedCamera, type SceneView } from '@/components/scene/sceneView';
 import { useProjectPlanarScene } from '@/components/scene/useProjectPlanarScene';
+import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { StudioPlanarSceneRequest } from '@/generated/studioContracts';
 
 const hiddenOverlays = new Set<never>();
+const sections: DrawerSections = { isOpen: (_, initially = true) => initially, setOpen: () => {} };
 
 export function mountSceneProbe(container: HTMLElement, project: string) {
   const root = createRoot(container);
@@ -29,7 +31,7 @@ export function mountSceneProbe(container: HTMLElement, project: string) {
         </div>
         {view.kind === 'geometry' && (
           <>
-            <SceneDrawer scene={view.scene} {...{ selectedId, onSelect }} />
+            <SceneDrawer sections={sections} scene={view.scene} {...{ selectedId, onSelect }} />
             <SceneElementInspector scene={view.scene} selectedId={selectedId} />
           </>
         )}

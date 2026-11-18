@@ -3,7 +3,7 @@ import type {
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
-import { activate, number, openView } from './studioKeyboard';
+import { activate, activateMenuItem, chooseStepKind, number, openView } from './studioKeyboard';
 
 /** Create a shared Evaluate from the current Train selection and author its numeric condition axis. */
 export async function authorEvaluateConditions({
@@ -15,7 +15,7 @@ export async function authorEvaluateConditions({
   train: StudioSavedTrainKey;
   selectComponent: () => Promise<void>;
   field: string;
-  conditions: readonly { label: string; value: number }[];
+  conditions: readonly number[];
 }) {
   const initial = await request.get(projectPath);
   expect(initial.ok(), await initial.text()).toBe(true);
@@ -34,8 +34,7 @@ export async function authorEvaluateConditions({
     response.request().postDataJSON()?.file?.step?.kind === 'evaluate');
   const card = page.locator(`[data-map-step="${train.step}"]:visible`).first();
   await activate(page, card.locator('button[data-command-id="newStep"]'));
-  await activate(page, page.getByRole('dialog', { name: 'New Step', exact: true })
-    .getByRole('button', { name: 'Evaluate', exact: true }));
+  await chooseStepKind(page, 'Evaluate', true);
   const creation = await created;
   expect(creation.status(), await creation.text()).toBe(201);
   const stepId: string = creation.request().postDataJSON().file.id;
@@ -61,20 +60,15 @@ export async function authorEvaluateConditions({
 
   await expect(value).toBeEditable();
   await activate(page, control.getByRole('button', { name: field + ' kind: Value', exact: true }));
-  await edit(() => activate(page, control.getByRole('menuitem', { name: 'Sweep', exact: true })));
+  await edit(() => activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true })));
   await expect(control.getByRole('button', { name: field + ' kind: Sweep', exact: true })).toBeVisible();
   await expect(value).toBeEditable();
-  let authored = await edit(() => number(page, value, conditions.map(({ value }) => value).join(', ')));
-  for (const [index, { label }] of conditions.entries()) {
-    const name = control.getByRole('textbox', { name: field + ' value ' + (index + 1) + ' name', exact: true });
-    await expect(name).toBeEditable();
-    authored = await edit(() => number(page, name, label));
-  }
+  const authored = await edit(() => number(page, value, conditions.join(', ')));
 
   const projection = (await plan(authored.revision)).window_map!;
   const rows = projection.rows.filter(({ key }) => key.step === stepId && key.variant === train.variant);
   expect(rows).toHaveLength(conditions.length);
   expect(projection.edges.filter(({ to_key }) => to_key.step === stepId && to_key.variant === train.variant))
     .toEqual(rows.map(({ key }) => ({ from_key: train, to_key: key })));
-  return { stepId, step: authored.project.steps[stepId], revision: authored.revision, rows };
+  return { stepId, step: authored.project.steps![stepId], revision: authored.revision, rows };
 }

@@ -1,46 +1,35 @@
 import { defineConfig, devices } from '@playwright/test';
-import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { availableParallelism } from 'node:os';
+import { requireBrowserTestRunner } from './e2e/runner';
 
-const port = Number(process.env.FEEDBAX_STUDIO_E2E_PORT ?? 3109);
-const backendPort = Number(process.env.FEEDBAX_STUDIO_E2E_API_PORT ?? 8109);
-const baseURL = `http://127.0.0.1:${port}`;
-const ownsHome = process.env.FEEDBAX_STUDIO_TEST_HOME === undefined;
-const home = process.env.FEEDBAX_STUDIO_TEST_HOME ??= join(tmpdir(), `feedbax-studio-test-${randomUUID()}`);
-const preview = process.env.FEEDBAX_STUDIO_E2E_PREVIEW === '1' ? ' --preview' : '';
-const dispose = ownsHome ? ' --remove-test-home' : '';
-const seriesFixture = process.env.FEEDBAX_STUDIO_E2E_SERIES_FIXTURE === '1';
-const remoteFixture = process.env.FEEDBAX_STUDIO_E2E_REMOTE_FIXTURE === '1';
-const launcher = remoteFixture
-  ? 'cd .. && exec uv run --offline --no-sync python -B -m web.e2e.studio.fixtures.remote_runs_backend'
-  : seriesFixture
-  ? 'cd .. && exec uv run --offline --no-sync python -B -m web.e2e.studio.fixtures.evaluate_series_backend'
-  : 'exec ../scripts/dev.sh';
+requireBrowserTestRunner();
+
+// Iteration runs the tests that start no job; round adds those tagged @round. Release runs only the @responsiveness
+// measurements, on one worker, since a responsiveness budget is read only from a run with nothing else beside it.
+const tiers = { iteration: /@round|@responsiveness/, round: /@responsiveness/, release: undefined };
+const tier = (process.env.FEEDBAX_STUDIO_TIER ?? 'iteration') as keyof typeof tiers;
+if (!(tier in tiers)) throw new Error(`FEEDBAX_STUDIO_TIER must be one of ${Object.keys(tiers).join(', ')}.`);
+const release = tier === 'release';
 
 export default defineConfig({
   testDir: './e2e/studio',
-  outputDir: mkdtempSync(join(tmpdir(), 'feedbax-studio-results-')),
-  metadata: { home, retainHome: !ownsHome },
-  grepInvert: preview ? undefined : /@responsiveness/,
-  workers: 1,
+  outputDir: './node_modules/.cache/studio-e2e-results',
+  globalSetup: './e2e/studio/globalSetup.ts',
+  grep: release ? /@responsiveness/ : undefined,
+  grepInvert: tiers[tier],
+  fullyParallel: true,
+  // Job-starting tiers contend for the CPU, so the round defaults to four workers.
+  workers: release ? 1 : Number(process.env.FEEDBAX_STUDIO_E2E_WORKERS ??
+    (tier === 'iteration' ? Math.max(1, Math.floor(availableParallelism() / 2)) : 4)),
   timeout: 30_000,
   use: {
     ...devices['Desktop Chrome'],
-    channel: process.env.FEEDBAX_STUDIO_E2E_CHROME === '1' ? 'chrome' : undefined,
-    baseURL,
+    // Worker-scoped options are set here only: specs that differ in one need their own workers,
+    // and each worker starts its own Studio.
     headless: true,
+    launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
+    trace: 'off',
     actionTimeout: 5_000,
     serviceWorkers: 'block',
-    trace: 'retain-on-failure',
-  },
-  webServer: {
-    command: `${launcher} --home "$FEEDBAX_STUDIO_TEST_HOME" --port ${port} --backend-port ${backendPort}${preview}${dispose}`,
-    env: { FEEDBAX_STUDIO_TEST_OWNER_PID: String(process.pid) },
-    url: `${baseURL}/api/health`,
-    reuseExistingServer: false,
-    gracefulShutdown: { signal: 'SIGTERM', timeout: 30_000 },
-    timeout: 55_000,
   },
 });

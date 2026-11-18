@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -737,7 +738,7 @@ def test_authenticated_completion_reports_definitive_dependency_errors(
 
 
 def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
-    host, tmp_path, monkeypatch
+    host, tmp_path, monkeypatch, request
 ):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -758,6 +759,7 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from feedbax.validity.evidence import read_execution_evidence, release_checkpoint_evidence, stage_checkpoint_evidence
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
+    from feedbax.web.services.job_activity import JobActivity
     from feedbax.contracts.project import Project
     from tests.test_canonical_evaluate_admission import _save_project
     from tests.test_document_train_pair import authored_documents, document_project
@@ -806,6 +808,8 @@ TrainingLoop.run_block = pause_first_update
     app.include_router(jobs.router)
     app.include_router(projects.router)
     app.state.job_service = service
+    app.state.job_activity = JobActivity(service)
+    request.addfinalizer(app.state.job_activity.close)
     app.state.remote_runs = None
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)
@@ -1133,3 +1137,127 @@ def test_resumed_consumer_inherits_its_pinned_completion(host, tmp_path, complet
     admit(host, "resume-consumer", resumed)
     wait_until(lambda: job_row(host, resumed.id, "succeeded"))
     assert json.loads((tmp_path / "consumed.jsonl").read_text()) == {"bindings": [pinned]}
+
+
+def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_path):
+    (tmp_path / "slow_import.py").write_text("import time\ntime.sleep(60)\ndef main(*args, **kwargs):\n    return 0\n")
+    client = HostClient(tmp_path / "host")
+    pid = client.ping()["pid"]
+    client.warm(Launch((sys.executable,), cwd=str(tmp_path), warm_entrypoint="slow_import:main", payload={}))
+    profiles = tmp_path / "host" / "workers"
+    wait_until(lambda: any(profiles.glob("*/profile.json")))
+
+    def process_exists(process):
+        try:
+            os.kill(process, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def alive(pattern):
+        return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+
+    assert wait_until(lambda: alive(str(profiles)))
+
+    def waiting():
+        with pytest.raises(HostError):
+            HostClient(tmp_path / "host").events(after=0, wait=30)
+
+    with ThreadPoolExecutor(1) as pool:
+        poll = pool.submit(waiting)
+        time.sleep(0.5)
+        os.kill(pid, signal.SIGTERM)
+        started = time.monotonic()
+        assert wait_until(lambda: not process_exists(pid), timeout=5)
+        assert time.monotonic() - started < 2
+        poll.result(timeout=5)
+    assert wait_until(lambda: not alive(str(profiles)), timeout=5)
+
+
+
+def _run_host(tmp_path, probe, *, accepted=None):
+    """Runs a Host in this process and hands `probe` the Host and its task; `accepted` wraps each new connection."""
+    from feedbax.host.daemon import Host
+
+    async def main():
+        host = Host(tmp_path / "inproc")
+        task = None
+        if accepted is not None:
+            serve = host.serve
+            host.serve = lambda reader, writer: accepted(task, serve, reader, writer)
+        task = asyncio.create_task(host.run())
+        while not host.address.exists():
+            await asyncio.sleep(0.001)
+        try:
+            return await probe(host, task)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return asyncio.run(main())
+
+
+def test_shutdown_ends_a_connection_accepted_before_its_handler_ran(tmp_path):
+    from feedbax.host.protocol import VERSION
+
+    # Shutdown begins between the accept and the first step of the connection's handler.
+    def accepted(task, serve, reader, writer):
+        task.cancel()
+        return serve(reader, writer)
+
+    async def probe(host, task):
+        reader, writer = await asyncio.open_unix_connection(str(host.address))
+        writer.write(json.dumps(dict(version=VERSION, op="events", after=0, projects=[], limit=1, wait=3)).encode() + b"\n")
+        await writer.drain()
+        await asyncio.wait({task}, timeout=1)
+        writer.close()
+        return task.done()
+
+    assert _run_host(tmp_path, probe, accepted=accepted)
+
+
+def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path):
+    import socket
+
+    from feedbax.host.io import encode
+    from feedbax.host.protocol import VERSION
+
+    async def probe(host, task):
+        host.store.record_put("large", {"value": "x" * 4_000_000})
+        loop = asyncio.get_running_loop()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.setblocking(False)
+            await loop.sock_connect(sock, str(host.address))
+            await loop.sock_sendall(sock, encode({"version": VERSION, "op": "record_get", "key": "large"}))
+            assert await loop.sock_recv(sock, 1) == b"{"
+            task.cancel()
+            await asyncio.wait({task}, timeout=1)
+            return task.done()
+
+    assert _run_host(tmp_path, probe)
+
+
+def test_shutdown_does_not_wait_for_a_reply_its_handler_already_handed_off(tmp_path, monkeypatch):
+    import socket
+
+    from feedbax.host import daemon
+    from feedbax.host.io import encode
+    from feedbax.host.protocol import VERSION
+
+    monkeypatch.setattr(daemon, "REPLY_SECONDS", 0.2)
+
+    async def probe(host, task):
+        host.store.record_put("large", {"value": "x" * 4_000_000})
+        loop = asyncio.get_running_loop()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.setblocking(False)
+            await loop.sock_connect(sock, str(host.address))
+            await loop.sock_sendall(sock, encode({"version": VERSION, "op": "record_get", "key": "large"}))
+            assert await loop.sock_recv(sock, 1) == b"{"
+            # Past the reply limit the handler's own work is over; the client still holds its socket open.
+            await asyncio.sleep(1)
+            task.cancel()
+            await asyncio.wait({task}, timeout=1)
+            return task.done()
+
+    assert _run_host(tmp_path, probe)

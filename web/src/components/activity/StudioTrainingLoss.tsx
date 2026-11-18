@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { z } from 'zod';
 import type { StudioActivityJob, StudioJobEvent } from '@/generated/studioContracts';
 import { useElementSize } from '@/hooks/useElementSize';
@@ -181,7 +182,7 @@ export function LossPlot({ series, objectives = [] }: { series: LossSeries[]; ob
         className="h-[148px] w-full rounded border border-shell-divider bg-shell-surface"
       >
         {ranges.length > 0 && <desc>{studioFormat('lossIntervalDescription')}</desc>}
-        <g aria-hidden="true" className="fill-shell-muted text-[11px] tabular-nums">
+        <g aria-hidden="true" className="fill-shell-muted text-xs tabular-nums">
           {yTicks.map((value) => (
             <g key={value}>
               <line x1={left} x2={right} y1={y(value)} y2={y(value)} className="stroke-shell-divider" />
@@ -224,7 +225,7 @@ export function LossPlot({ series, objectives = [] }: { series: LossSeries[]; ob
           </g>
         ))}
         {objectives.map(({ id, label, segments }, index) => (
-          <g key={id} role="group" aria-label={studioAccessibleName('objective', label)} style={{ color: objectiveColor(index) }}>
+          <g key={id} role="group" aria-label={studioAccessibleName('objective', label)} className="studio-objective" style={objectiveHue(index)}>
             {segments.filter((segment) => segment.length > 1).map((segment) => (
               <polyline key={segment[0].id}
                 points={segment.map(({ update, value }) => `${x(update)},${y(value)}`).join(' ')}
@@ -245,7 +246,7 @@ export function LossPlot({ series, objectives = [] }: { series: LossSeries[]; ob
       </svg>
       <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-shell-muted">
         {objectives.length > 0 && <ul aria-label={studioName('objective')} className="mr-auto flex flex-wrap gap-x-3">
-          {objectives.map(({ id, label }, index) => <li key={id} style={{ color: objectiveColor(index) }}>{label}</li>)}
+          {objectives.map(({ id, label }, index) => <li key={id} className="studio-objective" style={objectiveHue(index)}>{label}</li>)}
         </ul>}
         {chained && !primary?.result && (
           <ol aria-label={studioName('trainSteps')} className="mr-auto flex flex-wrap gap-x-3">
@@ -271,6 +272,6 @@ export function LossPlot({ series, objectives = [] }: { series: LossSeries[]; ob
   );
 }
 
-function objectiveColor(index: number) {
-  return `oklch(0.59 0.16 ${(305 + 137.508 * index) % 360})`;
+function objectiveHue(index: number) {
+  return { '--studio-objective-hue': (305 + 137.508 * index) % 360 } as CSSProperties;
 }

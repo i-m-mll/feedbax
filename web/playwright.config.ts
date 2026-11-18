@@ -2,6 +2,9 @@ import { defineConfig, devices } from '@playwright/test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { requireBrowserTestRunner } from './e2e/runner';
+
+requireBrowserTestRunner();
 
 const port = Number(process.env.FEEDBAX_E2E_PORT ?? 3108);
 const baseURL = `http://127.0.0.1:${port}`;

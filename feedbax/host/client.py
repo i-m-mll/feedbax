@@ -1,5 +1,6 @@
 """Client for the machine's sole host daemon."""
 
+import contextlib
 import json
 import os
 import socket
@@ -83,10 +84,22 @@ class HostClient:
         self._session = session
         self._start_lock = threading.Lock()
         self._start_allowed = True
+        self._closed = False
+        self._open: set[socket.socket] = set()
 
     def prohibit_start(self) -> None:
         with self._start_lock:
             self._start_allowed = False
+
+    def close(self) -> None:
+        """End this client's use of the Host: interrupt calls in flight and refuse every later call."""
+        with self._start_lock:
+            self._start_allowed = False
+            self._closed = True
+            open_sockets = tuple(self._open)
+        for sock in open_sockets:
+            with contextlib.suppress(OSError):
+                sock.shutdown(socket.SHUT_RDWR)
 
     def _connect(self, timeout: float) -> socket.socket:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -131,14 +144,25 @@ class HostClient:
                     time.sleep(0.02)
 
     def _exchange(self, message: bytes, *, timeout: float, start_host: bool) -> JsonObject:
+        with self._start_lock:
+            if self._closed:
+                raise HostError("closed", "This Host client is closed.")
         if self._attachment is not None:
             with self._start_lock:
                 start_host = start_host and self._start_allowed
             return self._attachment(message, timeout=timeout, start_host=start_host)
         connect = self._connect_or_start if start_host else self._connect
         with connect(timeout) as sock:
-            sock.sendall(message)
-            return receive(sock, MAX_RPC_BYTES)
+            with self._start_lock:
+                if self._closed:
+                    raise HostError("closed", "This Host client is closed.")
+                self._open.add(sock)
+            try:
+                sock.sendall(message)
+                return receive(sock, MAX_RPC_BYTES)
+            finally:
+                with self._start_lock:
+                    self._open.discard(sock)
 
     def _call(
         self, op: str, *, timeout: float = 5, start_host: bool = True, **request: Json

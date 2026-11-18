@@ -86,6 +86,10 @@ function fixture(settleMs = 400, start = initial) {
       }
     }
     current = { ...current, project: { ...current.project, documents }, revision: hex(sequence++), file_revisions: [...revisions.values()] };
+    if (body.presentation) {
+      if (body.presentation.before !== current.presentation_revision) throw new Error('Wrong presentation preimage');
+      current = { ...current, presentation: body.presentation.after, presentation_revision: hex(sequence++) };
+    }
     return current;
   });
   const externalRename = (next: string) => {
@@ -99,8 +103,28 @@ function fixture(settleMs = 400, start = initial) {
     return externalRename(body.name);
   });
   const create = vi.fn<ProjectEditTransport['create']>();
-  const editor = new ProjectEditController(document(), { read, write, replay, rename, create }, settleMs);
-  return { editor, write, replay, read, rename, create, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
+  const memberCommand = vi.fn<NonNullable<ProjectEditTransport['memberCommand']>>(async (_id, body) => {
+    if (body.revision !== current.revision) throw new ApiRequestError('http', '/members/command', 'Changed', { status: 409 });
+    const { member: from, kind } = body.command;
+    const to = body.command.name ?? `${from}-2`;
+    const source = current.file_revisions.find(({ address }) => address.kind === 'document' && address.id === from)!;
+    const { [from]: moved, ...others } = current.project.documents ?? {};
+    const shown = current.presentation?.documents ?? {};
+    current = {
+      ...current,
+      revision: hex(sequence++),
+      presentation_revision: hex(sequence++),
+      project: { ...current.project, documents: kind === 'rename' ? { ...others, [to]: moved } : { ...current.project.documents, [to]: moved } },
+      presentation: { ...current.presentation, documents: { ...(kind === 'rename' ? {} : shown), [to]: shown[from] } },
+      file_revisions: [
+        ...current.file_revisions.filter((file) => kind !== 'rename' || file !== source),
+        { ...source, address: { kind: 'document', id: to } },
+      ],
+    };
+    return { member: to, snapshot: current };
+  });
+  const editor = new ProjectEditController(document(), { read, write, replay, rename, create, memberCommand }, settleMs);
+  return { editor, write, replay, read, rename, create, memberCommand, external, externalRename, current: () => current, restore: (snapshot: StudioProjectSnapshot) => { current = snapshot; } };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -116,7 +140,7 @@ it('binds the first compatible documents by name and scaffolds only the missing 
       'a-task': { schema: 'feedbax.spec.task_document', payload: {} },
     } },
   });
-  const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(undefined);
+  const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
   await expect(createFirstTrain(editor, hex(99))).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
 
@@ -544,5 +568,27 @@ it('resumes autosave when an outside revision returns to the saved bytes', async
   await vi.advanceTimersByTimeAsync(400);
   expect(editor.getSnapshot()).toMatchObject({ outside: null, pending: 0 });
   expect(write).toHaveBeenCalledTimes(1);
+  editor.dispose();
+});
+
+it('undoes a document command and the step use that joined it as one entry', async () => {
+  const shown = { documents: { task: { positions: { a: { x: 1, y: 2 } } } } };
+  const { editor, current, replay } = fixture(400, { ...initial, presentation: shown });
+  const before = current();
+  const result = await editor.memberCommand('Duplicate Task', { kind: 'duplicate', family: 'documents', member: 'task' }, before,
+    async ({ member }) => [{ address: model, patches: [{ op: 'replace', path: '/payload/value', value: member }] }]);
+  expect(result.member).toBe('task-2');
+  expect(current().project.documents?.model?.payload).toEqual({ value: 'task-2' });
+  expect(editor.getSnapshot().undoName).toBe('Duplicate Task');
+
+  await editor.undo();
+  expect(replay).toHaveBeenCalledOnce();
+  expect(current().project.documents).toEqual(before.project.documents);
+  expect(current().presentation).toEqual(shown);
+  expect(editor.getSnapshot()).toMatchObject({ undoName: null, redoName: 'Duplicate Task' });
+
+  await editor.redo();
+  expect(Object.keys(current().project.documents ?? {}).sort()).toEqual(['model', 'task', 'task-2']);
+  expect(current().presentation?.documents?.['task-2']).toEqual(shown.documents.task);
   editor.dispose();
 });

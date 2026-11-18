@@ -3,8 +3,9 @@ import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
-import { authorLearningRateSweep, mapStep } from './canonicalTrain';
-import { activate, chooseOption, number, openView, palette } from './studioKeyboard';
+import { authorLearningRateSweep, mapStep, runName } from './canonicalTrain';
+import { activate, chooseOption, chooseOutlineRow, chooseStepKind, number, openView, palette, tabTo } from './studioKeyboard';
+import { outlineRow, pick } from './controls';
 
 type Walkthrough = {
   page: Page;
@@ -44,11 +45,7 @@ export async function selectModelComponent(page: Page, componentId: string) {
   await expect(component).toHaveAttribute('aria-label', /.+/);
   const name = (await component.getAttribute('aria-label'))!;
   if (!await drawer(page).isVisible()) await palette(page, 'showDrawer', 'Show Drawer');
-  const outline = drawer(page).getByRole('button', { name: 'Outline', exact: true });
-  if (await outline.getAttribute('aria-pressed') !== 'true') await activate(page, outline);
-  const entry = drawer(page).getByRole('button', { name, exact: true });
-  await activate(page, entry);
-  await expect(entry).toHaveAttribute('aria-pressed', 'true');
+  await chooseOutlineRow(page, outlineRow(page, name), name);
 }
 
 function mutation({ page, projectPath }: Walkthrough, method: string, suffix = '') {
@@ -58,13 +55,13 @@ function mutation({ page, projectPath }: Walkthrough, method: string, suffix = '
 
 export async function authorWalkthroughSweep(context: Walkthrough) {
   const { page } = context;
-  await expect(variant(page)).toHaveValue('base');
+  await expect(variant(page)).toHaveText('base');
   await openRuns(page, 'train');
   await authorLearningRateSweep(drawer(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
   const sweepRows = (value: StudioSavedTrainRuns) =>
     value.window_map!.rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
-  await expect.poll(async () => sweepRows(await plan(context)).map(({ coordinates }) => coordinates['learning-rate']?.label))
-    .toEqual(['Slow', 'Medium', 'Fast']);
+  await expect.poll(async () => sweepRows(await plan(context)).map(({ coordinates }) => coordinates['learning-rate']?.value))
+    .toEqual([0.001, 0.002, 0.003]);
   return (await plan(context)).rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
 }
 
@@ -96,7 +93,7 @@ export async function verifyWalkthroughVariant(context: Walkthrough, plantId: st
   expect(compare.edges.every(({ from_key }) => from_key.variant === 'compare')).toBe(true);
   const originalAttempts = await attempts();
 
-  await chooseOption(page, variant(page), 'compare');
+  await pick(variant(page), 'compare');
   await activate(page, mapStep(page, 'train'));
   await openView(page, 'model');
   await selectModelComponent(page, plantId);
@@ -117,7 +114,7 @@ export async function verifyWalkthroughVariant(context: Walkthrough, plantId: st
   expect(delta.receipts.every((receipt) => receipt == null)).toBe(true);
   expect(await attempts()).toEqual(originalAttempts);
   await page.reload();
-  await expect(variant(page)).toHaveValue('base');
+  await expect(variant(page)).toHaveText('base');
   expect(scoped(await plan(context), 'compare')).toEqual(delta);
 }
 
@@ -136,13 +133,13 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const sourceRow = (index: number) => table(page).getByRole('row').filter({ hasText: prefix[index].label }).getByRole('button');
+  const sourceRow = (index: number) => table(page).getByRole('button', { name: runName(prefix[index].label) });
 
   async function selectTwo() {
     await openRuns(page, 'train');
     await activate(page, sourceRow(0));
     await activate(page, sourceRow(1), 'Shift+Enter');
-    await expect(train(page)).toContainText('2 of 3');
+    await expect(train(page).locator('[data-result-run][aria-pressed="true"]')).toHaveCount(2);
   }
 
   async function addSuccessor(kind: 'Train' | 'Evaluate', id: string, producer = 'train') {
@@ -150,8 +147,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       new URL(response.url()).pathname === context.projectPath + '/files' && response.request().postDataJSON().file.id === id);
     const card = page.getByRole('article', { name: 'Train ' + producer, exact: true });
     await activate(page, card.locator('button[data-command-id="newStep"]'));
-    await activate(page, page.getByRole('dialog', { name: 'New Step', exact: true })
-      .getByRole('button', { name: kind, exact: true }));
+    await chooseStepKind(page, kind, true);
     const response = await saved;
     expect(response.status(), await response.text()).toBe(201);
     await expect(mapStep(page, id)).toHaveAttribute('aria-pressed', 'true');
@@ -180,7 +176,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     .getByRole('heading', { name: prefix[0].label, exact: true })).toBeVisible();
   for (const [step, kind, count] of [[pairedStep, 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
     await expect(used).toContainText(step);
-    await expect(outline.getByRole('button', { name: `Select ${step} ${kind} ${count}`, exact: true })).toBeVisible();
+    await expect(outline.getByRole('treeitem', { name: new RegExp(`^${step}\\b`) })).toHaveAccessibleDescription(count);
     await expect(mapStep(page, step)).toHaveAccessibleDescription(new RegExp(count));
   }
 
@@ -202,7 +198,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const beforeWidening = await attempts();
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
   const subset = drawer(page).getByRole('group', { name: 'Subject Subset', exact: true });
-  const fast = subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true });
+  const fast = subset.getByRole('checkbox', { name: '0.003', exact: true });
   await activate(page, fast, 'Space');
   await expect(fast).toBeChecked();
   const edited = mutation(context, 'PATCH');
@@ -220,7 +216,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const child = 'train-continuation';
   const continued = await addSuccessor('Train', child);
   expect(continued.project.steps?.[child]?.kind).toBe('train');
-  const carryover = drawer(page).getByRole('combobox', { name: 'Edit Checkpoint carryover', exact: true });
+  const carryover = drawer(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
   const carry = mutation(context, 'PATCH');
   await chooseOption(page, carryover, 'Carry training state');
   const carried = await carry;
@@ -233,7 +229,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       state: 'preserve', schedule: 'continue', rng: 'carry',
     },
   }]);
-  await expect(carryover.locator('option:checked')).toHaveText('Carry training state');
+  await expect(carryover).toHaveText('Carry training state');
   const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
   await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');
@@ -241,7 +237,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const changed = await batches;
   expect(changed.ok(), await changed.text()).toBe(true);
   expect(changed.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
-  const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps[child];
+  const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps![child];
   expect(editedChild.deltas?.at(-1)?.patches).toEqual([
     { op: 'replace', path: 'training_config.n_batches', value: additionalUpdates },
   ]);
@@ -267,7 +263,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       },
       progress: { completed_updates: childUpdates, total_updates: childUpdates },
     })]);
-    await activate(page, table(page).getByRole('row').filter({ hasText: producer.label }).getByRole('button'));
+    await activate(page, table(page).getByRole('button', { name: runName(producer.label) }));
     if (index === 0) {
       await palette(page, 'splitDetails', 'Split Details');
       await openView(page, 'results');
@@ -289,7 +285,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
 
   const producer = children[0];
   const producerTable = await openFocusedRuns(child);
-  await activate(page, producerTable.getByRole('rowheader', { name: producer.label, exact: true }).getByRole('button'));
+  await activate(page, producerTable.getByRole('rowheader', { name: runName(producer.label) }).getByRole('button'));
   const nested = child + '-continuation';
   await addSuccessor('Train', nested, child);
   const nestedTable = await openFocusedRuns(nested);

@@ -1,7 +1,7 @@
 import { studioFormat, studioName, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
-import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
+import { runResultState, type PlanResultView, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
 import type {
-  Project, SelectedRow, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
+  Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapCoordinate, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
 } from '@/generated/studioContracts';
 
@@ -9,6 +9,12 @@ export type SavedTrainRow = StudioSavedTrainRuns['rows'][number];
 
 export function savedRunId({ variant, step, row }: SavedTrainRow['key']) {
   return JSON.stringify([variant, step, row]);
+}
+
+/** The run's ID once its step is named `to`. */
+export function renamedSavedRunId(id: string, to: string) {
+  const [variant, , row] = JSON.parse(id) as [string, string, string];
+  return savedRunId({ variant, step: to, row });
 }
 
 export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, variant: string): SelectedRow[] {
@@ -21,7 +27,7 @@ export function sharedRowTerms(
 ): SubsetTerms | undefined {
   if (!members.length) return undefined;
   const axes = Object.fromEntries(step.sweeps.flatMap(({ id, values }) => {
-    const selected = new Set(members.map((member) => member.values[id]));
+    const selected = new Set<string | undefined>(members.map((member) => member.values[id]));
     return selected.has(undefined) ? [] : [[id, values.filter((value) => selected.has(value.id)).map(({ id }) => id)]];
   }));
   const selected = new Set(members.map(({ id }) => id));
@@ -36,6 +42,12 @@ export function planVariants(saved: StudioSavedTrainRuns | undefined) {
 export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | undefined): readonly StudioBestRankGroup[] {
   if (subset?.rank_groups?.length) return subset.rank_groups;
   return subset?.ranks?.length ? [{ coordinates: {}, ranks: subset.ranks }] : [];
+}
+
+/** A single value is drawn as its value; only a value without one has a name. */
+function coordinateText({ value, label, value_id }: StudioProjectWindowMapCoordinate) {
+  if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') return String(value);
+  return label ?? value_id;
 }
 
 function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {
@@ -53,8 +65,22 @@ function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMa
   ];
 }
 
-export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns | undefined, variant: string | null): PlanView {
+function savedResult(result: { request_id: string; job_id: string; validity?: PlanResultView['validity'] | null } | null | undefined) {
+  return result?.validity ? [{ requestId: result.request_id, jobId: result.job_id, validity: result.validity }] : [];
+}
+
+const noChecks: ReadonlySet<string> = new Set();
+
+export function projectWindowPlan(
+  project: Project, saved: StudioSavedTrainRuns | undefined, variant: string | null, checking = noChecks,
+): PlanView {
   const map = saved?.window_map;
+  const elementResults = new Map<string, StudioSavedLightResult[]>();
+  for (const element of map?.analysis_elements ?? []) {
+    if (!element.result) continue;
+    const id = savedRunId(element.key);
+    elementResults.set(id, [...elementResults.get(id) ?? [], element.result]);
+  }
   const scope = variant ?? planVariants(saved)[0] ?? null;
   const evaluations = new Map(map?.evaluations?.map((row) => [savedRunId(row.key), row]));
   const subjectsByStep = new Map<string, Map<string, StudioBoundBestSubject>>();
@@ -108,17 +134,14 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
     for (const [sweep, coordinate] of Object.entries(row.coordinates)) {
       let entries = sweeps.get(sweep);
       if (!entries) sweeps.set(sweep, entries = new Map());
-      const number = typeof coordinate.value === 'number' ? String(coordinate.value) : undefined;
-      const label = coordinate.label;
-      entries.set(coordinate.value_id, number && label && label !== number
-        ? `${label} · ${number}` : label ?? number ?? coordinate.value_id);
+      entries.set(coordinate.value_id, coordinateText(coordinate));
       values[sweep] = coordinate.value_id;
     }
     const id = savedRunId(row.key);
     const training = train.get(id);
     const bound = evaluations.get(id)?.bound_subject;
     const sourceStep = stepSources.get(row.key.step);
-    const producer = sourceStep && bound && sourceRows.get(savedRunId({ ...bound, step: sourceStep }));
+    const producer = sourceStep && bound ? sourceRows.get(savedRunId({ ...bound, step: sourceStep })) : undefined;
     const change = training?.change;
     const acquiringFailed = row.status === 'failed' && row.opening_step === 'acquiring' && row.reason;
     const [summary, ...openingErrors] = acquiringFailed ? acquiringFailed.split('\n') : [];
@@ -133,8 +156,16 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       : openingReason ? openingReason
       : row.opening_step ? [studioOpeningStep(row.opening_step), row.reason].filter(Boolean).join(' · ')
       : row.reason ?? undefined;
+    const evaluation = evaluations.get(id);
+    const results = [...new Map([
+      ...savedResult(training?.result),
+      ...savedResult(evaluation?.result && { ...evaluation.result, request_id: evaluation.request_id }),
+      ...savedResult(row.light?.result),
+      ...(elementResults.get(id) ?? []).flatMap(savedResult),
+    ].map((result) => [result.requestId, result])).values()];
     addRun(row.key.step, {
       id, values, label: producer?.label ?? row.label, status: row.status, reason, variant: row.key.variant,
+      state: runResultState(row.status, results, checking), results,
       openingReason,
       openingErrors: openingErrors.length ? openingErrors : undefined,
       progress: training?.attempts.at(-1)?.progress ?? undefined,
@@ -175,7 +206,7 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
       sweeps: [...(sweepsByStep.get(id) ?? [])].map(([id, values]) => ({
         id, label: id, values: [...values].map(([id, label]) => ({ id, label })),
       })),
-      statusCounts: projected?.status_counts ?? {},
+      statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
       runs: groupedLabels.size ? runs.map((run) => {
         const rank = evaluations.get(run.id)?.subject_rank_key;
         const label = rank && groupedLabels.get(rank);
@@ -191,4 +222,14 @@ export function projectWindowPlan(project: Project, saved: StudioSavedTrainRuns 
         to: { stepId: to_key.step, runId: savedRunId(to_key) },
       })),
   };
+}
+
+function resultCounts(counts: Readonly<Record<string, number>>, runs: readonly PlanRunView[]): PlanStepView['statusCounts'] {
+  const folded: Record<string, number> = { ...counts };
+  for (const { status, state } of runs) {
+    if (status === state) continue;
+    folded[status] = (folded[status] ?? 0) - 1;
+    folded[state] = (folded[state] ?? 0) + 1;
+  }
+  return Object.fromEntries(Object.entries(folded).filter(([, count]) => count > 0));
 }

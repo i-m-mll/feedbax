@@ -82,11 +82,8 @@ jobs:
       - name: Run tests
         run: bun run test
 
-      - name: Check Studio source reachability
-        run: bun scripts/check-reachability.ts
-
-      - name: Check Studio vocabulary
-        run: bun scripts/check-studio-vocabulary.ts
+      - name: Check types, the shared control layer, Studio vocabulary and reachability
+        run: bun run check
 
       - name: Install Playwright browsers
         run: bun x --bun --no-install playwright install --with-deps chromium
@@ -109,14 +106,14 @@ jobs:
         run: uv sync --locked --extra web --extra mjx
 
       - name: Run Studio walkthrough against the backend
-        run: bun run test:studio
+        run: bun run test:studio:round
 
       - name: Type-check the frontend
         run: bun --bun tsc -b
 
       - name: Trace Studio responsiveness in production preview
         env:
-          FEEDBAX_STUDIO_E2E_PREVIEW: "1"
+          FEEDBAX_STUDIO_TIER: release
           PLAYWRIGHT_JSON_OUTPUT_FILE: studio-responsiveness/report.json
         run: |
           bun run test:studio responsiveness.spec.ts --workers=1 --retries=0 \

@@ -6,7 +6,7 @@ import type {
   StudioSavedEvaluationRow, StudioSavedTrainAttempt, StudioSavedTrainKey,
   StudioSavedTrainResult, StudioSavedTrainRow,
 } from '@/generated/studioContracts';
-import { useStudioJobActions, useStudioJobConnection, useStudioJobHistory } from '@/hooks/useStudioJobs';
+import { useStudioJobActions, useStudioJobHistory } from '@/hooks/useStudioJobs';
 import { heldOutTracks, type ObjectiveStage } from './heldOutObjective';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue } from './StudioRegion';
 import { LossPlot, studioRunHistory, type LossResultName, type LossSeries, type LossStage } from './StudioTrainingLoss';
@@ -54,6 +54,15 @@ function sameRow(first: StudioSavedTrainKey, second: StudioSavedTrainKey) {
 }
 
 type ProjectLossStage = LossStage & ObjectiveStage & { key: StudioSavedTrainKey };
+
+/** One Evaluate row's held-out objective to read: its finished result, or the live points of a running attempt. */
+interface ObjectiveRead {
+  key: StudioSavedTrainKey;
+  stage: ProjectLossStage;
+  jobId: string;
+  receipt: NonNullable<StudioSavedEvaluationRow['result']>['receipt'] | null;
+  points: NonNullable<NonNullable<StudioSavedEvaluationRow['checkpoint_attempt']>['points']> | null;
+}
 
 function projectLoss(lineage: Stage[], events: readonly StudioJobEvent[]): ProjectLossStage[] | null {
   const stages: ProjectLossStage[] = [];
@@ -108,7 +117,6 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
 }) {
   const history = useStudioJobHistory(project);
   const events = history.data ?? emptyEvents;
-  const connection = useStudioJobConnection();
   const actions = useStudioJobActions();
   const queryClient = useQueryClient();
   const stages = useMemo(() => {
@@ -118,7 +126,7 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   }, [rows, row, selection, events]);
   const series = selection.kind === 'results' ? selection.results.map((result) => resultLoss(result, row, rows, events))
     : stages ? [{ stages }] : [];
-  const reads = evaluations.flatMap(({ key, checkpoint_series, checkpoint_attempt, result }) => {
+  const reads = evaluations.flatMap(({ key, checkpoint_series, checkpoint_attempt, result }): ObjectiveRead[] => {
     const stage = checkpoint_series && stages?.find((candidate) => sameRow(candidate.key, checkpoint_series.subject));
     if (!stage) return [];
     const live = checkpoint_attempt?.placement.location === 'live' && checkpoint_attempt.job_id !== result?.job_id
@@ -134,7 +142,6 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
       fetchSavedEvaluationObjective(project, { revision, key, job_id: jobId }, signal),
     staleTime: (query: { state: { data?: StudioEvaluationObjectiveSeries } }) =>
       receipt && query.state.data?.receipt?.manifest_sha256 === receipt.manifest_sha256 ? Infinity : 0,
-    retry: false,
   }));
   const objectives = useQueries({ queries });
   const versions = reads.map(({ receipt, points }, index) => {
@@ -174,8 +181,8 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   });
   const objectiveError = objectives.find((query) => query.isError)?.error;
   const retry = () => { actions.refresh(); };
-  const state = history.isError || connection === 'disconnected'
-    ? { kind: 'failed' as const, issue: studioRegionIssue('results', history.error, connection === 'disconnected'), retry }
+  const state = history.isError
+    ? { kind: 'failed' as const, issue: studioRegionIssue('results', history.error), retry }
     : history.isPending
       ? { kind: 'loading' as const }
       : stages === null

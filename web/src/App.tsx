@@ -5,6 +5,8 @@ import { apiErrorMessage } from '@/api/request';
 import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import { StudioActivityPane } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { Button } from '@/components/ui/Button';
+import { PendingProjectWindow } from '@/features/projectWindow/ProjectWindow';
 
 const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
@@ -12,8 +14,6 @@ function ProjectEntry({ requestedId }: { requestedId: string | null }) {
   const project = useQuery({
     queryKey: ['studio-entry-project', requestedId],
     queryFn: () => requestedId ? openProjectFolder(requestedId) : createProjectFolder(),
-    retry: false,
-    retryOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     staleTime: Infinity,
@@ -28,7 +28,7 @@ function ProjectEntry({ requestedId }: { requestedId: string | null }) {
 
   if (project.data) return (
     <StudioJobsProvider key={id} projectId={project.data.snapshot.project_id}>
-      <Suspense fallback={<main aria-busy="true" />}>
+      <Suspense fallback={<PendingProjectWindow />}>
         <StudioProjectWorkspace document={project.data} />
       </Suspense>
     </StudioJobsProvider>
@@ -36,10 +36,10 @@ function ProjectEntry({ requestedId }: { requestedId: string | null }) {
   if (project.isError && !project.isFetching) return (
     <main className="p-4">
       <p role="alert">{apiErrorMessage(project.error)}</p>
-      <button type="button" onClick={() => void project.refetch()}>{studioName('retry')}</button>
+      <Button onClick={() => void project.refetch()}>{studioName('retry')}</Button>
     </main>
   );
-  return <main aria-busy="true" />;
+  return <PendingProjectWindow />;
 }
 
 export default function App({ projectId, activity }: { projectId: string | null; activity?: boolean }) {

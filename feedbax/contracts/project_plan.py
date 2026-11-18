@@ -422,6 +422,13 @@ class ProjectPlan:
     source_snapshot: SourceSnapshot | None = field(default=None, repr=False, compare=False)
     exception_matches: Mapping[tuple[str, str], Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
 
+    def detached(self) -> ProjectPlan:
+        """Return this plan with its own copies of the selected payloads, which callers may change."""
+        return replace(self, selected_definitions=MappingProxyType({
+            key: replace(definition, payload=deepcopy(definition.payload))
+            for key, definition in self.selected_definitions.items()
+        }))
+
     def train_evaluation_source(self, request_id: RequestId) -> tuple[str, ...] | bytes | None:
         """Read the compiled Task facts only for their exact request and documents."""
         source = self._train_evaluation_sources.get(request_id)
@@ -908,17 +915,21 @@ def _encode_row(
             document = ReportDocument.model_validate(payload)
             expected = set(document.figure_roles)
             invalid = [
-                (role, "required figure input is missing") for role in sorted(expected - inputs.keys())
+                (ResolutionCode.INVALID_PAYLOAD, "payload.blocks", "The report has no blocks."),
+            ] if not document.blocks else []
+            invalid += [
+                (ResolutionCode.BAD_REFERENCE, f"inputs.{role}", "required figure input is missing")
+                for role in sorted(expected - inputs.keys())
             ] + [
-                (role, "unknown Report figure role") for role in sorted(inputs.keys() - expected)
+                (ResolutionCode.BAD_REFERENCE, f"inputs.{role}", "unknown Report figure role")
+                for role in sorted(inputs.keys() - expected)
             ]
             if invalid:
                 return _LoweredRow(
                     None,
                     tuple(ProjectDiagnostic(
-                        ResolutionCode.BAD_REFERENCE, f"inputs.{role}", detail, key.step,
-                        row=key.row, variant=key.variant,
-                    ) for role, detail in invalid),
+                        code, path, detail, key.step, row=key.row, variant=key.variant,
+                    ) for code, path, detail in invalid),
                     lowering_stamp,
                 )
             spec = ReportRequestSpec(document=document)
@@ -1027,12 +1038,13 @@ class ProjectPlanMemo:
                 self._work = work
 
 
-def _compiler_authority(
+def compiler_authority(
     components: ComponentRegistry | None, operations: OperationRegistry | None,
     functions: FunctionRegistry | None, python_tasks: PythonTaskRegistry | None,
     training_methods: TrainingMethodRegistry | None,
     figure_templates: FigureTemplateRegistry | None,
 ) -> tuple[object, ...]:
+    """Identify the compiler code and registries whose output a memoized plan depends on."""
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
         request_identity.request_codec_authority(), components, operations, functions, python_tasks, training_methods,
@@ -1697,7 +1709,7 @@ class _Compiler:
         )
 
     def prepare_train_trial(self, authored: TrialDocuments) -> _TrainPreparation | tuple[Problem, ...]:
-        from feedbax.compiler.trial_execution import compile_trial_execution
+        from feedbax.compiler.trial_execution import resolve_trial_execution
 
         identity = to_json(
             authored.model_dump(exclude_unset=True, round_trip=True), inf_nan_mode="constants",
@@ -1705,7 +1717,8 @@ class _Compiler:
         if (prepared := self.trial_preparations.get(identity)) is not None:
             return prepared
         components = self.components or _builtin_model_registry()
-        paired = compile_trial_execution(
+        # The plan needs the resolved graph, source addresses and conditions, never a constructed model.
+        paired = resolve_trial_execution(
             authored.model, authored.task_source,
             components, self.functions or _builtin_expression_registry(),
             python_tasks=self.python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
@@ -1714,7 +1727,7 @@ class _Compiler:
         if isinstance(paired, tuple):
             result = paired
         else:
-            graph = paired.executable.resolved.graph
+            graph = paired.graph.graph
             checkpoint_problem = None
             if problem := model_owner_problem(graph, "checkpoint", components):
                 address = paired.lowered.source_address(pointer(problem.path))
@@ -2908,14 +2921,14 @@ def compile_project(
             functions=functions, python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
             capture_sources=capture_sources,
         ).plan()
-    authority = _compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates)
+    authority = compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates)
     ticket, previous = memo._begin(authority)
     compiler = _Compiler(
         project, readers, source_runs, previous, operations, components, functions, python_tasks,
         training_methods=training_methods, figure_templates=figure_templates,
     )
     plan = compiler.plan()
-    if authority == _compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates):
+    if authority == compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates):
         memo._publish(ticket, authority, compiler.work)
     return plan
 

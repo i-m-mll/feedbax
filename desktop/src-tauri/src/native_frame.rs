@@ -1,43 +1,31 @@
 use block2::RcBlock;
-use objc2::{
-    rc::Retained,
-    runtime::{AnyObject, NSObjectProtocol, ProtocolObject},
-    MainThreadMarker,
-};
-use objc2_app_kit::{
-    NSWindow, NSWindowDidEnterFullScreenNotification, NSWindowDidExitFullScreenNotification,
-};
-use objc2_foundation::{NSError, NSNotification, NSNotificationCenter, NSOperationQueue, NSString};
+use objc2::{rc::Retained, runtime::AnyObject, MainThreadMarker, Message};
+use objc2_app_kit::NSWindow;
+use objc2_foundation::{NSError, NSString};
 use objc2_web_kit::{WKContentWorld, WKWebView};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    ptr::NonNull,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc,
     },
 };
 use tauri::{Manager, WebviewWindow, WindowEvent};
-use window_shell_geometry::appkit::overlay_reservation;
-
-struct Observations {
-    center: Retained<NSNotificationCenter>,
-    tokens: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
-}
-
-impl Drop for Observations {
-    fn drop(&mut self) {
-        for token in &self.tokens {
-            unsafe { self.center.removeObserver((&**token).as_ref()) };
-        }
-    }
-}
+use window_shell_geometry::{
+    appkit::{observe_controls, ControlsObserver},
+    host_identity_script, window_controls_script, PlacementError, WindowControls,
+};
 
 thread_local! {
-    static OBSERVATIONS: RefCell<BTreeMap<u64, Observations>> = RefCell::new(BTreeMap::new());
+    static FRAMES: RefCell<BTreeMap<u64, Hosted>> = const { RefCell::new(BTreeMap::new()) };
 }
 static NEXT_WINDOW: AtomicU64 = AtomicU64::new(0);
+
+struct Hosted {
+    observer: ControlsObserver,
+    webview: Retained<WKWebView>,
+}
 
 pub fn flush_preferences(
     window: &WebviewWindow,
@@ -70,11 +58,10 @@ pub fn flush_preferences(
 
 struct FrameState {
     origin: String,
-    live: AtomicBool,
-    refresh_queued: AtomicBool,
-    reported_failure: AtomicBool,
+    generation: u64,
 }
 
+/// The native side of a Studio window's title bar: AppKit places the window controls and the page learns where they are.
 #[derive(Clone)]
 pub struct StudioFrame(Arc<FrameState>);
 
@@ -89,9 +76,7 @@ impl StudioFrame {
         }
         Ok(Self(Arc::new(FrameState {
             origin: url.origin().ascii_serialization(),
-            live: AtomicBool::new(true),
-            refresh_queued: AtomicBool::new(false),
-            reported_failure: AtomicBool::new(false),
+            generation: NEXT_WINDOW.fetch_add(1, Ordering::Relaxed),
         })))
     }
 
@@ -99,128 +84,79 @@ impl StudioFrame {
         url.origin().ascii_serialization() == self.0.origin
     }
 
-    fn report(&self, error: impl std::fmt::Display) {
-        if !self.0.reported_failure.swap(true, Ordering::Relaxed) {
-            eprintln!("Studio window controls could not be measured: {error}");
-        }
+    fn scoped(&self, script: &str) -> String {
+        let origin = serde_json::json!(self.0.origin);
+        format!("if (location.origin === {origin}) {{ {script} }}")
     }
 
-    pub fn refresh(&self, window: &WebviewWindow) {
-        if !self.0.live.load(Ordering::Acquire)
-            || self.0.refresh_queued.swap(true, Ordering::AcqRel)
-        {
-            return;
-        }
-        let target = window.clone();
-        let frame = self.clone();
-        let refresh = RcBlock::new(move || {
-            frame.0.refresh_queued.store(false, Ordering::Release);
-            frame.measure(&target);
-        });
-        // Wry dispatches with_webview synchronously on the main thread.
-        unsafe { NSOperationQueue::mainQueue().addOperationWithBlock(&refresh) };
+    /// Marks documents from the Studio origin as natively hosted before their own scripts run.
+    pub fn host_script(&self) -> String {
+        self.scoped(&host_identity_script())
     }
 
-    fn measure(&self, window: &WebviewWindow) {
-        if !self.0.live.load(Ordering::Acquire) {
-            return;
-        }
-        let frame = self.clone();
-        if let Err(error) = window.with_webview(move |platform| {
-            if !frame.0.live.load(Ordering::Acquire) {
+    fn deliver(&self, webview: &WKWebView, outcome: Result<WindowControls, PlacementError>) {
+        let controls = match outcome {
+            Ok(controls) => controls,
+            Err(error) => {
+                eprintln!("Studio window controls could not be placed: {error}");
                 return;
             }
-            let native = unsafe { &*platform.ns_window().cast::<NSWindow>() };
-            let view = unsafe { &*platform.inner().cast::<WKWebView>() };
-            match overlay_reservation(native, view, unsafe { view.pageZoom() }) {
-                Ok(value) if value.is_finite() => {
-                    let script = NSString::from_str(&frame.update_script(value.max(0.0)));
-                    let completion = RcBlock::new(move |_: *mut AnyObject, error: *mut NSError| {
-                        if let Some(error) = unsafe { error.as_ref() } {
-                            frame.report(error.localizedDescription());
-                        }
-                    });
-                    unsafe {
-                        view.evaluateJavaScript_completionHandler(&script, Some(&completion))
-                    };
-                }
-                Ok(_) => frame.report("Invalid CSS reservation"),
-                Err(error) => frame.report(error),
+        };
+        let script = NSString::from_str(&self.scoped(&window_controls_script(controls)));
+        let completion = RcBlock::new(|_: *mut AnyObject, error: *mut NSError| {
+            if let Some(error) = unsafe { error.as_ref() } {
+                eprintln!(
+                    "Studio window controls could not be reported to the page: {}",
+                    error.localizedDescription()
+                );
             }
-        }) {
-            self.report(error);
-        }
+        });
+        unsafe { webview.evaluateJavaScript_completionHandler(&script, Some(&completion)) };
     }
 
-    fn update_script(&self, reservation: f64) -> String {
-        let origin = serde_json::json!(self.0.origin);
-        format!(
-            "if (location.origin === {origin}) {{\
-               const apply = () => document.documentElement.style.setProperty(\
-                 '--studio-native-controls', '{reservation}px');\
-               if (document.documentElement) apply();\
-               else addEventListener('DOMContentLoaded', apply, {{once: true}});\
-             }}"
-        )
+    /// Gives a newly committed document the controls' current placement, which reports before it existed missed.
+    pub fn page_committed(&self) {
+        MainThreadMarker::new().expect("Wry reports page loads on the main thread");
+        FRAMES.with(|frames| {
+            if let Some(hosted) = frames.borrow().get(&self.0.generation) {
+                self.deliver(&hosted.webview, hosted.observer.current());
+            }
+        });
     }
 
     pub fn install(&self, window: &WebviewWindow) -> tauri::Result<()> {
-        let generation = NEXT_WINDOW.fetch_add(1, Ordering::Relaxed);
         let target = window.clone();
-        let frame = self.clone();
-        window.on_window_event(move |event| match event {
-            WindowEvent::Destroyed => {
-                frame.0.live.store(false, Ordering::Release);
+        let generation = self.0.generation;
+        window.on_window_event(move |event| {
+            if let WindowEvent::Destroyed = event {
                 if let Err(error) = target.app_handle().run_on_main_thread(move || {
-                    OBSERVATIONS.with(|observations| {
-                        observations.borrow_mut().remove(&generation);
-                    });
+                    FRAMES.with(|frames| frames.borrow_mut().remove(&generation));
                 }) {
-                    frame.report(error);
+                    eprintln!("Studio window controls observer was not released: {error}");
                 }
             }
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                frame.refresh(&target);
-            }
-            _ => {}
         });
 
-        let target = window.clone();
         let frame = self.clone();
         window.with_webview(move |platform| {
-            if !frame.0.live.load(Ordering::Acquire) {
-                return;
-            }
+            let main = MainThreadMarker::new().expect("Wry runs with_webview on the main thread");
             let native = unsafe { &*platform.ns_window().cast::<NSWindow>() };
-            let center = NSNotificationCenter::defaultCenter();
-            let tokens = [unsafe { NSWindowDidEnterFullScreenNotification }, unsafe {
-                NSWindowDidExitFullScreenNotification
-            }]
-            .into_iter()
-            .map(|name| {
-                let target = target.clone();
-                let frame = frame.clone();
-                let callback = RcBlock::new(move |_: NonNull<NSNotification>| {
-                    frame.refresh(&target);
-                });
-                unsafe {
-                    center.addObserverForName_object_queue_usingBlock(
-                        Some(name),
-                        Some(native),
-                        None,
-                        &callback,
-                    )
-                }
-            })
-            .collect();
-            OBSERVATIONS.with(|observations| {
-                observations
-                    .borrow_mut()
-                    .insert(generation, Observations { center, tokens });
+            let webview = unsafe { &*platform.inner().cast::<WKWebView>() };
+            let reporting = webview.retain();
+            let reporter = frame.clone();
+            let observer = observe_controls(main, native, webview, move |outcome| {
+                reporter.deliver(&reporting, outcome)
             });
-        })?;
-        self.refresh(window);
-        Ok(())
+            FRAMES.with(|frames| {
+                frames.borrow_mut().insert(
+                    frame.0.generation,
+                    Hosted {
+                        observer,
+                        webview: webview.retain(),
+                    },
+                );
+            });
+        })
     }
 }
 

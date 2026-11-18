@@ -1,8 +1,10 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { palette } from './fixtures/studioKeyboard';
 
-test.use({ channel: 'chrome', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 function card(model: Locator, id: string) {
   return model.locator(`.react-flow__node[data-id="${id}"]`);
@@ -22,9 +24,9 @@ async function revealModel(page: Page, url: string) {
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
 }
 
-test('edits a conserving connection only inside its physical interior', async ({ page, request }, info) => {
+test('edits a conserving connection only inside its physical interior', async ({ page, request, studio }, info) => {
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
-  await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, 'equations');
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'equations');
   const url = `/?project=${encodeURIComponent(snapshot.project_id)}`;
   const model = modelPanel(page);
   const fit = () => model.getByRole('button', { name: 'Fit View', exact: true }).click();
@@ -56,6 +58,11 @@ test('edits a conserving connection only inside its physical interior', async ({
   }
   async function enterEquations() {
     await card(model, 'equations').locator('header').dblclick();
+    await expect(boundaryPort).toBeVisible();
+    await fit();
+  }
+  /** A reloaded window reopens the Model where it was left, inside Equations. */
+  async function reopenedInEquations() {
     await expect(boundaryPort).toBeVisible();
     await fit();
   }
@@ -94,7 +101,7 @@ test('edits a conserving connection only inside its physical interior', async ({
     { owner: 'boundary', port: 'free' },
   ]));
   await revealModel(page, url);
-  await enterEquations();
+  await reopenedInEquations();
   const savedEdge = edge(model, id);
   const savedPath = savedEdge.locator('.react-flow__edge-path');
   await expect(savedPath).toHaveAttribute('d', /^M/);
@@ -111,7 +118,7 @@ test('edits a conserving connection only inside its physical interior', async ({
   const restored = await apply('undo', () => model.press('Meta+Z'));
   expect(stored(restored.snapshot)).toEqual({ [id]: connection });
   await revealModel(page, url);
-  await enterEquations();
+  await reopenedInEquations();
   await expect(savedPath).toHaveAttribute('d', /^M/);
   expect(stored(await openSaved())).toEqual({ [id]: connection });
 });
@@ -122,13 +129,15 @@ for (const { scope, element, composites, target } of [
   { scope: 'within-step', element: { kind: 'wire', id: 'drive' }, composites: [],
     target: (model: Locator) => edge(model, 'drive') },
 ]) {
-  test(`reveals the saved Plan problem at its ${element.kind} address (${scope})`, async ({ page, request }, info) => {
+  test(`reveals the saved Plan problem at its ${element.kind} address (${scope})`, async ({ page, request, studio }, info) => {
     const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
-    await runProjectFixture('web.e2e.studio.fixtures.stored_model', info.config.metadata.home, configuration.project, scope);
-    const plan = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/train-runs` &&
+    await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, scope);
+    // The window's plan request names the revision it read; the test reads that plan itself,
+    // since the browser may already have dropped the body when the page refetches.
+    const planRead = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/train-runs` &&
       new URL(response.url()).searchParams.get('window_map') === 'true');
     await revealModel(page, `/?project=${encodeURIComponent(snapshot.project_id)}`);
-    const response = await plan;
+    const response = await request.get((await planRead).url());
     expect(response.ok(), await response.text()).toBe(true);
     const { window_map: map } = await response.json() as StudioSavedTrainRuns;
     expect(map?.rows.find((row) => row.key.step === 'train')?.status).toBe('cannot_run');
@@ -138,8 +147,7 @@ for (const { scope, element, composites, target } of [
     expect(problem?.detail).toBeTruthy();
     if (!problem?.detail) throw new Error('Expected an addressed Plan problem');
     const reason = problem.detail.startsWith(problem.path + ': ') ? problem.detail.slice(problem.path.length + 2) : problem.detail;
-    await page.getByRole('article', { name: 'Train train', exact: true })
-      .getByRole('button', { name: /Can't run/ }).and(page.locator('[aria-haspopup="dialog"]')).click();
+    await palette(page, 'problems', 'Problems');
     await page.getByRole('dialog', { name: 'Problems' }).getByRole('button').filter({ hasText: reason }).click();
     await expect(target(modelPanel(page))).toHaveCount(1);
     await expect(modelPanel(page).getByText(reason, { exact: false }).first()).toBeFocused();

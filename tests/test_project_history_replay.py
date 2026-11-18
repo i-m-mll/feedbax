@@ -118,7 +118,7 @@ def test_replay_restores_exact_model_bytes_and_emits_one_revision(study, monkeyp
                 raise HostError("unavailable", "Stream ended")
             return 0, StudioJobEventHistory(cursor=0, oldest_cursor=0, events=[])
 
-    client.app.state.job_service = JobsStream()
+    client.app.state.job_activity = JobsStream()
     response = client.get("/api/events?folder=study")
     assert response.status_code == 200
     notices = [

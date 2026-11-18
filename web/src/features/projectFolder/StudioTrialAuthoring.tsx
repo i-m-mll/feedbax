@@ -1,26 +1,36 @@
-import { useRef, useState } from 'react';
+import clsx from 'clsx';
+import { useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
+import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioReason } from '@/components/activity/studioVocabulary';
-import { StudioFieldControl } from '@/components/values/StudioFieldControl';
+import { Button } from '@/components/ui/Button';
+import { Inspector } from '@/components/ui/Inspector';
+import { MenuItem } from '@/components/ui/Menu';
+import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
+import type { FieldModel } from '@/components/values/fieldModel';
+import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { Select } from '@/components/ui/Select';
+import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
+import { CatalogPicker } from '@/components/ui/CatalogPicker';
+import { FieldRow } from '@/components/ui/FieldRow';
+import { SettingsForm } from '@/components/values/SettingsForm';
+import { ValueField } from '@/components/values/ValueField';
+import { setIn } from '@/components/values/adapters/jsonSchema';
+import { isRecord, rawField } from '@/components/values/adapters/raw';
+import { fromFieldView } from '@/components/values/adapters/fieldView';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
   JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { Field } from './model/ModelInspector';
 import type { ProjectEditController } from './projectEditController';
+import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
-type Commit = (name: string, change: Change) => Promise<string | undefined>;
-const control = 'min-w-0 rounded border border-shell-divider bg-shell-chrome px-2 py-1 text-sm';
-const button = 'rounded px-2 py-1 text-sm hover:bg-shell-hover disabled:opacity-50';
+/** Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. */
+type Commit = (name: string, change: Change, removes?: boolean) => Promise<string | undefined>;
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
-
-function parameterValue(value: JsonValue | undefined) {
-  return typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean' ? String(value) : '';
-}
 
 function write(path: string, value: JsonValue, present: boolean): ProjectValueEdit {
   return { op: present ? 'replace' : 'add', path, value };
@@ -28,22 +38,23 @@ function write(path: string, value: JsonValue, present: boolean): ProjectValueEd
 
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
-  enabled: boolean, editable: boolean, scope?: StudioTrialAuthoringRequest['scope'],
+  enabled: boolean, editable: boolean, scope: StudioTrialAuthoringRequest['scope'] | undefined, confirmRemoval: ConfirmRunRemoval,
 ) {
   const writing = useRef(false);
   const [busy, setBusy] = useState(false);
   const query = useQuery({
     queryKey: ['trial-authoring', project, revision, run],
     queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
-    enabled: enabled && !!run, retry: false,
+    enabled: enabled && !!run,
   });
-  const commit: Commit | undefined = editable && !busy && run && query.data ? async (name, change) => {
+  const commit: Commit | undefined = editable && !busy && run && query.data ? async (name, change, removes) => {
     if (writing.current) return studioReason('saving', studioName('project'));
     writing.current = true;
     setBusy(true);
     try {
       const result = await readStudioTrialAuthoring(project, { revision, run, change, scope }, editor.signal);
       if (result.files.length) {
+        if (removes && !await confirmRemoval(filesRemoval(project, revision, result.files, editor.signal))) return;
         const documents = [result.model, result.task_document, result.objective_document];
         editor.editFiles(name, result.files, {
           reviewedRevision: revision,
@@ -66,95 +77,159 @@ export function useTrialAuthoring(
   return { view: query.data, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
-export function TrialTaskPicker({ view, commit }: { view: StudioTrialAuthoring; commit?: Commit }) {
-  const [error, setError] = useState<string>();
-  return <>
-    <select className={control} aria-label={studioName('taskDocument')} value={view.task_document ?? ''}
-      disabled={!commit || view.tasks.length === 0} onChange={async (event) => {
-        const document = event.currentTarget.value;
-        if (document) setError(await commit?.(studioAccessibleName('select', studioName('task')), { kind: 'select_task', document }));
-      }}>
-      {!view.task_document && <option value="">{studioName('inlineTask')}</option>}
-      {view.tasks.map(({ document, problems }) => <option key={document} value={document}>
-        {document}{problems.length ? ' · ' + problems[0].reason : ''}
-      </option>)}
-    </select>
-    {error && <span role="alert">{error}</span>}
-  </>;
-}
-
 export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; commit?: Commit }) {
   const [error, setError] = useState<string>();
-  const task = view.task;
-  const selection = 'params' in task ? task : undefined;
-  const type = view.task_types.find((item) => item.type === selection?.type);
-  const properties = type?.parameter_schema.properties;
-  const params = properties && typeof properties === 'object' && !Array.isArray(properties) ? Object.entries(properties) : [];
+  const catalog = useAuthoringCatalog();
+  const typeLabel = useId();
+  const task = 'type' in view.task ? view.task : undefined;
+  const params = task?.params ?? {};
+  const type = view.task_types.find((item) => item.type === task?.type);
+  const packages = new Map(catalogEntries(catalog.data, 'python_tasks').map((entry) => [entry.key, entry.package]));
   const source = view.task_source && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(view.task_source)}</span>;
+  const edit = (name: string, edits: ProjectValueEdit[]) => commit && commit(studioAccessibleName('set', name), { kind: 'task', edits });
   return <div className="grid max-w-2xl gap-4 p-3 text-sm">
-    {!type && source}
-    {type && <section className="grid gap-2" aria-label={studioName('parameters')}>
-      <h3 className="font-medium">{type.label}</h3>
-      {params.flatMap(([key, property]) => {
-        if (!property || typeof property !== 'object' || Array.isArray(property)) return [];
-        const name = typeof property.title === 'string' ? property.title : humanizeLabel(key);
-        const value = selection?.params[key] ?? property.default;
-        const number = property.type === 'number' || property.type === 'integer';
-        const origin = view.task_field_sources?.[key] ?? view.task_source;
-        return <Field key={key} label={name} value={parameterValue(value)} type={number ? 'number' : 'text'}
-          description={origin ? studioEvaluateValueSource(origin) : undefined}
-          parse={(raw) => number ? raw.trim() && Number.isFinite(Number(raw)) ? Number(raw) : undefined : raw}
-          commit={commit && (async (value) => setError(await commit('Set ' + name, {
-            kind: 'task', edits: [write(authoredPointer(['params', key]), value, !!selection && has(selection.params, key))],
-          })))} />;
-      })}
-    </section>}
-    <section aria-label={studioName('signals')}>
-      <h3 className="font-medium">{studioName('signals')}</h3>
-      <ul>{view.signals.map(({ id, name, type }) => <li key={id}>{humanizeLabel(name)} · {type.shape?.join(' × ') || type.base}</li>)}</ul>
-    </section>
-    {!!view.epochs.length && <section aria-label={studioName('epochs')}>
-      <h3 className="font-medium">{studioName('epochs')}</h3>
-      <ol>{view.epochs.map(({ id, name }) => <li key={id}>{name}</li>)}</ol>
-    </section>}
-    {!!view.resets.length && <section aria-label={studioName('perTrial')}>
-      <h3 className="font-medium">{studioName('perTrial')}</h3>
-      <ul>{view.resets.map(({ address, variable }) => address.element.kind === 'field' &&
-        <li key={JSON.stringify(address)}>{address.element.path.map(String).join(' · ')} · {variable ?? studioDefinitionStatus('unlinked')}</li>)}</ul>
-    </section>}
-    {!!view.inputs.length && <section className="grid gap-1" aria-label={studioName('modelInputs')}>
-      <h3 className="font-medium">{studioName('modelInputs')}</h3>
-      {view.inputs.map(({ address, name, signal }) => <label key={name} className="flex items-center gap-2">
-        {name}
-        <select className={control} aria-label={studioAccessibleName('bind', name)} value={signal ?? ''} disabled={!commit}
-          onChange={async (event) => setError(await commit?.('Bind Task Signal', {
-            kind: 'binding', input: address, signal: event.currentTarget.value || null,
-          }))}>
-          <option value="">{studioDefinitionStatus('unbound')}</option>
-          {view.signals.map(({ id, name }) => <option key={id} value={name}>{humanizeLabel(name)}</option>)}
-        </select>
-      </label>)}
+    {!task && source}
+    {task && <section className="grid gap-1" aria-label={studioName('parameters')}>
+      <FieldRow label={studioName('task')} labelId={typeLabel}>
+        <CatalogPicker aria-labelledby={typeLabel} className="w-full" disabled={!commit} value={task.type}
+          entries={view.task_types.map((item) => ({ key: item.type, label: item.label, package: packages.get(item.type) }))}
+          onChoose={async (key) => setError(await edit(studioName('task'), [
+            write(authoredPointer(['type']), key, true), write(authoredPointer(['params']), {}, has(task, 'params')),
+          ]))} />
+      </FieldRow>
+      {type && <SettingsForm schema={type.parameter_schema} value={params}
+        origin={([key]) => {
+          const origin = view.task_field_sources?.[key] ?? view.task_source;
+          return origin ? studioEvaluateValueSource(origin) : undefined;
+        }}
+        write={commit && (async (path, value) => {
+          const [key, ...rest] = path;
+          const property = type.parameter_schema.properties;
+          const name = isRecord(property) && isRecord(property[key]) && typeof property[key].title === 'string'
+            ? property[key].title : humanizeLabel(key);
+          const edits = [write(authoredPointer(['params', key]), setIn(params[key], rest, value), has(params, key))];
+          return edit(name, has(task, 'params') ? edits : [write(authoredPointer(['params']), {}, false), ...edits]);
+        })} />}
     </section>}
     {error && <p role="alert">{error}</p>}
   </div>;
 }
 
-function expressionControl(view: StudioTrialAuthoring, term: ObjectiveTerm, field: 'measure' | 'weight', commit?: Commit) {
-  const projection = view.fields.find((site) => site.path === authoredPointer(['objective', 'terms', term.id, field]));
-  if (!projection) return '—';
-  const label = humanizeLabel(field);
-  const value = term[field];
-  const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
-  return <StudioFieldControl valueKind={kind} field={{
-    label, text: projection.text ?? '',
-    site: { ...projection.projection, kinds: projection.projection.kinds.filter((kind) => kind !== 'sweep') },
-  }} commit={commit && ((edit) => edit.kind === 'text'
-    ? commit('Set ' + label, { kind: 'expression', term: term.id, field, text: edit.text })
-    : Promise.resolve(undefined))} />;
+/** The Task's elements by kind, as the drawer's sections: what the task produces and what the Model reads. */
+function taskGroups(view: StudioTrialAuthoring) {
+  const signal = (name: string) => humanizeLabel(name);
+  return [
+    { id: 'variables', nodes: view.variables.map(({ id, name }) => ({ id: 'variable:' + id, name: humanizeLabel(name) })) },
+    { id: 'signals', nodes: view.signals.map(({ id, name }) => ({ id: 'signal:' + id, name: signal(name) })) },
+    { id: 'epochs', nodes: view.epochs.map(({ id, name }) => ({ id: 'epoch:' + id, name })) },
+    { id: 'perTrial', nodes: view.resets.flatMap(({ address }) => address.element.kind === 'field'
+      ? [{ id: 'reset:' + JSON.stringify(address), name: address.element.path.map(String).join(' · ') }] : []) },
+    { id: 'modelInputs', nodes: view.inputs.map(({ name, signal: bound }) => ({
+      id: 'input:' + name, name, muted: !bound,
+    })) },
+  ] as const satisfies readonly { id: Parameters<typeof studioName>[0]; nodes: readonly TreeNode[] }[];
+}
+
+export function TrialTaskOutline({ sections, view, selected, select }: {
+  sections: DrawerSections; view: StudioTrialAuthoring; selected?: string; select(id: string | null): void;
+}) {
+  return <Drawer>
+    {taskGroups(view).map(({ id, nodes }) => nodes.length > 0 && <DrawerSection key={id} sections={sections} id={`task.${id}`}
+      name={studioName(id)} count={nodes.length}>
+      <Tree aria-label={studioName(id)} nodes={nodes} selected={selected && nodes.some((node) => node.id === selected) ? [selected] : []}
+        onSelectedChange={(ids) => select(ids.at(-1) ?? null)} />
+    </DrawerSection>)}
+  </Drawer>;
+}
+
+export function TrialTaskInspector({ view, commit, selected }: { view: StudioTrialAuthoring; commit?: Commit; selected?: string }) {
+  if (!selected) return null;
+  const [kind, ...rest] = selected.split(':');
+  const key = rest.join(':');
+  if (kind === 'variable' || kind === 'signal') {
+    const value = (kind === 'variable' ? view.variables : view.signals).find(({ id }) => id === key);
+    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base} /> : null;
+  }
+  if (kind === 'epoch') {
+    const epoch = view.epochs.find(({ id }) => id === key);
+    return epoch ? <Inspector name={epoch.name} type={studioName('epochs')} /> : null;
+  }
+  if (kind === 'reset') {
+    const reset = view.resets.find(({ address }) => JSON.stringify(address) === key);
+    return reset && reset.address.element.kind === 'field' ? <Inspector name={reset.address.element.path.map(String).join(' · ')}
+      type={reset.variable ?? studioDefinitionStatus('unlinked')} /> : null;
+  }
+  const input = view.inputs.find(({ name }) => name === key);
+  if (!input) return null;
+  return <Inspector name={input.name} type={studioName('modelInputs')}>
+    <ValueField key={JSON.stringify([input.name, input.signal])} model={rawField({
+      id: 'signal', label: studioName('signals'), value: input.signal ?? '',
+      type: { kind: 'choice', options: [
+        { value: '', label: studioDefinitionStatus('unbound') },
+        ...view.signals.map(({ name }) => ({ value: name, label: humanizeLabel(name) })),
+      ] },
+      change: commit && ((value) => commit('Bind Task Signal', { kind: 'binding', input: input.address, signal: String(value) || null })),
+    })} />
+  </Inspector>;
+}
+
+/** A term's fields, by the column that shows them. */
+type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reduction';
+const columns = ['name', 'enabled', 'measure', 'window', 'weight'] as const satisfies readonly TermField[];
+const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
+
+function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: number, commit?: Commit): Record<TermField, FieldModel> {
+  const path = '/terms/' + index;
+  const set = (field: keyof ObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
+    studioAccessibleName('set', name), { kind: 'objective', edits: [write(path + '/' + field, value, has(term, field))] }));
+  const expression = (field: 'measure' | 'weight'): FieldModel => {
+    const label = humanizeLabel(field);
+    const projection = view.fields.find((site) => site.path === authoredPointer(['objective', 'terms', term.id, field]));
+    if (!projection) return rawField({ id: term.id + field, label, type: { kind: 'readOnly' }, value: '—' });
+    const value = term[field];
+    const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
+    return fromFieldView({
+      label, text: projection.text ?? '',
+      site: { ...projection.projection, kinds: projection.projection.kinds.filter((kind) => kind !== 'sweep') },
+    }, {
+      id: term.id + field, kind,
+      commit: commit && ((edit) => edit.kind === 'text'
+        ? commit('Set ' + label, { kind: 'expression', term: term.id, field, text: edit.text })
+        : Promise.resolve(undefined)),
+    });
+  };
+  const epochs = term.epochs ?? [];
+  return {
+    name: rawField({ id: term.id + 'name', label: studioName('name'), type: { kind: 'string' },
+      value: term.name ?? '', change: set('name', studioName('name')) }),
+    enabled: rawField({ id: term.id + 'enabled', label: studioName('enabled'), type: { kind: 'boolean' },
+      value: term.enabled ?? true, change: set('enabled', studioName('enabled')) }),
+    measure: expression('measure'),
+    window: rawField({ id: term.id + 'window', label: studioName('window'),
+      value: epochs.length === 1 ? epochs[0] : epochs.length ? epochs.join(', ') : '',
+      type: { kind: 'choice', options: [
+        { value: '', label: studioName('wholeTrial') },
+        ...epochs.length > 1 ? [{ value: epochs.join(', '), label: epochs.join(', ') }] : [],
+        ...view.epochs.map(({ id, name }) => ({ value: id, label: name })),
+      ] },
+      change: commit && ((epoch) => epoch === epochs.join(', ') && epochs.length > 1 ? undefined
+        : commit('Set Window', { kind: 'objective', edits: [write(path + '/epochs', epoch ? [epoch] : [], has(term, 'epochs'))] })) }),
+    weight: expression('weight'),
+    reduction: rawField({ id: term.id + 'reduction', label: studioName('reduction'),
+      value: term.reduction ?? 'mean', change: set('reduction', humanizeLabel('reduction')), type: { kind: 'choice', options:
+        ([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const)
+          .map(([value, name]) => ({ value, label: studioName(name) })) } }),
+  };
+}
+
+/** A term, and the field of it whose cell is selected. */
+export interface TermSelection {
+  term: string;
+  field?: string;
 }
 
 export function TrialObjectiveTable({ view, commit, selected, select }: {
-  view: StudioTrialAuthoring; commit?: Commit; selected?: string; select(id: string): void;
+  view: StudioTrialAuthoring; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void;
 }) {
   const [error, setError] = useState<string>();
   const [source, setSource] = useState('');
@@ -162,16 +237,11 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
   const sources = [...view.outputs.map(({ value }) => value), ...view.variables, ...view.signals]
     .filter(({ type }) => type.base === 'real' || type.base === 'integer');
   const chosen = sources.find(({ id }) => id === source) ?? sources[0];
-  const save = async (name: string, edit: ProjectValueEdit) =>
-    setError(await commit?.(name, { kind: 'objective', edits: [edit] }));
   return <div className="grid gap-3 overflow-auto p-3 text-sm">
     <div className="flex items-center gap-2">
-      <select className={control} aria-label={studioName('measureSource')} value={chosen?.id ?? ''} disabled={!commit || !sources.length}
-        onChange={(event) => setSource(event.currentTarget.value)}>
-        {!sources.length && <option value="" />}
-        {sources.map(({ id, name }) => <option key={id} value={id}>{humanizeLabel(name)}</option>)}
-      </select>
-      <button type="button" className={button} disabled={!commit || !chosen} onClick={async () => {
+      <Select className="min-w-0" aria-label={studioName('measureSource')} value={chosen?.id ?? null} disabled={!commit || !sources.length}
+        items={sources.map(({ id, name }) => ({ value: id, label: humanizeLabel(name) }))} onValueChange={setSource} />
+      <Button disabled={!commit || !chosen} onClick={async () => {
         if (!commit || !chosen) return;
         const id = crypto.randomUUID();
         const value = {
@@ -188,67 +258,81 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
         const reason = await commit(studioName('addTerm'), { kind: 'objective', edits });
         setError(reason);
         if (!reason) select(id);
-      }}>{studioName('addTerm')}</button>
+      }}>{studioName('addTerm')}</Button>
     </div>
     {error && <p role="alert">{error}</p>}
-    <table className="w-full text-left" aria-label={studioName('objectiveTerms')}>
-      <thead><tr>{(['term', 'measure', 'window', 'weight'] as const).map((id) =>
-        <th scope="col" className="border-b border-shell-divider p-2 font-medium" key={id}>{studioName(id)}</th>)}
-        <th scope="col" className="border-b border-shell-divider" />
+    <Table aria-label={studioName('objectiveTerms')}>
+      <thead><tr>{columns.map((id) =>
+        <TableHeaderCell scope="col" key={id}>{studioName(columnNames[id])}</TableHeaderCell>)}
       </tr></thead>
       <tbody>{terms.map((term, index) => {
-        const path = '/terms/' + index;
-        const set = (field: keyof ObjectiveTerm, value: JsonValue, name: string) =>
-          save(name, write(path + '/' + field, value, has(term, field)));
-        return <tr key={term.id} className="border-b border-shell-divider align-top" aria-selected={selected === term.id}>
-          <td className="p-2">
-            <button type="button" className={button} onClick={() => select(term.id)}>{term.name ?? studioAccessibleName('term', index + 1)}</button>
-            <label className="flex items-center gap-1"><input type="checkbox" checked={term.enabled ?? true} disabled={!commit}
-              onChange={(event) => { void set('enabled', event.currentTarget.checked, studioName('enabled')); }} />{studioName('enabled')}</label>
-          </td>
-          <td className="min-w-40 p-2">{expressionControl(view, term, 'measure', commit)}</td>
-          <td className="p-2"><select className={control} aria-label={studioName('window')} disabled={!commit}
-            value={term.epochs?.length === 1 ? term.epochs[0] : term.epochs?.length ? '@multiple' : ''}
-            onChange={(event) => { const epoch = event.currentTarget.value; void set('epochs', epoch ? [epoch] : [], 'Set Window'); }}>
-            <option value="">{studioName('wholeTrial')}</option>
-            {term.epochs && term.epochs.length > 1 && <option value="@multiple" disabled>{term.epochs.join(', ')}</option>}
-            {view.epochs.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
-          </select></td>
-          <td className="min-w-24 p-2">{expressionControl(view, term, 'weight', commit)}</td>
-          <td className="p-2">
-            <button type="button" className={button} disabled={!commit || index === 0} aria-label={studioName('moveEarlier')} onClick={() => {
-              const reordered = [...terms];
-              [reordered[index - 1], reordered[index]] = [reordered[index], reordered[index - 1]];
-              void save(studioName('moveEarlier'), write('/terms', reordered as unknown as JsonValue, true));
-            }}>↑</button>
-            <button type="button" className={button} disabled={!commit} onClick={() => {
-              void save(studioAccessibleName('remove', studioName('term')), { op: 'remove', path });
-            }}>{studioName('remove')}</button>
-          </td>
+        const fields = termFields(view, term, index, commit);
+        return <tr key={term.id} className="align-top">
+          {columns.map((field) => {
+            const chosenCell = selected?.term === term.id && selected.field === field;
+            return <TableCell key={field} data-selected={chosenCell || undefined}
+              className={clsx('overflow-visible py-1', field === 'measure' && 'min-w-40', chosenCell && 'bg-shell-row-selected')}
+              onFocusCapture={() => { if (!chosenCell) select(term.id, field); }}
+              onPointerDown={() => { if (!chosenCell) select(term.id, field); }}>
+              <ValueField model={fields[field]} form="cell" />
+            </TableCell>;
+          })}
         </tr>;
       })}</tbody>
-    </table>
+    </Table>
   </div>;
 }
 
-export function TrialObjectiveInspector({ view, commit, selected }: {
-  view: StudioTrialAuthoring; commit?: Commit; selected?: string;
+export function TrialObjectiveOutline({ sections, view, commit, selected, select }: {
+  sections: DrawerSections; view: StudioTrialAuthoring; commit?: Commit; selected?: string; select(term: string | null): void;
 }) {
   const [error, setError] = useState<string>();
-  const index = view.objective?.terms?.findIndex(({ id }) => id === selected) ?? -1;
+  const tree = useRef<TreeHandle>(null);
+  const terms = view.objective?.terms ?? [];
+  const save = async (name: string, edit: ProjectValueEdit, removes?: boolean) =>
+    setError(await commit?.(name, { kind: 'objective', edits: [edit] }, removes));
+  const nodes: TreeNode[] = terms.map((term, index) => ({
+    id: term.id, name: term.name ?? studioAccessibleName('term', index + 1), muted: term.enabled === false,
+  }));
+  return <Drawer>
+    <DrawerSection sections={sections} id="objective.outline" name={studioName('outline')} count={terms.length}>
+      <Tree ref={tree} aria-label={studioName('objectiveTerms')} nodes={nodes} selected={selected ? [selected] : []}
+        onSelectedChange={(ids) => select(ids.at(-1) ?? null)}
+        onRename={commit && ((id, name) => {
+          const index = terms.findIndex((term) => term.id === id);
+          if (index < 0 || !name.trim()) return false;
+          void save(studioAccessibleName('set', studioName('name')), write('/terms/' + index + '/name', name.trim(), has(terms[index], 'name')));
+        })}
+        menu={commit && ((node) => {
+          const index = terms.findIndex((term) => term.id === node.id);
+          return <>
+            <MenuItem onClick={() => tree.current?.rename(node.id)}>{studioName('rename')}</MenuItem>
+            <MenuItem disabled={index <= 0} onClick={() => {
+              const reordered = [...terms];
+              [reordered[index - 1], reordered[index]] = [reordered[index], reordered[index - 1]];
+              void save(studioName('moveEarlier'), write('/terms', reordered as unknown as JsonValue, true));
+            }}>{studioName('moveEarlier')}</MenuItem>
+            <MenuItem onClick={() => { void save(studioAccessibleName('remove', studioName('term')), { op: 'remove', path: '/terms/' + index }, true); }}>
+              {studioName('remove')}
+            </MenuItem>
+          </>;
+        })} />
+      {error && <p role="alert" className="px-2">{error}</p>}
+    </DrawerSection>
+  </Drawer>;
+}
+
+export function TrialObjectiveInspector({ view, commit, selected }: {
+  view: StudioTrialAuthoring; commit?: Commit; selected?: TermSelection;
+}) {
+  const index = view.objective?.terms?.findIndex(({ id }) => id === selected?.term) ?? -1;
   const term = view.objective?.terms?.[index];
   if (!term) return null;
-  const save = async (field: 'name' | 'reduction', value: JsonValue) => setError(await commit?.('Set ' + humanizeLabel(field), {
-    kind: 'objective', edits: [write('/terms/' + index + '/' + field, value, has(term, field))],
-  }));
-  return <div className="grid gap-2 p-2 text-sm">
-    <Field key={term.id} label={studioName('name')} value={term.name ?? ''} parse={(raw) => raw.trim() || undefined}
-      commit={commit && ((value) => { void save('name', value); })} />
-    <label>{studioName('reduction')} <select className={control} value={term.reduction ?? 'mean'} disabled={!commit}
-      onChange={(event) => { void save('reduction', event.currentTarget.value); }}>
-      {([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const).map(([value, name]) =>
-        <option value={value} key={value}>{studioName(name)}</option>)}
-    </select></label>
-    {error && <p role="alert">{error}</p>}
-  </div>;
+  const fields = termFields(view, term, index, commit);
+  const first = (Object.keys(fields) as TermField[]).find((field) => field === selected?.field);
+  const order = [...first ? [first] : [], ...(Object.keys(fields) as TermField[]).filter((field) => field !== first)];
+  return <Inspector name={term.name ?? studioAccessibleName('term', index + 1)} type={term.name ? studioName('term') : undefined}>
+    {order.map((field) => <ValueField key={term.id + field + JSON.stringify(fields[field].value ?? fields[field].text)}
+      model={fields[field]} />)}
+  </Inspector>;
 }

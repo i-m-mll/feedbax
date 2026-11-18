@@ -1,22 +1,23 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type { ModelFieldResponse, StudioProjectDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseStepKind } from './fixtures/studioKeyboard';
+import { placeFromLibrary } from './fixtures/controls';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 test('reopens a Model duration range and an integer sample in their saved forms', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Train');
   await mapStep(page, 'train').click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const tau = inspector.getByRole('region', { name: 'Tau field', exact: true });
   const tauText = tau.getByRole('textbox', { name: 'Tau', exact: true });
   const hidden = inspector.getByRole('textbox', { name: 'Hidden size', exact: true });
-  const rnn = page.getByRole('button', { name: 'Add VanillaRNN', exact: true });
-  await rnn.press('Enter');
+  await placeFromLibrary(page, 'VanillaRNN');
   await expect(tauText).toHaveValue(/ st$/);
   await enter(tauText, '30 ms');
   await expect(tauText).toHaveValue('0.03 s');
@@ -37,7 +38,7 @@ test('reopens a Model duration range and an integer sample in their saved forms'
   });
   await page.reload();
   await mapStep(page, 'train').click();
-  await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(model).toBeVisible();
   await model.locator('.react-flow__node').filter({ hasText: 'VanillaRNN' }).locator('header').click();
   await expect(tauText).toHaveValue('linspace(0.02 s, 0.04 s, 4)');
   await expect(hidden).toHaveValue(/sample\(choice\(8, 12, per=run\), 4\)/);
@@ -48,13 +49,13 @@ test('edits and reopens a stored Model field sweep through project history', asy
   const { snapshot, projectPath } = await seedManagedProject(request, []);
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await page.getByRole('button', { name: 'New Step', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Train');
   await mapStep(page, 'train').click();
 
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const hidden = inspector.getByRole('textbox', { name: 'Hidden size', exact: true });
-  await page.getByRole('button', { name: 'Add GRU', exact: true }).press('Enter');
+  await placeFromLibrary(page, 'GRU');
   await expect(hidden).toHaveValue('4');
   await enter(hidden, '64');
   await expect(inspector.getByRole('button', { name: 'Hidden size kind: Value' })).toBeVisible();
@@ -66,22 +67,22 @@ test('edits and reopens a stored Model field sweep through project history', asy
 
   const valueMenu = inspector.getByRole('button', { name: 'Hidden size kind: Value' });
   await valueMenu.click();
-  await expect(inspector.getByRole('menuitem')).toHaveText(['Value', 'Sweep', 'Formula']);
-  await inspector.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  await expect(page.getByRole('menuitem')).toHaveText(['Value', 'Sweep', 'Formula']);
+  await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   await expect(hidden).toHaveValue('64,');
   await enter(hidden, '64, 96, 128');
-  await expect(inspector.getByRole('textbox', { name: 'Hidden size value 3', exact: true })).toHaveValue('128');
+  await expect(inspector.getByText('128', { exact: true })).toBeVisible();
   const saved = async () => (await (await request.get(projectPath + '/open')).json() as StudioProjectDocument).snapshot;
   const axis = (value: StudioProjectSnapshot) => value.project.steps?.train.sweep?.axes?.['hidden-size'];
   await expect.poll(async () => Object.keys((axis(await saved()) as { values: object })?.values ?? {}).length).toBe(3);
   const ids = Object.keys((axis(await saved()) as { values: object }).values);
-  await enter(inspector.getByRole('textbox', { name: 'Hidden size value 2', exact: true }), '100');
+  await enter(hidden, '64, 100, 128');
   await expect.poll(async () => JSON.stringify(axis(await saved()))).toContain('"value":100');
   expect(Object.keys((axis(await saved()) as { values: object }).values)).toEqual(ids);
 
   const select = page.getByRole('button', { name: /Select hidden-size/ }).first();
   await select.click();
-  await expect(inspector.getByRole('textbox', { name: 'Hidden size value 2', exact: true })).toHaveValue('100');
+  await expect(hidden).toHaveValue('64, 100, 128');
   await mapStep(page, 'train').click();
   await model.focus();
   await page.keyboard.press('Meta+Z');
@@ -90,16 +91,23 @@ test('edits and reopens a stored Model field sweep through project history', asy
   await page.keyboard.press('Meta+Shift+Z');
   await expect.poll(async () => JSON.stringify(axis(await saved()))).toContain('"value":100');
 
+  await enter(hidden, '100');
+  await expect(inspector.getByRole('button', { name: 'Hidden size kind: Value', exact: true })).toBeVisible();
+  await expect.poll(async () => axis(await saved())).toBeFalsy();
+  await model.focus();
+  await page.keyboard.press('Meta+Z');
+  await expect.poll(async () => Object.keys((axis(await saved()) as { values?: object })?.values ?? {})).toEqual(ids);
+
   await page.reload();
   await mapStep(page, 'train').click();
-  await page.getByRole('navigation', { name: 'Details', exact: true }).getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(model).toBeVisible();
   await model.locator('.react-flow__node').filter({ hasText: 'GRU' }).locator('header').click();
   await expect(hidden).toHaveValue('64, 100, 128');
   const invalid = page.waitForResponse((response) => response.url().endsWith('/model/fields') &&
     response.request().postDataJSON()?.edit?.text === 'U(0, 1)');
   await enter(hidden, 'U(0, 1)');
   const { problems } = await (await invalid).json() as ModelFieldResponse;
-  expect(problems[0].reason).toContain('Value, Sweep, Formula');
+  expect(problems![0].reason).toContain('Value, Sweep, Formula');
   await expect(inspector.getByRole('alert')).toContainText('Value, Sweep, Formula');
   await hidden.press('Escape');
   await expect(hidden).toHaveValue('64, 100, 128');

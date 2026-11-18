@@ -9,7 +9,6 @@ Their shared immutable build fixtures run together under xdist's loadgroup sched
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tarfile
@@ -30,6 +29,8 @@ from feedbax.orchestration.revision import (
     resolve_feedbax_revision,
 )
 
+from tests.support.git_fixtures import fixture_git_environment
+
 pytestmark = pytest.mark.xdist_group(name="wheel_provenance")
 
 
@@ -48,9 +49,7 @@ def _run(
         text=True,
         timeout=60,
         env={
-            **os.environ,
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
+            **fixture_git_environment(),
             "GIT_OPTIONAL_LOCKS": "0",
             "LC_ALL": "C",
             **(extra_env or {}),

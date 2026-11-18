@@ -51,11 +51,7 @@ def test_every_delegated_command_still_has_its_own_console_script() -> None:
 
 
 def test_the_absorbed_commands_are_the_surviving_console_scripts() -> None:
-    assert tuple(command.name for command in cli.DELEGATED_COMMANDS) == (
-        "run",
-        "analysis",
-        "figure",
-    )
+    assert tuple(command.name for command in cli.DELEGATED_COMMANDS) == ("run",)
 
 
 # --- dispatch ---------------------------------------------------------------
@@ -89,9 +85,9 @@ def test_a_delegated_command_receives_its_own_arguments_verbatim(
 def test_a_delegated_command_with_no_arguments_gets_an_empty_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = _capture(monkeypatch, "figure", 0)
+    calls = _capture(monkeypatch, "run", 0)
 
-    assert cli.main(["figure"]) == 0
+    assert cli.main(["run"]) == 0
     assert calls == [[]]
 
 
@@ -99,18 +95,18 @@ def test_a_delegated_command_with_no_arguments_gets_an_empty_list(
 def test_a_delegate_exit_code_is_returned_unchanged(
     monkeypatch: pytest.MonkeyPatch, result: int | None
 ) -> None:
-    _capture(monkeypatch, "analysis", result)
+    _capture(monkeypatch, "run", result)
 
-    assert cli.main(["analysis", "run"]) == (0 if result is None else result)
+    assert cli.main(["run", "admit"]) == (0 if result is None else result)
 
 
 def test_a_delegate_returning_a_non_exit_code_is_a_programming_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _capture(monkeypatch, "figure", "fine")
+    _capture(monkeypatch, "run", "fine")
 
     with pytest.raises(TypeError, match="non-exit-code value"):
-        cli.main(["figure", "resolve"])
+        cli.main(["run", "admit"])
 
 
 def test_an_engine_command_reaches_the_engine_main_with_the_command_included(

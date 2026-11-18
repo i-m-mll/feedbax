@@ -5,6 +5,7 @@ import {
 } from './studioCommands';
 
 const groups = {
+  App: ['settings'],
   File: ['rename'],
   Edit: [
     'undo', 'redo', 'addComponent', 'connectPorts', 'exposeOutput', 'modelSelectAll', 'modelRemove',
@@ -15,8 +16,9 @@ const groups = {
     'commandPalette', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer', 'showInspector',
     'splitDetails', 'switchSlot', ...projectWindowViews, 'back', 'forward', 'nextRegion', 'previousRegion',
     'clearFocus', 'collapseAll', 'lock', 'fitView', 'zoomIn', 'zoomOut', 'activity', 'problems', 'retry',
+    'themeSystem', 'themeLight', 'themeDark',
   ],
-  Run: ['run', 'stop', 'resume', 'forceStop', 'openRun'],
+  Run: ['run', 'stop', 'resume', 'forceStop', 'openRun', 'check', 'accept'],
   Plan: ['newStep', 'newSweep', 'pivot', 'fold'],
 } as const satisfies Record<string, readonly StudioCommandId[]>;
 const sections = Object.entries(groups) as [keyof typeof groups, readonly StudioCommandId[]][];

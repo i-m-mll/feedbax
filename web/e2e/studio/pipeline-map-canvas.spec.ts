@@ -1,19 +1,19 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { captureStudioWindow, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('navigates and resizes the saved pipeline canvas without changing zoom', async ({ page, request }, info) => {
+test('navigates and resizes the saved pipeline canvas without changing zoom', { tag: '@round' }, async ({ page, request }, info) => {
   test.setTimeout(55_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const unrelated = { ...structuredClone(train), id: 'unrelated' };
-  train.step.base.inline.method_payload.payload.seed = 0;
+  train.step.base.inline.seed = 0;
   train.step.sweep = { axes: { seed: { values: {
-    first: { label: '1', patches: { 'method_payload.payload.seed': { value: 1 } } },
-    second: { label: '2', patches: { 'method_payload.payload.seed': { value: 2 } } },
-    third: { label: '3', patches: { 'method_payload.payload.seed': { value: 3 } } },
+    first: { label: '1', patches: { 'seed': { value: 1 } } },
+    second: { label: '2', patches: { 'seed': { value: 2 } } },
+    third: { label: '3', patches: { 'seed': { value: 3 } } },
   } } } };
   successor.step.inputs.checkpoint.where = { axes: { seed: ['first', 'third'] } };
   const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train, successor, unrelated]);
@@ -56,7 +56,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await page.keyboard.press('ArrowRight');
   await expect(mapStep(page, 'successor')).toBeFocused();
   await page.keyboard.press('ArrowLeft');
-  await page.keyboard.press('Enter');
+  await page.keyboard.press('Space');
   await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
   await expect(card('unrelated')).toHaveAttribute('data-map-dimmed', 'true');
   await expect(child).toContainText('2 of 3');
@@ -81,10 +81,8 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await mark(excluded).press('Escape');
   await expect(mark(excluded)).toHaveAttribute('aria-pressed', 'true');
 
-  const fitMap = async () => {
-    await mapStep(page, 'train').press('Shift+F10');
-    await page.getByRole('menuitem', { name: 'Fit View', exact: true }).press('Enter');
-  };
+  const rail = page.getByRole('navigation', { name: 'Details', exact: true });
+  const fitMap = () => rail.getByRole('button', { name: 'Fit View', exact: true }).click();
   const paneControl = canvas.locator('.react-flow__pane');
   const motion = [];
   for (const reducedMotion of ['no-preference', 'reduce'] as const) {
@@ -121,9 +119,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await info.attach('pipeline-zoom-motion', { body: JSON.stringify(motion), contentType: 'application/json' });
 
   const initial = await camera();
-  await mapStep(page, 'train').press('Shift+F10');
-  const menu = page.getByRole('menu', { name: 'Pipeline Map' });
-  await menu.getByRole('menuitem', { name: 'Zoom In', exact: true }).press('Enter');
+  await rail.getByRole('button', { name: 'Zoom In', exact: true }).click();
   await expect.poll(async () => (await camera()).zoom).toBeGreaterThan(initial.zoom);
   const zoomed = await camera();
   const pane = await canvas.locator('.react-flow__pane').boundingBox();
@@ -173,8 +169,8 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await mapStep(page, 'train').press('Enter');
   await expect(mark(included)).toHaveAccessibleName(/ · Done$/, { timeout: 18_000 });
   await expect(mark(excluded)).toHaveAccessibleName(/ · Not run$/);
-  const done = mark(included).locator('[data-run-status-mark="succeeded"] svg');
-  const idle = mark(excluded).locator('[data-run-status-mark="not_run"] svg');
+  const done = mark(included).locator('[data-status-mark="succeeded"] svg');
+  const idle = mark(excluded).locator('[data-status-mark="not_run"] svg');
   await expect(done).toBeVisible();
   await expect(idle).toBeVisible();
   const donePath = done.locator('path');
@@ -182,7 +178,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await expect(donePath).toHaveCSS('stroke', 'rgb(255, 255, 255)');
   await expect(idlePath).toHaveCSS('stroke', 'rgb(255, 255, 255)');
   expect(await donePath.getAttribute('d')).not.toBe(await idlePath.getAttribute('d'));
-  await expect(child.getByText('2 Not run', { exact: true })).toBeVisible();
+  await expect(child.getByRole('button', { name: / · Not run$/ })).toHaveCount(2);
   await expect(page.getByRole('log', { name: 'Status' }).getByText(/^Train · train · seed=.+: Done$/)).toHaveCount(1);
   const vision = await page.context().newCDPSession(page);
   try {

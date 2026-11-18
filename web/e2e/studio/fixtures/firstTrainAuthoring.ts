@@ -1,6 +1,7 @@
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
+import { pick } from './controls';
 import { activate, number, palette, post, readSaved } from './studioKeyboard';
 
 export async function authorFirstTrain(
@@ -32,8 +33,8 @@ export async function authorFirstTrain(
   const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const taskX = task.getByRole('spinbutton', { name: 'Target x (m)', exact: true });
-  const nSteps = task.getByRole('spinbutton', { name: /N Steps/i });
+  const taskX = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
+  const nSteps = task.getByRole('textbox', { name: /N Steps/i });
   const weight = objective.getByRole('textbox', { name: 'Weight', exact: true });
   const nBatches = training.getByRole('textbox', { name: 'N Batches', exact: true });
   const batchSize = training.getByRole('textbox', { name: 'Batch Size', exact: true });
@@ -51,14 +52,13 @@ export async function authorFirstTrain(
 
   await expect(page.getByRole('button', { name: 'New Step', exact: true })).toBeEnabled();
   await palette(page, 'newStep', 'New Step');
-  const chooser = page.getByRole('dialog', { name: 'New Step', exact: true });
-  await expect(chooser.getByRole('button', { name: 'Train', exact: true })).toBeFocused();
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(model).toBeFocused();
   await page.keyboard.press('Meta+3');
   await setNumber(taskX, 0.22, (project) => taskValues(project)?.x);
   if (forceComparison) {
-    await setNumber(task.getByRole('spinbutton', { name: 'Target y (m)', exact: true }),
+    await setNumber(task.getByRole('textbox', { name: 'Target y (m)', exact: true }),
       forceComparison.targetY, (project) => taskValues(project)?.y);
   }
   await setNumber(nSteps, 12, (project) => taskValues(project)?.n_steps);
@@ -95,12 +95,9 @@ export async function authorFirstTrain(
   await setLinearSize('Output size', 'output_size');
   if (forceComparison) {
     const activation = inspector.getByRole('combobox', { name: 'Activation', exact: true });
-    // Repeated initials cycle the options. The inspector saves and disables the field between keys.
-    for (const value of ['sigmoid', forceComparison.activation]) {
-      await activate(page, activation, 's');
-      await expect(activation).toHaveValue(value);
-      await expect.poll(async () => linearField((await savedProject()).project, 'activation')).toBe(value);
-    }
+    await pick(activation, new RegExp(`^${forceComparison.activation}$`, 'i'));
+    await expect(activation).toHaveText(new RegExp(forceComparison.activation, 'i'));
+    await expect.poll(async () => linearField((await savedProject()).project, 'activation')).toBe(forceComparison.activation);
   }
   await page.keyboard.press('Meta+2');
   const plant = await add('PointMass', 'Mechanics');
@@ -152,7 +149,7 @@ export async function authorFirstTrain(
 
   await page.keyboard.press('Meta+4');
   const measure = objective.getByRole('combobox', { name: 'Measure Source', exact: true });
-  await expect(measure.locator('option:checked')).toHaveText('Command');
+  await expect(measure).toHaveText('Command');
   await activate(page, objective.getByRole('button', { name: 'Add Term', exact: true }));
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
   await setNumber(weight, 2, (project) => {
@@ -220,6 +217,9 @@ export async function authorFirstTrain(
     await page.reload();
     await expect(page).toHaveURL(new RegExp(`[?&]project=${snapshot.project_id}(?:&|$)`));
     await activate(page, mapStep(page, 'train'));
+    // The window comes back as it was left, on Training.
+    await expect(page.getByRole('tabpanel', { name: 'Training', exact: true })).toBeVisible();
+    await page.keyboard.press('Meta+1');
     await expect(runs).toBeVisible();
   }
   await reopen();

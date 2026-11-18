@@ -67,17 +67,34 @@ def _evaluation_project():
     return raw
 
 
-def seed(home: str, project_id: str):
+def _seed(home: str, project_id: str, raw: dict, presentation: dict | None = None):
     paths = AppPaths.resolve(instance_root=Path(home))
     folders = ProjectFolderService(paths.web / "projects")
-    project = Project.model_validate(_evaluation_project())
+    project = Project.model_validate(raw)
     for name, data in dump_text_project(
         project, ProjectConfiguration(project=project_id, store="results"),
     ).items():
         path = folders.root / project_id / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+    if presentation is not None:
+        (folders.root / project_id / "presentation.json").write_text(json.dumps(presentation) + "\n")
     return folders.open(project_id).snapshot.project_id
+
+
+def seed(home: str, project_id: str):
+    return _seed(home, project_id, _evaluation_project())
+
+
+def seed_step_rename(home: str, project_id: str):
+    """Train, an Evaluate reading it, a Train-scoped project sweep target, a group and a folded sweep."""
+    raw = _evaluation_project()
+    raw["steps"] = {name: raw["steps"][name] for name in ("train", "baseline")}
+    raw["steps"]["train"]["group"] = "fitting"
+    raw["sweep"] = {"axes": {"mass": {"values": {
+        "nominal": {"value": 1, "patches": {"steps.train." + _MASS: {"value": 1}}},
+    }}}}
+    return _seed(home, project_id, raw, {"steps": {"train": {"sweep_order": ["mass"], "folded_sweep_id": "mass"}}})
 
 
 def walkthrough_files(batches: str | None = None):
@@ -85,7 +102,6 @@ def walkthrough_files(batches: str | None = None):
     if batches is not None:
         train = project["steps"]["train"]["base"]["inline"]
         train["training_config"]["n_batches"] = int(batches)
-        train["method_payload"]["payload"]["target_total"] = int(batches)
     documents = [
         {"kind": "document", "id": name, "document": document}
         for name, document in project["documents"].items()
@@ -104,7 +120,6 @@ def measured_subset_files():
     files[-1]["step"]["sweep"] = {"axes": {"updates": {"values": {
         name: {"label": name, "patches": {
             "training_config.n_batches": {"value": updates},
-            "method_payload.payload.target_total": {"value": updates},
         }}
         for name, updates in (("Long", 4), ("Medium", 3), ("Short", 2))
     }}}}
@@ -115,9 +130,9 @@ def grouped_subset_files():
     files = measured_subset_files()
     train = files[-1]["step"]
     del train["sweep"]["axes"]["updates"]["values"]["Medium"]
-    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["base"]["inline"]["seed"] = 0
     train["sweep"]["axes"]["replicate"] = {"values": {
-        name: {"label": label, "patches": {"method_payload.payload.seed": {"value": seed}}}
+        name: {"label": label, "patches": {"seed": {"value": seed}}}
         for name, label, seed in (("zeta", "First", 1), ("alpha", "Second", 2))
     }}
     return files
@@ -126,15 +141,15 @@ def grouped_subset_files():
 def task_pivot_files():
     files = walkthrough_files()
     train = files[-1]["step"]
-    train["base"]["inline"]["method_payload"]["payload"]["seed"] = 0
+    train["base"]["inline"]["seed"] = 0
     train["sweep"] = {"axes": {
         "learning-rate": {"values": {
             name: {"label": name, "value": rate, "patches": {
-                "method_payload.payload.optimizer.params.learning_rate": {"value": rate},
+                "settings.optimizer.params.learning_rate": {"value": rate},
             }} for name, rate in (("Slow", 0.001), ("Medium", 0.002), ("Fast", 0.003))
         }},
         "seed": {"values": {
-            name: {"label": name, "value": seed, "patches": {"method_payload.payload.seed": {"value": seed}}}
+            name: {"label": name, "value": seed, "patches": {"seed": {"value": seed}}}
             for name, seed in (("one", 1), ("two", 2))
         }},
     }}
@@ -282,7 +297,7 @@ def observe(home: str, project: str, revision: str, trial_index: str):
 if __name__ == "__main__":
     action, *args = sys.argv[1:]
     print(json.dumps({
-        "seed": seed, "observe": observe, "walkthrough-files": walkthrough_files,
+        "seed": seed, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
         "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,

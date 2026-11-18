@@ -40,6 +40,7 @@ from feedbax.compiler.studio_taps import lower_studio_taps
 from feedbax.component_registry.declarations import ComponentParamValidationError
 from feedbax.compiler.serialization import (
     _instantiate_graph,
+    refuse_unbuildable_leaves,
 )
 from feedbax.runtime._graph import instant_execution_order
 from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID
@@ -278,6 +279,8 @@ class GraphResolution:
     parameters: GraphParameterResolution
     tap_origins: dict[tuple[str, str], str]
     anchor: SemanticAnchor
+    signal_schedule: SignalSchedule | None
+    key_schedule: GraphKeySchedule
     schema_source_version: str
     schema_target_version: str
     migration_record_count: int
@@ -641,6 +644,11 @@ def resolve_graph(
         action="correct the conflicting port, dimension, parameter, or prototype declarations",
         operation=solve_constraints,
     )
+    def validate_semantics() -> GraphSpec:
+        validated = GraphSpec.model_validate(resolution.graph.model_dump(mode="json", exclude_none=True))
+        refuse_unbuildable_leaves(validated, component_registry)
+        return validated
+
     graph = _compile_phase(
         phase=CompilerPhase.SEMANTIC_VALIDATION,
         code="compiler.semantic_validation.invalid_resolved_semantics",
@@ -648,13 +656,21 @@ def resolve_graph(
         document_sha256=document_sha256,
         expected="the lowered graph satisfies every cross-reference and semantic invariant",
         action="correct the authored semantic reference named by the diagnostic",
-        operation=lambda: GraphSpec.model_validate(
-            resolution.graph.model_dump(mode="json", exclude_none=True)
-        ),
+        operation=validate_semantics,
     )
 
+    signal_schedule, key_schedule = _compile_phase(
+        phase=CompilerPhase.SCHEDULING,
+        code="compiler.scheduling.invalid_executable_schedule",
+        anchor=graph_anchor,
+        document_sha256=document_sha256,
+        expected="the graph has one deterministic executable node order",
+        action="correct the scheduling dependency",
+        operation=lambda: resolve_graph_schedule(graph),
+    )
     return GraphResolution(
         document, component_registry, authored_graph, graph, resolution, tap_origins, graph_anchor,
+        signal_schedule, key_schedule,
         migration.source_version, migration.target_version, len(migration.migration_records),
     )
 
@@ -689,7 +705,7 @@ def realize_graph(
             if not path or path in leaf_keys:
                 raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
             leaf_keys[path] = key
-        scoped_schedule, key_schedule = resolve_graph_schedule(graph)
+        scoped_schedule, key_schedule = resolved.signal_schedule, resolved.key_schedule
         instantiated = _instantiate_graph(
             graph,
             resolved.component_registry,
@@ -707,14 +723,8 @@ def realize_graph(
         code="compiler.scheduling.invalid_executable_schedule",
         anchor=resolved.anchor,
         document_sha256=document_sha256,
-        expected=(
-            "every resolved component realizes and the graph has one deterministic "
-            "executable node order"
-        ),
-        action=(
-            "correct the component runtime facet, its resolved parameters, or the "
-            "scheduling dependency"
-        ),
+        expected="every resolved component realizes",
+        action="correct the component runtime facet or its resolved parameters",
         operation=build_schedule,
     )
 

@@ -12,7 +12,7 @@ import pytest
 
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.compiler import trial_execution
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
@@ -71,12 +71,12 @@ def authored():
 def prepared_trials(monkeypatch):
     calls = []
 
-    @wraps(compile_trial_execution)
+    @wraps(resolve_trial_execution)
     def prepare(*args, **kwargs):
         calls.append((args, kwargs))
-        return compile_trial_execution(*args, **kwargs)
+        return resolve_trial_execution(*args, **kwargs)
 
-    monkeypatch.setattr(trial_execution, "compile_trial_execution", prepare)
+    monkeypatch.setattr(trial_execution, "resolve_trial_execution", prepare)
     return calls
 
 
@@ -182,6 +182,30 @@ def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_t
         for variant, label in (("base", original), ("renamed", "Renamed readout"))
         for row in ("rate=low", "rate=high")
     }
+
+
+def test_plan_reports_every_component_with_invalid_parameters(authored):
+    raw = document_project(authored)
+    interior = raw["documents"]["reach-model"]["payload"]["interior"]
+    for name in ("left", "right"):
+        interior["components"][name] = {
+            "kind": "leaf", "name": name.title(), "type": "feedbax.equinox.Linear", "fields": {},
+        }
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert sorted(
+        issue.model_address.element.id for issue in plan.diagnostics
+        if issue.model_address is not None and issue.model_address.element.kind == "component"
+    ) == ["left", "right"]
+
+
+def test_plan_reports_every_unwired_required_input(authored):
+    raw = document_project(authored)
+    model = raw["documents"]["reach-model"]["payload"]
+    controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+    del controller["interior"]["wires"]["decode"]
+    del controller["interior"]["wires"]["target"]
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert sorted(issue.path.rsplit(".", 1)[-1] for issue in plan.diagnostics) == ["cell", "readout"]
 
 
 def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_trials):
@@ -442,7 +466,7 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     plan = compile_project(Project.model_validate(document_project(authored)))
     identity, data = next(iter(plan.requests.items()))
     stored = json.loads(data)
-    assert stored["schema"] == "feedbax.request.train.documents.v2"
+    assert stored["schema"] == "feedbax.request.train.documents.v3"
     model = stored["spec"]["trial_documents"]["model"]
     assert model["ports"]["inputs"][0]["name"] == "reach_target"
     wrapper = model["interior"]["components"]["wrapper"]
@@ -456,7 +480,7 @@ def test_managed_train_stores_only_scientific_model_names(authored):
     assert encode_request(decoded.spec, decoded.inputs).data == data
     assert identity != request_id("train", stored["spec"], decoded.inputs)
 
-    previous = stored | {"schema": "feedbax.request.train.documents.v1"}
+    previous = stored | {"schema": "feedbax.request.train.documents.v2"}
     with pytest.raises(ValueError, match="Unsupported stored request envelope"):
         decode_request(canonical_json_v2_bytes(previous), plan.documents.__getitem__)
     wrapper["name"] = "wrapper"

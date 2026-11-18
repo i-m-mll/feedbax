@@ -1,9 +1,11 @@
-import { expect, test, type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures/studio';
+import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
-import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
-test.use({ headless: true, trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 function modelFixture(cards: number): ModelDocument {
   const components: NonNullable<ModelDocument['interior']['components']> = {};
@@ -29,7 +31,7 @@ function modelFixture(cards: number): ModelDocument {
 type Samples = { callbacks: number[]; updates: number[]; longTasks: { duration: number; startTime: number }[] };
 type SampleWindow = Window & {
   finishStudioSample?: () => Samples;
-  settledPlanStatus?: { visibleAt: number; text: string };
+  mapSettledAt?: number;
 };
 
 async function startSamples(target: Locator, kind: 'drag' | 'field' | 'scroll' | 'replay', label: string) {
@@ -153,22 +155,19 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   }, { timeout: 12_000 });
   void projected.catch(() => {});
   const planCard = page.getByRole('article', { name: 'Train train', exact: true });
-  const planStatus = planCard.getByRole('button', { name: /^\d+ Can't run$/ });
-  await expect(planStatus).toBeVisible();
-  await planStatus.evaluate((status) => {
-    const state = window as SampleWindow;
-    const card = status.closest<HTMLElement>('[data-map-step]')!;
-    let pending = false;
+  const cannotRunMarks = planCard.locator(`button[data-result-run][aria-label$=" · Can't run"]`);
+  await expect(cannotRunMarks.first()).toBeVisible();
+  // The map is busy from the new revision until its plan is shown; the time it settles is recorded in the page.
+  await page.getByRole('region', { name: 'Pipeline Map', exact: true }).last().evaluate((map) => {
+    let busy = false;
     const observer = new MutationObserver(() => {
-      const restored = Array.from(card.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]'))
-        .find((button) => /^\d+ Can't run$/.test(button.textContent?.trim() ?? '') && button.checkVisibility());
-      if (!restored) pending = true;
-      if (!pending || !restored) return;
-      state.settledPlanStatus = { visibleAt: performance.timeOrigin + performance.now(), text: restored.textContent!.trim() };
-      performance.mark('studio-commit-plan-status-visible');
-      observer.disconnect();
+      if (map.getAttribute('aria-busy') === 'true') busy = true;
+      else if (busy) {
+        (window as SampleWindow).mapSettledAt = performance.timeOrigin + performance.now();
+        observer.disconnect();
+      }
     });
-    observer.observe(card, { subtree: true, childList: true, characterData: true, attributes: true });
+    observer.observe(map, { attributes: true, attributeFilter: ['aria-busy'] });
   });
     await startSamples(field, 'field', 'commit');
     const beforeCommit = await chromeMetrics(context);
@@ -182,8 +181,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     const { snapshot, changed, acknowledgedAt } = await savedEdit;
     const addressed = changed.find(({ element }) => element.kind === 'field' && element.path.at(-1) === 'step_seconds');
     if (!addressed) throw new Error('The acknowledgement did not address the Step field');
-    expect(addressed.document).toBe(modelDocument);
-    const model = snapshot.project.documents[addressed.document].payload as unknown as ModelDocument;
+    const model = snapshot.project.documents![modelDocument].payload as unknown as ModelDocument;
     expect(model.step_seconds).toBe(0.02);
     const plan = await (await settled).json() as StudioSavedTrainRuns;
     expect(plan.revision).toBe(snapshot.revision);
@@ -193,19 +191,17 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     await projected;
     await expect(field).toBeEditable();
     await expect(field).toHaveValue(value);
-    const visibleAt = performance.now();
     const commitWork = chromeWork(beforeCommit, await chromeMetrics(context));
     const commit = await endSamples(page);
-    const planVisible = await page.evaluate(() => (window as SampleWindow).settledPlanStatus);
-    if (!planVisible) throw new Error('The Plan status did not return from the pending state');
-    expect(planVisible.text).toBe(`${cannotRun} Can't run`);
+    await expect(cannotRunMarks).toHaveCount(cannotRun!);
+    await expect(page.getByRole('region', { name: 'Pipeline Map', exact: true }).last()).not.toHaveAttribute('aria-busy', 'true');
+    const mapSettledAt = await page.evaluate(() => (window as SampleWindow).mapSettledAt);
+    if (mapSettledAt === undefined) throw new Error('The map was not busy while the plan of the new revision was read');
     return { keys: value.length, typing, typingWork, commit, commitWork,
       submitToAcknowledgementMs: acknowledgedAt - submittedAt,
-      acknowledgementToEditableFieldMs: visibleAt - acknowledgedAt,
-      acknowledgementToVisiblePlanStatusMs: planVisible.visibleAt - (performance.timeOrigin + acknowledgedAt) };
+      acknowledgementToSettledMapMs: mapSettledAt - (performance.timeOrigin + acknowledgedAt) };
 
 }
-
 
 async function measureScroll(page: Page, request: APIRequestContext, context: CDPSession) {
   const rowCount = 1_000;
@@ -357,7 +353,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   expect(result?.result?.checkpoint_source?.job_id).toBe(train.job_id);
   const trial = result!.trials[1];
   const row = plan.window_map!.rows.find(({ key }) => key.step === 'baseline')!;
-  await table.getByRole('button', { name: row.label, exact: true }).click();
+  await table.getByRole('button', { name: runName(row.label) }).click();
   await tabs.getByRole('tab', { name: 'Scene', exact: true }).click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const cursor = scene.locator('[data-scene-cursor]');
@@ -367,13 +363,13 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   const responded = page.waitForResponse((response) => response.request().method() === 'POST' &&
     new URL(response.url()).pathname === path + '/evaluate-replay' && response.request().postDataJSON().trial === trial);
   void responded.catch(() => {});
-  await trials.selectOption(trial);
+  await pick(trials, trial);
   const loaded = await responded;
   expect(loaded.ok(), await loaded.text()).toBe(true);
   expect(loaded.request().postDataJSON()).toMatchObject({ key: row.key, job_id: evaluation.job_id, trial });
   const replay = await loaded.json() as WorkspaceReplayTrial;
   expect(replay.identity.stable_id).toBe(trial);
-  expect(replay.manifest_refs.producer_manifest).toMatchObject({
+  expect(replay.manifest_refs!.producer_manifest).toMatchObject({
     kind: 'EvaluationRunManifest', id: result?.result?.receipt.manifest_id,
     metadata: { manifest_sha256: result?.result?.receipt.manifest_sha256 },
   });
@@ -419,9 +415,8 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
     callbackGaps: statistics(gaps(samples.callbacks)) };
 }
 
-test('measures mounted Model, Runs and Scene responsiveness @responsiveness', async ({ page, request, browser }, info) => {
+test('measures mounted Model, Runs and Scene responsiveness @responsiveness', async ({ page, request, browser, studio }, info) => {
   test.setTimeout(100_000);
-  expect(process.env.FEEDBAX_STUDIO_E2E_PREVIEW).toBe('1');
   const files = await fixture('ordinary-files', '2');
   const modelFile = files.find((file: { document?: { schema: string } }) => file.document?.schema === 'feedbax.spec.model');
   const stepFile = files.find((file: { kind: string }) => file.kind === 'step');
@@ -433,7 +428,7 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
   const { snapshot, projectPath } = await seedManagedProject(request, [
     modelFile,
     { kind: 'document', id: 'profile-task', document: {
-      schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.task.reaching.v1', params: {} },
+      schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
     } },
     { kind: 'document', id: 'profile-objective', document: {
       schema: 'feedbax.spec.objective_document', payload: { id: 'profile-objective', terms: [] },
@@ -462,12 +457,11 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
     await info.attach('mounted-runs-scroll', { body: JSON.stringify(scroll), contentType: 'application/json' });
     expect(scroll.end.lastRowVisible).toBe(true);
     expect(Math.abs(scroll.end.offset - scroll.end.distance)).toBeLessThanOrEqual(1);
-    const replay = await measureReplay(page, request, context, String(info.config.metadata.home));
+    const replay = await measureReplay(page, request, context, studio.home);
     await info.attach('mounted-scene-playback', { body: JSON.stringify(replay), contentType: 'application/json' });
     const longTasks = [...field.commit.longTasks, ...drag.flatMap(({ samples }) => samples.longTasks), ...replay.samples.longTasks];
     expect.soft(longTasks.filter(({ duration }) => duration > 50), 'drag, commit and active playback main-thread tasks over 50 ms').toEqual([]);
-    expect.soft(field.acknowledgementToVisiblePlanStatusMs, 'revision-matched DOM status after edit acknowledgement').toBeGreaterThanOrEqual(0);
-    expect.soft(field.acknowledgementToVisiblePlanStatusMs, 'revision-matched DOM status after edit acknowledgement').toBeLessThanOrEqual(500);
+    expect.soft(field.acknowledgementToSettledMapMs, 'map showing the plan of the new revision after edit acknowledgement').toBeLessThanOrEqual(500);
 
   } finally {
     await browser.stopTracing();

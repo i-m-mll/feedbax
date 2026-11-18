@@ -88,9 +88,9 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         def revision():
             return expect(client.get(path)).json()["revision"]
 
-        def run(rev, token, *steps):
+        def run(rev, token, *steps, reuse_completed=False):
             return expect(client.post(f"{path}/train-runs", json={
-                "revision": rev, "token": token,
+                "revision": rev, "token": token, "reuse_completed": reuse_completed,
                 "run_keys": [{"variant": "default", "step": step, "row": "default"} for step in steps],
             }), 202).json()["items"]
 
@@ -170,7 +170,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         assert main(["status", str(projects / project)]) == 0
         assert "bounds_scale" in capsys.readouterr().out
 
-        rerun = run(edited, "scoped-rerun", "analyze", "report")
+        rerun = run(edited, "scoped-rerun", "analyze", "report", reuse_completed=True)
         assert [item["disposition"] for item in rerun] == ["reused", "admitted", "admitted", "admitted"], rerun
         rerun_jobs = {job["id"]: job for job in terminal(9)}
         assert rerun_jobs[by_kind["evaluate"]["id"]] == by_kind["evaluate"]

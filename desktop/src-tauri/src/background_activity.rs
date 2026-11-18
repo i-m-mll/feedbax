@@ -12,7 +12,6 @@ use objc2::{
 use objc2_app_kit::{
     NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSMenuItem,
     NSRunningApplication, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWorkspace,
-    NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRunLoop, NSString, NSTimer, NSURL};
 use objc2_user_notifications::{
@@ -35,6 +34,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use window_shell_geometry::appkit;
 
 fn should_notify(project: &str, window: Option<&Window>, frontmost: Option<i32>) -> bool {
     !window.is_some_and(|window| {
@@ -312,9 +312,7 @@ impl Menu {
                             .find_map(|pid| gui_application(&release, pid));
                         if let Some(application) = running {
                             drop(state);
-                            application.activateWithOptions(
-                                objc2_app_kit::NSApplicationActivationOptions::empty(),
-                            );
+                            appkit::activate(&application);
                         } else if !state.in_flight {
                             state.in_flight = true;
                             drop(state);
@@ -452,7 +450,7 @@ fn launch_gui(release: &service::Release, activation: File, launch: Arc<Mutex<Gu
         &NSString::from_str(&release.bundle_path().to_string_lossy()),
         true,
     );
-    let configuration = NSWorkspaceOpenConfiguration::configuration();
+    let configuration = appkit::open_configuration();
     configuration.setAllowsRunningApplicationSubstitution(false);
     configuration.setArguments(&NSArray::from_retained_slice(&[NSString::from_str(
         OPEN_ACTIVITY,

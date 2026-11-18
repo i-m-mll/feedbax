@@ -8,6 +8,8 @@ import type {
   ModelEditResponse,
   ModelUndoRequest,
   PresentationDocument,
+  StudioMemberCommand,
+  StudioMemberCommandResult,
   ProjectValueEdit,
   StudioProjectCreateFile,
   StudioProjectDocument,
@@ -24,7 +26,7 @@ import {
   type AuthoredProject, type ProjectEditContent,
 } from './authoredEdits';
 import { modelSchema } from './model/modelGraph';
-import type { ModelSelection } from './model/modelSelection';
+import type { ModelChange } from '@/features/projectWindow/elementSelection';
 
 export interface ProjectEditTransport {
   read: (id: string, signal?: AbortSignal) => Promise<StudioProjectDocument>;
@@ -32,11 +34,13 @@ export interface ProjectEditTransport {
   replay: (id: string, body: StudioProjectReplay, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
   rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   create: (id: string, body: StudioProjectCreateFile, signal?: AbortSignal) => Promise<StudioProjectDocument>;
+  memberCommand?: (id: string, body: StudioMemberCommand, signal?: AbortSignal) => Promise<StudioMemberCommandResult>;
   editModel?: (id: string, body: ModelEditRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
   undoModel?: (id: string, body: ModelUndoRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
 }
 
 type NamedFileCreation = StudioProjectCreateFile['file'];
+type FollowingEdits = (snapshot: StudioProjectSnapshot) => Promise<readonly StudioProjectFilePatch[]>;
 
 interface FileGesture {
   readonly name: string;
@@ -59,6 +63,12 @@ interface ReplayGesture {
   readonly name: string;
   readonly undo: readonly ReplayTarget[];
   readonly redo: readonly ReplayTarget[];
+  readonly presentation?: { readonly undo: PresentationState; readonly redo: PresentationState };
+}
+
+interface PresentationState {
+  readonly revision: string;
+  readonly document: PresentationDocument;
 }
 
 type Gesture = FileGesture | ModelGesture | ReplayGesture;
@@ -171,7 +181,7 @@ function authoredFileContent(project: AuthoredProject, { kind, id }: ReplayFile[
 }
 
 function changedFiles(
-  name: string, before: StudioProjectSnapshot, after: StudioProjectSnapshot,
+  name: string, before: StudioProjectSnapshot, after: StudioProjectSnapshot, withPresentation = false,
 ): ReplayGesture | null {
   const previous = new Map(before.file_revisions.map((file) => [addressKey(file.address), file]));
   const current = new Map(after.file_revisions.map((file) => [addressKey(file.address), file]));
@@ -200,7 +210,14 @@ function changedFiles(
     undo.push(target(before.declaration));
     redo.push(target(after.declaration));
   }
-  return { name, undo, redo };
+  if (!withPresentation || before.presentation_revision === after.presentation_revision) return { name, undo, redo };
+  if (!before.presentation || !after.presentation) return null;
+  return {
+    name, undo, redo, presentation: {
+      undo: { revision: before.presentation_revision, document: before.presentation },
+      redo: { revision: after.presentation_revision, document: after.presentation },
+    },
+  };
 }
 
 function replayFiles(
@@ -380,7 +397,7 @@ export class ProjectEditController {
     return this.replay('redo');
   }
 
-  private replay(direction: 'undo' | 'redo'): Promise<ModelSelection | undefined> | undefined {
+  private replay(direction: 'undo' | 'redo'): Promise<ModelChange | undefined> | undefined {
     this.requireEditable();
     const gesture = this.history[direction].at(-1);
     if (!gesture) return;
@@ -389,8 +406,23 @@ export class ProjectEditController {
         if (this.savedHistory[direction].at(-1) !== gesture) throw new ProjectEditConflictError();
         const target = gesture[direction];
         const source = gesture[direction === 'undo' ? 'redo' : 'undo'];
-        const latest = await this.publishReplay(before, replayFiles(source, target, before), target);
-        this.adopt(latest, moveHistory(this.savedHistory, gesture, direction));
+        const presentation = gesture.presentation && {
+          before: gesture.presentation[direction === 'undo' ? 'redo' : 'undo'].revision,
+          after: gesture.presentation[direction].document,
+        };
+        if (presentation && presentation.before !== before.presentation_revision) throw new ProjectEditConflictError();
+        const latest = await this.publishReplay(before, replayFiles(source, target, before), target, presentation);
+        const history = moveHistory(this.savedHistory, gesture, direction);
+        const destination = direction === 'undo' ? 'redo' : 'undo';
+        // The server re-encodes the restored presentation, so its revision is the one to expect next.
+        this.adopt(latest, gesture.presentation ? {
+          ...history, [destination]: [...history[destination].slice(0, -1), {
+            ...gesture, presentation: {
+              ...gesture.presentation,
+              [direction]: { ...gesture.presentation[direction], revision: latest.snapshot.presentation_revision },
+            },
+          }],
+        } : history);
         return undefined;
       });
     }
@@ -487,7 +519,10 @@ export class ProjectEditController {
     );
   }
 
-  createFiles(name: string, files: readonly NamedFileCreation[], reviewedRevision: string): Promise<void> {
+  /** Create files as one Undo entry, which the patches `use` computes against the created files join. */
+  createFiles(
+    name: string, files: readonly NamedFileCreation[], reviewedRevision: string, use?: FollowingEdits,
+  ): Promise<StudioProjectSnapshot> {
     const targets = files.map((file): ReplayContent => {
       const value = file.kind === 'document' ? file.document : file.step;
       const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2) + '\n');
@@ -501,30 +536,71 @@ export class ProjectEditController {
       const absent = targets.map(({ address }) => ({ address, data: null, revision: null }));
       const latest = await this.publishReplay(before, replayFiles(absent, targets, before), targets);
       if (!replayObserved(before, targets, latest.snapshot)) throw new ProjectEditConflictError();
-      const gesture = changedFiles(name, before, latest.snapshot);
-      if (!gesture) throw new ProjectEditConflictError();
-      this.adopt(latest, moveHistory(this.savedHistory, gesture, 'edit'));
+      return this.recordWithFollowing(name, before, latest.snapshot, use);
     });
+  }
+
+  private async recordWithFollowing(
+    name: string, before: StudioProjectSnapshot, done: StudioProjectSnapshot, use?: FollowingEdits,
+  ): Promise<StudioProjectSnapshot> {
+    const record = (latest: StudioProjectSnapshot) => {
+      const gesture = changedFiles(name, before, latest, true);
+      if (!gesture) throw new ProjectEditConflictError();
+      this.adopt({ ...this.document, snapshot: latest }, moveHistory(this.savedHistory, gesture, 'edit'));
+    };
+    let latest = done;
+    try {
+      const files = use ? await use(done) : [];
+      if (files.length) {
+        latest = await this.transport.write(before.project_id, { revision: latest.revision, files: [...files] }, this.signal);
+      }
+      this.signal.throwIfAborted();
+    } catch (error) {
+      record(done);
+      throw error;
+    }
+    record(latest);
+    return latest;
   }
 
   private async publishReplay(
     before: StudioProjectSnapshot, files: ReplayFile[], targets: readonly ReplayContent[],
+    presentation?: StudioProjectReplay['presentation'],
   ): Promise<StudioProjectDocument> {
     let latest: StudioProjectDocument;
     try {
       const snapshot = await this.transport.replay(before.project_id, {
-        revision: before.revision, files,
+        revision: before.revision, files, ...(presentation ? { presentation } : {}),
       }, this.signal);
       latest = { ...this.document, snapshot };
     } catch (error) {
       if (!canRetryOnReconnect(error)) throw error;
       const observed = await this.read().catch(() => undefined);
-      if (!observed || observed.snapshot.presentation_revision !== before.presentation_revision ||
+      if (!observed || (!presentation && observed.snapshot.presentation_revision !== before.presentation_revision) ||
           !replayObserved(before, targets, observed.snapshot)) throw error;
       latest = observed;
     }
     this.signal.throwIfAborted();
     return latest;
+  }
+
+  /**
+   * Rename a document or step, or duplicate a document, on the server as one Undo entry.
+   * `use` may then return authored patches computed against the command's result, such
+   * as pointing a step at the duplicate, which join the same entry.
+   */
+  memberCommand(
+    name: string, command: StudioMemberCommand['command'], reviewed: StudioProjectRevision,
+    use?: (result: StudioMemberCommandResult) => Promise<readonly StudioProjectFilePatch[]>,
+  ): Promise<StudioMemberCommandResult> {
+    return this.exclusiveTransaction(async (before) => {
+      const run = this.transport.memberCommand;
+      if (!run || !versionsMatch(before, reviewed)) throw new ProjectEditConflictError();
+      const result = await run(before.project_id, {
+        revision: before.revision, presentation_revision: before.presentation_revision, command,
+      }, this.signal);
+      return { ...result, snapshot: await this.recordWithFollowing(name, before, result.snapshot, use && (() => use(result))) };
+    });
   }
 
   private authoredCommand(

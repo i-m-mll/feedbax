@@ -78,7 +78,12 @@ class StudioFieldView(StrictModel):
     label: str
     text: str
     effective: str | None = None
+    """The value the selected runs share where it differs from the document's."""
+    mixed: bool = False
+    """The selected runs hold different values."""
     unit: str | None = None
+    conversion: str | None = None
+    """A duration's single value in the model's other time unit: steps for seconds, seconds for steps."""
     site: SiteProjection
     sweep: StudioSweepList | StudioSweepRange | StudioSweepSampler | None = None
     selected_value: ProjectName | None = None
@@ -109,10 +114,14 @@ class TrainFieldResponse(StrictModel):
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
     dependencies: list[ProjectName] = Field(default_factory=list)
     problems: list[Problem] = Field(default_factory=list)
+    removed_values: dict[str, list[str]] = Field(default_factory=dict)
+    """Per sweep, the values whose runs the edit removes from the project."""
 
 
 class ModelFieldResponse(StrictModel):
     fields: list[ModelFieldView] = Field(default_factory=list)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
     problems: list[Problem] = Field(default_factory=list)
+    removed_values: dict[str, list[str]] = Field(default_factory=dict)
+    """Per sweep, the values whose runs the edit removes from the project."""
     command: ModelEditCommand | None = None

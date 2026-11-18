@@ -15,7 +15,7 @@ function findings(results: Result[]) {
 export async function scanStudio(page: Page, info: TestInfo, name: string) {
   if (!await page.evaluate(() => 'axe' in window)) await page.addScriptTag({ content: axe.source });
   const result = await page.evaluate(async (): Promise<AxeResults> => {
-    const { axe } = window as Window & { axe: typeof import('axe-core') };
+    const { axe } = window as unknown as { axe: typeof import('axe-core') };
     return axe.run(document, {
       runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] },
       resultTypes: ['violations', 'incomplete'],

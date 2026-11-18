@@ -57,8 +57,9 @@ class StudioTrialDocumentEdit(StrictModel):
     edits: list[ProjectValueEdit] = Field(min_length=1)
 
 
-class StudioTrialSelectTask(StrictModel):
-    kind: Literal["select_task"]
+class StudioTrialSelectDocument(StrictModel):
+    kind: Literal["select_document"]
+    role: Literal["model", "task", "objective"]
     document: ProjectName
 
 
@@ -84,7 +85,7 @@ class StudioTrialAuthoringRequest(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
     change: Annotated[
-        StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectTask | StudioTrialExpressionEdit,
+        StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit,
         Field(discriminator="kind"),
     ] | None = None
     scope: Annotated[

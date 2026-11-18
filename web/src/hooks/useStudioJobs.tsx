@@ -15,15 +15,16 @@ import {
   fetchStudioJobs,
   resumeStudioJob,
   stopStudioJobs,
+  warmStudioWorkers,
 } from '@/api/jobs';
 import type { StudioActivityJob, StudioJobEvent, StudioJobSnapshot } from '@/generated/studioContracts';
 import { studioFormat, studioName, studioRunStatus, studioStep } from '@/components/activity/studioVocabulary';
 import {
   STUDIO_JOBS_WORKER_NAME,
-  type StudioJobConnection,
   type StudioJobWorkerCommand,
   type StudioJobWorkerMessage,
 } from '@/jobs/studioJobConnection';
+import { serviceDidNotRespond, serviceResponded, subscribeConnection, getConnection } from '@/api/connection';
 import JobsWorker from '@/jobs/studioJobWorker?sharedworker';
 
 const jobsKey = ['studio-jobs'] as const;
@@ -32,7 +33,7 @@ const eventSource = (venue: StudioJobEvent['venue']) => venue
   ? JSON.stringify([venue.session_id, venue.stream_id]) : 'local';
 
 const StudioJobsContext = createContext<{
-  connection: StudioJobConnection;
+  projectId: string | null;
   refresh: () => void;
   acknowledge: (jobId: string) => Promise<void>;
 } | null>(null);
@@ -53,7 +54,6 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     queryFn: skipToken,
     notifyOnChangeProps: [],
   });
-  const [connection, setConnection] = useState<StudioJobConnection>('connecting');
   const [announcements, setAnnouncements] = useState<{ id: number; text: string }[]>([]);
   const announcementId = useRef(0);
   const retry = useRef<(() => void) | null>(null);
@@ -67,6 +67,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     let historyReady = false;
     let snapshotReady = false;
     let machineUpdatePending = false;
+    let streamDown = false;
     let historyCursors = new Map<string, number>();
     let announcedThrough = 0;
     const statuses = new Map<string, StudioActivityJob['status']>();
@@ -94,17 +95,18 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     }
 
     function apply(event: StudioJobEvent) {
-      const { activity } = event;
-      if (activity && ownsSnapshot && !event.venue) {
+      const { activity, unreadable } = event;
+      if ((activity || unreadable) && ownsSnapshot && !event.venue) {
         cache.setQueryData<StudioJobSnapshot>(jobsKey, (snapshot) => {
           if (!snapshot || event.cursor <= snapshot.cursor) return snapshot;
-          const known = snapshot.jobs.some((job) => job.job_id === activity.job_id);
-          const jobs = known
-            ? snapshot.jobs.map((job) => job.job_id === activity.job_id ? activity : job)
-            : [...snapshot.jobs, activity];
-          return { ...snapshot, cursor: event.cursor, jobs };
+          const others = snapshot.jobs.filter((job) => job.job_id !== event.job_id);
+          const known = others.length < snapshot.jobs.length;
+          // Jobs are listed in the order of their latest change, as the held snapshot lists them.
+          const jobs = activity ? [...others, activity] : others;
+          const unread = snapshot.unreadable.filter((record) => record.job_id !== event.job_id);
+          return { ...snapshot, cursor: event.cursor, jobs, unreadable: unreadable ? [...unread, unreadable] : unread };
         });
-        if (snapshotReady && event.cursor > announcedThrough) {
+        if (activity && snapshotReady && event.cursor > announcedThrough) {
           announcedThrough = event.cursor;
           announce([activity]);
         }
@@ -134,8 +136,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       try {
         const snapshot = ownsSnapshot ? await cache.fetchQuery({
           queryKey: jobsKey,
-          queryFn: ({ signal }) => fetchStudioJobs(signal),
-          retry: false,
+          queryFn: () => fetchStudioJobs(boundary.signal),
           staleTime: 0,
         }) : await fetchStudioJobs(boundary.signal);
         if (current !== generation) return;
@@ -158,15 +159,14 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
             : event.cursor > snapshot.oldest_cursor && event.cursor <= localStart);
           await cache.fetchQuery({
             queryKey: history,
-            queryFn: async ({ signal }) => [
+            queryFn: async () => [
               ...retainedEvents,
               ...(await Promise.all([
-                fetchStudioJobHistory(projectId, localStart, snapshot.cursor, signal),
+                fetchStudioJobHistory(projectId, localStart, snapshot.cursor, boundary.signal),
                 ...venues.map((venue) =>
-                  fetchStudioJobHistory(projectId, venueStarts.get(eventSource(venue)) ?? 0, venue.cursor, signal, venue)),
+                  fetchStudioJobHistory(projectId, venueStarts.get(eventSource(venue)) ?? 0, venue.cursor, boundary.signal, venue)),
               ])).flat(),
             ],
-            retry: false,
             staleTime: 0,
           });
           if (current !== generation) return;
@@ -195,14 +195,14 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       }
     }
 
+    function warm() {
+      if (ownsSnapshot && projectId !== null) void warmStudioWorkers().catch(() => undefined);
+    }
+
     function open() {
       if (port) return;
-      try {
-        port = new JobsWorker({ name: STUDIO_JOBS_WORKER_NAME }).port;
-      } catch {
-        setConnection('disconnected');
-        return;
-      }
+      warm();
+      port = new JobsWorker({ name: STUDIO_JOBS_WORKER_NAME }).port;
       activePort.current = port;
       port.onmessage = ({ data }: MessageEvent<StudioJobWorkerMessage>) => {
         switch (data.type) {
@@ -213,8 +213,12 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
             void hydrate(true);
             break;
           case 'state':
-            setConnection(data.state);
-            if (data.state === 'disconnected') snapshotReady = false;
+            streamDown = data.state === 'disconnected';
+            if (streamDown) {
+              snapshotReady = false;
+              serviceDidNotRespond();
+            }
+            if (data.state === 'connected') serviceResponded();
             if (data.state === 'connected' && !snapshotReady && buffered === null) void hydrate();
             break;
           case 'event':
@@ -258,6 +262,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
 
     function retryConnection() {
       parentRefresh?.();
+      warm();
       if (!port) open();
       else {
         if (ownsSnapshot) port.postMessage({ type: 'retry' } satisfies StudioJobWorkerCommand);
@@ -265,6 +270,9 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       }
     }
     retry.current = retryConnection;
+    const stopReconnecting = ownsSnapshot ? subscribeConnection(() => {
+      if (streamDown && getConnection().kind === 'connected') retryConnection();
+    }) : undefined;
     open();
     window.addEventListener('pagehide', close);
     window.addEventListener('pageshow', open);
@@ -274,19 +282,20 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       window.removeEventListener('pageshow', open);
       window.removeEventListener('studio-native-reconnected', retryConnection);
       retry.current = null;
+      stopReconnecting?.();
       close();
     };
   }, [cache, ownsSnapshot, parentRefresh, projectId]);
 
   const refresh = useCallback(() => retry.current?.(), []);
   const context = useMemo(() => ({
-    connection,
+    projectId,
     refresh,
     acknowledge: async (jobId: string) => {
       const result = await acknowledgeStudioJob(jobId);
       activePort.current?.postMessage({ type: 'seen', jobId: result.job_id } satisfies StudioJobWorkerCommand);
     },
-  }), [connection, refresh]);
+  }), [projectId, refresh]);
 
   return <StudioJobsContext.Provider value={context}>
     {children}
@@ -300,12 +309,20 @@ export function useStudioJobs() {
   return useQuery<StudioJobSnapshot>({ queryKey: jobsKey, queryFn: skipToken });
 }
 
-export function useStudioJobHistory(projectId: string | null) {
-  return useQuery<StudioJobEvent[]>({ queryKey: historyKey(projectId), queryFn: skipToken });
+/** The project whose window this is, or null in the standalone Activity window. */
+export function useStudioJobsProject() {
+  return useStudioJobsContext().projectId;
 }
 
-export function useStudioJobConnection() {
-  return useStudioJobsContext().connection;
+export function useStudioUnreadableJobs() {
+  const { projectId } = useStudioJobsContext();
+  const snapshot = useStudioJobs();
+  return useMemo(() => (snapshot.data?.unreadable ?? [])
+    .filter((record) => projectId === null || record.project_id === projectId), [projectId, snapshot.data]);
+}
+
+export function useStudioJobHistory(projectId: string | null) {
+  return useQuery<StudioJobEvent[]>({ queryKey: historyKey(projectId), queryFn: skipToken });
 }
 
 export function useStudioJobActions() {

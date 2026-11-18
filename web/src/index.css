@@ -1,17 +1,37 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Work+Sans:wght@400;500;600&display=swap');
-
+@import "@fontsource-variable/work-sans/wght.css";
+@import "@fontsource-variable/space-grotesk/wght.css";
 @import "@window-shell/browser/tokens.css";
 @import "@window-shell/browser/frame.css";
+@import "@window-shell/browser/titlebar.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --studio-native-controls: 0px;
   --studio-shell-accent: #5d4b87;
   --studio-shell-selection: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  --row-hover-fill: var(--neutral-alpha-05);
+  --row-selected-fill: var(--neutral-alpha-08);
+  --row-related-mark: var(--text-secondary);
+  --studio-scroll-fade: 1.5rem;
+  /* A region whose read for the shown revision is still pending after its delay; the whole region recedes together. */
+  --studio-region-pending-opacity: .6;
+  --card-surface: var(--surface-main);
+  --card-border: var(--app-divider);
+  --card-border-hover: var(--studio-control-border);
+  --card-radius: var(--radius-md);
+  --card-head-fill: transparent;
+  --card-selected-head-fill: var(--neutral-alpha-06);
+  --card-selected-border: var(--text-primary);
+  --card-selected-width: 1.5px;
+  --card-selected-outset: 1px;
+  --card-focus: var(--studio-shell-accent);
   --shell-focus-color: var(--studio-shell-accent);
+  --studio-scrim: rgba(15, 23, 42, 0.3);
+  --studio-logo-ink: #000000;
+  --studio-logo-paper: #ffffff;
+  --studio-logo-accent: #213082;
   --studio-control-border: color-mix(in srgb, var(--text-muted) 45%, var(--surface-main));
   --studio-status-idle: var(--neutral-8);
   --studio-status-neutral: var(--text-muted);
@@ -19,6 +39,7 @@
   --studio-status-running: #2459c4;
   --studio-status-success: #27713f;
   --studio-status-failure: #af2b32;
+  --studio-status-ink: var(--surface-main);
   --studio-kind-train: #a17d66;
   --studio-kind-evaluate: #a17385;
   --studio-kind-analyze: #85758d;
@@ -27,26 +48,280 @@
   --studio-scene-guide: #917967;
   --studio-scene-outline: var(--text-muted);
   --studio-scene-grid: color-mix(in srgb, var(--app-divider) 60%, var(--surface-main));
-  --gray-50: #fafafa;
-  --gray-100: #f4f4f5;
-  --gray-200: #e4e4e7;
-  --gray-300: #d4d4d8;
-  --gray-400: #a1a1aa;
-  --gray-500: #71717a;
-  --gray-600: #52525b;
-  --gray-700: #3f3f46;
-  --gray-800: #27272a;
-  --gray-900: #18181b;
-  --blue-500: #3b82f6;
-  --blue-600: #2563eb;
-  --green-500: #22c55e;
-  --red-500: #ef4444;
-  --yellow-500: #eab308;
-  --purple-500: #a855f7;
+  --studio-objective-lightness: 0.48;
+  --studio-shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.08);
+  --studio-shadow-lift: 0 18px 40px rgba(15, 23, 42, 0.12);
 }
+
 
 :root[data-theme='dark'] {
   --studio-shell-accent: #c1aedf;
+  --studio-scrim: rgba(0, 0, 0, 0.5);
+  --studio-logo-ink: var(--text-primary);
+  --studio-logo-paper: var(--surface-header);
+  --studio-logo-accent: #6d88e2;
+  --studio-status-warning: #af760e;
+  --studio-status-running: #457dec;
+  --studio-status-success: #478f5b;
+  --studio-status-failure: #e35d5d;
+  --studio-kind-train: #926f58;
+  --studio-kind-evaluate: #986b7d;
+  --studio-kind-analyze: #807188;
+  --studio-kind-report: #797775;
+  --studio-scene-feature: #99688a;
+  --studio-scene-guide: #8a7260;
+  --studio-objective-lightness: 0.68;
+  --studio-shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.32);
+  --studio-shadow-lift: 0 18px 40px rgba(0, 0, 0, 0.44);
+}
+
+.studio-objective {
+  color: oklch(var(--studio-objective-lightness) 0.16 var(--studio-objective-hue));
+}
+
+:root[data-face='work-sans'] { --font-ui: 'Work Sans Variable', system-ui, sans-serif; }
+:root[data-face='space-grotesk'] { --font-ui: 'Space Grotesk Variable', system-ui, sans-serif; }
+
+:root[data-size='12'] { --text-base: 12px; }
+:root[data-size='13'] { --text-base: 13px; }
+:root[data-size='14'] { --text-base: 14px; }
+
+:root {
+  --text-xs: calc(var(--text-base) - 2px);
+  --text-sm: calc(var(--text-base) - 1px);
+  --text-md: var(--text-base);
+  --text-lg: calc(var(--text-base) + 1px);
+  --text-xl: calc(var(--text-base) + 3px);
+  --font-ui-size: var(--text-md);
+}
+
+:root[data-density='compact'] {
+  --control-height: 24px;
+  --control-padding-inline: var(--space-2);
+  --row-height: 24px;
+  --row-padding-inline: var(--space-1);
+  --panel-header-height: 32px;
+  --panel-header-padding-inline: var(--space-2);
+}
+
+:root[data-density='regular'] {
+  --control-height: 28px;
+  --control-padding-inline: var(--space-3);
+  --row-height: 28px;
+  --row-padding-inline: var(--space-2);
+  --panel-header-height: 36px;
+  --panel-header-padding-inline: var(--space-3);
+}
+
+.studio-scroll-fade {
+  --fade-top: 0px;
+  --fade-bottom: 0px;
+  --fade-left: 0px;
+  --fade-right: 0px;
+  -webkit-mask-image:
+    linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent),
+    linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
+  mask-image:
+    linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent),
+    linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+.studio-scroll-fade[data-overflow-top] { --fade-top: var(--studio-scroll-fade); }
+.studio-scroll-fade[data-overflow-bottom] { --fade-bottom: var(--studio-scroll-fade); }
+.studio-scroll-fade[data-overflow-left] { --fade-left: var(--studio-scroll-fade); }
+.studio-scroll-fade[data-overflow-right] { --fade-right: var(--studio-scroll-fade); }
+
+.studio-card {
+  position: relative;
+  border: 1px solid var(--card-tint, var(--card-border));
+  border-radius: var(--card-radius);
+  background: var(--card-surface);
+  color: var(--text-primary);
+}
+
+.studio-card:hover {
+  border-color: var(--card-tint, var(--card-border-hover));
+}
+
+.studio-card::after {
+  content: '';
+  position: absolute;
+  inset: calc(-1 * var(--card-selected-outset));
+  border-radius: calc(var(--card-radius) + var(--card-selected-outset) - 1px);
+  box-shadow: inset 0 0 0 var(--card-selected-width) var(--card-selected-border);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.studio-card[data-selected]::after {
+  opacity: 1;
+}
+
+.studio-card:focus-visible,
+.studio-card:has(> .studio-card__head :focus-visible) {
+  outline: var(--card-selected-width) solid var(--card-focus);
+  outline-offset: calc(var(--card-selected-outset) + 2px);
+}
+
+[data-region-pending] {
+  opacity: var(--studio-region-pending-opacity);
+}
+
+/* While a reference is being picked, the cards and elements it accepts are outlined and the rest recede. */
+.studio-card[data-pick='allowed'],
+.react-flow__node[data-pick='allowed'] {
+  outline: var(--card-selected-width) dashed var(--card-focus);
+  outline-offset: calc(var(--card-selected-outset) + 2px);
+  cursor: crosshair;
+}
+
+.studio-card[data-pick='refused'],
+.react-flow__node[data-pick='refused'] {
+  opacity: .45;
+}
+
+.studio-card__head {
+  border-radius: calc(var(--card-radius) - 1px) calc(var(--card-radius) - 1px) 0 0;
+  background: var(--card-head-fill);
+}
+
+.studio-card[data-selected] > .studio-card__head {
+  background: var(--card-selected-head-fill);
+}
+
+.studio-card__glyph {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* A control attached to a card's edge sits wholly outside its border and selection ring. */
+.studio-card__attached {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + var(--card-selected-outset) + var(--card-selected-width) + 4px);
+  transform: translateY(-50%);
+}
+
+/* Card styles: one root attribute (`data-card`, an appearance setting) over the shared Card. */
+[data-card='ring'] {
+  --card-selected-head-fill: transparent;
+  --card-selected-outset: 4px;
+}
+
+[data-card='flow'] {
+  --card-surface: var(--surface-header);
+  --card-border: var(--studio-control-border);
+  --card-border-hover: var(--text-muted);
+  --card-radius: 3px;
+  --card-selected-head-fill: transparent;
+  --card-selected-width: 1px;
+}
+
+[data-card='flow'] .studio-card__title {
+  justify-content: center;
+}
+
+[data-card='flow-ui'] {
+  --card-border-hover: var(--app-divider);
+  --card-selected-head-fill: transparent;
+  --card-selected-width: 0px;
+  --card-selected-outset: 3px;
+}
+
+[data-card='flow-ui'] .studio-card {
+  transition: box-shadow 120ms, border-color 120ms;
+}
+
+[data-card='flow-ui'] .studio-card:hover {
+  box-shadow: 0 0 0 1px var(--neutral-alpha-15);
+}
+
+[data-card='flow-ui'] .studio-card[data-selected] {
+  border-color: var(--text-muted);
+  box-shadow: var(--studio-shadow-lift);
+}
+
+[data-card='flow-ui'] .studio-card > .studio-card__head:not(:last-child) {
+  border-bottom: 1px solid var(--app-divider);
+  margin-bottom: var(--space-2);
+}
+
+@property --card-status-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+[data-card='flow-ui'] .studio-card[data-status]::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  padding: 2px;
+  border-radius: calc(var(--card-radius) + 2px);
+  background: var(--card-status-paint);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+
+[data-card='flow-ui'] .studio-card[data-status='success'] { --card-status-paint: var(--studio-status-success); }
+[data-card='flow-ui'] .studio-card[data-status='failure'] { --card-status-paint: var(--studio-status-failure); }
+
+[data-card='flow-ui'] .studio-card[data-status='busy'] {
+  --card-status-paint: conic-gradient(from var(--card-status-angle), transparent 0 55%, var(--studio-status-running));
+}
+
+[data-card='flow-ui'] .studio-card[data-status='busy']::before {
+  animation: studio-card-status 2s linear infinite;
+}
+
+@keyframes studio-card-status {
+  to { --card-status-angle: 360deg; }
+}
+
+[data-card='turbo'] {
+  --card-radius: 10px;
+  --card-selected-head-fill: transparent;
+  --card-selected-width: 0px;
+  --card-selected-outset: 2px;
+  --turbo-start: var(--studio-status-failure);
+  --turbo-middle: var(--studio-shell-accent);
+  --turbo-end: var(--studio-status-running);
+  --turbo-gradient: linear-gradient(90deg, var(--turbo-start), var(--turbo-middle), var(--turbo-end));
+}
+
+[data-card='turbo'] .studio-card {
+  border: 2px solid var(--card-tint, transparent);
+  background: linear-gradient(var(--surface-header), var(--surface-header)) padding-box, var(--turbo-gradient) border-box;
+  transition: box-shadow 200ms;
+}
+
+[data-card='turbo'] .studio-card:hover {
+  border-color: var(--card-tint, transparent);
+  box-shadow: -6px 0 16px -8px var(--turbo-start), 6px 0 16px -8px var(--turbo-end);
+}
+
+[data-card='turbo'] .studio-card[data-selected] {
+  box-shadow: -10px 0 24px -6px var(--turbo-start), 10px 0 24px -6px var(--turbo-end);
+}
+
+[data-card='turbo'] .studio-card__head .studio-card__glyph {
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--neutral-alpha-08);
+}
+
+[data-card='turbo'] .studio-map-edge {
+  stroke: url(#studio-map-turbo-edge);
+  stroke-width: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-card='flow-ui'] .studio-card[data-status='busy']::before { animation: none; }
 }
 
 .studio-running-progress {
@@ -70,9 +345,10 @@ body {
   width: 100%;
   min-height: 100vh;
   overflow-x: hidden;
-  font-family: 'Work Sans', 'Segoe UI', sans-serif;
-  color: #0f1115;
-  background: radial-gradient(circle at top left, #fefefe 0%, #f4f5f7 40%, #eef1f6 100%);
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  background: var(--surface-main);
 }
 
 #root {
@@ -81,8 +357,30 @@ body {
   overflow-x: hidden;
 }
 
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-background-pattern-dots-color: var(--app-divider);
+  --xy-background-pattern-lines-color: var(--app-divider);
+  --xy-background-pattern-cross-color: var(--app-divider);
+  --xy-edge-stroke: var(--text-muted);
+  --xy-edge-stroke-selected: var(--text-primary);
+  --xy-connectionline-stroke: var(--text-muted);
+  --xy-node-color: var(--text-primary);
+  --xy-node-border: 1px solid var(--studio-control-border);
+  --xy-node-background-color: var(--surface-header);
+  --xy-node-group-background-color: var(--surface-hover);
+  --xy-node-boxshadow-selected: 0 0 0 1px var(--text-primary);
+  --xy-handle-background-color: var(--text-muted);
+  --xy-handle-border-color: var(--surface-main);
+  --xy-selection-background-color: var(--studio-shell-selection);
+  --xy-selection-border: 1px dotted var(--text-muted);
+  --xy-edge-label-background-color: var(--surface-main);
+  --xy-edge-label-color: var(--text-primary);
+  --xy-resize-background-color: var(--text-muted);
+}
+
 .react-flow__node {
-  font-family: 'Work Sans', 'Segoe UI', sans-serif;
+  font-family: var(--font-ui);
 }
 
 .react-flow__handle {
@@ -114,16 +412,16 @@ body {
 }
 
 .local-x-scrollbar::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: var(--surface-toolbar);
   border-radius: 999px;
 }
 
 .local-x-scrollbar::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border: 2px solid #f1f5f9;
+  background: var(--app-divider);
+  border: 2px solid var(--surface-toolbar);
   border-radius: 999px;
 }
 
 .local-x-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--text-muted);
 }

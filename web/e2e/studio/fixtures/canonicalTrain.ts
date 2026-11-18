@@ -1,28 +1,29 @@
 import { expect, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import type { StudioProjectDocument } from '../../../src/generated/studioContracts';
-import { activate, number } from './studioKeyboard';
+import { createHash } from 'node:crypto';
+import { readFile, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { runPython } from './python';
+import { activate, activateMenuItem, chooseStepKind, number } from './studioKeyboard';
 
-const repo = fileURLToPath(new URL('../../../../', import.meta.url));
-const run = promisify(execFile);
 
-export async function runProjectFixture(
-  fixture: string | { module: string; home: string }, ...arguments_: string[]
-) {
-  const module = typeof fixture === 'string' ? fixture : fixture.module;
-  const env = typeof fixture === 'string' ? process.env : { ...process.env, FEEDBAX_STUDIO_TEST_HOME: fixture.home };
-  try {
-    const { stdout } = await run('uv', [
-      'run', '--no-sync', 'python', '-B', '-m', module, ...arguments_,
-    ], { cwd: repo, env, timeout: 12_000 });
-    return stdout;
-  } catch (error) {
-    const failure = error as Error & { code?: number | string; signal?: string; killed?: boolean; stderr?: string };
-    throw new Error(`${failure.message}\nExit ${failure.code ?? 'none'}, signal ${failure.signal ?? 'none'}, killed ${failure.killed ?? false}\n${failure.stderr ?? ''}`,
-      { cause: error });
-  }
+/** Runs a pure project-file generator (an action named `…files`) once per arguments and Python source. */
+async function generatedFiles(module: string, arguments_: readonly string[]) {
+  const root = process.env.FEEDBAX_STUDIO_E2E_FIXTURES;
+  if (root === undefined) throw new Error('The Studio global setup did not create the fixture cache');
+  const path = join(root, createHash('sha256').update(JSON.stringify([module, ...arguments_])).digest('hex') + '.json');
+  const cached = await readFile(path, 'utf8').catch(() => undefined);
+  if (cached !== undefined) return cached;
+  const output = await runPython({ module }, arguments_);
+  const staging = `${path}.${process.pid}`;
+  await writeFile(staging, output);
+  await rename(staging, path);
+  return output;
+}
+
+export async function runProjectFixture(module: string, ...arguments_: string[]) {
+  if (/(^|-)files$/.test(arguments_[0] ?? '')) return generatedFiles(module, arguments_);
+  return runPython({ module }, arguments_);
 }
 
 export async function fixture(...arguments_: string[]) {
@@ -49,12 +50,17 @@ export async function appendManagedFiles(
   return { snapshot, projectPath };
 }
 
+/** A Runs table row's accessible name: its ordinal, then the run's label. */
+export function runName(label: string) {
+  return new RegExp(`^\\d+ ${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+}
+
 export function mapStep(page: Page, stepId: string) {
   return page.locator(`[data-map-step="${stepId}"] button[data-canvas-focus]`);
 }
 
 export async function chooseTrainSuccessor(page: Page) {
-  await page.getByRole('dialog', { name: 'New Step', exact: true }).getByRole('button', { name: 'Train', exact: true }).press('Enter');
+  await chooseStepKind(page, 'Train');
 }
 
 export async function captureStudioWindow(page: Page, info: TestInfo, name: string) {
@@ -79,16 +85,10 @@ export async function enter(field: Locator, value: string) {
 export async function authorLearningRateSweep(rate: Locator) {
   const page = rate.page();
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
-  await activate(page, rate.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   const text = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await expect(text).toHaveValue('0.001,');
   await expect(text).toBeEditable();
   await number(page, text, '0.001, 0.002, 0.003');
-  await expect(rate.getByRole('textbox', { name: 'Learning Rate value 3', exact: true })).toHaveValue('0.003');
-  for (const [index, name] of ['Slow', 'Medium', 'Fast'].entries()) {
-    const valueName = rate.getByRole('textbox', { name: `Learning Rate value ${index + 1} name`, exact: true });
-    await expect(valueName).toBeEditable();
-    await number(page, valueName, name);
-    await expect(rate.getByRole('textbox', { name: `Value ${name}`, exact: true })).toBeVisible();
-  }
+  for (const value of ['0.001', '0.002', '0.003']) await expect(rate.getByText(value, { exact: true })).toBeVisible();
 }

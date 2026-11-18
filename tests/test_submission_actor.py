@@ -92,7 +92,7 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
     legacy_record = {"project": "legacy", "continues": None, "runs": {}}
     legacy_data = {
         "run_key": "old", "stage_id": "old", "scenario_id": "default",
-        "label": "Old attempt", "coordinates": {},
+        "label": "Old attempt", "coordinates": {}, "manifest_root": str(tmp_path / "legacy-store"),
     }
     old_submission = host.admit(
         "actor-legacy", [AdmissionItem("old", replace(legacy, data=legacy_data))], record=legacy_record,

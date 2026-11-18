@@ -37,6 +37,9 @@ OPTIONAL_NAMESPACE_IMPORT_ALLOWLIST = {
     ("feedbax.plot", "seaborn"): "viz extra module imports seaborn at module import time",
 }
 
+#: Namespaces that are the web runtime: the desktop host serves the same FastAPI transport.
+WEB_NAMESPACES = (("feedbax", "web"), ("feedbax", "desktop"))
+
 
 @dataclass(frozen=True, order=True)
 class ImportFinding:
@@ -205,7 +208,7 @@ def _find_unapproved_imports(
         relative_path = path.relative_to(repo_root)
         module = ".".join(relative_path.with_suffix("").parts)
         dependencies = base_dependencies
-        if relative_path.parts[:2] == ("feedbax", "web"):
+        if relative_path.parts[:2] in WEB_NAMESPACES:
             dependencies = base_dependencies | web_dependencies
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         visitor = UnguardedImportVisitor()

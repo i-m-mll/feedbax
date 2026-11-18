@@ -100,7 +100,7 @@ def test_generated_equinox_components_default_trainable_leaves_to_float32():
 
 
 def test_generated_equinox_components_preserve_explicit_float64():
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         layer = graph_eqx.Linear(2, 3, dtype=jnp.float64, key=jax.random.PRNGKey(0))
         gru = graph_eqx.GRUCell(2, 3, dtype=jnp.float64, key=jax.random.PRNGKey(1))
 
@@ -396,7 +396,7 @@ def test_recurrent_controller_activates_output(out_size):
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_recurrent_controller_preserves_dtype_with_noisy_carry(dtype):
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         net = recurrent_controller(
             2,
             3,

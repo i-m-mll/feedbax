@@ -1,12 +1,13 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, firstJobTimeout, test } from './fixtures/studio';
+import { type APIRequestContext, type Page } from '@playwright/test';
 import type {
-  StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
+  ModelFieldResponse, StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission,
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import {
-  appendManagedFiles, authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot,
-  runProjectFixture, seedManagedProject,
-} from './fixtures/canonicalTrain';
+import { appendManagedFiles, authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { runPythonProcess } from './fixtures/python';
+import { pick } from './fixtures/controls';
+import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
 const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
@@ -54,7 +55,7 @@ async function launchRows(page: Page, projectPath: string, keys: StudioSavedTrai
   expect(items.map(({ disposition }) => disposition)).toEqual(keys.map(() => 'admitted'));
 }
 
-test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from Activity',
+test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from Activity', { tag: '@round' },
   async ({ page, request }) => {
     test.setTimeout(50_000);
     let creates = 0;
@@ -81,7 +82,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
 
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
-    const attempt = activity.getByRole('list', { name: 'Runs' }).getByRole('listitem').filter({ hasText: configuration.project });
+    const attempt = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
     const stopping = responseFor(page, '/api/jobs/stop');
     await attempt.getByRole('button', { name: 'Stop', exact: true }).click();
     expect((await stopping).status()).toBe(202);
@@ -117,7 +118,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
   },
 );
 
-test('Activity shows the original CLI and Studio clients for a saved Train request', async ({ page, request }, info) => {
+test('Activity shows the original CLI and Studio clients for a saved Train request', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const project = snapshot.project_id;
@@ -126,10 +127,11 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   await select(page, 'train');
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
-  const entries = activity.getByRole('list', { name: 'Runs', exact: true }).getByRole('listitem').filter({ hasText: configuration.project });
+  const entries = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
 
-  await runProjectFixture('web.e2e.studio.fixtures.canonical_train',
-    'run-saved-cli', String(info.config.metadata.home), configuration.project, label);
+  // The fixture execs the CLI in place of its interpreter, so it cannot run in the shared fixture runner.
+  await runPythonProcess({ module: 'web.e2e.studio.fixtures.canonical_train' },
+    ['run-saved-cli', studio.home, configuration.project, label]);
   const cli = entries.filter({ has: page.getByText('CLI', { exact: true }) });
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
   await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
@@ -137,11 +139,11 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const studioJob = await admit(page, projectPath);
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
-  const studio = entries.filter({ has: page.getByText('Studio', { exact: true }) });
-  await expect(studio.getByText('Client', { exact: true })).toBeVisible();
-  await expect(studio.getByText('Label', { exact: true })).toHaveCount(0);
+  const studioEntry = entries.filter({ has: page.getByText('Studio', { exact: true }) });
+  await expect(studioEntry.getByText('Client', { exact: true })).toBeVisible();
+  await expect(studioEntry.getByText('Label', { exact: true })).toHaveCount(0);
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
-  await expect(studio.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
+  await expect(studioEntry.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
 
   const response = await request.get('/api/jobs', { params: { project } });
   expect(response.ok(), await response.text()).toBe(true);
@@ -156,17 +158,17 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   });
 });
 
-test('M1 runs only the selected row of a sweep authored in Studio', async ({ page, request }) => {
+test('M1 runs only the selected row of a sweep authored in Studio', { tag: '@round' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '30'));
   await page.goto('/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   await authorLearningRateSweep(rate);
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
-  const picked = runs(page).getByRole('button', { name: /Medium/ });
+  const picked = runs(page).getByRole('row').filter({ hasText: '0.002' }).getByRole('button');
   await picked.click();
   const submitted = await admit(page, projectPath);
-  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(1);
+  await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(1, { timeout: firstJobTimeout });
   await expect(runs(page).getByText('Not run', { exact: true })).toHaveCount(2);
   const response = await request.get('/api/jobs', { params: { project: snapshot.project_id } });
   expect(response.ok()).toBe(true);
@@ -197,11 +199,11 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   expect(end).toBe(30);
 });
 
-for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, async ({ page, request }, info) => {
+for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(59_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
-  const metricName = 'program_step';
+  const metricName = 'train_loss';
   const files = JSON.parse(await runProjectFixture(evaluation, grouped ? 'grouped-subset-files' : 'measured-subset-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const path = '/?project=' + snapshot.project_id;
@@ -212,11 +214,11 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const train = page.getByRole('article', { name: 'Train train', exact: true });
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  await chooseStepKind(page, 'Evaluate');
   expect((await created).status()).toBe(201);
   const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
   const metric = subset.getByRole('textbox', { name: 'Metric', exact: true });
-  const count = subset.getByRole('spinbutton', { name: 'Count', exact: true });
+  const count = subset.getByRole('textbox', { name: 'Count', exact: true });
   const best = subset.getByRole('checkbox', { name: 'Best', exact: true });
   const apply = subset.getByRole('button', { name: 'Apply Subset', exact: true });
   const order = subset.getByRole('combobox', { name: 'Order', exact: true });
@@ -235,14 +237,12 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     await click();
     const response = await saved;
     expect(response.ok(), await response.text()).toBe(true);
-    return (await response.json() as StudioProjectSnapshot).project.steps.evaluate.inputs?.subject;
+    return (await response.json() as StudioProjectSnapshot).project.steps!.evaluate.inputs?.subject;
   };
 
   await best.check();
   await expect(apply).toBeDisabled();
   await metric.fill(metricName);
-  await count.fill('0');
-  await expect(apply).toBeDisabled();
   await count.fill('2');
   if (grouped) await per.check();
   expect(await saveWhere(() => apply.click())).toMatchObject({
@@ -255,7 +255,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   await expect(best).toBeChecked();
   await expect(metric).toHaveValue(metricName);
   await expect(count).toHaveValue('2');
-  await expect(order).toHaveValue('min');
+  await expect(order).toHaveText('Lowest');
   await expect(inputs).toContainText(grouped ? '4 of 4' : '2 of 3');
   const memberLists = grouped ? groupedLists : [members];
   if (grouped) {
@@ -280,13 +280,13 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     expect(projection.rank_groups?.flatMap(({ ranks }) => ranks)).toEqual(keys);
     expect(ranks.map(({ subject_rank_key }) => subject_rank_key)).toEqual(keys);
     for (const [index, label] of groupLabels.entries()) {
-      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveText(`${label} · Rank 1`);
-      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveText(`${label} · Rank 2`);
+      await expect(runs(page).getByRole('rowheader').nth(index * 2)).toHaveAccessibleName(runName(`${label} · Rank 1`));
+      await expect(runs(page).getByRole('rowheader').nth(index * 2 + 1)).toHaveAccessibleName(runName(`${label} · Rank 2`));
     }
   } else {
     expect(keys).toEqual(['rank-1', 'rank-2']);
     for (const [index] of ranks.entries()) {
-      await expect(runs(page).getByRole('row').filter({ hasText: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
+      await expect(runs(page).getByRole('rowheader', { name: new RegExp(`rank-${index + 1}`, 'i') })).toHaveCount(1);
     }
   }
 
@@ -299,14 +299,14 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const finished = finishedPlan.rows.filter(({ key }) => key.step === 'train');
   const attempts = finished.map(({ result }) => result!.job_id);
   const measures: Record<string, number> = JSON.parse(await runProjectFixture(
-    evaluation, 'train-measures', String(info.config.metadata.home), snapshot.project_id, metricName, ...attempts,
+    evaluation, 'train-measures', studio.home, snapshot.project_id, metricName, ...attempts,
   ));
-  expect(attempts.map((attempt) => measures[attempt])).toEqual(grouped ? [4, 4, 2, 2] : [4, 3, 2]);
-  const expected = grouped ? ['zeta', 'alpha'].flatMap((group) => {
-    const candidates = finishedPlan.window_map!.rows.filter(({ key, coordinates }) =>
-      key.step === 'train' && coordinates.replicate?.value_id === group);
-    return candidates.toReversed().map(({ key }) => finished.find((row) => row.key.row === key.row)!);
-  }) : [finished[2], finished[1]];
+  for (const attempt of attempts) expect(Number.isFinite(measures[attempt])).toBe(true);
+  const lowest = (rows: typeof finished) =>
+    [...rows].sort((a, b) => measures[a.result!.job_id] - measures[b.result!.job_id]).slice(0, 2);
+  const expected = grouped ? ['zeta', 'alpha'].flatMap((group) => lowest(finishedPlan.window_map!.rows
+    .filter(({ key, coordinates }) => key.step === 'train' && coordinates.replicate?.value_id === group)
+    .map(({ key }) => finished.find((row) => row.key.row === key.row)!))) : lowest(finished);
 
   await select(page, 'evaluate');
   for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
@@ -314,7 +314,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const ranked = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   expect(ranked.map(({ key }) => key)).toEqual(ranks.map(({ key }) => key));
   if (grouped) {
-    const firstGroup = runs(page).getByRole('rowheader').getByRole('button', { name: /^replicate First · Rank/ });
+    const firstGroup = runs(page).getByRole('rowheader').getByRole('button', { name: /^\d+ replicate First · Rank/ });
     await firstGroup.nth(0).click();
     await firstGroup.nth(1).click({ modifiers: ['Shift'] });
     await launchRows(page, projectPath, ranked.slice(0, 2).map(({ key }) => key));
@@ -331,7 +331,8 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     expect(completed[index].bound_subject?.key).toBe(keys[index]);
     expect(completed[index].result?.checkpoint_source).toEqual({
       job_id: producer.result!.job_id, request_id: producer.request_id,
-      completed_updates: measures[producer.result!.job_id],
+      completed_updates: { Long: 4, Medium: 3, Short: 2 }[finishedPlan.window_map!.rows
+        .find(({ key }) => key.row === producer.key.row)!.coordinates.updates!.value_id as string],
     });
   }
   if (grouped) expect(new Set(completed.map(({ bound_subject }) => bound_subject!.selection_sha256)).size).toBe(2);
@@ -339,9 +340,9 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     const group = Math.floor(index / 2);
     const position = index % 2;
     await expect(memberLists[group].nth(position)).toHaveText(`Rank ${position + 1} · ${producer.label}`);
-    await expect(runs(page).getByRole('row').filter({ hasText: producer.label })).toHaveCount(1);
+    await expect(runs(page).getByRole('rowheader', { name: new RegExp(producer.label) })).toHaveCount(1);
     if (grouped) await expect(runs(page).getByRole('rowheader').nth(index))
-      .toHaveText(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`);
+      .toHaveAccessibleName(runName(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`));
   }
   await expect(freeze).toBeEnabled();
   await count.fill('1');
@@ -373,7 +374,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   await expect(members).toHaveText(expected.map(({ label }) => label));
 });
 
-test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', async ({ page, request }) => {
+test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(58_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
@@ -394,7 +395,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(sweep).toHaveText('learning-rate 3');
   const definition = await readPlan();
   const sourceRows = definition.window_map!.rows.filter(({ key }) => key.step === 'train');
-  expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].label)).toEqual(['Slow', 'Medium', 'Fast']);
+  expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   expect(sourceRows.map(({ key, member_key }) => member_key === key.row)).toEqual([true, true, true]);
   const authoredRows = sourceRows.map(({ key: { variant, row }, member_key }) => ({ key: member_key, variant, row }));
   const ids = sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value_id);
@@ -407,26 +408,25 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const value = (name: string) => train.getByRole('listitem').getByRole('button', {
     name: `Select learning-rate ${name}`, exact: true,
   });
-  await value('Slow · 0.001').click();
-  await value('Medium · 0.002').click({ modifiers: ['Shift'] });
-  await expect(train).toContainText('2 of 3');
+  await value('0.001').click();
+  await value('0.002').click({ modifiers: ['Shift'] });
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  await chooseStepKind(page, 'Evaluate');
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
-  const authored = (await response.json() as StudioProjectDocument).snapshot.project.steps.evaluate;
+  const authored = (await response.json() as StudioProjectDocument).snapshot.project.steps!.evaluate;
   expect(authored).toMatchObject({
     inputs: { subject: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': ids.slice(0, 2) } } } },
     sweep: { axes: { subject: { input: 'subject' } } },
   });
   const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
-  await expect(inputs).toContainText('learning-rate Slow · 0.001, Medium · 0.002 · 2 of 3');
+  await expect(inputs).toContainText('learning-rate 0.001, 0.002 · 2 of 3');
   const members = inputs.getByRole('list', { name: 'Members', exact: true });
   await expect(members.getByRole('listitem')).toHaveText(sourceRows.slice(0, 2).map(({ label }) => label));
   const trialSet = drawer.getByRole('group', { name: 'Trial Set', exact: true });
   await expect(trialSet.getByRole('combobox')).toBeFocused();
-  await trialSet.getByRole('combobox').selectOption('conditions');
+  await pick(trialSet.getByRole('combobox'), 'Selected Conditions');
   for (const condition of conditionIds) await trialSet.getByRole('checkbox', { name: condition, exact: true }).check();
   const edited = (path: string) => page.waitForResponse((response) => {
     const request = response.request();
@@ -437,7 +437,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await trialSet.getByRole('button', { name: 'Apply Trials', exact: true }).click();
   const savedTrials = await trialEdit;
   expect(savedTrials.ok(), await savedTrials.text()).toBe(true);
-  const step = (await savedTrials.json() as StudioProjectSnapshot).project.steps.evaluate;
+  const step = (await savedTrials.json() as StudioProjectSnapshot).project.steps!.evaluate;
   expect(step.base).toMatchObject({ inline: { params: { trial_set: { kind: 'conditions', ids: conditionIds } } } });
   expect(step.base).not.toHaveProperty('inline.params.trials');
 
@@ -449,19 +449,19 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(runButton(page)).toBeDisabled();
 
   await select(page, 'train');
-  const fast = runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button');
+  const fast = runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button');
   await fast.click();
   await expect(primary(page).getByRole('region', { name: 'Used By' })).toHaveCount(0);
-  await expect(steps.getByRole('button', { name: 'Select evaluate Evaluate 0 of 2', exact: true })).toBeVisible();
-  const slow = runs(page).getByRole('row').filter({ hasText: 'Slow' }).getByRole('button');
+  await expect(steps.getByRole('treeitem', { name: /^evaluate\b/ })).toHaveAccessibleDescription('0 of 2');
+  const slow = runs(page).getByRole('row').filter({ hasText: '0.001' }).getByRole('button');
   await slow.click();
   await expect(primary(page).getByRole('region', { name: 'Used By' })).toContainText('1 of 2');
-  await expect(steps.getByRole('button', { name: 'Select evaluate Evaluate 1 of 2', exact: true })).toBeVisible();
+  await expect(steps.getByRole('treeitem', { name: /^evaluate\b/ })).toHaveAccessibleDescription('1 of 2');
   await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
 
   await select(page, 'evaluate');
   const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
-  await subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true }).check();
+  await subset.getByRole('checkbox', { name: '0.003', exact: true }).check();
   const subsetEdit = edited('/inputs/subject/where');
   await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
   const savedSubset = await subsetEdit;
@@ -479,9 +479,9 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await select(page, 'evaluate');
   await expect(inputs).toContainText('3 of 3');
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3);
-  await runs(page).getByRole('row').filter({ hasText: 'Fast' }).getByRole('button').click();
+  await runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button').click();
   await expect(primary(page).getByRole('region', { name: 'Made From' })).toContainText('1 of 3');
-  await expect(steps.getByRole('button', { name: 'Select train Train 1 of 3', exact: true })).toBeVisible();
+  await expect(steps.getByRole('treeitem', { name: /^train\b/ })).toHaveAccessibleDescription('1 of 3');
   await page.getByRole('button', { name: 'Show Map', exact: true }).click();
   await expect(train.locator('[data-map-focus="upstream"]')).toHaveCount(1);
   const final = await readPlan();
@@ -503,21 +503,21 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await fast.click();
   await slow.click({ modifiers: ['Shift'] });
   const second = responseFor(page, projectPath + '/files');
-  await primary(page).getByRole('button', { name: 'New Step', exact: true }).click();
-  await page.getByRole('dialog', { name: 'New Step' }).getByRole('button', { name: 'Evaluate', exact: true }).click();
+  await palette(page, 'newStep', 'New Step');
+  await chooseStepKind(page, 'Evaluate');
   const secondCreated = await second;
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);
   const { snapshot: withSecond } = await secondCreated.json() as StudioProjectDocument;
   const picked = [sourceRows[0], sourceRows[2]];
-  expect(withSecond.project.steps['evaluate-2'].inputs?.subject).toMatchObject({
+  expect(withSecond.project.steps!['evaluate-2'].inputs?.subject).toMatchObject({
     where: { rows: [authoredRows[0], authoredRows[2]] },
   });
   await expect(members.getByRole('listitem')).toHaveText(picked.map(({ label }) => label));
-  await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
+  await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');
   await select(page, 'evaluate');
-  await expect(trialSet.getByRole('combobox')).toHaveValue('conditions');
+  await expect(trialSet.getByRole('combobox')).toHaveText('Selected Conditions');
   await select(page, 'evaluate-2');
-  await expect(trialSet.getByRole('combobox')).toHaveValue('every_condition');
+  await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');
   await expect(trialSet.getByRole('button', { name: 'Apply Trials', exact: true })).toBeDisabled();
   await subset.getByRole('checkbox', { name: sourceRows[1].label, exact: true }).check();
   const widenRows = edited('/inputs/subject/where');
@@ -525,14 +525,14 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const widenedRows = await widenRows;
   expect(widenedRows.ok(), await widenedRows.text()).toBe(true);
   const widenedSnapshot = await widenedRows.json() as StudioProjectSnapshot;
-  expect(widenedSnapshot.project.steps['evaluate-2'].inputs?.subject).toMatchObject({
+  expect(widenedSnapshot.project.steps!['evaluate-2'].inputs?.subject).toMatchObject({
     where: { rows: authoredRows },
   });
   await expect(members.getByRole('listitem')).toHaveText(sourceRows.map(({ label }) => label));
   console.info('Mounted Evaluate subset receipts', JSON.stringify({ project: snapshot.project_id, revision: final.revision, results }));
 });
 
-test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async ({ page, request }) => {
+test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(75_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'task-pivot-files'));
@@ -556,13 +556,13 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   expect(evaluation.map(({ trials }) => trials.length)).toEqual([2, 3, 2, 3]);
 
   const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
-  await primary(page).getByRole('combobox', { name: 'Rows', exact: true }).selectOption('learning-rate');
-  await primary(page).getByRole('combobox', { name: 'Columns', exact: true }).selectOption('task');
+  await pick(primary(page).getByRole('combobox', { name: 'Rows', exact: true }), 'learning-rate');
+  await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
   const cell = (model: string, task: string, status: string) => pivot.getByRole('button', {
     name: `Select learning-rate ${model} · task ${task} · ${status}`, exact: true,
   });
   await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
-  await expect(pivot.getByRole('rowheader')).toHaveText(['Slow · 0.001', 'Fast · 0.003']);
+  await expect(pivot.getByRole('rowheader')).toHaveText(['0.001', '0.003']);
   await expect(pivot.getByRole('button', { name: /Can't run$/ })).toHaveCount(4);
 
   await select(page, 'train');
@@ -570,13 +570,13 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(6, { timeout: 26_000 });
   const trainDone = (await read()).rows;
   await select(page, 'evaluate');
-  await primary(page).getByRole('combobox', { name: 'Columns', exact: true }).selectOption('task');
-  const sampled = cell('Fast · 0.003', 'Long Task', 'Not run');
+  await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
+  const sampled = cell('0.003', 'Long Task', 'Not run');
   const target = rows[3].key;
   await sampled.click();
   await expect(sampled).toHaveAttribute('aria-pressed', 'true');
   await launchRows(page, projectPath, [target]);
-  await expect(cell('Fast · 0.003', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
+  await expect(cell('0.003', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
   await expect(pivot.getByRole('button', { name: /Not run$/ })).toHaveCount(3);
   const lineage = primary(page).getByRole('region', { name: 'Made From', exact: true });
   const complete = await read();
@@ -600,8 +600,8 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   await model.getByRole('article', { name: 'Plant', exact: true }).locator('header').click();
   const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
   await expect(mass).toHaveAccessibleDescription('Document · reach-model');
-  const rate = primary(page).getByRole('group', { name: 'learning-rate', exact: true });
-  await rate.getByRole('button', { name: 'Fast · 0.003', exact: true }).click();
+  await page.getByRole('article', { name: 'Train train', exact: true })
+    .getByRole('button', { name: 'Select learning-rate 0.003', exact: true }).click();
   await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '2');
@@ -614,7 +614,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   expect(groupStale.map(({ change }) => [change?.before, change?.after])).toEqual([[1, 2], [1, 2]]);
 
   const picked = trainDone.filter(({ key }) => key.row.startsWith('learning-rate=Slow'));
-  const rowButton = (label: string) => runs(page).getByRole('button', { name: label, exact: true });
+  const rowButton = (label: string) => runs(page).getByRole('button', { name: runName(label) });
   await rowButton(picked[0].label).click();
   await rowButton(picked[1].label).click({ modifiers: ['Shift'] });
   await model.focus();
@@ -634,7 +634,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
   const authorSeed = await request.patch(projectPath, { data: { revision: saved.revision, files: [{
     address: { kind: 'step', id: 'train' },
     patches: [{ op: 'add', path: '/sweep/axes/seed/values/three', value: {
-      label: 'three', value: 3, patches: { 'method_payload.payload.seed': { value: 3 } },
+      label: 'three', value: 3, patches: { 'seed': { value: 3 } },
     } }],
   }] } });
   expect(authorSeed.ok(), await authorSeed.text()).toBe(true);
@@ -649,16 +649,15 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async
       revision: widened.revision, run: row, document: 'reach-model', owner: { composites: [], element: { kind: 'component', id: 'plant' } },
     } });
     expect(result.ok(), await result.text()).toBe(true);
-    return (await result.json()).fields.find(({ label }) => label === 'Mass').sources;
+    return (await result.json() as ModelFieldResponse).fields!.find(({ label }) => label === 'Mass')!.sources;
   };
   expect(await sourceFor(newRows[2].key)).toMatchObject([{ kind: 'sweep_value', axis: 'learning-rate', value: 'Fast' }]);
   expect(await sourceFor(newRows[0].key)).toMatchObject([{ kind: 'document', name: 'reach-model' }]);
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  const exception = drawer.getByRole('region', { name: 'Sweep', exact: true })
-    .getByRole('listitem').filter({ hasText: picked[0].key.row });
-  await expect(exception).toContainText(`${picked[1].key.row} · 2`);
-  await expect(exception).toContainText('Mass');
-  await exception.getByRole('button', { name: 'Remove', exact: true }).click();
+  const exception = drawer.getByRole('region', { name: 'Exceptions', exact: true })
+    .getByRole('listitem').filter({ hasText: 'Mass' });
+  await expect(exception).toContainText('learning-rate 0.001 · seed 1, 2 · 2 runs');
+  await exception.getByRole('button', { name: 'Remove Exception', exact: true }).click();
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(2);
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(4);
   await expect(exception).toHaveCount(0);

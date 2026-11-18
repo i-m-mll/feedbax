@@ -111,9 +111,15 @@ class StudioReplayFile(StrictModel):
     after: str | None
 
 
+class StudioReplayPresentation(StrictModel):
+    before: Sha256
+    after: PresentationDocument
+
+
 class StudioProjectReplay(StrictModel):
     revision: Sha256
     files: list[StudioReplayFile] = Field(min_length=1)
+    presentation: StudioReplayPresentation | None = None
 
 
 class StudioPresentationWrite(StrictModel):
@@ -129,6 +135,38 @@ class StudioProjectDocument(StrictModel):
 class StudioProjectRename(StrictModel):
     revision: Sha256
     name: ProjectName
+
+
+type MemberFamily = Literal["documents", "steps"]
+
+
+class RenameMember(StrictModel):
+    """Rename a document or step and every authored reference to it."""
+
+    kind: Literal["rename"]
+    family: MemberFamily
+    member: ProjectName
+    name: ProjectName
+
+
+class DuplicateMember(StrictModel):
+    """Copy a document and its presentation under a new name, generated when omitted."""
+
+    kind: Literal["duplicate"]
+    family: Literal["documents"]
+    member: ProjectName
+    name: ProjectName | None = None
+
+
+class StudioMemberCommand(StrictModel):
+    revision: Sha256
+    presentation_revision: Sha256
+    command: Annotated[RenameMember | DuplicateMember, Field(discriminator="kind")]
+
+
+class StudioMemberCommandResult(StrictModel):
+    member: ProjectName
+    snapshot: StudioProjectSnapshot
 
 
 class StudioTrainStep(Step):

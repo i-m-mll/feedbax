@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef, type MouseEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
+import { installTitleBarDrag, shellHost } from '@window-shell/browser/titlebar';
 import type { StudioWindowAction } from './studioNativeMenu';
 
 async function windowAction(action: StudioWindowAction) {
@@ -9,13 +10,8 @@ async function windowAction(action: StudioWindowAction) {
   }
 }
 
-function dragSurface(event: MouseEvent<HTMLElement>): boolean {
-  return event.button === 0 && event.target instanceof Element &&
-    event.target.hasAttribute('data-studio-drag-region');
-}
-
-export function useStudioTitleBar(title: string) {
-  const click = useRef<{ target: EventTarget; x: number; y: number }>();
+/** Publishes the window title to the native host and gives the bar the shell's drag and zoom. */
+export function useStudioTitleBar(bar: RefObject<HTMLElement>, title: string) {
   const publishingTitle = useRef(Promise.resolve());
 
   useLayoutEffect(() => {
@@ -23,24 +19,11 @@ export function useStudioTitleBar(title: string) {
     publishingTitle.current = publishingTitle.current.then(() => windowAction({ kind: 'title', title }));
   }, [title]);
 
-  return {
-    onMouseDown(event: MouseEvent<HTMLElement>) {
-      click.current = undefined;
-      if (!window.__FEEDBAX_STUDIO_MENU__?.windowAction || !dragSurface(event)) return;
-      if (event.detail === 1) {
-        event.preventDefault();
-        void windowAction({ kind: 'drag' });
-      } else if (event.detail === 2) {
-        click.current = { target: event.target, x: event.clientX, y: event.clientY };
-      }
-    },
-    onMouseUp(event: MouseEvent<HTMLElement>) {
-      const start = click.current;
-      click.current = undefined;
-      if (start && dragSurface(event) && event.detail === 2 && start.target === event.target &&
-          start.x === event.clientX && start.y === event.clientY) {
-        void windowAction({ kind: 'zoom' });
-      }
-    },
-  };
+  useEffect(() => {
+    if (!bar.current || shellHost() !== 'native') return;
+    return installTitleBarDrag(bar.current, {
+      startDrag: () => void windowAction({ kind: 'drag' }),
+      toggleZoom: () => void windowAction({ kind: 'zoom' }),
+    });
+  }, [bar]);
 }
