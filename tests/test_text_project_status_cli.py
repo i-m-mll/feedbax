@@ -14,12 +14,8 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project
-from tests.support.host import private_host as host_fixture
-from tests.support.host import job_row, wait_until
+from tests.support.host import job_row, token, wait_until
 from tests.test_text_project_plan_cli import _edit, _files, _write_walkthrough
-
-
-host = host_fixture
 
 
 def _status_table(output):
@@ -34,7 +30,7 @@ def _status_table(output):
 
 def _retain_train(host, folders, reviewed, registries, key):
     submission = JobService(host, registries).admit_plan(
-        folders, reviewed, run_keys=(key,), token="saved-train",
+        folders, reviewed, run_keys=(key,), token=token("saved-train"),
     )
     (attempt,) = submission.items
     finished = wait_until(

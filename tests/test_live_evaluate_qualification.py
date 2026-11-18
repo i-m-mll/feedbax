@@ -20,10 +20,8 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.support.host import private_host as host_fixture, job_row, restart, wait_until
+from tests.support.host import job_row, restart, token, wait_until
 from tests.test_saved_update_series import definition
-
-host = host_fixture
 
 
 @pytest.fixture
@@ -63,7 +61,7 @@ def admit(jobs, folders, project, definition, *, qualified=True, train_only=Fals
             ),
         )
     keys = (train.key,) if train_only else (train.key, evaluate.key)
-    submission = jobs.admit_plan(folders, plan, run_keys=keys, token=project)
+    submission = jobs.admit_plan(folders, plan, run_keys=keys, token=token(project))
     assert all(item.disposition == "admitted" for item in submission.items), submission
     return plan, tuple(item.job_id for item in submission.items)
 
@@ -129,7 +127,7 @@ def test_live_evaluate_train_stop_and_independent_cancellation(host, tmp_path, m
     restart(host)
     assert events(host, plan.project_id, evaluation, "evaluation_point") == prefix
     assert service.evaluation_objective(project, read) == paused_curve
-    resumed = jobs.resume(producer, "resume")
+    resumed = jobs.resume(producer, token("resume"))
     try:
         wait_until(lambda: (tmp_path / "cancel.reached").exists())
         continued_curve = service.evaluation_objective(project, read)

@@ -33,17 +33,14 @@ from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, verify_t
 from feedbax.validity.evidence import evidence_objects
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_payload
-from tests.support.host import admit, job_row, restart, run_job, wait_until
-from tests.support.host import private_host as host_fixture
-
-
-host = host_fixture
+from tests.support.host import admit, job_row, restart, run_job, token, wait_until
 
 
 @pytest.mark.parametrize("damage_committed_state", [False, True], ids=["recover", "corrupt"])
 def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
-    host, tmp_path, monkeypatch, damage_committed_state,
+    private_host, tmp_path, monkeypatch, damage_committed_state,
 ):
+    host = private_host
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     registries = load_application().bundle
     jobs = JobService(host, registries)
@@ -415,7 +412,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
 
     host.policy(compute=1)
     actor = StudioSubmissionActor(client="cli", label="original chain")
-    submitted = jobs.admit_plan(folders, reviewed, run_keys=(child, prefix), token="chain", actor=actor)
+    submitted = jobs.admit_plan(folders, reviewed, run_keys=(child, prefix), token=token("chain"), actor=actor)
     child_item, parent_item = submitted.items
     assert parent_item.disposition == child_item.disposition == "admitted"
     prefix_id, child_id = parent_item.job_id, child_item.job_id
@@ -432,8 +429,8 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     assert waiting["delivery"] == 0 and waiting["edges"][0]["binding"] is None
 
     restart(host)
-    assert jobs.admit_plan(folders, reviewed, run_keys=(child, prefix), token="chain") == submitted
-    prefix_resume = jobs.resume(prefix_id, token="resume-prefix")
+    assert jobs.admit_plan(folders, reviewed, run_keys=(child, prefix), token=token("chain")) == submitted
+    prefix_resume = jobs.resume(prefix_id, token=token("resume-prefix"))
     assert prefix_resume.actor == StudioSubmissionActor(client="studio")
     attempts = {job.job_id: job for job in jobs.jobs(project=project).jobs}
     assert attempts[prefix_id].actor == actor
@@ -462,8 +459,8 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     assert initialization["metadata"]["manifest_sha256"] == producer["checkpoint"]["pointer"]["manifest_sha256"]
 
     restart(host)
-    resumed = jobs.resume(child_id, token="resume-child")
-    assert jobs.resume(child_id, token="resume-child").job_id == resumed.job_id
+    resumed = jobs.resume(child_id, token=token("resume-child"))
+    assert jobs.resume(child_id, token=token("resume-child")).job_id == resumed.job_id
     child_done = wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
     verify_bound_training_completion(child_done["outcome"]["completion"])
     store = SuccessView(ImmutableArtifactBlobProvider(reviewed.store_path))
@@ -483,7 +480,7 @@ def test_saved_train_successor_waits_for_and_reuses_exact_completion(host, tmp_p
     assert bound["data"] == child_done["edges"][0]["binding"]
     resumed_checkpoint = _checkpoint(child_done["outcome"])
     assert child_success.receipt.recovery.transaction_id == child_checkpoint.transaction_id
-    uninterrupted = jobs.admit_plan(folders, reviewed, run_keys=(child,), token="control")
+    uninterrupted = jobs.admit_plan(folders, reviewed, run_keys=(child,), token=token("control"))
     (control_item,) = uninterrupted.items
     control = wait_until(lambda: job_row(host, control_item.job_id, "succeeded"))
     assert _checkpoint(control["outcome"]).state_sha256 == resumed_checkpoint.state_sha256
@@ -531,7 +528,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
     })
     reviewed = folders.read_plan(snapshot.project_id, revision=snapshot.revision)
     keys = tuple(RunKey("default", name, "default") for name in ("prefix", "child", "incompatible"))
-    submitted = jobs.admit_plan(folders, reviewed, run_keys=keys, token="stateful")
+    submitted = jobs.admit_plan(folders, reviewed, run_keys=keys, token=token("stateful"))
     _, child_attempt, incompatible_attempt = (item.job_id for item in submitted.items)
 
     def settled(job_id):

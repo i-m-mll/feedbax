@@ -3,11 +3,8 @@
 from dataclasses import replace
 from hashlib import sha256
 import json
-import os
 from pathlib import Path
-import signal
 from statistics import median
-import sys
 from time import monotonic, perf_counter_ns, sleep
 
 from fastapi.testclient import TestClient
@@ -21,13 +18,14 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.host import AdmissionItem, HostClient, HostError, Job, Launch
+from feedbax.host import HostError
 from feedbax.job_completion import verify_bound_training_completion
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
 from tests.support.hang import HANG_SECONDS
+from tests.support.host import admit, run_job, token
 from tests.support.managed_train_fixture import managed_train_payload, managed_train_project
 
 
@@ -112,10 +110,10 @@ def test_plan_join_does_not_start_an_absent_host(tmp_path, monkeypatch):
     assert not (projects / "empty" / "results").exists()
 
 
-def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypatch):
+def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, monkeypatch):
     projects = tmp_path / "projects"
     root = projects / "reach"
-    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
     data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -144,15 +142,11 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
 
-    pid = HostClient().ping()["pid"]
-    try:
-        with TestClient(create_app(projects_dir=projects)) as client:
-            revision = client.get("/api/projects/reach").json()["revision"]
-            route = "/api/projects/reach/train-runs"
-            old = client.get(route, params={"revision": revision})
-            projected = client.get(route, params={"revision": revision, "window_map": "true"})
-    finally:
-        os.kill(pid, signal.SIGTERM)
+    with TestClient(create_app(projects_dir=projects)) as client:
+        revision = client.get("/api/projects/reach").json()["revision"]
+        route = "/api/projects/reach/train-runs"
+        old = client.get(route, params={"revision": revision})
+        projected = client.get(route, params={"revision": revision, "window_map": "true"})
 
     assert old.status_code == projected.status_code == 200
     response = projected.json()
@@ -213,12 +207,11 @@ def test_saved_train_read_can_include_the_settled_window_map(tmp_path, monkeypat
     assert not (root / "results").exists()
 
 
-def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, monkeypatch, record_property):
+def test_plan_joins_exact_train_attempts_and_receipts_across_reload(host, tmp_path, monkeypatch, record_property):
     projects = tmp_path / "projects"
     root = projects / "reach"
     store = root / "results"
-    host_root = tmp_path / "host"
-    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host_root))
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv(DEFAULT_MANIFEST_ROOT_ENV, str(store))
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "controller.jsonl"))
@@ -229,8 +222,6 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
     original = RunKey("original", "fit", "default")
     different = RunKey("different", "fit", "default")
     selection = (same,)
-    host = HostClient()
-    pid = host.ping()["pid"]
     host.policy(compute=1)
     release = tmp_path / "release"
     seen = []
@@ -257,21 +248,20 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             assert not before.attempts_by_run and not store.exists()
             assert "post" not in client.app.openapi()["paths"].get("/api/projects/{project_id}/plan", {})
 
-            wrong_store = Job(
-                "different-store", before.settled.project_id, request_id, Launch((sys.executable, "-c", "pass")),
+            wrong_store = replace(
+                run_job("different-store", "pass", project=before.settled.project_id, request=request_id),
                 data={"manifest_root": str(tmp_path / "other-results")},
             )
-            host.admit("wrong-store", [AdmissionItem(wrong_store.id, wrong_store)], record={})
+            admit(host, token("wrong-store"), wrong_store)
             _until(lambda: host.jobs(job_id=wrong_store.id)[0]["outcome"])
-            gate = Job(
-                "different-project", "other-project", request_id,
-                Launch((sys.executable, "-c", (
+            gate = replace(
+                run_job("different-project", (
                     "from pathlib import Path; from time import sleep\n"
                     f"while not Path({str(release)!r}).exists(): sleep(.02)"
-                ))),
+                ), request=request_id),
                 data={"manifest_root": str(store)},
             )
-            host.admit("slot-gate", [AdmissionItem(gate.id, gate)], record={})
+            admit(host, token("slot-gate"), gate)
             _until(lambda: host.jobs(job_id=gate.id)[0]["state"] == "running")
 
             renamed = client.post("/api/projects/reach/rename", json={"revision": revision, "name": "renamed"})
@@ -282,7 +272,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             assert renamed_plan.settled.store_path == before.settled.store_path
             assert renamed_plan.settled.plan == before.settled.plan
             admission = service.jobs.admit_plan(
-                service.folders, before.settled, run_keys=(same,), token="canonical-train"
+                service.folders, before.settled, run_keys=(same,), token=token("canonical-train")
             )
             (admitted,) = admission.items
             assert admitted.disposition == "admitted"
@@ -347,12 +337,11 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             assert corrupt.status is JobStatus.CORRUPT and corrupt.successful_receipt is None
             path.write_bytes(raw)
 
-            failure = Job(
-                "later-failure", opened["project_id"], request_id,
-                Launch((sys.executable, "-c", "raise SystemExit(7)")),
+            failure = replace(
+                run_job("later-failure", "raise SystemExit(7)", project=opened["project_id"], request=request_id),
                 data={"manifest_root": str(store)},
             )
-            host.admit("later-failure", [AdmissionItem(failure.id, failure)], record={})
+            admit(host, token("later-failure"), failure)
             _until(lambda: host.jobs(job_id=failure.id)[0]["state"] == "failed")
             after_failure = read()
             retained, failed = after_failure.attempts_by_run[same]
@@ -389,9 +378,3 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(tmp_path, mo
             }))
     finally:
         release.touch()
-        live = [job["id"] for job in host.jobs() if job["outcome"] is None]
-        if live:
-            host.stop(live, "force")
-            _until(lambda: all(job["outcome"] is not None for job in host.jobs()))
-        os.kill(pid, signal.SIGTERM)
-        _until(lambda: not host.address.exists())
