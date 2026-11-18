@@ -89,13 +89,13 @@ function useTrainFields(editor: ProjectEditController, stepId: string, run?: Stu
   const editable = !fields.isPlaceholderData && !pending && !outside;
   async function edit(field: string, change: ProjectedEdit): Promise<string | undefined> {
     try {
-      const recipe = await projectTrainFields(projectId, stepId, { ...body, field, edit: change }, editor.signal);
-      if (recipe.problems.length) return recipe.problems[0].reason;
-      if (recipe.files.length && await confirmRemoval(sweepValueRuns(recipe.removed_values))) {
-        editor.editFiles(studioName('setField'), recipe.files, {
+      const { problems = [], files = [], dependencies = [], removed_values: removedValues } = await projectTrainFields(projectId, stepId, { ...body, field, edit: change }, editor.signal);
+      if (problems[0]) return problems[0].reason;
+      if (files.length && await confirmRemoval(sweepValueRuns(removedValues))) {
+        editor.editFiles(studioName('setField'), files, {
           reviewedRevision: revision,
-          dependencies: recipe.dependencies.map((id) => ({ kind: 'document', id })),
-          validate: validateRecipe(saved.project, { kind: 'step', id: stepId }, recipe.dependencies),
+          dependencies: dependencies.map((id) => ({ kind: 'document', id })),
+          validate: validateRecipe(saved.project, { kind: 'step', id: stepId }, dependencies),
         });
         await editor.flush();
       }
@@ -112,7 +112,7 @@ export function SweepFieldItems({ editor, stepId, onSwept }: {
   editor: ProjectEditController; stepId: string; onSwept(): void;
 }) {
   const { fields, edit } = useTrainFields(editor, stepId);
-  const sweepable = fields.data?.fields.filter((field) => field.can_sweep && !field.sweep) ?? [];
+  const sweepable = fields.data?.fields?.filter((field) => field.can_sweep && !field.sweep) ?? [];
   return <>{sweepable.map((field) => <MenuItem key={field.id} disabled={!edit}
     onClick={() => { void edit?.(field.id, { kind: 'to_sweep' }).then((reason) => { if (!reason) onSwept(); }); }}>
     {field.label}

@@ -21,7 +21,7 @@ test('a part edit writes the whole parameter back, and text is parsed by type', 
 });
 
 test('a settings schema walks references, optional values, free parameters and a tagged union', async () => {
-  const schema = {
+  const schema: JsonValue = {
     type: 'object',
     properties: {
       optimizer: { $ref: '#/$defs/Optimizer' },

@@ -54,6 +54,6 @@ describe('component catalog transport', () => {
       },
     });
 
-    expect(response.data.components[0].representation?.elements[0].archetype).toBe('marker');
+    expect(response.data.components?.[0]?.representation?.elements?.[0]?.archetype).toBe('marker');
   });
 });

@@ -55,6 +55,15 @@ function sameRow(first: StudioSavedTrainKey, second: StudioSavedTrainKey) {
 
 type ProjectLossStage = LossStage & ObjectiveStage & { key: StudioSavedTrainKey };
 
+/** One Evaluate row's held-out objective to read: its finished result, or the live points of a running attempt. */
+interface ObjectiveRead {
+  key: StudioSavedTrainKey;
+  stage: ProjectLossStage;
+  jobId: string;
+  receipt: NonNullable<StudioSavedEvaluationRow['result']>['receipt'] | null;
+  points: NonNullable<NonNullable<StudioSavedEvaluationRow['checkpoint_attempt']>['points']> | null;
+}
+
 function projectLoss(lineage: Stage[], events: readonly StudioJobEvent[]): ProjectLossStage[] | null {
   const stages: ProjectLossStage[] = [];
   let offset = 0;
@@ -117,7 +126,7 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   }, [rows, row, selection, events]);
   const series = selection.kind === 'results' ? selection.results.map((result) => resultLoss(result, row, rows, events))
     : stages ? [{ stages }] : [];
-  const reads = evaluations.flatMap(({ key, checkpoint_series, checkpoint_attempt, result }) => {
+  const reads = evaluations.flatMap(({ key, checkpoint_series, checkpoint_attempt, result }): ObjectiveRead[] => {
     const stage = checkpoint_series && stages?.find((candidate) => sameRow(candidate.key, checkpoint_series.subject));
     if (!stage) return [];
     const live = checkpoint_attempt?.placement.location === 'live' && checkpoint_attempt.job_id !== result?.job_id

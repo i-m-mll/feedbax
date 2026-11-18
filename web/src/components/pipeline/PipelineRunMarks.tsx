@@ -204,7 +204,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
     const valuesBySweep = new Map(sweeps.map(
       (sweep) => [sweep.id, new Map(sweep.values.map(({ id, label }) => [id, label]))],
     ));
-    const positions = (sweep?: PlanSweepView) => new Map(sweep?.values.map(({ id }, index) => [id, index]));
+    const positions = (sweep?: PlanSweepView) => new Map<string | undefined, number>(sweep?.values.map(({ id }, index) => [id, index]));
     const rows = positions(rowSweep);
     const columns = positions(columnSweep);
     const projectedCells = [...cells].map(([key, cell]): ProjectedCell => ({

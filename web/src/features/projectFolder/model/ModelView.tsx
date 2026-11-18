@@ -1,6 +1,6 @@
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { MarkerType, type OnConnectStart } from '@xyflow/react';
-import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
 import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
@@ -424,7 +424,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (model) state.setState({ selection: addresses.map((address) => ({ document: model.id, address })) });
   }
   function clear() {
-    state.setState(pick ? { pick: null } : { selection: null });
+    state.setState(pick ? { pick: null } : { selection: undefined });
     setLibraryItem(undefined);
   }
   function go(path: string[]) {
@@ -597,7 +597,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       id, type: 'modelCard', ariaLabel: name,
       domAttributes: {
         'aria-description': [caption, problem].filter(Boolean).join(' · ') || undefined,
-        ...(enter && { onKeyDownCapture: (event) => {
+        ...(enter && { onKeyDownCapture: (event: KeyboardEvent<HTMLElement>) => {
           if (event.target !== event.currentTarget || event.key !== 'Enter') return;
           event.preventDefault();
           event.stopPropagation();
@@ -618,9 +618,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         problem,
         onPort: (port) => { if (!port.taskSignal && !port.growing) select(at(graph, { kind: 'port', end: port.end })); },
         keyboardConnect,
-        canPick: pick ? (port) => pick.accepts({ kind: 'port', document: model.id, address: at(graph, { kind: 'port', end: port.end }), port }) : undefined,
+        canPick: pick && model ? (port) => pick.accepts({ kind: 'port', document: model.id, address: at(graph, { kind: 'port', end: port.end }), port }) : undefined,
         cancelPick: pick ? clear : undefined,
-        pickPort: pick ? (port) => { choosePick(state, { kind: 'port', document: model.id, address: at(graph, { kind: 'port', end: port.end }), port }); } : undefined,
+        pickPort: pick && model ? (port) => { choosePick(state, { kind: 'port', document: model.id, address: at(graph, { kind: 'port', end: port.end }), port }); } : undefined,
         portReasons: verdict && new Map(ports.filter((port) => port.direction === 'input').map((port) =>
           [portId(port), verdict.get(endKey(wireEnd(port)))]).filter((entry): entry is [string, string | null] => entry[1] !== undefined)),
         portProblems: new Map(ports.flatMap((port) => {
@@ -990,7 +990,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const outlineTree = useRef<TreeHandle>(null);
   const problemCount = (address: ModelAddress) => (problems ?? []).filter((item) => holds(address, item.address)).length;
   const outline = shownModel && model && modelOutline({
-    model: shownModel, effective: effectiveModel, registry,
+    model: shownModel, effective: effectiveModel ?? undefined, registry,
     attachmentName: (item, address) => attachmentName(item) + (isAuthored(address) ? ' ◇' : ''),
     trailing: (address) => {
       const count = problemCount(address);

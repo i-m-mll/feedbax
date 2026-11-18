@@ -140,7 +140,7 @@ it('binds the first compatible documents by name and scaffolds only the missing 
       'a-task': { schema: 'feedbax.spec.task_document', payload: {} },
     } },
   });
-  const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(undefined);
+  const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
   await expect(createFirstTrain(editor, hex(99))).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
 

@@ -285,7 +285,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const singleStep = state.selection?.kind === 'steps' && state.selection.stepIds.length === 1 && state.selection.stepIds[0] === step?.id;
   const wholeStep = singleStep && primaryVariant;
   const canAuthorSweep = (id: string) => primaryVariant && directTrainStep(saved.project, id, true) !== null;
-  const authored = step && saved.project.steps[step.id];
+  const authored = step && saved.project.steps?.[step.id];
   const subjectCheckpoint = authored?.kind === 'evaluate' ? exactCheckpoint(authored) : undefined;
   const checkpoint = authored && authored.inputs?.checkpoint;
   const linked = wholeStep && authored?.kind === 'train' &&
@@ -413,7 +413,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const snapshots = ranks.map((key) => subjectsByRank.get(key)?.selection_sha256);
     return snapshots.every(Boolean) && new Set(snapshots).size === 1;
   }) ? rankGroups.flatMap(({ ranks }) => ranks.map((key) => subjectsByRank.get(key)!.consumer_job_id)) : undefined;
-  const subjectIds = rankGroups.length
+  const subjectIds = subject && rankGroups.length
     ? new Set(rankedSubjects.map((bound) => savedRunId({ ...bound, step: subject.source_step_id })))
     : subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
   const evaluationEditor = evaluationSource && evaluationAuthoring && authoredMap?.rows.some(({ key, evaluation_conditions }) =>
@@ -833,7 +833,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   function editEvaluateSubject(name: string, patches: ProjectValueEdit[], reads: readonly string[]) {
     if (!step || !ready) return;
     const files = [{ address: { kind: 'step' as const, id: step.id }, patches }];
-    const dependencies = reads.map((id) => ({ kind: saved.project.steps[id] ? 'step' as const : 'document' as const, id }));
+    const dependencies = reads.map((id) => ({ kind: saved.project.steps?.[id] ? 'step' as const : 'document' as const, id }));
     void perform(async () => {
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies });
@@ -906,7 +906,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (!step || !subject || !evaluationCheckpointRule || !ready) return;
     if (checkpointScope) {
       void applyCheckpointSweepEdit({ kind: 'set', scope: { ...checkpointScope,
-        ...('rows' in checkpointScope && { rows: [...checkpointScope.rows] }),
+        ...('rows' in checkpointScope && { rows: [...checkpointScope.rows ?? []] }),
       }, rule });
       return;
     }

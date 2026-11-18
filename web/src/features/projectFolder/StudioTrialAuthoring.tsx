@@ -107,8 +107,8 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
           const property = type.parameter_schema.properties;
           const name = isRecord(property) && isRecord(property[key]) && typeof property[key].title === 'string'
             ? property[key].title : humanizeLabel(key);
-          return edit(name, [write(authoredPointer(['params', key]), setIn(selection.params[key], rest, value),
-            has(selection.params, key))]);
+          return edit(name, [write(authoredPointer(['params', key]), setIn(selection.params?.[key], rest, value),
+            has(selection.params ?? {}, key))]);
         })} />
     </section>}
     {error && <p role="alert">{error}</p>}

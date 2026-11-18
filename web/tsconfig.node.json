@@ -4,6 +4,7 @@
     "emitDeclarationOnly": true,
     "outDir": "./node_modules/.tmp/tsconfig.node",
     "skipLibCheck": true,
+    "strict": true,
     "module": "ESNext",
     "moduleResolution": "Bundler"
   },

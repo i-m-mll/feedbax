@@ -251,11 +251,11 @@ export function Gallery() {
   const [number, setNumber] = useState<number | null>(0.001);
   const [position, setPosition] = useState(0.6);
   const [checked, setChecked] = useState(true);
-  const [kind, setKind] = useState<string | null>('train');
+  const [kind, setKind] = useState<(typeof kinds)[number]['value'] | null>('train');
   const [optimizer, setOptimizer] = useState<string | null>('adam');
   const [method, setMethod] = useState('feedbax.supervised_gradient');
-  const [windowState, setWindowState] = useState('both');
-  const [library, setLibrary] = useState('library');
+  const [windowState, setWindowState] = useState<'map' | 'details' | 'both'>('both');
+  const [library, setLibrary] = useState<'library' | 'outline'>('library');
   const [expanded, setExpanded] = useState(true);
   const [dialog, setDialog] = useState(false);
   const [chosen, setChosen] = useState('');

@@ -115,7 +115,7 @@ export function validTrialSet(rule: TrialSet, domain: TrialDomain | undefined): 
 }
 
 function addressedModelAxis(axis: Axis) {
-  const paths = 'path' in axis ? [axis.path] : 'values' in axis && !Array.isArray(axis.values)
+  const paths = 'path' in axis ? (axis.path === undefined ? [] : [axis.path]) : 'values' in axis && !Array.isArray(axis.values)
     ? Object.values(axis.values).flatMap((value) => Object.keys(value?.patches ?? {})) : [];
   return paths.length > 0 && paths.every((path) => path.startsWith('{'));
 }

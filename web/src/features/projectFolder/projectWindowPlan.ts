@@ -27,7 +27,7 @@ export function sharedRowTerms(
 ): SubsetTerms | undefined {
   if (!members.length) return undefined;
   const axes = Object.fromEntries(step.sweeps.flatMap(({ id, values }) => {
-    const selected = new Set(members.map((member) => member.values[id]));
+    const selected = new Set<string | undefined>(members.map((member) => member.values[id]));
     return selected.has(undefined) ? [] : [[id, values.filter((value) => selected.has(value.id)).map(({ id }) => id)]];
   }));
   const selected = new Set(members.map(({ id }) => id));
@@ -141,7 +141,7 @@ export function projectWindowPlan(
     const training = train.get(id);
     const bound = evaluations.get(id)?.bound_subject;
     const sourceStep = stepSources.get(row.key.step);
-    const producer = sourceStep && bound && sourceRows.get(savedRunId({ ...bound, step: sourceStep }));
+    const producer = sourceStep && bound ? sourceRows.get(savedRunId({ ...bound, step: sourceStep })) : undefined;
     const change = training?.change;
     const acquiringFailed = row.status === 'failed' && row.opening_step === 'acquiring' && row.reason;
     const [summary, ...openingErrors] = acquiringFailed ? acquiringFailed.split('\n') : [];

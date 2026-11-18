@@ -258,7 +258,7 @@ function ActivityContent({ projectNames, onOpenRun, onClose, standalone, resultS
   const machineField = machine && (
     <dl className="flex justify-between rounded-md border border-shell-divider px-3 py-2 text-sm">
       <dt className="font-medium">{studioName('thisMac')}</dt>
-      <dd className="text-shell-muted">{studioMachineStatus(machine.state)}</dd>
+      <dd className="text-shell-muted">{studioMachineStatus(machine.state ?? 'open')}</dd>
     </dl>
   );
   const state: StudioRegionState = snapshot.isError
