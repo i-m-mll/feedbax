@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1135,3 +1136,38 @@ def test_resumed_consumer_inherits_its_pinned_completion(host, tmp_path, complet
     admit(host, "resume-consumer", resumed)
     wait_until(lambda: job_row(host, resumed.id, "succeeded"))
     assert json.loads((tmp_path / "consumed.jsonl").read_text()) == {"bindings": [pinned]}
+
+
+def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_path):
+    (tmp_path / "slow_import.py").write_text("import time\ntime.sleep(60)\ndef main(*args, **kwargs):\n    return 0\n")
+    client = HostClient(tmp_path / "host")
+    pid = client.ping()["pid"]
+    client.warm(Launch((sys.executable,), cwd=str(tmp_path), warm_entrypoint="slow_import:main", payload={}))
+    profiles = tmp_path / "host" / "workers"
+    wait_until(lambda: any(profiles.glob("*/profile.json")))
+
+    def process_exists(process):
+        try:
+            os.kill(process, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def alive(pattern):
+        return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+
+    assert wait_until(lambda: alive(str(profiles)))
+
+    def waiting():
+        with pytest.raises(HostError):
+            HostClient(tmp_path / "host").events(after=0, wait=30)
+
+    with ThreadPoolExecutor(1) as pool:
+        poll = pool.submit(waiting)
+        time.sleep(0.5)
+        os.kill(pid, signal.SIGTERM)
+        started = time.monotonic()
+        assert wait_until(lambda: not process_exists(pid), timeout=5)
+        assert time.monotonic() - started < 2
+        poll.result(timeout=5)
+    assert wait_until(lambda: not alive(str(profiles)), timeout=5)
