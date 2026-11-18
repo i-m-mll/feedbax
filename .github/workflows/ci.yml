@@ -82,10 +82,7 @@ jobs:
       - name: Run tests
         run: bun run test
 
-      - name: Check Studio source reachability
-        run: bun scripts/check-reachability.ts
-
-      - name: Check types, the shared control layer and Studio vocabulary
+      - name: Check types, the shared control layer, Studio vocabulary and reachability
         run: bun run check
 
       - name: Install Playwright browsers

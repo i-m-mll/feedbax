@@ -76,7 +76,3 @@ export function subscribeConnection(listener: () => void) {
 export function useConnection() {
   return useSyncExternalStore(subscribeConnection, getConnection);
 }
-
-export function isServiceConnected() {
-  return state.kind === 'connected';
-}

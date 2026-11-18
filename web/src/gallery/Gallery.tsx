@@ -10,7 +10,6 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
 import { CommandBar, type BarCommand, type BarEntry } from '@/components/ui/CommandBar';
 import { Checkbox } from '@/components/ui/Checkbox';
-import { Chip } from '@/components/ui/Chip';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { Combobox } from '@/components/ui/Combobox';
 import { Dialog } from '@/components/ui/Dialog';
@@ -21,7 +20,6 @@ import {
   MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger,
 } from '@/components/ui/Menu';
 import { NumberField } from '@/components/ui/NumberField';
-import { PanelHeader } from '@/components/ui/PanelHeader';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import { Section } from '@/components/ui/Section';
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
@@ -32,6 +30,7 @@ import { StatusMark, type StatusMarkStatus } from '@/components/ui/StatusMark';
 import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
 import { TextField } from '@/components/ui/TextField';
 import { ValueFieldGallery } from './ValueFieldGallery';
+import { CardStyles } from './CardStyles';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 
 type Theme = 'light' | 'dark';
@@ -162,7 +161,7 @@ function ScrollFadeDemo() {
         <div className="w-72 rounded-control border border-shell-divider">
           <ScrollFade axis="x" data-testid="fade-x">
             <div className="flex w-max gap-1 p-1">
-              {sweep.map((value) => <Chip key={value}>{value}</Chip>)}
+              {sweep.map((value) => <Button key={value} variant="ghost" size="mark">{value}</Button>)}
             </div>
           </ScrollFade>
         </div>
@@ -437,6 +436,10 @@ export function Gallery() {
 
         <ValueFieldGallery />
 
+        <Group name="Card styles">
+          <CardStyles />
+        </Group>
+
         <Group name="Tree">
           <TreeDemo />
         </Group>
@@ -477,12 +480,6 @@ export function Gallery() {
           </div>
         </Group>
 
-        <Group name="Chip">
-          <State name="document"><Chip glyph={<Box />}>policy</Chip></State>
-          <State name="output"><Chip glyph={<Circle />} trailing={<StatusMark status="succeeded" />}>Train · checkpoint</Chip></State>
-          <State name="selected"><Chip glyph={<Box />} selected>policy</Chip></State>
-          <State name="long"><Chip glyph={<Box />} className="w-32">a very long document name</Chip></State>
-        </Group>
 
         <Group name="Table">
           <div className="w-full max-w-xl overflow-hidden rounded-control border border-shell-divider">
@@ -497,12 +494,6 @@ export function Gallery() {
           </div>
         </Group>
 
-        <Group name="PanelHeader">
-          <div className="w-80 rounded-control border border-shell-divider">
-            <PanelHeader title="Details" glyph={<FileText />}
-              actions={<><IconButton label="Fit" icon={<Maximize />} /><IconButton label="Settings" icon={<Settings />} /></>} />
-          </div>
-        </Group>
 
         <Group name="Dialog">
           <Button onClick={() => setDialog(true)}>Rename</Button>

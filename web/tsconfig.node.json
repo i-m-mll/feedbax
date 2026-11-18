@@ -8,5 +8,5 @@
     "module": "ESNext",
     "moduleResolution": "Bundler"
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "entries.ts"]
 }

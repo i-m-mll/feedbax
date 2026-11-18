@@ -2,17 +2,14 @@ import dagre from '@dagrejs/dagre';
 import {
   Background, Handle, Position, ReactFlow, useNodesState, type Edge, type Node, type NodeProps, type NodeTypes,
 } from '@xyflow/react';
-import { appTip, installTooltips } from '@window-shell/browser/tooltip';
+import { appTip } from '@window-shell/browser/tooltip';
 import { Box, ChartLine, FlaskConical } from 'lucide-react';
-import { useLayoutEffect } from 'react';
-import { setAppearance, type AppearanceValue } from '@/appearance/appearance';
-import { useRootAttribute } from '@/appearance/useRootAttribute';
+import type { AppearanceValue } from '@/appearance/appearance';
 import { Card, CardHead, type CardStatus } from '@/components/ui/Card';
-import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StatusMark, type StatusMarkStatus } from '@/components/ui/StatusMark';
+import '@xyflow/react/dist/style.css';
 import './nodeStyles.css';
 
-type Theme = 'light' | 'dark';
 type Kind = 'train' | 'evaluate' | 'analyze';
 type Step = { label: string; kind: Kind; runs: StatusMarkStatus[] };
 type StepNode = Node<Step>;
@@ -111,19 +108,9 @@ const styles = [
   ['React Flow', 'flow'], ['React Flow UI', 'flow-ui'], ['Turbo', 'turbo'], ['Quiet', 'quiet'], ['Ring', 'ring'],
 ] as const;
 
-export function NodeStyles() {
-  useLayoutEffect(() => installTooltips(), []);
-  const theme = useRootAttribute<Theme>('data-theme');
-  return (
-    <main className="min-h-screen bg-shell-surface text-shell-foreground">
-      <header className="sticky top-0 z-10 flex h-panel-header items-center gap-3 border-b border-shell-divider bg-shell-chrome px-panel-header-inline">
-        <h1 className="flex-1 font-medium">Cards</h1>
-        <SegmentedControl<Theme> aria-label="Theme" value={theme} onValueChange={(value) => setAppearance(window, 'theme', value)}
-          items={[{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} />
-      </header>
-      <div className="grid max-w-5xl gap-6 p-6">
-        {styles.map(([name, style]) => <Canvas key={style} name={name} style={style} />)}
-      </div>
-    </main>
-  );
+/** The shared Card under each card style, one small pipeline per style. */
+export function CardStyles() {
+  return <div className="grid w-full max-w-5xl gap-6">
+    {styles.map(([name, style]) => <Canvas key={style} name={name} style={style} />)}
+  </div>;
 }

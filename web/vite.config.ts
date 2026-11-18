@@ -7,6 +7,7 @@ import path from 'path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import type { Plugin } from 'vite';
 import { buildSync } from 'esbuild';
+import { appearanceBootEntry } from './entries';
 
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
@@ -75,7 +76,7 @@ function appearanceBoot(): Plugin {
     name: 'appearance-boot',
     transformIndexHtml() {
       const { outputFiles } = buildSync({
-        entryPoints: [path.join(__dirname, 'src/appearance/boot.ts')],
+        entryPoints: [path.join(__dirname, appearanceBootEntry)],
         bundle: true, write: false, minify: true, format: 'iife', target: 'es2020',
       });
       return [{ tag: 'script', children: outputFiles[0].text, injectTo: 'head' }];
