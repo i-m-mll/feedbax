@@ -155,18 +155,19 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   }, { timeout: 12_000 });
   void projected.catch(() => {});
   const planCard = page.getByRole('article', { name: 'Train train', exact: true });
-  const planStatus = planCard.getByRole('button', { name: /^\d+ Can't run$/ });
+  // The card marks each run with its status; the Plan status is back once the runs it can't run are marked again.
+  const planStatus = planCard.locator(`button[data-result-run][aria-label$=" · Can't run"]`).first();
   await expect(planStatus).toBeVisible();
   await planStatus.evaluate((status) => {
     const state = window as SampleWindow;
     const card = status.closest<HTMLElement>('[data-map-step]')!;
     let pending = false;
     const observer = new MutationObserver(() => {
-      const restored = Array.from(card.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="dialog"]'))
-        .find((button) => /^\d+ Can't run$/.test(button.textContent?.trim() ?? '') && button.checkVisibility());
-      if (!restored) pending = true;
-      if (!pending || !restored) return;
-      state.settledPlanStatus = { visibleAt: performance.timeOrigin + performance.now(), text: restored.textContent!.trim() };
+      const restored = Array.from(card.querySelectorAll<HTMLButtonElement>('button[data-result-run]'))
+        .filter((button) => button.getAttribute('aria-label')?.endsWith(" · Can't run") && button.checkVisibility());
+      if (!restored.length) pending = true;
+      if (!pending || !restored.length) return;
+      state.settledPlanStatus = { visibleAt: performance.timeOrigin + performance.now(), text: `${restored.length} Can't run` };
       performance.mark('studio-commit-plan-status-visible');
       observer.disconnect();
     });
