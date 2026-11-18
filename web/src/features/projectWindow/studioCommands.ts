@@ -139,6 +139,15 @@ export function matchesShortcut(event: KeyboardEvent, shortcut: Shortcut | undef
     event.altKey === Boolean(shortcut.alt) && event.shiftKey === Boolean(shortcut.shift);
 }
 
+/**
+ * Whether a control took the key for itself. Base UI cancels every key but Tab on a disabled control that keeps
+ * focus, before any handler of ours runs; that cancel does not mean the control used the key.
+ */
+export function keyHandled(event: KeyboardEvent) {
+  if (!event.defaultPrevented) return false;
+  return !(event.target instanceof Element && event.target.matches('[aria-disabled="true"][data-disabled]'));
+}
+
 export function studioCommandContext(target: EventTarget | null, paletteOpen: boolean) {
   const element = target instanceof Element ? target : null;
   return {

@@ -30,7 +30,7 @@ import { SlotHeader } from './SlotHeader';
 import { StudioCommandPalette } from './StudioCommandPalette';
 import { StudioConnectionStatus } from './StudioConnectionStatus';
 import { StudioSettings } from './StudioSettings';
-import { bindStudioCommand, commandAttributes, commandInContext, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
+import { bindStudioCommand, commandAttributes, commandInContext, keyHandled, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
 import { useStudioTitleBar } from './studioTitleBar';
 import { appearanceCommands } from '@/appearance/appearanceCommands';
@@ -316,7 +316,7 @@ export function ProjectWindow({
   useStudioTitleBar(bar, projectName);
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.isComposing || event.repeat) return;
+      if (keyHandled(event) || event.isComposing || event.repeat) return;
       const { palette, paletteCommands, paletteScope } = shortcutCommands.current;
       const context = studioCommandContext(event.target, paletteScope !== null);
       const command = matchesShortcut(event, palette.shortcut) ? palette
