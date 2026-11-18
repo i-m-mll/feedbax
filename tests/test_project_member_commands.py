@@ -1,10 +1,12 @@
 """Rename a project document or step, and duplicate and use a document, through Studio's routes."""
 
 from copy import deepcopy
+import json
 
 from fastapi.testclient import TestClient
 import pytest
 
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
@@ -13,6 +15,11 @@ from tests.test_document_train_pair import authored_documents, document_project
 PROJECT = "documents"
 URL = f"/api/projects/{PROJECT}"
 STEPS = ("train", "train-b")
+MASS = {
+    "composites": [],
+    "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+}
+MASS_TEXT = ModelAddress.model_validate(MASS).to_text()
 
 
 @pytest.fixture
@@ -22,10 +29,29 @@ def studio(tmp_path):
         folders = app.state.project_folders
         raw = document_project(authored_documents())
         raw["steps"]["train-b"] = deepcopy(raw["steps"]["train"])
+        # An attachment batch is named by its author, so a batch that shares a document's name is not a reference.
+        raw["steps"]["train-b"]["model_attachments"] = {
+            "reach-model": [{"op": "set_field", "address": MASS, "value": 1.4}],
+        }
+        model = raw["documents"]["reach-model"]["payload"]
+        controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+        reset = ModelAddress.model_validate({
+            "composites": ["wrapper", "controller"],
+            "element": {"kind": "port", "end": {
+                "owner": "component", "component": "cell", "port": "hidden", "direction": "output",
+            }},
+        })
+        controller["interior"]["wires"]["carry"]["attachments"][0]["initial"] = {
+            "kind": "name", "reference": reset.to_text(),
+        }
         _save_project(folders, PROJECT, Project.model_validate(raw))
-        (folders.root / PROJECT / "presentation.json").write_text(
-            '{"documents": {"reach-model": {"positions": {"a": {"x": 1, "y": 2}}}}}\n',
-        )
+        (folders.root / PROJECT / "presentation.json").write_text(json.dumps({
+            "documents": {"reach-model": {"positions": {
+                ModelAddress.model_validate({
+                    "composites": [], "element": {"kind": "component", "id": "wrapper"},
+                }).to_text(): {"x": 1, "y": 2},
+            }}},
+        }))
         yield client, folders
 
 
@@ -78,8 +104,16 @@ def _replay(client, before, after):
     })
 
 
-def test_rename_rewrites_every_reference_and_replays_back(studio):
+def test_rename_preserves_document_bytes_and_requests_through_undo(studio):
     client, folders = studio
+    raw = _snapshot(client)["project"]
+    # A document whose content mentions another document's name is not a reference to it.
+    raw["documents"]["notes"] = {
+        "schema": "application/json",
+        "payload": {"document": "reach-model", "label": "documents.reach-model.payload.name"},
+    }
+    raw["sweep"] = {"rows": {"nominal": {"patches": {f"documents.reach-model.{MASS_TEXT}": {"value": 2.0}}}}}
+    _save_project(folders, PROJECT, Project.model_validate(raw))
     before = _snapshot(client)
     files = _files(folders)
     requests = _requests(folders, before["revision"])
@@ -92,9 +126,15 @@ def test_rename_rewrites_every_reference_and_replays_back(studio):
     for step in STEPS:
         trial = after["project"]["steps"][step]["base"]["inline"]["trial_documents"]
         assert trial["model"] == {"document": "arm"} and "model_name" not in trial
-    assert set(after["presentation"]["documents"]) == {"arm"}
+    assert set(after["project"]["steps"]["train-b"]["model_attachments"]) == {"reach-model"}
+    assert after["project"]["sweep"]["rows"]["nominal"]["patches"] == {f"documents.arm.{MASS_TEXT}": {"value": 2.0}}
+    assert after["presentation"]["documents"] == {"arm": before["presentation"]["documents"]["reach-model"]}
     # A document's name is outside request identity, so both Train steps keep their results.
     assert _requests(folders, after["revision"]) == requests
+
+    documents = {name: data for name, data in files.items() if name.startswith("documents/")}
+    documents["documents/arm.json"] = documents.pop("documents/reach-model.json")
+    assert {name: data for name, data in _files(folders).items() if name.startswith("documents/")} == documents
 
     # A client's Undo replays the prior bytes of every changed file and the presentation.
     response = _replay(client, before, after)
@@ -149,8 +189,12 @@ def test_a_step_using_a_duplicate_diverges_alone(studio):
 
 def test_a_step_uses_a_duplicated_model_whose_links_and_measures_resolve(studio):
     client, folders = studio
-    result = _command(client, _snapshot(client), {"kind": "duplicate", "family": "documents", "member": "reach-model", "name": "arm"})
-    assert result["snapshot"]["presentation"]["documents"]["arm"] == result["snapshot"]["presentation"]["documents"]["reach-model"]
+    before = _snapshot(client)
+    requests = _requests(folders, before["revision"])
+    result = _command(client, before, {"kind": "duplicate", "family": "documents", "member": "reach-model", "name": "arm"})
+    assert result["snapshot"]["presentation"]["documents"]["arm"] == before["presentation"]["documents"]["reach-model"]
+    files = _files(folders)
+    assert files["documents/arm.json"] == files["documents/reach-model.json"]
     run = {"variant": "default", "step": "train-b", "row": "default"}
     response = client.post(f"{URL}/authoring/trials", json={
         "revision": result["snapshot"]["revision"], "run": run,
@@ -163,6 +207,8 @@ def test_a_step_uses_a_duplicated_model_whose_links_and_measures_resolve(studio)
     revision = response.json()["revision"]
     trial = response.json()["project"]["steps"]["train-b"]["base"]["inline"]["trial_documents"]
     assert trial["model"] == {"document": "arm"} and "model_name" not in trial
+    assert trial["task"] == {"document": "task"} and trial["objective"] == {"document": "objective"}
+    assert _requests(folders, revision) == requests
     plan = folders.read_plan(PROJECT, revision=revision).plan
     # Model addresses are relative to their document, so the copy's links and measures resolve as the original's.
     assert {run.key.step for run in plan.runs} == {"train", "train-b"}
@@ -183,21 +229,14 @@ def test_choosing_a_document_of_another_role_is_refused(studio):
     assert response.status_code == 422, response.text
 
 
-MASS = {
-    "composites": [],
-    "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
-}
-
 
 @pytest.fixture
 def evaluated(tmp_path):
-    from feedbax.contracts.model_address import ModelAddress
-
     app = create_app(projects_dir=tmp_path / "projects")
     with TestClient(app) as client:
         folders = app.state.project_folders
         raw = document_project(authored_documents(), evaluation=True)
-        target = "steps.train." + ModelAddress.model_validate(MASS).to_text()
+        target = "steps.train." + MASS_TEXT
         raw["sweep"] = {"axes": {"mass": {"values": {
             name: {"value": value, "patches": {target: {"value": value}}} for name, value in (("nominal", 1), ("heavy", 2))
         }}}}
