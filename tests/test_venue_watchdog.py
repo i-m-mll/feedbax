@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from feedbax.host import HostClient, HostError
@@ -16,15 +17,7 @@ from feedbax.host import watchdog
 from feedbax.host.protocol import SessionAccess
 from feedbax.host.session import initialize_session
 from tests.support.hang import HANG_SECONDS
-
-
-def until(read):
-    deadline = time.monotonic() + HANG_SECONDS
-    while time.monotonic() < deadline:
-        if value := read():
-            return value
-        time.sleep(0.02)
-    pytest.fail("The venue watchdog did not reach the expected state.")
+from tests.support.host import wait_until
 
 
 def prepare_watchdog(bootstrap: Path, *, ends_at_ms: int):
@@ -55,10 +48,8 @@ Path({str(confirm)!r}).touch()
     return [sys.executable, str(script), "--config", str(path)], calls, confirm
 
 
-def test_detached_watchdog_recovers_host_then_retries_termination(tmp_path):
-    bootstrap = tmp_path / "venue"
-    # The cutoff leaves room for two Host starts on a loaded machine, each up to about 2.5 s.
-    ends_at_ms = int(time.time() * 1000) + 10_000
+def start_venue(bootstrap: Path, *, ends_at_ms: int):
+    """A detached watchdog over a ready venue, and a ping of its Host that returns its pid and stream id."""
     argv, calls, confirmation = prepare_watchdog(bootstrap, ends_at_ms=ends_at_ms)
     subprocess.run([*argv, "--detach"], check=True, timeout=HANG_SECONDS, capture_output=True)
     subprocess.run([*argv, "--detach"], check=True, timeout=HANG_SECONDS, capture_output=True)
@@ -85,27 +76,61 @@ def test_detached_watchdog_recovers_host_then_retries_termination(tmp_path):
             assert error.code == "disconnected"
             return None
 
-    pid = None
+    return client, ping, calls, confirmation
+
+
+def replacement_of(ping, pid: int):
+    def read():
+        result = ping()
+        return result if result and result[0] != pid else None
+    return read
+
+
+def stop_host(client: HostClient, ping) -> None:
+    if running := ping():
+        os.kill(running[0], signal.SIGTERM)
+        wait_until(lambda: not client.address.exists())
+
+
+def test_detached_watchdog_restarts_a_killed_host_before_cutoff(tmp_path):
+    bootstrap = tmp_path / "venue"
+    client, ping, calls, _ = start_venue(bootstrap, ends_at_ms=int(time.time() * 1000) + 3_600_000)
+    pid, stream_id = wait_until(ping)
+    supervisor = psutil.Process(pid).ppid()
+    assert str(bootstrap / "watchdog.py") in psutil.Process(supervisor).cmdline()
     try:
-        pid, stream_id = until(ping)
         os.kill(pid, signal.SIGKILL)
+        replacement, replacement_stream = wait_until(replacement_of(ping, pid))
+        assert replacement_stream == stream_id
+        assert psutil.Process(replacement).ppid() == supervisor
+        assert not calls.exists()
+    finally:
+        os.kill(supervisor, signal.SIGKILL)
+        wait_until(lambda: not psutil.pid_exists(supervisor))
+        stop_host(client, ping)
 
-        def replacement():
-            result = ping()
-            return result if result and result[0] != pid else None
 
-        pid, replacement_stream = until(replacement)
+@pytest.mark.round(
+    "The watchdog restarts a killed venue Host and, at a real cutoff some seconds later, retries"
+    " termination until it is confirmed."
+)
+def test_detached_watchdog_recovers_host_then_retries_termination(tmp_path):
+    # Fixed when the watchdog starts, the cutoff must cover the Host's first start and its restart,
+    # each up to about 2.5 s on a loaded machine.
+    ends_at_ms = int(time.time() * 1000) + 10_000
+    client, ping, calls, confirmation = start_venue(tmp_path / "venue", ends_at_ms=ends_at_ms)
+    try:
+        pid, stream_id = wait_until(ping)
+        os.kill(pid, signal.SIGKILL)
+        _, replacement_stream = wait_until(replacement_of(ping, pid))
         assert replacement_stream == stream_id
         assert not calls.exists()
-        until(confirmation.exists)
+        wait_until(confirmation.exists)
         timestamps = [int(line) for line in calls.read_text().splitlines()]
         assert len(timestamps) == 2
         assert all(timestamp >= ends_at_ms for timestamp in timestamps)
     finally:
-        running = ping()
-        if running:
-            os.kill(running[0], signal.SIGTERM)
-            until(lambda: not client.address.exists())
+        stop_host(client, ping)
 
 
 def test_watchdog_cutoff_does_not_wait_for_ready_marker_or_host(tmp_path):
