@@ -102,6 +102,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   })]);
   const stoppedJob = successorSubmission.items[0].job_id!;
   await openResultsSlot(page);
+  await expect(runButton).toHaveText('Run');
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
   await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).first()).toBeAttached({ timeout: 14_000 });

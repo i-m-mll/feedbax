@@ -371,7 +371,7 @@ export function ProjectWindow({
               value: target, label: command.label, icon: <Icon aria-hidden="true" />, disabled: !command.enabled,
               attributes: commandAttributes(command),
             }))} />
-          <CommandBar commands={[steps, back, forward]} moreLabel={studioName('more')} itemClassName="studio-window-control"
+          <CommandBar entries={[steps, back, forward].map((command) => ({ command, priority: 'normal' }))} moreLabel={studioName('more')} itemClassName="studio-window-control"
             itemProps={(command) => ({
               ...commandAttributes(command),
               ...(command === steps ? { 'aria-pressed': mapDrawerVisible, 'aria-controls': ids.mapDrawer } : {}),
