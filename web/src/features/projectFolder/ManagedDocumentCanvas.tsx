@@ -1,16 +1,35 @@
 import dagre from '@dagrejs/dagre';
-import { ReactFlowProvider, useReactFlow, type Edge, type Node } from '@xyflow/react';
-import { useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
+import { Handle, Position, ReactFlowProvider, useReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { memo, useMemo, type ReactNode, type Ref } from 'react';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
+import { Card, CardHead } from '@/components/ui/Card';
+import { StatusMark } from '@/components/ui/StatusMark';
 import type { PresentationPosition } from '@/generated/studioContracts';
 
-interface CanvasNode {
+export type CanvasNode = {
   id: string;
   selectionId: string;
-  label: ReactNode;
+  name: string;
+  glyph: ReactNode;
   problem?: string;
-}
+};
+
+type ElementData = CanvasNode & { selected: boolean };
+
+const ElementCard = memo(function ElementCard({ data }: NodeProps<Node<ElementData>>) {
+  return <Card selected={data.selected} className="w-[150px] text-sm">
+    <Handle type="target" position={Position.Left} isConnectable={false} className="!opacity-0" />
+    <CardHead className="flex min-w-0 items-center gap-1.5 px-2 py-1.5">
+      <span aria-hidden="true" className="studio-card__glyph text-shell-muted [&>svg]:size-3.5">{data.glyph}</span>
+      <span className="min-w-0 flex-1 truncate font-medium">{data.name}</span>
+      {data.problem && <StatusMark status="cannot_run" label={data.problem} />}
+    </CardHead>
+    <Handle type="source" position={Position.Right} isConnectable={false} className="!opacity-0" />
+  </Card>;
+});
+
+const nodeTypes = { element: ElementCard };
 
 type CanvasProps = {
   selectedId: string | null;
@@ -40,22 +59,22 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
     const edges = connections.filter(({ source, target }) => layout.hasNode(source) && layout.hasNode(target));
     edges.forEach(({ source, target }) => layout.setEdge(source, target));
     dagre.layout(layout);
-    const nodes = items.map(({ id, selectionId, label, problem }): Node => {
-      const { x, y } = layout.node(id);
+    const nodes = items.map((item): Node<ElementData> => {
+      const { x, y } = layout.node(item.id);
       return {
-        id, ariaLabel: studioAccessibleName('select', id),
-        data: { selectionId, label: <span className="break-words" title={problem}>{label}{problem &&
-          <span aria-label={problem} className="text-shell-status-failure"> !</span>}</span> },
-        position: positions?.[id] ?? { x: x - 75, y: y - 25 },
+        id: item.id, type: 'element', ariaLabel: studioAccessibleName('select', item.id),
+        data: { ...item, selected: false },
+        position: positions?.[item.id] ?? { x: x - 75, y: y - 25 },
       };
     });
     return { nodes, edges };
   }, [items, connections, positions]);
   const shownNodes = useMemo(() => nodes.map((node) => ({
     ...node, selected: !pick && selectedId === node.data.selectionId,
+    data: { ...node.data, selected: !pick && selectedId === node.data.selectionId },
     ...pick && {
       selectable: false,
-      domAttributes: { 'data-pick': pick.accepts(node.data.selectionId as string) ? 'allowed' : 'refused' } as Node['domAttributes'],
+      domAttributes: { 'data-pick': pick.accepts(node.data.selectionId) ? 'allowed' : 'refused' } as Node['domAttributes'],
     },
   })), [nodes, selectedId, pick]);
   const shownEdges = useMemo(() => edges.map((edge) => ({ ...edge, selected: selectedId === edge.id })), [edges, selectedId]);
@@ -78,16 +97,16 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
         openAt(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
       }
     }}>
-    <StudioCanvas nodes={shownNodes} edges={shownEdges} fitNewContent lockAutoFit={placing} viewportRef={viewportRef}
+    <StudioCanvas nodes={shownNodes} nodeTypes={nodeTypes} edges={shownEdges} fitNewContent lockAutoFit={placing} viewportRef={viewportRef}
       zoomOnDoubleClick={!openAt}
       onNodeClick={pick ? (_, node) => {
-        const id = node.data.selectionId;
-        if (typeof id === 'string' && pick.accepts(id)) pick.choose(id);
+        const id = nodes.find((item) => item.id === node.id)?.data.selectionId;
+        if (id !== undefined && pick.accepts(id)) pick.choose(id);
       } : undefined}
       onNodesChange={(changes) => {
         const change = changes.find((item) => item.type === 'select' && item.selected);
         const node = change?.type === 'select' ? nodes.find(({ id }) => id === change.id) : undefined;
-        if (typeof node?.data.selectionId === 'string') onSelect(node.data.selectionId);
+        if (node) onSelect(node.data.selectionId);
       }}
       onEdgesChange={(changes) => {
         const change = changes.find((item) => item.type === 'select' && item.selected);

@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { ChartLine, Sigma } from 'lucide-react';
+import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -24,7 +24,7 @@ import {
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { ManagedDocumentCanvas } from './ManagedDocumentCanvas';
+import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas';
 import {
   choosePick, useNamedSelection, usePick, type ElementSelectionStore,
 } from '@/features/projectWindow/elementSelection';
@@ -212,16 +212,11 @@ export function useManagedAnalyze({
     }, canBind);
   }
 
-  const items = [
-    ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, label: name })),
-    ...Object.entries(operations).map(([name, value]) => ({
-      id: name, selectionId: name, label: <>{name}<br />{definitions.get(value.operation)?.label ?? value.operation}</>,
-      problem: diagnostics.find((item) => item.element === name)?.detail,
-    })),
-    ...Object.keys(figures).map((name) => ({
-      id: name, selectionId: name, label: <>{name}<br />{studioName('figures')}</>,
-      problem: diagnostics.find((item) => item.element === name)?.detail,
-    })),
+  const problemOf = (name: string) => diagnostics.find((item) => item.element === name)?.detail;
+  const items: CanvasNode[] = [
+    ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, name, glyph: <Database /> })),
+    ...Object.keys(operations).map((name) => ({ id: name, selectionId: name, name, glyph: <Sigma />, problem: problemOf(name) })),
+    ...Object.keys(figures).map((name) => ({ id: name, selectionId: name, name, glyph: <ChartLine />, problem: problemOf(name) })),
   ];
   const canvas = useRef<CanvasViewport>(null);
   const viewport = canvasViewportCommands(() => canvas.current, !!document);
@@ -240,7 +235,8 @@ export function useManagedAnalyze({
       ? file(['operations', selected, 'params', name], next)
       : file(['operations', selected, 'params'], { [name]: next })]));
   }
-  const inspector = <div className="space-y-2 p-2">
+  const inspector = selected && (operation || figure || selectedInput) && <Inspector name={selected}
+    type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}>
     {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
       project={saved.project} steps={steps} picking={selection} onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
@@ -272,7 +268,7 @@ export function useManagedAnalyze({
         }}
         onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
     </label>}
-  </div>;
+  </Inspector>;
   const library = useMemo((): LibraryItem[] => catalog ? [
     ...catalog.operations.map((entry) => ({
       id: entry.key, name: entry.label, group: studioName('operations'), glyph: <Sigma />, terms: entry.key,

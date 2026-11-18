@@ -202,7 +202,6 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     expect(edges.map(({ from_key }) => from_key)).toEqual(sources.map(({ key }) => key));
   }
   expectAnalyzeSources(await plan(created.revision));
-  if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
 
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   async function place(label: string) {
@@ -212,6 +211,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const selectElement = (name: string) => activate(page, analysis.getByRole('group', { name: 'Select ' + name, exact: true }));
   await place('Aligned velocity');
   await selectElement('aligned_velocity');
+  if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', paired ? /reach_target$/ : /target_pos$/],
   ] as const) {

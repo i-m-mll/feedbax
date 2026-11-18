@@ -86,13 +86,13 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   expect((await plan(created.revision)).edges).toContainEqual(expect.objectContaining({
     from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }),
   }));
-  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
 
   const search = drawer.getByRole('textbox', { name: 'Search Library', exact: true });
   const item = (name: string) => drawer.getByRole('option', { name, exact: true });
   await expect(drawer.getByRole('button', { name: /^Add/ })).toHaveCount(0);
   await search.fill('velocity');
   await item('Aligned velocity').click();
+  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
   await expect(inspector.getByText('Aligned velocity', { exact: true })).toBeVisible();
   await edit(() => page.keyboard.press('Enter'));
   await expect(search).toHaveValue('velocity');
@@ -122,7 +122,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
   await edit(() => pick(role('Velocity'), 'aligned_velocity.velocity'));
 
-  await edit(() => item('Velocity Summary').dragTo(analysis.locator('.react-flow__pane')));
+  await edit(() => item('Velocity Summary').dragTo(analysis.locator('.react-flow__pane'), { targetPosition: { x: 60, y: 60 } }));
   await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
   const wired = await edit(() => pick(role('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
