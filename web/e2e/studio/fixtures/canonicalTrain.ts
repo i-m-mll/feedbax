@@ -21,12 +21,9 @@ async function generatedFiles(module: string, arguments_: readonly string[]) {
   return output;
 }
 
-export async function runProjectFixture(
-  fixture: string | { module: string; home: string }, ...arguments_: string[]
-) {
-  if (typeof fixture === 'string' && /(^|-)files$/.test(arguments_[0] ?? '')) return generatedFiles(fixture, arguments_);
-  if (typeof fixture === 'string') return runPython({ module: fixture }, arguments_);
-  return runPython({ module: fixture.module }, arguments_, { FEEDBAX_STUDIO_TEST_HOME: fixture.home });
+export async function runProjectFixture(module: string, ...arguments_: string[]) {
+  if (/(^|-)files$/.test(arguments_[0] ?? '')) return generatedFiles(module, arguments_);
+  return runPython({ module }, arguments_);
 }
 
 export async function fixture(...arguments_: string[]) {

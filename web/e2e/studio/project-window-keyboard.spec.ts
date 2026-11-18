@@ -2,6 +2,7 @@ import { expect, firstJobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { runPythonProcess } from './fixtures/python';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
 import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
@@ -189,10 +190,13 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
     return rows.find(({ key }) => key.step === selected.key.step && key.row === selected.key.row)!;
   }
   await expect.poll(async () => (await readSelected(swept.revision)).status, { timeout: 12_000 }).toBe('stopped');
-  const witness = { module: 'web.e2e.studio.fixtures.managed_lifecycle', home };
+  const witness = { module: 'web.e2e.studio.fixtures.managed_lifecycle' };
+  const witnessArgs = (action: string, ...args: string[]) => [action, home, saved.project_id, initial.job_id!, ...args];
   const observe = async (action: string, ...args: string[]) =>
-    JSON.parse(await runProjectFixture(witness, action, home, saved.project_id, initial.job_id!, ...args));
-  const paused = await observe('restart');
+    JSON.parse(await runProjectFixture(witness.module, ...witnessArgs(action, ...args)));
+  // Restart kills the Host and pings until a replacement answers, and that ping can start the
+  // replacement, which must not become a child of the worker's shared fixture runner.
+  const paused = JSON.parse(await runPythonProcess(witness, witnessArgs('restart')));
   expect(paused.checkpoint.completed_updates).toBeGreaterThan(0);
   expect(paused.checkpoint.completed_updates).toBeLessThan(totalUpdates);
   expect(paused.new_host).not.toBe(paused.old_host);

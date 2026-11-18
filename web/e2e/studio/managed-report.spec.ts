@@ -9,7 +9,6 @@ import { chooseStepKind } from './fixtures/studioKeyboard';
 test.use({ viewport: { width: 1440, height: 900 } });
 
 test('authors an ordered shared Report from a planned Analyze figure', async ({ page, request, studio }, info) => {
-  test.setTimeout(48_000);
   const home = studio.home;
   const module = 'web.e2e.studio.fixtures.managed_report';
   const project = JSON.parse(await runProjectFixture(module, 'seed', home, 'managed-report'));

@@ -8,6 +8,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startFixtureRunner } from './python';
 
 export const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 
@@ -157,7 +158,11 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
  * test in those specs. Tracing the context here, not through the worker-scoped `trace` option, keeps the spec
  * in the shared workers and their Studio.
  */
-const traced = base.extend<{ namedTrace: void }>({
+const traced = base.extend<{ namedTrace: void }, { fixtureRunner: void }>({
+  fixtureRunner: [async ({}, use) => {
+    startFixtureRunner();
+    await use();
+  }, { scope: 'worker', auto: true }],
   namedTrace: [async ({ context }, use, info) => {
     const spec = process.env.FEEDBAX_STUDIO_TRACE;
     const on = spec !== undefined && spec.split(',').some((name) => info.file.endsWith(name));

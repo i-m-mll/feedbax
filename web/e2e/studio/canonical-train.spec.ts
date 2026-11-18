@@ -20,8 +20,7 @@ function submitted(page: Page, path: string) {
     response.request().method() === 'POST' && new URL(response.url()).pathname === path);
 }
 
-test('standalone Activity opens an existing run and hydrates its retained history', async ({ page, request }) => {
-  test.setTimeout(48_000);
+test('standalone Activity opens an existing run and hydrates its retained history', { tag: '@round' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const admission = await request.post(`${projectPath}/train-runs`, { data: {
     token: 'background-activity', revision: snapshot.revision,
@@ -35,7 +34,7 @@ test('standalone Activity opens an existing run and hydrates its retained histor
   await expect(announcements).toHaveCount(1);
   const row = page.getByRole('list', { name: 'Runs', exact: true })
     .getByRole('region', { name: snapshot.project_id, exact: true }).getByRole('listitem');
-  await expect(row.getByText('Done', { exact: true })).toBeVisible({ timeout: 36_000 });
+  await expect(row.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
   await row.getByRole('button', { name: /^Train / }).click();
   const inspector = page.getByRole('region', { name: 'Run Inspector' });
   await expect(inspector.getByRole('region', { name: 'Log', exact: true })).toBeVisible();
