@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter, field_validator
 
-from feedbax.analysis.operations import RegisteredOperation
-from feedbax.analysis.operation_runtime import require_task_source, uses_replicate_axis, verify_dataset
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, render as render_report
 from feedbax.contracts.artifact_custody import (
     ContentObjectRef,
@@ -41,14 +39,13 @@ from feedbax.contracts.request_specs import (
     ReportRequestSpec,
 )
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.dataset_replicates import replicate_ids, select_replicate
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.content_retention import read_active_roots
-from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.declarations import DistributionSource, ResolvedDeclaration, missing_declaration
 
 if TYPE_CHECKING:
+    from feedbax.analysis.operations import RegisteredOperation
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 
@@ -128,6 +125,8 @@ def validate_light_request(
     read_document: Callable[[ContentRef], DocumentInput] | None = None,
 ) -> tuple[str, ResolvedDeclaration[RegisteredOperation] | None]:
     """Check declaration and binding metadata before managed dataset delivery."""
+    from feedbax.analysis.operation_runtime import require_task_source
+
     spec = request.spec
     operation = None
     if isinstance(spec, AnalysisRequestSpec):
@@ -250,6 +249,11 @@ def light_staging_target(ref: ContentObjectRef | ContentTreeRef) -> ContentReten
 def _verify_dataset_output(
     store: ImmutableArtifactBlobProvider, product: Product, port: DatasetPort
 ) -> None:
+    # Opening a dataset loads JAX; the Host admits light jobs and must not pay for it.
+    from feedbax.analysis.operation_runtime import uses_replicate_axis, verify_dataset
+    from feedbax.dataset_replicates import replicate_ids, select_replicate
+    from feedbax.persistence.dataset import open_stored_dataset
+
     with open_stored_dataset(store, dataset_member(product)) as dataset:
         if not uses_replicate_axis(port) and replicate_ids(dataset) is not None:
             dataset = select_replicate(dataset, 0)

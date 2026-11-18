@@ -25,7 +25,8 @@ from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
 from feedbax.host.protocol import (
-    LIGHT_ENTRYPOINT, LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError, JsonObject, SessionCloseClaim, SessionStatus,
+    HANG_SECONDS, LIGHT_ENTRYPOINT, LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError, JsonObject,
+    SessionCloseClaim, SessionStatus,
 )
 from feedbax.host.session import SessionFence
 from feedbax.host.store import Store, StorePublicationPending
@@ -34,8 +35,6 @@ LOG_LINE_LIMIT = 8192
 EVENT_LINE_LIMIT = 2 * 1024 * 1024
 POLL_SECONDS = 0.20
 TERM_GRACE = 2
-# How long a connection may take to send its request, or to take its reply, before the Host drops it.
-REPLY_SECONDS = 5
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
     "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
@@ -971,7 +970,7 @@ class Host:
             if self.closing:
                 return
             try:
-                raw = await asyncio.wait_for(reader.readline(), REPLY_SECONDS)
+                raw = await asyncio.wait_for(reader.readline(), HANG_SECONDS)
                 if not raw.endswith(b"\n"):
                     return
                 message = json.loads(raw)
@@ -999,7 +998,7 @@ class Host:
                     writer.transport.abort()
                 else:
                     writer.close()
-                    await asyncio.wait_for(writer.wait_closed(), REPLY_SECONDS)
+                    await asyncio.wait_for(writer.wait_closed(), HANG_SECONDS)
             except (OSError, TimeoutError):
                 writer.transport.abort()
             finally:
