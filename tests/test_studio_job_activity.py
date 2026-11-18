@@ -8,6 +8,7 @@ from threading import Event
 
 from fastapi.testclient import TestClient
 
+from feedbax.host import HostError
 from feedbax.host.protocol import AdmissionItem
 from feedbax.web.app import create_app
 from tests.test_local_job_host import host as host_fixture, run_job, wait_until
@@ -124,3 +125,41 @@ def test_the_follower_recovers_from_one_unexpected_error(host, tmp_path, monkeyp
             return response.status_code == 200 and [job["job_id"] for job in response.json()["jobs"]] == ["after"]
 
         assert wait_until(recovered)
+
+
+def test_reads_recover_as_soon_as_a_quiet_host_answers_again(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
+    with TestClient(create_app(projects_dir=tmp_path / "projects")) as studio:
+        service = studio.app.state.job_service
+        job = _studio_job("quiet", "p", "import time; time.sleep(30)")
+        _admit(service.host, "quiet", job)
+
+        page = service.activity_page
+
+        def settled():
+            head = page(after=0, wait=0).head
+            time.sleep(0.5)
+            return head == page(after=0, wait=0).head == studio.get("/api/jobs").json()["cursor"]
+
+        assert wait_until(settled)
+        down = Event()
+        down.set()
+
+        def restarting(**kwargs):
+            if down.is_set():
+                raise HostError("disconnected", "host socket closed before a complete message")
+            return page(**kwargs)
+
+        monkeypatch.setattr(service, "activity_page", restarting)
+
+        def failing():
+            response = studio.get("/api/jobs")
+            return response if response.status_code == 503 else None
+
+        assert wait_until(failing).json()["detail"]["code"] == "disconnected"
+        down.clear()
+        started = time.monotonic()
+        assert wait_until(lambda: studio.get("/api/jobs").status_code == 200)
+        # No event wakes the follower here, so recovery within a follow wait means its first page was a probe.
+        assert time.monotonic() - started < 1
