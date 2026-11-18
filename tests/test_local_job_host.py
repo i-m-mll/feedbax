@@ -1188,7 +1188,7 @@ def test_shutdown_does_not_wait_for_a_reply_its_handler_already_handed_off(tmp_p
     from feedbax.host.io import encode
     from feedbax.host.protocol import VERSION
 
-    monkeypatch.setattr(daemon, "REPLY_SECONDS", 0.2)
+    monkeypatch.setattr(daemon, "HANG_SECONDS", 0.2)
 
     async def probe(host, task):
         host.store.record_put("large", {"value": "x" * 4_000_000})

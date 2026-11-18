@@ -1,6 +1,7 @@
 """Client for the machine's sole host daemon."""
 
 import contextlib
+import fcntl
 import json
 import os
 import socket
@@ -14,6 +15,7 @@ from typing import Any, cast
 
 from feedbax.host.io import encode, private_directory, receive, socket_path
 from feedbax.host.protocol import (
+    HANG_SECONDS,
     MAX_RPC_BYTES,
     VERSION,
     Admission,
@@ -132,16 +134,26 @@ class HostClient:
                         start_new_session=True,
                     )
                 threading.Thread(target=process.wait, daemon=True).start()
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + HANG_SECONDS
             while True:
                 try:
                     return self._connect(timeout)
                 except (FileNotFoundError, ConnectionRefusedError) as error:
-                    if time.monotonic() >= deadline:
+                    # The started process may lose the lock to another Host, which is then the one to wait for.
+                    starting = process.returncode is None or self._host_lock_held()
+                    if not starting or time.monotonic() >= deadline:
                         raise HostError(
                             "unavailable", f"Host did not start. See {self.root / 'host.log'}."
                         ) from error
                     time.sleep(0.02)
+
+    def _host_lock_held(self) -> bool:
+        with (self.root / "host.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+        return False
 
     def _exchange(self, message: bytes, *, timeout: float, start_host: bool) -> JsonObject:
         with self._start_lock:
@@ -165,7 +177,7 @@ class HostClient:
                     self._open.discard(sock)
 
     def _call(
-        self, op: str, *, timeout: float = 5, start_host: bool = True, **request: Json
+        self, op: str, *, timeout: float = HANG_SECONDS, start_host: bool = True, **request: Json
     ) -> Json:
         if self._session is not None:
             request["session"] = asdict(self._session)
@@ -181,7 +193,7 @@ class HostClient:
             raise HostError(error["code"], error["message"])
         return reply["value"]
 
-    def ping(self, *, timeout: float = 5) -> JsonObject:
+    def ping(self, *, timeout: float = HANG_SECONDS) -> JsonObject:
         return cast(JsonObject, self._call("ping", timeout=timeout))
 
     def session_epoch(self, session_id: str, operator: str, adoption_token: str) -> int:
@@ -360,7 +372,7 @@ class HostClient:
                 projects=list(projects),
                 limit=limit,
                 wait=wait,
-                timeout=max(5, wait + 5),
+                timeout=wait + HANG_SECONDS,
             ),
         )
 

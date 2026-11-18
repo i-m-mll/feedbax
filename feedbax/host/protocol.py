@@ -22,6 +22,8 @@ type State = Literal[
 type Disposition = Literal["admitted", "attached", "reused", "rejected"]
 type ReusePolicy = Literal["selected", "automatic", "prerequisite"]
 
+# Ends a hung exchange with the Host, and only that: no wait that load can stretch may reach it.
+HANG_SECONDS = 60
 LIGHT_ENTRYPOINT = "feedbax.light_host_worker:main"
 VALIDITY_CHECK_ENTRYPOINT = "feedbax.validity.check_worker:main"
 MANAGED_ENTRYPOINTS = frozenset({
