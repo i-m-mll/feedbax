@@ -1409,9 +1409,31 @@ def test_same_seed_nested_rename_preserves_values_and_batch_loss():
         np.testing.assert_array_equal(a, b)
 
 
+def _refuse_realization(monkeypatch):
+    """Makes realizing a graph, or constructing any registered component but an acausal element descriptor, raise."""
+    from feedbax.acausal.base import AcausalElement
+    from feedbax.compiler import graph, trial_execution
+    from feedbax.component_registry.declarations import ComponentParamContract
+    from feedbax.runtime import model_input
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a plan read realized the model")
+
+    for module in (graph, trial_execution, model_input):
+        monkeypatch.setattr(module, "realize_graph", refuse)
+    for name in ("build", "build_resolved"):
+        construct = getattr(ComponentParamContract, name)
+
+        def guarded(contract, *args, construct=construct, **kwargs):
+            if not issubclass(contract.runtime_type, AcausalElement):
+                raise AssertionError(f"a plan read constructed {contract.runtime_type.__name__}")
+            return construct(contract, *args, **kwargs)
+
+        monkeypatch.setattr(ComponentParamContract, name, guarded)
+
+
 @pytest.mark.parametrize("scope", ["plain", "within-step"])
-def test_reading_the_plan_constructs_no_component(monkeypatch, scope):
-    from feedbax.compiler import serialization
+def test_reading_the_plan_realizes_no_model(monkeypatch, scope):
     from web.e2e.studio.fixtures.stored_model import add_physical_interior
 
     raw = _model_project()
@@ -1419,12 +1441,45 @@ def test_reading_the_plan_constructs_no_component(monkeypatch, scope):
         add_physical_interior(raw, scope)
     project = Project.model_validate(raw)
     expected = compile_project(project)
-
-    def refuse(*args, **kwargs):
-        raise AssertionError("a plan read constructed a component")
-
-    monkeypatch.setattr(serialization, "build_component", refuse)
+    _refuse_realization(monkeypatch)
     plan = compile_project(project)
     assert plan == expected
     refusals = [problem.detail for problem in plan.diagnostics if "within-step evaluation" in problem.detail]
     assert bool(refusals) == (scope == "within-step")
+
+
+def test_reading_the_plan_of_a_grounded_network_realizes_no_model(monkeypatch):
+    def leaf(name):
+        return {"kind": "leaf", "type": f"feedbax.{name}", "name": name}
+
+    raw = _model_project()
+    del raw["steps"]["baseline"]
+    raw["documents"]["reach-model"]["payload"]["interior"]["components"]["equations"] = {
+        "kind": "composite", "name": "Mass spring wall", "ports": {},
+        "interior": {
+            "physical_domain": "translational",
+            "components": {"mass": leaf("Mass"), "spring": leaf("LinearSpring"), "wall": leaf("Ground")},
+            "connections": {
+                "end1": {"a": _end("wall", "flange"), "b": _end("spring", "flange_a")},
+                "end2": {"a": _end("spring", "flange_b"), "b": _end("mass", "flange")},
+            },
+        },
+    }
+    _refuse_realization(monkeypatch)
+    plan = compile_project(Project.model_validate(raw))
+    assert len(plan.requests) == 1
+    assert plan.diagnostics == ()
+
+
+def test_reading_the_plan_refuses_an_acausal_leaf_in_a_causal_model(monkeypatch):
+    raw = _model_project()
+    raw["documents"]["reach-model"]["payload"]["interior"]["components"]["mass"] = {
+        "kind": "leaf", "name": "Mass", "type": "feedbax.Mass", "fields": {"mass": 1},
+    }
+    _refuse_realization(monkeypatch)
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.requests
+    assert any(
+        "'feedbax.Mass' for node 'mass' belongs to domain 'feedbax.domain.acausal'" in problem.detail
+        for problem in plan.diagnostics
+    )
