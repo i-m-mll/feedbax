@@ -529,7 +529,7 @@ def test_unresolved_relative_link_is_reported_at_the_task():
 
 def test_stored_model_plan_uses_the_supplied_component_registry():
     class CustomRelay(Input):
-        pass
+        model_facts = None
 
     raw = _model_project()
     model = raw["documents"]["reach-model"]["payload"]

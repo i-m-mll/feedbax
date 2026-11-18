@@ -57,9 +57,8 @@ from feedbax.contracts.project_io import (
     text_file_stamp,
     text_project_fingerprint,
 )
-from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project
+from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project, compiler_authority
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
-from feedbax.contracts.request_identity import request_codec_authority
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_members import references_member, rename_member
@@ -352,8 +351,8 @@ def compile_saved_project(
     semantic_root = project_semantic_root(text.project)
     source_runs = frozenset(source_runs)
     stamp = (
-        project_id, text.revision, semantic_root, text.root, store, source_runs, request_codec_authority(),
-        operations, components, functions, python_tasks, figure_templates, training_methods,
+        project_id, text.revision, semantic_root, text.root, store, source_runs,
+        compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates),
         readers.figure_external is not None,
     )
     observations: dict[str, dict[str, object]] = {}
@@ -370,7 +369,7 @@ def compile_saved_project(
             reusable and previous is not None and previous.stamp == stamp
             and _same_plan_inputs(readers, previous.observations)
         ):
-            return replace(previous.plan, readers=readers)
+            return replace(previous.plan, plan=previous.plan.plan.detached(), readers=readers)
         plan = compile_project(
             text.project, source_runs=source_runs, memo=memo,
             operations=operations, components=components, functions=functions, python_tasks=python_tasks,
