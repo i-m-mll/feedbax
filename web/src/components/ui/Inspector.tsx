@@ -21,9 +21,9 @@ export function Inspector({ name, type, children, attachments, className }: Insp
   const title = useId();
   return (
     <section aria-labelledby={title} className={clsx('grid min-w-0 content-start gap-2 p-2 text-sm', className)}>
-      <header className="flex h-row min-w-0 items-baseline gap-2">
-        <span id={title} className="min-w-0 truncate font-medium">{name}</span>
-        {type ? <span className="min-w-0 truncate text-shell-muted">{type}</span> : null}
+      <header className="grid min-h-row min-w-0 content-center">
+        <span id={title} className="min-w-0 break-words font-medium">{name}</span>
+        {type ? <span className="min-w-0 break-words text-shell-muted">{type}</span> : null}
       </header>
       {children ? <div className="grid min-w-0 gap-1">{children}</div> : null}
       {attachments ? <div className="grid min-w-0 border-t border-shell-divider pt-1">{attachments}</div> : null}

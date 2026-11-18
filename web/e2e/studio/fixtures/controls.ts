@@ -1,11 +1,16 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 
+/** The open Select or Combobox popup's list, apart from the listboxes drawn in the window. */
+export function popupListbox(page: Page) {
+  return page.getByRole('listbox').and(page.locator('[data-side] [role="listbox"], [role="listbox"][data-side]'));
+}
+
 /** Chooses `label` from a Select or Combobox of the control layer, by pointer. */
 export async function pick(trigger: Locator, label: string | RegExp) {
   const page = trigger.page();
   await expect(trigger).toBeEnabled();
   await trigger.click();
-  const listbox = page.getByRole('listbox');
+  const listbox = popupListbox(page);
   await listbox.getByRole('option', { name: label, exact: true }).click();
   await expect(listbox).toBeHidden();
 }
