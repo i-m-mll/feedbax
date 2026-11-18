@@ -1407,3 +1407,24 @@ def test_same_seed_nested_rename_preserves_values_and_batch_loss():
     assert len(values) == len(renamed) and values
     for a, b in zip(values, renamed, strict=True):
         np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("scope", ["plain", "within-step"])
+def test_reading_the_plan_constructs_no_component(monkeypatch, scope):
+    from feedbax.compiler import serialization
+    from web.e2e.studio.fixtures.stored_model import add_physical_interior
+
+    raw = _model_project()
+    if scope != "plain":
+        add_physical_interior(raw, scope)
+    project = Project.model_validate(raw)
+    expected = compile_project(project)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a plan read constructed a component")
+
+    monkeypatch.setattr(serialization, "build_component", refuse)
+    plan = compile_project(project)
+    assert plan == expected
+    refusals = [problem.detail for problem in plan.diagnostics if "within-step evaluation" in problem.detail]
+    assert bool(refusals) == (scope == "within-step")

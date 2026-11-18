@@ -12,7 +12,7 @@ import pytest
 
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.compiler import trial_execution
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
@@ -71,12 +71,12 @@ def authored():
 def prepared_trials(monkeypatch):
     calls = []
 
-    @wraps(compile_trial_execution)
+    @wraps(resolve_trial_execution)
     def prepare(*args, **kwargs):
         calls.append((args, kwargs))
-        return compile_trial_execution(*args, **kwargs)
+        return resolve_trial_execution(*args, **kwargs)
 
-    monkeypatch.setattr(trial_execution, "compile_trial_execution", prepare)
+    monkeypatch.setattr(trial_execution, "resolve_trial_execution", prepare)
     return calls
 
 
