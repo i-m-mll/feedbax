@@ -30,6 +30,7 @@ from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
 from feedbax.plugins.composition import load_application
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, verify_training_request_binding
+from feedbax.validity.evidence import evidence_objects
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_payload
 from tests.test_local_job_host import admit, job_row, restart, run_job, wait_until
@@ -288,8 +289,8 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     assert packet_ref is not None
     packet = read_store_closure_ref(packet_ref)
     expected = (
-        success.ref, request.object, *request.documents, model.tree.descriptor,
-        *(member.object for member in tree.files),
+        success.ref, request.object, *request.documents, *evidence_objects(store, success.receipt.trace),
+        model.tree.descriptor, *(member.object for member in tree.files),
     )
     transferred = ReceiptClosure(destination).walk(packet)
     assert {ref.sha256 for ref in transferred} == {ref.sha256 for ref in expected}

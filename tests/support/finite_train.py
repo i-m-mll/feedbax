@@ -31,6 +31,7 @@ import os
 from pathlib import Path
 from time import monotonic, sleep
 from feedbax.training.method_runtime import TrainingLoop
+from feedbax.training_host_worker import _Events
 
 run_block = TrainingLoop.run_block
 
@@ -48,10 +49,6 @@ def wrapped(self, state, *, completed, count):
     resumed = source.get("resume") is not None
     stop_at = int(os.environ["FINITE_STOP_AT"])
     resume_at = int(os.environ["FINITE_RESUME_AT"])
-    if resumed and completed == resume_at:
-        (root / "resumed-interior").touch()
-        wait(root / "finish-train")
-
     if not resumed and completed < stop_at:
         count = min(count, stop_at - completed)
     result = run_block(self, state, completed=completed, count=count)
@@ -71,7 +68,20 @@ def wrapped(self, state, *, completed, count):
         wait(stop)
     return result
 
+def published(self, kind, data, *, sync=False):
+    append(self, kind, data, sync=sync)
+    source = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes())
+    if (
+        kind == "publication" and source.get("resume") is not None
+        and data["checkpoint"]["completed_updates"] == int(os.environ["FINITE_RESUME_AT"])
+    ):
+        root = Path(os.environ["FINITE_PROOF_ROOT"])
+        (root / "resumed-interior").touch()
+        wait(root / "finish-train")
+
 TrainingLoop.run_block = wrapped
+append = _Events.append
+_Events.append = published
 """)
     launch = jobs._training_worker
     jobs._training_worker = replace(
