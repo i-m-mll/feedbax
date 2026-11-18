@@ -33,9 +33,15 @@ if DIRECTORY:
             os.close(fd)
 
     def _role(argv) -> str:
-        text = " ".join(map(str, argv))
-        if "-m feedbax.host" in text or text.endswith("feedbax.host"):
-            return "host_relay" if any(op in argv for op in ("attach", "init-session")) else "host"
+        args = [str(a) for a in argv]
+        for i, arg in enumerate(args[:-1]):
+            if arg == "-m" and args[i + 1] == "feedbax.host":
+                rest = args[i + 2:]
+                return "host_relay" if "attach" in rest or "init-session" in rest else "host"
+        text = " ".join(args)
+        if "-m feedbax.host" in text:
+            # The Host command is an argument of another program (ssh): this process relays to a Host.
+            return "host_relay"
         if "_feedbax_host_runtime" in text:
             for role in ("launcher", "worker", "watchdog"):
                 if f" {role} " in f" {text} ":
@@ -140,7 +146,8 @@ if DIRECTORY:
                     states = [[v.get("id"), v.get("state")] for v in value if isinstance(v, dict) and "state" in v]
                 elif isinstance(value, dict) and isinstance(value.get("jobs"), list):
                     states = [[v.get("id"), v.get("state")] for v in value["jobs"] if isinstance(v, dict)]
-                record("rpc", op=op, start=start, root=str(self.root), error=error, states=states)
+                record("rpc", op=op, start=start, root=str(self.root), wait=kwargs.get("wait"), error=error,
+                       stdio=getattr(self, "_attachment", None) is not None, states=states)
 
         client._call = wrapped
 
@@ -157,18 +164,142 @@ if DIRECTORY:
 
         store.finished = wrapped
 
-    def _patch_daemon(module) -> None:
-        host = module.Host
-        run = host.run
+    HOLD_SECONDS = 0.02  # a loop callback at least this long is recorded as a hold
+    PARTS_SECONDS = 0.05  # a tick at least this long records the time of each Host or Store method it called
 
-        async def wrapped(self, *args, **kwargs):
+    def _time_methods(cls, tick) -> None:
+        """Time every plain method of `cls`; within a tick, add each direct callee's time to the tick's parts."""
+        import inspect
+
+        for name, function in list(vars(cls).items()):
+            if not inspect.isfunction(function) or inspect.iscoroutinefunction(function) or name.startswith("__"):
+                continue
+            if name == "_tick":
+                continue
+            label = f"{cls.__name__}.{name}"
+
+            def timed(*args, _function=function, _label=label, **kwargs):
+                if tick.parts is None:
+                    return _function(*args, **kwargs)
+                depth = tick.depth
+                tick.depth = depth + 1
+                start = time.perf_counter()
+                try:
+                    return _function(*args, **kwargs)
+                finally:
+                    tick.depth = depth
+                    if depth == 0:
+                        seconds, calls = tick.parts.get(_label, (0.0, 0))
+                        tick.parts[_label] = (seconds + time.perf_counter() - start, calls + 1)
+
+            setattr(cls, name, functools.wraps(function)(timed))
+
+    import weakref as _weakref
+
+    STEP_START = _weakref.WeakKeyDictionary()  # task -> perf_counter at the start of its running step
+    HELD = _weakref.WeakKeyDictionary()  # task -> loop seconds its steps have held
+    OPS = _weakref.WeakKeyDictionary()  # task -> the Host operation it is handling
+
+    class _Tick:
+        parts: dict | None = None
+        depth = 0
+
+    TICK = _Tick()
+
+    def _watch_loop(schedule_tasks) -> None:
+        """Record each loop callback that holds the Host's loop, and the loop time each task has held."""
+        import asyncio
+
+        handle = asyncio.events.Handle
+        if getattr(handle._run, "_host_profile", False):
+            return
+        run = handle._run
+
+        def wrapped(self):
+            task = getattr(self._callback, "__self__", None)
+            if not isinstance(task, asyncio.Task):
+                task = None
+            start = time.perf_counter()
+            if task is not None:
+                STEP_START[task] = start
+            try:
+                return run(self)
+            finally:
+                seconds = time.perf_counter() - start
+                if task is not None:
+                    HELD[task] = HELD.get(task, 0.0) + seconds
+                if seconds >= HOLD_SECONDS and task not in schedule_tasks:
+                    if task is not None:
+                        label = OPS.get(task) or getattr(task.get_coro(), "__qualname__", None) or task.get_name()
+                    else:
+                        label = getattr(self._callback, "__qualname__", None) or repr(self._callback)[:80]
+                    record("loop_hold", start=time.time() - seconds, seconds=seconds, label=label)
+
+        wrapped._host_profile = True
+        handle._run = wrapped
+
+    def _patch_daemon(module) -> None:
+        import asyncio
+
+        host = module.Host
+        missing = [name for name in ("run", "_tick", "_call") if not hasattr(host, name)]
+        if missing:
+            record("hook_seam_missing", cls="Host", names=missing)
+            return
+        run, tick, call = host.run, host._tick, host._call
+        schedule_tasks = _weakref.WeakSet()
+
+        async def wrapped_run(self, *args, **kwargs):
+            _watch_loop(schedule_tasks)
             record("host_run", root=str(self.root))
             try:
                 return await run(self, *args, **kwargs)
             finally:
                 record("host_run_end", root=str(self.root))
 
-        host.run = wrapped
+        def wrapped_tick(self, *args, **kwargs):
+            task = asyncio.current_task() if asyncio._get_running_loop() is not None else None
+            if task is not None:
+                schedule_tasks.add(task)
+            TICK.parts, TICK.depth = {}, 0
+            wall, start = time.time(), time.perf_counter()
+            error = None
+            try:
+                return tick(self, *args, **kwargs)
+            except BaseException as exc:
+                error = type(exc).__name__
+                raise
+            finally:
+                seconds = time.perf_counter() - start
+                parts, TICK.parts = TICK.parts, None
+                detail = {}
+                if seconds >= PARTS_SECONDS:
+                    detail["parts"] = {k: [round(v, 4), n] for k, (v, n) in
+                                       sorted(parts.items(), key=lambda item: -item[1][0]) if v >= 0.001}
+                record("tick", start=wall, seconds=seconds, error=error, **detail)
+
+        async def wrapped_call(self, message, *args, **kwargs):
+            op = message.get("op") if isinstance(message, dict) else None
+            task = asyncio.current_task()
+            OPS[task] = f"rpc:{op}"
+            wall, start = time.time(), time.perf_counter()
+            held0, step0 = HELD.get(task, 0.0), STEP_START.get(task, start)
+            error = None
+            try:
+                return await call(self, message, *args, **kwargs)
+            except BaseException as exc:
+                error = type(exc).__name__
+                raise
+            finally:
+                end = time.perf_counter()
+                held = HELD.get(task, 0.0) - held0 + (end - STEP_START.get(task, start)) - (start - step0)
+                record("host_rpc", op=op, start=wall, seconds=end - start, held=held, error=error)
+
+        host.run, host._tick, host._call = wrapped_run, wrapped_tick, wrapped_call
+        _time_methods(host, TICK)
+        store = sys.modules.get("feedbax.host.store")
+        if store is not None and hasattr(store, "Store"):
+            _time_methods(store.Store, TICK)
 
     def _patch_jax(module) -> None:
         from jax import monitoring
