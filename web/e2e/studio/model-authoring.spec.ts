@@ -7,7 +7,7 @@ import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { palette } from './fixtures/studioKeyboard';
 
-test.use({ channel: 'chrome', trace: 'retain-on-failure', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 type ModelWire = NonNullable<ModelDocument['interior']['wires']>[string];
 

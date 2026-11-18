@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 test('Training and Runs edit the same saved values and project the selected source', async ({ page, request }) => {
   test.setTimeout(55_000);

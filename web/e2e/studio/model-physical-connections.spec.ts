@@ -4,7 +4,7 @@ import type { ModelDocument, ModelEditResponse, StudioProjectDocument, StudioSav
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette } from './fixtures/studioKeyboard';
 
-test.use({ channel: 'chrome', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 function card(model: Locator, id: string) {
   return model.locator(`.react-flow__node[data-id="${id}"]`);

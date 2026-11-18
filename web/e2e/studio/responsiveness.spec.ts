@@ -5,7 +5,7 @@ import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
-test.use({ headless: true, trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 function modelFixture(cards: number): ModelDocument {
   const components: NonNullable<ModelDocument['interior']['components']> = {};
@@ -206,7 +206,6 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
       acknowledgementToVisiblePlanStatusMs: planVisible.visibleAt - (performance.timeOrigin + acknowledgedAt) };
 
 }
-
 
 async function measureScroll(page: Page, request: APIRequestContext, context: CDPSession) {
   const rowCount = 1_000;

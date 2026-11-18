@@ -3,7 +3,7 @@ import { type APIRequestContext, type CDPSession, type Locator, type Page } from
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 function modelFixture(cards: number): ModelDocument {
   const components: NonNullable<ModelDocument['interior']['components']> = {};

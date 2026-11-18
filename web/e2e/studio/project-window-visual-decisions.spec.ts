@@ -3,11 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { captureStudioWindow, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 
-test.use({
-  viewport: { width: 1440, height: 900 },
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 test('Studio visual decisions use shell roles and keep the narrow window usable', async ({ page, studio }, info) => {
   const id = 'visual-decisions';

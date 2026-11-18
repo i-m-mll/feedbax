@@ -3,12 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 
-test.use({
-  channel: 'chrome',
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const runs = (page: Page) => page.getByRole('table', { name: 'Runs', exact: true });
 

@@ -1,7 +1,8 @@
 import { expect, test as base } from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { closeSync, openSync, readFileSync, rmSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -57,14 +58,23 @@ async function loopbackPorts(count: number) {
   }
 }
 
-async function stop(child: ChildProcess, log: readonly string[]) {
+async function stop(child: ChildProcess, log: () => string) {
   if (child.exitCode === null && child.signalCode === null) {
     const exited = once(child, 'exit');
     child.kill('SIGTERM');
     await exited;
   }
   if (child.exitCode !== 0 && child.exitCode !== 143) {
-    throw new Error(`Studio launcher exited with ${child.exitCode ?? child.signalCode}\n${log.join('').slice(-4000)}`);
+    throw new Error(`Studio launcher exited with ${child.exitCode ?? child.signalCode}\n${log().slice(-4000)}`);
+  }
+}
+
+/** Lists the processes still working in `home`, which a stopped Studio must not leave behind. */
+function processesIn(home: string) {
+  try {
+    return execFileSync('pgrep', ['-lf', home]).toString().trim();
+  } catch {
+    return '';
   }
 }
 
@@ -76,7 +86,11 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
   const [webPort, backendPort] = await loopbackPorts(2);
   const origin = `http://127.0.0.1:${webPort}`;
   const home = join(tmpdir(), `feedbax-studio-test-${randomUUID()}`);
-  const log: string[] = [];
+  // Launchers write to a file rather than to pipes, so a descendant that outlives its launcher
+  // cannot hold this worker open.
+  const logPath = `${home}.log`;
+  const logFd = openSync(logPath, 'a');
+  const log = () => readFileSync(logPath, 'utf8');
   const launchers: ChildProcess[] = [];
   const start = (...args: string[]) => {
     const child = spawn('uv', [
@@ -85,9 +99,8 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
     ], {
       cwd: repo,
       env: { ...process.env, FEEDBAX_STUDIO_TEST_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', logFd, logFd],
     });
-    for (const stream of [child.stdout!, child.stderr!]) stream.on('data', (chunk) => log.push(String(chunk)));
     launchers.push(child);
     return child;
   };
@@ -108,7 +121,7 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
     ...(frontend === 'preview' ? ['--preview-from', dist!] : []));
   while (!await healthy()) {
     if (main.exitCode !== null || main.signalCode !== null) {
-      throw new Error(`Studio launcher exited with ${main.exitCode ?? main.signalCode}\n${log.join('')}`);
+      throw new Error(`Studio launcher exited with ${main.exitCode ?? main.signalCode}\n${log()}`);
     }
     await new Promise((done) => setTimeout(done, 50));
   }
@@ -124,13 +137,17 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
       start('--backend-only');
       await expect.poll(healthy, { timeout: 15_000 }).toBe(true);
     },
-    serviceLog: () => log.join(''),
+    serviceLog: log,
   };
   return {
     studio,
     close: async () => {
       const stopped = await Promise.allSettled(launchers.map((child) => stop(child, log)));
+      closeSync(logFd);
       for (const result of stopped) if (result.status === 'rejected') throw result.reason;
+      const survivors = processesIn(home);
+      if (survivors) throw new Error(`Studio processes outlived their launcher in ${home}:\n${survivors}\n${log().slice(-4000)}`);
+      rmSync(logPath);
     },
   };
 }
@@ -170,13 +187,13 @@ export const isolatedTest = base.extend<{ studio: Studio }>({
       await use(studio);
     } finally {
       const failed = info.status !== info.expectedStatus;
-      const workers = failed ? await workerLogs(studio.home) : '';
+      const logs = failed ? studio.serviceLog() + await workerLogs(studio.home) : '';
       try {
         await close();
       } finally {
         if (failed) {
           const path = info.outputPath('studio.log');
-          await writeFile(path, studio.serviceLog() + workers);
+          await writeFile(path, logs);
           await info.attach('Studio process log', { path, contentType: 'text/plain' });
         }
       }

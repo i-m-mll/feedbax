@@ -5,7 +5,7 @@ import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixture
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { outlineRow, pick, placeFromLibrary } from './fixtures/controls';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 async function addIntervention(page: Page, projectPath: string, scope: object) {
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
