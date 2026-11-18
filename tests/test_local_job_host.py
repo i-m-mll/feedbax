@@ -1171,3 +1171,66 @@ def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_pat
         assert time.monotonic() - started < 2
         poll.result(timeout=5)
     assert wait_until(lambda: not alive(str(profiles)), timeout=5)
+
+
+
+def _run_host(tmp_path, probe, *, accepted=None):
+    """Runs a Host in this process and hands `probe` the Host and its task; `accepted` wraps each new connection."""
+    from feedbax.host.daemon import Host
+
+    async def main():
+        host = Host(tmp_path / "inproc")
+        task = None
+        if accepted is not None:
+            serve = host.serve
+            host.serve = lambda reader, writer: accepted(task, serve, reader, writer)
+        task = asyncio.create_task(host.run())
+        while not host.address.exists():
+            await asyncio.sleep(0.001)
+        try:
+            return await probe(host, task)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return asyncio.run(main())
+
+
+def test_shutdown_ends_a_connection_accepted_before_its_handler_ran(tmp_path):
+    from feedbax.host.protocol import VERSION
+
+    # Shutdown begins between the accept and the first step of the connection's handler.
+    def accepted(task, serve, reader, writer):
+        task.cancel()
+        return serve(reader, writer)
+
+    async def probe(host, task):
+        reader, writer = await asyncio.open_unix_connection(str(host.address))
+        writer.write(json.dumps(dict(version=VERSION, op="events", after=0, projects=[], limit=1, wait=3)).encode() + b"\n")
+        await writer.drain()
+        await asyncio.wait({task}, timeout=1)
+        writer.close()
+        return task.done()
+
+    assert _run_host(tmp_path, probe, accepted=accepted)
+
+
+def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path):
+    import socket
+
+    from feedbax.host.io import encode
+    from feedbax.host.protocol import VERSION
+
+    async def probe(host, task):
+        host.store.record_put("large", {"value": "x" * 4_000_000})
+        loop = asyncio.get_running_loop()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.setblocking(False)
+            await loop.sock_connect(sock, str(host.address))
+            await loop.sock_sendall(sock, encode({"version": VERSION, "op": "record_get", "key": "large"}))
+            assert await loop.sock_recv(sock, 1) == b"{"
+            task.cancel()
+            await asyncio.wait({task}, timeout=1)
+            return task.done()
+
+    assert _run_host(tmp_path, probe)
