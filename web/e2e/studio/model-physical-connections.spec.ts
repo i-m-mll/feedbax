@@ -132,14 +132,14 @@ for (const { scope, element, composites, target } of [
   test(`reveals the saved Plan problem at its ${element.kind} address (${scope})`, async ({ page, request, studio }, info) => {
     const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
     await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, scope);
-    // Read the body as soon as it arrives: the browser drops it once the page refetches the plan.
-    const plan = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/train-runs` &&
-      new URL(response.url()).searchParams.get('window_map') === 'true')
-      .then(async (response) => ({ ok: response.ok(), body: await response.text() }));
+    // The window's plan request names the revision it read; the test reads that plan itself,
+    // since the browser may already have dropped the body when the page refetches.
+    const planRead = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/train-runs` &&
+      new URL(response.url()).searchParams.get('window_map') === 'true');
     await revealModel(page, `/?project=${encodeURIComponent(snapshot.project_id)}`);
-    const response = await plan;
-    expect(response.ok, response.body).toBe(true);
-    const { window_map: map } = JSON.parse(response.body) as StudioSavedTrainRuns;
+    const response = await request.get((await planRead).url());
+    expect(response.ok(), await response.text()).toBe(true);
+    const { window_map: map } = await response.json() as StudioSavedTrainRuns;
     expect(map?.rows.find((row) => row.key.step === 'train')?.status).toBe('cannot_run');
     const address = { composites, element };
     const problem = map?.problems.find((candidate) => candidate.step === 'train');
