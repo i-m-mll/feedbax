@@ -1,7 +1,8 @@
 """Pytest plugin: label child processes with the running test, record its phase timings, and end leaked Hosts.
 
-Every Host root in these tests belongs to one test, so a Host that is still running after its test's teardown
-is a leak. It is recorded as `host_leaked` and terminated, so it does not load the tests that follow.
+A Host started by a session-scoped fixture, and any later Host on its root, belongs to the session. Every other
+Host belongs to the test that started it, so one still running after that test's teardown is a leak. It is
+recorded as `host_leaked` and terminated, so it does not load the tests that follow.
 """
 
 import os
@@ -10,7 +11,7 @@ import time
 
 import pytest
 
-from sitecustomize import STARTED_HOSTS, record
+from sitecustomize import SESSION_SETUP, STARTED_HOSTS, record
 
 GRACE_SECONDS = 2.0
 
@@ -65,6 +66,16 @@ def _reap(test) -> None:
     for process, owner in live:
         record("host_leaked", host=process.pid, owner=owner)
         _end(process)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_fixture_setup(fixturedef, request):
+    session = fixturedef.scope == "session"
+    SESSION_SETUP[0] += session
+    try:
+        yield
+    finally:
+        SESSION_SETUP[0] -= session
 
 
 @pytest.hookimpl(hookwrapper=True)
