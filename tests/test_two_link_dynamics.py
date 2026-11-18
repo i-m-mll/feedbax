@@ -37,7 +37,16 @@ def test_arm_dynamics_uses_live_inertia_across_traces(arm_type):
             state = State(arm).get(arm.state_index)
             field = RigidTendonMusculoskeletalArm._vector_field
         else:
-            state = arm.init_system_state(key=jax.random.key(0))
+            lengths = arm.geometry.musculotendon_lengths(moving.angle)
+            fibers = jnp.stack([
+                law.init_state(length, jnp.zeros_like(length))
+                for law, length in zip(arm.laws, lengths, strict=True)
+            ])
+            state = eqx.tree_at(
+                lambda s: (s.activations, s.fiber_lengths),
+                arm.init_system_state(key=jax.random.key(0)),
+                (fibers[:, 0], fibers[:, 1]),
+            )
             field = CompliantTendonMusculoskeletalArm.vector_field
         state = eqx.tree_at(lambda s: s.arm, state, moving)
 

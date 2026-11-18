@@ -154,7 +154,7 @@ def test_component_definition_v2_migrates_to_optional_dynamic_port_policy() -> N
     payload = {
         "schema_id": COMPONENT_DEFINITION_SCHEMA_ID,
         "schema_version": COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
-        "name": "Gain",
+        "name": "feedbax.Gain",
         "category": "Test",
         "description": "A v2 definition without a dynamic-port policy.",
     }
@@ -330,7 +330,7 @@ def test_component_definition_v1_migration_records_all_format_steps() -> None:
         {
             "schema_id": COMPONENT_DEFINITION_SCHEMA_ID,
             "schema_version": COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-            "name": "Gain",
+            "name": "feedbax.Gain",
             "category": "Test",
             "description": "Legacy schema.",
         },
