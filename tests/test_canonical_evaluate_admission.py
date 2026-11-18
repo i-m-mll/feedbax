@@ -35,10 +35,8 @@ from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.validity.evidence import stage_evidence
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
-from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, job_row, restart, run_job, token, wait_until
 from tests.support.store_damage import writable_store_object
-
-host = host_fixture
 
 
 def _save_project(folders, project, authored):
@@ -145,8 +143,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     assert by_key[baseline].request_id != by_key[conditions["heavy"]].request_id
     assert all(by_key[key].request_id.startswith("evaluate:") for key in keys)
 
-    def launch(service, rows, token):
-        return service.admit_plan(folders, plan, run_keys=rows, token=token)
+    def launch(service, rows, name):
+        return service.admit_plan(folders, plan, run_keys=rows, token=token(name))
 
     unsupported = RunKey("default", "unsupported", "default")
     (selector,) = launch(jobs, (unsupported,), "unsupported-selector").items
@@ -188,7 +186,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     (stopped,) = jobs.stop((queued.job_id,), "checkpoint")
     assert stopped.job.status == "stopped" and not stopped.job.can_resume
     with pytest.raises(JobConflict, match="resubmit the saved Evaluate row"):
-        jobs.resume(queued.job_id, "evaluate-resume")
+        jobs.resume(queued.job_id, token("evaluate-resume"))
     release.touch()
 
     trained = wait_until(lambda: job_row(host, source.job_id, "succeeded"))
