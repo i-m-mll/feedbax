@@ -289,11 +289,27 @@ test('a Model field edit waits for the plan of the revision it edits', async ({ 
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
   const batches = page.getByRole('tabpanel', { name: 'Training', exact: true }).getByRole('textbox', { name: 'N Batches', exact: true });
+  // The page records, in order, each plan that arrives and each field edit sent.
+  await page.addInitScript((path) => {
+    const order: string[] = [];
+    (window as Window & { studioOrder?: string[] }).studioOrder = order;
+    const fetched = window.fetch;
+    window.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const edit = init?.method === 'POST' && (url.pathname === path + '/model/edit' ||
+        url.pathname === path + '/model/fields' && typeof init.body === 'string' && 'edit' in JSON.parse(init.body));
+      if (edit) order.push(`edit ${url.pathname.slice(path.length)}`);
+      const response = await fetched(input, init);
+      if (url.pathname === path + '/train-runs') order.push('plan');
+      return response;
+    };
+  }, projectPath);
   await page.goto('/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await expect(batches).toBeEditable();
   // The plan read after the step edit is held, so the field shows the new revision before its plan names the steps lit.
+  // The field stays editable, and its edit is sent once that plan has arrived.
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
   await page.route((url) => url.pathname === projectPath + '/train-runs', async (route) => { await held; await route.continue(); });
@@ -302,18 +318,28 @@ test('a Model field edit waits for the plan of the revision it edits', async ({ 
     enter(batches, '5'),
   ]);
   expect(step.ok(), await step.text()).toBe(true);
+  await page.evaluate(() => { (window as Window & { studioOrder?: string[] }).studioOrder!.length = 0; });
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await page.getByRole('tabpanel', { name: 'Model', exact: true })
     .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
-  setTimeout(release, 1_000);
-  const [saved] = await Promise.all([
-    page.waitForResponse((response) => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === projectPath + '/model/edit'),
-    enter(mass, '2'),
-  ]);
-  expect(saved.ok(), await saved.text()).toBe(true);
-  expect((await saved.json()).result.status).toBe('applied');
+  // The window's map slot holds the map, and both are named for it; the map is the inner one.
+  const map = page.getByRole('region', { name: 'Pipeline Map', exact: true }).last();
+  await expect(map).toHaveAttribute('aria-busy', 'true');
+  await expect(mass).toBeEditable();
+  await expect(map).toHaveAttribute('data-region-pending', '');
+  const saved = page.waitForResponse((response) => response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === projectPath + '/model/edit');
+  await enter(mass, '2');
+  release();
+  expect((await saved).ok(), await (await saved).text()).toBe(true);
+  expect((await (await saved).json()).result.status).toBe('applied');
   await expect(mass).toHaveValue('2');
+  await expect(map).not.toHaveAttribute('aria-busy', 'true');
+  await expect(map).not.toHaveAttribute('data-region-pending');
+  const order = await page.evaluate(() => (window as Window & { studioOrder?: string[] }).studioOrder!);
+  // After the step edit, the held plan is the first to arrive, and the field's edit is sent after it.
+  expect(order[0], order.join(', ')).toBe('plan');
+  expect(order.findIndex((event) => event.startsWith('edit')), order.join(', ')).toBeGreaterThan(0);
 });
 
 test('the managed window shares selection and retains the folded slot without editing the folder', async ({ page, request }) => {

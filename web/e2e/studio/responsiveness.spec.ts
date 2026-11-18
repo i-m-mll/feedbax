@@ -31,6 +31,7 @@ function modelFixture(cards: number): ModelDocument {
 type Samples = { callbacks: number[]; updates: number[]; longTasks: { duration: number; startTime: number }[] };
 type SampleWindow = Window & {
   finishStudioSample?: () => Samples;
+  mapSettledAt?: number;
 };
 
 async function startSamples(target: Locator, kind: 'drag' | 'field' | 'scroll' | 'replay', label: string) {
@@ -156,6 +157,18 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   const planCard = page.getByRole('article', { name: 'Train train', exact: true });
   const cannotRunMarks = planCard.locator(`button[data-result-run][aria-label$=" · Can't run"]`);
   await expect(cannotRunMarks.first()).toBeVisible();
+  // The map is busy from the new revision until its plan is shown; the time it settles is recorded in the page.
+  await page.getByRole('region', { name: 'Pipeline Map', exact: true }).last().evaluate((map) => {
+    let busy = false;
+    const observer = new MutationObserver(() => {
+      if (map.getAttribute('aria-busy') === 'true') busy = true;
+      else if (busy) {
+        (window as SampleWindow).mapSettledAt = performance.timeOrigin + performance.now();
+        observer.disconnect();
+      }
+    });
+    observer.observe(map, { attributes: true, attributeFilter: ['aria-busy'] });
+  });
     await startSamples(field, 'field', 'commit');
     const beforeCommit = await chromeMetrics(context);
     const submittedAt = performance.now();
@@ -178,13 +191,15 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     await projected;
     await expect(field).toBeEditable();
     await expect(field).toHaveValue(value);
-    const visibleAt = performance.now();
     const commitWork = chromeWork(beforeCommit, await chromeMetrics(context));
     const commit = await endSamples(page);
     await expect(cannotRunMarks).toHaveCount(cannotRun!);
+    await expect(page.getByRole('region', { name: 'Pipeline Map', exact: true }).last()).not.toHaveAttribute('aria-busy', 'true');
+    const mapSettledAt = await page.evaluate(() => (window as SampleWindow).mapSettledAt);
+    if (mapSettledAt === undefined) throw new Error('The map was not busy while the plan of the new revision was read');
     return { keys: value.length, typing, typingWork, commit, commitWork,
       submitToAcknowledgementMs: acknowledgedAt - submittedAt,
-      acknowledgementToEditableFieldMs: visibleAt - acknowledgedAt };
+      acknowledgementToSettledMapMs: mapSettledAt - (performance.timeOrigin + acknowledgedAt) };
 
 }
 
@@ -446,6 +461,7 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
     await info.attach('mounted-scene-playback', { body: JSON.stringify(replay), contentType: 'application/json' });
     const longTasks = [...field.commit.longTasks, ...drag.flatMap(({ samples }) => samples.longTasks), ...replay.samples.longTasks];
     expect.soft(longTasks.filter(({ duration }) => duration > 50), 'drag, commit and active playback main-thread tasks over 50 ms').toEqual([]);
+    expect.soft(field.acknowledgementToSettledMapMs, 'map showing the plan of the new revision after edit acknowledgement').toBeLessThanOrEqual(500);
 
   } finally {
     await browser.stopTracing();

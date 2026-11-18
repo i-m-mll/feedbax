@@ -10,3 +10,25 @@ export function commandQueue() {
     return result;
   };
 }
+
+/**
+ * A value that a queued command can wait for. `next` resolves with the value as soon as one is set that the command
+ * accepts, which may be at once; the commands behind it in the queue wait with it.
+ */
+export function awaitedValue<T>() {
+  let value: T | undefined;
+  let waiting: { accept: (value: T) => boolean; resolve: (value: T) => void }[] = [];
+  return {
+    set(next: T | undefined) {
+      value = next;
+      if (next === undefined) return;
+      const ready = waiting.filter(({ accept }) => accept(next));
+      waiting = waiting.filter((waiter) => !ready.includes(waiter));
+      for (const { resolve } of ready) resolve(next);
+    },
+    next(accept: (value: T) => boolean = () => true): Promise<T> {
+      if (value !== undefined && accept(value)) return Promise.resolve(value);
+      return new Promise((resolve) => waiting.push({ accept, resolve }));
+    },
+  };
+}

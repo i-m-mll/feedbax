@@ -38,7 +38,7 @@ import {
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
-import { commandQueue } from './commandQueue';
+import { awaitedValue, commandQueue } from './commandQueue';
 import { modelOutline } from './modelOutline';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
@@ -53,6 +53,8 @@ type Props = {
   editable: boolean;
   fieldEditable: boolean;
   fieldLitSteps?: ReadonlySet<string>;
+  /** Whether the plan read is of the shown revision, so that `fieldLitSteps` names the steps it lights. */
+  planCurrent: boolean;
   fieldRows?: readonly string[];
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
@@ -149,7 +151,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -160,6 +162,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const keyboardReview = useRef<AbortController>();
   const libraryReview = useRef<Promise<ModelConnectionReview>>();
   const [run] = useState(commandQueue);
+  const [plan] = useState(() => awaitedValue<{ revision: string; litSteps: ReadonlySet<string> }>());
+  useEffect(() => {
+    plan.set(planCurrent ? { revision: saved.revision, litSteps: fieldLitSteps ?? new Set() } : undefined);
+  }, [plan, planCurrent, saved.revision, fieldLitSteps]);
   const [modelIssue, setIssue] = useState<{ document: string; address?: ModelAddress; reason: string }>();
   const issue = modelIssue?.document === model?.id ? modelIssue : undefined;
   const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
@@ -235,32 +241,40 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const fieldsPlaceholder = fieldQueries.some((query) => query.isPlaceholderData);
   const fieldsError = fieldQueries.find((query) => query.error)?.error ?? null;
   const fieldsData = fieldQueries.every((query) => query.data) ? fieldQueries.map((query) => query.data!) : undefined;
+  /**
+   * Edits a projected field after the view's earlier commands, once the plan of the revision it edits is current: the
+   * edit carries the steps that plan lights.
+   */
   async function editField(fieldBody: FieldBody, address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
     if (!canEditField || fieldsPlaceholder) return studioReason('unavailable', studioName('field'));
-    try {
-      const result = await projectModelFields(saved.project_id, {
-        ...fieldBody, address, edit, lit_steps: [...fieldLitSteps ?? []],
-      }, editor.signal);
-      if (result.problems?.length) return result.problems[0].reason;
-      if (result.command) {
-        const applied = await editor.editModel('Set Value', fieldBody.document, result.command, saved);
-        return applied.status === 'refused' ? applied.problem.detail : undefined;
+    return run(async () => {
+      const { litSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
+      const current = editor.getSnapshot().saved;
+      try {
+        const result = await projectModelFields(saved.project_id, {
+          ...fieldBody, revision: current.revision, address, edit, lit_steps: [...litSteps],
+        }, editor.signal);
+        if (result.problems?.length) return result.problems[0].reason;
+        if (result.command) {
+          const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current);
+          return applied.status === 'refused' ? applied.problem.detail : undefined;
+        }
+        if (result.files?.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
+          const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
+          const dependencies = variant ? current.file_revisions.map(({ address: file }) => file).filter((file) =>
+            (file.kind === 'document' && file.id === fieldBody.document) ||
+            (file.kind === 'step' && litSteps.has(file.id)) ||
+            (file.kind === 'variant' && file.id !== variant))
+            : [{ kind: 'document' as const, id: fieldBody.document },
+              ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
+              ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
+          editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
+        }
+        return undefined;
+      } catch (error) {
+        return apiErrorMessage(error);
       }
-      if (result.files?.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
-        const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
-        const dependencies = variant ? saved.file_revisions.map(({ address: file }) => file).filter((file) =>
-          (file.kind === 'document' && file.id === fieldBody.document) ||
-          (file.kind === 'step' && fieldLitSteps?.has(file.id)) ||
-          (file.kind === 'variant' && file.id !== variant))
-          : [{ kind: 'document' as const, id: fieldBody.document },
-            ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
-            ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
-        editor.editFiles('Set Field', result.files, { reviewedRevision: fieldBody.revision, dependencies });
-      }
-      return undefined;
-    } catch (error) {
-      return apiErrorMessage(error);
-    }
+    });
   }
   const fieldName = (address: ModelAddress) => address.element.kind === 'field' ? address.element.path.map(String).join('.') : addressKey(address);
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
@@ -358,22 +372,22 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   async function attempt(name: string, operation: Operation, choose = true): Promise<{ address?: ModelAddress; reason: string } | null> {
     if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
     return run(async () => {
-      const reviewed = editor.getSnapshot().saved;
-      setIssue(undefined);
-      try {
-        const result = await editor.editModel(name, model.id, { operation }, reviewed);
-        if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
-        if (result.clipboard) clipboard = result.clipboard;
-        if (choose && result.changed.length) {
-          const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
-            : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
-          setSelection(selection);
+        const reviewed = editor.getSnapshot().saved;
+        setIssue(undefined);
+        try {
+          const result = await editor.editModel(name, model.id, { operation }, reviewed);
+          if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
+          if (result.clipboard) clipboard = result.clipboard;
+          if (choose && result.changed.length) {
+            const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
+              : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
+            setSelection(selection);
+          }
+          return null;
+        } catch (error) {
+          const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
+          return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) };
         }
-        return null;
-      } catch (error) {
-        const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
-        return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) };
-      }
     });
   }
   async function apply(name: string, operation: Operation, choose = true) {
@@ -388,24 +402,24 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return studioReason('unavailable', name);
     }
     return run(async () => {
-      setIssue(undefined);
-      try {
-        const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
-        if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
-        editor.editFiles(name, [result.file], {
-          reviewedRevision: saved.revision,
-          dependencies: [{ kind: 'document', id: model.id }],
-        });
-        await editor.flush();
-        if (difference.op !== 'set_field') {
-          selectElement(state, { document: model.id, address: difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed });
+        setIssue(undefined);
+        try {
+          const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
+          if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
+          editor.editFiles(name, [result.file], {
+            reviewedRevision: saved.revision,
+            dependencies: [{ kind: 'document', id: model.id }],
+          });
+          await editor.flush();
+          if (difference.op !== 'set_field') {
+            selectElement(state, { document: model.id, address: difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed });
+          }
+          return undefined;
+        } catch (error) {
+          if (onField) return apiErrorMessage(error);
+          setIssue({ document: model.id, reason: apiErrorMessage(error) });
+          return undefined;
         }
-        return undefined;
-      } catch (error) {
-        if (onField) return apiErrorMessage(error);
-        setIssue({ document: model.id, reason: apiErrorMessage(error) });
-        return undefined;
-      }
     });
   }
 

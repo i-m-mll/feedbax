@@ -15,6 +15,7 @@ import {
   type Ref,
 } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
+import { useRegionPending } from '@/components/activity/StudioRegion';
 import { Card, CardHead, cardTint, type CardStatus } from '@/components/ui/Card';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import { StatusMark, worstStatus } from '@/components/ui/StatusMark';
@@ -122,6 +123,8 @@ export interface StudioPipelineMapProps {
   rename?: MapStepRename;
   /** Go into a step: its views, with the keyboard in the slot that shows its Runs. */
   onEnterStep?: (stepId: string) => void;
+  /** The plan shown is of an earlier revision while the shown revision's plan is read. */
+  pending?: boolean;
 }
 
 export type MapRenameSurface = 'card' | 'line';
@@ -654,11 +657,13 @@ function stepTrailing(step: PlanStepView, applySelection: ApplyMapSelection) {
 
 const groupId = (group: string) => '\u0000' + group;
 
-function MapDrawer({ steps, newStep, framed = false, selection, related, focusedStepId, chooseStep, applySelection, documentScope, rename, enterStep }: DrawerProps & {
+function MapDrawer({ steps, newStep, framed = false, pending = false, selection, related, focusedStepId, chooseStep, applySelection, documentScope, rename, enterStep }: DrawerProps & {
   steps: readonly PlanStepView[];
   newStep?: StudioCommand;
   framed?: boolean;
+  pending?: boolean;
 }) {
+  const region = useRegionPending(pending);
   const rows = (entries: readonly PlanStepView[]): TreeNode[] => entries.map((step) => {
     const { Icon } = studioStep(step.kind);
     const count = related?.get(step.id)?.size ?? 0;
@@ -690,7 +695,7 @@ function MapDrawer({ steps, newStep, framed = false, selection, related, focused
       ? { selection: { kind: 'steps', stepIds: ids }, focus: null } : { selection: null, focus: null });
   };
   return (
-    <nav aria-label={studioName('steps')} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-chrome'}`}>
+    <nav aria-label={studioName('steps')} {...region} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-chrome'}`}>
       {newStep && (
         <div className="shrink-0 px-1 pt-1">
           <ListRow role="button" tabIndex={0} glyph={<Plus aria-hidden="true" />} name={studioName('newStep')}
@@ -713,15 +718,15 @@ function MapDrawer({ steps, newStep, framed = false, selection, related, focused
   );
 }
 
-export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep, rename, onEnterStep }: Pick<
-  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep' | 'rename' | 'onEnterStep'
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep, rename, onEnterStep, pending }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep' | 'rename' | 'onEnterStep' | 'pending'
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const applySelection: ApplyMapSelection = (change) => onSelectionChange(change(state));
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
     chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename} enterStep={onEnterStep}
-    newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })} framed />;
+    newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })} framed pending={pending} />;
 }
 
 function MapLine({
@@ -804,7 +809,9 @@ export function StudioPipelineMap({
   rename,
   pick,
   onEnterStep,
+  pending = false,
 }: StudioPipelineMapProps) {
+  const region = useRegionPending(pending);
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
   const applySelection = useCallback<ApplyMapSelection>((change) => {
@@ -851,6 +858,7 @@ export function StudioPipelineMap({
     <section
       ref={root}
       aria-label={studioName('pipelineMap')}
+      {...region}
       className="relative flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-subtle"
       onKeyDown={(event) => {
         if (event.key === 'Escape' && state.focus) {

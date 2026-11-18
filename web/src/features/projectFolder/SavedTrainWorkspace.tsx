@@ -262,6 +262,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     gcTime: 0,
   }, jobsVersion);
   const data = projection.data?.revision === saved.revision ? projection.data : undefined;
+  /** The plan shown is of an earlier revision while the shown revision's plan is read. */
+  const planPending = !!projection.data && !data;
   const refetchProjection = projection.refetch;
   const refreshProjection = useCallback(() => refetchProjection(), [refetchProjection]);
   const validity = useResultValidity({
@@ -733,7 +735,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ? { kind: 'failed', issue: studioRegionIssue(name, projection.error), retry: retryPlan }
     : undefined;
   const planUnavailable: StudioRegionState | undefined = planError('runs') ??
-    (!data ? { kind: 'loading' } : undefined);
+    (!projection.data ? { kind: 'loading' } : undefined);
   const mapUnavailable = planError('pipelineMap');
   const renderMap = (body: ReactNode) => mapUnavailable
     ? <StudioRegion state={mapUnavailable} />
@@ -1068,6 +1070,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     onProblems: (step: string, opener: HTMLButtonElement) => setPanel({ kind: 'problems', scope: { step, variant }, opener }),
     newStepCommand, newSweepCommand, onChooseStep: chooseMapStep, runMenu,
     documentScope: activeDocumentScope && activeDocumentScope.users.size > 1 ? activeDocumentScope : undefined,
+    pending: planPending,
   };
   const activity = bindStudioCommand('activity', () => setPanel((current) => current?.kind === 'activity' ? null : { kind: 'activity' }));
   const problemCommand = bindStudioCommand('problems', () => openProjectProblems());
@@ -1341,14 +1344,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               body: withProblem(<StudioRuns plan={plan} {...runSelection}
                 region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
                   ? { kind: 'result', missing: [] } : { kind: 'empty' })}
-                pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} runMenu={runMenu} />),
+                pending={planPending} pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} runMenu={runMenu} />),
             };
           }
           if (view === 'training' && authoring) {
             return { body: withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
               fieldRows={detailInputs.fieldRows} />) };
           }
-          const resultsUnavailable = view === 'results' && (planError('results') ?? planUnavailable);
+          const resultsUnavailable = view === 'results' && (planError('results') ?? (!data ? { kind: 'loading' } as const : undefined));
           if (resultsUnavailable) return {
             body: <StudioRegion state={resultsUnavailable} />,
           };

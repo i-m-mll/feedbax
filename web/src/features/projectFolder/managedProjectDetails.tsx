@@ -67,7 +67,7 @@ interface DetailInputs {
   readonly fieldRows?: readonly string[];
   readonly fieldAxes?: Record<string, string[]>;
   readonly documentScopes: Readonly<Record<'graph' | 'task', NamedDocumentScope | undefined>>;
-  /** Whether the plan read is of the shown revision; a field edit carries the steps it lights, which that plan names. */
+  /** Whether the plan read is of the shown revision; a field edit waits for it, since it carries the steps that plan lights. */
   readonly planCurrent: boolean;
   readonly problemReveal?: ProblemReveal;
   readonly elements: ElementSelectionStore;
@@ -313,9 +313,10 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     selectedSweepValues: input.selectedSweepValues,
     confirmRunRemoval: input.confirmRunRemoval,
     fieldLitSteps: graphScope?.lit,
+    planCurrent: input.planCurrent,
     fieldRows: input.fieldRows,
     fieldAxes: input.fieldAxes,
-    fieldEditable: !outside && !pending && !saving && input.planCurrent && Boolean(input.namedRun && (
+    fieldEditable: !outside && !pending && !saving && Boolean(input.namedRun && (
       input.step?.kind === 'evaluate' ? input.evaluateScope
         : input.step?.kind === 'train' && (saved.project.sweep ? canEdit && graphScope?.localVariant
           : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')

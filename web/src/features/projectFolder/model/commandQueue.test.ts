@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { commandQueue } from './commandQueue';
+import { awaitedValue, commandQueue } from './commandQueue';
 
 function held() {
   let release!: () => void;
@@ -28,5 +28,22 @@ describe('commandQueue', () => {
     const next = run(async () => 'sent');
     await expect(failed).rejects.toThrow('refused');
     await expect(next).resolves.toBe('sent');
+  });
+});
+
+describe('awaitedValue', () => {
+  it('holds a queued edit, and the commands behind it, until the plan of its revision is set', async () => {
+    const run = commandQueue();
+    const plan = awaitedValue<{ revision: string }>();
+    const sent: string[] = [];
+    plan.set({ revision: 'a' });
+    const edit = run(async () => { sent.push(`edit with ${(await plan.next(({ revision }) => revision === 'b')).revision}`); });
+    const next = run(async () => { sent.push('next'); });
+    plan.set(undefined);
+    await Promise.resolve();
+    expect(sent).toEqual([]);
+    plan.set({ revision: 'b' });
+    await Promise.all([edit, next]);
+    expect(sent).toEqual(['edit with b', 'next']);
   });
 });

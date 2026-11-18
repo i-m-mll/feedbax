@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { StudioRegion, StudioRegionBoundary, type StudioRegionState } from "@/components/activity/StudioRegion";
+import { StudioRegion, StudioRegionBoundary, useRegionPending, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import {
   studioAccessibleName, studioCountOf, studioEnvironmentNotice, studioName, studioReason, studioRunStatus, studioValidityReason,
@@ -27,6 +27,8 @@ import type { RunMenu } from "./RunContextMenu";
 interface StudioRunsProps extends RunSelectionProps {
   plan: PlanView;
   region: StudioRegionState;
+  /** The runs shown are of an earlier revision while the shown revision's plan is read. */
+  pending?: boolean;
   pivotActive?: boolean;
   upstreamDetail?: ReactNode;
   runMenu?: RunMenu;
@@ -288,8 +290,9 @@ function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstre
 }
 
 export function StudioRuns(props: StudioRunsProps) {
+  const region = useRegionPending(props.pending ?? false);
   return (
-    <section aria-label={studioName("runs")} className="h-full min-h-0">
+    <section aria-label={studioName("runs")} {...region} className="h-full min-h-0">
       <StudioRegionBoundary name="runs">
         <StudioRegion
           state={props.region}
