@@ -511,7 +511,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
-    namedRun, documentScopes, elements, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
+    namedRun, documentScopes, planCurrent: !!data, elements, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
       const owner = modelProblems?.find((problem) => problem.model_address && holds(element, problem.model_address));

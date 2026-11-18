@@ -96,7 +96,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     parts,
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && !rowSelection,
     differs: effective ?? undefined,
-    origin: origin(options),
+    origin: [field.conversion, origin(options)].filter(Boolean).join(' · ') || undefined,
     names: field.site.site.names ?? [],
     functions: field.site.functions,
     commit,

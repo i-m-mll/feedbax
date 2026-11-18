@@ -882,12 +882,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         : items(commands))}
     </InspectorAddRow>;
   }
+  // A field is keyed by the field it shows, never by where its value came from: when the projection takes over a
+  // field first drawn from the raw document, the same instance stays, with any draft typed meanwhile.
   const rows = (scope: string, models: readonly FieldModel[]) =>
-    models.map((field) => <ValueField key={JSON.stringify([scope, field.id])} model={field} />);
+    models.map((field) => <ValueField key={JSON.stringify([scope, field.id.split('.').at(-1)])} model={field} />);
+  const fields = (raw: readonly FieldModel[]) => rows(fieldScope, [...projectedFields, ...raw]);
   const fieldRegion = fieldBodies.length > 0 && <StudioRegion state={studioReadState(
     'field', fieldsData, fieldsError, () => { for (const query of fieldQueries) void query.refetch(); },
   )} />;
-  const projectedRows = rows(fieldScope, projectedFields);
   const definitionOf = (item: Component | undefined) => item?.kind === 'leaf' ? registry.get(item.type) : undefined;
   const typeOf = (item: Component) => item.kind === 'composite' ? graphKind(item)
     : shortName(definitionOf(item)?.name ?? item.type);
@@ -907,8 +909,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return <Inspector name={item.name} type={shownType(item.name, typeOf(item))}
       attachments={(attached.length || add) && <>{attachmentRows(attached)}{add}</>}>
       {fieldRegion}
-      {projectedRows}
-      {rows(addressKey(address), componentFields(item, definitionOf(item), rawChange(address), projectedNames))}
+      {fields(componentFields(item, definitionOf(item), rawChange(address), projectedNames))}
     </Inspector>;
   }
 
@@ -938,8 +939,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     })] : [];
     return <Inspector name={attachmentName(item)}>
       {fieldRegion}
-      {projectedRows}
-      {rows(addressKey(address), attachmentFields(item, model?.value.step_seconds ?? 0.01, change, projectedNames))}
+      {fields(attachmentFields(item, change, projectedNames))}
       {initial}
       {rows(addressKey(address), order)}
     </Inspector>;
@@ -971,8 +971,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   </Inspector> : !model ? null
     : components.length > 1 ? <Inspector name={studioFormat('elementCount', { count: components.length, name: studioName('components').toLowerCase() })}>
       {fieldRegion}
-      {projectedRows}
-      {rows(selectionKeys.join(), sharedFields(components.map(({ address, item }) =>
+      {fields(sharedFields(components.map(({ address, item }) =>
         componentFields(item, definitionOf(item), rawChange(address), projectedNames))))}
     </Inspector>
     : component && selection ? componentInspector(selection, component)
@@ -981,7 +980,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     : <Inspector name={currentPath.length ? owner && 'name' in owner ? String(owner.name) : model.id : model.id}
       type={currentPath.length ? undefined : studioName('model')}>
       {fieldRegion}
-      {projectedFields.length ? projectedRows : rows('model', modelFields(model.value,
+      {fields(projectedFields.length ? [] : modelFields(model.value,
         editTopology && !fieldBodies.length && !currentPath.length
           ? async (path, value) => (await attempt(studioName('step'), {
             op: 'set_field', address: fieldAddress(graph, ...path), value,
