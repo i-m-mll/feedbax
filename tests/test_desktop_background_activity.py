@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -17,9 +18,10 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.__main__ import _register_stop
 from feedbax.desktop.activity import register_activity
-from feedbax.host import HostClient
+from feedbax.host import HostClient, Job
 from feedbax.host.protocol import AdmissionItem
 from feedbax.web.app import create_app
+from tests.support import minimal_worker
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_desktop_project_open import _desktop_clients
 from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
@@ -251,6 +253,98 @@ def test_warming_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch, de
         assert acceptance == {"kind": "accepted", "data": {"token": profile.parent.name}}
 
 
+@pytest.mark.parametrize("desktop_owned", [False, True], ids=["standalone", "desktop-owned"])
+def test_warming_after_restart_keeps_one_idle_worker_for_the_next_train(host, tmp_path, monkeypatch, desktop_owned):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
+    if desktop_owned:
+        monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(Path(sys.executable).resolve().parent.parent))
+    else:
+        monkeypatch.delenv("FEEDBAX_DESKTOP_RELEASE_ROOT", raising=False)
+    minimal_worker.train_with(monkeypatch, tmp_path)
+    projects = tmp_path / "projects"
+    _project(projects / "reach", batches=2)
+    app = create_app(projects_dir=projects)
+
+    def workers():
+        return set((host.root / "workers").glob("*/profile.json"))
+
+    with TestClient(app) as studio:
+        assert studio.post("/api/jobs/warm").status_code == 202
+        original = wait_until(workers)
+        restart(host)
+        assert studio.post("/api/jobs/warm").status_code == 202
+        (replacement,) = wait_until(lambda: workers() - original)
+        assert studio.post("/api/jobs/warm").status_code == 202
+
+        opened = studio.get("/api/projects/reach/open")
+        assert opened.status_code == 200, opened.text
+        submitted = studio.post("/api/projects/reach/train-runs", json={
+            "revision": opened.json()["snapshot"]["revision"], "token": "restart-train",
+            "run_keys": [{"variant": "default", "step": "train", "row": "default"}],
+        })
+        assert submitted.status_code == 202, submitted.text
+        (item,) = submitted.json()["items"]
+        job = item["job_id"]
+        minimal_worker.release(tmp_path, job)
+        done = wait_until(lambda: job_row(host, job, "succeeded"))
+        log = host.root / "deliveries" / job / str(done["delivery"]) / "events.jsonl"
+        with log.open() as stream:
+            acceptance = json.loads(stream.readline())
+        assert acceptance == {"kind": "accepted", "data": {"token": replacement.parent.name}}
+        idle = workers() - original - {replacement}
+        assert len(idle) == 1, f"The pool keeps {len(idle)} idle workers of the Train profile, not one."
+
+
+def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_host(tmp_path, monkeypatch):
+    from feedbax.host.io import append
+    from feedbax.jobs import JobService
+    from feedbax.web.services.desktop_jobs import StudioJobLifecycle
+    from feedbax.plugins.application import new_application_registry_bundle
+
+    registries = new_application_registry_bundle()
+    runtime = os.path.realpath(sys.executable)
+    release = Path(runtime).parent.parent
+    monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(release))
+    host = HostClient(tmp_path / "host")
+    owner = host.ping()["pid"]
+    attempt = replace(
+        Job("attempt", "project", "train:attempt", minimal_worker.launch(tmp_path)),
+        data={"run_key": "run", "stage_id": "train", "scenario_id": "base", "label": "Train",
+              "coordinates": {}, "runtime": runtime},
+    )
+    try:
+        admit(host, "attempt", attempt)
+        def checkpointed():
+            row = job_row(host, attempt.id, "running")
+            return row if row and row["checkpoint"] else None
+
+        before = wait_until(checkpointed)
+        cursor = host.events()["head"]
+        retiring = JobService(HostClient(host.root), registries)
+        result = asyncio.run(StudioJobLifecycle(retiring, release).stop("interrupt", timeout_seconds=8))
+        assert result["status"] == "ready_to_stop", result
+        assert not host.address.exists()
+        log = host.root / "deliveries" / attempt.id / str(before["delivery"]) / "events.jsonl"
+        append(log, "terminal", {"outcome": "failed"}, sync=True)
+
+        assert host.ping()["pid"] != owner
+        interrupted = job_row(host, attempt.id, "interrupted")
+        assert interrupted is not None and interrupted["checkpoint"] == before["checkpoint"]
+        assert interrupted["outcome"]["error"]["code"] == "service_stopped"
+        events = host.events(after=cursor)["events"]
+        assert [event["job_id"] for event in events if event["kind"] == "terminal"] == [attempt.id]
+        resumed = JobService(host, registries).resume(attempt.id, "resume")
+        assert resumed.continues == attempt.id
+        (successor,) = host.jobs(job_id=resumed.job_id, include_launch=True)
+        assert successor["launch"]["payload"]["resume"] == before["checkpoint"]
+        minimal_worker.release(tmp_path, resumed.job_id)
+        wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
+    finally:
+        wait_until(lambda: host.retire_runtime(runtime, str(release), "force")["status"] == "absent")
+        wait_until(lambda: not subprocess.run(["pgrep", "-f", str(host.root)], capture_output=True).stdout)
+
+
 def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch):
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.host import HostError
@@ -323,8 +417,6 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
 
 
 def test_service_signal_waits_for_runtime_release_and_exits_successfully(tmp_path):
-    import subprocess
-
     marker = tmp_path / "ready"
     completed = tmp_path / "released"
     with subprocess.Popen([sys.executable, "-c", """
