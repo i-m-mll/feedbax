@@ -521,7 +521,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
-    sections: drawerSections,
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: data, variant, stepId: step?.kind === 'report' ? step.id : undefined,

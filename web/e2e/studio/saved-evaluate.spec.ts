@@ -192,7 +192,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await drawer.getByRole('treeitem', { name: 'Effector', exact: true }).click();
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await reveal(page, 'Inspector');
-  await expect(inspector.getByRole('region', { name: 'Effector' })).toBeVisible();
+  await expect(inspector.getByRole('region', { name: 'Effector', exact: true })).toBeVisible();
   return replay;
 }
 

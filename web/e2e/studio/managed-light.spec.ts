@@ -71,7 +71,6 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   const document = page.getByRole('tabpanel', { name: 'Document', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const boundsScale = inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true });
   const mutation = (method: string, route: string) => page.waitForResponse((response) =>
     response.request().method() === method && new URL(response.url()).pathname === route);
@@ -205,11 +204,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
 
   async function addOperation(label: string) {
     await palette(page, 'addComponent', 'Add Operation');
-    const search = drawer.getByRole('textbox', { name: 'Search Library', exact: true });
-    await expect(search).toBeFocused();
-    await typeValue(page, search, label);
-    await expect(drawer.getByRole('option', { name: label, exact: true })).toBeVisible();
-    return edit(() => page.keyboard.press('Enter'));
+    const chooser = page.getByRole('dialog', { name: 'Add Operation', exact: true });
+    await typeValue(page, chooser.getByRole('textbox', { name: 'Operations', exact: true }), label);
+    return edit(() => activate(page, chooser.getByRole('button', { name: label, exact: true })));
   }
   const selectElement = (name: string) => activate(page, analysis.getByRole('group', { name: 'Select ' + name, exact: true }));
   await addOperation('Aligned velocity');
@@ -598,8 +595,8 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     } } } },
   });
   expect(paired.project.sweep).toEqual(initial.project.sweep);
-  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Aligned velocity');
-  await drawer.getByRole('option', { name: 'Aligned velocity', exact: true }).dblclick();
+  await expect(drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true })).toBeEnabled();
+  await drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click();
   await expect.poll(async () => (await snapshot()).project.documents?.analyze?.payload)
     .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
 

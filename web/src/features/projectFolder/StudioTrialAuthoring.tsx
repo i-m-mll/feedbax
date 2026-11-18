@@ -263,10 +263,10 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
       </tr></thead>
       <tbody>{terms.map((term, index) => {
         const fields = termFields(view, term, index, commit);
-        return <tr key={term.id} className="align-top" aria-selected={selected?.term === term.id}>
+        return <tr key={term.id} className="align-top">
           {columns.map((field) => {
             const chosenCell = selected?.term === term.id && selected.field === field;
-            return <TableCell key={field} aria-selected={chosenCell}
+            return <TableCell key={field} data-selected={chosenCell || undefined}
               className={clsx('overflow-visible py-1', field === 'measure' && 'min-w-40', chosenCell && 'bg-shell-row-selected')}
               onFocusCapture={() => { if (!chosenCell) select(term.id, field); }}
               onPointerDown={() => { if (!chosenCell) select(term.id, field); }}>

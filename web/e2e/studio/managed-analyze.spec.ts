@@ -3,7 +3,7 @@ import { type Page } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { captureStudioWindow, enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 
@@ -88,12 +88,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   }));
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
 
-  const search = drawer.getByRole('textbox', { name: 'Search Library', exact: true });
-  async function place(label: string | RegExp) {
-    await search.fill(typeof label === 'string' ? label : label.source.replace(/[\^$]/g, ''));
-    await drawer.getByRole('option', { name: label, exact: typeof label === 'string' }).dblclick();
-  }
-  await edit(() => place('Aligned velocity'));
+  await edit(() => drawer.getByRole('button', { name: 'Add Aligned velocity', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
@@ -103,16 +98,14 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   }
   const dialog = page.getByRole('dialog', { name: 'Connect Ports', exact: true });
   async function chooseSource(label: string) {
-    await page.keyboard.press('Meta+K');
-    await palette.getByRole('combobox').fill('Connect Ports');
-    await palette.getByRole('option', { name: 'Connect Ports', exact: true }).press('Enter');
+    await drawer.getByRole('button', { name: 'Connect Ports', exact: true }).click();
     await pick(dialog.getByRole('combobox', { name: 'Source Port' }), label);
   }
   const connect = () => dialog.getByRole('button', { name: 'Connect Ports', exact: true }).click();
   await chooseSource('states');
   await edit(connect);
 
-  await edit(() => place('Trial summary'));
+  await edit(() => drawer.getByRole('button', { name: 'Add Trial summary', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).click();
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
   const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
@@ -126,14 +119,11 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   await pick(dialog.getByRole('combobox', { name: 'Source Port' }), 'aligned_velocity.velocity');
   await edit(connect);
 
-  await edit(() => place(/^Velocity summary$/i));
+  await edit(() => drawer.getByRole('button', { name: 'Add Figure', exact: true }).click());
   await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
   await chooseSource('summarize_velocity.summary');
   const wired = await edit(connect);
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
-  await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
-  await expect(drawer.locator('button:not([aria-expanded]), [role="button"]')).toHaveCount(0);
-  await captureStudioWindow(page, info, 'analysis-drawer');
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
     projection.analysis_elements!.filter(({ key }) => key.step === 'analyze').map(({ name, request_id }) => [name, request_id]),
