@@ -487,9 +487,7 @@ def test_portable_defaults_reset_edits_and_legacy_evidence_share_contract() -> N
     changed = eqx.tree_at(lambda item: item.params_index.init.threshold, direct, jnp.array(0.75))
     assert registry.serialize_component(changed)[1]["threshold"] == pytest.approx(0.75)
     assert direct.input_ports == ("state", "target", "force", "params_override")
-    curl = registry.resolve_component_spec(
-        "CurlField", {"label": "legacy"}, historical_unversioned=True
-    )
+    curl = registry.resolve_component_spec("feedbax.CurlField", {"label": "legacy"}, revision=1)
     assert (curl.type_id, curl.revision) == ("feedbax.CurlField", 2)
     assert "label" not in curl.params
     assert registry.serialize_component(CurlField())[0] == "feedbax.CurlField"

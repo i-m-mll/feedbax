@@ -146,7 +146,7 @@ def test_physical_owner_validation_and_domain_variants_share_scientific_storage(
 
     registry = ComponentRegistry()
     for cls, domain in ((Mass, ACAUSAL_DOMAIN_ID), (MechanicsMass, MECHANICS_DOMAIN_ID)):
-        owner = registry.resolve_component_spec(cls.__name__, {}, legacy_token="1")
+        owner = registry.resolve_component_spec(f"feedbax.{cls.__name__}", {}, revision=1)
         assert owner.type_id == f"feedbax.{cls.__name__}"
         assert owner.revision == 1
         assert owner.meta.domain == domain
@@ -164,7 +164,7 @@ def test_component_definition_v1_migration_defaults_legacy_ports_to_signal() -> 
     payload = {
         "schema_id": COMPONENT_DEFINITION_SCHEMA_ID,
         "schema_version": COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-        "name": "Gain",
+        "name": "feedbax.Gain",
         "category": "Math",
         "description": "Legacy signal-only component.",
         "input_ports": ["input"],

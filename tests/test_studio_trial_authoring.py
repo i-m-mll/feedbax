@@ -282,10 +282,9 @@ def test_memoized_plan_uses_supplied_python_tasks():
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
-    declaration = application_python_tasks().resolve(REACHING_TASK)
-    assert declaration is not None
+    reaching = application_python_tasks().declaration_record(REACHING_TASK)
     registry = PythonTaskRegistry()
-    registry.register(replace(declaration, key="test.reaching"))
+    registry.register_declaration(reaching.defining_object, key="test.reaching", source=reaching.source)
     registry.seal()
     raw["documents"]["task"]["payload"]["type"] = "test.reaching"
     project = Project.model_validate(raw)
@@ -302,23 +301,27 @@ def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp
     class Parameters(ReachingParameters):
         scale: StrictInt | StrictFloat = Field(default=1.0, validation_alias=AliasChoices("gain", "scale"))
 
+    reaching = application_python_tasks().declaration_record(REACHING_TASK)
+
     def registry(prefix):
-        def template(params):
-            base = declaration.template(params)
-            conditions = (f"{prefix}-{type(params.scale).__name__}-{params.scale:.0f}",)
+        class Scaled(reaching.defining_object):
+            settings_model = Parameters
 
-            def prepare(*args):
-                return replace(base.prepare(*args), condition_ids=conditions)
+            @staticmethod
+            def template(params):
+                base = reaching.defining_object.template(params)
+                conditions = (f"{prefix}-{type(params.scale).__name__}-{params.scale:.0f}",)
 
-            return replace(base, prepare=prepare, condition_ids=conditions)
+                def prepare(*args):
+                    return replace(base.prepare(*args), condition_ids=conditions)
+
+                return replace(base, prepare=prepare, condition_ids=conditions)
 
         tasks = PythonTaskRegistry()
-        tasks.register(replace(declaration, key="test.reaching", parameters=Parameters, template=template))
+        tasks.register_declaration(Scaled, key="test.reaching", source=reaching.source)
         tasks.seal()
         return tasks
 
-    declaration = application_python_tasks().resolve(REACHING_TASK)
-    assert declaration is not None
     compiler_tasks, window_tasks = registry("compiler"), registry("window")
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
