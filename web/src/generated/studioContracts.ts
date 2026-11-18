@@ -1088,6 +1088,7 @@ export interface StudioFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
+  conversion?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -1102,6 +1103,7 @@ export interface ModelFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
+  conversion?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -1118,6 +1120,7 @@ export interface TrainFieldView {
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
+  conversion?: string | null;
   site: SiteProjection;
   sweep?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
   selected_value?: string | null;
@@ -6059,6 +6062,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
+      "conversion": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -6077,6 +6081,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
+      "conversion": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
@@ -6097,6 +6102,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
+      "conversion": z.string().nullable().optional(),
       "site": SiteProjectionSchema,
       "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
       "selected_value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),

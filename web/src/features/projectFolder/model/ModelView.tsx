@@ -939,7 +939,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     })] : [];
     return <Inspector name={attachmentName(item)}>
       {fieldRegion}
-      {fields(attachmentFields(item, model?.value.step_seconds ?? 0.01, change, projectedNames))}
+      {fields(attachmentFields(item, change, projectedNames))}
       {initial}
       {rows(addressKey(address), order)}
     </Inspector>;

@@ -285,6 +285,37 @@ test('an Inspector edit typed before the field projection arrives is kept and sa
   await expect(mass).toHaveValue('2');
 });
 
+test('a Model field edit waits for the plan of the revision it edits', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
+  const batches = page.getByRole('tabpanel', { name: 'Training', exact: true }).getByRole('textbox', { name: 'N Batches', exact: true });
+  await page.goto('/?project=' + snapshot.project_id);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await expect(batches).toBeEditable();
+  // The plan read after the step edit is held, so the field shows the new revision before its plan names the steps lit.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route((url) => url.pathname === projectPath + '/train-runs', async (route) => { await held; await route.continue(); });
+  const [step] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
+    enter(batches, '5'),
+  ]);
+  expect(step.ok(), await step.text()).toBe(true);
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Model', exact: true })
+    .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  setTimeout(release, 1_000);
+  const [saved] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === projectPath + '/model/edit'),
+    enter(mass, '2'),
+  ]);
+  expect(saved.ok(), await saved.text()).toBe(true);
+  expect((await saved.json()).result.status).toBe('applied');
+  await expect(mass).toHaveValue('2');
+});
+
 test('the managed window shares selection and retains the folded slot without editing the folder', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('managed-files'));
   const id = snapshot.project_id;

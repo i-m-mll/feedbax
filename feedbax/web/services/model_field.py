@@ -266,7 +266,7 @@ def model_fields(
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         fields.append(project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
-            address=field.address,
+            period=(effective_model or model).step_seconds, address=field.address,
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
         ))
         targets[field_key] = replace(field, numeric=numeric), axis

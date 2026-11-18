@@ -24,11 +24,6 @@ function duration(raw: string): ModelTime | undefined {
   return value > 0 && (unit === 's' || Number.isInteger(value)) ? { value, unit } : undefined;
 }
 
-function conversion(delay: ModelTime, step: number) {
-  return delay.unit === 's' ? `${Math.round(delay.value / step)} ${studioUnit('steps')}`
-    : `${Number((delay.value * step).toPrecision(8))} ${studioUnit('second')}`;
-}
-
 /** The model's own fields, shown when nothing is selected. */
 export function modelFields(model: ModelDocument, change?: FieldChange): FieldModel[] {
   const label = studioName('step');
@@ -61,7 +56,7 @@ export function componentFields(component: Component, definition: ComponentDefin
 }
 
 /** An attachment's raw fields. A delay's Initial is the caller's row, since it can hold a link to a port. */
-export function attachmentFields(item: Attachment, step: number, change?: AttachmentChange,
+export function attachmentFields(item: Attachment, change?: AttachmentChange,
   projected?: ReadonlySet<string>): FieldModel[] {
   const write = (next: Attachment): ReturnType<RawChange> => change?.(next);
   if (item.kind === 'delay') {
@@ -69,7 +64,6 @@ export function attachmentFields(item: Attachment, step: number, change?: Attach
     const label = studioName('delay');
     return [rawField({
       id: 'delay', label, type: { kind: 'string' }, value: `${item.delay.value} ${item.delay.unit}`,
-      origin: conversion(item.delay, step),
       change: change && ((raw) => {
         const delay = duration(String(raw));
         return delay ? write({ ...item, delay }) : studioReason('takesDuration', label);

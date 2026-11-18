@@ -82,6 +82,8 @@ class StudioFieldView(StrictModel):
     mixed: bool = False
     """The selected runs hold different values."""
     unit: str | None = None
+    conversion: str | None = None
+    """A duration's single value in the model's other time unit: steps for seconds, seconds for steps."""
     site: SiteProjection
     sweep: StudioSweepList | StudioSweepRange | StudioSweepSampler | None = None
     selected_value: ProjectName | None = None

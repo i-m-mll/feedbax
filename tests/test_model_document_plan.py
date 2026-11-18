@@ -226,6 +226,30 @@ def _rename_components(model):
             _rename_components(component)
 
 
+@pytest.mark.parametrize(("delay", "conversion"), [
+    ({"value": 0.06, "unit": "s"}, "6 st"),
+    ({"value": 3, "unit": "st"}, "0.03 s"),
+])
+def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_path, delay, conversion):
+    raw = _model_project()
+    controller = raw["documents"]["reach-model"]["payload"]["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
+    controller["interior"]["wires"]["carry"]["attachments"][0]["delay"] = delay
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "delay", Project.model_validate(raw))
+    url = "/api/projects/delay"
+    owner = {"composites": ["wrapper", "controller"],
+             "element": {"kind": "attachment", "parent": {"kind": "wire", "id": "carry"}, "id": "carry"}}
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        revision = client.get(url).json()["revision"]
+        fields = client.post(url + "/model/fields", json={
+            "revision": revision, "document": "reach-model", "owner": owner,
+            "run": {"variant": "default", "step": "train", "row": "default"},
+        })
+        assert fields.status_code == 200, fields.text
+        (shown,) = [field for field in fields.json()["fields"] if field["label"] == "Delay"]
+        assert shown["conversion"] == conversion
+
+
 def test_addressed_field_range_sample_and_row_provenance(tmp_path):
     raw = _model_project()
     raw["steps"].pop("baseline")

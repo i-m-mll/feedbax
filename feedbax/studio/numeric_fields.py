@@ -150,7 +150,8 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
 
 def project_numeric_field[View: StudioFieldView](
     view_type: type[View], field: NumericField, axis: FieldSweeps | None,
-    functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *, mixed: bool = False, **address,
+    functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *, mixed: bool = False,
+    period: float | None = None, **address,
 ) -> View:
     site = project_site(field.site, functions)
     view = axis.view() if axis else None
@@ -174,6 +175,7 @@ def project_numeric_field[View: StudioFieldView](
             view = view.model_copy(update={"can_list": False})
     return view_type(
         **address, label=field.label, text=print_field(shown, field.site), unit=field.unit,
+        conversion=_conversion(field, period) if source is None else None,
         effective=print_field(field.literal(effective), field.site)
         if type(effective) in (int, float) and effective != field.value else None,
         mixed=mixed,
@@ -184,6 +186,14 @@ def project_numeric_field[View: StudioFieldView](
         )),
         members=members,
     )
+
+
+def _conversion(field: NumericField, period: float | None) -> str | None:
+    if not field.duration or period is None or type(field.value) not in (int, float):
+        return None
+    if field.unit == "s":
+        return f"{round(field.value / period)} st"
+    return f"{float(f'{field.value * period:.8g}'):g} s"
 
 
 @dataclass(frozen=True)
