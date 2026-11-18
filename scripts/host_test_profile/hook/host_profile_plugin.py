@@ -56,13 +56,14 @@ def _end(process) -> None:
 
 
 def _reap(test) -> None:
-    live = [process for process, owner in STARTED_HOSTS if (test is None or owner == test) and _alive(process)]
+    live = [(process, owner) for process, owner in STARTED_HOSTS
+            if (test is None or owner == test) and _alive(process)]
     deadline = time.monotonic() + GRACE_SECONDS
     while live and time.monotonic() < deadline:
         time.sleep(0.05)
-        live = [process for process in live if _alive(process)]
-    for process in live:
-        record("host_leaked", host=process.pid, owner=test)
+        live = [(process, owner) for process, owner in live if _alive(process)]
+    for process, owner in live:
+        record("host_leaked", host=process.pid, owner=owner)
         _end(process)
 
 

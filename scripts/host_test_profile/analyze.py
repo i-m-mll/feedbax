@@ -72,7 +72,7 @@ def analyze(directory: Path) -> dict:
             elif e["ev"] == "popen" and e["role"] == "launcher":
                 c["workers"] += 1
             elif e["ev"] == "host_leaked":
-                c["hosts_leaked"] += 1
+                counts[e.get("owner") or e["test"]]["hosts_leaked"] += 1
             elif e["ev"] == "reaped":
                 c[f"reaped_{e['role']}"] += 1
             elif e["ev"] == "test_phase":
@@ -215,11 +215,12 @@ def main() -> None:
         print(f"  {n}x via", " > ".join(stack[-4:]))
     print("summed seconds:", {p: round(totals[p], 1) for p in PHASES})
     print("summed counts:", dict(sorted(count_totals.items())))
-    header = ["test", "wall", "hosts", "workers", "attempts", *PHASES[:-1]]
+    header = ["test", "wall", "hosts", "leaked", "workers", "attempts", *PHASES[:-1]]
     print("\t".join(header))
     for test in sorted(selected, key=lambda k: -result["tests"].get(k, {}).get("wall", 0)):
         t, c = result["tests"].get(test, {}), result["counts"].get(test, {})
         row = [test, f"{t.get('wall', 0):.1f}", str(c.get("hosts", 0) + c.get("hosts_in_process", 0)),
+               str(c.get("hosts_leaked", 0)),
                str(c.get("workers", 0)), str(c.get("attempts", 0)), *(f"{t.get(p, 0):.1f}" for p in PHASES[:-1])]
         print("\t".join(row))
 
