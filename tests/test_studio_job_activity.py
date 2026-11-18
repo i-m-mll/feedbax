@@ -58,3 +58,65 @@ def test_job_reads_do_not_wait_on_a_busy_host(host, tmp_path, monkeypatch):
             return jobs if [row["status"] for row in jobs] == ["starting"] else None
 
         assert [row["job_id"] for row in wait_until(started)] == [job.id]
+
+
+def _admit(client, token: str, *jobs) -> None:
+    client.admit(token, [AdmissionItem(job.id, job) for job in jobs], record={})
+
+
+def test_an_invalid_record_fails_only_its_own_project(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
+    sleep = "import time; time.sleep(30)"
+    with TestClient(create_app(projects_dir=tmp_path / "projects")) as studio:
+        client = studio.app.state.job_service.host
+        invalid = replace(_studio_job("invalid", "a", sleep), request="unknown-kind")
+        _admit(client, "invalid", invalid, _studio_job("first", "b", sleep))
+
+        def project_b():
+            jobs = studio.get("/api/jobs", params={"project": "b"}).json()["jobs"]
+            return jobs or None
+
+        assert [job["job_id"] for job in wait_until(project_b)] == ["first"]
+        refused = studio.get("/api/jobs", params={"project": "a"})
+        assert refused.status_code == 409
+        assert refused.json()["detail"]["code"] == "invalid_job_record"
+        assert "invalid" in refused.json()["detail"]["message"]
+
+        cursor = studio.get("/api/jobs", params={"project": "b"}).json()["cursor"]
+        _admit(client, "second", _studio_job("second", "b", sleep))
+        _, page = studio.app.state.job_activity.events(after=cursor, projects=("b",), wait=10, machine=True)
+        assert "second" in {event.job_id for event in page.events}
+        assert {job["job_id"] for job in studio.get("/api/jobs", params={"project": "b"}).json()["jobs"]} == {
+            "first", "second",
+        }
+
+
+def test_the_follower_recovers_from_one_unexpected_error(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
+    with TestClient(create_app(projects_dir=tmp_path / "projects")) as studio:
+        assert studio.get("/api/jobs").status_code == 200
+        service = studio.app.state.job_service
+        page = service.activity_page
+        failures = iter([RuntimeError("one bad event")])
+
+        def once(**kwargs):
+            if (failure := next(failures, None)) is not None:
+                raise failure
+            return page(**kwargs)
+
+        monkeypatch.setattr(service, "activity_page", once)
+        _admit(service.host, "wake", _studio_job("after", "p", "import time; time.sleep(30)"))
+
+        def failing():
+            response = studio.get("/api/jobs")
+            return response if response.status_code == 503 else None
+
+        assert "one bad event" in wait_until(failing).json()["detail"]["message"]
+
+        def recovered():
+            response = studio.get("/api/jobs", params={"project": "p"})
+            return response.status_code == 200 and [job["job_id"] for job in response.json()["jobs"]] == ["after"]
+
+        assert wait_until(recovered)

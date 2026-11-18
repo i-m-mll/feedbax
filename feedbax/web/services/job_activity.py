@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from threading import Condition, Event, Thread
 from time import monotonic
@@ -13,12 +14,38 @@ from feedbax.contracts.jobs import (
     StudioLocalSession,
 )
 from feedbax.host import HostError
-from feedbax.jobs import ActivityEntry, ActivityPage, JobService, history_events, stream_events
+from feedbax.jobs import (
+    ActivityEntry,
+    ActivityPage,
+    ActivitySnapshot,
+    InvalidJobRecord,
+    JobService,
+    history_events,
+    stream_events,
+)
 
 _FOLLOW_WAIT = 5.0
 _RETRY_DELAY = 0.5
+_RESTART_DELAY_LIMIT = 30.0
 _LOG_LIMIT = 8192
 _PAGE_LIMIT = 256
+_log = logging.getLogger(__name__)
+
+
+class InvalidProjectJobs(Exception):
+    """A project's held jobs include records that do not project to Activity rows."""
+
+    def __init__(self, project: str, failures: list[InvalidJobRecord]) -> None:
+        super().__init__("; ".join(failure.reason for failure in failures))
+        self.project = project
+
+
+class FollowerStopped(Exception):
+    """The follower met an error it could not apply and is restarting from a full reload."""
+
+
+def _project_of(row: StudioActivityJob | InvalidJobRecord) -> str:
+    return row.project if isinstance(row, InvalidJobRecord) else row.project_id
 
 
 class JobActivity:
@@ -38,7 +65,7 @@ class JobActivity:
         self._loaded = False
         self._error: HostError | None = None
         self._defect: Exception | None = None
-        self._rows: dict[str, StudioActivityJob] = {}
+        self._rows: dict[str, StudioActivityJob | InvalidJobRecord] = {}
         self._cursor = 0
         self._oldest_cursor = 0
         self._log: deque[ActivityEntry] = deque()
@@ -47,7 +74,11 @@ class JobActivity:
     def snapshot(self, *, project: str | None = None) -> StudioJobSnapshot:
         with self._changed:
             self._await_loaded()
-            jobs = [job for job in self._rows.values() if project is None or job.project_id == project]
+            rows = [row for row in self._rows.values() if project is None or _project_of(row) == project]
+            failures = [row for row in rows if isinstance(row, InvalidJobRecord)]
+            if project is not None and failures:
+                raise InvalidProjectJobs(project, failures)
+            jobs = [row for row in rows if isinstance(row, StudioActivityJob)]
             return StudioJobSnapshot(
                 jobs=jobs, cursor=self._cursor, oldest_cursor=self._oldest_cursor,
                 sessions=[StudioLocalSession()],
@@ -124,27 +155,32 @@ class JobActivity:
         while not self._loaded and self._error is None and self._defect is None:
             self._changed.wait()
         if self._defect is not None:
-            raise RuntimeError("Studio stopped following host jobs.") from self._defect
+            raise FollowerStopped(f"Studio is reloading host jobs after {self._defect!r}.") from self._defect
         if self._error is not None:
             raise self._error
 
     def _follow(self) -> None:
+        delay = _RETRY_DELAY
         while not self._stopped.is_set():
             try:
                 with self._changed:
                     loaded, after = self._loaded, self._cursor
                 if not loaded:
                     self._load()
+                    delay = _RETRY_DELAY
                     continue
                 self._apply(after, self._service.activity_page(after=after, wait=_FOLLOW_WAIT))
             except HostError as error:
                 self._fail(error)
                 self._stopped.wait(_RETRY_DELAY)
             except Exception as defect:
+                _log.exception("Studio stopped following host jobs; reloading in %.1f s", delay)
                 with self._changed:
                     self._defect = defect
+                    self._loaded = False
                     self._changed.notify_all()
-                raise
+                self._stopped.wait(delay)
+                delay = min(2 * delay, _RESTART_DELAY_LIMIT)
 
     def _fail(self, error: HostError) -> None:
         with self._changed:
@@ -152,14 +188,15 @@ class JobActivity:
             self._changed.notify_all()
 
     def _load(self) -> None:
-        snapshot = self._service.jobs()
+        snapshot = self._service.activity_snapshot()
         with self._changed:
-            self._rows = {job.job_id: job for job in snapshot.jobs}
+            self._rows = {row.job_id: row for row in snapshot.rows}
             self._cursor = self._log_floor = snapshot.cursor
             self._oldest_cursor = snapshot.oldest_cursor
             self._log.clear()
             self._loaded = True
             self._error = None
+            self._defect = None
             self._changed.notify_all()
 
     def _apply(self, after: int, page: ActivityPage) -> None:
@@ -169,10 +206,12 @@ class JobActivity:
         with self._changed:
             known = self._rows.keys()
             admitted = {
-                entry.activity.project_id for entry in page.entries
+                _project_of(entry.activity) for entry in page.entries
                 if entry.activity is not None and entry.activity.job_id not in known
             }
-        refreshed = [self._service.jobs(project=project) for project in sorted(admitted)]
+        refreshed: list[ActivitySnapshot] = [
+            self._service.activity_snapshot(project=project) for project in sorted(admitted)
+        ]
         with self._changed:
             if self._cursor != after:
                 return
@@ -180,7 +219,7 @@ class JobActivity:
                 if entry.activity is not None:
                     self._rows[entry.activity.job_id] = entry.activity
             for snapshot in refreshed:
-                self._rows.update((job.job_id, job) for job in snapshot.jobs)
+                self._rows.update((row.job_id, row) for row in snapshot.rows)
             self._log.extend(page.entries)
             while len(self._log) > _LOG_LIMIT:
                 self._log_floor = self._log.popleft().event["cursor"]

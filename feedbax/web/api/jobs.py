@@ -44,7 +44,7 @@ from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.orchestration.session import SessionError
 from feedbax.web.api.projects import ProjectRevisionWatch, _project_response
-from feedbax.web.services.job_activity import JobActivity
+from feedbax.web.services.job_activity import FollowerStopped, InvalidProjectJobs, JobActivity
 from feedbax.web.services.remote_runs import StudioRemoteRuns
 
 
@@ -58,6 +58,12 @@ def _jobs(request: Request) -> JobService:
 
 def _activity(request: Request) -> JobActivity:
     return request.app.state.job_activity
+
+
+def _activity_error(exc: InvalidProjectJobs | FollowerStopped) -> HTTPException:
+    if isinstance(exc, InvalidProjectJobs):
+        return HTTPException(409, detail={"code": "invalid_job_record", "message": str(exc)})
+    return HTTPException(503, detail={"code": "job_activity_stopped", "message": str(exc)})
 
 
 def _host_error(exc: HostError) -> HTTPException:
@@ -276,6 +282,8 @@ def list_jobs(request: Request, project: str | None = None) -> StudioJobSnapshot
         snapshot = _activity(request).snapshot(project=project)
         remote = request.app.state.remote_runs
         return remote.snapshot(snapshot, project=project) if remote is not None else snapshot
+    except (InvalidProjectJobs, FollowerStopped) as exc:
+        raise _activity_error(exc) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
 
@@ -384,6 +392,8 @@ def job_event_history(
         if venue is not None or stream is not None:
             raise HTTPException(422, detail="Machine history requires both source identifiers.")
         return _activity(request).history(after=after, project=project, through=through)
+    except FollowerStopped as exc:
+        raise _activity_error(exc) from exc
     except JobNotFound as exc:
         raise HTTPException(404, detail="Unknown machine history.") from exc
     except SessionError as exc:
@@ -419,6 +429,8 @@ async def job_events(
             wait=0,
             machine=machine,
         )
+    except FollowerStopped as exc:
+        raise _activity_error(exc) from exc
     except HostError as exc:
         raise _host_error(exc) from exc
 
@@ -482,7 +494,7 @@ async def job_events(
                     wait=wait,
                     machine=machine,
                 )
-            except HostError:
+            except (HostError, FollowerStopped):
                 return
 
     return StreamingResponse(

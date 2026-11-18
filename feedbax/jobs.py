@@ -130,11 +130,31 @@ _log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class InvalidJobRecord:
+    """A Studio job row that does not project to an Activity row."""
+
+    project: str
+    job_id: str
+    error: KeyError | ValueError
+
+    @property
+    def reason(self) -> str:
+        return f"Job {self.job_id} has an invalid record: {self.error!r}"
+
+
+@dataclass(frozen=True, slots=True)
 class ActivityEntry:
     """One visible host event and the Activity row it leaves, when it is the job's latest in its page."""
 
     event: Mapping[str, Any]
-    activity: StudioActivityJob | None
+    activity: StudioActivityJob | InvalidJobRecord | None
+
+
+@dataclass(frozen=True, slots=True)
+class ActivitySnapshot:
+    cursor: int
+    oldest_cursor: int
+    rows: tuple[StudioActivityJob | InvalidJobRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,8 +175,9 @@ def stream_events(
         if not machine and projects and event["project"] not in projects:
             continue
         detail = not machine or event["project"] in projects
-        if (detail and event["kind"] not in _HOST_ONLY_EVENTS) or entry.activity is not None:
-            events.append(_project_event(event, activity=entry.activity, detail=detail))
+        activity = entry.activity if isinstance(entry.activity, StudioActivityJob) else None
+        if (detail and event["kind"] not in _HOST_ONLY_EVENTS) or activity is not None:
+            events.append(_project_event(event, activity=activity, detail=detail))
     return events
 
 
@@ -1331,6 +1352,14 @@ class JobService(PlanJobReader):
             sessions=[StudioLocalSession()],
         )
 
+    def activity_snapshot(self, *, project: str | None = None) -> ActivitySnapshot:
+        """Read every Studio row, keeping each invalid record as its own failure."""
+        snapshot = self.host.jobs_snapshot(project=project)
+        return ActivitySnapshot(
+            cursor=snapshot["cursor"], oldest_cursor=snapshot["oldest_cursor"],
+            rows=tuple(self._activity_results(snapshot["jobs"], project=project).values()),
+        )
+
     def project_venue_activity(
         self, rows: Sequence[dict[str, Any]], *, pending: set[str], collected: set[str], logs: Mapping[str, list[str]],
     ) -> tuple[StudioActivityJob, ...]:
@@ -1671,7 +1700,7 @@ class JobService(PlanJobReader):
             if event["kind"] in _ACTIVITY_EVENTS
             or (event["kind"] == "dependency_bound" and rows[event["job_id"]]["data"].get("placement_detail"))
         }
-        activity = self._activity_rows([rows[job_id] for job_id in activity_events])
+        activity = self._activity_results([rows[job_id] for job_id in activity_events])
         return ActivityPage(
             head=page["head"], cursor=page["cursor"], oldest_cursor=page["oldest_cursor"],
             entries=tuple(
@@ -1859,6 +1888,20 @@ class JobService(PlanJobReader):
         *,
         project: str | None = None,
     ) -> dict[str, StudioActivityJob]:
+        result = {}
+        for job_id, projected in self._activity_results(rows, project=project).items():
+            if isinstance(projected, InvalidJobRecord):
+                raise projected.error
+            result[job_id] = projected
+        return result
+
+    def _activity_results(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        project: str | None = None,
+    ) -> dict[str, StudioActivityJob | InvalidJobRecord]:
+        """Project each Studio row on its own, so one invalid record fails only itself."""
         rows = [row for row in rows if _is_studio_job(row)]
         if not rows:
             return {}
@@ -1878,7 +1921,7 @@ class JobService(PlanJobReader):
                     actors[job_id] = _submission_actor(record)
             for run_key, run in record["runs"].items():
                 current.setdefault((record["project"], run_key), run["request_id"])
-        result = {}
+        result: dict[str, StudioActivityJob | InvalidJobRecord] = {}
         retained_ids = {row["outcome"]["retained_attempt"] for row in rows if row["state"] == "reused"}
         retained = {row["id"]: row for row in rows if row["id"] in retained_ids}
         if missing := retained_ids - retained.keys():
@@ -1886,21 +1929,24 @@ class JobService(PlanJobReader):
                 row["id"]: row for row in self.host.jobs_snapshot(job_ids=tuple(missing))["jobs"]
             })
         for row in rows:
-            key = (row["project"], row["data"]["run_key"])
-            request_id = row["request"]
-            reused = row["state"] == "reused"
-            source = retained.get(row["outcome"]["retained_attempt"]) if reused else row
-            intact = source is not None and (
-                self._receipt_matches(source) if source["state"] == "succeeded" else not reused
-            )
-            result[row["id"]] = _project_activity(
-                row,
-                receipt_intact=intact,
-                reused_receipt=source["outcome"]["receipt"] if reused and intact else None,
-                seen=_seen_key(row["id"]) in seen,
-                earlier_definition=current.get(key, request_id) != request_id,
-                actor=actors.get(row["id"]),
-            )
+            try:
+                key = (row["project"], row["data"]["run_key"])
+                request_id = row["request"]
+                reused = row["state"] == "reused"
+                source = retained.get(row["outcome"]["retained_attempt"]) if reused else row
+                intact = source is not None and (
+                    self._receipt_matches(source) if source["state"] == "succeeded" else not reused
+                )
+                result[row["id"]] = _project_activity(
+                    row,
+                    receipt_intact=intact,
+                    reused_receipt=source["outcome"]["receipt"] if reused and intact else None,
+                    seen=_seen_key(row["id"]) in seen,
+                    earlier_definition=current.get(key, request_id) != request_id,
+                    actor=actors.get(row["id"]),
+                )
+            except (KeyError, ValueError) as error:
+                result[row["id"]] = InvalidJobRecord(row["project"], row["id"], error)
         return result
 
 
