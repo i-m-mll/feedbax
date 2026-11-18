@@ -250,6 +250,94 @@ def pytest_processes(processes: dict[int, list[dict]]) -> list[dict]:
     return sorted(rows, key=lambda r: r["pid"])
 
 
+def pool(processes: dict[int, list[dict]]) -> dict:
+    """Workers by the kind of Host that spawned them and by profile; what each assigned job found; CPU and memory.
+
+    A Host is the session's when a session fixture started it, a restart when it is a later Host on a session
+    root, and private otherwise. A profile is test-specific when every job assigned to it ran within one test.
+    """
+    popens = {e["child"]: e for events in processes.values() for e in events if e["ev"] == "popen"}
+    kinds = {}
+    for child, e in popens.items():
+        if e["role"] == "host":
+            kinds[child] = ("session" if e.get("test") == "(session)" else "restart") if e.get("shared") else "private"
+    windows = collections.defaultdict(list)  # pytest pid -> (start, stop, test)
+    for pid, events in processes.items():
+        for e in events:
+            if e["ev"] == "test_phase":
+                windows[pid].append((e["start"], e["stop"], e["nodeid"]))
+
+    def test_at(host: int, t: float) -> str | None:
+        owner = popens.get(host, {}).get("pid")
+        return next((test for a, b, test in windows.get(owner, []) if a <= t <= b), None)
+
+    spawns, assigns = {}, {}
+    for pid, events in processes.items():
+        for e in events:
+            if e["ev"] == "worker_spawn":
+                spawns[e["launcher"]] = (pid, e)
+            elif e["ev"] == "assign":
+                assigns.setdefault((e["job"], e["launcher"]), (pid, e))
+    key_tests = collections.defaultdict(set)
+    for (job, _), (host, e) in assigns.items():
+        key_tests[(host, e["key"])].add(test_at(host, e["t"]))
+    used = {launcher for _, launcher in assigns}
+    workers = []
+    for launcher, launch in popens.items():
+        if launch["role"] != "launcher":
+            continue
+        host = launch["pid"]
+        worker_pids = [p for p, e in popens.items() if e["role"] == "worker" and e["pid"] == launcher]
+        ready = [e["t"] for p in worker_pids for e in processes.get(p, []) if e["ev"] == "worker_ready"]
+        spawn = spawns.get(launcher, (host, {}))[1]
+        tests = key_tests.get((host, spawn.get("key")), set())
+        workers.append({
+            "host_kind": kinds.get(host, "unknown"), "key": spawn.get("key"), "slot": spawn.get("slot"),
+            "entrypoint": spawn.get("entrypoint"), "used": launcher in used,
+            "import": min(ready) - launch["start"] if ready else None,
+            "test_specific": len(tests) == 1 and None not in tests,
+        })
+    found = collections.Counter((e["slot"], e["found"]) for _, e in assigns.values())
+    cpu = collections.defaultdict(lambda: {"processes": 0, "exited": 0, "cpu": 0.0, "max_rss": 0})
+    for pid, events in processes.items():
+        role = "pytest" if windows.get(pid) else popens.get(pid, {}).get("role", "other")
+        if role == "other" and kinds.get(pid):
+            role = "host"
+        row = cpu[role]
+        row["processes"] += 1
+        end = next((e for e in events if e["ev"] == "process_exit" and "cpu" in e), None)
+        if end is not None:
+            row["exited"] += 1
+            row["cpu"] += end["cpu"]
+            row["max_rss"] = max(row["max_rss"], end["max_rss"])
+    return {"workers": workers, "found": {f"{slot}:{what}": n for (slot, what), n in found.items()},
+            "cpu": dict(cpu), "host_kinds": dict(collections.Counter(kinds.values()))}
+
+
+def pool_lines(result: dict) -> list[str]:
+    workers = result["workers"]
+
+    def total(rows):
+        imported = [w["import"] for w in rows if w["import"] is not None]
+        return f"{len(rows)} ({sum(imported):.1f}s spawn->imported)"
+
+    lines = [f"Hosts by kind: {result['host_kinds']}"]
+    for kind in sorted({w["host_kind"] for w in workers}):
+        rows = [w for w in workers if w["host_kind"] == kind]
+        lines.append(f"  workers on {kind} Hosts: spawned {total(rows)}, used {total([w for w in rows if w['used']])}, "
+                     f"unused {total([w for w in rows if not w['used']])}")
+    lines.append(f"workers used, all Hosts: {total([w for w in workers if w['used']])}")
+    lines.append(f"workers after a restart: {total([w for w in workers if w['host_kind'] == 'restart'])}; "
+                 f"under test-specific profiles: {total([w for w in workers if w['test_specific']])}")
+    lines.append("assigned jobs by slot and what they found (ready = an imported idle worker, importing = an idle "
+                 f"worker still importing, none = spawned for the job): {dict(sorted(result['found'].items()))}")
+    lines.append("process CPU and peak RSS by role (processes, with exit record, CPU s, max RSS MiB):")
+    for role, row in sorted(result["cpu"].items(), key=lambda item: -item[1]["cpu"]):
+        lines.append(f"  {role}: {row['processes']}, {row['exited']}, {row['cpu']:.1f}, {row['max_rss'] / 2**20:.0f}")
+    lines.append(f"  total CPU s: {sum(r['cpu'] for r in result['cpu'].values()):.1f}")
+    return lines
+
+
 def _interval(e: dict) -> tuple[float, float]:
     return e["start"], e["start"] + e["seconds"]
 
@@ -421,6 +509,7 @@ def main() -> None:
     result["host_loop"] = loop_summary(hosts)
     result["slow_rpcs"] = attribute(processes, hosts, args.slow)
     result["pytest_processes"] = pytest_processes(processes)
+    result["pool"] = pool(processes)
     selected = {
         test for test, c in result["counts"].items()
         if args.all or c.get("hosts") or c.get("hosts_in_process") or c.get("workers")
@@ -449,6 +538,7 @@ def main() -> None:
                   f"{row['between_tests']:.1f}s, {row['after_last_test']:.1f}s, {row['wall']:.1f}s")
         else:
             print(f"  {row['pid']}: no tests of its own, {row['wall']:.1f}s")
+    print("\n".join(pool_lines(result["pool"])))
     loop = result["host_loop"]
     print(f"Host loops recorded: {loop['hosts']}")
     for missing in loop["seam_missing"]:

@@ -51,7 +51,16 @@ if DIRECTORY:
 
     record("process_start", argv=sys.argv[:4], ppid=os.getppid(), role=_role(sys.argv), python=sys.executable,
            jax_cache=os.environ.get("JAX_COMPILATION_CACHE_DIR"))
-    atexit.register(lambda: record("process_exit", jax="jax" in sys.modules, feedbax="feedbax" in sys.modules))
+    def _exit() -> None:
+        import resource
+
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        # ru_maxrss is bytes on macOS and KiB on Linux.
+        rss = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024
+        record("process_exit", jax="jax" in sys.modules, feedbax="feedbax" in sys.modules,
+               cpu=usage.ru_utime + usage.ru_stime, max_rss=rss)
+
+    atexit.register(_exit)
 
     STARTED_HOSTS: list = []  # (Popen, test) for each Host this process started; the plugin reaps leaks
     SESSION_SETUP = [0]  # session-scoped fixture setups now running; the plugin keeps this count
@@ -327,9 +336,43 @@ if DIRECTORY:
 
         host.run, host._tick, host._call = wrapped_run, wrapped_tick, wrapped_call
         _time_methods(host, TICK)
+        _patch_pool(host)
         store = sys.modules.get("feedbax.host.store")
         if store is not None and hasattr(store, "Store"):
             _time_methods(store.Store, TICK)
+
+    def _patch_pool(host) -> None:
+        """Record each worker spawn with its profile, and whether each assigned job found an imported worker."""
+        missing = [name for name in ("_assign", "_spawn", "_profile") if not hasattr(host, name)]
+        if missing:
+            record("hook_seam_missing", cls="Host", names=missing)
+            return
+        assign, spawn = host._assign, host._spawn
+
+        def wrapped_spawn(self, key, profile, *args, **kwargs):
+            worker = spawn(self, key, profile, *args, **kwargs)
+            record("worker_spawn", launcher=worker.process.pid, key=key[:16], slot=profile.get("slot"),
+                   entrypoint=profile.get("warm_entrypoint"), env=sorted(profile.get("env") or {}),
+                   preload=profile.get("preload"))
+            return worker
+
+        def wrapped_assign(self, row, *args, **kwargs):
+            try:
+                launch = json.loads(row["launch"])
+                key = self._profile(launch, row["slot"], self._runtime(json.loads(row["data"])))[0]
+                idle = [w for w in self.workers.values()
+                        if w.profile_key == key and w.job_id is None and w.control.fileno() >= 0]
+                before = "ready" if any(w.ready for w in idle) else "importing" if idle else "none"
+            except Exception:
+                key = before = None
+            result = assign(self, row, *args, **kwargs)
+            worker = next((w for w in self.workers.values() if w.job_id == row["id"]), None)
+            if worker is not None and key is not None:
+                record("assign", job=row["id"], slot=row["slot"], key=key[:16], launcher=worker.process.pid,
+                       found=before, ready=worker.ready)
+            return result
+
+        host._assign, host._spawn = wrapped_assign, wrapped_spawn
 
     def _patch_jax(module) -> None:
         from jax import monitoring
