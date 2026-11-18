@@ -33,7 +33,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await expect(approval.getByText('Cost ceiling', { exact: true })).toBeVisible();
   await expect(approval.getByText('$0.12', { exact: true })).toBeVisible();
   await expect(approval.getByText('Expiry', { exact: true })).toBeVisible();
-  await expect(approval.getByText('Results not downloaded are destroyed', { exact: true })).toBeVisible();
+  await expect(approval.getByText('Results lost', { exact: true })).toBeVisible();
   expect(await attempts()).toEqual([]);
   const activity = await request.get('/api/jobs');
   expect((await activity.json() as StudioJobSnapshot).jobs).toEqual([]);
@@ -97,7 +97,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   const card = page.getByRole('region', { name: 'Rehearsal Machine', exact: true });
   await expect(card.getByText('Closes at', { exact: true })).toBeVisible();
-  await expect(card.getByText('Cost so far', { exact: true })).toBeVisible();
+  await expect(card.getByText('Billed cost', { exact: true })).toBeVisible();
   await expect(card.getByText('$0.012345', { exact: true })).toBeVisible();
   await expect(card.getByText('Idle since', { exact: true })).toBeVisible();
   await card.getByText('Opening history', { exact: true }).click();

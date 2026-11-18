@@ -163,10 +163,9 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
     for (const sample of model.samples) residuals.push(await comparePose(page, source(document, model.revision), sample));
   }
   await selectFixedGuide(page);
-  const guide = page.getByRole('region', { name: 'Details', exact: true }).locator('div').filter({
-    has: page.getByText('forearm.distal guide', { exact: true }),
-  }).locator('dd');
-  await expect(guide).toHaveText('0.03, -0.09 m');
+  const guide = page.locator('#scene-proof').getByRole('region', { name: 'cross_chain', exact: true })
+    .getByRole('textbox', { name: 'forearm.distal guide', exact: true });
+  await expect(guide).toHaveValue('0.03, -0.09');
 
   expect(snapshot.revision).toBe(initial.chain.revision);
   const editedRevisions = await setFields(request, projectUrl, {
@@ -187,7 +186,7 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
     kind: 'recorded', sample: { modelIdentity: edited.identity, qpos: edited.samples[0].qpos },
   }));
   await selectFixedGuide(page);
-  await expect(guide).toHaveText('0.05, -0.07 m');
+  await expect(guide).toHaveValue('0.05, -0.07');
 
   await show(page, address, { kind: 'recorded', sample: { modelIdentity: initial.chain.identity, qpos: edited.samples[0].qpos } });
   await expectInvalidGeometry(page, 'scene.pose_model_mismatch', /different model/);

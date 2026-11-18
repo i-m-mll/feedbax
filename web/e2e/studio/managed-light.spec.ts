@@ -231,7 +231,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await tabTo(page, roleField('Velocity'));
   await page.keyboard.press('ArrowDown');
   // The popup's search field takes focus after it opens; keys typed before then are lost.
-  await expect(page.locator('input[role="combobox"][aria-label="Velocity"]')).toBeFocused();
+  await expect(page.locator('input').and(page.getByRole('combobox', { name: 'Velocity', exact: true }))).toBeFocused();
   await page.keyboard.type('states');
   await expect(page.getByRole('option', { name: 'states', exact: true })).toHaveAttribute('data-highlighted');
   await page.keyboard.press('Enter');
