@@ -184,9 +184,9 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
   await field.getByRole('button', { name: 'Mass kind: Value', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   await enter(field.getByRole('textbox', { name: 'Mass', exact: true }), '1, 2');
-  await expect(field.getByText('2', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await readPlan(request, projectPath)).plan.window_map!.rows
+    .map(({ coordinates }) => coordinates.mass?.value)).toEqual([1, 2]);
   const { plan } = await readPlan(request, projectPath);
-  expect(plan.window_map!.rows.map(({ coordinates }) => coordinates.mass.value)).toEqual([1, 2]);
   expect(new Set(plan.rows.map(({ request_id }) => request_id)).size).toBe(2);
   await expect(page.getByRole('article', { name: 'Train train' }).locator('[data-status-mark="not_run"]')).toHaveCount(2);
 });
