@@ -107,7 +107,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
     response.request().postDataJSON()?.edit?.text === 'U(0, 1)');
   await enter(hidden, 'U(0, 1)');
   const { problems } = await (await invalid).json() as ModelFieldResponse;
-  expect(problems[0].reason).toContain('Value, Sweep, Formula');
+  expect(problems![0].reason).toContain('Value, Sweep, Formula');
   await expect(inspector.getByRole('alert')).toContainText('Value, Sweep, Formula');
   await hidden.press('Escape');
   await expect(hidden).toHaveValue('64, 100, 128');

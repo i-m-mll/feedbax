@@ -1,6 +1,6 @@
 import { expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type { StudioActivityJob, StudioJobSnapshot, StudioJobSubmission } from '../../../src/generated/studioContracts';
-import { mapStep, runProjectFixture } from './canonicalTrain';
+import { mapStep, runName, runProjectFixture } from './canonicalTrain';
 import { authorFirstTrain } from './firstTrainAuthoring';
 import { activate, palette, post, tabTo } from './studioKeyboard';
 import { hostPid, processExists } from './studioRecovery';
@@ -41,7 +41,7 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   const selectRun = async () => {
     await activate(page, mapStep(page, 'train'));
     await page.keyboard.press('Meta+1');
-    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: row.label, exact: true }));
+    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(row.label) }));
   };
   const openRun = async () => {
     await expect(runs.getByRole('button', { name: 'Open Run', exact: true })).toBeEnabled();
@@ -90,13 +90,11 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
 
   await studio.stopBackend();
   const footer = page.locator('[data-studio-focus-region="bottom"]');
-  for (const region of [footer, results, page.locator('[data-studio-focus-region="map"]')]) {
-    await expect(region.getByRole('alert').filter({ hasText: 'Service unreachable' })).toBeVisible();
-  }
-  const retry = footer.locator('button[data-command-id="retry"]');
+  await expect(footer.getByRole('alert').filter({ hasText: 'Service unreachable' })).toBeVisible();
+  await expect(page.getByRole('alert').filter({ hasText: 'Service unreachable' })).toHaveCount(1);
+  const retry = footer.getByRole('alert').getByRole('button', { name: 'Retry', exact: true });
   await Promise.all([
-    page.waitForResponse((response) => response.status() >= 500 && response.request().method() === 'GET' &&
-      new URL(response.url()).pathname === '/api/jobs'),
+    page.waitForEvent('requestfailed', (failed) => new URL(failed.url()).pathname === '/api/health'),
     activate(page, retry),
   ]);
   await tabTo(page, retry);

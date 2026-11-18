@@ -46,7 +46,7 @@ test('Studio visual decisions use shell roles and keep the narrow window usable'
   await expect.poll(async () => (await cards.locator('[data-map-kind-label]').allTextContents()).sort())
     .toEqual(['Analyze', 'Evaluate', 'Report', 'Train']);
   await captureStudioWindow(page, info, 'visual-map-greyscale');
-  await greyscale.evaluate((node) => node.remove());
+  await greyscale.evaluate((node) => (node as ChildNode).remove());
 
   await page.getByRole('button', { name: 'Show Both', exact: true }).click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();

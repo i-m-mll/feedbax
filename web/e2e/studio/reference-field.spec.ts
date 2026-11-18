@@ -66,7 +66,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   await expect(subject).toHaveText('train');
 
   const toDocument = await saved(page, project, () => pick(subject, models[0]));
-  expect(toDocument.project.steps.baseline.inputs).toMatchObject({
+  expect(toDocument.project.steps!.baseline.inputs).toMatchObject({
     subject: { kind: 'initial_model', source: { document: models[0] } },
     task: { kind: 'task', source: { document: expect.any(String) } },
   });
@@ -78,7 +78,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   await expect(page.locator('[data-map-step="train"]')).toHaveAttribute('data-pick', 'allowed');
   await expect(page.locator('[data-map-step="baseline"]')).toHaveAttribute('data-pick', 'refused');
   const toCheckpoint = await saved(page, project, () => mapStep(page, 'train').click());
-  expect(toCheckpoint.project.steps.baseline.inputs).toEqual({ subject: { step: 'train', checkpoint: 'last' } });
+  expect(toCheckpoint.project.steps!.baseline.inputs).toEqual({ subject: { step: 'train', checkpoint: 'last' } });
   await expect(page.locator('[data-pick]')).toHaveCount(0);
   await expect(subject).toHaveText('train');
   await expect(inputs.getByRole('combobox', { name: 'Task', exact: true })).toHaveCount(0);
@@ -95,7 +95,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   await expect(listbox.getByRole('option')).toHaveText([...models, 'train']);
   await page.keyboard.press('Escape');
   const bound = await saved(page, project, () => pick(policy, 'train'));
-  expect(bound.project.steps.analyze.inputs?.policy).toEqual({ step: 'train', checkpoint: 'last' });
+  expect(bound.project.steps!.analyze.inputs?.policy).toEqual({ step: 'train', checkpoint: 'last' });
   await canvas.getByRole('group', { name: 'Select protocol', exact: true }).click();
   const protocol = inspector.getByRole('combobox', { name: 'Protocol', exact: true });
   await protocol.click();
@@ -109,7 +109,7 @@ test('Evaluate edits that remove runs ask first and keep the other results', asy
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-removal'));
   const initial = await open(page, project);
   await appendManagedFiles(page.request, initial, [{ kind: 'step', id: 'trials', step: {
-    ...initial.project.steps.baseline, sweep: { axes: { subject: { input: 'subject' } } },
+    ...initial.project.steps!.baseline, sweep: { axes: { subject: { input: 'subject' } } },
   } }]);
   await page.addInitScript(() => window.localStorage.setItem('feedbax.studio.removal-threshold', '0'));
   await page.goto('/?project=' + encodeURIComponent(project));
@@ -149,5 +149,5 @@ test('Evaluate edits that remove runs ask first and keep the other results', asy
   expect(Object.fromEntries(Object.keys(kept).map((key) => [key, after[key]]))).toEqual(kept);
   const done = (await plan()).rows.find(({ key }) => key.step === 'train');
   expect(done?.result).toBeTruthy();
-  expect(removed.project.steps.trials.base).toMatchObject({ inline: { params: { trial_set: { kind: 'conditions' } } } });
+  expect(removed.project.steps!.trials.base).toMatchObject({ inline: { params: { trial_set: { kind: 'conditions' } } } });
 });

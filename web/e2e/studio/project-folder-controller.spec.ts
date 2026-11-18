@@ -35,7 +35,7 @@ async function state(page: Page) {
     const editor = (window as unknown as Probe).folderEditor.editor;
     const { saved, draft, outside, pending, configuration, undoName } = editor.getSnapshot();
     const batch = (project: typeof draft) => {
-      const step = project.steps.train as unknown as { base: { inline: { training_config: { batch_size: number } } } };
+      const step = project.steps!.train as unknown as { base: { inline: { training_config: { batch_size: number } } } };
       return step.base.inline.training_config.batch_size;
     };
     return {
@@ -385,7 +385,7 @@ test('M2 managed New authors a Train with named trial documents', async ({ page,
   expect(saved.saved.project.documents).toEqual({
     [model.id]: model.document, [task.id]: task.document, [objective.id]: objective.document,
   });
-  expect(saved.saved.project.steps).toEqual({ train: definedTrain.step });
+  expect(saved.saved.project.steps!).toEqual({ train: definedTrain.step });
   const response = await request.get(`/api/projects/${id}/train-runs?revision=${saved.saved.revision}&window_map=true`);
   expect(response.ok(), await response.text()).toBe(true);
   const plan = await response.json() as StudioSavedTrainRuns;

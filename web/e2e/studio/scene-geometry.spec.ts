@@ -36,18 +36,18 @@ function source(document_id: string, revision: string): StudioPlanarSceneRequest
 async function mount(page: Page, projectId: string) {
   await page.evaluate(async (id) => {
     const entry = '/e2e/studio/fixtures/sceneGeometryProbe.tsx';
-    const { mountSceneProbe } = await import(entry) as { mountSceneProbe: typeof mountSceneProbe };
+    const probe = await import(entry) as { mountSceneProbe: typeof mountSceneProbe };
     const container = document.createElement('section');
     container.id = 'scene-proof';
     document.body.replaceChildren(container);
-    (window as Probe).sceneProof = mountSceneProbe(container, id);
+    (window as unknown as Probe).sceneProof = probe.mountSceneProbe(container, id);
   }, projectId);
 }
 
 async function show(page: Page, address: StudioPlanarSceneRequest, pose: PlanarScenePose) {
-  const version = await page.evaluate(({ address, pose }) => (window as Probe).sceneProof.show(address, pose), { address, pose });
+  const version = await page.evaluate(({ address, pose }) => (window as unknown as Probe).sceneProof.show(address, pose), { address, pose });
   await expect.poll(() => page.evaluate(() => {
-    const current = (window as Probe).sceneProof.current();
+    const current = (window as unknown as Probe).sceneProof.current();
     return current?.view.kind === 'geometry' ? current.version : null;
   })).toBe(version);
 }
@@ -86,7 +86,7 @@ async function expectInvalidGeometry(page: Page, code: string, message: RegExp) 
   await expect(proof.getByRole('alert')).toContainText(message);
   await expect(proof.locator('svg')).toHaveCount(0);
   const codes = await page.evaluate(() => {
-    const view = (window as Probe).sceneProof.current()?.view;
+    const view = (window as unknown as Probe).sceneProof.current()?.view;
     return view?.kind === 'geometry' ? view.scene.validation.map((issue) => issue.type) : [];
   });
   expect(codes).toEqual([code]);
@@ -99,7 +99,7 @@ function distance(actual: Point, expected: Point) {
 async function comparePose(page: Page, address: StudioPlanarSceneRequest, sample: NativeSample, pose: PlanarScenePose = { kind: 'inspection', qpos: sample.qpos }) {
   await show(page, address, pose);
   const scene = await page.evaluate(() => {
-    const view = (window as Probe).sceneProof.current()?.view;
+    const view = (window as unknown as Probe).sceneProof.current()?.view;
     if (view?.kind !== 'geometry') throw new Error('Planar Scene was not resolved');
     return view.scene;
   });
@@ -207,5 +207,5 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
     maxRotation: Math.max(...residuals.map((item) => item.maxRotation)),
   };
   console.log('Scene kinematics', JSON.stringify(measured));
-  await page.evaluate(() => (window as Probe).sceneProof.close());
+  await page.evaluate(() => (window as unknown as Probe).sceneProof.close());
 });

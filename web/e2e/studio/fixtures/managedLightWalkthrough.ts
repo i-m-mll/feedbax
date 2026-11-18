@@ -133,7 +133,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const sourceRow = (index: number) => table(page).getByRole('button', { name: prefix[index].label, exact: true });
+  const sourceRow = (index: number) => table(page).getByRole('button', { name: runName(prefix[index].label) });
 
   async function selectTwo() {
     await openRuns(page, 'train');
@@ -237,7 +237,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const changed = await batches;
   expect(changed.ok(), await changed.text()).toBe(true);
   expect(changed.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
-  const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps[child];
+  const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps![child];
   expect(editedChild.deltas?.at(-1)?.patches).toEqual([
     { op: 'replace', path: 'training_config.n_batches', value: additionalUpdates },
   ]);
@@ -263,7 +263,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       },
       progress: { completed_updates: childUpdates, total_updates: childUpdates },
     })]);
-    await activate(page, table(page).getByRole('button', { name: producer.label, exact: true }));
+    await activate(page, table(page).getByRole('button', { name: runName(producer.label) }));
     if (index === 0) {
       await palette(page, 'splitDetails', 'Split Details');
       await openView(page, 'results');

@@ -239,7 +239,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const createdEvaluate = await creating;
   expect(createdEvaluate.status(), await createdEvaluate.text()).toBe(201);
   const { snapshot: evaluated }: StudioProjectDocument = await createdEvaluate.json();
-  expect(evaluated.project.steps.evaluate.inputs?.subject).toEqual({
+  expect(evaluated.project.steps!.evaluate.inputs?.subject).toEqual({
     step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': [selected.coordinates['learning-rate'].value_id] } },
   });
   await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText('1 of 3');
@@ -263,7 +263,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await activate(page, mapStep(page, 'evaluate'));
   await page.keyboard.press('Meta+1');
   const label = projection.window_map!.rows.find(({ key }) => key.step === pending.key.step && key.row === pending.key.row)!.label;
-  await activate(page, runs.getByRole('table', { name: runName('Runs') }).getByRole('button', { name: label, exact: true }));
+  await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(label) }));
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
   await expect(runs.getByRole('region', { name: 'Made From', exact: true })).toContainText('1 of 3');
   expect(await evaluatedRow()).toEqual(result);
@@ -283,7 +283,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const replay: WorkspaceReplayTrial = await replayed.json();
   const observed = await observe('result', continued.job_id, evaluated.revision, evaluation.job_id!, trial);
   expect(observed.receipt).toEqual(result.result!.receipt);
-  expect(replay.manifest_refs.producer_manifest).toMatchObject({
+  expect(replay.manifest_refs!.producer_manifest).toMatchObject({
     id: observed.receipt.manifest_id, metadata: { manifest_sha256: observed.receipt.manifest_sha256 },
   });
   expect(replay.identity.stable_id).toBe(trial);
@@ -628,7 +628,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const changed = await childEdit;
   expect(changed.ok(), await changed.text()).toBe(true);
   const reviewed = await changed.json() as StudioProjectSnapshot;
-  expect(reviewed.project.steps[child].deltas).toEqual(expect.arrayContaining([
+  expect(reviewed.project.steps![child].deltas).toEqual(expect.arrayContaining([
     expect.objectContaining({ patches: expect.arrayContaining([
       expect.objectContaining({ path: 'training_config.n_batches', value: 1200 }),
     ]) }),

@@ -182,9 +182,11 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const admittedJobs = await attempts();
   expect(admittedJobs).toHaveLength((first ? 4 : 1) + settledEvaluate.length);
   const table = page.getByRole('table', { name: 'Runs', exact: true });
-  const sourceLabels = pairedInput?.rows.map(({ label }) => label) ?? [sources[0].key.row];
-  await activate(page, table.getByRole('button', { name: sourceLabels[0], exact: true }));
-  if (paired) await activate(page, table.getByRole('button', { name: sourceLabels[1], exact: true }), 'Shift+Enter');
+  const rowLabel = (key: StudioSavedTrainKey) =>
+    initialPlan.rows.find((row) => JSON.stringify(row.key) === JSON.stringify(key))!.label;
+  const sourceLabels = pairedInput?.rows.map(({ label }) => label) ?? [rowLabel(sources[0].key)];
+  await activate(page, table.getByRole('button', { name: runName(sourceLabels[0]) }));
+  if (paired) await activate(page, table.getByRole('button', { name: runName(sourceLabels[1]) }), 'Shift+Enter');
   await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Analyze', true);
   await expect(analysis).toBeVisible();
@@ -242,7 +244,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const wired = await edit(() => chooseOption(page, roleField('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   if (first) {
-    const authored = wired.project.documents.analyze.payload as unknown as AnalysisDocument;
+    const authored = wired.project.documents!.analyze.payload as unknown as AnalysisDocument;
     const state = '/v1/model/state/' + first.plantId + '/';
     expect(authored.operations).toMatchObject({
       aligned_velocity: {
@@ -285,7 +287,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const settled = await plan(ordered.revision);
   expect(settled.problems.filter(({ step }) => step === 'analyze' || step === 'report')).toEqual([]);
   expect(requests(settled)).toEqual(requests(original));
-  const reportRequest = settled.requests.find(({ key }) => key.variant === scope && key.step === 'report');
+  const reportRequest = settled.requests?.find(({ key }) => key.variant === scope && key.step === 'report');
   expect(reportRequest?.request_id).toMatch(/^report:/);
   expect(settled.edges).toContainEqual(expect.objectContaining({
     from_key: expect.objectContaining({ step: 'analyze' }), to_key: expect.objectContaining({ step: 'report' }),
@@ -386,7 +388,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
       evaluation_manifest_sha256: result!.receipt.manifest_sha256,
       store_success_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     })));
-    expect(new Set(retained.members.map(({ store_success_sha256 }) => store_success_sha256)).size).toBe(2);
+    expect(new Set(retained.members.map(({ store_success_sha256 }: { store_success_sha256: string }) => store_success_sha256)).size).toBe(2);
     expect(retained.producers.sort()).toEqual(sources.map(({ result }) => result!.job_id).sort());
     const condition = { seed: 0, trial_policy: 'paired', trials: firstCondition.trials };
     expect(retained.condition_inputs).toEqual([
@@ -525,8 +527,10 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   }
   async function selectPair() {
     await openRuns('conditions');
-    const nominal = table.getByRole('button', { name: runName('mass=nominal') });
-    const heavy = table.getByRole('button', { name: runName('mass=heavy') });
+    const rows = (await plan()).window_map!.rows;
+    const label = (row: string) => rows.find(({ key }) => key.step === 'conditions' && key.row === row)!.label;
+    const nominal = table.getByRole('button', { name: runName(label('mass=nominal')) });
+    const heavy = table.getByRole('button', { name: runName(label('mass=heavy')) });
     await nominal.click();
     await heavy.click({ modifiers: ['Shift'] });
     await expect(nominal).toHaveAttribute('aria-pressed', 'true');

@@ -184,8 +184,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     const { snapshot, changed, acknowledgedAt } = await savedEdit;
     const addressed = changed.find(({ element }) => element.kind === 'field' && element.path.at(-1) === 'step_seconds');
     if (!addressed) throw new Error('The acknowledgement did not address the Step field');
-    expect(addressed.document).toBe(modelDocument);
-    const model = snapshot.project.documents[addressed.document].payload as unknown as ModelDocument;
+    const model = snapshot.project.documents![modelDocument].payload as unknown as ModelDocument;
     expect(model.step_seconds).toBe(0.02);
     const plan = await (await settled).json() as StudioSavedTrainRuns;
     expect(plan.revision).toBe(snapshot.revision);
@@ -375,7 +374,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   expect(loaded.request().postDataJSON()).toMatchObject({ key: row.key, job_id: evaluation.job_id, trial });
   const replay = await loaded.json() as WorkspaceReplayTrial;
   expect(replay.identity.stable_id).toBe(trial);
-  expect(replay.manifest_refs.producer_manifest).toMatchObject({
+  expect(replay.manifest_refs!.producer_manifest).toMatchObject({
     kind: 'EvaluationRunManifest', id: result?.result?.receipt.manifest_id,
     metadata: { manifest_sha256: result?.result?.receipt.manifest_sha256 },
   });

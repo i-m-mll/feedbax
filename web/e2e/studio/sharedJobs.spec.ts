@@ -7,7 +7,7 @@ import type {
   StudioJobSubmission,
 } from '../../src/generated/studioContracts';
 import { observeJobStreams } from './observeJobStreams';
-import { fixture, mapStep, openResultsSlot, seedManagedProject } from './fixtures/canonicalTrain';
+import { fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
 
 const rates = ['0.0003', '0.0004', '0.0005', '0.0006', '0.0007', '0.0008'];
 
@@ -27,7 +27,7 @@ ${command}
 
 function row(page: Page, label: string) {
   return page.locator('[data-slot="primary"]').getByRole('table', { name: 'Runs', exact: true }).getByRole('row').filter({
-    has: page.getByRole('button', { name: label, exact: true }),
+    has: page.getByRole('button', { name: runName(label) }),
   });
 }
 
@@ -106,7 +106,7 @@ test('shares live Jobs across windows and observes the four-slot queue', async (
         await expect(row(window, job.label).getByText('Queued', { exact: true })).toBeVisible();
       }
     }
-    await row(second, first.label).getByRole('button', { name: first.label, exact: true }).click();
+    await row(second, first.label).getByRole('button', { name: runName(first.label) }).click();
     await openResultsSlot(second);
     await expect(second.getByRole('img', { name: 'Loss', exact: true }).locator('line title').first()).toBeAttached();
 

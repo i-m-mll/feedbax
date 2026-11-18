@@ -11,7 +11,7 @@ test.use({ viewport: { width: 1440, height: 900 }, trace: 'off' });
 const inspector = (page: Page) => page.locator('[data-studio-focus-region="inspector"]:visible');
 
 function components(saved: StudioProjectSnapshot, document: string) {
-  return Object.entries((saved.project.documents?.[document].payload as ModelDocument).interior.components ?? {});
+  return Object.entries((saved.project.documents?.[document]?.payload as unknown as ModelDocument).interior.components ?? {});
 }
 
 test('the Model inspector frames the document, one component and two', async ({ page, request }) => {

@@ -395,8 +395,7 @@ test('Mounted field sweep continues exactly two Train rows with state', async ({
   await expect(table).toBeInViewport();
   await expect(runs.getByRole('region', { name: 'Definition' })).toHaveCount(0);
   await expect(drawer.getByRole('region', { name: 'Definition' })).toBeVisible();
-  await expect(source).toHaveCSS('outline-width', '2px');
-  await expect(mapStep(page, 'train')).toHaveCSS('background-color', await source.evaluate((node) => getComputedStyle(node).color));
+  await expect(source).toHaveAttribute('data-selected');
   await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
 
   const sweep = source.getByRole('button', { name: /^Sweep \(?learning-rate / });

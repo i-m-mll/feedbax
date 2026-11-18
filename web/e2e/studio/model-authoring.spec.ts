@@ -128,7 +128,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   const linear = await add('Linear', 'Runtime');
   await enter(inspector.getByRole('textbox', { name: 'Input size', exact: true }), '4');
   await expect.poll(async () => Object.values(((await saved()).project.documents?.model?.payload as unknown as ModelDocument)
-    .interior.components ?? {}).find(({ type }) => type === 'feedbax.Linear')).toMatchObject({ fields: { input_size: 4 } });
+    .interior.components ?? {}).find((component) => component.kind === 'leaf' && component.type === 'feedbax.Linear')).toMatchObject({ fields: { input_size: 4 } });
   await enter(inspector.getByRole('textbox', { name: 'Output size', exact: true }), '2');
   await expect.poll(async () => Object.values(((await saved()).project.documents?.model?.payload as unknown as ModelDocument)
     .interior.components ?? {})).toEqual(expect.arrayContaining([expect.objectContaining({

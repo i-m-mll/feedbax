@@ -70,5 +70,5 @@ export async function authorEvaluateConditions({
   expect(rows).toHaveLength(conditions.length);
   expect(projection.edges.filter(({ to_key }) => to_key.step === stepId && to_key.variant === train.variant))
     .toEqual(rows.map(({ key }) => ({ from_key: train, to_key: key })));
-  return { stepId, step: authored.project.steps[stepId], revision: authored.revision, rows };
+  return { stepId, step: authored.project.steps![stepId], revision: authored.revision, rows };
 }
