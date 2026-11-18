@@ -7,7 +7,7 @@ import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegio
 import { StudioRunInspector } from './StudioRunInspector';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
 import {
-  studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
+  studioAccessibleName, studioDateTime, studioDefinitionStatus, studioMachinePower, studioMachineStatus, studioMoney, studioName, studioOpeningStep,
   studioStep, type StudioResultState, type StudioRunStatusId,
 } from './studioVocabulary';
 
@@ -172,7 +172,7 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
       setBusy(false);
     }
   }
-  return <section aria-label={machine.name} className="space-y-2 rounded-md border border-shell-divider px-3 py-2 text-sm">
+  return <section aria-label={studioAccessibleName('machine', machine.name)} className="space-y-2 rounded-md border border-shell-divider px-3 py-2 text-sm">
     <header className="flex items-baseline justify-between gap-2">
       <h3 className="font-medium">{machine.name}</h3>
       <span className="text-shell-muted">{studioMachineStatus(machine.state)}</span>

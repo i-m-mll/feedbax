@@ -32,7 +32,8 @@ export interface ReferenceFieldProps {
   onChoose?: (choice: ReferenceChoice) => void;
   /** The window's element selection, whose pick the crosshair arms. Without it the field has no crosshair. */
   picking?: ElementSelectionStore;
-  'aria-labelledby'?: string;
+  /** The visible label that names the field's trigger, popup and filter. */
+  'aria-labelledby': string;
   className?: string;
 }
 
@@ -58,7 +59,7 @@ export function ReferenceField({ label, groups, value, onChoose, picking, classN
       disabled={disabled}
       autoHighlight
     >
-      <Combobox.Trigger {...aria} aria-label={aria['aria-labelledby'] ? undefined : label}
+      <Combobox.Trigger {...aria}
         className={clsx(fieldFrame, 'h-control min-w-0 flex-1 cursor-default select-none items-center gap-1 px-control-inline',
           'hover:[&:not([data-disabled])]:bg-shell-hover data-[popup-open]:bg-shell-hover', focusRing, glyph, disabledLook)}>
         {value?.glyph && <span aria-hidden="true" className="flex text-shell-muted">{value.glyph}</span>}
@@ -67,9 +68,9 @@ export function ReferenceField({ label, groups, value, onChoose, picking, classN
       </Combobox.Trigger>
       <Combobox.Portal container={usePopupLayer()}>
         <Combobox.Positioner className="z-50 outline-none" sideOffset={4} align="start">
-          <Combobox.Popup aria-label={label}
+          <Combobox.Popup aria-labelledby={aria['aria-labelledby']}
             className={clsx(popupSurface, 'grid min-w-[var(--anchor-width)] max-w-[var(--available-width)] gap-1')}>
-            <Combobox.Input aria-label={label} className={clsx(fieldFrame, fieldInput, 'h-control')} />
+            <Combobox.Input aria-labelledby={aria['aria-labelledby']} className={clsx(fieldFrame, fieldInput, 'h-control')} />
             <Combobox.List className="max-h-[min(22rem,var(--available-height))] overflow-y-auto empty:hidden">
               {(group: { value: string; items: readonly ReferenceChoice[] }) => (
                 <Combobox.Group key={group.value} items={group.items}>

@@ -34,9 +34,8 @@ export function StudioRunReason({ job }: { job: StudioActivityJob }) {
 const bytes = new Intl.NumberFormat(undefined, { style: 'unit', unit: 'byte', unitDisplay: 'narrow' });
 
 export function StudioCollectionProgress({ progress }: { progress?: StoreTransferProgress | null }) {
-  const label = studioRunStatus('collecting');
   return <div className="space-y-1">
-    <progress aria-label={label} value={progress?.verified_bytes} max={progress?.total_bytes} />
+    <progress aria-label={studioRunStatus('collecting')} value={progress?.verified_bytes} max={progress?.total_bytes} />
     {progress && <div className="text-xs text-shell-muted">
       {studioName('verifiedBytes')} {studioFormat('ofCount', {
         count: bytes.format(progress.verified_bytes), total: bytes.format(progress.total_bytes),

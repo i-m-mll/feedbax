@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { requestJson } from '@/api/request';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import type { StudioSavedLightHistory } from '@/generated/studioContracts';
 import { Button } from '@/components/ui/Button';
 
@@ -78,7 +78,7 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
     } }
     : figure.data ? { kind: 'result', missing: [] } : { kind: 'loading' };
   return <StudioRegion state={state} skeleton={<div className="min-h-64 rounded bg-shell-subtle motion-safe:animate-pulse" />}>
-    <div ref={target} role="img" aria-label={name} className="min-h-64 w-full" aria-busy={!ready || undefined} />
+    <div ref={target} role="img" aria-label={studioAccessibleName('figure', name)} className="min-h-64 w-full" aria-busy={!ready || undefined} />
   </StudioRegion>;
 }
 
@@ -102,7 +102,7 @@ export function SavedReportResult({ url }: { url: string }) {
   const [open, setOpen] = useState(false);
   return <details onToggle={({ currentTarget }) => setOpen(currentTarget.open)}>
     <summary className="cursor-pointer">{studioName('result')}</summary>
-    {open && <iframe title={studioName('report')} src={url} sandbox="allow-scripts allow-same-origin"
+    {open && <iframe aria-label={studioName('report')} src={url} sandbox="allow-scripts allow-same-origin"
       className="h-[28rem] w-full rounded-shell-control border border-shell-divider" />}
   </details>;
 }

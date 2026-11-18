@@ -85,11 +85,8 @@ jobs:
       - name: Check Studio source reachability
         run: bun scripts/check-reachability.ts
 
-      - name: Check Studio vocabulary
-        run: bun scripts/check-studio-vocabulary.ts
-
-      - name: Check the shared control layer
-        run: bun scripts/check-control-layer.ts
+      - name: Check types, the shared control layer and Studio vocabulary
+        run: bun run check
 
       - name: Install Playwright browsers
         run: bun x --bun --no-install playwright install --with-deps chromium
