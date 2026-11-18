@@ -95,8 +95,14 @@ def test_an_unreadable_record_is_listed_only_for_its_own_project(host, tmp_path,
 
         cursor = read("b")["cursor"]
         _admit(client, "second", _studio_job("second", "b", sleep))
-        _, page = studio.app.state.job_activity.events(after=cursor, projects=("b",), wait=10, machine=True)
-        assert "second" in {event.job_id for event in page.events}
+
+        def second_listed():
+            nonlocal cursor
+            _, page = studio.app.state.job_activity.events(after=cursor, projects=("b",), wait=0.2, machine=True)
+            cursor = page.cursor
+            return "second" in {event.job_id for event in page.events}
+
+        assert wait_until(second_listed)
         assert {job["job_id"] for job in read("b")["jobs"]} == {"first", "second"}
 
 
