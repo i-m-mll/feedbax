@@ -176,7 +176,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     effective_hash = canonical_sha256(
         {
             "resolved_graph": paired.executable.resolved.resolved_sha256,
-            "checkpoint_values": slot.arrays.sha256,
+            "model_values": slot.tree.descriptor.sha256,
             "source_overrides": {},
         }
     )
@@ -326,7 +326,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
     assert isinstance(paired, PreparedTrialExecution), paired
     effective_hash = canonical_sha256({
         "resolved_graph": paired.executable.resolved.resolved_sha256,
-        "checkpoint_values": slot.arrays.sha256,
+        "model_values": slot.tree.descriptor.sha256,
         "source_overrides": expected_overrides,
     })
 

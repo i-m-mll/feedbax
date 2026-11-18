@@ -336,7 +336,7 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
             assert row["state"] == "failed"
             error = row["outcome"]["error"]
             assert error["code"] == "cannot_run"
-            assert error["path"].startswith("/inputs/subject/checkpoint/model/")
+            assert error["path"].startswith("/inputs/subject/checkpoint/v1/model/value/")
             assert "dtype" in error["message"]
             assert "receipt" not in row["outcome"]
             continue
