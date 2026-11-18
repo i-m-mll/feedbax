@@ -141,7 +141,8 @@ def analyze(processes: dict[int, list[dict]]) -> dict:
             if e["ev"] != "event" or not e.get("test") or e.get("won") is False:
                 continue
             path = Path(e["path"])
-            key = (path.parent.parent.name, path.parent.name)
+            # Job ids repeat across Hosts; a delivery is named by its Host root, job id and attempt.
+            key = (os.path.realpath(path.parents[3]), path.parent.parent.name, path.parent.name)
             job_test[key] = e["test"]
             name = e["kind"] if e["kind"] != "phase" else f"phase:{e['phase']}"
             jobs[key].setdefault(name, e["t"])
@@ -149,18 +150,19 @@ def analyze(processes: dict[int, list[dict]]) -> dict:
                 jobs[key]["last_progress"] = e["t"]
     finished = {}
     for events in processes.values():
+        run = next((e for e in events if e["ev"] == "host_run"), None)
         for e in events:
-            if e["ev"] == "job_finished":
-                finished.setdefault(e["job"], e["t"])
+            if e["ev"] == "job_finished" and run is not None:
+                finished.setdefault((os.path.realpath(run["root"]), e["job"]), e["t"])
     noticed = {}
     for events in processes.values():
         for e in events:
             if e["ev"] == "rpc" and e.get("states"):
                 for job, state in e["states"]:
-                    if state in TERMINAL and job not in noticed:
-                        noticed[job] = e["t"]
-    for (job, attempt), j in jobs.items():
-        test = job_test[(job, attempt)]
+                    if state in TERMINAL:
+                        noticed.setdefault((os.path.realpath(e["root"]), job), e["t"])
+    for (root, job, attempt), j in jobs.items():
+        test = job_test[(root, job, attempt)]
         t, c = tests[test], counts[test]
         c["attempts"] += 1
         accepted = j.get("accepted")
@@ -184,8 +186,9 @@ def analyze(processes: dict[int, list[dict]]) -> dict:
             spans[test]["any_job"].append((accepted, j["terminal"]))
         if (terminal := j.get("terminal")) is not None and end_updates is not None and building is not None:
             t["finalize"] += terminal - end_updates
-        if job in finished and job in noticed and noticed[job] >= finished[job]:
-            t["notice"] += noticed[job] - finished[job]
+        done, seen = finished.get((root, job)), noticed.get((root, job))
+        if done is not None and seen is not None and seen >= done:
+            t["notice"] += seen - done
             c["noticed"] += 1
     # Compile cache: which worker cache directories are used by more than one test.
     cache_tests = collections.defaultdict(set)
