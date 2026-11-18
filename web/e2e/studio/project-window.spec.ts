@@ -259,6 +259,32 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   expect(await read(modelPath)).toBe(json(changed));
 });
 
+test('an Inspector edit typed before the field projection arrives is kept and saved', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const inspector = page.getByRole('complementary', { name: 'Inspector' });
+  const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(`**${projectPath}/model/fields`, async (route) => { await held; await route.continue(); });
+  await page.goto('/?project=' + snapshot.project_id);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await page.getByRole('tabpanel', { name: 'Model', exact: true })
+    .getByRole('article', { name: 'Point mass', exact: true }).locator('header').click();
+  // The field is drawn from the saved document while its projection is held, and the person types into it.
+  await expect(mass).toBeEditable();
+  await mass.fill('2');
+  release();
+  await expect(inspector.locator('[aria-busy="true"]')).toHaveCount(0);
+  const [saved] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === projectPath + '/model/edit'),
+    mass.press('Enter'),
+  ]);
+  expect(saved.ok(), await saved.text()).toBe(true);
+  await expect(mass).toHaveValue('2');
+});
+
 test('the managed window shares selection and retains the folded slot without editing the folder', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('managed-files'));
   const id = snapshot.project_id;
