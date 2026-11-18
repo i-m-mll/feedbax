@@ -254,7 +254,8 @@ def pool(processes: dict[int, list[dict]]) -> dict:
     """Workers by the kind of Host that spawned them and by profile; what each assigned job found; CPU and memory.
 
     A Host is the session's when a session fixture started it, a restart when it is a later Host on a session
-    root, and private otherwise. A profile is test-specific when every job of the run assigned to it ran
+    root, and private otherwise. A worker counts as after a restart when a restart Host spawned it within the test
+    that restarted it; later workers of that Host count as the session's. A profile is test-specific when every job of the run assigned to it ran
     within one test.
     """
     popens = {e["child"]: e for events in processes.values() for e in events if e["ev"] == "popen"}
@@ -292,8 +293,11 @@ def pool(processes: dict[int, list[dict]]) -> dict:
         ready = [e["t"] for p in worker_pids for e in processes.get(p, []) if e["ev"] == "worker_ready"]
         spawn = spawns.get(launcher, (host, {}))[1]
         tests = key_tests.get(spawn.get("key"), set())
+        kind = kinds.get(host, "unknown")
+        if kind == "restart" and test_at(host, launch["start"]) != popens[host].get("test"):
+            kind = "session"  # A restarted Host serves the tests after the one that restarted it.
         workers.append({
-            "host_kind": kinds.get(host, "unknown"), "key": spawn.get("key"), "slot": spawn.get("slot"),
+            "host_kind": kind, "key": spawn.get("key"), "slot": spawn.get("slot"),
             "entrypoint": spawn.get("entrypoint"), "used": launcher in used,
             "import": min(ready) - launch["start"] if ready else None,
             "test_specific": len(tests) == 1 and None not in tests,
