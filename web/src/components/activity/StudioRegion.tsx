@@ -10,6 +10,7 @@ export interface StudioRegionIssue {
 }
 
 export type StudioRegionState =
+  /** A region that has never had content; one that has keeps it while its next read is pending (`useRegionPending`). */
   | { kind: 'loading' }
   | { kind: 'empty' }
   | { kind: 'failed'; issue: StudioRegionIssue; retry: () => void }
@@ -31,6 +32,26 @@ export function studioRegionIssue(name: StudioNameId, error: unknown): StudioReg
       : studioReason('unavailable', studioName(name)),
     detail: message,
   };
+}
+
+/** How long a region's pending read may take before the region's content is dimmed. */
+export const regionPendingMs = 500;
+
+/**
+ * Marks a region whose content is of an earlier revision while its read for the shown revision is pending: it is busy at
+ * once and, once the read has taken longer than `regionPendingMs`, its content is dimmed as a whole until the read arrives.
+ */
+export function useRegionPending(pending: boolean) {
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setTimeout(() => setLate(true), regionPendingMs);
+    return () => {
+      window.clearTimeout(timer);
+      setLate(false);
+    };
+  }, [pending]);
+  return { 'aria-busy': pending || undefined, 'data-region-pending': pending && late ? '' : undefined };
 }
 
 export function StudioRegion({

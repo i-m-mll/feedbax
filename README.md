@@ -60,7 +60,7 @@ bun install --cwd web --frozen-lockfile
 
 Open http://127.0.0.1:3008 in your browser. Each launch uses a fresh temporary data home. Use `./scripts/dev.sh --home /path/to/studio-data` to keep projects and runs across launches, or add `--preview` to serve a production build at http://127.0.0.1:3009.
 
-Run the isolated browser walkthrough with `cd web && bun run test:studio`. Each Playwright worker serves the production frontend from its own Studio home, and the homes share one JAX compilation cache in `web/node_modules/.cache/studio-e2e-jax`; `test:studio` skips the tests that start a job, which are tagged `@round`; `bun run test:studio:round` runs them too, on four workers by default, and `FEEDBAX_STUDIO_TIER=release` adds the responsiveness measurements. Set `FEEDBAX_STUDIO_E2E_WORKERS` to change the number of workers, and `FEEDBAX_STUDIO_TRACE=<spec>[,<spec>]` to keep a Playwright trace of each failing test in the named spec files.
+Run the isolated browser walkthrough with `cd web && bun run test:studio`. Each Playwright worker serves the production frontend from its own Studio home, and the homes share one JAX compilation cache in `web/node_modules/.cache/studio-e2e-jax`; `test:studio` skips the tests that start a job, which are tagged `@round`; `bun run test:studio:round` runs them too, on four workers by default, and `bun run test:studio:release` runs the responsiveness measurements alone, on one worker, so their budgets are read without other tests beside them. Set `FEEDBAX_STUDIO_E2E_WORKERS` to change the number of workers, and `FEEDBAX_STUDIO_TRACE=<spec>[,<spec>]` to keep a Playwright trace of each failing test in the named spec files.
 
 ## Building application packages on feedbax
 
