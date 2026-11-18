@@ -60,8 +60,8 @@ export async function authorWalkthroughSweep(context: Walkthrough) {
   await authorLearningRateSweep(drawer(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
   const sweepRows = (value: StudioSavedTrainRuns) =>
     value.window_map!.rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
-  await expect.poll(async () => sweepRows(await plan(context)).map(({ coordinates }) => coordinates['learning-rate']?.label))
-    .toEqual(['Slow', 'Medium', 'Fast']);
+  await expect.poll(async () => sweepRows(await plan(context)).map(({ coordinates }) => coordinates['learning-rate']?.value))
+    .toEqual([0.001, 0.002, 0.003]);
   return (await plan(context)).rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
 }
 
@@ -198,7 +198,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const beforeWidening = await attempts();
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
   const subset = drawer(page).getByRole('group', { name: 'Subject Subset', exact: true });
-  const fast = subset.getByRole('checkbox', { name: 'Fast · 0.003', exact: true });
+  const fast = subset.getByRole('checkbox', { name: '0.003', exact: true });
   await activate(page, fast, 'Space');
   await expect(fast).toBeChecked();
   const edited = mutation(context, 'PATCH');
