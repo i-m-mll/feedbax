@@ -422,6 +422,13 @@ class ProjectPlan:
     source_snapshot: SourceSnapshot | None = field(default=None, repr=False, compare=False)
     exception_matches: Mapping[tuple[str, str], Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
 
+    def detached(self) -> ProjectPlan:
+        """Return this plan with its own copies of the selected payloads, which callers may change."""
+        return replace(self, selected_definitions=MappingProxyType({
+            key: replace(definition, payload=deepcopy(definition.payload))
+            for key, definition in self.selected_definitions.items()
+        }))
+
     def train_evaluation_source(self, request_id: RequestId) -> tuple[str, ...] | bytes | None:
         """Read the compiled Task facts only for their exact request and documents."""
         source = self._train_evaluation_sources.get(request_id)
@@ -1031,12 +1038,13 @@ class ProjectPlanMemo:
                 self._work = work
 
 
-def _compiler_authority(
+def compiler_authority(
     components: ComponentRegistry | None, operations: OperationRegistry | None,
     functions: FunctionRegistry | None, python_tasks: PythonTaskRegistry | None,
     training_methods: TrainingMethodRegistry | None,
     figure_templates: FigureTemplateRegistry | None,
 ) -> tuple[object, ...]:
+    """Identify the compiler code and registries whose output a memoized plan depends on."""
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
         request_identity.request_codec_authority(), components, operations, functions, python_tasks, training_methods,
@@ -2913,14 +2921,14 @@ def compile_project(
             functions=functions, python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
             capture_sources=capture_sources,
         ).plan()
-    authority = _compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates)
+    authority = compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates)
     ticket, previous = memo._begin(authority)
     compiler = _Compiler(
         project, readers, source_runs, previous, operations, components, functions, python_tasks,
         training_methods=training_methods, figure_templates=figure_templates,
     )
     plan = compiler.plan()
-    if authority == _compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates):
+    if authority == compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates):
         memo._publish(ticket, authority, compiler.work)
     return plan
 
