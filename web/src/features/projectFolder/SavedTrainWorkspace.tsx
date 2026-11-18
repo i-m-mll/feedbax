@@ -4,8 +4,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
 import { apiErrorMessage, isUnanswered } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
-import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
-import { StudioRegion, studioRegionIssue, useRegionPending, type StudioRegionState } from '@/components/activity/StudioRegion';
+import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioCountOf, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -57,11 +56,12 @@ import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
 import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, type SavedTrainRow as SavedRow } from './projectWindowPlan';
+import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows } from './projectWindowPlan';
 import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
-import { StudioEvaluationAttemptDetails, StudioEvaluationResults } from './StudioEvaluationResults';
+import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
+import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
 import { StudioTrainAuthoringForm, SweepFieldItems } from './StudioTrainAuthoringForm';
 import {
@@ -120,76 +120,6 @@ const viewsByKind = {
 } as const satisfies Record<string, readonly ProjectWindowView[]>;
 const emptyViews: readonly ProjectWindowView[] = [];
 const noView = <StudioRegion state={{ kind: 'empty' }} />;
-
-function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResult'; result: NonNullable<SavedRow['result']> }) {
-  const [copyError, setCopyError] = useState(false);
-  return <section aria-label={studioName(name)} className="min-w-0">
-    <h3 className="font-medium">{studioName(name)}</h3>
-    {result.progress && <dl className="space-y-1">
-      <div><dt>{studioName('updates')}</dt><dd>{result.progress.completed_updates}</dd></div>
-    </dl>}
-    <Button onClick={async () => {
-      setCopyError(false);
-      try {
-        await navigator.clipboard.writeText(JSON.stringify(result, null, 2));
-      } catch {
-        setCopyError(true);
-      }
-    }}>{studioName('copyDetails')}</Button>
-    {copyError && <p role="alert">{studioReason('copyFailed', studioName('details'))}</p>}
-  </section>;
-}
-
-/**
- * The run the Results show, read from one plan: the focused row of the step with its chosen or latest attempt, the
- * step's evaluations among the targeted runs, and the one of them in focus.
- */
-function focusedResult(source: StudioSavedTrainRuns | undefined, stepId: string | undefined, focusRunId: string | null | undefined,
-  runIds: ReadonlySet<string>, chosen: { runId: string; jobId: string } | undefined) {
-  const row = source?.rows.find(({ key }) => key.step === stepId && savedRunId(key) === focusRunId);
-  const selectedAttempt = row && chosen?.runId === savedRunId(row.key)
-    ? row.attempts.find(({ job_id }) => job_id === chosen.jobId) : undefined;
-  const scene = source?.window_map?.evaluations?.filter(({ key }) => key.step === stepId && runIds.has(savedRunId(key))) ?? [];
-  const evaluation = scene.find(({ key }) => savedRunId(key) === focusRunId) ?? (scene.length === 1 ? scene[0] : undefined);
-  return { row, attempt: selectedAttempt ?? row?.attempts.at(-1), scene, evaluation };
-}
-
-/** The Results of the shown plan, marked pending while the shown revision's plan is read. */
-function ResultsRegion({ pending, children }: { pending: boolean; children: ReactNode }) {
-  return <div {...useRegionPending(pending)}>{children}</div>;
-}
-
-function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTrainResults>[0], 'selection'> & {
-  attempt: SavedRow['attempts'][number] | undefined;
-}) {
-  const [comparing, setComparing] = useState(false);
-  const results: TrainLossResult[] = [
-    ...(row.result ? [{ name: 'currentResult', result: row.result } as const] : []),
-    ...(row.previous ? [{ name: 'previousResult', result: row.previous } as const] : []),
-  ];
-  const selection = comparing && results.length ? { kind: 'results', results } as const
-    : attempt ? { kind: 'attempt', attempt } as const : undefined;
-  return (
-    <>
-      {selection && <StudioTrainResults {...plot} row={row} selection={selection} />}
-      {results.length > 0 && <details className="mt-3 rounded-surface border border-shell-divider p-3 text-sm"
-        onToggle={(event) => setComparing(event.currentTarget.open)}>
-        <summary className="cursor-pointer font-medium">
-          {studioName(results.length === 2 ? 'compareResults' : results[0].name)}
-        </summary>
-        {row.change && (
-          <p className="mt-2 break-all">
-            <code>{row.change.path}</code>{' '}
-            <code>{JSON.stringify(row.change.before)}</code> → <code>{JSON.stringify(row.change.after)}</code>
-          </p>
-        )}
-        <div className="mt-2 grid gap-3 sm:grid-cols-2">
-          {results.map(({ name, result }) => <ResultDetail key={name} name={name} result={result} />)}
-        </div>
-      </details>}
-    </>
-  );
-}
 
 export default function StudioProjectWorkspace({
   document, onNewStep = checkpointNewStep,
@@ -1376,31 +1306,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             return { body: withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
               fieldRows={detailInputs.fieldRows} />) };
           }
-          const resultsUnavailable = view === 'results' && (planError('results') ?? planUnavailable);
-          if (resultsUnavailable) return {
-            body: <StudioRegion state={resultsUnavailable} />,
-          };
-          const shown = projection.data;
-          const resultsShown = Boolean(shown && !pending && !outside && connected);
-          if (view === 'results' && shownResult.evaluation?.checkpoint_series && resultsShown) return {
-            body: <ResultsRegion pending={planPending}><StudioEvaluationResults evaluation={shownResult.evaluation}
-              replayable={ready && selectedEvaluation === shownResult.evaluation} onReplay={(update) => {
+          const resultsFailure = planError('results');
+          if (view === 'results' && (resultsFailure || !projection.data || (!pending && !outside && connected))) return {
+            body: <SavedResults shown={projection.data} current={!!data} failure={resultsFailure} result={shownResult}
+              project={saved.project_id} fallback={withProblem(noView)}
+              stopped={stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}
+                className="flex items-center gap-2">
+                <h3 id={stoppedCheckpointId} className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
+                <Button {...commandAttributes(stoppedNewStep)}
+                  disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</Button>
+              </section>}
+              onReplay={(update) => {
                 evaluationReplay.chooseCheckpoint(update);
                 setWindowState((current) => showProjectWindowView(current, 'scene', slot));
                 requestSlotFocus((count) => count + 1);
-              }} /></ResultsRegion>,
+              }} />,
           };
-          if (view === 'results' && shownRow && shown && resultsShown) return { body: <ResultsRegion pending={planPending}><div className="p-3">
-            {stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}
-              className="flex items-center gap-2">
-              <h3 id={stoppedCheckpointId} className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
-              <Button {...commandAttributes(stoppedNewStep)}
-                disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</Button>
-            </section>}
-            <TrainResults key={savedRunId(shownRow.key)} project={saved.project_id} revision={shown.revision}
-              evaluations={shown.window_map?.evaluations ?? []} mapRows={shown.window_map?.rows ?? []}
-              rows={shown.rows} row={shownRow} attempt={shownResult.attempt} />
-          </div></ResultsRegion> };
           return { body: withProblem(noView) };
         }}
       />
