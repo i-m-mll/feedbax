@@ -15,7 +15,8 @@ export default defineConfig({
   globalSetup: './e2e/studio/globalSetup.ts',
   grepInvert: tiers[tier],
   fullyParallel: true,
-  workers: Number(process.env.FEEDBAX_STUDIO_E2E_WORKERS ?? Math.max(1, Math.floor(availableParallelism() / 2))),
+  // Job-starting tiers contend for the CPU, so they default to four workers.
+  workers: Number(process.env.FEEDBAX_STUDIO_E2E_WORKERS ?? (tier === 'iteration' ? Math.max(1, Math.floor(availableParallelism() / 2)) : 4)),
   timeout: 30_000,
   use: {
     ...devices['Desktop Chrome'],
