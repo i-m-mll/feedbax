@@ -18,7 +18,7 @@ import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pi
 import type { RunMenu } from '@/components/pipeline/RunContextMenu';
 import type { ActivityResultState } from '@/components/activity/StudioActivity';
 import { useResultValidity } from './useResultValidity';
-import { StudioMachineApproval, StudioRunMachine } from '@/components/pipeline/StudioRunMachine';
+import { StudioMachineApproval, studioRunMachineControl } from '@/components/pipeline/StudioRunMachine';
 import { SweepExceptions } from '@/components/pipeline/SweepExceptions';
 import { Drawer, DrawerSection, useDrawerSections } from '@/features/projectWindow/DrawerForms';
 import { X } from 'lucide-react';
@@ -1290,9 +1290,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             return {
               header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
                 ? runCommands : undefined}
-                machine={<StudioRunMachine catalog={machineCatalog.data} value={requestedMachine}
-                  disabled={busy || machineCatalog.isPending}
-                  onChange={(value) => setMachines((current) => ({ ...current, [step.id]: value }))} />}
+                machine={studioRunMachineControl({ catalog: machineCatalog.data, value: requestedMachine,
+                  disabled: busy || machineCatalog.isPending,
+                  onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
               drawer: (authoring || evaluateInputs || step.inputs.length > 0 || exceptions.length > 0 || evaluationCheckpointRule ||
                 evaluationEditor) ? <Drawer>

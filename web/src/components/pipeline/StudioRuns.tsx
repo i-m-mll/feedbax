@@ -6,7 +6,7 @@ import {
   type StudioResultState, type StudioValidityRows,
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
-import { commandAttributes, type StudioCommand } from "@/features/projectWindow/studioCommands";
+import { commandAttributes, type StudioCommand, type StudioCommandId } from "@/features/projectWindow/studioCommands";
 import type { PlanRunView, PlanView } from "@/features/pipeline/planView";
 import {
   selectionButton,
@@ -18,7 +18,7 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
-import { CommandBar } from "@/components/ui/CommandBar";
+import { CommandBar, type BarControl, type BarEntry, type GlyphCommand } from "@/components/ui/CommandBar";
 import { Select } from "@/components/ui/Select";
 import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/ui/Table";
 import { StudioRunTable, type RunSelectionProps } from "./StudioRunTable";
@@ -231,26 +231,39 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
   </section>;
 }
 
+const lowRunCommands = new Set<StudioCommandId>(["openRun", "pivot"]);
+
+function glyphCommand(command: StudioCommand): GlyphCommand<StudioCommand> {
+  if (!command.glyph) throw new Error(`Pinned command ${command.id} has no glyph`);
+  return command as GlyphCommand<StudioCommand>;
+}
+
+/** The Runs header: Run and Stop are pinned, the Machine picker is normal, Open Run and Pivot are low. */
 export function StudioRunControls({ commands = [], machine, pivotCommand, pivotActive, reason }: {
   commands?: readonly StudioCommand[];
-  machine?: ReactNode;
+  machine?: BarControl;
   pivotCommand?: StudioCommand;
   pivotActive?: boolean;
   reason?: string;
 }) {
-  return <div className="flex min-w-0 flex-1 items-center gap-1">
-    {machine}
-    <CommandBar commands={pivotCommand ? [...commands, pivotCommand] : commands} moreLabel={studioName("more")}
-      itemProps={(command) => ({
-        ...commandAttributes(command),
-        ...(command === pivotCommand ? { pressed: pivotActive } : {}),
-        ...(command.id === "run" ? {
-          focusableWhenDisabled: true,
-          tabIndex: command.enabled ? undefined : -1,
-          "aria-description": command.enabled ? undefined : reason,
-        } : {}),
-      })} />
-  </div>;
+  const run = commands.find(({ id }) => id === "run");
+  const stop = commands.find(({ id }) => id === "stop");
+  const rest = [...commands.filter((command) => command !== run && command !== stop), ...pivotCommand ? [pivotCommand] : []];
+  const entries: BarEntry<StudioCommand>[] = [
+    ...machine ? [{ control: machine, priority: "normal" as const }] : [],
+    ...rest.map((command) => ({ command, priority: lowRunCommands.has(command.id) ? "low" as const : "normal" as const })),
+  ];
+  return <CommandBar moreLabel={studioName("more")} entries={entries}
+    pinned={run ? { action: glyphCommand(run), counterpart: stop && glyphCommand(stop) } : undefined}
+    itemProps={(command) => ({
+      ...commandAttributes(command),
+      ...(command === pivotCommand ? { pressed: pivotActive } : {}),
+      ...(command.id === "run" ? {
+        focusableWhenDisabled: true,
+        tabIndex: command.enabled ? undefined : -1,
+        "aria-description": command.enabled ? undefined : reason,
+      } : {}),
+    })} />;
 }
 
 function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstreamDetail, runMenu }: StudioRunsProps) {

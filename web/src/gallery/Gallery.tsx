@@ -1,6 +1,6 @@
 import { installTooltips } from '@window-shell/browser/tooltip';
 import {
-  Box, ChartLine, ChevronDown, Circle, FileText, FlaskConical, Layers, Maximize, Plus, Search, Settings, Waypoints,
+  Box, ChartLine, ChevronDown, Circle, FileText, FlaskConical, Layers, Maximize, Play, Plus, Search, Settings, Square, Waypoints,
   ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
@@ -8,7 +8,7 @@ import { setAppearance, type AppearanceValue } from '@/appearance/appearance';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Card, CardHead } from '@/components/ui/Card';
-import { CommandBar, type BarCommand } from '@/components/ui/CommandBar';
+import { CommandBar, type BarCommand, type BarEntry } from '@/components/ui/CommandBar';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Chip } from '@/components/ui/Chip';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
@@ -224,16 +224,19 @@ function State({ name, children }: { name: string; children: ReactNode }) {
 
 function CommandBarDemo() {
   const [last, setLast] = useState('');
-  const command = (id: string, title: string, glyph?: BarCommand['glyph'], enabled = true): BarCommand =>
+  const command = <G extends BarCommand['glyph']>(id: string, title: string, glyph: G, enabled = true) =>
     ({ id, title, label: title, glyph, enabled, invoke: () => setLast(title) });
-  const commands = [
-    command('run', 'Run'), command('stop', 'Stop', undefined, false), command('open', 'Open Run'),
-    command('add', 'Add', Plus), command('pivot', 'Pivot'),
+  const pinned = { action: command('run', 'Run', Play), counterpart: command('stop', 'Stop', Square, false) };
+  const entries: BarEntry<BarCommand>[] = [
+    { command: command('add', 'Add', Plus), priority: 'normal' },
+    { command: command('resume', 'Resume', undefined), priority: 'normal' },
+    { command: command('open', 'Open Run', undefined), priority: 'low' },
+    { command: command('pivot', 'Pivot', undefined), priority: 'low' },
   ];
   return (
     <div className="space-y-2">
       <div className="w-[min(100%,24rem)] resize-x overflow-hidden rounded-surface border border-shell-divider p-1">
-        <CommandBar commands={commands} moreLabel="More" aria-label="Commands" />
+        <CommandBar pinned={pinned} entries={entries} moreLabel="More" aria-label="Commands" />
       </div>
       <div className="text-sm text-shell-muted">{last}</div>
     </div>

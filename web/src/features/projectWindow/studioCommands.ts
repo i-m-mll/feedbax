@@ -1,5 +1,5 @@
 import { appTip } from '@window-shell/browser/tooltip';
-import { ArrowLeft, ArrowRight, Command, PanelLeft, PanelRight, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Command, PanelLeft, PanelRight, Play, Square, type LucideIcon } from 'lucide-react';
 import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import type { AppearanceCommandId } from '@/appearance/appearance';
 import { projectWindowViews, type ProjectWindowView } from './projectWindowState';
@@ -57,6 +57,8 @@ const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
   commandPalette: Command,
   showDrawer: PanelLeft,
   showInspector: PanelRight,
+  run: Play,
+  stop: Square,
 };
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
