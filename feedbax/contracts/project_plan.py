@@ -1701,7 +1701,7 @@ class _Compiler:
         )
 
     def prepare_train_trial(self, authored: TrialDocuments) -> _TrainPreparation | tuple[Problem, ...]:
-        from feedbax.compiler.trial_execution import compile_trial_execution
+        from feedbax.compiler.trial_execution import resolve_trial_execution
 
         identity = to_json(
             authored.model_dump(exclude_unset=True, round_trip=True), inf_nan_mode="constants",
@@ -1709,7 +1709,8 @@ class _Compiler:
         if (prepared := self.trial_preparations.get(identity)) is not None:
             return prepared
         components = self.components or _builtin_model_registry()
-        paired = compile_trial_execution(
+        # The plan needs the resolved graph, source addresses and conditions, never a constructed model.
+        paired = resolve_trial_execution(
             authored.model, authored.task_source,
             components, self.functions or _builtin_expression_registry(),
             python_tasks=self.python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
@@ -1718,7 +1719,7 @@ class _Compiler:
         if isinstance(paired, tuple):
             result = paired
         else:
-            graph = paired.executable.resolved.graph
+            graph = paired.graph.graph
             checkpoint_problem = None
             if problem := model_owner_problem(graph, "checkpoint", components):
                 address = paired.lowered.source_address(pointer(problem.path))
