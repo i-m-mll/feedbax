@@ -122,7 +122,14 @@ test('authors a managed Analyze graph from one saved Evaluate run', async ({ pag
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
   await edit(() => pick(role('Velocity'), 'aligned_velocity.velocity'));
 
-  await edit(() => item('Velocity Summary').dragTo(analysis.locator('.react-flow__pane'), { targetPosition: { x: 60, y: 60 } }));
+  const pane = analysis.locator('.react-flow__pane');
+  await analysis.getByRole('button', { name: 'Zoom Out', exact: true }).click();
+  const [paneBox, summaryBox] = await Promise.all([
+    pane.boundingBox(), analysis.getByRole('group', { name: 'Select summarize_velocity', exact: true }).boundingBox(),
+  ]);
+  await edit(() => item('Velocity Summary').dragTo(pane, { targetPosition: {
+    x: summaryBox!.x - paneBox!.x + summaryBox!.width + 100, y: summaryBox!.y - paneBox!.y,
+  } }));
   await analysis.getByRole('group', { name: 'Select velocity_summary', exact: true }).click();
   const wired = await edit(() => pick(role('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);

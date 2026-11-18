@@ -18,11 +18,11 @@ export type CanvasNode = {
 type ElementData = CanvasNode & { selected: boolean };
 
 const ElementCard = memo(function ElementCard({ data }: NodeProps<Node<ElementData>>) {
-  return <Card selected={data.selected} className="w-[150px] text-sm">
+  return <Card selected={data.selected} className="text-sm" style={{ width: cardWidth(data.name) }}>
     <Handle type="target" position={Position.Left} isConnectable={false} className="!opacity-0" />
     <CardHead className="flex min-w-0 items-center gap-1.5 px-2 py-1.5">
       <span aria-hidden="true" className="studio-card__glyph text-shell-muted [&>svg]:size-3.5">{data.glyph}</span>
-      <span className="min-w-0 flex-1 truncate font-medium">{data.name}</span>
+      <span className="min-w-0 flex-1 whitespace-nowrap font-medium">{data.name}</span>
       {data.problem && <StatusMark status="cannot_run" label={data.problem} />}
     </CardHead>
     <Handle type="source" position={Position.Right} isConnectable={false} className="!opacity-0" />
@@ -30,6 +30,9 @@ const ElementCard = memo(function ElementCard({ data }: NodeProps<Node<ElementDa
 });
 
 const nodeTypes = { element: ElementCard };
+const cardHeight = 34;
+/** Wide enough for the glyph, the name and a problem mark, so the name is never cut. */
+const cardWidth = (name: string) => Math.max(150, 56 + name.length * 8);
 
 type CanvasProps = {
   selectedId: string | null;
@@ -54,17 +57,18 @@ export function ManagedDocumentCanvas(props: CanvasProps) {
 function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing, viewportRef, pick, drop }: CanvasProps) {
   const { screenToFlowPosition } = useReactFlow();
   const { nodes, edges } = useMemo(() => {
-    const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR' }).setDefaultEdgeLabel(() => ({}));
-    items.forEach(({ id }) => layout.setNode(id, { width: 150, height: 50 }));
+    const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR', ranksep: 40, nodesep: 24 }).setDefaultEdgeLabel(() => ({}));
+    items.forEach(({ id, name }) => layout.setNode(id, { width: cardWidth(name), height: cardHeight }));
     const edges = connections.filter(({ source, target }) => layout.hasNode(source) && layout.hasNode(target));
-    edges.forEach(({ source, target }) => layout.setEdge(source, target));
+    edges.forEach(({ source, target, label }) => layout.setEdge(source, target, typeof label === 'string'
+      ? { width: label.length * 7 + 16, height: 20, labelpos: 'c' } : {}));
     dagre.layout(layout);
     const nodes = items.map((item): Node<ElementData> => {
       const { x, y } = layout.node(item.id);
       return {
         id: item.id, type: 'element', ariaLabel: studioAccessibleName('select', item.id),
         data: { ...item, selected: false },
-        position: positions?.[item.id] ?? { x: x - 75, y: y - 25 },
+        position: positions?.[item.id] ?? { x: x - cardWidth(item.name) / 2, y: y - cardHeight / 2 },
       };
     });
     return { nodes, edges };

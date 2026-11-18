@@ -221,10 +221,12 @@ export function useManagedAnalyze({
   const canvas = useRef<CanvasViewport>(null);
   const viewport = canvasViewportCommands(() => canvas.current, !!document);
   const connections = [...Object.entries(operations), ...Object.entries(figures)].flatMap(([target, value]) =>
-    Object.entries(value.inputs).map(([role, source]) => ({
-      id: JSON.stringify([target, role]), source: 'input' in source ? source.input : source.element, target,
-      label: ('input' in source ? source.input : source.product) + ' → ' + role,
-    })));
+    Object.entries(value.inputs).map(([role, source]) => {
+      const from = 'input' in source ? source.input : source.element;
+      const product = 'input' in source ? source.input : source.product;
+      const label = product === role ? role : product + ' → ' + role;
+      return { id: JSON.stringify([target, role]), source: from, target, label: label === from ? undefined : label };
+    }));
   const selectedProblems = diagnostics.filter((item) => selected && item.element === selected);
   const selectedPlan = selected ? planned.get(selected) : undefined;
   function writeParameter(path: readonly string[], value: JsonValue) {
