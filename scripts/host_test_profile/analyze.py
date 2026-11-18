@@ -95,7 +95,7 @@ def analyze(processes: dict[int, list[dict]]) -> dict:
                 t[f"pytest_{e['when']}"] += e["stop"] - e["start"]
                 if e["outcome"] == "failed":
                     c["failed"] += 1
-            elif e["ev"] == "rpc":
+            elif e["ev"] == "rpc" and not e.get("relayed"):
                 c[f"rpc_{e['op']}"] += 1
                 if e["op"] in POLLS:
                     c["polls"] += 1
@@ -293,10 +293,15 @@ def attribute(processes: dict[int, list[dict]], hosts: dict, slow: float) -> lis
                 index = e["argv"].index("--root")
                 if index + 1 < len(e["argv"]):
                     hosts_started[e["argv"][index + 1]].append(e["start"])
+    relayed = collections.defaultdict(list)  # op -> the requests stdio relays forwarded to a Host
+    for events in processes.values():
+        for e in events:
+            if e["ev"] == "rpc" and e.get("relayed"):
+                relayed[e["op"]].append(e)
     found = []
     for pid, events in processes.items():
         for e in events:
-            if e["ev"] != "rpc":
+            if e["ev"] != "rpc" or e.get("relayed"):
                 continue
             elapsed = e["t"] - e["start"]
             excess = elapsed - (e.get("wait") or 0)
@@ -305,13 +310,20 @@ def attribute(processes: dict[int, list[dict]], hosts: dict, slow: float) -> lis
             low, high = e["start"], e["t"]
             entry = {"test": e.get("test"), "client": pid, "op": e["op"], "seconds": elapsed, "excess": excess,
                      "error": e.get("error"), "root": e["root"], "start": low}
+            root = e["root"]
             if e.get("stdio"):
-                entry["cause"] = "stdio relay: the Host behind it is not matched"
-                found.append(entry)
-                continue
-            host = next((h for h in by_root.get(e["root"], []) if h["start"] <= high and h["end"] >= low), None)
+                forwarded = [r for r in relayed.get(e["op"], []) if low <= r["start"] and r["t"] <= high
+                             and r.get("test") in (None, e.get("test"))]
+                if not forwarded:
+                    entry["cause"] = "through a stdio relay that recorded no forwarded request"
+                    found.append(entry)
+                    continue
+                relay = max(forwarded, key=lambda r: r["t"] - r["start"])
+                root = entry["root"] = relay["root"]
+                entry["relay"] = {"pid": relay["pid"], "began": relay["start"] - low, "seconds": relay["t"] - relay["start"]}
+            host = next((h for h in by_root.get(root, []) if h["start"] <= high and h["end"] >= low), None)
             if host is None:
-                starting = [s for s in hosts_started.get(e["root"], []) if low <= s <= high]
+                starting = [s for s in hosts_started.get(root, []) if low <= s <= high]
                 entry["cause"] = ("Host started during the call and has no loop record" if starting
                                   else "no profiled Host on this root during the call")
                 found.append(entry)
@@ -353,6 +365,10 @@ def describe(entry: dict) -> list[str]:
              f"{entry['test'] or '(no test)'}  client {entry['client']} host {entry.get('host', '-')}"]
     if "cause" in entry:
         return lines + [f"        {entry['cause']}"]
+    if "relay" in entry:
+        r = entry["relay"]
+        lines.append(f"        through stdio relay {r['pid']}: it began forwarding at +{r['began']:.2f}s "
+                     f"and took {r['seconds']:.2f}s")
     boot = entry.get("host_boot", 0.0)
     if boot:
         lines.append(f"        Host was starting: its loop began {boot:.2f}s into the call")

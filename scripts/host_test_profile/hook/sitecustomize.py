@@ -128,28 +128,39 @@ if DIRECTORY:
 
     def _patch_client(module) -> None:
         client = module.HostClient
-        call = client._call
+        if not hasattr(client, "_exchange"):
+            record("hook_seam_missing", cls="HostClient", names=["_exchange"])
+            return
+        exchange = client._exchange
+        relaying = "attach" in sys.argv  # this process is a stdio relay in front of a Host
 
-        def wrapped(self, op, *args, **kwargs):
+        def wrapped(self, message, *args, **kwargs):
             start = time.time()
-            error = None
+            error = reply = None
             try:
-                value = call(self, op, *args, **kwargs)
-                return value
+                reply = exchange(self, message, *args, **kwargs)
+                return reply
             except BaseException as exc:
                 error = type(exc).__name__
-                value = None
                 raise
             finally:
+                try:
+                    request = json.loads(message)
+                except ValueError:
+                    request = {}
+                value = reply.get("value") if isinstance(reply, dict) else None
+                if isinstance(reply, dict) and isinstance(reply.get("error"), dict):
+                    error = reply["error"].get("code")
                 states = None
                 if isinstance(value, list):
                     states = [[v.get("id"), v.get("state")] for v in value if isinstance(v, dict) and "state" in v]
                 elif isinstance(value, dict) and isinstance(value.get("jobs"), list):
                     states = [[v.get("id"), v.get("state")] for v in value["jobs"] if isinstance(v, dict)]
-                record("rpc", op=op, start=start, root=str(self.root), wait=kwargs.get("wait"), error=error,
-                       stdio=getattr(self, "_attachment", None) is not None, states=states)
+                record("rpc", op=request.get("op"), start=start, root=str(self.root), wait=request.get("wait"),
+                       error=error, stdio=getattr(self, "_attachment", None) is not None, relayed=relaying,
+                       states=states)
 
-        client._call = wrapped
+        client._exchange = wrapped
 
     def _patch_store(module) -> None:
         store = module.Store if hasattr(module, "Store") else None
