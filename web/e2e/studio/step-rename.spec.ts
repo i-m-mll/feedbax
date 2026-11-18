@@ -7,7 +7,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const runs = (page: Page) => page.getByRole('table', { name: 'Runs', exact: true });
 
-test('renaming a Train step keeps its runs and its Evaluate reader Done, and one Undo restores it', async ({ page, request, studio }) => {
+test('renaming a Train step keeps its runs and its Evaluate reader Done, and one Undo restores it', { tag: '@round' }, async ({ page, request, studio }) => {
   test.setTimeout(90_000);
   const projectId: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'step-rename',

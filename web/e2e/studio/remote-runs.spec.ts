@@ -9,7 +9,7 @@ import { pick } from './fixtures/controls';
 
 test.use({ studioBackend: 'remote' });
 
-test('Machine approval reviews the saved selection and collects the remote result', async ({ page, request, studio }, info) => {
+test('Machine approval reviews the saved selection and collects the remote result', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(50_000);
   const fixtureRoot = join(studio.home, 'state', 'studio-e2e-remote');
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -136,7 +136,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
     .toBeAttached();
 });
 
-test('A set of six remote rows keeps its Jobs states and commands across reloads', async ({ page, request, studio }, info) => {
+test('A set of six remote rows keeps its Jobs states and commands across reloads', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture(
     'ordinary-files', '20000', '0.001', '0.0011', '0.0012', '0.0013', '0.0014', '0.0015',

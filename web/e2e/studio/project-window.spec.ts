@@ -79,7 +79,7 @@ test('a failed Task read retries in its slot without disturbing Runs', async ({ 
   }
 });
 
-test('a real Model edit updates map, drawer, and Runs from the saved plan', async ({ page, request }, info) => {
+test('a real Model edit updates map, drawer, and Runs from the saved plan', { tag: '@round' }, async ({ page, request }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const host = await request.get('/api/jobs');

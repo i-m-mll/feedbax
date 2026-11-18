@@ -44,7 +44,7 @@ async function chooseStep(page: Page, step: string) {
   await tab(page, 'Runs').click();
 }
 
-test('authors Evaluate conditions from one authenticated Train checkpoint', async ({ page, request, studio }, info) => {
+test('authors Evaluate conditions from one authenticated Train checkpoint', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(60_000);
   const project: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.evaluate_authoring', studio.home, 'authored-evaluate-conditions',
@@ -323,7 +323,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   return { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis };
 }
 
-test('authors selected saved Evaluate Model and Task inputs and repairs a refused edit', async ({ page, request }) => {
+test('authors selected saved Evaluate Model and Task inputs and repairs a refused edit', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(59_000);
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -523,7 +523,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   });
 });
 
-test('authors checkpoint rules and replays covered updates from Results', async ({ page, request }, info) => {
+test('authors checkpoint rules and replays covered updates from Results', { tag: '@round' }, async ({ page, request }, info) => {
   test.setTimeout(54_000);
   const files = JSON.parse(await runProjectFixture(fixture, 'series-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -761,7 +761,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   await expect(field).toHaveValue('every 2');
 });
 
-test('authors and replays Evaluate from the selected stopped Train checkpoint', async ({ page, request }, info) => {
+test('authors and replays Evaluate from the selected stopped Train checkpoint', { tag: '@round' }, async ({ page, request }, info) => {
   test.setTimeout(58_000);
   const files = JSON.parse(await runProjectFixture(fixture, 'walkthrough-files', '1200'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -841,7 +841,7 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   });
 });
 
-test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', async ({ page, request, studio }, info) => {
+test('saved document Evaluate replays authenticated trials and checkpoints in the Scene', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(85_000);
   const { revision, replayPath, completed, single, finiteRow, fromCheckpoint, analysis } =
     (await runSavedEvaluation(page, request, info, studio.home))!;

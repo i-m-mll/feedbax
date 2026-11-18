@@ -104,7 +104,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
-test('Evaluate edits that remove runs ask first and keep the other results', async ({ page, studio }) => {
+test('Evaluate edits that remove runs ask first and keep the other results', { tag: '@round' }, async ({ page, studio }) => {
   test.setTimeout(90_000);
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'reference-removal'));
   const initial = await open(page, project);
