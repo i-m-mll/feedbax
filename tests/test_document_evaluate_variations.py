@@ -41,7 +41,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored, document_project  # noqa: F401
-from tests.support.host import private_host as host, job_row, wait_until  # noqa: F401
+from tests.support.host import job_row, token, wait_until
 from tests.test_model_document_plan import (
     _add_attachment,
     _attachment_address,
@@ -130,7 +130,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
 
     jobs_by_run = {}
     for key in (train, baseline, condition):
-        (admitted,) = jobs.admit_plan(folders, plan, run_keys=(key,), token=key.step).items
+        (admitted,) = jobs.admit_plan(folders, plan, run_keys=(key,), token=token(key.step)).items
         assert admitted.disposition == "admitted", admitted
         jobs_by_run[key] = admitted.job_id
 
@@ -284,7 +284,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
     assert not snapshot.plan.diagnostics, snapshot.plan.diagnostics
     keys = {step: RunKey("default", step, "default") for step in ("train", "baseline", "condition")}
     admissions = {
-        step: jobs.admit_plan(folders, snapshot, run_keys=(key,), token=step).items[0]
+        step: jobs.admit_plan(folders, snapshot, run_keys=(key,), token=token(step)).items[0]
         for step, key in keys.items()
     }
     completions = {}
@@ -404,9 +404,9 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     row = next(row for row in view.status_rows() if row.key == key)
     assert row.status == "cannot_run"
     assert problem.path in row.reason
-    refused = jobs.admit_plan(folders, snapshot, run_keys=(train.key, key), token="unsupported").items
+    refused = jobs.admit_plan(folders, snapshot, run_keys=(train.key, key), token=token("unsupported")).items
     assert len(refused) == 2 and all(item.disposition == "rejected" for item in refused)
-    assert not host.jobs()
+    assert not host.jobs(project=snapshot.project_id)
 
     _save_project(folders, project, valid)
     restored = folders.read_plan(project, revision=None).plan
@@ -470,14 +470,14 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
     view = read_settled_project_plan(snapshot, jobs)
     rows = {row.key.step: row for row in view.status_rows()}
     assert rows["learned"].status == rows["retired"].status == "cannot_run"
-    refused = jobs.admit_plan(folders, snapshot, run_keys=(rows["learned"].key,), token="learned")
+    refused = jobs.admit_plan(folders, snapshot, run_keys=(rows["learned"].key,), token=token("learned"))
     assert refused.items[0].disposition == "rejected"
-    assert not host.jobs()
+    assert not host.jobs(project=snapshot.project_id)
 
     keys = {step: RunKey("default", step, "default") for step in ("train", "baseline", "curl")}
-    (train,) = jobs.admit_plan(folders, snapshot, run_keys=(keys["train"],), token="train").items
+    (train,) = jobs.admit_plan(folders, snapshot, run_keys=(keys["train"],), token=token("train")).items
     evaluations = jobs.admit_plan(
-        folders, snapshot, run_keys=(keys["baseline"], keys["curl"]), token="evaluate",
+        folders, snapshot, run_keys=(keys["baseline"], keys["curl"]), token=token("evaluate"),
     ).items
     assert train.disposition == "admitted"
     assert all(item.disposition == "admitted" for item in evaluations)

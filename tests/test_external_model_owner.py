@@ -21,18 +21,13 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.installed_package import install_discovery_fixture
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.support.host import private_host as host_fixture, job_row, restart, wait_until
-
-host = host_fixture
+from tests.support.host import job_row, token, wait_until, worker_environment
 
 
 def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(host, tmp_path, monkeypatch):
     installed_site = install_discovery_fixture(tmp_path / "installed")
     monkeypatch.syspath_prepend(str(installed_site))
-    paths = (str(installed_site), os.environ.get("PYTHONPATH", ""))
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, paths)))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
-    restart(host)
     registry = load_application().bundle
 
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -81,9 +76,11 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
     ).spec
     assert isinstance(request, DocumentTrainingRequestSpec)
     jobs = JobService(host, registry)
+    paths = (str(installed_site), os.environ.get("PYTHONPATH", ""))
+    worker_environment(jobs, {"PYTHONPATH": os.pathsep.join(filter(None, paths))})
 
     def run_to_success(key):
-        (admission,) = jobs.admit_plan(folders, reviewed, run_keys=(key,), token=key.step).items
+        (admission,) = jobs.admit_plan(folders, reviewed, run_keys=(key,), token=token(key.step)).items
         assert admission.disposition == "admitted", admission
         row = wait_until(
             lambda: job_row(host, admission.job_id, "succeeded") or job_row(host, admission.job_id, "failed"),

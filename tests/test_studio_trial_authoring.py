@@ -25,7 +25,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.support.host import private_host as host, job_row, wait_until  # noqa: F401
+from tests.support.host import job_row, token, wait_until
 
 
 def _python_project():
@@ -44,7 +44,7 @@ def _python_project():
     return raw
 
 
-def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, monkeypatch):  # noqa: F811
+def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     app = create_app(projects_dir=tmp_path / "projects")
     with TestClient(app) as client:
@@ -202,9 +202,9 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, mon
         assert sample.status_code == 200, sample.text
         np.testing.assert_allclose(sample.json()["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
 
-        def submit(selected, token):
+        def submit(selected, name):
             response = client.post(f"/api/projects/{project}/train-runs", json={
-                "run_keys": [selected], "revision": revision, "token": token,
+                "run_keys": [selected], "revision": revision, "token": token(name),
             })
             assert response.status_code == 202, response.text
             item, = response.json()["items"]
