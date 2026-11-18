@@ -101,6 +101,8 @@ class Host:
         self.file_changes = FileChanges(self.loop, self.wake.set)
         self.workers: dict[int, Worker] = {}
         self.requests: set[asyncio.Task] = set()
+        self.connections: set[asyncio.StreamWriter] = set()
+        self.closing = False
         self.profiles: dict[str, dict] = {}
         self.release_owner = os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT")
         self.interpreter = os.path.realpath(sys.executable)
@@ -953,12 +955,19 @@ class Host:
             case _:
                 raise HostError("invalid_request", f"Unknown host operation: {op}")
 
+    def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        # Registered at the accept itself: a shutdown that begins before the handler first runs still finds it.
+        self.connections.add(writer)
+        return self.serve(reader, writer)
+
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         exiting = False
         request = asyncio.current_task()
         assert request is not None
         self.requests.add(request)
         try:
+            if self.closing:
+                return
             try:
                 raw = await asyncio.wait_for(reader.readline(), 5)
                 if not raw.endswith(b"\n"):
@@ -983,23 +992,31 @@ class Host:
             pass
         finally:
             self.requests.discard(request)
-            writer.close()
+            self.connections.discard(writer)
+            if self.closing:
+                writer.transport.abort()
+            else:
+                writer.close()
             if exiting:
                 self.shutdown_acknowledged = True
                 self.wake.set()
 
     async def run(self) -> None:
         self.address.unlink(missing_ok=True)
-        server = await asyncio.start_unix_server(self.serve, str(self.address), limit=MAX_RPC_BYTES)
+        server = await asyncio.start_unix_server(self._accept, str(self.address), limit=MAX_RPC_BYTES)
         try:
             async with server:
                 try:
                     await self._schedule()
                 finally:
-                    # The server's exit waits for every open connection, so end the requests
-                    # still waiting, such as event long polls, instead of serving them out.
+                    # The server's exit waits for every open connection to close. End them instead of
+                    # serving them out: cancel the requests still waiting, such as event long polls, and
+                    # abort every transport, since closing one waits until a client reads its buffered reply.
+                    self.closing = True
                     for request in tuple(self.requests):
                         request.cancel()
+                    for connection in tuple(self.connections):
+                        connection.transport.abort()
         finally:
             self.file_changes.close()
             for worker in self.workers.values():
