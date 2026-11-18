@@ -82,6 +82,7 @@ def __getattr__(name: str):
 
     app = create_app(remote_runs=StudioRemoteRuns(
         (profile,), (StudioVenue(driver, ENVIRONMENT, jobs, 90, provider.review_quote),), attest=attest,
+        refresh_seconds=.05, provider_retry_seconds=.5,
     ))
     application = app.router.lifespan_context
 

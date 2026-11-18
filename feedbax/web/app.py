@@ -43,13 +43,13 @@ STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
 service_log = logging.getLogger("uvicorn.error")
 
 
-async def _maintain_remote_runs(advance: Callable[[], None], failure: str) -> None:
+async def _maintain_remote_runs(advance: Callable[[], None], failure: str, interval: float) -> None:
     while True:
         try:
             await asyncio.to_thread(advance)
         except Exception:
             service_log.exception(failure)
-        await asyncio.sleep(0.75)
+        await asyncio.sleep(interval)
 
 
 def create_app(
@@ -91,10 +91,11 @@ def create_app(
         maintenance = () if remote_runs is None else (
             asyncio.create_task(_maintain_remote_runs(
                 partial(remote_runs.advance_openings, app.state.project_folders), "Could not advance approved machines.",
+                remote_runs.refresh_seconds,
             )),
             asyncio.create_task(_maintain_remote_runs(
                 partial(remote_runs.observe, app.state.project_folders, app.state.job_service),
-                "Could not refresh the machine activity.",
+                "Could not refresh the machine activity.", remote_runs.refresh_seconds,
             )),
         )
         try:

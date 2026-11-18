@@ -85,7 +85,9 @@ class StudioRemoteRuns:
     def __init__(
         self, profiles: Iterable[SessionTargetProfile], venues: Iterable[StudioVenue],
         *, attest: Callable[[StudioMachineQuote, SessionRequest], SessionAuthorization],
+        refresh_seconds: float = 0.75, provider_retry_seconds: float = 5,
     ) -> None:
+        """``refresh_seconds`` paces opening and observation; ``provider_retry_seconds`` paces outage probes."""
         venues = tuple(venues)
         if any(venue.authorization_seconds <= 0 for venue in venues):
             raise ValueError("Machine approval requires a positive lifetime.")
@@ -96,6 +98,8 @@ class StudioRemoteRuns:
         self._openings = {target: ApprovedSessionRuns(venue.driver, venue.jobs) for target, venue in self._venues.items()}
         self._history = {target: VenueHistory(venue.driver) for target, venue in self._venues.items()}
         self._attest = attest
+        self.refresh_seconds = refresh_seconds
+        self._provider_retry_seconds = provider_retry_seconds
         self._quotes: dict[UUID, _PendingRun] = {}
         self._lock = Lock()
         self._observations: dict[UUID, _VenueObservation] = {}
@@ -120,7 +124,7 @@ class StudioRemoteRuns:
             previous = self._unreachable.get(request.target)
             reason = str(error) if error is not None else None
             if reason is not None:
-                self._unreachable[request.target] = _ProviderOutage(request, reason, monotonic() + 5)
+                self._unreachable[request.target] = _ProviderOutage(request, reason, monotonic() + self._provider_retry_seconds)
             elif previous is not None:
                 del self._unreachable[request.target]
             if (previous.reason if previous is not None else None) != reason:
