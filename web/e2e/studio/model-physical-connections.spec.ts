@@ -61,6 +61,11 @@ test('edits a conserving connection only inside its physical interior', async ({
     await expect(boundaryPort).toBeVisible();
     await fit();
   }
+  /** A reloaded window reopens the Model where it was left, inside Equations. */
+  async function reopenedInEquations() {
+    await expect(boundaryPort).toBeVisible();
+    await fit();
+  }
 
   await revealModel(page, url);
   await fit();
@@ -96,7 +101,7 @@ test('edits a conserving connection only inside its physical interior', async ({
     { owner: 'boundary', port: 'free' },
   ]));
   await revealModel(page, url);
-  await enterEquations();
+  await reopenedInEquations();
   const savedEdge = edge(model, id);
   const savedPath = savedEdge.locator('.react-flow__edge-path');
   await expect(savedPath).toHaveAttribute('d', /^M/);
@@ -113,7 +118,7 @@ test('edits a conserving connection only inside its physical interior', async ({
   const restored = await apply('undo', () => model.press('Meta+Z'));
   expect(stored(restored.snapshot)).toEqual({ [id]: connection });
   await revealModel(page, url);
-  await enterEquations();
+  await reopenedInEquations();
   await expect(savedPath).toHaveAttribute('d', /^M/);
   expect(stored(await openSaved())).toEqual({ [id]: connection });
 });

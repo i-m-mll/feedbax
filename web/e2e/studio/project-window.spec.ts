@@ -149,13 +149,13 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', asyn
   expect(saved.ok(), await saved.text()).toBe(true);
   expect((await saved.json()).result.status).toBe('applied');
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
-  await expect(card.getByText('1 Out of date')).toBeVisible();
-  await expect(drawer.getByText('1 Out of date')).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Select default · Out of date', exact: true })).toBeVisible();
+  await expect(drawer.getByRole('treeitem', { name: 'train Out of date', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
   await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
-  await expect(card.getByText('1 Done')).toBeVisible();
-  await expect(drawer.getByText('1 Done')).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Select default · Done', exact: true })).toBeVisible();
+  await expect(drawer.getByRole('treeitem', { name: 'train Done', exact: true })).toBeVisible();
 });
 
 test('outside saved-folder edits join the mounted Undo history', async ({ page, request, studio }, info) => {
@@ -394,7 +394,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const upper = scene.getByRole('button', { name: 'Select upper', exact: true });
   await expect(upper).toBeVisible();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer' });
-  await drawer.getByRole('region', { name: 'Bodies' }).getByRole('button', { name: 'upper', exact: true }).click();
+  await drawer.getByRole('region', { name: 'Bodies' }).getByRole('treeitem', { name: 'upper', exact: true }).click();
   await expect(upper).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
   await scanStudio(page, info, 'train-scene-geometry');
@@ -477,7 +477,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect(problemButton).toBeFocused();
 
   const broken = page.getByRole('article', { name: 'Train broken' });
-  const scoped = broken.getByRole('button', { name: "1 Can't run", exact: true });
+  const scoped = broken.getByRole('button', { name: "Can't run 1", exact: true });
   await scoped.press('Enter');
   await expect(list.getByRole('listitem')).toHaveCount(brokenProblems.length);
   await anchored();

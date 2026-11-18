@@ -864,12 +864,13 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   try {
     await vision.send('Emulation.setEmulatedVisionDeficiency', { type: 'achromatopsia' });
     await expect(mapAndSteps).toHaveCount(2);
-    for (const region of await mapAndSteps.all()) {
-      for (const kind of ['Train', 'Evaluate']) {
-        const label = region.locator('[data-map-kind-label]').getByText(kind, { exact: true }).first();
-        await expect(label).toBeVisible();
-      }
+    // Without colour, a step's kind is carried by its glyph's shape on the card and in the drawer row.
+    for (const kind of ['Train', 'Evaluate']) {
+      await expect(page.locator('[data-map-canvas]').getByRole('article', { name: new RegExp(`^${kind} `) })
+        .first().locator('.studio-card__glyph svg')).toBeVisible();
     }
+    const rows = page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem');
+    for (const row of await rows.all()) await expect(row.locator('svg').first()).toBeVisible();
     await captureStudioWindow(page, info, 'train-evaluate-map-greyscale');
   } finally {
     await vision.send('Emulation.setEmulatedVisionDeficiency', { type: 'none' });

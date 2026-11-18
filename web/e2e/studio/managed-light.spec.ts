@@ -230,7 +230,10 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     Boolean(response.request().postDataJSON()?.wire));
   await tabTo(page, roleField('Velocity'));
   await page.keyboard.press('ArrowDown');
+  // The popup's search field takes focus after it opens; keys typed before then are lost.
+  await expect(page.locator('input[role="combobox"][aria-label="Velocity"]')).toBeFocused();
   await page.keyboard.type('states');
+  await expect(page.getByRole('option', { name: 'states', exact: true })).toHaveAttribute('data-highlighted');
   await page.keyboard.press('Enter');
   expect((await refusal).status()).toBe(422);
   await expect(analysis.getByRole('alert')).toContainText('Requires dataset schemas');

@@ -139,7 +139,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     await openRuns(page, 'train');
     await activate(page, sourceRow(0));
     await activate(page, sourceRow(1), 'Shift+Enter');
-    await expect(train(page)).toContainText('2 of 3');
+    await expect(train(page).locator('[data-result-run][aria-pressed="true"]')).toHaveCount(2);
   }
 
   async function addSuccessor(kind: 'Train' | 'Evaluate', id: string, producer = 'train') {
@@ -176,7 +176,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     .getByRole('heading', { name: prefix[0].label, exact: true })).toBeVisible();
   for (const [step, kind, count] of [[pairedStep, 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
     await expect(used).toContainText(step);
-    await expect(outline.getByRole('button', { name: `Select ${step} ${kind} ${count}`, exact: true })).toBeVisible();
+    await expect(outline.getByRole('treeitem', { name: new RegExp(`^${step}\\b`) })).toHaveAccessibleDescription(count);
     await expect(mapStep(page, step)).toHaveAccessibleDescription(new RegExp(count));
   }
 

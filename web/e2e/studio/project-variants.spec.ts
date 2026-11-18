@@ -36,7 +36,8 @@ test('a Model value edit changes only its authored variant and keeps exact share
   const inspector = page.getByRole('complementary', { name: 'Inspector' });
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
   const plant = page.getByRole('tabpanel', { name: 'Model', exact: true }).getByRole('article', { name: 'Point mass', exact: true });
-  const selectPlant = () => plant.locator('header').click();
+  // After a reload both restored slots can show the Model; either one selects the same element.
+  const selectPlant = () => plant.first().locator('header').click();
   await page.goto(url);
   await expect(variants).toHaveText('base');
   await mapStep(page, 'train').click();

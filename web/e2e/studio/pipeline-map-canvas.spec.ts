@@ -56,7 +56,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await page.keyboard.press('ArrowRight');
   await expect(mapStep(page, 'successor')).toBeFocused();
   await page.keyboard.press('ArrowLeft');
-  await page.keyboard.press('Enter');
+  await page.keyboard.press('Space');
   await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
   await expect(card('unrelated')).toHaveAttribute('data-map-dimmed', 'true');
   await expect(child).toContainText('2 of 3');
@@ -169,8 +169,8 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await mapStep(page, 'train').press('Enter');
   await expect(mark(included)).toHaveAccessibleName(/ · Done$/, { timeout: 18_000 });
   await expect(mark(excluded)).toHaveAccessibleName(/ · Not run$/);
-  const done = mark(included).locator('[data-run-status-mark="succeeded"] svg');
-  const idle = mark(excluded).locator('[data-run-status-mark="not_run"] svg');
+  const done = mark(included).locator('[data-status-mark="succeeded"] svg');
+  const idle = mark(excluded).locator('[data-status-mark="not_run"] svg');
   await expect(done).toBeVisible();
   await expect(idle).toBeVisible();
   const donePath = done.locator('path');
@@ -178,7 +178,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', as
   await expect(donePath).toHaveCSS('stroke', 'rgb(255, 255, 255)');
   await expect(idlePath).toHaveCSS('stroke', 'rgb(255, 255, 255)');
   expect(await donePath.getAttribute('d')).not.toBe(await idlePath.getAttribute('d'));
-  await expect(child.getByText('2 Not run', { exact: true })).toBeVisible();
+  await expect(child.getByRole('button', { name: / · Not run$/ })).toHaveCount(2);
   await expect(page.getByRole('log', { name: 'Status' }).getByText(/^Train · train · seed=.+: Done$/)).toHaveCount(1);
   const vision = await page.context().newCDPSession(page);
   try {

@@ -104,7 +104,8 @@ test('the rail separator follows the divider and every view keeps its place', as
   const trainOffsets = await glyphOffsets(page);
   for (const [kind, absent] of [['evaluate', ['Objective', 'Training', 'Analysis', 'Figures', 'Document']],
     ['analyze', ['Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Document']]] as const) {
-    await mapStep(page, stepOf(kind)).click();
+    // The zoomed canvas can carry a card under the window bar, so the step is chosen from the drawer.
+    await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${stepOf(kind)}\\b`) }).click();
     expect(await glyphOffsets(page)).toEqual(trainOffsets);
     for (const name of views) {
       const tab = rail(page).getByRole('tab', { name, exact: true });
@@ -113,6 +114,7 @@ test('the rail separator follows the divider and every view keeps its place', as
     }
   }
 
+  await rail(page).getByRole('button', { name: 'Fit View', exact: true }).click();
   await mapStep(page, stepOf('train')).click();
   const trainCard = page.locator(`[data-map-step="${stepOf('train')}"]`).getByRole('button', { name: /^New Step/ });
   await trainCard.click();

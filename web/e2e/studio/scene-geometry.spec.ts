@@ -77,8 +77,8 @@ async function selectFixedGuide(page: Page) {
   const muscle = proof.getByRole('button', { name: 'Select cross_chain', exact: true });
   await muscle.locator(':scope > circle').nth(1).click();
   await expect(muscle).toHaveAttribute('aria-pressed', 'true');
-  await expect(proof.getByRole('region', { name: 'Muscles' }).getByRole('button', { name: 'cross_chain' }))
-    .toHaveAttribute('aria-pressed', 'true');
+  await expect(proof.getByRole('region', { name: 'Muscles' }).getByRole('treeitem', { name: 'cross_chain' }))
+    .toHaveAttribute('aria-selected', 'true');
 }
 
 async function expectInvalidGeometry(page: Page, code: string, message: RegExp) {
