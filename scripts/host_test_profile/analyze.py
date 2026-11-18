@@ -36,14 +36,16 @@ def analyze(directory: Path) -> dict:
             if e["ev"] == "popen":
                 popens[e["child"]] = e
     jax_in_host = []
+    jax_host_paths = collections.Counter()
     # Per-process facts.
     for pid, events in processes.items():
-        role = popens[pid]["role"] if pid in popens else "test"
+        role = "test" if any(e["ev"] == "test_start" for e in events) else popens.get(pid, {}).get("role", "other")
         test = next((e["test"] for e in events if e.get("test")), None)
         for e in events:
             if e["ev"] == "import" and e["module"] == "jax":
                 if role == "host":
                     jax_in_host.append(pid)
+                    jax_host_paths[tuple(e.get("stack") or ())] += 1
                 if test:
                     tests[test][f"jax_import_{'test' if role == 'test' else 'child'}"] += e["t"] - e["start"]
             if e["ev"] == "process_exit" and role == "host" and e.get("jax"):
@@ -61,6 +63,8 @@ def analyze(directory: Path) -> dict:
                 c[f"cache_{'hits' if e['name'].endswith('hits') else 'misses'}_{where}"] += 1
             elif e["ev"] == "popen" and e["role"] == "host":
                 c["hosts"] += 1
+            elif e["ev"] == "popen" and e["role"] == "host_relay":
+                c["host_relays"] += 1
             elif e["ev"] == "host_run" and role == "test":
                 c["hosts_in_process"] += 1
             elif e["ev"] == "popen" and e["role"] == "launcher":
@@ -162,6 +166,7 @@ def analyze(directory: Path) -> dict:
     return {"tests": {k: dict(v) for k, v in tests.items()}, "counts": {k: dict(v) for k, v in counts.items()},
             "jax_in_host_pids": sorted(set(jax_in_host)), "processes": len(processes),
             "worker_cache_dirs": len(cache_tests),
+            "jax_host_import_paths": [[list(k), v] for k, v in jax_host_paths.most_common()],
             "worker_cache_dirs_shared_by_tests": sum(len(v) > 1 for v in cache_tests.values())}
 
 
@@ -182,6 +187,7 @@ def main() -> None:
     selected = {
         test for test, c in result["counts"].items()
         if args.all or c.get("hosts") or c.get("hosts_in_process") or c.get("workers")
+        or any(k.startswith("rpc_") for k in c)
     }
     result["selected"] = sorted(selected)
     if args.json:
@@ -194,7 +200,9 @@ def main() -> None:
     print(f"tests starting a Host or worker: {len(selected)}; processes recorded: {result['processes']}")
     print(f"worker JAX cache directories: {result['worker_cache_dirs']}, "
           f"shared by more than one test: {result['worker_cache_dirs_shared_by_tests']}")
-    print(f"Host processes that imported JAX: {result['jax_in_host_pids'] or 'none'}")
+    print(f"Host processes that imported JAX: {len(result['jax_in_host_pids'])}")
+    for stack, n in result["jax_host_import_paths"]:
+        print(f"  {n}x via", " > ".join(stack[-4:]))
     print("summed seconds:", {p: round(totals[p], 1) for p in PHASES})
     print("summed counts:", dict(sorted(count_totals.items())))
     header = ["test", "wall", "hosts", "workers", "attempts", *PHASES[:-1]]

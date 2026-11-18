@@ -35,7 +35,7 @@ if DIRECTORY:
     def _role(argv) -> str:
         text = " ".join(map(str, argv))
         if "-m feedbax.host" in text or text.endswith("feedbax.host"):
-            return "host"
+            return "host_relay" if any(op in argv for op in ("attach", "init-session")) else "host"
         if "_feedbax_host_runtime" in text:
             for role in ("launcher", "worker", "watchdog"):
                 if f" {role} " in f" {text} ":
@@ -202,7 +202,13 @@ if DIRECTORY:
                 start = time.time()
                 exec_module(module)
                 if fullname in TIMED:
-                    record("import", module=fullname, start=start)
+                    import traceback
+
+                    # The outermost Feedbax frames say which code path pulled the module in.
+                    stack = [f"{f.filename.rsplit('/feedbax/', 1)[-1]}:{f.lineno}:{f.name}"
+                             for f in traceback.extract_stack()
+                             if "/feedbax/" in f.filename and "host_test_profile" not in f.filename]
+                    record("import", module=fullname, start=start, stack=stack[:12])
                 if fullname in PATCHES:
                     PATCHES[fullname](module)
 
