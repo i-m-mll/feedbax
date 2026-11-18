@@ -133,14 +133,14 @@
 
 .studio-card {
   position: relative;
-  border: 1px solid var(--card-border);
+  border: 1px solid var(--card-tint, var(--card-border));
   border-radius: var(--card-radius);
   background: var(--card-surface);
   color: var(--text-primary);
 }
 
 .studio-card:hover {
-  border-color: var(--card-border-hover);
+  border-color: var(--card-tint, var(--card-border-hover));
 }
 
 .studio-card::after {
@@ -286,13 +286,13 @@
 }
 
 [data-card='turbo'] .studio-card {
-  border: 2px solid transparent;
+  border: 2px solid var(--card-tint, transparent);
   background: linear-gradient(var(--surface-header), var(--surface-header)) padding-box, var(--turbo-gradient) border-box;
   transition: box-shadow 200ms;
 }
 
 [data-card='turbo'] .studio-card:hover {
-  border-color: transparent;
+  border-color: var(--card-tint, transparent);
   box-shadow: -6px 0 16px -8px var(--turbo-start), 6px 0 16px -8px var(--turbo-end);
 }
 

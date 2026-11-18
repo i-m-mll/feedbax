@@ -313,6 +313,7 @@
     "reportDocument": "Report Document",
     "new": "New",
     "duplicate": "Duplicate",
+    "variables": "Variables",
     "signals": "Signals",
     "perTrial": "Per Trial",
     "modelInputs": "Model Inputs",
