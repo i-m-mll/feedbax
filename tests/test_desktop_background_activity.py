@@ -206,6 +206,10 @@ def test_background_observation_does_not_start_an_idle_host(tmp_path, monkeypatc
         assert not HostClient(root).address.exists()
 
 
+@pytest.mark.round(
+    "After a Host restart a real Train worker is imported ahead of use and the next Train runs "
+    "in it."
+)
 @pytest.mark.parametrize("desktop_owned", [False, True], ids=["standalone", "desktop-owned"])
 def test_warming_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch, desktop_owned):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
@@ -345,6 +349,10 @@ def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_h
         wait_until(lambda: not subprocess.run(["pgrep", "-f", str(host.root)], capture_output=True).stdout)
 
 
+@pytest.mark.round(
+    "An owned Host exits under a running real Train, and the Train resumes from its checkpoint "
+    "on a new Host."
+)
 def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch):
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.host import HostError

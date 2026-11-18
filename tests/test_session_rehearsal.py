@@ -38,11 +38,9 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, evidence, verify_authorization
 from tests.test_canonical_evaluate_admission import managed_evaluation_definition
-from tests.support.host import private_host, wait_until
+from tests.support.host import wait_until
 from tests.support.hang import HANG_SECONDS
 
-
-host_fixture = private_host
 
 PROJECT = "reaching"
 TRAIN = RunKey("default", "train", "default")
@@ -121,7 +119,11 @@ def _terminal_without_rpc(database: Path):
     return rows if len(rows) == 2 and all(row[2] is not None for row in rows) else None
 
 
-def test_session_rehearses_saved_train_and_evaluate_after_controller_exit(host_fixture, tmp_path, monkeypatch):
+@pytest.mark.round(
+    "A controller process exits after delegating to a venue Host of its own, whose real Train "
+    "and Evaluate are collected exactly."
+)
+def test_session_rehearses_saved_train_and_evaluate_after_controller_exit(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     provider_root = tmp_path / "provider"
@@ -264,7 +266,7 @@ TrainingLoop.run_block = execute
         assert all(row["project"] == project_id for row in attempts)
         assert all(row["data"]["target"] == state.placement.model_dump(mode="json") for row in attempts)
         assert all(SuccessView(source).read_receipt(ref).target == state.placement for ref in receipts.values())
-        local_jobs = _jobs(host_fixture)
+        local_jobs = _jobs(host)
 
         def collect(attempt):
             result = local_jobs.collect_session_attempt(

@@ -16,7 +16,7 @@ test-all:
 	uv run pytest tests/ -q
 
 test-round:
-	uv run pytest -m round -n 4 -q
+	uv run python -m scripts.test_round
 
 lint:
 	uv run ruff check tests/test_batch_reshape_nan_bypass.py

@@ -666,6 +666,10 @@ def test_authenticated_completion_reports_definitive_dependency_errors(
     assert not (tmp_path / "consumed.jsonl").exists()
 
 
+@pytest.mark.round(
+    "A real Train worker's completion is bound to its attempt across two Host restarts and a "
+    "Studio resume."
+)
 def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     host, tmp_path, monkeypatch, request
 ):

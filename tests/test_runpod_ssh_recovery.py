@@ -83,6 +83,9 @@ def _relay(listener, server_port, stalled, finished) -> bool:
     return False
 
 
+@pytest.mark.round(
+    "OpenSSH's own stall timers expire a silent link, 8 to 18 s, and the stream is replayed."
+)
 @pytest.mark.skipif(sys.platform != "darwin", reason="uses an unprivileged macOS OpenSSH server")
 def test_silent_runpod_ssh_stall_expires_and_replays_the_same_stream(tmp_path, monkeypatch, record_property):
     provider = LocalVenueProvider(tmp_path / "venue")

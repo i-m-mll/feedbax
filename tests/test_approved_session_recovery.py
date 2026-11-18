@@ -43,7 +43,7 @@ from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider
 from tests.support.store_transport import loopback_store
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.support.host import private_host, wait_until
+from tests.support.host import wait_until
 from tests.test_session_rehearsal import EVALUATE, PROJECT, TRAIN
 from tests.support.hang import HANG_SECONDS
 
@@ -52,7 +52,6 @@ PROFILE = "recovery"
 RUNS = (TRAIN, EVALUATE)
 API = f"/api/projects/{PROJECT}/train-runs"
 REFUSED = "The original machine refused initialization."
-host_fixture = private_host
 
 
 def _park(root: Path) -> None:
@@ -149,8 +148,8 @@ def _kill_controller(root: Path, action: str) -> UUID:
     return UUID((root / "quote-id").read_text())
 
 
-def _local_project(tmp_path: Path, monkeypatch, host_fixture):
-    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host_fixture.root))
+def _local_project(tmp_path: Path, monkeypatch, host):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     folders = ProjectFolderService(tmp_path / "projects")
@@ -170,8 +169,8 @@ def _approval_row(driver, quote_id):
         ).fetchone()
 
 
-def test_native_refusal_and_edit_during_approval_leave_no_admission(tmp_path, monkeypatch, host_fixture):
-    folders, foreign = _local_project(tmp_path, monkeypatch, host_fixture)
+def test_native_refusal_and_edit_during_approval_leave_no_admission(tmp_path, monkeypatch, host):
+    folders, foreign = _local_project(tmp_path, monkeypatch, host)
     reviewed = folders.read_plan(PROJECT, revision=None)
     challenges = []
 
@@ -210,9 +209,9 @@ def test_native_refusal_and_edit_during_approval_leave_no_admission(tmp_path, mo
 
 
 def test_staging_one_hundred_saved_runs_replies_before_provider_acquisition(
-    tmp_path, monkeypatch, host_fixture, record_property,
+    tmp_path, monkeypatch, host, record_property,
 ):
-    folders, foreign = _local_project(tmp_path, monkeypatch, host_fixture)
+    folders, foreign = _local_project(tmp_path, monkeypatch, host)
     raw = document_project(authored_documents())
     base = raw["steps"].pop("train")
     for index in range(100):
@@ -269,8 +268,8 @@ def test_staging_one_hundred_saved_runs_replies_before_provider_acquisition(
 
 
 @pytest.fixture
-def installed_runpod(tmp_path, monkeypatch, host_fixture):
-    folders, _ = _local_project(tmp_path, monkeypatch, host_fixture)
+def installed_runpod(tmp_path, monkeypatch, host):
+    folders, _ = _local_project(tmp_path, monkeypatch, host)
     source = tmp_path / "source"
     package = source / "feedbax"
     package.mkdir(parents=True)
@@ -414,10 +413,14 @@ def test_plain_text_runpod_rejection_becomes_a_failed_saved_run(installed_runpod
         assert not fake.pods and not fake.secrets
 
 
-def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_path, monkeypatch, host_fixture):
+@pytest.mark.round(
+    "A controller process is killed after approval, and its restart delivers the selection to a"
+    " venue Host with real workers."
+)
+def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_path, monkeypatch, host):
     from feedbax.contracts.studio_project import StudioProjectRename
 
-    folders, foreign = _local_project(tmp_path, monkeypatch, host_fixture)
+    folders, foreign = _local_project(tmp_path, monkeypatch, host)
     authored = folders.read(PROJECT)
     renamed = folders.rename(PROJECT, StudioProjectRename(revision=authored.revision, name="renamed_experiment"))
     assert renamed.snapshot.project_id == authored.project_id
@@ -451,18 +454,20 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
             assert submission.target == opened.placement
             assert submission.project_id == reviewed.project_id
             assert [item.disposition for item in submission.items] == ["admitted", "admitted"]
-            host = restarted.attach(quote_id)
-            assert len(host.submissions(token=str(quote_id))) == 1
-            assert [row["request"] for row in host.jobs()] == [requests[key] for key in RUNS]
+            venue_host = restarted.attach(quote_id)
+            assert len(venue_host.submissions(token=str(quote_id))) == 1
+            assert [row["request"] for row in venue_host.jobs()] == [requests[key] for key in RUNS]
             installed = venue / "projects" / reviewed.revision / reviewed.project_id
             assert {name: (installed / name).read_bytes() for name in files} == files
             assert (venue / "stores" / reviewed.project_id).is_dir()
             assert set(restarted.inventory()) == {opened.venue, foreign}
             assert list((tmp_path / "venues").glob(".used-*")) == [tmp_path / "venues" / f".used-{opened.venue.id}"]
 
-            acknowledged = wait_until(
-                lambda: host.session_status()["collections"] if len(host.session_status()["collections"]) == 2 else None,
-            )
+            def acknowledged_both():
+                collections = venue_host.session_status()["collections"]
+                return collections if len(collections) == 2 else None
+
+            acknowledged = wait_until(acknowledged_both)
             local = SuccessView(ImmutableArtifactBlobProvider(reviewed.store_path))
             for item in submission.items:
                 ref = local.attempt_ref(item.job_id)
@@ -473,8 +478,8 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
     assert restarted.inventory() == (foreign,)
 
 
-def test_recovered_opening_failure_closes_the_original_machine(tmp_path, monkeypatch, host_fixture):
-    folders, foreign = _local_project(tmp_path, monkeypatch, host_fixture)
+def test_recovered_opening_failure_closes_the_original_machine(tmp_path, monkeypatch, host):
+    folders, foreign = _local_project(tmp_path, monkeypatch, host)
     quote_id = _kill_controller(tmp_path, "after-acquisition")
     challenges = []
 

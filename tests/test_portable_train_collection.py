@@ -31,6 +31,9 @@ from tests.support.host import private_host as host_fixture, restart, wait_until
 host = host_fixture
 
 
+@pytest.mark.round(
+    "Real Train results move between two Hosts and resume after the first is removed."
+)
 def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     registries = new_application_registry_bundle()

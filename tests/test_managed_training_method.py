@@ -8,6 +8,7 @@ import shutil
 import signal
 
 import numpy as np
+import pytest
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import EvaluationSubjectValue, success_content_ref
@@ -145,6 +146,10 @@ def _await_stop_gate(venue, job_id, gate):
     wait_until(read)
 
 
+@pytest.mark.round(
+    "An installed training method's stopped real Train is collected from its own Host and "
+    "resumed on another after the first Host's store is removed."
+)
 def test_external_adversarial_method_resumes_and_supplies_its_model(request, tmp_path, monkeypatch):
     _install_methods(tmp_path / "installed", monkeypatch)
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")

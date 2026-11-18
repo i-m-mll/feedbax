@@ -46,11 +46,9 @@ from tests.support.runpod_session import runpod_resources
 from tests.support.session_venue import verify_authorization
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_session_rehearsal import EVALUATE, ISSUER_KEY, PROJECT, TRAIN, _authorization, _jobs, _terminal_without_rpc
-from tests.support.host import private_host, wait_until
+from tests.support.host import wait_until
 from tests.support.hang import HANG_SECONDS
 
-
-host_fixture = private_host
 
 
 def _loopback_ssh(path, *, gate, lost_reply, trace, resources, login):
@@ -157,12 +155,16 @@ def native_execution(tmp_path):
             _terminate_local_venue(venue)
 
 
+@pytest.mark.round(
+    "Studio opens a venue through the real pod entrypoint, a real `uv sync` into the venue "
+    "environment and the watchdog's Host."
+)
 def test_approved_runpod_offer_opens_in_another_region_and_projects_its_stages(
-    host_fixture, native_execution, monkeypatch,
+    host, native_execution, monkeypatch,
 ):
     run = native_execution
     provider, driver, fake = run.provider, run.driver, run.fake
-    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host_fixture.root))
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     projects = run.controller / "projects"
     for name, data in dump_text_project(
         Project.model_validate(document_project(authored_documents(), evaluation=True)),
@@ -244,7 +246,11 @@ def test_approved_runpod_offer_opens_in_another_region_and_projects_its_stages(
             release_ssh.set()
 
 
-def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixture, native_execution):
+@pytest.mark.round(
+    "A saved plan runs real Train and Evaluate workers in a venue built by a real `uv sync`, "
+    "and is collected over SSH."
+)
+def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host, native_execution):
     run = native_execution
     controller, venue, fake = run.controller, run.venue, run.fake
     gate, trace, lost_reply = run.gate, run.trace, run.lost_reply
@@ -296,7 +302,7 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
         return session.delegate(folders, reviewed, run_keys=run_keys, token=token)
 
     typed_jobs = JobService(
-        host_fixture, new_application_registry_bundle(), targets=targets, submit_session=submit_to_venue,
+        host, new_application_registry_bundle(), targets=targets, submit_session=submit_to_venue,
     )
     lost_reply.touch()
     with pytest.raises(OSError, match="exited 74"):
@@ -349,7 +355,7 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
     assert reconnected.host.session_status()["pending"]
 
     gate.touch()
-    local_jobs = _jobs(host_fixture)
+    local_jobs = _jobs(host)
     copied = reconnected.collect_project(local_jobs, approved, observed_only=True)
     assert {item.attempt_id for item in copied} == {train_id, evaluate_id}
     gate.unlink()
@@ -386,6 +392,10 @@ def test_runpod_saved_plan_uses_real_venue_paths_and_collects_over_ssh(host_fixt
 
 
 
+@pytest.mark.round(
+    "A venue built by a real `uv sync` removes its own pod at an 18 s cutoff after its Host and"
+    " controller detach."
+)
 def test_runpod_native_cutoff_removes_only_its_pod_after_host_and_controller_detach(native_execution):
     run = native_execution
     driver, fake = run.driver, run.fake

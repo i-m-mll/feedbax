@@ -26,25 +26,37 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import states_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, job_row, restart, run_job, token, wait_until
 from tests.test_saved_update_series import definition
 from tests.support.store_damage import writable_store_object
 
-host = host_fixture
+PROJECT = "evaluate-store"
 
 
-@pytest.mark.parametrize("damage", [False, True], ids=["replay", "damaged"])
-def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path, monkeypatch, capsys, damage):
+def _trained(host, tmp_path, monkeypatch):
+    """A saved project whose Train has succeeded on `host`."""
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     jobs = JobService(host, new_application_registry_bundle())
     folders = ProjectFolderService(tmp_path / "projects")
-    project = "evaluate-store"
-    _save_project(folders, project, Project.model_validate(definition("last")))
-    plan = folders.read_plan(project, revision=None)
+    _save_project(folders, PROJECT, Project.model_validate(definition("last")))
+    plan = folders.read_plan(PROJECT, revision=None)
     runs = {run.kind: run for run in plan.plan.runs}
-    (train,) = jobs.admit_plan(folders, plan, run_keys=(runs["train"].key,), token="train").items
+    (train,) = jobs.admit_plan(folders, plan, run_keys=(runs["train"].key,), token=token("train")).items
     wait_until(lambda: job_row(host, train.job_id, "succeeded"))
+    return jobs, folders, plan, runs, train
+
+
+@pytest.mark.round(
+    "The Host dies inside the terminal Store commit of a real Evaluate, and the next Host "
+    "republishes it over the committed receipt, or fails it when the committed evidence is "
+    "damaged."
+)
+@pytest.mark.parametrize("damage", [False, True], ids=["replay", "damaged"])
+def test_accepted_saved_evaluate_recovers_committed_store_attempt(private_host, tmp_path, monkeypatch, damage):
+    host = private_host
+    jobs, folders, plan, runs, train = _trained(host, tmp_path, monkeypatch)
+    project = PROJECT
     host.policy(compute=1)
     release = tmp_path / "release"
     gate = run_job(
@@ -52,18 +64,18 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
         f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
         project=project,
     )
-    admit(host, "gate", gate)
+    admit(host, token("gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))
 
-    def submit(token):
-        return jobs.admit_plan(folders, plan, run_keys=(runs["evaluate"].key,), token=token)
+    def submit(name):
+        return jobs.admit_plan(folders, plan, run_keys=(runs["evaluate"].key,), token=token(name))
 
     first = submit("prior")
     release.touch()
     prior = wait_until(lambda: job_row(host, first.items[0].job_id, "succeeded"))
     release.unlink()
     gate = run_job("retry-gate", gate.launch.argv[2], project=project)
-    admit(host, "retry-gate", gate)
+    admit(host, token("retry-gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))
     store = ImmutableArtifactBlobProvider(plan.store_path)
     from feedbax.contracts.effective_success import INDEX_REF
@@ -134,15 +146,34 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
     assert submit("evaluate") == submission
     assert marker.with_suffix(".pending").exists()
     assert SuccessView(store).attempt_ref(attempt) == committed.ref
-    if damage:
-        assert result["outcome"]["error"]["code"] == "publication_failed"
-        assert "store_success" not in result["outcome"]
-        with jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=prior["id"]).open_states() as dataset:
-            assert dataset.data("checkpoint").tolist() == [4]
+    if not damage:
+        assert ContentObjectRef.model_validate(result["outcome"]["store_success"]) == committed.ref
+        assert SuccessView(store).authored(runs["evaluate"].request_id) == committed
         return
+    assert result["outcome"]["error"]["code"] == "publication_failed"
+    assert "store_success" not in result["outcome"]
+    prior_result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=prior["id"])
+    with prior_result.open_states() as dataset:
+        assert dataset.data("checkpoint").tolist() == [4]
 
-    assert ContentObjectRef.model_validate(result["outcome"]["store_success"]) == committed.ref
-    assert SuccessView(store).authored(runs["evaluate"].request_id) == committed
+
+def test_committed_evaluate_damage_is_found_by_check_and_recomputed(host, tmp_path, monkeypatch, capsys):
+    from feedbax.contracts.effective_success import INDEX_REF
+
+    jobs, folders, plan, runs, train = _trained(host, tmp_path, monkeypatch)
+    project = PROJECT
+    store = ImmutableArtifactBlobProvider(plan.store_path)
+
+    def submit(name):
+        return jobs.admit_plan(folders, plan, run_keys=(runs["evaluate"].key,), token=token(name))
+
+    (first,) = submit("prior").items
+    prior = wait_until(lambda: job_row(host, first.job_id, "succeeded"))
+    (evaluate,) = submit("evaluate").items
+    attempt = evaluate.job_id
+    result = wait_until(lambda: job_row(host, attempt, "succeeded"))
+    committed = SuccessView(store).read_attempt(attempt)
+    assert committed.receipt.supersedes.model_dump(mode="json") == prior["outcome"]["store_success"]
     subject = committed.receipt.inputs["subject"][0].evaluation_subject
     assert subject.terminal_checkpoint.run_id == train.job_id
     original = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=attempt)
@@ -207,7 +238,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(host, tmp_path
         _save_project(folders, project, Project.model_validate(new_definition))
         new_plan = folders.read_plan(project, revision=None)
         new_evaluate = next(run for run in new_plan.plan.runs if run.kind == "evaluate")
-        (new_reader,) = jobs.admit_plan(folders, new_plan, run_keys=(new_evaluate.key,), token="blocked").items
+        (new_reader,) = jobs.admit_plan(folders, new_plan, run_keys=(new_evaluate.key,), token=token("blocked")).items
         assert new_reader.disposition == "admitted"
         blocked = wait_until(lambda: job_row(host, new_reader.job_id, "blocked"))
         assert blocked["delivery"] == 0 and model_array.sha256 in blocked["outcome"]["error"]["message"]

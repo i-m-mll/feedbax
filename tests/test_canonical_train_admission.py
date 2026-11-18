@@ -36,6 +36,11 @@ from tests.support.managed_train_fixture import managed_train_payload
 from tests.support.host import admit, job_row, restart, run_job, token, wait_until
 
 
+@pytest.mark.round(
+    "The Host dies inside the terminal Store commit of a real Train, and the next Host "
+    "republishes it over the committed receipt, or fails it when the committed state is "
+    "damaged."
+)
 @pytest.mark.parametrize("damage_committed_state", [False, True], ids=["recover", "corrupt"])
 def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     private_host, tmp_path, monkeypatch, damage_committed_state,
