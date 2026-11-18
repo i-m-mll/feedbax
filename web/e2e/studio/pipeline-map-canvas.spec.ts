@@ -5,7 +5,7 @@ import { scanStudio } from './fixtures/studioAccessibility';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('navigates and resizes the saved pipeline canvas without changing zoom', async ({ page, request }, info) => {
+test('navigates and resizes the saved pipeline canvas without changing zoom', { tag: '@round' }, async ({ page, request }, info) => {
   test.setTimeout(55_000);
   const [model, task, objective, train, successor] = await fixture('managed-files');
   const unrelated = { ...structuredClone(train), id: 'unrelated' };

@@ -26,6 +26,8 @@ from feedbax.jobs import (
 
 _FOLLOW_WAIT = 5.0
 _RETRY_DELAY = 0.5
+# While the host is unreachable, probe it this often so reads recover as soon as it answers.
+_PROBE_DELAY = 0.05
 _RESTART_DELAY_LIMIT = 30.0
 _LOG_LIMIT = 8192
 _PAGE_LIMIT = 256
@@ -154,15 +156,16 @@ class JobActivity:
         while not self._stopped.is_set():
             try:
                 with self._changed:
-                    loaded, after = self._loaded, self._cursor
+                    loaded, after, failing = self._loaded, self._cursor, self._error is not None
                 if not loaded:
                     self._load()
                     delay = _RETRY_DELAY
                     continue
-                self._apply(after, self._service.activity_page(after=after, wait=_FOLLOW_WAIT))
+                # A held error answers every read, so after one the next page is a probe that returns at once.
+                self._apply(after, self._service.activity_page(after=after, wait=0 if failing else _FOLLOW_WAIT))
             except HostError as error:
                 self._fail(error)
-                self._stopped.wait(_RETRY_DELAY)
+                self._stopped.wait(_PROBE_DELAY)
             except Exception as defect:
                 _log.exception("Studio stopped following host jobs; reloading in %.1f s", delay)
                 with self._changed:

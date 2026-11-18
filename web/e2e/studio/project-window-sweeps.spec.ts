@@ -16,7 +16,7 @@ async function readPlan(request: APIRequestContext, path: string) {
   return { snapshot, plan };
 }
 
-test('the saved Train field, map and Runs share sweep values and row identity', async ({ page, request }) => {
+test('the saved Train field, map and Runs share sweep values and row identity', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(55_000);
   const files = await fixture('ordinary-files', '2');
   const { snapshot, projectPath } = await seedManagedProject(request, files);

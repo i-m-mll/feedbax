@@ -54,7 +54,7 @@ async function drainProjects(request: APIRequestContext, projects: string[]) {
   await expect.poll(activeIds, { timeout: 10_000 }).toEqual([]);
 }
 
-test('shares live Jobs across windows and observes the four-slot queue', async ({
+test('shares live Jobs across windows and observes the four-slot queue', { tag: '@round' }, async ({
   page, context, request, baseURL, studio,
 }, testInfo) => {
   test.setTimeout(50_000);
@@ -201,7 +201,7 @@ raise TimeoutError("No isolated sibling published a checkpoint")
   }
 });
 
-test('opens a ninth project window while one stream serves active projects', async ({
+test('opens a ninth project window while one stream serves active projects', { tag: '@round' }, async ({
   context, page, request, baseURL,
 }) => {
   test.setTimeout(45_000);

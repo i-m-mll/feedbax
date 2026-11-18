@@ -322,9 +322,12 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     });
   }
   async function waitForLight(revision: string) {
-    await expect.poll(async () => lightStatus(await plan(revision)).map(({ status }) => status), { timeout: 22_000 })
+    // The report runs last, so its Done status in the open Document view marks the whole chain.
+    await expect(document.getByRole('status').filter({ hasText: /^Done/ })).toBeVisible({ timeout: 22_000 });
+    let projection: StudioProjectWindowMap | undefined;
+    await expect.poll(async () => lightStatus(projection = await plan(revision)).map(({ status }) => status))
       .toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded']);
-    return await plan(revision);
+    return projection!;
   }
   async function showReport(url: string) {
     await expect(document.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('**Velocity** by condition.');
@@ -476,13 +479,13 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   }
 }
 
-test('runs and reopens saved figures and Report from a selected Evaluate row', ({ page, request, studio }, info) =>
+test('runs and reopens saved figures and Report from a selected Evaluate row', { tag: '@round' }, ({ page, request, studio }, info) =>
   savedLightGate({ page, request, home: studio.home }, info));
 
-isolatedTest('walks one saved project through paired results, variants, widened Evaluate and chained Train', ({ page, request, studio }, info) =>
+isolatedTest('walks one saved project through paired results, variants, widened Evaluate and chained Train', { tag: '@round' }, ({ page, request, studio }, info) =>
   savedLightGate({ page, request, home: studio.home }, info, studio));
 
-test('authors a paired Analyze and shared successors from the primary variant', async ({ page, request, studio }, info) => {
+test('authors a paired Analyze and shared successors from the primary variant', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(65_000);
   const home = studio.home;
   const project = JSON.parse(await runProjectFixture(

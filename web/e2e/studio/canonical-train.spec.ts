@@ -43,7 +43,7 @@ test('standalone Activity opens an existing run and hydrates its retained histor
     .jobs.some(({ job_id, seen }) => job_id === attempt.job_id && seen)).toBe(true);
 });
 
-test('Mounted saved Train runs a canonical successor through Jobs', async ({ page, request, studio }, info) => {
+test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(48_000);
   const created = await request.post('/api/projects');
   expect(created.status()).toBe(201);
@@ -184,7 +184,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', async ({ pag
   console.info('Mounted canonical Train', JSON.stringify({ ...evidence, refused_revision: edited!.revision }));
 });
 
-test('Saved Train compares authenticated receipts after a partial run and stopped edit', async ({ page, request, studio }, info) => {
+test('Saved Train compares authenticated receipts after a partial run and stopped edit', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(65_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const created = await request.post('/api/projects');
@@ -372,7 +372,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   console.info('Mounted saved Train history', JSON.stringify(evidence));
 });
 
-test('Mounted field sweep continues exactly two Train rows with state', async ({ page, request, studio }, info) => {
+test('Mounted field sweep continues exactly two Train rows with state', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(47_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   let { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));

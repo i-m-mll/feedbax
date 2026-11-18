@@ -6,7 +6,7 @@ import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixture
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('saves and runs managed optimizer and attachment sweeps', async ({ page, request, studio }, info) => {
+test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(50_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, []);
   const id = snapshot.project_id;

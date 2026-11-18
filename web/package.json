@@ -11,6 +11,7 @@
     "check": "bun --bun tsc -b && bun scripts/check-control-layer.ts && bun scripts/check-studio-vocabulary.ts && bun scripts/check-reachability.ts",
     "test:e2e": "bun scripts/run-browser-tests.ts",
     "test:studio": "bun scripts/run-browser-tests.ts --config playwright.studio.config.ts",
+    "test:studio:round": "FEEDBAX_STUDIO_TIER=round bun scripts/run-browser-tests.ts --config playwright.studio.config.ts",
     "preview": "bun --bun vite preview"
   },
   "dependencies": {

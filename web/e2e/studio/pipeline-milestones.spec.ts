@@ -54,7 +54,7 @@ async function launchRows(page: Page, projectPath: string, keys: StudioSavedTrai
   expect(items.map(({ disposition }) => disposition)).toEqual(keys.map(() => 'admitted'));
 }
 
-test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from Activity',
+test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from Activity', { tag: '@round' },
   async ({ page, request }) => {
     test.setTimeout(50_000);
     let creates = 0;
@@ -117,7 +117,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
   },
 );
 
-test('Activity shows the original CLI and Studio clients for a saved Train request', async ({ page, request, studio }, info) => {
+test('Activity shows the original CLI and Studio clients for a saved Train request', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const project = snapshot.project_id;
@@ -156,7 +156,7 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   });
 });
 
-test('M1 runs only the selected row of a sweep authored in Studio', async ({ page, request }) => {
+test('M1 runs only the selected row of a sweep authored in Studio', { tag: '@round' }, async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '30'));
   await page.goto('/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
@@ -197,7 +197,7 @@ test('M1 runs only the selected row of a sweep authored in Studio', async ({ pag
   expect(end).toBe(30);
 });
 
-for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, async ({ page, request, studio }, info) => {
+for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${grouped ? 'grouped' : 'measured'} Evaluate subset in Runs`, { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(59_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
@@ -372,7 +372,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   await expect(members).toHaveText(expected.map(({ label }) => label));
 });
 
-test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', async ({ page, request }) => {
+test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(58_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const evaluation = 'web.e2e.studio.fixtures.canonical_evaluate';
@@ -530,7 +530,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   console.info('Mounted Evaluate subset receipts', JSON.stringify({ project: snapshot.project_id, revision: final.revision, results }));
 });
 
-test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', async ({ page, request }) => {
+test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(75_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'task-pivot-files'));

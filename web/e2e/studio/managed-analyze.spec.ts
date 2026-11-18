@@ -11,7 +11,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('authors a managed Analyze graph from one saved Evaluate run', async ({ page, request, studio }, info) => {
+test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(70_000);
   const home = studio.home;
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', home, 'managed-analyze'));

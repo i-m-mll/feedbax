@@ -5,7 +5,7 @@ import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('a Model value edit changes only its authored variant and keeps exact shared Train results', async ({ page, request, studio }, info) => {
+test('a Model value edit changes only its authored variant and keeps exact shared Train results', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(55_000);
   const id = await fixture('seed-variants', studio.home, 'model-variants');
   const projectPath = `/api/projects/${id}`;

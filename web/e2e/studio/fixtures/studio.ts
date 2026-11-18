@@ -152,10 +152,32 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
   };
 }
 
+/**
+ * Traces are off; `FEEDBAX_STUDIO_TRACE=<spec file>[,<spec file>…]` records one for each failing
+ * test in those specs. Tracing the context here, not through the worker-scoped `trace` option, keeps the spec
+ * in the shared workers and their Studio.
+ */
+const traced = base.extend<{ namedTrace: void }>({
+  namedTrace: [async ({ context }, use, info) => {
+    const spec = process.env.FEEDBAX_STUDIO_TRACE;
+    const on = spec !== undefined && spec.split(',').some((name) => info.file.endsWith(name));
+    if (on) await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+    await use();
+    if (!on) return;
+    if (info.status === info.expectedStatus) {
+      await context.tracing.stop();
+    } else {
+      const path = info.outputPath('trace.zip');
+      await context.tracing.stop({ path });
+      await info.attach('trace', { path, contentType: 'application/zip' });
+    }
+  }, { auto: true }],
+});
+
 type WorkerFixtures = { studioBackend: StudioBackend; studioFrontend: StudioFrontend; studio: Studio };
 
 /** Each worker owns one Studio; tests in the worker share its home and job host. */
-export const test = base.extend<{}, WorkerFixtures>({
+export const test = traced.extend<{}, WorkerFixtures>({
   studioBackend: ['app', { scope: 'worker', option: true }],
   studioFrontend: ['preview', { scope: 'worker', option: true }],
   studio: [async ({ studioBackend, studioFrontend }, use) => {
@@ -180,7 +202,7 @@ async function workerLogs(home: string) {
 }
 
 /** Each test owns its Studio, for tests that stop and restart the backend. */
-export const isolatedTest = base.extend<{ studio: Studio }>({
+export const isolatedTest = traced.extend<{ studio: Studio }>({
   studio: [async ({}, use, info) => {
     const { studio, close } = await launchStudio('app', 'preview');
     try {

@@ -128,7 +128,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(reopened.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
 });
 
-test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', async ({ page, request, studio }, info) => {
+test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(100_000);
   const totalUpdates = 2400;
   const home = studio.home;
@@ -548,7 +548,7 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(activity).toBeHidden();
 });
 
-test('the keyboard authors, runs and stops a strict checkpoint continuation and follows Results', async ({ page, request }) => {
+test('the keyboard authors, runs and stops a strict checkpoint continuation and follows Results', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(55_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const runsPath = `${projectPath}/train-runs`;

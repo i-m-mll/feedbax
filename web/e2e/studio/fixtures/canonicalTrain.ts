@@ -1,12 +1,30 @@
 import { expect, type APIRequestContext, type Locator, type Page, type TestInfo } from '@playwright/test';
 import type { StudioProjectDocument } from '../../../src/generated/studioContracts';
+import { createHash } from 'node:crypto';
+import { readFile, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { runPython } from './python';
 import { activate, activateMenuItem, chooseStepKind, number } from './studioKeyboard';
 
 
+/** Runs a pure project-file generator (an action named `…files`) once per arguments and Python source. */
+async function generatedFiles(module: string, arguments_: readonly string[]) {
+  const root = process.env.FEEDBAX_STUDIO_E2E_FIXTURES;
+  if (root === undefined) throw new Error('The Studio global setup did not create the fixture cache');
+  const path = join(root, createHash('sha256').update(JSON.stringify([module, ...arguments_])).digest('hex') + '.json');
+  const cached = await readFile(path, 'utf8').catch(() => undefined);
+  if (cached !== undefined) return cached;
+  const output = await runPython({ module }, arguments_);
+  const staging = `${path}.${process.pid}`;
+  await writeFile(staging, output);
+  await rename(staging, path);
+  return output;
+}
+
 export async function runProjectFixture(
   fixture: string | { module: string; home: string }, ...arguments_: string[]
 ) {
+  if (typeof fixture === 'string' && /(^|-)files$/.test(arguments_[0] ?? '')) return generatedFiles(fixture, arguments_);
   if (typeof fixture === 'string') return runPython({ module: fixture }, arguments_);
   return runPython({ module: fixture.module }, arguments_, { FEEDBAX_STUDIO_TEST_HOME: fixture.home });
 }

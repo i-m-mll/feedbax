@@ -155,7 +155,7 @@ test('a mounted Model render failure reports to the service and retries only its
   expect(failedReports()).toBe(1);
 });
 
-test('reopens the same live run and restores loss after backend and host restart', async ({
+test('reopens the same live run and restores loss after backend and host restart', { tag: '@round' }, async ({
   browser, page, request, studio,
 }) => {
   test.setTimeout(50_000);

@@ -13,7 +13,7 @@ function submitted(page: Page, path: string) {
     response.request().method() === 'POST' && new URL(response.url()).pathname === path);
 }
 
-test('the slot header switches, creates, duplicates and renames a step\'s documents in place', async ({ page, request }) => {
+test('the slot header switches, creates, duplicates and renames a step\'s documents in place', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
   const runsPath = `${projectPath}/train-runs`;
