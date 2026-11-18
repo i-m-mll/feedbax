@@ -7,7 +7,8 @@ const allowed = [
   'PLAYWRIGHT_JSON_OUTPUT_FILE',
   'FEEDBAX_E2E_PORT',
   'FEEDBAX_STUDIO_E2E_WORKERS',
-  'FEEDBAX_STUDIO_MEASURE',
+  'FEEDBAX_STUDIO_TIER',
+  'FEEDBAX_STUDIO_TRACE',
 ] as const;
 
 const env: Record<string, string> = { FEEDBAX_BROWSER_TEST_RUNNER: '1' };
