@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from feedbax.host import AdmissionItem, Edge, HostClient, HostError, Job, Launch
+from tests.support import minimal_worker
 from tests.support.hang import HANG_SECONDS
 from tests.support.host import admit, job_row, private_host, restart, run_job, wait_until
 
@@ -100,38 +101,8 @@ while not Path({str(release)!r}).exists():
 @pytest.mark.parametrize("stop_first", [False, True])
 def test_completion_edges_are_bound_to_one_attempt(host, tmp_path, stop_first):
     """Exercise real daemon scheduling with controlled worker events."""
-    release = tmp_path / "release"
     deliveries = tmp_path / "deliveries"
-    (tmp_path / "phase_fixture.py").write_text("""
-import json
-import os
-from pathlib import Path
-import time
-
-def main(args):
-    payload = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
-    stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-    release = Path(payload["release"])
-    with Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]).open("a", buffering=1) as stream:
-        checkpoint = {"completed_updates": 1}
-        print(json.dumps({
-            "kind": "publication", "data": {"key": "checkpoint:1", "checkpoint": checkpoint},
-        }), file=stream)
-        while not release.exists() and not stop.exists():
-            time.sleep(0.01)
-        print(json.dumps({
-            "kind": "result",
-            "data": {"outcome": "stopped", "checkpoint": checkpoint}
-                if stop.exists() else {"outcome": "succeeded"},
-        }), file=stream)
-    return 0
-""")
-    launch = Launch(
-        (sys.executable,),
-        cwd=str(tmp_path),
-        warm_entrypoint="phase_fixture:main",
-        payload={"release": str(release)},
-    )
+    launch = minimal_worker.launch(tmp_path)
     prefix = Job("prefix", "project", "prefix-request", launch)
     successor = run_job(
         "successor",
@@ -140,7 +111,7 @@ def main(args):
         slot="light",
     )
     submission = admit(host, "phases", successor, prefix)
-    wait_until(lambda: job_row(host, prefix.id)["checkpoint"] == {"completed_updates": 1})
+    wait_until(lambda: job_row(host, prefix.id)["checkpoint"] == minimal_worker.CHECKPOINT)
     assert job_row(host, successor.id)["state"] == "queued"
     assert not deliveries.exists()
     if stop_first:
@@ -150,12 +121,12 @@ def main(args):
         assert blocked["outcome"]["error"]["code"] == "dependency_ended"
         continued = Job("continued", prefix.project, prefix.request, launch, continues=prefix.id)
         admit(host, "continuation", continued)
-        release.touch()
+        minimal_worker.release(tmp_path, continued.id)
         wait_until(lambda: job_row(host, continued.id, "succeeded"))
         assert job_row(host, successor.id)["state"] == "blocked"
         assert not deliveries.exists()
     else:
-        release.touch()
+        minimal_worker.release(tmp_path, prefix.id)
         finished = wait_until(lambda: job_row(host, successor.id, "succeeded"))
         assert finished["delivery"] == 1
         assert admit(host, "phases", successor, prefix) == submission
@@ -163,44 +134,15 @@ def main(args):
 
 
 def test_warm_entrypoint_reports_checkpoint_stop_and_typed_error(host, tmp_path):
-    module = tmp_path / "worker_fixture.py"
-    module.write_text("""
-import json
-import os
-import time
-from pathlib import Path
-
-def main(args):
-    payload = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
-    log = Path(os.environ["FEEDBAX_HOST_EVENT_LOG"])
-    if payload["fail"]:
-        result = {"outcome": "failed", "error": {"code": "update_failed", "message": "Update failed."}}
-    else:
-        while not Path(os.environ["FEEDBAX_HOST_STOP_FILE"]).exists():
-            time.sleep(0.01)
-        result = {"outcome": "stopped", "checkpoint": {"step": 4}}
-    with log.open("a") as stream:
-        stream.write(json.dumps({"kind": "result", "data": result}) + "\\n")
-    return int(payload["fail"])
-""")
-
-    def make_launch(*, fail):
-        return Launch(
-            (sys.executable,),
-            cwd=str(tmp_path),
-            warm_entrypoint="worker_fixture:main",
-            payload={"fail": fail},
-        )
-
-    host.warm(make_launch(fail=False))
-    first = Job("first", "project", "request", make_launch(fail=False))
+    host.warm(minimal_worker.launch(tmp_path))
+    first = Job("first", "project", "request", minimal_worker.launch(tmp_path))
     admit(host, "stop", first)
     wait_until(lambda: job_row(host, first.id, "running"))
     assert host.stop([first.id], "checkpoint")[0]["state"] == "stopping"
     stopped = wait_until(lambda: job_row(host, first.id, "stopped"))
-    assert stopped["checkpoint"] == {"step": 4}
-    continued = Job("continued", "project", "request", make_launch(fail=True), continues=first.id)
-    independent = Job("independent", "project", "request", make_launch(fail=False))
+    assert stopped["checkpoint"] == minimal_worker.CHECKPOINT
+    continued = Job("continued", "project", "request", minimal_worker.launch(tmp_path, fail=True), continues=first.id)
+    independent = Job("independent", "project", "request", minimal_worker.launch(tmp_path))
     admit(host, "rerun", independent)
     wait_until(lambda: job_row(host, independent.id, "running"))
     with pytest.raises(HostError) as refusal:
@@ -305,6 +247,49 @@ time.sleep(120)
     outcome = wait_until(lambda: job_row(host, fault.id, "failed"))["outcome"]
     assert outcome["signal"] == signal.SIGABRT
     assert outcome["error"]["code"] == "worker_signal"
+
+
+def test_host_that_dies_committing_a_terminal_commits_it_on_the_next_host(host, tmp_path, monkeypatch):
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    marker = probe / "died"
+    job = Job("attempt", "project", "request", minimal_worker.launch(tmp_path))
+    (probe / "sitecustomize.py").write_text(f"""
+import os
+from pathlib import Path
+from feedbax.host.store import Store
+
+finished = Store.finished
+
+def die_once(self, row, outcome):
+    marker = Path({str(marker)!r})
+    if row["id"] == {job.id!r} and not marker.exists():
+        marker.touch()
+        os._exit(81)
+    return finished(self, row, outcome)
+
+Store.finished = die_once
+""")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(probe), os.environ.get("PYTHONPATH", ""))))
+    restart(host)
+    admit(host, "attempt", job)
+    wait_until(lambda: job_row(host, job.id, "running"))
+    minimal_worker.release(tmp_path, job.id)
+    wait_until(marker.exists)
+
+    def ended():
+        try:
+            row = job_row(host, job.id)
+        except HostError as error:
+            if error.code != "disconnected":
+                raise
+            return None
+        return row if row["outcome"] is not None else None
+
+    row = wait_until(ended)
+    assert (row["state"], row["delivery"]) == ("succeeded", 1), row
+    terminals = [event for event in host.events()["events"] if event["kind"] == "terminal"]
+    assert [event["job_id"] for event in terminals] == [job.id]
 
 
 def test_admission_of_cyclic_dependencies_leaves_no_partial_jobs(host):
@@ -735,7 +720,7 @@ def pause_first_update(self, state, *, completed, count):
 TrainingLoop.run_block = pause_first_update
 """)
 
-    service = JobService(host, new_application_registry_bundle())
+    service = JobService(HostClient(host.root), new_application_registry_bundle())
     monkeypatch.setattr(
         service,
         "_training_worker",
@@ -753,7 +738,13 @@ TrainingLoop.run_block = pause_first_update
     app.include_router(projects.router)
     app.state.job_service = service
     app.state.job_activity = JobActivity(service)
-    request.addfinalizer(app.state.job_activity.close)
+
+    def close_studio():
+        # As the application lifespan does: the follower's long poll ends with the client.
+        service.host.close()
+        app.state.job_activity.close()
+
+    request.addfinalizer(close_studio)
     app.state.remote_runs = None
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)
