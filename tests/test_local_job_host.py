@@ -1234,3 +1234,29 @@ def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path):
             return task.done()
 
     assert _run_host(tmp_path, probe)
+
+
+def test_shutdown_does_not_wait_for_a_reply_its_handler_already_handed_off(tmp_path, monkeypatch):
+    import socket
+
+    from feedbax.host import daemon
+    from feedbax.host.io import encode
+    from feedbax.host.protocol import VERSION
+
+    monkeypatch.setattr(daemon, "REPLY_SECONDS", 0.2)
+
+    async def probe(host, task):
+        host.store.record_put("large", {"value": "x" * 4_000_000})
+        loop = asyncio.get_running_loop()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.setblocking(False)
+            await loop.sock_connect(sock, str(host.address))
+            await loop.sock_sendall(sock, encode({"version": VERSION, "op": "record_get", "key": "large"}))
+            assert await loop.sock_recv(sock, 1) == b"{"
+            # Past the reply limit the handler's own work is over; the client still holds its socket open.
+            await asyncio.sleep(1)
+            task.cancel()
+            await asyncio.wait({task}, timeout=1)
+            return task.done()
+
+    assert _run_host(tmp_path, probe)
