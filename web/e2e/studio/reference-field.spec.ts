@@ -87,8 +87,8 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   await tab(page, 'Analysis').click();
   const canvas = page.getByRole('tabpanel', { name: 'Analysis', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
   await canvas.getByRole('group', { name: 'Select policy', exact: true }).click();
+  if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
   const policy = inspector.getByRole('combobox', { name: 'Policy', exact: true });
   await policy.click();
   const listbox = page.getByRole('listbox');
