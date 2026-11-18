@@ -34,6 +34,8 @@ LOG_LINE_LIMIT = 8192
 EVENT_LINE_LIMIT = 2 * 1024 * 1024
 POLL_SECONDS = 0.20
 TERM_GRACE = 2
+# How long a connection may take to send its request, or to take its reply, before the Host drops it.
+REPLY_SECONDS = 5
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
     "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
@@ -969,7 +971,7 @@ class Host:
             if self.closing:
                 return
             try:
-                raw = await asyncio.wait_for(reader.readline(), 5)
+                raw = await asyncio.wait_for(reader.readline(), REPLY_SECONDS)
                 if not raw.endswith(b"\n"):
                     return
                 message = json.loads(raw)
@@ -987,16 +989,22 @@ class Host:
                     "error": {"code": "disk_full", "message": "The host's state disk is full."}
                 }
             writer.write(encode(reply))
-            await asyncio.wait_for(writer.drain(), 5)
         except (OSError, TimeoutError):
             pass
         finally:
-            self.requests.discard(request)
-            self.connections.discard(writer)
-            if self.closing:
+            # The request and its connection stay registered until the transport has closed, buffered reply
+            # included, so a shutdown meanwhile cancels this handler and aborts the transport.
+            try:
+                if self.closing:
+                    writer.transport.abort()
+                else:
+                    writer.close()
+                    await asyncio.wait_for(writer.wait_closed(), REPLY_SECONDS)
+            except (OSError, TimeoutError):
                 writer.transport.abort()
-            else:
-                writer.close()
+            finally:
+                self.requests.discard(request)
+                self.connections.discard(writer)
             if exiting:
                 self.shutdown_acknowledged = True
                 self.wake.set()
