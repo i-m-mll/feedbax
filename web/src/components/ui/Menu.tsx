@@ -2,7 +2,7 @@ import { ContextMenu as BaseContextMenu } from '@base-ui/react/context-menu';
 import { Menu as BaseMenu } from '@base-ui/react/menu';
 import clsx from 'clsx';
 import { Check } from 'lucide-react';
-import type { ComponentPropsWithoutRef, ReactNode } from 'react';
+import { useRef, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { popupItem, popupSurface } from './styles';
 import { usePopupLayer } from './popupLayer';
 
@@ -27,10 +27,19 @@ export interface MenuContentProps {
 }
 
 export function MenuContent({ children, side = 'bottom', align = 'start', anchor, finalFocus, className, ...aria }: MenuContentProps) {
+  const popup = useRef<HTMLDivElement>(null);
+  // Focus returns when the close animation ends. If the person has moved focus elsewhere by then, it stays there:
+  // returning it would send their next keys to the field the menu came from.
+  const settle: PopupProps['finalFocus'] = (closeType) => {
+    const active = document.activeElement;
+    if (active && active !== document.body && !popup.current?.contains(active)) return false;
+    if (typeof finalFocus === 'function') return finalFocus(closeType);
+    return typeof finalFocus === 'object' ? finalFocus.current : finalFocus ?? true;
+  };
   return (
     <BaseMenu.Portal container={usePopupLayer()}>
       <BaseMenu.Positioner className="z-50 outline-none" side={side} align={align} sideOffset={4} anchor={anchor}>
-        <BaseMenu.Popup className={clsx(popupSurface, 'min-w-[10rem]', className)} finalFocus={finalFocus} {...aria}>{children}</BaseMenu.Popup>
+        <BaseMenu.Popup ref={popup} className={clsx(popupSurface, 'min-w-[10rem]', className)} finalFocus={settle} {...aria}>{children}</BaseMenu.Popup>
       </BaseMenu.Positioner>
     </BaseMenu.Portal>
   );
