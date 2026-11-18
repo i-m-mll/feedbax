@@ -6,7 +6,7 @@ import type { ModelDocument, StudioProjectSnapshot } from '../../src/generated/s
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { readSaved } from './fixtures/studioKeyboard';
 
-test.use({ viewport: { width: 1440, height: 900 }, trace: 'off' });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const inspector = (page: Page) => page.locator('[data-studio-focus-region="inspector"]:visible');
 

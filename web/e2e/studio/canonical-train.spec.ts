@@ -15,8 +15,6 @@ import type {
 import { pick } from './fixtures/controls';
 import { palette } from './fixtures/studioKeyboard';
 
-test.use({ trace: 'off', launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] } });
-
 function submitted(page: Page, path: string) {
   return page.waitForResponse((response) =>
     response.request().method() === 'POST' && new URL(response.url()).pathname === path);

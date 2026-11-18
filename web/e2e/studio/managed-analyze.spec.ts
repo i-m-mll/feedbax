@@ -7,11 +7,7 @@ import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 
-test.use({
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 

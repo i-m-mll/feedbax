@@ -3,7 +3,7 @@ import { type Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
-test.use({ trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const views = ['Runs', 'Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Analysis', 'Figures', 'Document'];
 const rail = (page: Page) => page.getByRole('navigation', { name: 'Details', exact: true });

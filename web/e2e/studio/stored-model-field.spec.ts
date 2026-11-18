@@ -4,7 +4,7 @@ import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { placeFromLibrary } from './fixtures/controls';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 test('reopens a Model duration range and an integer sample in their saved forms', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, []);

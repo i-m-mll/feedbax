@@ -3,11 +3,7 @@ import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/gene
 import { enter, fixture, mapStep } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
-test.use({
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 test('a Model value edit changes only its authored variant and keeps exact shared Train results', async ({ page, request, studio }, info) => {
   test.setTimeout(55_000);

@@ -11,12 +11,7 @@ import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
 import { pick, reveal } from './fixtures/controls';
 
-test.use({
-  channel: 'chrome',
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const fixture = 'web.e2e.studio.fixtures.canonical_evaluate';
 const trialIndex = 1;

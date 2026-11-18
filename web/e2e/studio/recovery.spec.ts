@@ -9,11 +9,7 @@ function lossCurve(page: Page) {
   return page.getByRole('img', { name: 'Loss', exact: true }).locator('polyline');
 }
 
-test.use({
-  channel: 'chrome',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const unreachable = 'Service unreachable';
 

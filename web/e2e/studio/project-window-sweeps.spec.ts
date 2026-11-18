@@ -3,11 +3,7 @@ import { type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 
-test.use({
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 async function readPlan(request: APIRequestContext, path: string) {
   const response = await request.get(path);
@@ -194,7 +190,6 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
   expect(new Set(plan.rows.map(({ request_id }) => request_id)).size).toBe(2);
   await expect(page.getByRole('article', { name: 'Train train' }).locator('[data-status-mark="not_run"]')).toHaveCount(2);
 });
-
 
 test('an authored component range reopens as its exact rule and To List keeps row IDs', async ({ page, request }) => {
   const [model, task, objective, train] = await fixture('ordinary-files', '2');

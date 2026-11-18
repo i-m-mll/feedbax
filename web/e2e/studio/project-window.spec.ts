@@ -7,11 +7,7 @@ import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedMa
 import { scanStudio } from './fixtures/studioAccessibility';
 import { tabTo } from './fixtures/studioKeyboard';
 
-test.use({
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 test('opens a readable project beside a malformed project folder', async ({ page, request, studio }, info) => {
   const { snapshot, configuration } = await seedManagedProject(request, []);

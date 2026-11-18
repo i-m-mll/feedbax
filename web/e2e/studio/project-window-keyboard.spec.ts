@@ -7,11 +7,7 @@ import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, p
 import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
 import { outlineRow } from './fixtures/controls';
 
-test.use({
-  trace: 'off',
-  launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
-  viewport: { width: 1440, height: 900 },
-});
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const region = (page: Page, id: string) => page.locator(`[data-studio-focus-region="${id}"]:visible`);
 const command = (page: Page, id: string) => page.locator(`button[data-command-id="${id}"]:visible`).first();

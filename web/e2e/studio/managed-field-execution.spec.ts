@@ -4,7 +4,7 @@ import type {
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
-test.use({ channel: 'chrome', trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 test('saves and runs managed optimizer and attachment sweeps', async ({ page, request, studio }, info) => {
   test.setTimeout(50_000);

@@ -14,9 +14,12 @@ export default defineConfig({
   timeout: 30_000,
   use: {
     ...devices['Desktop Chrome'],
+    // Worker-scoped options are set here only: specs that differ in one need their own workers,
+    // and each worker starts its own Studio.
     headless: true,
+    launchOptions: { args: ['--use-mock-keychain', '--password-store=basic'] },
+    trace: 'off',
     actionTimeout: 5_000,
     serviceWorkers: 'block',
-    trace: 'retain-on-failure',
   },
 });

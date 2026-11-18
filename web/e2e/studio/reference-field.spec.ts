@@ -4,7 +4,7 @@ import type { StudioProjectDocument, StudioSavedTrainRuns } from '../../src/gene
 import { appendManagedFiles, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
-test.use({ trace: 'off', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
