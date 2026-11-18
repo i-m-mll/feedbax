@@ -254,7 +254,8 @@ def pool(processes: dict[int, list[dict]]) -> dict:
     """Workers by the kind of Host that spawned them and by profile; what each assigned job found; CPU and memory.
 
     A Host is the session's when a session fixture started it, a restart when it is a later Host on a session
-    root, and private otherwise. A profile is test-specific when every job assigned to it ran within one test.
+    root, and private otherwise. A profile is test-specific when every job of the run assigned to it ran
+    within one test.
     """
     popens = {e["child"]: e for events in processes.values() for e in events if e["ev"] == "popen"}
     kinds = {}
@@ -280,7 +281,7 @@ def pool(processes: dict[int, list[dict]]) -> dict:
                 assigns.setdefault((e["job"], e["launcher"]), (pid, e))
     key_tests = collections.defaultdict(set)
     for (job, _), (host, e) in assigns.items():
-        key_tests[(host, e["key"])].add(test_at(host, e["t"]))
+        key_tests[e["key"]].add(test_at(host, e["t"]))
     used = {launcher for _, launcher in assigns}
     workers = []
     for launcher, launch in popens.items():
@@ -290,7 +291,7 @@ def pool(processes: dict[int, list[dict]]) -> dict:
         worker_pids = [p for p, e in popens.items() if e["role"] == "worker" and e["pid"] == launcher]
         ready = [e["t"] for p in worker_pids for e in processes.get(p, []) if e["ev"] == "worker_ready"]
         spawn = spawns.get(launcher, (host, {}))[1]
-        tests = key_tests.get((host, spawn.get("key")), set())
+        tests = key_tests.get(spawn.get("key"), set())
         workers.append({
             "host_kind": kinds.get(host, "unknown"), "key": spawn.get("key"), "slot": spawn.get("slot"),
             "entrypoint": spawn.get("entrypoint"), "used": launcher in used,

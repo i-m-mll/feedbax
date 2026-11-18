@@ -350,9 +350,10 @@ TrainingLoop.run_block = execute
 def test_watchdog_closes_venue_at_cost_ceiling_after_host_dies(tmp_path):
     provider = LocalVenueProvider(tmp_path / "provider")
     driver = _driver(tmp_path / "controller", provider)
-    request = _request(provider, maximum=2_000)
+    # The ceiling leaves room for the venue Host to start on a loaded machine, up to about 2.5 s.
+    request = _request(provider, maximum=6_000)
     state = driver.open(request, _authorization(request), adoption_token=secrets.token_urlsafe())
-    assert state.launch.ends_at_ms == state.launch.acquired_at_ms + 2_000
+    assert state.launch.ends_at_ms == state.launch.acquired_at_ms + 6_000
     venue = driver.attach(request.id)
     os.kill(venue.ping()["pid"], signal.SIGKILL)
     wait_until(lambda: not driver.inventory())

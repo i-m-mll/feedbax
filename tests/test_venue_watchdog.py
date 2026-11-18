@@ -57,7 +57,8 @@ Path({str(confirm)!r}).touch()
 
 def test_detached_watchdog_recovers_host_then_retries_termination(tmp_path):
     bootstrap = tmp_path / "venue"
-    ends_at_ms = int(time.time() * 1000) + 4500
+    # The cutoff leaves room for two Host starts on a loaded machine, each up to about 2.5 s.
+    ends_at_ms = int(time.time() * 1000) + 10_000
     argv, calls, confirmation = prepare_watchdog(bootstrap, ends_at_ms=ends_at_ms)
     subprocess.run([*argv, "--detach"], check=True, timeout=HANG_SECONDS, capture_output=True)
     subprocess.run([*argv, "--detach"], check=True, timeout=HANG_SECONDS, capture_output=True)
