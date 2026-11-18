@@ -230,7 +230,7 @@ function useSceneSelection(elements: ElementSelectionStore, scene: ResolvedScene
   };
 }
 
-function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluationReplay, elements }: DetailInputs,
+function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluationReplay, elements, drawerSections }: DetailInputs,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const interiors = useMemo(() => model ? planarInteriors(model.value.interior) : [], [model]);
   const [interiorChoice, chooseInterior] = useState<{ scope: string; path: string }>();
@@ -281,7 +281,7 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
       ? evaluation?.reason ? <p role="status">{studioReason('observed', evaluation.reason)}</p>
         : <DetailReason reason="scenePlaybackUnavailable" name="playback" />
       : omission,
-    drawer: (scene || trials) && <SceneDrawer scene={scene ?? emptyReplayScene} trials={trials} checkpoints={checkpoints} {...selection} />,
+    drawer: (scene || trials) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyReplayScene} trials={trials} checkpoints={checkpoints} {...selection} />,
     inspector: scene && selection.selectedId ? <SceneElementInspector scene={scene} selectedId={selection.selectedId} /> : null,
   };
 }

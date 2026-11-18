@@ -4,10 +4,13 @@ import { createStore } from 'zustand/vanilla';
 import type { ModelAddress } from '@/generated/studioContracts';
 import { addressKey, at, type Port } from '@/features/projectFolder/model/modelGraph';
 
-/** An element of a document that has no element grammar of its own yet: an Analysis operation or figure, an Objective term. */
+/**
+ * An element of a document that has no element grammar of its own yet: an Analysis operation or figure, an Objective
+ * term, a Task signal. `field` is the field of it whose cell is selected.
+ */
 export interface NamedElementAddress {
   readonly document: string;
-  readonly element: { readonly kind: 'named'; readonly id: string };
+  readonly element: { readonly kind: 'named'; readonly id: string; readonly field?: string };
 }
 
 /** A Model element in the document that holds it; a Model address is relative to its document. */
@@ -58,7 +61,8 @@ export function selectedElement(address: ModelAddress): ModelAddress {
 }
 
 export function elementKey(address: ElementAddress) {
-  return JSON.stringify([address.document, isModelAddress(address) ? addressKey(address.address) : address.element.id]);
+  return isModelAddress(address) ? JSON.stringify([address.document, addressKey(address.address)])
+    : JSON.stringify([address.document, address.element.id, address.element.field ?? null]);
 }
 
 function sameGroup(left: ElementAddress, right: ElementAddress) {

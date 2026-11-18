@@ -69,7 +69,8 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   await expect(model.getByText('Components · Model has no components.', { exact: true })).toBeFocused();
   await mapStep(page, 'train').click();
   await tab('Task').click();
-  await expect(task.getByRole('region', { name: 'Signals' })).toContainText('Reach Target');
+  await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true })
+    .getByRole('region', { name: 'Signals' })).toContainText('Reach Target');
   const taskTarget = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
   const taskSteps = task.getByRole('textbox', { name: /N Steps/i });
   const saved = async () => {

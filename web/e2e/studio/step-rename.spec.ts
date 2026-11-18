@@ -105,12 +105,13 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
   await palette.press('Escape');
   await expect(mapStep(page, 'train')).toBeFocused();
 
-  const row = page.locator('[data-map-row="train"]');
+  const steps = page.getByRole('navigation', { name: 'Steps', exact: true });
+  const row = steps.getByRole('treeitem', { name: /^train\b/ });
   if (!await row.isVisible()) await command('Show Steps');
   await row.click();
   await expectGoesIn(row);
   await row.press('F2');
-  const drawer = page.getByRole('navigation', { name: 'Steps', exact: true }).getByRole('textbox', { name: 'Rename train', exact: true });
+  const drawer = steps.getByRole('textbox', { name: 'Rename', exact: true });
   await expect(drawer).toBeFocused();
   await drawer.press('Escape');
   await expect(row).toBeFocused();

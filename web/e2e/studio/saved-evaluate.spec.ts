@@ -189,10 +189,10 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await scrubber.press('End');
   await expect.poll(coordinates).not.toEqual(reset);
   await expect(scrubber).toHaveValue(String(replay.time.values!.at(-1)));
-  await drawer.getByRole('button', { name: 'Effector', exact: true }).click();
+  await drawer.getByRole('treeitem', { name: 'Effector', exact: true }).click();
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await reveal(page, 'Inspector');
-  await expect(inspector.getByRole('heading', { name: 'Effector' })).toBeVisible();
+  await expect(inspector.getByRole('region', { name: 'Effector', exact: true })).toBeVisible();
   return replay;
 }
 
