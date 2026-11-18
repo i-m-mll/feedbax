@@ -126,12 +126,6 @@ def subprocess_dirty_tolerance():
 
 @pytest.fixture
 def enable_jax_x64() -> Iterator[None]:
-    """Enable JAX x64 only for one test, then restore the prior global state."""
-    previous = bool(jax.config.jax_enable_x64)
-    jax.config.update("jax_enable_x64", True)
-    try:
+    """Enable JAX x64 within one test's scope."""
+    with jax.enable_x64(True):
         yield
-    finally:
-        # Several precision tests used to set this at import time, polluting the
-        # process-wide JAX config during collection and making later tests fail.
-        jax.config.update("jax_enable_x64", previous)

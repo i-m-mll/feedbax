@@ -250,7 +250,7 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
     from feedbax.builtins.runtime.filters import LowPassFilter
     from feedbax.runtime.graph import init_state_from_component
 
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         prototype = {
             "position": jnp.zeros(2, dtype=jnp.float16),
             "velocity": (jnp.zeros(1, dtype=jnp.float32),),

@@ -167,7 +167,7 @@ def _force_field_cases():
 def test_registered_intervention_rollout_preserves_signal_dtype_and_gradients(
     component_type, params, effect, dtype, active
 ):
-    with jax.experimental.enable_x64(dtype == jnp.float32):
+    with jax.enable_x64(dtype == jnp.float32):
         registry = _components()
         metadata = registry.get(component_type)
         input_port, output_port = (

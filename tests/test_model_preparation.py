@@ -94,7 +94,7 @@ def test_preparing_nested_shared_children_assigns_independent_reset_slots():
 def test_filter_change_input_preserves_solver_configuration_and_mixed_float_reset(
     solver_type, first_dtype
 ):
-    with jax.experimental.enable_x64():
+    with jax.enable_x64(True):
         original = LowPassFilter(
             tau_rise=0.2, tau_decay=0.3, dt=0.01, solver_type=solver_type, init_value=2
         ).prepare()
