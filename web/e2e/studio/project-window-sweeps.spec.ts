@@ -5,12 +5,14 @@ import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject } 
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-async function readPlan(request: APIRequestContext, path: string) {
+async function readPlan(request: APIRequestContext, path: string): Promise<{ snapshot: StudioProjectSnapshot; plan: StudioSavedTrainRuns }> {
   const response = await request.get(path);
-  expect(response.ok()).toBe(true);
+  expect(response.ok(), await response.text()).toBe(true);
   const snapshot: StudioProjectSnapshot = await response.json();
   const result = await request.get(`${path}/train-runs?revision=${snapshot.revision}&window_map=true`);
-  expect(result.ok()).toBe(true);
+  // A save that lands between the two reads moves the revision on; read the newer one.
+  if (result.status() === 409 && (await result.json()).detail?.current) return await readPlan(request, path);
+  expect(result.ok(), await result.text()).toBe(true);
   const plan: StudioSavedTrainRuns = await result.json();
   expect(plan.window_map?.problems).toEqual([]);
   return { snapshot, plan };
