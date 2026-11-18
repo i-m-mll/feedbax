@@ -35,7 +35,7 @@ import {
   accepts, addressKey, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
   holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, type Component, type Port,
 } from './modelGraph';
-import { choosePick, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
 import { modelOutline } from './modelOutline';
@@ -424,7 +424,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (model) state.setState({ selection: addresses.map((address) => ({ document: model.id, address })) });
   }
   function clear() {
-    state.setState(pick ? { pick: null } : { selection: undefined });
+    if (pick) state.setState({ pick: null });
+    else clearSelection(state);
     setLibraryItem(undefined);
   }
   function go(path: string[]) {
