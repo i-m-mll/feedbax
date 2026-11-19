@@ -275,6 +275,10 @@ export function useManagedAnalyze({
   const library = useMemo((): LibraryItem[] => catalog ? [
     ...catalog.operations.map((entry) => ({
       id: entry.key, name: entry.label, group: studioName('operations'), glyph: <Sigma />, terms: entry.key,
+      about: {
+        description: entry.description, inputs: Object.keys(entry.inputs), outputs: Object.keys(entry.outputs),
+        parameters: entry.param_schema.map(({ name }) => name),
+      },
     })),
     { id: figureItem, name: humanizeLabel(figureItem), group: studioName('figures'), glyph: <ChartLine /> },
   ] : [], [catalog]);

@@ -1,5 +1,6 @@
 import { Search } from 'lucide-react';
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { HoverCard, HoverCardTrigger, createHoverCardHandle } from '@/components/ui/HoverCard';
 import { ListRow } from '@/components/ui/ListRow';
 import { TextField } from '@/components/ui/TextField';
 import { StudioRegion, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -14,6 +15,15 @@ export interface LibraryItem {
   glyph?: ReactNode;
   /** Further text a search matches, beside the name and group. */
   terms?: string;
+  /** What the item's hover card says about it. */
+  about?: LibraryAbout;
+}
+
+export interface LibraryAbout {
+  description: string;
+  inputs: readonly string[];
+  outputs: readonly string[];
+  parameters: readonly string[];
 }
 
 export interface LibraryListProps {
@@ -35,6 +45,20 @@ export interface LibraryListProps {
   dragType?: string;
 }
 
+function AboutCard({ item: { name, about } }: { item: LibraryItem & { about: LibraryAbout } }) {
+  const lists = (['inputs', 'outputs', 'parameters'] as const).filter((list) => about[list].length);
+  return <div className="grid gap-2">
+    <div className="font-medium">{name}</div>
+    {about.description && <p className="text-shell-muted">{about.description}</p>}
+    {lists.length > 0 && <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+      {lists.map((list) => <div key={list} className="contents">
+        <dt className="text-shell-muted">{studioName(list)}</dt>
+        <dd className="min-w-0 break-words font-mono text-sm">{about[list].join(', ')}</dd>
+      </div>)}
+    </dl>}
+  </div>;
+}
+
 function matches(item: LibraryItem, query: string) {
   return `${item.name} ${item.group} ${item.terms ?? ''}`.toLowerCase().includes(query);
 }
@@ -46,6 +70,7 @@ export function LibraryList({
   const [query, setQuery] = useState('');
   const names = useId();
   const [focused, setFocused] = useState<string>();
+  const [card] = useState(() => createHoverCardHandle<LibraryItem & { about: LibraryAbout }>());
   const rows = useRef(new Map<string, HTMLDivElement>());
   const search = query.trim().toLowerCase();
   const groups = new Map<string, LibraryItem[]>();
@@ -85,19 +110,27 @@ export function LibraryList({
       {[...groups].map(([group, list], index) => <DrawerSection key={group} sections={sections} id={groupKey(group)}
         level="group" name={group} nameId={`${names}-${index}`} initially={false} forceOpen={!!search}>
         <div role="listbox" aria-labelledby={`${names}-${index}`} className="grid gap-px px-1 pb-1">
-          {list.map((item) => <ListRow key={item.id} role="option" name={item.name} glyph={item.glyph}
-            ref={(element) => {
-              if (element) rows.current.set(item.id, element);
-              else rows.current.delete(item.id);
-            }}
-            tabIndex={item.id === current ? 0 : -1} selected={item.id === selected}
-            draggable={!!dragType} onDragStart={dragType ? (event) => event.dataTransfer.setData(dragType, item.id) : undefined}
-            onFocus={() => setFocused(item.id)}
-            onClick={() => onInspect(item.id)}
-            onDoubleClick={onPlace && (() => onPlace(item.id))}
-            onKeyDown={(event) => onKeyDown(event, item.id)} />)}
+          {list.map((item) => {
+            const row = <ListRow key={item.id} role="option" name={item.name} glyph={item.glyph}
+              ref={(element) => {
+                if (element) rows.current.set(item.id, element);
+                else rows.current.delete(item.id);
+              }}
+              tabIndex={item.id === current ? 0 : -1} selected={item.id === selected}
+              draggable={!!dragType} onDragStart={dragType ? (event) => event.dataTransfer.setData(dragType, item.id) : undefined}
+              onFocus={() => setFocused(item.id)}
+              onClick={() => onInspect(item.id)}
+              onDoubleClick={onPlace && (() => onPlace(item.id))}
+              onKeyDown={(event) => onKeyDown(event, item.id)} />;
+            const { about } = item;
+            return about ? <HoverCardTrigger key={item.id} handle={card} payload={{ ...item, about }} render={row} />
+              : row;
+          })}
         </div>
       </DrawerSection>)}
     </StudioRegion>
+    <HoverCard handle={card} beside={(trigger) => trigger.closest('[data-section-stack]')}>
+      {(item) => <AboutCard item={item} />}
+    </HoverCard>
   </DrawerSection>;
 }

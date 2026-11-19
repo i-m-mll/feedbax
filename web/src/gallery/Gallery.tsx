@@ -13,6 +13,7 @@ import { Checkbox } from '@/components/ui/Checkbox';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { Combobox } from '@/components/ui/Combobox';
 import { Dialog } from '@/components/ui/Dialog';
+import { HoverCard, HoverCardTrigger, createHoverCardHandle } from '@/components/ui/HoverCard';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { ListRow } from '@/components/ui/ListRow';
 import {
@@ -133,6 +134,7 @@ function DrawerDemo({ content }: { content: 'short' | 'overflowing' }) {
     open: open[section] ?? false, onOpenChange: (next: boolean) => setOpen((now) => ({ ...now, [section]: next })),
   });
   const groups = content === 'short' ? libraryGroups.slice(0, 1) : libraryGroups;
+  const [card] = useState(() => createHoverCardHandle<string>());
   return (
     <State name={content}>
       <div className="h-96 w-64 rounded-control border border-shell-divider" data-testid={`drawer-${content}`}>
@@ -144,10 +146,17 @@ function DrawerDemo({ content }: { content: 'short' | 'overflowing' }) {
             </div>}>
             {groups.map((group) => <Section key={group.name} level="group" name={group.name} {...fold(group.name)}>
               <div className="grid gap-px px-1 pb-1">
-                {group.items.map((name) => <ListRow key={name} tabIndex={0} name={name} glyph={<Box />} />)}
+                {group.items.map((name) => <HoverCardTrigger key={name} handle={card} payload={name}
+                  render={<ListRow tabIndex={0} name={name} glyph={<Box />} draggable />} />)}
               </div>
             </Section>)}
           </Section>
+          <HoverCard handle={card} beside={(trigger) => trigger.closest('[data-section-stack]')}>
+            {(name) => <div className="grid gap-2">
+              <div className="font-medium">{name}</div>
+              <p className="text-shell-muted">A component that transforms its input.</p>
+            </div>}
+          </HoverCard>
           <Section name="Outline" {...fold('outline')}>
             <Tree aria-label="Outline" nodes={treeNodes(content === 'short' ? outline.slice(0, 1) : outline, {})}
               defaultExpanded={['model', 'encoder']} selected={selected} onSelectedChange={setSelected} />
