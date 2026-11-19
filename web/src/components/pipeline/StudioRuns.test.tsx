@@ -163,6 +163,11 @@ it("titles the inspector by step and the run's values, and reveals a run's probl
   expect(inspector.getByRole("heading").textContent).toBe("Train arm · Rate 0.003 · Seed 1");
   fireEvent.click(inspector.getByRole("button", { name: /^Objective · Objective has no enabled terms/ }));
   expect(reveal).toHaveBeenCalledWith(step.runs[1], expect.objectContaining({ place: problem.place, problem }));
+  const change = { path: "payload.seed", place: { part: "step", field: "seed" }, before: 0, after: 1 } as const;
+  const stale = { ...train, runs: train.runs.map((run) => run.id === "b" ? { ...run, status: "stale" as const, change } : run) };
+  rerender(<StudioRunDetails step={stale} state={rows(["b"])} onReveal={reveal} />);
+  fireEvent.click(inspector.getByRole("button", { name: /^Seed · 0 → 1$/ }));
+  expect(reveal).toHaveBeenLastCalledWith(stale.runs[1], { place: change.place, detail: "0 → 1" });
   rerender(<StudioRunDetails step={{ ...evaluate, runs: [{ ...evaluate.runs[0], label: "default" }] }}
     state={{ ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }} />);
   expect(screen.getByRole("heading").textContent).toBe("Test reach");
