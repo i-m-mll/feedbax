@@ -8,7 +8,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
@@ -22,6 +22,7 @@ from feedbax.host.protocol import (
     AdmissionItem,
     Edge,
     EventPage,
+    ShutdownMode,
     Job,
     HostError,
     JobsSnapshot,
@@ -92,6 +93,29 @@ class StdioAttachment:
         ):
             raise EOFError("Host attachment returned an invalid error reply.")
         return cast(JsonObject, reply)
+
+
+def _running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@contextlib.contextmanager
+def owned_host(root: Path, *, mode: ShutdownMode = "interrupt") -> Iterator["HostClient"]:
+    """Start the Host at the private `root` and end it, with its jobs and workers, when the block exits.
+
+    The creator of a private root owns its Host. The default root's Host belongs to no client and outlives them.
+    """
+    client = HostClient(root)
+    client.ping()
+    try:
+        yield client
+    finally:
+        client.shutdown(mode)
+        client.close()
 
 
 class HostClient:
@@ -389,12 +413,39 @@ class HostClient:
     def stop(self, job_ids: Sequence[str], mode: StopMode) -> list[JsonObject]:
         return cast(list[JsonObject], self._call("stop", job_ids=list(job_ids), mode=mode))
 
-    def retire_runtime(self, runtime: str, release: str, mode: str) -> JsonObject:
-        """Retire the installed runtime on the existing Host without launching one."""
+    def retire_runtime(self, runtime: str, release: str, mode: ShutdownMode) -> JsonObject:
+        """Take one step toward retiring the installed runtime on the existing Host, without launching one.
+
+        Call it again until it returns `released`, or `absent` once the Host has exited.
+        """
+        return self._call_existing("retire_runtime", runtime=runtime, release=release, mode=mode)
+
+    def shutdown(self, mode: ShutdownMode = "interrupt", *, timeout: float = HANG_SECONDS) -> JsonObject:
+        """End the Host at this root, with its jobs and workers, and wait until its process has exited.
+
+        Live jobs end by `mode`: `interrupt` records them as interrupted by the service, `force` and `checkpoint`
+        as stopped, `checkpoint` once each has saved a checkpoint. With `defer` and a live job nothing ends and
+        the result is `deferred`. Otherwise it is `exited`, or `absent` when no Host was running. This client
+        starts no Host after it has ended one. A Host that does not answer, or whose process outlives `timeout` seconds,
+        raises `HostError`.
+        """
+        deadline = time.monotonic() + timeout
+        result = self._call_existing("shutdown", timeout=timeout, mode=mode)
+        if result["status"] == "deferred":
+            return result
+        self.prohibit_start()
+        if result["status"] == "absent":
+            return result
+        pid = cast(int, result["pid"])
+        while _running(pid):
+            if time.monotonic() >= deadline:
+                raise HostError("shutdown_timeout", f"Host {pid} did not exit within {timeout} s.")
+            time.sleep(0.02)
+        return {"status": "exited", "jobs": result["jobs"]}
+
+    def _call_existing(self, op: str, *, timeout: float = HANG_SECONDS, **request: Json) -> JsonObject:
         try:
-            return cast(JsonObject, self._call(
-                "retire_runtime", start_host=False, runtime=runtime, release=release, mode=mode,
-            ))
+            return cast(JsonObject, self._call(op, timeout=timeout, start_host=False, **request))
         except HostError as error:
             if isinstance(error.__cause__, (FileNotFoundError, ConnectionRefusedError)):
                 return {"status": "absent"}

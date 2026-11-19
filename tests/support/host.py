@@ -107,23 +107,6 @@ def _launch(root: Path, env: Mapping[str, str]) -> _Started:
     return started
 
 
-def _exited(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    return False
-
-
-def _end(pid: int) -> None:
-    """End one Host this process started and wait until its process has exited."""
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    wait_until(lambda: _exited(pid))
-
-
 def _stop_live(client: HostClient) -> None:
     live = [job["id"] for job in client.jobs() if job["outcome"] is None]
     if live:
@@ -336,7 +319,7 @@ class _Served:
 
     def stop(self) -> None:
         if self.started is not None:
-            _end(_started[self.started.root].pid)
+            _client(self.started.root).shutdown()
 
 
 @pytest.fixture(scope="session")
@@ -393,9 +376,8 @@ def private_hosts(tmp_path) -> Iterator[Path]:
     _declared = directory
     yield directory
     for root in dict.fromkeys(_client_starts):
-        if root.is_relative_to(directory) and (pid := _answering(root)) is not None:
-            _stop_live(_client(root))
-            _end(pid)
+        if root.is_relative_to(directory):
+            _client(root).shutdown()
 
 
 @pytest.fixture
