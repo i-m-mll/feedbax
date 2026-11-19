@@ -32,6 +32,7 @@ from feedbax.contracts.model_input import DocumentInput, InitialModelSource, aut
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
+from feedbax.contracts.studio_place import path_parts, variation_targets
 from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
@@ -1783,6 +1784,16 @@ class _Compiler:
         return _model_difference_problem(key, document, address, detail), None
 
     def lower_evaluate_payload(
+        self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
+        reference: object, has_differences: bool,
+    ) -> Payload | ProjectDiagnostic:
+        original = payload.get("params")
+        result = self._lower_evaluate_payload(key, payload, model_source, reference, has_differences)
+        if isinstance(result, ProjectDiagnostic) and (parts := path_parts(result.path))[:2] == ("params", "variation"):
+            return replace(result, variation_target=variation_targets(original)(parts[2]) if len(parts) > 2 else None)
+        return result
+
+    def _lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool,
     ) -> Payload | ProjectDiagnostic:

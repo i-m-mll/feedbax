@@ -55,7 +55,7 @@ from feedbax.contracts.jobs import (
 from feedbax.contracts.project_inputs import (
     BatchCheckpoint, InputBinding, SelectedRow, StepReference, producer_member_key, subset_to_rows,
 )
-from feedbax.contracts.studio_place import StudioStepPlace, definition_place, path_parts
+from feedbax.contracts.studio_place import StudioStepPlace, definition_place, path_parts, variation_targets
 from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.project_io import project_declaration_name
@@ -69,7 +69,7 @@ from feedbax.contracts.request_identity import decode_python_task_selection, dec
 from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember,
 )
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
@@ -767,6 +767,7 @@ def _light_history(
         changed = StudioDefinitionChange(path=path, place=definition_place(
             parts, node.document_ids.get if isinstance(node, PlannedRun) else lambda _slot: None,
             element=key.name if isinstance(key, ElementKey) else None,
+            variation=variation_targets(new.spec.params if isinstance(new.spec, EvaluationRequestSpec) else None),
         ))
     status, reason = saved_request_status(
         attempts, success=current, changed=changed is not None,
@@ -788,6 +789,11 @@ def _light_result(settled: SettledProjectPlan, attempt: PlanJobAttempt | None) -
         job_id=attempt.job_id, request_id=success.request.id, receipt=attempt.successful_receipt,
         products=products, validity=attempt.validity, provenance=attempt.provenance,
     )
+
+
+def _evaluation_params(settled: SettledProjectPlan, run: PlannedRun) -> Mapping[str, object] | None:
+    spec = decode_request(settled.plan.requests[run.request_id], settled.plan.documents.__getitem__).spec
+    return spec.params if isinstance(spec, EvaluationRequestSpec) else None
 
 
 def _evaluation_row(
@@ -831,7 +837,10 @@ def _evaluation_row(
         problem = StudioProjectWindowMapProblem(
             code="cannot_run", path=error.path, detail=error.reason,
             variant=key.variant, step=key.step, row=key.row,
-            place=definition_place(path_parts(error.path), run.document_ids.get),
+            place=definition_place(
+                path_parts(error.path), run.document_ids.get,
+                variation=variation_targets(_evaluation_params(settled, run)),
+            ),
         )
     attempts = jobs.by_request.get(run.request_id, ())
     success = next((attempt for attempt in reversed(attempts) if (

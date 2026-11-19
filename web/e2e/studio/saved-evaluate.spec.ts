@@ -484,8 +484,9 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   const taskProblem = (await selectedProblem())!;
   await tab(page, 'Runs').click();
   await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
-  // A variation's problem is placed in the Model, where the step's variations are drawn.
-  await expect(inspector).toContainText(`Model · ${taskProblem.detail}`);
+  // A variation entry's problem is placed where the field it patches lives: the Task's N Steps.
+  expect(taskProblem.place).toEqual({ part: 'task', document: null, parameter: 'n_steps' });
+  await expect(inspector).toContainText(`N Steps · ${taskProblem.detail}`);
   await tab(page, 'Task').click();
   await expect(taskSteps).toBeEditable();
   await expect(taskSteps).toHaveValue('0');
