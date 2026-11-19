@@ -1305,14 +1305,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                       picking={elements} subset={subjectInput && inputDetail(subjectInput)}
                       onEdit={ready && !busy && wholeStep ? editEvaluateSubject : undefined} />}
                     {evaluationCheckpointRule &&
-                      <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, saved.revision, checkpointScope])}
+                      <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope])}
                         initial={evaluationCheckpointRule}
                         disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
                         onSave={editEvaluationCheckpoint}
                         onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
-                    {evaluationEditor && data && variant && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
+                    {evaluationEditor && projection.data && variant && <StudioEvaluateAuthoring key={step.id}
                       authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
-                      source={evaluationEditor.source} sourceRows={stepSourceRows(data, evaluationEditor.source.id, variant)}
+                      source={evaluationEditor.source} sourceRows={stepSourceRows(projection.data, evaluationEditor.source.id, variant)}
                       domain={evaluationEditor.domain}
                       editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
                       disabled={!ready || busy} onEdit={editEvaluation}

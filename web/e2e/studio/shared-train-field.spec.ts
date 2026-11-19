@@ -146,3 +146,57 @@ test('two runs of a 4 × 2 sweep take a value as one exception, and removing it 
   await expect(batchText).toHaveValue(rule);
   await expect(batch.getByLabel('Batch Size selected value', { exact: true })).toHaveCount(0);
 });
+
+test('choosing an optimizer keeps the inspector still, and reveals only the parameters it brings in', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  await page.setViewportSize({ width: 1440, height: 640 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
+  const optimizer = page.getByRole('region', { name: 'Optimizer', exact: true });
+  const choice = optimizer.getByRole('combobox', { name: 'Optimizer', exact: true });
+  await expect(choice).toHaveValue('Adam');
+  /** The Inspector's scroll, its clear area (inside the edge fades), and the Optimizer field's label and picker. */
+  const view = () => choice.evaluate((control) => {
+    const scroller = control.closest('.studio-scroll-fade')!;
+    const { scrollPaddingTop, scrollPaddingBottom } = getComputedStyle(scroller);
+    const { top } = scroller.getBoundingClientRect();
+    return {
+      scrollTop: scroller.scrollTop,
+      max: scroller.scrollHeight - scroller.clientHeight,
+      clearTop: top + parseFloat(scrollPaddingTop),
+      clearBottom: top + scroller.clientHeight - parseFloat(scrollPaddingBottom),
+      label: document.getElementById(control.getAttribute('aria-labelledby')!)!.getBoundingClientRect().top,
+      picker: control.getBoundingClientRect().bottom,
+    };
+  });
+  const scrollBy = (delta: number) => choice.evaluate((control, by) => { control.closest('.studio-scroll-fade')!.scrollTop += by; }, delta);
+  const placePicker = async () => { const { picker, clearBottom } = await view(); await scrollBy(picker - clearBottom); };
+  const bottom = (field: string) => page.getByRole('region', { name: `${field} field`, exact: true })
+    .evaluate((element) => element.getBoundingClientRect().bottom);
+
+  // SGD has fewer parameters than Adam, and they fit below the picker: the Inspector stays where it is.
+  await scrollBy((await view()).label - (await view()).clearTop);
+  const end = await view();
+  await pick(choice, 'SGD');
+  await expect(page.getByRole('region', { name: 'B1 field', exact: true })).toHaveCount(0);
+  const removed = await view();
+  expect(Math.abs(removed.scrollTop - Math.min(end.scrollTop, removed.max))).toBeLessThanOrEqual(1);
+  expect(removed.scrollTop).toBeGreaterThan(0);
+
+  // Fromage's Min Norm fits above the picker: it ends at the bottom of the clear area, and the picker stays in view.
+  await placePicker();
+  await pick(choice, 'Fromage');
+  await expect.poll(async () => Math.abs(await bottom('Min Norm') - (await view()).clearBottom)).toBeLessThanOrEqual(1);
+  expect((await view()).label).toBeGreaterThan((await view()).clearTop);
+
+  // Adam's parameters are taller than the Inspector: the field's label ends at the top of the clear area.
+  await placePicker();
+  await pick(choice, 'Adam');
+  await expect(page.getByRole('region', { name: 'Nesterov field', exact: true })).toBeAttached();
+  await expect.poll(async () => { const { label, clearTop } = await view(); return Math.abs(label - clearTop); }).toBeLessThanOrEqual(1);
+  const revealed = await view();
+  expect(await bottom('Nesterov')).toBeGreaterThan(revealed.clearBottom);
+  expect(revealed.scrollTop).toBeLessThan(revealed.max);
+});

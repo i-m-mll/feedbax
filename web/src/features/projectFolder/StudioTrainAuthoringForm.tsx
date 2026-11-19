@@ -245,7 +245,7 @@ export function StudioTrainAuthoringForm(props: Props) {
     chooseMember: field.sweep && onChooseSweepValue
       ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined,
   });
-  const fields = current?.fields ?? [];
+  const fields = shown?.fields ?? [];
   const methodField = fields.find(({ id }) => id === '/method');
   const methods = catalogEntries(catalog.data, 'training_methods');
   const method = catalog.data?.registries.training_methods?.entries
@@ -277,7 +277,7 @@ export function StudioTrainAuthoringForm(props: Props) {
         {steps.map((field) => { const model = fieldModel(field); return <div key={model.id} data-field={field.id} className="contents">
           <ValueField model={model} />
         </div>; })}
-        {settingsSchema && current?.settings && <SettingsForm schema={settingsSchema} value={current.settings}
+        {settingsSchema && shown?.settings && <SettingsForm schema={settingsSchema} value={shown.settings}
           projected={(path) => {
             const field = byPath.get(settingsPrefix + pointer(path));
             return field && fieldModel(field);

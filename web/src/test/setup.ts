@@ -6,3 +6,8 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     disconnect() {}
   };
 }
+
+// jsdom lays nothing out, so a range has no box; components that measure content need one.
+if (typeof Range !== 'undefined' && !Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+}
