@@ -350,11 +350,6 @@
   pointer-events: none;
 }
 
-.studio-map-value[aria-pressed='true']:not(.studio-map-run-grid *),
-.studio-map-run-grid[data-separate-labels] .studio-map-value[aria-pressed='true'] {
-  box-shadow: inset 0 0 0 1px var(--text-primary);
-}
-
 .studio-map-run-grid [data-map-group-cell]::after {
   position: absolute;
   inset: -2px;

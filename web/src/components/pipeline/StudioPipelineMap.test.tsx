@@ -13,7 +13,7 @@ import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/pl
 import { emptyPipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioPipelineMap, StudioPipelineMapDrawer, type StudioPipelineMapProps } from './StudioPipelineMap';
-import { fullMapFits, type PipelineCardPresentation } from './pipelineMapLayout';
+import { fullMapFits, mapMarkSize, type PipelineCardPresentation } from './pipelineMapLayout';
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class {
@@ -114,13 +114,13 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
   expect(header.getAttribute('aria-pressed')).toBe('true');
   expect(first.getAttribute('aria-pressed')).toBe('true');
 
-  fireEvent.click(card.getByRole('button', { name: select('rate 0.003') }));
+  chooseValue(card, 'rate', '0.003');
   expect(header.getAttribute('aria-pressed')).toBe('false');
   expect(card.queryByText(studioCountOf(2, 6))).toBeNull();
   expect(first.getAttribute('aria-pressed')).toBe('true');
   expect(second.getAttribute('aria-pressed')).toBe('true');
 
-  fireEvent.click(card.getByRole('button', { name: select('seed 1') }), { metaKey: true });
+  chooseValue(card, 'seed', '1', true);
   expect(first.getAttribute('aria-pressed')).toBe('true');
   expect(second.getAttribute('aria-pressed')).toBe('false');
   expect(first.closest('[role="gridcell"]')?.hasAttribute('data-map-group-cell')).toBe(true);
@@ -137,7 +137,6 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
     selection: scope,
     focus: { stepId: train.id, runId: 'mid-second' },
   });
-  expect(card.getByRole('button', { name: select('rate 0.003') }).getAttribute('aria-pressed')).toBe('false');
 
   fireEvent.click(card.getByRole('button', { name: studioAccessibleName('newStep', train.label) }));
   expect(onNewStep).toHaveBeenCalledWith({ stepId: train.id, selection: scope });
@@ -145,7 +144,12 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
   expect(onNewSweep).toHaveBeenCalledWith(train.id);
 });
 
-it('shows partial folded marks and preserves group selection when sweeps move', () => {
+function chooseValue(card: ReturnType<typeof within>, sweep: string, value: string, extend = false) {
+  fireEvent.click(card.getByRole('button', { name: new RegExp(`^${studioAccessibleName('sweep', sweep)} `) }));
+  fireEvent.click(screen.getByRole('menuitem', { name: value }), { metaKey: extend });
+}
+
+it('folds the sweeps after the first two into one mark per cell, named after the axis labels', () => {
   const step: PlanStepView = {
     ...train,
     sweeps: [...train.sweeps, curl],
@@ -158,58 +162,43 @@ it('shows partial folded marks and preserves group selection when sweeps move', 
   };
   const { selectionChanged, presentationChanged } = mapWithState({ steps: [step], edges: [] });
   const card = within(screen.getByRole('article'));
-  fireEvent.click(card.getByRole('button', { name: 'Sweep curl 2' }));
-  fireEvent.click(card.getByRole('button', { name: studioAccessibleName('fold', curl.label) }));
-  fireEvent.click(card.getByRole('button', { name: select('curl 1') }));
+  const labels = card.getAllByRole('button', { name: /^Sweep / });
+  expect(labels.map((label) => label.textContent)).toEqual(['↓\u00a0seed', '→\u00a0rate', '(curl\u00a0×2)']);
+  expect(card.getAllByRole('gridcell')).toHaveLength(6);
+  chooseValue(card, 'curl', '1');
   const aggregate = (coordinates: string) => select(
     `${coordinates} · 2 ${studioName('runs')} · 2 ${studioRunStatus('not_run')} · ${studioCountOf(1, 2)}`,
   );
-  const foldedMark = card.getByRole('button', { name: aggregate('seed 1 · rate 0.003') });
-  expect(foldedMark.getAttribute('aria-pressed')).toBe('mixed');
+  expect(card.getByRole('button', { name: aggregate('seed 1 · rate 0.003') }).getAttribute('aria-pressed')).toBe('mixed');
 
   const dataTransfer = { effectAllowed: 'none', setData: vi.fn() };
-  fireEvent.dragStart(card.getByRole('button', { name: 'Sweep seed 2' }), { dataTransfer });
-  fireEvent.drop(card.getByRole('button', { name: 'Sweep rate 3' }), { dataTransfer });
-  expect(presentationChanged).toHaveBeenLastCalledWith(train.id, {
-    foldedSweepId: curl.id,
-    sweepOrder: [rate.id, seed.id, curl.id],
-  });
-  const movedMark = card.getByRole('button', { name: aggregate('rate 0.003 · seed 1') });
-  fireEvent.click(movedMark);
+  fireEvent.dragStart(labels[2], { dataTransfer });
+  fireEvent.drop(labels[1], { dataTransfer });
+  expect(presentationChanged).toHaveBeenLastCalledWith(train.id, { sweepOrder: [seed.id, curl.id, rate.id] });
+  expect(card.getAllByRole('button', { name: /^Sweep / }).map((label) => label.textContent))
+    .toEqual(['↓\u00a0seed', '→\u00a0curl', '(rate\u00a0×3)']);
+  expect(card.getAllByRole('gridcell')).toHaveLength(4);
+  fireEvent.click(card.getByRole('button', { name: select(`seed 1 · curl 0 · 3 ${studioName('runs')} · 3 ${studioRunStatus('not_run')}`) }));
   expect(selectionChanged).toHaveBeenLastCalledWith({
     selection: {
       kind: 'values',
       stepId: train.id,
       terms: [
-        { sweepId: rate.id, valueIds: ['mid'] },
         { sweepId: seed.id, valueIds: ['first'] },
+        { sweepId: curl.id, valueIds: ['plain'] },
       ],
     },
     focus: null,
   });
 });
 
-it('automatically folds a large sweep into a group with explicit value IDs', () => {
-  const values = Array.from({ length: 1_100 }, (_, index) => ({ id: `seed-${index}`, label: String(index) }));
-  const step: PlanStepView = {
-    ...train,
-    sweeps: [{ ...seed, values }],
-    runs: values.map(({ id, label }) => ({ id, label, values: { seed: id }, status: 'not_run', state: 'not_run', results: [] })),
-    statusCounts: { not_run: values.length },
-  };
-  const { selectionChanged } = mapWithState({ steps: [step], edges: [] });
-  const card = within(screen.getByRole('article'));
-  expect(card.getByRole('button', { name: 'Sweep seed 1100' }).textContent).toBe('(seed 1100)');
-  const aggregate = select(`1100 ${studioName('runs')} · 1100 ${studioRunStatus('not_run')}`);
-  fireEvent.click(card.getByRole('button', { name: aggregate }));
-  expect(selectionChanged).toHaveBeenLastCalledWith({
-    selection: {
-      kind: 'values',
-      stepId: step.id,
-      terms: [{ sweepId: seed.id, valueIds: values.map(({ id }) => id) }],
-    },
-    focus: null,
-  });
+it('shrinks marks to the largest of three sizes at which both directions fit, and scrolls only past the smallest', () => {
+  expect(mapMarkSize(11, 1).id).toBe('full');
+  expect(mapMarkSize(12, 1).id).toBe('small');
+  expect(mapMarkSize(22, 11).id).toBe('small');
+  expect(mapMarkSize(23, 1).id).toBe('smallest');
+  expect(mapMarkSize(45, 43).id).toBe('smallest');
+  expect(mapMarkSize(60, 60).id).toBe('smallest');
 });
 
 it('draws the input subset and follows only linked runs into the drawer and direct step neighbors', () => {

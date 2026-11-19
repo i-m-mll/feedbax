@@ -203,15 +203,15 @@ it('undoes and redoes placement while preserving a later fold', async () => {
   ], { reviewedRevision: start.revision, reviewedPresentationRevision: start.presentation_revision });
   await editor.flush();
   expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions } } });
-  external(presentationAddress, [{ op: 'add', path: '/steps/fit/folded_sweep_id', value: 'seed' }]);
+  external(presentationAddress, [{ op: 'add', path: '/steps/fit/sweep_order', value: ['seed'] }]);
   await editor.flush();
   editor.undo();
   await editor.flush();
   expect(current().project).toEqual(start.project);
-  expect(current().presentation).toEqual({ steps: { fit: { folded_sweep_id: 'seed' } } });
+  expect(current().presentation).toEqual({ steps: { fit: { sweep_order: ['seed'] } } });
   editor.redo();
   await editor.flush();
-  expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions, folded_sweep_id: 'seed' } } });
+  expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions, sweep_order: ['seed'] } } });
   editor.dispose();
 });
 

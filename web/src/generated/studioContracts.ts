@@ -3379,7 +3379,6 @@ export type StepNote = {
 
 export type StepPresentation = {
   "sweep_order"?: Array<string>;
-  "folded_sweep_id"?: string | null;
   "model_positions"?: Record<string, Record<string, PresentationPosition>>;
 };
 
@@ -9824,7 +9823,6 @@ export const StepNoteSchema: z.ZodType<StepNote> = z.lazy(() =>
 export const StepPresentationSchema: z.ZodType<StepPresentation> = z.lazy(() =>
   z.object({
     "sweep_order": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
-    "folded_sweep_id": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "model_positions": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string(), PresentationPositionSchema)).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepPresentation>;

@@ -34,7 +34,6 @@ class DocumentPresentation(StrictModel):
 
 class StepPresentation(StrictModel):
     sweep_order: list[ProjectName] = Field(default_factory=list)
-    folded_sweep_id: ProjectName | None = None
     model_positions: dict[ProjectName, dict[str, PresentationPosition]] = Field(default_factory=dict)
 
 

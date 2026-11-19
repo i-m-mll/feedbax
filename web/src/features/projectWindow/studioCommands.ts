@@ -70,13 +70,13 @@ const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
   'check' | 'accept' | 'newStep' | 'newSweep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
-  'pivot' | 'fold' | 'unfold' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
+  'pivot' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
   'fitView' | 'zoomIn' | 'zoomOut' | 'rename';
 
 const selectionCommands = new Set<StudioCommandId>([
-  'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'fold', 'unfold', 'pivot',
+  'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'pivot',
   'addComponent', 'connectPorts', 'exposeOutput', 'addText', 'addFigure', 'moveEarlier', 'moveLater', 'remove',
   'flip', 'enter', 'leave', 'collapseAll', 'lock', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
   'renameStep', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',

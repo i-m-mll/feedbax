@@ -10,7 +10,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
-  bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type MapStepRename, type PipelineMapStepSource,
+  StudioPipelineMap, StudioPipelineMapDrawer, type MapStepRename, type PipelineMapStepSource,
 } from '@/components/pipeline/StudioPipelineMap';
 import { isMemberName } from './projectMemberName';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -29,7 +29,7 @@ import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
-import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
+import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
@@ -695,13 +695,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   const present = saved.presentation;
   const presentation = useMemo(() => Object.fromEntries(Object.entries(present?.steps ?? {}).map(([id, value]) => [
-    id, { sweepOrder: value.sweep_order, foldedSweepId: value.folded_sweep_id },
+    id, { sweepOrder: value.sweep_order },
   ])), [present]);
   async function changePresentation(stepId: string, next: PipelineCardPresentation) {
     const current = editor.getSnapshot().saved.presentation ?? {};
     const updated: PresentationDocument = {
       ...current, steps: { ...current.steps, [stepId]: {
-        ...current.steps?.[stepId], sweep_order: [...(next.sweepOrder ?? [])], folded_sweep_id: next.foldedSweepId,
+        ...current.steps?.[stepId], sweep_order: [...(next.sweepOrder ?? [])],
       } },
     };
     try {
@@ -1092,10 +1092,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       ...current, [slot]: current[slot] === step.id ? undefined : step.id,
     })));
   }
-  const selectedAxis = state.selection?.kind === 'values' && state.selection.terms.length === 1
-    ? step?.sweeps.find(({ id }) => state.selection?.kind === 'values' && id === state.selection.terms[0].sweepId) : undefined;
-  const cardPresentation = step ? presentation[step.id] ?? {} : {};
-  const folded = step && selectedAxis ? foldedMapSweep(step, orderedMapSweeps(step, cardPresentation), cardPresentation) : undefined;
   const commands = [
     bindStudioCommand('rename', () => {
       void perform(async () => {
@@ -1115,7 +1111,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     step && bindStudioCommand('renameStep', () => setRenamingStep({ stepId: step.id, surface: mapSurface }), { subject: step.label, enabled: !!renameStep && !busy }),
     ...analyze.commands,
     ...report.commands,
-    step && selectedAxis && bindSweepFold(step.id, selectedAxis, folded?.id === selectedAxis.id, cardPresentation, changePresentation),
     step && newSweepCommand(step.id),
     windowState.mode !== 'map' && focusView === 'runs' && pivotCommand(focusSlot),
     bindStudioCommand('undo', () => { void moveHistory('undo'); }, {

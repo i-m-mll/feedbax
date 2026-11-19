@@ -1050,7 +1050,7 @@ def test_named_document_edit_reopens_and_presentation_leaves_authored_identity(s
                 "camera": {"x": 2, "y": 3, "zoom": 1.5},
             }
         },
-        "steps": {"fit": {"sweep_order": ["seed"], "folded_sweep_id": "seed"}},
+        "steps": {"fit": {"sweep_order": ["seed"]}},
     }
     response = client.put(
         f"{_URL}/presentation",
