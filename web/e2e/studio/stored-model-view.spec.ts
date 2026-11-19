@@ -67,6 +67,9 @@ test('authors and reopens an addressed Model through the project history', async
   await expect(cell.getByText('GRU', { exact: true }).first()).toBeVisible();
   await model.getByRole('button', { name: 'Fit View', exact: true }).click();
   const initialPosition = await cell.evaluate((node) => node.style.transform);
+  // Topology edits wait for the plan of the saved revision after each commit.
+  const editableCard = () => expect(cell).toHaveClass(/\bdraggable\b/);
+  await editableCard();
   const moved = await apply(async () => {
     const bounds = await cell.locator('header').boundingBox();
     if (!bounds) throw new Error('The cell header is not measurable');
@@ -80,6 +83,7 @@ test('authors and reopens an addressed Model through the project history', async
   await expect.poll(() => cell.evaluate((node) => node.style.transform)).not.toBe(initialPosition);
   const handle = (direction: 'input' | 'output', name: string) => cell.locator(`[data-handleid="${direction}:${name}"]`);
   const reviewed = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/connections`);
+  await editableCard();
   const wired = await apply(async () => {
     await handle('output', 'hidden').hover();
     await page.mouse.down();

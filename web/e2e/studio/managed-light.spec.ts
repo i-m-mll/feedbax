@@ -240,7 +240,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const wired = await edit(() => chooseOption(page, roleField('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   if (first) {
-    const authored = wired.project.documents!.analyze.payload as unknown as AnalysisDocument;
+    const authored = wired.project.documents!.analysis.payload as unknown as AnalysisDocument;
     const state = '/v1/model/state/' + first.plantId + '/';
     expect(authored.operations).toMatchObject({
       aligned_velocity: {

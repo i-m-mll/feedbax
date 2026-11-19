@@ -559,7 +559,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
     name: `Select learning-rate ${model} · task ${task} · ${status}`, exact: true,
   });
   await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
-  await expect(pivot.getByRole('rowheader')).toHaveText(['0.001', '0.003']);
+  await expect(pivot.getByRole('rowheader')).toHaveText(['Slow', 'Fast']);
   await expect(pivot.getByRole('button', { name: /Can't run$/ })).toHaveCount(4);
 
   await select(page, 'train');
@@ -568,12 +568,12 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const trainDone = (await read()).rows;
   await select(page, 'evaluate');
   await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
-  const sampled = cell('0.003', 'Long Task', 'Not run');
+  const sampled = cell('Fast', 'Long Task', 'Not run');
   const target = rows[3].key;
   await sampled.click();
   await expect(sampled).toHaveAttribute('aria-pressed', 'true');
   await launchRows(page, projectPath, [target]);
-  await expect(cell('0.003', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
+  await expect(cell('Fast', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
   await expect(pivot.getByRole('button', { name: /Not run$/ })).toHaveCount(3);
   const lineage = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('listitem')
     .filter({ has: page.getByRole('button', { name: /^Select Made From / }) });
@@ -599,7 +599,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
   // The value comes from the inspected document itself, so the field names no source.
   await expect(mass).toHaveAccessibleDescription('');
-  await chooseSweepValue(page.getByRole('article', { name: 'Train train', exact: true }), 'learning-rate', '0.003');
+  await chooseSweepValue(page.getByRole('article', { name: 'Train train', exact: true }), 'learning-rate', 'Fast');
   await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '2');

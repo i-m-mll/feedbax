@@ -4,7 +4,7 @@ import type {
   StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { chooseStepKind } from './fixtures/studioKeyboard';
+import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -248,10 +248,7 @@ test('New in the Document header gives an empty report that cannot run', async (
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
   await page.getByRole('tabpanel', { name: 'Figures', exact: true }).getByRole('button', { name: 'profile', exact: true }).click();
-  await page.keyboard.press('Meta+K');
-  const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
-  await palette.getByRole('combobox').fill('New Step');
-  await palette.getByRole('option', { name: 'New Step', exact: true }).press('Enter');
+  await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('listitem')).toHaveCount(1);
 

@@ -119,7 +119,9 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await page.screenshot({ path: test.info().outputPath('runs-minimum.png') });
   await more.click();
   const menu = page.getByRole('menu', { name: 'More' });
-  await expect(menu.getByRole('menuitemradio').first()).toBeVisible();
+  // The machine picker leaves the bar last, so at the minimum width only commands are rows of More.
+  await expect(runsHeader.getByRole('combobox', { name: 'Machine' })).toBeVisible();
+  await expect(menu.getByRole('menuitem').first()).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: 'Run', exact: true })).toHaveCount(0);
   await page.screenshot({ path: test.info().outputPath('runs-minimum-menu.png') });
   await page.keyboard.press('Escape');
