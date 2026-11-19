@@ -433,6 +433,48 @@ def test_class_parameter_axes_are_named_by_the_field_holding_the_class(tmp_path)
         assert set(axes) == {"learning-rate-peak-value", "optimizer-b1"}
 
 
+def test_a_sweep_with_an_exception_can_still_sweep_the_fields_the_exception_leaves_alone(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    rate = "settings.optimizer.learning_rate.value"
+    raw["steps"]["train"]["sweep"] = {
+        "axes": {"learning-rate": {"values": {
+            "slow": {"value": 0.001, "patches": {rate: {"value": 0.001}}},
+            "fast": {"value": 0.003, "patches": {rate: {"value": 0.003}}},
+        }}},
+        "exceptions": {"wide": {
+            "where": {"axes": {"learning-rate": ["fast"]}},
+            "patches": {"training_config.batch_size": {"value": 8}},
+        }},
+    }
+    _save_project(ProjectFolderService(tmp_path), "excepted", Project.model_validate(raw))
+    url = "/api/projects/excepted"
+    endpoint = url + "/authoring/train/train/fields"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        body = {"revision": client.get(url).json()["revision"]}
+        fields = {field["id"]: field for field in client.post(endpoint, json=body).json()["fields"]}
+        assert fields["/settings/optimizer/b1"]["can_sweep"]
+        assert not fields["/settings/optimizer/learning_rate/value"]["can_sweep"]
+        assert not fields["/training_config/batch_size"]["can_sweep"]
+
+        recipe = client.post(endpoint, json=body | {
+            "field": "/settings/optimizer/b1", "edit": {"kind": "text", "text": "0.8, 0.9"},
+        }).json()
+        assert not recipe["problems"], recipe
+        client.patch(url, json=body | {"files": recipe["files"]}).raise_for_status()
+        revision = client.get(url).json()["revision"]
+    plan = ProjectFolderService(tmp_path).read_plan("excepted", revision=revision).plan
+    keys = tuple(row.key for row in plan.rows if row.key.step == "train")
+    assert len(keys) == 4
+    plan = ProjectFolderService(tmp_path).read_plan("excepted", revision=revision, source_runs=keys).plan
+    batch_sizes = sorted(
+        (definition.payload["settings"]["optimizer"]["learning_rate"]["value"], definition.payload["training_config"]["batch_size"])
+        for definition in plan.selected_definitions.values()
+    )
+    assert [size for value, size in batch_sizes if value == 0.003] == [8, 8]
+    assert all(size != 8 for value, size in batch_sizes if value == 0.001)
+
+
 def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
     raw = _model_project()
     raw["steps"].pop("baseline")
