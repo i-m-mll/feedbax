@@ -51,7 +51,7 @@ export function focusInspectorField(frames = 30) {
   else if (frames > 0) requestAnimationFrame(() => focusInspectorField(frames - 1));
 }
 
-/** A request to put the keyboard on a field: the one whose `data-field` is `target`, or else the first. */
+/** A request to put the keyboard on a field: the one whose `data-field` is `target`, or else the first with a `data-field`. */
 export interface FieldFocusRequest {
   readonly key: string;
   readonly target?: string;
@@ -66,11 +66,13 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
     const element = root.current;
     if (!request || !element) return;
     const attempt = () => {
-      // The named field once it can take the keyboard; the first field when the fields shown do not include it.
-      const named = target === undefined ? null : element.querySelector(`[data-field="${CSS.escape(target)}"]`);
-      const shown = named === null && (target === undefined || element.querySelector('[data-field]') !== null ||
+      // The named field, or without a name the step's own first field, once it can take the keyboard;
+      // the first field of any kind when the fields shown do not include it.
+      const scope = target === undefined ? '[data-field]' : `[data-field="${CSS.escape(target)}"]`;
+      const named = element.querySelector(scope);
+      const shown = named === null && (element.querySelector('[data-field]') !== null ||
         element.querySelector('[aria-busy="true"]') === null);
-      const chosen = named ? named.querySelector<HTMLElement>(field) : shown ? element.querySelector<HTMLElement>(field) : null;
+      const chosen = named || shown ? element.querySelector<HTMLElement>(named ? `${scope} :is(${field})` : field) : null;
       if (!chosen) return false;
       chosen.focus();
       focused.current();
@@ -79,7 +81,7 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
     if (attempt()) return;
     const observer = new MutationObserver(() => { if (attempt()) observer.disconnect(); });
     observer.observe(element, {
-      childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'readonly', 'aria-disabled'],
+      childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'readonly', 'aria-disabled', 'aria-busy'],
     });
     return () => observer.disconnect();
   }, [request?.key]);
