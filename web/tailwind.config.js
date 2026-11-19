@@ -56,7 +56,8 @@ export default {
       },
       boxShadow: {
         soft: 'var(--studio-shadow-soft)',
-        lift: 'var(--studio-shadow-lift)'
+        lift: 'var(--studio-shadow-lift)',
+        segment: '0 1px 2px rgba(15, 23, 42, 0.12)'
       },
       fontFamily: {
         sans: 'var(--font-ui)'

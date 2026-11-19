@@ -87,7 +87,7 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
   const packages = new Map(catalogEntries(catalog.data, 'python_tasks').map((entry) => [entry.key, entry.package]));
   const source = view.task_source && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(view.task_source)}</span>;
   const edit = (name: string, edits: ProjectValueEdit[]) => commit && commit(studioAccessibleName('set', name), { kind: 'task', edits });
-  return <div className="grid max-w-2xl gap-4 p-3 text-sm">
+  return <div className="grid max-w-2xl gap-4 text-sm">
     {!task && source}
     {task && <section className="grid gap-1" aria-label={studioName('parameters')}>
       <FieldRow label={studioName('task')} labelId={typeLabel}>

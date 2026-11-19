@@ -56,7 +56,7 @@ export function StudioEvaluationResults({ evaluation, replayable, onReplay }: {
   const sources = new Set(result?.checkpoint_sources?.map(({ completed_updates }) => completed_updates));
   const gaps = new Map(result?.checkpoint_gaps?.map(({ update, reason }) => [update, reason]));
   const points = new Map(attempt?.points?.map(({ completed_updates, status }) => [completed_updates, status]));
-  return <div className="space-y-2 p-3 text-sm">
+  return <div className="space-y-2 text-sm">
     <StudioEvaluationAttemptDetails evaluation={evaluation} />
     <Table aria-label={studioName('checkpointResults')}>
       <thead>

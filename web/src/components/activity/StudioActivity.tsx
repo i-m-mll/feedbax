@@ -14,6 +14,7 @@ import {
 /** The state a finished job's result is in, where the window knows its validity. */
 export type ActivityResultState = (job: StudioActivityJob) => StudioResultState | undefined;
 import { Button } from '@/components/ui/Button';
+import { Section } from '@/components/ui/Section';
 
 const liveStatuses = new Set<StudioRunStatusId>([
   'queued',
@@ -193,14 +194,13 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
       </>}
       <dt>{studioName('runs')}</dt><dd>{machine.job_ids.length}</dd>
     </dl>
-    {opening.length > 0 && <details>
-      <summary>{studioName('openingHistory')}</summary>
+    {opening.length > 0 && <Section nested name={studioName('openingHistory')} defaultOpen={false}>
       <ol className="list-disc ps-5">
         {opening.map(({ step, observed_at_ms }, index) => <li key={index}>
           {studioOpeningStep(step)} · {studioDateTime(observed_at_ms)}
         </li>)}
       </ol>
-    </details>}
+    </Section>}
     {error && <p role="alert">{error}</p>}
     <Button disabled={!machine.can_close || busy} onClick={() => void close()}>{studioName('close')}</Button>
   </section>;

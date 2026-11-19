@@ -17,6 +17,7 @@
   --studio-scroll-fade: 1.5rem;
   /* A region whose read for the shown revision is still pending after its delay; the whole region recedes together. */
   --studio-region-pending-opacity: .6;
+  --segment-raised: var(--surface-main);
   --card-surface: var(--surface-main);
   --card-border: var(--app-divider);
   --card-border-hover: var(--studio-control-border);
@@ -73,6 +74,7 @@
   --studio-objective-lightness: 0.68;
   --studio-shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.32);
   --studio-shadow-lift: 0 18px 40px rgba(0, 0, 0, 0.44);
+  --segment-raised: var(--neutral-alpha-12);
 }
 
 .studio-objective {

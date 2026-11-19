@@ -1211,6 +1211,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               const document = value.task_document ?? step?.id ?? '';
               const selected = named(document)?.id;
               return {
+                padded: true,
                 picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
                 body: withProblem(<TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
@@ -1303,11 +1304,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             };
           }
           if (view === 'training' && authoring) {
-            return { body: withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
+            return { padded: true, body: withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
               fieldRows={detailInputs.fieldRows} />) };
           }
           const resultsFailure = planError('results');
           if (view === 'results' && (resultsFailure || !projection.data || (!pending && !outside && connected))) return {
+            padded: true,
             body: <SavedResults shown={projection.data} current={!!data} failure={resultsFailure} result={shownResult}
               project={saved.project_id} fallback={withProblem(noView)}
               stopped={stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}

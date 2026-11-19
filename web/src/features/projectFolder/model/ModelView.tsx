@@ -599,7 +599,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const type = definition?.kind === 'leaf' ? registry.get(definition.type) : undefined;
     const value = definition?.kind === 'leaf' ? definition.fields?.hidden_size ?? definition.fields?.output_size : undefined;
     const name = definition?.name ?? studioName(id === inputCard ? 'inputs' : 'outputs');
-    const caption = definition?.kind === 'leaf'
+    const description = definition?.kind === 'leaf'
       ? [shortName(type?.name ?? definition.type), typeof value === 'number' ? value : undefined].filter((item) => item !== undefined).join(' · ')
       : definition?.kind === 'composite' ? graphKind(definition) : undefined;
     const ports = portMap.get(id) ?? emptyPorts;
@@ -608,7 +608,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return {
       id, type: 'modelCard', ariaLabel: name,
       domAttributes: {
-        'aria-description': [caption, problem].filter(Boolean).join(' · ') || undefined,
+        'aria-description': [description, problem].filter(Boolean).join(' · ') || undefined,
         ...(enter && { onKeyDownCapture: (event: KeyboardEvent<HTMLElement>) => {
           if (event.target !== event.currentTarget || event.key !== 'Enter') return;
           event.preventDefault();
@@ -622,7 +622,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       draggable: !!definition && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
       data: {
-        address, name, caption, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
+        address, name, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
         locked: locked || !editTopology, physicalConnections: !!physical, stacked: definition?.kind === 'composite',
         selected: !!definition && selectedIds.has(key),
         holdsSelection: definition?.kind === 'composite' && selected.some((item) =>
