@@ -18,6 +18,7 @@
   /* A region whose read for the shown revision is still pending after its delay; the whole region recedes together. */
   --studio-region-pending-opacity: .6;
   --segment-raised: var(--surface-main);
+  --segment-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
   --card-surface: var(--surface-main);
   --card-border: var(--app-divider);
   --card-border-hover: var(--studio-control-border);
