@@ -14,14 +14,14 @@ from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentStep, ModelEditCommand, SetField,
+    EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentRows, EvaluateAttachmentStep,
+    ModelEditCommand, SetField,
 )
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import InlineBase, SetProjectValue, Step
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
-from feedbax.contracts.project_inputs import SweepExceptionTerms
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import _paths_overlap, authored_row
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, ModelFieldView
@@ -34,7 +34,7 @@ from feedbax.web.services.evaluate_attachment import (
 )
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
-from feedbax.web.services.trial_scope import variant_file
+from feedbax.web.services.trial_scope import scoped_file, selection_scope, variant_file
 
 
 @dataclass(frozen=True)
@@ -284,18 +284,11 @@ def model_fields(
     def step_file(patches: list[SetProjectValue]) -> StudioProjectFilePatch:
         return StudioProjectFilePatch(address=step_address, patches=patches)
 
+    scope = None
     if (body.rows or body.axes) and evaluate is None:
-        available = {row.key.row: row for row in plan.rows if
-                     (row.key.variant, row.key.step) == (body.run.variant, body.run.step)}
-        if not set(body.rows) <= available.keys() or len(set(body.rows)) != len(body.rows):
-            raise ProjectFolderInvalid("The selected rows no longer address this stored field.")
-        if body.axes and set(body.rows) != {
-            row_id for row_id, row in available.items()
-            if all(axis in row.coordinates and row.coordinates[axis].value_id in values
-                   for axis, values in body.axes.items())
-        }:
-            raise ProjectFolderInvalid("The selected sweep values no longer address these rows.")
-        if not body.axes and axis is not None and any(
+        key = RunKey(body.run.variant, body.run.step, body.run.row)
+        scope = selection_scope(project, plan, key, tuple(body.rows), body.axes)
+        if isinstance(scope, EvaluateAttachmentRows) and axis is not None and any(
             source.kind == "sweep_value"
             for field_view in fields if field_view.address == body.address
             for source in field_view.sources
@@ -303,15 +296,20 @@ def model_fields(
             raise ProjectFolderInvalid("A selected row already writes this field through a sweep value.")
     prepared = prepare_numeric_field(
         field.numeric, axis, body.edit, functions, period=(effective_model or model).step_seconds,
-        rows=tuple(body.rows) if evaluate is None else (),
-        selection=SweepExceptionTerms(axes=body.axes) if evaluate is None and body.axes else None,
-        keep_value=axis.target.writes if axis is not None else None,
+        scoped=scope is not None, keep_value=axis.target.writes if axis is not None else None,
     )
     result = prepared.result
     if isinstance(result, tuple):
         return ModelFieldResponse(problems=list(result))
     if isinstance(result, list):
         return ModelFieldResponse(files=[step_file(result)], removed_values=prepared.removed)
+    if scope is not None:
+        if axis is None or axis.target.patch_path is None:
+            return ModelFieldResponse(problems=[Problem(
+                code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
+            )])
+        write = OverridePatch(op="replace", path=axis.target.patch_path, value=result)
+        return ModelFieldResponse(files=[scoped_file(project, body.run.step, scope, [write])])
     value = result
     if isinstance(result, LiteralValue):
         if field.address.element.parent.kind == "attachment":

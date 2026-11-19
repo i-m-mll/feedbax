@@ -13,14 +13,15 @@ export interface CatalogPickerProps {
   value: string | null;
   onChoose: (key: string) => void;
   disabled?: boolean;
+  placeholder?: string;
   'aria-label'?: string;
   'aria-labelledby'?: string;
   className?: string;
 }
 
 /** A combobox over a registry: each row the declaration's label, with its package as trailing text. */
-export function CatalogPicker({ entries, value, onChoose, disabled, className, ...aria }: CatalogPickerProps) {
+export function CatalogPicker({ entries, value, onChoose, disabled, placeholder, className, ...aria }: CatalogPickerProps) {
   return <Combobox items={entries.map(({ key, label, package: source }) => ({ value: key, label, detail: source }))}
-    value={value} disabled={disabled} className={className} {...aria}
+    value={value} disabled={disabled} placeholder={placeholder} className={className} {...aria}
     onValueChange={(key) => { if (key !== null && key !== value) onChoose(key); }} />;
 }

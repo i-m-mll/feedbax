@@ -12,7 +12,8 @@ from feedbax.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
-from feedbax.contracts.studio_project import ProjectValueEdit
+from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.studio_project import StudioProjectFilePatch
 
 
 class StudioAuthoringDeclaration(StrictModel):
@@ -138,7 +139,19 @@ class StudioAuthoringSweepChange(StrictModel):
     ]
 
 
-class StudioTrainAuthoringRequest(StrictModel):
+class StudioRunSelection(StrictModel):
+    """The runs an edit is made for: a named run and, when they are not the whole step, the selected rows.
+
+    Rows that are exactly the runs of a set of values per sweep, named in ``axes``, are stored by those values;
+    other rows are stored by row.
+    """
+
+    run: StudioSavedTrainKey | None = None
+    rows: list[str] = Field(default_factory=list)
+    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
+
+
+class StudioTrainAuthoringRequest(StudioRunSelection):
     revision: Sha256
     change: StudioAuthoringChange | None = None
 
@@ -156,6 +169,9 @@ class StudioTrainAuthoring(StrictModel):
     revision: Sha256
     fields: list[StudioAuthoringField]
     settings: dict[str, JsonValue] | None
-    patches: list[ProjectValueEdit]
+    """The selected runs' settings: the named run's."""
+    mixed: list[str] = Field(default_factory=list)
+    """Pointers in the definition where the selected runs hold different values."""
+    files: list[StudioProjectFilePatch]
     documents: list[ProjectName]
     refusal: StudioSweptParameterMissing | None = None

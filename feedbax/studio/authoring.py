@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import math
 from collections.abc import Callable, Iterable
@@ -22,6 +21,7 @@ from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSource
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.contracts.project import (
     DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
 )
@@ -34,7 +34,6 @@ from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import REQUEST_KINDS, decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, TrainContinuation
 from feedbax.contracts.request_refs import LastMember, ProductRef
-from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_authoring import (
     StudioAuthoredDocumentFamily,
     StudioAuthoringCatalog,
@@ -61,6 +60,7 @@ from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps, sweep_paths
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
+from feedbax.studio.selection import TrainSelection
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
 from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 
@@ -220,7 +220,16 @@ def authoring_surface(
     )
 
 
-type _Edit = list[SetProjectValue] | StudioSweptParameterMissing
+type _Edit = list[OverridePatch] | StudioSweptParameterMissing
+
+
+@dataclass(frozen=True)
+class TrainProjection:
+    fields: list[StudioAuthoringField]
+    settings: dict[str, JsonValue] | None
+    mixed: list[str]
+    edit: StudioProjectFilePatch | StudioSweptParameterMissing | None
+    documents: list[str]
 
 
 @dataclass(frozen=True)
@@ -230,11 +239,64 @@ class _Field:
     documents: tuple[str, ...]
     name: _Path
 
-    def number_write(self, value: int | float) -> list[SetProjectValue]:
+    def number_write(self, value: int | float) -> list[OverridePatch]:
         """A number field's write, which no sweep refuses."""
         patches = self.write(value)
         assert isinstance(patches, list), f"{self.view.label} refused a number"
         return patches
+
+
+def _step_writes(writes: list[OverridePatch]) -> list[SetProjectValue]:
+    """Writes in a step's definition as edits of the step's own inline definition."""
+    return [
+        SetProjectValue(op=write.op, path=pointer(("base", "inline", *write.path.split("."))), value=write.value)
+        for write in writes
+    ]
+
+
+def _changes(path: _Path, old: JsonValue, new: JsonValue) -> list[OverridePatch]:
+    """The writes that turn ``old``, present at ``path``, into ``new``, each entry that stays untouched.
+
+    A kept entry is not written, so a sweep's patch at it is not overlapped by a patch for the selected runs.
+    """
+    if old == new:
+        return []
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return [OverridePatch(op="replace", path=".".join(path), value=new)]
+    return [
+        *(write for key, value in new.items()
+          for write in (_changes((*path, key), old[key], value) if key in old
+                        else [OverridePatch(op="add", path=".".join((*path, key)), value=value)])),
+        *(OverridePatch(op="remove", path=".".join((*path, key))) for key in old if key not in new),
+    ]
+
+
+def _effective(payload: dict[str, JsonValue], registry: TrainingMethodRegistry) -> dict[str, JsonValue]:
+    """A run's Train definition with its method's defaults filled in, so runs compare by the values they train with."""
+    effective = {key: value for key, value in payload.items() if key != "trial_documents"}
+    method = payload.get("method")
+    if isinstance(method, str) and method in registry.keys():
+        settings = _read(registry.resolve(method).settings_model, payload.get("settings"))
+        if settings is not None:
+            effective["settings"] = settings.model_dump(mode="json")
+    config = payload.get("training_config")
+    if config is None or isinstance(config, dict):
+        effective["training_config"] = DocumentTrainingConfig(batch_size=_GRAPH_BATCH_SIZE).model_dump(mode="json") | (config or {})
+    return effective
+
+
+def _differences(values: list[JsonValue], at: _Path = ()) -> set[str]:
+    """Pointers below ``at`` where ``values`` differ: each differing leaf, and each entry some of them lack."""
+    if all(value == values[0] for value in values):
+        return set()
+    if not all(isinstance(value, dict) for value in values):
+        return {pointer(at)}
+    keys = {key for value in values for key in value}
+    return {
+        found for key in keys
+        for found in (_differences([value[key] for value in values], (*at, key))
+                      if all(key in value for value in values) else {pointer((*at, key))})
+    }
 
 
 def _read[Model: BaseModel](model: type[Model], value: Any) -> Model | None:
@@ -268,7 +330,9 @@ def _source(source: ValueSource | None) -> StudioAuthoringSource | None:
 
 
 class _TrainFields:
-    def __init__(self, project: Project, step_id: str, registry: TrainingMethodRegistry) -> None:
+    def __init__(
+        self, project: Project, step_id: str, registry: TrainingMethodRegistry, current: dict[str, JsonValue] | None = None,
+    ) -> None:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
             raise ValueError(f"Unknown Train step {step_id!r}")
@@ -297,43 +361,25 @@ class _TrainFields:
         else:
             assert isinstance(step.base, InlineBase)
             self.payload = step.base.inline
+        self.current = self.payload if current is None else current
         self.sources = (resolved.sources or {}) if isinstance(resolved, ResolvedStep) else {}
         self.fields: dict[str, _Field] = {}
         self.method: RegisteredTrainingMethod | None = None
 
-    def set(self, path: _Path, value: JsonValue) -> SetProjectValue:
-        parent = _get(self.payload, path[:-1])
+    def set(self, path: _Path, value: JsonValue) -> OverridePatch:
+        """The write of ``value`` at ``path`` in the definition, made against the selected runs' definition."""
+        parent = _get(self.current, path[:-1])
         exists = isinstance(parent, dict) and path[-1] in parent
-        return SetProjectValue(
-            op="replace" if exists else "add",
-            path=pointer(("base", "inline", *path)),
-            value=value,
-        )
-
-    def authored_edits(self, field: str, edits: list[SetProjectValue]) -> list[SetProjectValue]:
-        if not self.linked or not edits:
-            return edits
-        patches = [
-            OverridePatch(op=edit.op, path=".".join(json_pointer_parts(edit.path)[2:]), value=edit.value)
-            for edit in edits
-        ]
-        layer = MatrixCompositionDelta(
-            layer_id=f"studio-{field.replace('/', '-').strip('-')}-{len(self.step.deltas) + 1}",
-            patches=patches,
-            acknowledges_ancestor_paths=[patch.path for patch in patches],
-        ).model_dump(mode="json", exclude_unset=True)
-        has_deltas = "deltas" in self.step.model_fields_set
-        return [SetProjectValue(
-            op="add",
-            path=f"/deltas/{len(self.step.deltas)}" if has_deltas else "/deltas",
-            value=layer if has_deltas else [layer],
-        )]
+        return OverridePatch(op="replace" if exists else "add", path=".".join(path), value=value)
 
     def choose_class(self, path: _Path, model: type[BaseModel], label: str) -> _Edit:
         """Replace the value at ``path`` with ``model``'s, or name the parameter the step sweeps that it lacks."""
-        value = replacement(model, _get(self.payload, path))
+        current = _get(self.current, path)
+        value = replacement(model, current)
         missing = swept_parameter_missing(self.step.sweep, path, value, label, self.field_label)
-        return missing or [self.set(path, value)]
+        if missing:
+            return missing
+        return _changes(path, current, value) if isinstance(current, dict) else [self.set(path, value)]
 
     def field_label(self, path: _Path) -> str:
         field = self.fields.get(pointer(path))
@@ -436,7 +482,7 @@ class _TrainFields:
         elif scope is None:
             value = _CHECKPOINT_CHOICES[value]
 
-        def change(selected: _Scalar) -> list[SetProjectValue]:
+        def change(selected: _Scalar) -> list[OverridePatch]:
             assert scope is not None
             continuation = TrainContinuation(
                 source_completed_updates=scope[0], state="preserve", schedule="continue", rng="carry",
@@ -480,7 +526,7 @@ class _TrainFields:
             for name, schema in DocumentTrainingConfig.model_json_schema()["properties"].items():
                 path = ("training_config", name)
 
-                def write(value: _Scalar, *, name=name, path=path) -> list[SetProjectValue]:
+                def write(value: _Scalar, *, name=name, path=path) -> list[OverridePatch]:
                     if raw is not None:
                         return [self.set(path, value)]
                     return [self.set(("training_config",), defaults | {name: value})]
@@ -512,7 +558,7 @@ class _TrainFields:
                     single = tag is not None and len(set(props.get("properties", {})) - {tag}) == 1
                     fields(site, leaf, props, inner, (name, _title(declared, name), single) if tag is not None else None)
                 elif type(leaf) in (int, float) and props.get("type") in ("number", "integer"):
-                    def write(value: _Scalar, site=site, inner=inner) -> list[SetProjectValue]:
+                    def write(value: _Scalar, site=site, inner=inner) -> list[OverridePatch]:
                         if inner is None:
                             return [self.set(site, value)]
                         root, default = inner
@@ -649,20 +695,23 @@ def project_train_fields(
     step_id: str,
     registry: TrainingMethodRegistry,
     change: StudioAuthoringChange | None,
+    selection: TrainSelection,
     *,
     read_plan: _ReadPlan | None = None,
-) -> tuple[
-    list[StudioAuthoringField], dict[str, JsonValue] | None, list[SetProjectValue] | StudioSweptParameterMissing, list[str],
-]:
-    """Project the Train step's declared fields and authored settings, and plan one atomic, step-local edit, or the
-    reason the step's sweep refuses it."""
-    definition = _TrainFields(project, step_id, registry)
+) -> TrainProjection:
+    """Project the Train step's declared fields and the selected runs' settings, and store one atomic edit for the
+    selected runs, or the reason the step's sweep refuses it."""
+    definition = _TrainFields(project, step_id, registry, selection.current)
     definition.training(read_plan)
-    settings = definition.payload.get("settings")
-    patches: list[SetProjectValue] | StudioSweptParameterMissing = []
+    payloads = selection.payloads
+    shown = payloads[0] if payloads else definition.payload
+    settings = shown.get("settings")
+    mixed = _differences([_effective(payload, registry) for payload in payloads]) if payloads else set()
+    edit: StudioProjectFilePatch | StudioSweptParameterMissing | None = None
     documents: set[str] = set()
     if change is not None:
         field = definition.fields.get(change.field)
+        patches: _Edit = []
         if field is None:
             patches = _settings_edit(definition, change)
         else:
@@ -675,7 +724,8 @@ def project_train_fields(
                     raise ValueError(f"{field.view.label} has no choice {value!r}")
             else:
                 value = _number(field.view, value)
-            if value != field.view.value:
+            held = _get(definition.current, tuple(json_pointer_parts(change.field))) if selection.scoped else field.view.value
+            if value != held:
                 patches = field.write(value)
                 if not isinstance(patches, StudioSweptParameterMissing):
                     documents.update(field.documents)
@@ -684,12 +734,15 @@ def project_train_fields(
                         for patch in patches
                         if (ref := _read(DocumentReference, patch.value)) is not None
                     )
-        if not isinstance(patches, StudioSweptParameterMissing):
-            patches = definition.authored_edits(change.field, patches)
-    return (
+        if isinstance(patches, StudioSweptParameterMissing):
+            edit = patches
+        elif patches:
+            edit = selection.store(patches)
+    return TrainProjection(
         [field.view for field in definition.fields.values()],
         settings if isinstance(settings, dict) else None,
-        patches,
+        sorted(mixed),
+        edit,
         sorted(documents),
     )
 
@@ -718,7 +771,7 @@ def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> _
     At a class-valued field, or at a class's tag, the value is the key of the class chosen in place of the current one.
     """
     path = tuple(json_pointer_parts(change.field))
-    settings = definition.payload.get("settings")
+    settings = definition.current.get("settings")
     method = definition.method
     missing = ValueError(f"Train step {definition.step_id!r} has no field {change.field!r}")
     if len(path) < 2 or path[0] != "settings" or method is None or not isinstance(settings, dict):
@@ -741,10 +794,8 @@ def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> _
             return []
         edit = [definition.set(path, change.value)]
     if isinstance(edit, list):
-        edited: JsonValue = settings
-        for patch in edit:
-            edited = _set_in(edited, tuple(json_pointer_parts(patch.path))[3:], patch.value)
         try:
+            edited = apply_override_patches({"settings": settings}, edit)["settings"]
             method.settings_model.model_validate(edited)
         except ValidationError as error:
             location = ".".join(str(part) for part in error.errors()[0]["loc"]) or path[-1]
@@ -754,25 +805,11 @@ def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> _
 
 def project_training_numeric_fields(
     project: Project, step_id: str, registry: TrainingMethodRegistry, functions: FunctionRegistry,
-    body: TrainFieldRequest, read_plan: _ReadPlan,
+    body: TrainFieldRequest, selection: TrainSelection, read_plan: _ReadPlan,
 ) -> TrainFieldResponse:
     definition = _TrainFields(project, step_id, registry)
     definition.training(read_plan)
-    selected = None
-    definitions = []
-    if body.run is not None:
-        key = RunKey(body.run.variant, body.run.step, body.run.row)
-        if key.step != step_id:
-            raise ValueError(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}")
-        shown = tuple(RunKey(key.variant, step_id, row) for row in body.rows) or (key,)
-        plan = read_plan(tuple(dict.fromkeys((key, *shown))))
-        selected = next((row for row in plan.rows if row.key == key), None)
-        available = {row.key.row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, step_id)}
-        if not set(body.rows) <= available or len(set(body.rows)) != len(body.rows):
-            raise ValueError(f"Train step {step_id!r} has no rows {sorted(set(body.rows) - available)!r}")
-        definitions = [plan.selected_definitions.get(item) for item in shown]
-    elif body.rows:
-        raise ValueError("Rows were given without the run they belong to")
+    effective = [_effective(payload, registry) for payload in selection.payloads]
     fields = []
     targets = {}
     for field_id, field in definition.fields.items():
@@ -780,7 +817,8 @@ def project_training_numeric_fields(
         if not isinstance(view.control, StudioAuthoringNumber) or type(view.value) not in (float, int):
             continue
         path = json_pointer_parts(field_id)
-        target = SweepTarget.from_field(view.value, view.control, field.number_write) if not definition.linked else None
+        step_writes = lambda value, field=field: _step_writes(field.number_write(value))
+        target = SweepTarget.from_field(view.value, view.control, step_writes) if not definition.linked else None
         axis = FieldSweeps(definition.step, target, view.label, field.name, integer=view.control.step == 1) if target is not None else None
         numeric = NumericField(
             path, view.label, view.value,
@@ -788,37 +826,34 @@ def project_training_numeric_fields(
                  finest=Level.RUN, structural=True),
             target is not None, lambda value, view=view: _number(view, value),
         )
-        values = {json.dumps(_get(item.payload, path)) for item in definitions if item is not None}
+        values = {json.dumps(_get(payload, path)) for payload in effective}
         fields.append(project_numeric_field(
-            TrainFieldView, numeric, axis, functions, selected,
+            TrainFieldView, numeric, axis, functions, selection.row,
             json.loads(next(iter(values))) if len(values) == 1 else None, mixed=len(values) > 1, id=field_id,
         ))
-        targets[field_id] = field, numeric, axis
+        targets[field_id] = field, numeric, axis, step_writes
     if body.edit is None:
         return TrainFieldResponse(fields=fields)
     if body.field not in targets:
         raise ValueError(f"Train step {step_id!r} has no number field {body.field!r}")
-    field, numeric, axis = targets[body.field]
+    field, numeric, axis, step_writes = targets[body.field]
     prepared = prepare_numeric_field(
-        numeric, axis, body.edit, functions, rows=tuple(body.rows), keep_value=field.number_write,
+        numeric, axis, body.edit, functions, scoped=selection.scoped, keep_value=step_writes,
     )
     result = prepared.result
     if isinstance(result, tuple):
         return TrainFieldResponse(problems=list(result))
     if isinstance(result, list):
-        patches = result
+        files = [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)] if result else []
     elif definition.step.sweep and axis is None:
         return TrainFieldResponse(problems=[Problem(
             code=ProblemCode.STRUCTURE, reason="This Train field has no writable sweep destination.",
         )])
     else:
         assert not isinstance(result, LiteralValue)
-        patches = definition.authored_edits(body.field, field.number_write(result))
-    return TrainFieldResponse(
-        files=[StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=patches)] if patches else [],
-        dependencies=list(field.documents),
-        removed_values=prepared.removed,
-    )
+        definition.current = selection.current if selection.current is not None else definition.payload
+        files = [selection.store(field.number_write(result))]
+    return TrainFieldResponse(files=files, dependencies=list(field.documents), removed_values=prepared.removed)
 
 
 def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:

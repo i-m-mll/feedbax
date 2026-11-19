@@ -80,7 +80,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     label,
     type: { kind: field.site.site.expected.base === 'integer' ? 'integer' : 'number' },
     unit: unit ?? undefined,
-    text: rowSelection && !sweep ? multipleRows || field.mixed ? null : effective ?? authored : authored,
+    text: sweep ? authored : field.mixed || rowSelection && multipleRows ? null : rowSelection ? effective ?? authored : authored,
     kind,
     kinds: field.site.kinds.map((value) => ({
       kind: value,

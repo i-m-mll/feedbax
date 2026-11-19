@@ -475,6 +475,129 @@ def test_a_sweep_with_an_exception_can_still_sweep_the_fields_the_exception_leav
     assert all(size != 8 for value, size in batch_sizes if value == 0.001)
 
 
+def _seed_swept_project(tmp_path, name):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    raw["steps"]["train"]["base"]["inline"]["seed"] = 0
+    raw["steps"]["train"]["sweep"] = {"axes": {"seed": {"values": {
+        f"seed-{seed}": {"value": seed, "patches": {"seed": {"value": seed}}} for seed in (1, 2, 3)
+    }}}}
+    _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
+    return f"/api/projects/{name}"
+
+
+class _TrainClient:
+    """A Train step's edits through the Studio endpoints, each saved as it is made."""
+
+    def __init__(self, client, url):
+        self.client, self.url = client, url
+
+    @property
+    def revision(self):
+        return self.client.get(self.url).json()["revision"]
+
+    def plan(self, tmp_path, name):
+        folders = ProjectFolderService(tmp_path)
+        plan = folders.read_plan(name, revision=self.revision).plan
+        keys = tuple(row.key for row in plan.rows)
+        return folders.read_plan(name, revision=self.revision, source_runs=keys).plan
+
+    def requests(self, tmp_path, name):
+        return {run.key: run.request_id for run in self.plan(tmp_path, name).runs}
+
+    def runs(self, tmp_path, name, **coordinates):
+        return [row.key for row in self.plan(tmp_path, name).rows if all(
+            row.coordinates[axis].value_id == value for axis, value in coordinates.items()
+        )]
+
+    def save(self, response):
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert not body.get("problems") and not body.get("refusal"), body
+        saved = self.client.patch(self.url, json={"revision": self.revision, "files": body["files"]})
+        assert saved.status_code == 200, saved.text
+        return body
+
+    def number(self, field, edit, keys=(), axes=None, *, save=True):
+        response = self.client.post(self.url + "/authoring/train/train/fields", json=self.scope(keys, axes) | {
+            "field": field, "edit": edit,
+        })
+        return self.save(response) if save else response.json()
+
+    def choose(self, field, value, keys=(), axes=None):
+        return self.save(self.client.post(self.url + "/authoring/train/train", json=self.scope(keys, axes) | {
+            "change": {"field": field, "value": value},
+        }))
+
+    def read(self, keys=(), named=None):
+        return self.client.post(self.url + "/authoring/train/train", json=self.scope(keys, named=named)).json()
+
+    def scope(self, keys=(), axes=None, *, named=None):
+        run = named or (keys[0] if keys else None)
+        return {"revision": self.revision} | ({"run": {
+            "variant": run.variant, "step": run.step, "row": run.row,
+        }, "rows": [key.row for key in keys], "axes": axes or {}} if run else {})
+
+
+def test_an_edit_for_a_sweep_value_is_stored_on_that_value(tmp_path):
+    url = _seed_swept_project(tmp_path, "by-value")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        seed_2 = train.runs(tmp_path, "by-value", seed="seed-2")
+        before = train.requests(tmp_path, "by-value")
+        train.number("/training_config/n_batches", {"kind": "text", "text": "7"}, seed_2, {"seed": ["seed-2"]})
+        after = train.requests(tmp_path, "by-value")
+        assert {key for key in before if before[key] != after[key]} == set(seed_2)
+        step = client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]
+        assert not step["sweep"].get("exceptions")
+
+        train.number("/settings/optimizer/learning_rate/value", {"kind": "to_sweep"})
+        train.number("/settings/optimizer/learning_rate/value", {"kind": "text", "text": "0.001, 0.003"})
+        train.number("/seed", {"kind": "text", "text": "1, 2, 3, 4"})
+        plan = train.plan(tmp_path, "by-value")
+        batches = {
+            (row.coordinates["seed"].value_id, row.coordinates["learning-rate"].value_id):
+                plan.selected_definitions[row.key].payload["training_config"]["n_batches"]
+            for row in plan.rows
+        }
+        assert len(batches) == 8
+        assert {key: count for key, count in batches.items() if count != 2} == {
+            ("seed-2", rate): 7 for rate in ("value", "value-2")
+        }
+
+
+def test_an_edit_for_runs_that_are_not_a_sweep_value_is_an_exception_for_those_runs(tmp_path):
+    url = _seed_swept_project(tmp_path, "by-run")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        picked = train.runs(tmp_path, "by-run")[:2]
+        before = train.requests(tmp_path, "by-run")
+        train.number("/training_config/n_batches", {"kind": "text", "text": "7"}, picked, {"seed": ["seed-1", "seed-2", "seed-3"]})
+        after = train.requests(tmp_path, "by-run")
+        assert {key for key in before if before[key] != after[key]} == set(picked)
+        exceptions = client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]["sweep"]["exceptions"]
+        assert [exception["where"] for exception in exceptions.values()] == [{"rows": sorted(key.row for key in picked)}]
+
+
+def test_a_class_chosen_for_one_run_changes_that_run_and_reads_mixed_for_the_step(tmp_path):
+    url = _seed_swept_project(tmp_path, "one-run")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        train.number("/settings/optimizer/learning_rate/value", {"kind": "text", "text": "0.001, 0.003"})
+        first, *others = train.runs(tmp_path, "one-run")
+        before = train.requests(tmp_path, "one-run")
+        train.choose("/settings/optimizer", "adamw", [first])
+        after = train.requests(tmp_path, "one-run")
+        assert {key for key in before if before[key] != after[key]} == {first}
+        plan = train.plan(tmp_path, "one-run")
+        assert not plan.diagnostics
+        assert plan.selected_definitions[first].payload["settings"]["optimizer"]["type"] == "adamw"
+        assert {plan.selected_definitions[key].payload["settings"]["optimizer"]["type"] for key in others} == {"adam"}
+        assert {"/settings/optimizer/type", "/settings/optimizer/weight_decay"} <= set(train.read(named=first)["mixed"])
+        assert "/settings/optimizer/b1" not in train.read(named=first)["mixed"]
+        assert not train.read([others[0]])["mixed"]
+
+
 def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
     raw = _model_project()
     raw["steps"].pop("baseline")

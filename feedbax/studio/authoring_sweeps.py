@@ -86,6 +86,18 @@ def _axis_paths(axis: Axis) -> set[str]:
     return set()
 
 
+def _axis_field_paths(axis: Axis) -> set[str]:
+    """The paths an axis sweeps: each value sets them to that value. A value's other patches are edits for its runs."""
+    if not isinstance(axis, NamedAxis):
+        return _axis_paths(axis)
+    entries = [entry for entry in axis.values.values() if entry is not None]
+    swept = [
+        {path for path, patch in entry.patches.items() if isinstance(patch, SetValue) and patch.value == entry.value}
+        for entry in entries
+    ]
+    return set.intersection(*swept) if swept else set()
+
+
 def sweep_paths(sweep: Sweep) -> set[str]:
     """The step-local paths a sweep writes, through its axes, rows, and exceptions."""
     sets = [*sweep.rows.values(), *sweep.exceptions.values()]
@@ -112,7 +124,7 @@ class FieldSweeps:
         self.axes = step.sweep.axes if step.sweep else {}
         self.covering = [
             (name, axis) for name, axis in self.axes.items()
-            if axis is not None and paths_match(self.paths, _axis_paths(axis))
+            if axis is not None and paths_match(self.paths, _axis_field_paths(axis))
         ]
         exceptions = [exception for exception in step.sweep.exceptions.values() if exception is not None] if step.sweep else []
         crossed = step.sweep is None or (step.sweep.combination in (None, "cross") and not step.sweep.rows)
@@ -126,11 +138,15 @@ class FieldSweeps:
     def to_list(self, axis: ListedAxis | GeneratedAxis) -> NamedAxis:
         return axis_to_list(axis, integer_site=lambda path: self.integer and path in self.paths)
 
+    def own_patches(self, entry: AxisValue) -> dict[str, object]:
+        """The patches of ``entry`` that write this field; the others are edits made for that value's runs."""
+        return {path: patch for path, patch in entry.patches.items() if paths_match({path}, self.paths)}
+
     def may_edit_member(self, axis: NamedAxis) -> bool:
         return all(
             entry is not None
             and type(entry.value) in (int, float)
-            and entry.patches == self.target.entry(entry.value).patches
+            and self.own_patches(entry) == self.target.entry(entry.value).patches
             for entry in axis.values.values()
         )
 
@@ -248,7 +264,7 @@ class FieldSweeps:
                 SetProjectValue(op="replace", path=pointer((*path, "value")), value=number),
                 *(
                     SetProjectValue(op="replace", path=pointer((*path, "patches", key, "value")), value=number)
-                    for key in entry.patches
+                    for key in self.own_patches(entry)
                 ),
             ]
         if edit.kind == "nameSweepValue":

@@ -21,7 +21,8 @@ import {
   StepReferenceSchema, type StepReference,
 } from '@/generated/studioContracts';
 import type {
-  AuthoredFileAddress, JsonValue, StudioAuthoringField, StudioSavedTrainKey, StudioTrainAuthoringRequest, TrainFieldView,
+  AuthoredFileAddress, JsonValue, StudioAuthoringField, StudioSavedTrainKey, StudioTrainAuthoringRequest, TrainFieldRequest,
+  TrainFieldView,
 } from '@/generated/studioContracts';
 import { modelDocumentId, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
@@ -39,6 +40,8 @@ interface Props {
   /** The plan of the saved revision is still loading, so `run` is not yet known and the fields wait for it. */
   readonly runPending?: boolean;
   readonly fieldRows?: readonly string[];
+  /** The selected sweep values, when the selection is values: the rows are then stored by them where they are exactly their runs. */
+  readonly fieldAxes?: Readonly<Record<string, readonly string[]>>;
   readonly step?: PlanStepView;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
   /** The project's Train steps, whose checkpoints the step can start from. */
@@ -75,12 +78,24 @@ function validateRecipe(
   };
 }
 
+type RunSelection = Pick<TrainFieldRequest, 'run' | 'rows' | 'axes'>;
+
+/** The runs an edit is made for: the named run, and the selected rows and sweep values when they are not the whole step. */
+function runSelection(
+  run?: StudioSavedTrainKey, rows: readonly string[] = [], axes: Readonly<Record<string, readonly string[]>> = {},
+): RunSelection {
+  if (!run) return {};
+  return {
+    run, rows: [...rows],
+    axes: rows.length ? Object.fromEntries(Object.entries(axes).map(([axis, values]) => [axis, [...values]])) : {},
+  };
+}
+
 function useTrainFieldsQuery(
-  editor: ProjectEditController, stepId: string | undefined, run?: StudioSavedTrainKey, rows: readonly string[] = [],
-  runPending = false,
+  editor: ProjectEditController, stepId: string | undefined, selection: RunSelection = {}, runPending = false,
 ) {
   const { project_id: projectId, revision } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
-  const body = { revision, run, rows: run ? [...rows] : [] };
+  const body = { revision, ...selection };
   return { body, fields: useQuery({
     queryKey: ['train-fields', projectId, stepId, body],
     queryFn: ({ signal }) => projectTrainFields(projectId, stepId!, body, signal),
@@ -101,11 +116,11 @@ function jsonPointerPath(id: string) {
 
 /** The step's numeric fields as the server projects them, and the edit that applies one through the run confirmation. */
 function useTrainFields(
-  editor: ProjectEditController, stepId: string, run?: StudioSavedTrainKey, rows: readonly string[] = [], runPending = false,
+  editor: ProjectEditController, stepId: string, selection: RunSelection = {}, runPending = false,
 ) {
   const { saved, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
-  const { body, fields } = useTrainFieldsQuery(editor, stepId, run, rows, runPending);
+  const { body, fields } = useTrainFieldsQuery(editor, stepId, selection, runPending);
   const confirmRemoval = useRunRemoval();
   const editable = !fields.isPlaceholderData && !pending && !outside;
   async function edit(field: string, change: ProjectedEdit): Promise<string | undefined> {
@@ -195,13 +210,15 @@ export function StudioTrainAuthoringForm(props: Props) {
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();
   const [methodReason, setMethodReason] = useState<string>();
+  const scope = runSelection(props.run, props.fieldRows, props.fieldAxes);
   const definition = useQuery({
-    queryKey: ['train-authoring', projectId, stepId, revision],
-    queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision }, signal),
+    queryKey: ['train-authoring', projectId, stepId, revision, scope],
+    queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision, ...scope }, signal),
+    enabled: !props.runPending,
     placeholderData: (previous) => previous?.project_id === projectId && previous.step_id === stepId ? previous : undefined,
   });
   const catalog = useAuthoringCatalog();
-  const numeric = useTrainFields(editor, stepId, props.run, props.fieldRows, props.runPending);
+  const numeric = useTrainFields(editor, stepId, scope, props.runPending);
   const active = useRef<AbortController | null>(null);
   const command = useRef<AbortController | null>(null);
   const shown = definition.data;
@@ -220,13 +237,16 @@ export function StudioTrainAuthoringForm(props: Props) {
     }
     command.current = lifetime;
     try {
-      const recipe = await readStudioTrainAuthoring(projectId, stepId, { revision, change }, editor.signal);
+      const recipe = await readStudioTrainAuthoring(projectId, stepId, { revision, ...scope, change }, editor.signal);
       const latest = editor.getSnapshot();
       if (latest.saved.revision !== revision || latest.pending || latest.outside) throw new ProjectEditConflictError();
       if (recipe.refusal) return studioSweptParameterMissing(recipe.refusal);
-      if (!recipe.patches.length) return undefined;
-      const address = { kind: 'step', id: stepId } as const;
-      editor.edit(address, label, recipe.patches, validateRecipe(latest.saved.project, address, recipe.documents));
+      if (!recipe.files.length) return undefined;
+      editor.editFiles(label, recipe.files, {
+        reviewedRevision: revision,
+        dependencies: recipe.documents.map((id) => ({ kind: 'document', id })),
+        validate: validateRecipe(latest.saved.project, { kind: 'step', id: stepId }, recipe.documents),
+      });
       await editor.flush();
       return undefined;
     } catch (error) {
@@ -257,6 +277,9 @@ export function StudioTrainAuthoringForm(props: Props) {
   const steps = projected.filter(({ id }) => !id.startsWith(settingsPrefix + '/'));
   const byPath = new Map(projected.map((field) => [field.id, field]));
   const editable = !!current && !pending && !outside;
+  const mixed = shown?.mixed ?? [];
+  /** The selected runs hold different values at this pointer, or at an object holding it. */
+  const isMixed = (at: string) => mixed.some((differs) => at === differs || at.startsWith(differs + '/'));
 
   return (
     <StudioRegion state={studioReadState('definition', shown && numeric.fields.data,
@@ -271,7 +294,8 @@ export function StudioTrainAuthoringForm(props: Props) {
         {methodField && <div data-field={methodField.id} className="contents"><FieldRow label={methodField.label} labelId={methodLabel}
           below={methodReason && <p role="alert">{methodReason}</p>}>
           <CatalogPicker aria-labelledby={methodLabel} className="w-full" entries={methods}
-            value={typeof methodField.value === 'string' ? methodField.value : null}
+            value={typeof methodField.value === 'string' && !isMixed('/method') ? methodField.value : null}
+            placeholder={isMixed('/method') ? studioName('mixed') : undefined}
             disabled={!editable || !methodField.control}
             onChoose={(key) => { void apply({ field: '/method', value: key }, methodField.label).then(setMethodReason); }} />
         </FieldRow></div>}
@@ -281,6 +305,7 @@ export function StudioTrainAuthoringForm(props: Props) {
           <ValueField model={model} />
         </div>; })}
         {settingsSchema && shown?.settings && <SettingsForm schema={settingsSchema} value={shown.settings}
+          mixed={(path) => isMixed(settingsPrefix + pointer(path))}
           projected={(path) => {
             const field = byPath.get(settingsPrefix + pointer(path));
             return field && fieldModel(field);

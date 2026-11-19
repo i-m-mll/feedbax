@@ -522,7 +522,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             if change.role != "task":
                 raise ProjectFolderInvalid("An Evaluate reads its Model and Objective from its subject.")
             _chosen_task(project, change.document)
-            files = [scoped_file(project, key, scope, _task_selection_writes(definition, {"document": change.document}))]
+            files = [scoped_file(project, key.step, scope, _task_selection_writes(definition, {"document": change.document}))]
         elif evaluate_field:
             files = _evaluate_field_files(project, settled.plan, key, scope, selected, bundle, change, documents, projected)
         else:
@@ -534,7 +534,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         files = [variant_file(project, key.variant, _value_writes(f"documents.{document}.payload", value, change))]
     else:
         writes = _train_writes(change, project, definition, documents, projected)
-        files = [scoped_file(project, key, scope, writes)] if writes else []
+        files = [scoped_file(project, key.step, scope, writes)] if writes else []
     if not files:
         return [], ()
     return _validate_files(files, project, settled, selected, folders, bundle, change, expression, evaluate_field=evaluate_field)
@@ -546,14 +546,14 @@ def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, d
         task, projection = (documents, projected) if row == key else _pairing(plan, row, bundle)[:2]
         recipes[row] = _task_field_writes(plan.selected_definitions[row], task.task_source, projection.task_origins, change)
     if all(writes == recipes[key] for writes in recipes.values()):
-        return [scoped_file(project, key, scope, recipes[key])]
+        return [scoped_file(project, key.step, scope, recipes[key])]
     if not isinstance(scope, EvaluateAttachmentRows):
         raise ProjectFolderInvalid("Selected runs have different authored sources for this Task field.")
     # Explicit rows can carry independent recipes in a single saved sweep edit.
     # A step or named axis must remain one rule over its future rows.
     current = project
     for row, writes in recipes.items():
-        file = scoped_file(current, row, EvaluateAttachmentRows(kind="rows", rows=(row.row,)), writes)
+        file = scoped_file(current, row.step, EvaluateAttachmentRows(kind="rows", rows=(row.row,)), writes)
         current = preview_authored_files(current, [file])
     raw = project.steps[key.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
     sweep = current.steps[key.step].sweep.model_dump(mode="json", by_alias=True, exclude_unset=True)

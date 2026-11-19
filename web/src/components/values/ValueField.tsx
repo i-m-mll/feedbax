@@ -109,7 +109,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
       case 'class': {
         const index = optionIndex(type.options, model.value);
         return <Combobox aria-labelledby={labelId} className={boxed ? undefined : 'w-full'} inline={boxed} disabled={readOnly}
-          value={index < 0 ? null : String(index)}
+          value={index < 0 ? null : String(index)} placeholder={studioName('mixed')}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => {
             if (position !== null && Number(position) !== index) void submit({ kind: 'set', value: type.options[Number(position)].value });
@@ -204,7 +204,8 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
     else if (kind === 'value' && parameter.kind === 'sweep' && parameter.keeps) void submit({ kind: 'to_value', value_id: parameter.keeps });
     else focusText();
   }
-  return <section className="value-field value-field-class grid min-w-0 tabular-nums" aria-label={studioFieldLabel('field', model.label)}>
+  return <section className={clsx('value-field value-field-class grid min-w-0 tabular-nums', parameter.members && 'value-field-class-swept')}
+    aria-label={studioFieldLabel('field', model.label)}>
     <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
       {origin && <span id={originId} className="text-shell-muted">{origin}</span>}
       {shown && <p role="alert" id={reasonId}>{shown}</p>}
