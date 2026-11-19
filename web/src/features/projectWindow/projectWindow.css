@@ -256,6 +256,10 @@
   overflow: auto;
 }
 
+.studio-window-slot__body[data-padded] {
+  padding: var(--space-3);
+}
+
 .studio-window-region-content {
   display: contents;
 }
@@ -271,6 +275,7 @@
   font-weight: 600;
   color: var(--text-secondary);
   background: var(--surface-toolbar);
+  border-radius: 0;
 }
 
 .studio-window-resize {

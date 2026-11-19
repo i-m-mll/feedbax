@@ -42,6 +42,8 @@ export interface ProjectWindowViewRegion {
   header?: ReactNode;
   drawer?: ReactNode;
   inspector?: ReactNode;
+  /** The body is a form or report, drawn at the slot's inset rather than to its edges. */
+  padded?: boolean;
 }
 
 export interface ProjectWindowProps {
@@ -449,6 +451,7 @@ export function ProjectWindow({
             }}>
             {tabCommands.map((command) => {
               const view = command.id;
+              if (!command.enabled) return <span key={view} aria-hidden="true" className="studio-window-control" />;
               const selected = shownViews[focusedSlot] === view;
               return (
                 <WindowButton key={view} command={command} icon={viewGlyphs[view]} controls={selected ? ids[focusedSlot] : undefined}
@@ -503,7 +506,7 @@ export function ProjectWindow({
                       : <WindowButton command={splitCommand} icon={Columns2} />}>
                     {region.header}
                   </SlotHeader>
-                  <div key={view} className="studio-window-slot__body">
+                  <div key={view} className="studio-window-slot__body" data-padded={region.padded ? '' : undefined}>
                     {regionBody(view, region.body)}
                   </div>
                 </section>

@@ -99,11 +99,9 @@ export function SavedResults({ shown, current, failure, result, project, stopped
   </div>;
   if (!row) return <>{fallback}</>;
   return <div {...region}>
-    <div className="p-3">
-      {stopped}
-      <TrainResults key={savedRunId(row.key)} project={project} revision={shown.revision}
-        evaluations={shown.window_map?.evaluations ?? []} mapRows={shown.window_map?.rows ?? []}
-        rows={shown.rows} row={row} attempt={attempt} />
-    </div>
+    {stopped}
+    <TrainResults key={savedRunId(row.key)} project={project} revision={shown.revision}
+      evaluations={shown.window_map?.evaluations ?? []} mapRows={shown.window_map?.rows ?? []}
+      rows={shown.rows} row={row} attempt={attempt} />
   </div>;
 }

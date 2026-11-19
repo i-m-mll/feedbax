@@ -24,7 +24,6 @@ import './modelCanvas.css';
 export type ModelCardData = {
   address: ModelAddress;
   name: string;
-  caption?: string;
   ports: readonly Port[];
   flipped?: boolean;
   collapsed?: boolean;
@@ -116,7 +115,6 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
             if (event.key === 'Escape') { event.stopPropagation(); data.endRename?.(); }
           }} />
       </form>}
-      {data.caption && <span>{data.caption}</span>}
       {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
     </CardHead>
     {ports.map(({ port, key, reason, available, problem, verdict }) => {
