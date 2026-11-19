@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from feedbax.host import AdmissionItem, Edge, HostClient, HostError, Job, Launch
+from feedbax.host import AdmissionItem, Edge, HostClient, HostError, Job, Launch, owned_host
 from tests.support import minimal_worker
 from tests.support.hang import HANG_SECONDS
 from tests.support.host import (
@@ -1093,6 +1094,64 @@ def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_pat
         poll.result(timeout=HANG_SECONDS)
     assert wait_until(lambda: not alive(str(profiles)))
 
+
+def _started_with_a_live_job(client, tmp_path):
+    """Start the Host at `client.root` with a warm worker and a running job; return the processes it holds."""
+    (tmp_path / "idle_import.py").write_text("def main(*args, **kwargs):\n    return 0\n")
+    host_pid = client.ping()["pid"]
+    client.warm(Launch((sys.executable,), cwd=str(tmp_path), warm_entrypoint="idle_import:main", payload={}))
+    job = run_job("held", HELD_UNTIL_STOPPED)
+    admit(client, "held", job)
+    worker = wait_until(lambda: job_row(client, job.id, "running"))["worker_pid"]
+    pool = wait_until(lambda: [
+        process.pid for process in psutil.process_iter(["cmdline"])
+        if any(str(client.root / "workers") in part for part in process.info["cmdline"] or ())
+        and process.pid != worker
+    ])
+    return job, [host_pid, worker, *pool]
+
+
+def test_shutdown_ends_the_host_with_its_live_jobs_and_workers(tmp_path, private_hosts):
+    root = private_hosts / "host"
+    with owned_host(root) as client:
+        job, processes = _started_with_a_live_job(client, tmp_path)
+        assert client.shutdown("defer") == {"status": "deferred", "jobs": [job.id], "foreign": False}
+        assert job_row(client, job.id, "running")
+    assert not any(psutil.pid_exists(pid) for pid in processes)
+    assert HostClient(root).shutdown() == {"status": "absent"}
+    assert job_row(HostClient(root), job.id)["outcome"]["error"]["code"] == "service_stopped"
+
+
+def test_shutdown_raises_for_a_host_that_does_not_answer(tmp_path):
+    import socket
+
+    client = HostClient(tmp_path / "root")
+    assert client.shutdown() == {"status": "absent"}
+    # A process listening at the Host's address that closes each connection unanswered.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(client.address))
+        try:
+            listener.listen()
+            with ThreadPoolExecutor(1) as pool:
+                pool.submit(lambda: listener.accept()[0].close())
+                with pytest.raises(HostError) as unanswered:
+                    HostClient(client.root).shutdown()
+        finally:
+            client.address.unlink()
+    assert unanswered.value.code == "disconnected"
+
+
+@pytest.mark.parametrize("removal", ["rename", "delete"])
+def test_a_host_whose_root_is_removed_exits_with_its_workers(tmp_path, private_hosts, removal):
+    client = HostClient(private_hosts / "host")
+    _, processes = _started_with_a_live_job(client, tmp_path)
+    if removal == "rename":
+        # As pytest removes a temporary directory: rename it aside, then delete it.
+        client.root.rename(tmp_path / "garbage")
+    else:
+        shutil.rmtree(client.root, ignore_errors=True)
+    assert wait_until(lambda: not any(psutil.pid_exists(pid) for pid in processes))
+    shutil.rmtree(tmp_path / "garbage", ignore_errors=True)
 
 
 def _run_host(tmp_path, probe, *, accepted=None):

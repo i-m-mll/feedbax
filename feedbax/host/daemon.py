@@ -36,6 +36,7 @@ LOG_LINE_LIMIT = 8192
 EVENT_LINE_LIMIT = 2 * 1024 * 1024
 POLL_SECONDS = 0.20
 TERM_GRACE = 2
+SHUTDOWN_MODES = ("defer", "checkpoint", "force", "interrupt")
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
     "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
@@ -66,6 +67,8 @@ def failure(code: str, message: str, *, outcome: str = "failed") -> dict:
 class Host:
     def __init__(self, root: Path, *, required_expiry_ms: int | None = None):
         self.root = private_directory(root)
+        identity = os.stat(root)
+        self.root_identity = (identity.st_dev, identity.st_ino)
         if not local_filesystem(root):
             raise OSError(f"Host state root must be on a local filesystem: {root}")
         self.lock = (root / "host.lock").open("a")
@@ -111,7 +114,7 @@ class Host:
         self.interpreter = os.path.realpath(sys.executable)
         self.fresh_workers = os.environ.get("FEEDBAX_HOST_FRESH_WORKERS") == "1"
         self.retiring: set[str] = set()
-        self.retiring_groups: dict[str, dict[int, str]] = {}
+        self.retiring_groups: dict[str | None, dict[int, str]] = {}
         self.exiting = False
         self.shutdown_acknowledged = False
         self.force_started: dict[str, float] = {}
@@ -258,14 +261,32 @@ class Host:
                     break
 
     def _retire_runtime(self, runtime: str, release: str, mode: str) -> dict:
-        if (
-            not Path(release).is_absolute() or not Path(runtime).is_relative_to(release)
-            or mode not in ("defer", "checkpoint", "force", "interrupt")
-        ):
+        if not Path(release).is_absolute() or not Path(runtime).is_relative_to(release) or mode not in SHUTDOWN_MODES:
             raise HostError("invalid_request", "Invalid installed runtime retirement.")
         owned = self.release_owner == release and self.interpreter == runtime
         if self.interpreter == runtime and self.release_owner is not None and not owned:
             raise HostError("runtime_owner", "The installed interpreter's Host has no matching release owner.")
+        return self._retire(runtime, mode, owned=owned)
+
+    async def _shutdown(self, mode: str) -> dict:
+        """End the whole Host's jobs and workers, then reply; the Host exits once the reply is delivered."""
+        if mode not in SHUTDOWN_MODES:
+            raise HostError("invalid_request", f"Unknown shutdown mode: {mode}")
+        jobs = None
+        while (result := self._retire(None, mode, owned=True))["status"] == "settling":
+            jobs = jobs or result["jobs"]
+            self.wake.set()
+            await asyncio.sleep(POLL_SECONDS)
+        if result["status"] == "deferred":
+            return result
+        return result | {"jobs": jobs or [], "pid": os.getpid()}
+
+    def _retire(self, runtime: str | None, mode: str, *, owned: bool) -> dict:
+        """Take one step toward ending the jobs and workers of `runtime`, or of the whole Host when it is None.
+
+        The Host exits once the whole Host is retired: when `runtime` is None, or when it owns `runtime` and no
+        other runtime has live jobs.
+        """
         rows = self.store.db.execute(
             """SELECT id, state, data, worker_pid, worker_token FROM jobs
                WHERE state IN (?, ?, ?, ?) OR worker_pid IS NOT NULL""",
@@ -274,7 +295,7 @@ class Host:
         matching, jobs = set(), []
         foreign = False
         for row in rows:
-            if self._runtime(json.loads(row["data"])) == runtime:
+            if runtime is None or self._runtime(json.loads(row["data"])) == runtime:
                 matching.add(row["id"])
                 if row["state"] in LIVE_STATES:
                     jobs.append(row["id"])
@@ -284,10 +305,13 @@ class Host:
                 foreign = owned
         if (mode == "defer" and jobs) or (foreign and mode != "interrupt"):
             return {"status": "deferred", "jobs": jobs, "foreign": foreign}
-        self.retiring.add(runtime)
+        whole_host = runtime is None or (owned and not foreign)
+        if runtime is None:
+            self.exiting = True
+        else:
+            self.retiring.add(runtime)
         if jobs:
             self.store.stop(jobs, mode, service=True)
-        whole_host = owned and not foreign
         for key, profile in tuple(self.profiles.items()):
             if whole_host or profile.get("runtime_owner") == runtime:
                 del self.profiles[key]
@@ -323,6 +347,20 @@ class Host:
         else:
             self.retiring.discard(runtime)
         return {"status": "exiting" if whole_host else "released", "jobs": []}
+
+    def _root_removed(self) -> bool:
+        """Whether the directory this Host serves is gone from its path, so no client can reach this Host."""
+        try:
+            info = os.stat(self.root)
+        except FileNotFoundError:
+            return True
+        return (info.st_dev, info.st_ino) != self.root_identity
+
+    def _end_all_workers(self) -> None:
+        groups = {worker.process.pid: worker.token for worker in self.workers.values()}
+        groups.update((row["worker_pid"], row["worker_token"]) for row in self.store.active())
+        for pid, token in groups.items():
+            self._signal_group(pid, token, escalate=True)
 
     @staticmethod
     def _runtime(data: dict) -> str | None:
@@ -771,6 +809,9 @@ class Host:
         recovering = True
         while not self.shutdown_acknowledged:
             self.wake.clear()
+            if self._root_removed():
+                print(f"Host root {self.root} was removed; exiting.", file=sys.stderr, flush=True)
+                return
             try:
                 self._tick(recovering=recovering)
             except sqlite3.OperationalError as error:
@@ -909,6 +950,8 @@ class Host:
                 result = self._retire_runtime(**message)
                 self.wake.set()
                 return result
+            case "shutdown":
+                return await self._shutdown(**message)
             case "ping":
                 identity = {} if self.stream_id is None else {"stream_id": self.stream_id}
                 return {"version": VERSION, "pid": os.getpid(), **identity}
@@ -1028,6 +1071,9 @@ class Host:
                     # An idle or still-importing pool worker holds no job; it would otherwise
                     # outlive this Host until its import finished.
                     self._signal_group(worker.process.pid, worker.token, escalate=True)
+            if self._root_removed():
+                # Nothing can recover a job whose root is gone.
+                self._end_all_workers()
             self._power_assertion(False)
             self.address.unlink(missing_ok=True)
             self.store.db.close()

@@ -7,6 +7,7 @@ type Json = None | bool | int | float | str | list[Json] | dict[str, Json]
 type JsonObject = dict[str, Json]
 type Slot = Literal["compute", "light"]
 type StopMode = Literal["checkpoint", "force"]
+type ShutdownMode = Literal["defer", "checkpoint", "force", "interrupt"]
 type State = Literal[
     "queued",
     "blocked",
