@@ -61,7 +61,7 @@ from feedbax.plugins.application import (
 )
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
-from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps, sweep_paths
+from feedbax.studio.authoring_sweeps import SelectedValues, SweepTarget, FieldSweeps, sweep_paths
 from feedbax.studio.class_fields import ClassField, edit_class_sweep
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import TrainSelection, merged_files
@@ -907,6 +907,10 @@ def project_training_numeric_fields(
     definition = _TrainFields(project, step_id, registry, shown=selection.current, selected=selection.payloads)
     definition.training(read_plan)
     effective = [_effective(payload, registry) for payload in selection.payloads]
+    selected = (
+        SelectedValues(selection.values, selection.current)
+        if selection.values is not None and selection.current is not None else None
+    )
     fields = []
     targets = {}
     for field_id, field in definition.fields.items():
@@ -917,7 +921,9 @@ def project_training_numeric_fields(
         def step_writes(value, field=field):
             return _step_writes(field.number_write(value))
         target = SweepTarget.from_field(view.value, view.control, step_writes) if not definition.linked else None
-        axis = FieldSweeps(definition.step, target, view.label, field.name, integer=view.control.step == 1) if target is not None else None
+        axis = FieldSweeps(
+            definition.step, target, view.label, field.name, integer=view.control.step == 1, selected=selected,
+        ) if target is not None else None
         numeric = NumericField(
             path, view.label, view.value,
             Site(expected=ValueType(base=ValueBase.INTEGER if view.control.step == 1 else ValueBase.REAL),
@@ -927,7 +933,8 @@ def project_training_numeric_fields(
         values = {json.dumps(_get(payload, path)) for payload in effective}
         fields.append(project_numeric_field(
             TrainFieldView, numeric, axis, functions, selection.row,
-            json.loads(next(iter(values))) if len(values) == 1 else None, mixed=len(values) > 1, id=field_id,
+            json.loads(next(iter(values))) if len(values) == 1 else None, mixed=len(values) > 1,
+            scoped=selection.scoped, id=field_id,
         ))
         targets[field_id] = field, numeric, axis
     if body.edit is None:

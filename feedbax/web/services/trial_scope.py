@@ -20,7 +20,7 @@ from feedbax.contracts.project import (
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.project_resolution import StepTemplate, compose_step, document_write_target
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.project_sweep import NamedAxis, SetValue, RemoveValue, _compose_writes
+from feedbax.contracts.project_sweep import AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.studio.selection import TrainSelection, merged_files
@@ -347,9 +347,14 @@ def train_selection(
     payloads = tuple(definitions[item].payload for item in shown if item in definitions)
     scoped = not isinstance(scope, EvaluateAttachmentStep)
     named = definitions.get(key)
+    values = (
+        AxisCondition(axes={scope.axis: [scope.value]}) if isinstance(scope, EvaluateAttachmentAxis)
+        else AxisCondition(axes={axis: sorted(set(ids)) for axis, ids in sorted(scope.axes.items())})
+        if isinstance(scope, SweepValuesScope) else None
+    )
     return TrainSelection(
         payloads, next((row for row in plan.rows if row.key == key), None),
         named.payload if isinstance(scope, SweepValuesScope | EvaluateAttachmentAxis | EvaluateAttachmentRows)
         and named is not None else None, scoped,
-        partial(store, scope),
+        partial(store, scope), values,
     )

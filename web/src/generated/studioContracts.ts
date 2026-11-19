@@ -2542,6 +2542,10 @@ export type AuthoredFileAddress = {
 
 export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis;
 
+export type AxisCondition = {
+  "axes": Record<string, Array<string>>;
+};
+
 export type AxisGroup = {
   "axes": Array<string>;
   "mode": "cross" | "zip";
@@ -2974,6 +2978,7 @@ export type Link = {
 
 export type ListedAxis = {
   "path": SweepTarget;
+  "where"?: AxisCondition | null;
   "values": Array<JsonValue>;
 };
 
@@ -3022,6 +3027,7 @@ export type NameValue = {
 
 export type NamedAxis = {
   "values": Record<string, AxisValue | null>;
+  "where"?: AxisCondition | null;
 };
 
 export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
@@ -3164,6 +3170,7 @@ export type PythonTaskSelection = {
 
 export type RangeAxis = {
   "path": SweepTarget;
+  "where"?: AxisCondition | null;
   "range": RangeValues;
 };
 
@@ -3268,6 +3275,7 @@ export type SampleValues = {
 
 export type SampledAxis = {
   "path": SweepTarget;
+  "where"?: AxisCondition | null;
   "sampler": SampleValues;
   "draws"?: Record<string, JsonValue> | null;
 };
@@ -8743,6 +8751,12 @@ export const AxisSchema: z.ZodType<Axis> = z.lazy(() =>
   z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema, CheckpointRuleAxisSchema])
 ) as unknown as z.ZodType<Axis>;
 
+export const AxisConditionSchema: z.ZodType<AxisCondition> = z.lazy(() =>
+  z.object({
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }),
+  }).strict()
+) as unknown as z.ZodType<AxisCondition>;
+
 export const AxisGroupSchema: z.ZodType<AxisGroup> = z.lazy(() =>
   z.object({
     "axes": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
@@ -9328,6 +9342,7 @@ export const LinkSchema: z.ZodType<Link> = z.lazy(() =>
 export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
   z.object({
     "path": SweepTargetSchema,
+    "where": z.union([AxisConditionSchema, z.null()]).optional(),
     "values": z.array(jsonValueSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<ListedAxis>;
@@ -9396,6 +9411,7 @@ export const NameValueSchema: z.ZodType<NameValue> = z.lazy(() =>
 export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
   z.object({
     "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
+    "where": z.union([AxisConditionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<NamedAxis>;
 
@@ -9594,6 +9610,7 @@ export const PythonTaskSelectionSchema: z.ZodType<PythonTaskSelection> = z.lazy(
 export const RangeAxisSchema: z.ZodType<RangeAxis> = z.lazy(() =>
   z.object({
     "path": SweepTargetSchema,
+    "where": z.union([AxisConditionSchema, z.null()]).optional(),
     "range": RangeValuesSchema,
   }).strict()
 ) as unknown as z.ZodType<RangeAxis>;
@@ -9736,6 +9753,7 @@ export const SampleValuesSchema: z.ZodType<SampleValues> = z.lazy(() =>
 export const SampledAxisSchema: z.ZodType<SampledAxis> = z.lazy(() =>
   z.object({
     "path": SweepTargetSchema,
+    "where": z.union([AxisConditionSchema, z.null()]).optional(),
     "sampler": SampleValuesSchema,
     "draws": z.union([z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), jsonValueSchema), z.null()]).optional(),
   }).strict()

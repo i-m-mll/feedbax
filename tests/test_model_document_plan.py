@@ -506,7 +506,7 @@ class _TrainClient:
         return {run.key: run.request_id for run in self.plan(tmp_path, name).runs}
 
     def runs(self, tmp_path, name, **coordinates):
-        return [row.key for row in self.plan(tmp_path, name).rows if all(
+        return [row.key for row in self.plan(tmp_path, name).rows if row.key.step == "train" and all(
             row.coordinates[axis].value_id == value for axis, value in coordinates.items()
         )]
 
@@ -661,6 +661,83 @@ def test_an_optimizer_swept_with_its_parameters_crosses_the_learning_rate(tmp_pa
         body = train.sweep_class(optimizer, {"kind": "to_value", "value_id": "adam"})
         assert body["removed_values"] == {"optimizer": ["sgd", "rmsprop"]}
         assert set(train.requests(tmp_path, "classes").values()) == kept
+
+
+def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
+    """The owner's case: Adam and SGD, b1 swept over 0.8 and 0.9 for Adam's runs only."""
+    from tests.support.managed_train_fixture import managed_evaluation_step
+
+    raw = _model_project()
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"] |= {
+        "b1": 0.8, "b2": 0.999, "eps": 1e-8, "eps_root": 0.0, "nesterov": False,
+    }
+    raw["steps"]["baseline"]["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    raw["steps"]["picked"] = managed_evaluation_step("train")
+    raw["steps"]["train-2"] = {
+        "kind": "train", "base": {"step": "train"}, "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
+        "deltas": [{"layer_id": "initialize", "patches": [
+            {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+        ]}],
+    }
+    name, optimizer, b1 = "conditional", "/settings/optimizer", "/settings/optimizer/b1"
+    _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
+    url = f"/api/projects/{name}"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        train.sweep_class(optimizer, {"kind": "to_sweep"})
+        train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
+        before = train.requests(tmp_path, name)
+        adam, group = train.runs(tmp_path, name, optimizer="adam"), {"optimizer": ["adam"]}
+
+        def fields(keys, axes=None):
+            body = client.post(url + "/authoring/train/train/fields", json=train.scope(keys, axes)).json()
+            return {field["id"]: field for field in body["fields"]}
+
+        assert fields(adam, group)[b1]["can_sweep"]
+        train.number(b1, {"kind": "to_sweep"}, adam, group)
+        adam = train.runs(tmp_path, name, optimizer="adam")
+        train.number(b1, {"kind": "text", "text": "0.8, 0.9"}, adam, group)
+
+        plan = train.plan(tmp_path, name)
+        runs = [row for row in plan.rows if row.key.step == "train"]
+        axis = next(axis for axis in runs[0].coordinates if axis != "optimizer")
+        coordinate = {row.key: (row.coordinates["optimizer"].label, getattr(row.coordinates.get(axis), "value", None))
+                      for row in runs}
+        assert sorted(coordinate.values(), key=str) == [("Adam", 0.8), ("Adam", 0.9), ("SGD", None)]
+        assert {row.label for row in runs} == {
+            f"optimizer=Adam, {axis}=0.8", f"optimizer=Adam, {axis}=0.9", "optimizer=SGD",
+        }
+        (sgd,) = (key for key, value in coordinate.items() if value[0] == "SGD")
+        assert train.requests(tmp_path, name)[sgd] == before[sgd]
+        assert {key: plan.selected_definitions[key].payload["settings"]["optimizer"].get("b1") for key in coordinate} == {
+            key: value for key, (_, value) in coordinate.items()
+        }
+        assert fields(adam, group)[b1]["sweep"]["id"] == axis
+        rate = optimizer + "/learning_rate/value"
+        assert fields([sgd], {"optimizer": ["sgd"]})[rate]["can_sweep"] and not fields(adam[:1])[rate]["can_sweep"]
+
+        evaluated = {
+            row.key.row: row.coordinates for row in plan.rows if row.key.step == "baseline"
+        }
+        assert sorted(
+            (coordinates["optimizer"].label, getattr(coordinates.get(axis), "value", None)) for coordinates in evaluated.values()
+        ) == sorted(coordinate.values(), key=str)
+        continued = {run.key.row: run.inputs["checkpoint"].producer for run in plan.runs if run.key.step == "train-2"}
+        assert {row: producer.row for row, producer in continued.items()} == {key.row: key.row for key in coordinate}
+
+        point_nine = next(row.coordinates[axis].value_id for row in runs if axis in row.coordinates
+                          and row.coordinates[axis].value == 0.9)
+        train.save(Mock(status_code=200, json=lambda: {"files": [{
+            "address": {"kind": "step", "id": "picked"},
+            "patches": [{"op": "add", "path": "/inputs/subject/where", "value": {"axes": {axis: [point_nine]}}}],
+        }]}))
+        picked = [run for run in train.plan(tmp_path, name).runs if run.key.step == "picked"]
+        assert [run.inputs["subject"].producer.row for run in picked] == [
+            key.row for key, value in coordinate.items() if value == ("Adam", 0.9)
+        ]
+
+        train.number(optimizer + "/learning_rate/value", {"kind": "text", "text": "0.001, 0.003"})
+        assert len([row for row in train.plan(tmp_path, name).rows if row.key.step == "train"]) == 6
 
 
 def test_a_class_without_a_swept_parameter_is_refused_as_a_member(tmp_path):

@@ -561,3 +561,19 @@ def test_sweep_editor_expansion_budget():
         assert count_sweep(sweep) == len(expand_sweep(sweep)) == width**2
         elapsed = perf_counter() - start
         assert elapsed < seconds, f"{width**2} rows expanded in {elapsed:.3f}s"  # real clock: the expansion budget
+
+
+@pytest.mark.parametrize("conditions", [
+    {"a": ["a"]},
+    {"a": ["b"], "b": ["a"]},
+    {"a": ["b"], "b": ["c"], "c": ["a"]},
+])
+def test_an_axis_conditioned_on_itself_is_refused_naming_the_axes(conditions):
+    axes = {
+        name: {"path": f"x.{name}", "values": [1], **({"where": {"axes": {other: ["v"] for other in on}}} if on else {})}
+        for name, on in {"a": [], "b": [], "c": [], **conditions}.items()
+    }
+    with pytest.raises(SweepExpansionError) as refused:
+        expand_sweep(Sweep.model_validate({"axes": axes}))
+    assert refused.value.code == SweepExpansionCode.INVALID_CONDITION
+    assert all(repr(name) in refused.value.detail for name in conditions)
