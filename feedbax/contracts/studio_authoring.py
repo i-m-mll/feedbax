@@ -91,7 +91,11 @@ class StudioAuthoringField(StrictModel):
 
 
 class StudioAuthoringChange(StrictModel):
-    """Sets a declared field, or any value under ``/settings`` that the method's settings model accepts."""
+    """Sets a declared field, or any value under ``/settings`` that the method's settings model accepts.
+
+    At ``/method`` or a class-valued field the value is the chosen method's or class's key; the server keeps each
+    current setting the chosen one declares and accepts, and takes its defaults for the rest.
+    """
 
     field: str
     value: JsonValue

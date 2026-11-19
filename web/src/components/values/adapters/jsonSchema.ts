@@ -8,10 +8,18 @@ type Schema = Readonly<Record<string, JsonValue>>;
 /** Writes the value at a path below the form's root; answers with a reason when the source refuses. */
 export type SchemaWrite = (path: readonly string[], value: JsonValue) => ReturnType<RawChange>;
 
+/**
+ * Puts the class whose key is `key` at a class-valued path, in place of the current one; the source decides what of
+ * the current value the class keeps. Answers with a reason when the source refuses.
+ */
+export type SchemaChoose = (path: readonly string[], key: JsonValue) => ReturnType<RawChange>;
+
 export interface SchemaContext {
   /** The schema whose `$defs` resolve `$ref`. */
   readonly root: JsonValue;
   readonly write?: SchemaWrite;
+  /** Without it, a class-valued field shows its class and cannot change it. */
+  readonly choose?: SchemaChoose;
   /** A field the server projects for the value at this path (a sweepable number), drawn in place of the schema's. */
   readonly projected?: (path: readonly string[]) => FieldModel | undefined;
   /** Where the value at this path comes from, when not from the document itself. */
@@ -82,36 +90,6 @@ function constOf(member: Schema, name: string) {
   return fixed(isRecord(member.properties) ? member.properties[name] ?? null : null) ?? null;
 }
 
-/** Whether the schema describes the value: by its type, or for a union of classes, by its class. */
-function fits(schema: JsonValue, value: JsonValue, root: JsonValue): boolean {
-  const resolved = resolve(schema, root, true);
-  const union = Array.isArray(resolved.anyOf) ? resolved.anyOf : Array.isArray(resolved.oneOf) ? resolved.oneOf : undefined;
-  if (value === null) return !!union?.some((member) => isRecord(member) && member.type === 'null');
-  const classes = unionOf(resolved, root);
-  if (!classes) return accepts(resolved, value);
-  const { members, name } = classes;
-  return name !== undefined && isRecord(value)
-    ? members.some((member) => constOf(member, name) === value[name])
-    : members.some((member) => fits(member, value, root));
-}
-
-/** The class's value when it replaces `current`: each parameter it shares with `current` kept, its defaults for the rest. */
-function replacing(member: Schema, name: string, current: JsonValue, root: JsonValue): Record<string, JsonValue> {
-  const properties = isRecord(member.properties) ? member.properties : {};
-  const kept = isRecord(current) ? Object.entries(current)
-    .filter(([key, value]) => key !== name && key in properties && fits(properties[key], value, root)) : [];
-  return { ...defaults(member, root), ...Object.fromEntries(kept), [name]: constOf(member, name) };
-}
-
-/** A class's value before it is edited: each declared default, a nested object's own defaults. */
-function defaults(member: Schema, root: JsonValue): Record<string, JsonValue> {
-  return Object.fromEntries(Object.entries(isRecord(member.properties) ? member.properties : {}).flatMap(([name, property]) => {
-    if (isRecord(property) && 'default' in property) return [[name, property.default]];
-    const resolved = resolve(property, root);
-    return resolved.type === 'object' && !unionOf(resolved, root) ? [[name, defaults(resolved, root)]] : [];
-  }));
-}
-
 export function pointer(path: readonly string[]) {
   return path.map((part) => '/' + part.replace(/~/g, '~0').replace(/\//g, '~1')).join('');
 }
@@ -144,7 +122,7 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   let schema = outer;
   if (union) {
     const { members, name } = union;
-    if (name) return classField(label, id, name, members, current, path, context, change, origin);
+    if (name) return classField(label, id, name, members, current, path, context, origin);
     const member = members.length === 1 ? members[0] : members.find((candidate) => accepts(candidate, current));
     schema = { ...without(member ?? {}, 'title'), ...without(outer, 'anyOf', 'oneOf', 'discriminator') };
   }
@@ -183,7 +161,7 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
 
 /** A value that is one of several classes: a choice of class, the chosen class's parameters as its parts. */
 function classField(label: string, id: string, name: string, members: readonly Schema[], current: JsonValue,
-  path: readonly string[], context: SchemaContext, change: RawChange | undefined, origin: string | undefined): FieldModel {
+  path: readonly string[], context: SchemaContext, origin: string | undefined): FieldModel {
   const chosen = isRecord(current) ? members.find((member) => constOf(member, name) === current[name]) : undefined;
   const options: FieldOption[] = members.map((member) => {
     const value = constOf(member, name);
@@ -200,9 +178,6 @@ function classField(label: string, id: string, name: string, members: readonly S
   }
   return rawField({
     id, label, origin, value: chosen ? constOf(chosen, name) : null, type: { kind: 'class', options }, parts,
-    change: change && ((next) => {
-      const member = members.find((candidate) => constOf(candidate, name) === next);
-      return member && change(replacing(member, name, current, context.root));
-    }),
+    change: context.choose && ((key) => context.choose!(path, key)),
   });
 }

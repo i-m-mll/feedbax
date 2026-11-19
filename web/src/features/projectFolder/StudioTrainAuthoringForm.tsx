@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
@@ -194,6 +194,7 @@ export function StudioTrainAuthoringForm(props: Props) {
   const { saved, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();
+  const [methodReason, setMethodReason] = useState<string>();
   const definition = useQuery({
     queryKey: ['train-authoring', projectId, stepId, revision],
     queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision }, signal),
@@ -267,11 +268,12 @@ export function StudioTrainAuthoringForm(props: Props) {
       <section aria-label={studioName('definition')} className="grid gap-1">
         {props.trains && <CheckpointStart editor={editor} stepId={stepId} step={props.step} trains={props.trains}
           picking={props.picking} editable={editable} />}
-        {methodField && <div data-field={methodField.id} className="contents"><FieldRow label={methodField.label} labelId={methodLabel}>
+        {methodField && <div data-field={methodField.id} className="contents"><FieldRow label={methodField.label} labelId={methodLabel}
+          below={methodReason && <p role="alert">{methodReason}</p>}>
           <CatalogPicker aria-labelledby={methodLabel} className="w-full" entries={methods}
             value={typeof methodField.value === 'string' ? methodField.value : null}
             disabled={!editable || !methodField.control}
-            onChoose={(key) => { void apply({ field: '/method', value: key }, methodField.label); }} />
+            onChoose={(key) => { void apply({ field: '/method', value: key }, methodField.label).then(setMethodReason); }} />
         </FieldRow></div>}
         {choices.map((field) => <div key={field.id} data-field={field.id} className="contents"><ValueField model={choiceField(field,
           editable ? (value) => apply({ field: field.id, value }, field.label) : undefined)} /></div>)}
@@ -283,7 +285,8 @@ export function StudioTrainAuthoringForm(props: Props) {
             const field = byPath.get(settingsPrefix + pointer(path));
             return field && fieldModel(field);
           }}
-          write={editable ? (path, value) => apply({ field: settingsPrefix + pointer(path), value }, humanizeLabel(path.at(-1) ?? '')) : undefined} />}
+          write={editable ? (path, value) => apply({ field: settingsPrefix + pointer(path), value }, humanizeLabel(path.at(-1) ?? '')) : undefined}
+          choose={editable ? (path, key) => apply({ field: settingsPrefix + pointer(path), value: key }, humanizeLabel(path.at(-1) ?? '')) : undefined} />}
       </section>
     </StudioRegion>
   );

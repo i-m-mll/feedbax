@@ -9,8 +9,8 @@ export interface SettingsFormProps extends Omit<SchemaContext, 'root'> {
 }
 
 /** One `ValueField` row per declared value, a nested object as a group of indented rows. */
-export function SettingsForm({ schema, value, write, projected, origin }: SettingsFormProps) {
-  const root = fromJsonSchema('', schema, value ?? {}, { root: schema, write, projected, origin }, []);
+export function SettingsForm({ schema, value, ...context }: SettingsFormProps) {
+  const root = fromJsonSchema('', schema, value ?? {}, { root: schema, ...context }, []);
   return <>{(root.type.kind === 'group' ? root.parts ?? [] : [root]).map((model) =>
     <ValueField key={model.id} model={model} />)}</>;
 }
