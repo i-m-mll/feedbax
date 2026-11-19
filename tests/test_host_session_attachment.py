@@ -18,7 +18,7 @@ from feedbax.host.client import StdioAttachment
 from feedbax.host.daemon import Host
 from feedbax.host.protocol import VERSION, SessionAccess
 from feedbax.host.session import SessionFence, initialize_session
-from tests.support.hang import HANG_SECONDS
+from tests.support.host import held_until_released, wait_until
 
 SESSION = "venue-session"
 OPERATOR = "operator"
@@ -51,28 +51,13 @@ def expect_code(code: str, call, /, *args, **kwargs):
     assert raised.value.code == code
 
 
-def until(read):
-    deadline = time.monotonic() + HANG_SECONDS
-    while time.monotonic() < deadline:
-        if value := read():
-            return value
-        time.sleep(0.02)
-    pytest.fail("The Host did not reach the expected state.")
-
-
 def stop_daemon(client: HostClient, pid: int) -> None:
     os.kill(pid, signal.SIGTERM)
-    until(lambda: not client.address.exists())
+    wait_until(lambda: not client.address.exists())
 
 
 def held_job(release: Path) -> Job:
-    source = f"""
-from pathlib import Path
-import time
-while not Path({str(release)!r}).exists():
-    time.sleep(0.01)
-"""
-    return Job("held", "project", "request", Launch((sys.executable, "-c", source)))
+    return Job("held", "project", "request", Launch((sys.executable, "-c", held_until_released(release))))
 
 
 def test_real_attachments_share_host_and_adoption_fences_old_controller(tmp_path):
@@ -98,7 +83,7 @@ def test_real_attachments_share_host_and_adoption_fences_old_controller(tmp_path
         job = held_job(release)
         admission = old.admit("token", [AdmissionItem("key", job)], record={})
         assert admission["items"][0]["job_id"] == job.id
-        running = until(lambda: next(
+        running = wait_until(lambda: next(
             (row for row in old.jobs(job_id=job.id) if row["state"] == "running"), None,
         ))
         expect_code("session_busy", old.claim_session_close)
@@ -122,7 +107,7 @@ def test_real_attachments_share_host_and_adoption_fences_old_controller(tmp_path
         assert current.ping() == old_ping
         assert current.jobs(job_id=job.id)[0]["worker_pid"] == running["worker_pid"]
         release.touch()
-        until(lambda: not current.session_status()["live_jobs"])
+        wait_until(lambda: not current.session_status()["live_jobs"])
         claim = current.claim_session_close()
         assert claim == {"session_id": SESSION, "operator": OPERATOR, "epoch": 1}
         expect_code("session_closing", current.policy, compute=1)
@@ -210,11 +195,8 @@ def test_worker_that_finishes_cold_import_after_expiry_never_invokes_job(tmp_pat
     release = tmp_path / "release"
     invoked = tmp_path / "invoked"
     (tmp_path / "delayed_worker.py").write_text(f"""
-import time
 from pathlib import Path
-while not Path({str(release)!r}).exists():
-    time.sleep(0.01)
-
+{held_until_released(release)}
 def main(args):
     Path({str(invoked)!r}).touch()
 """)
@@ -230,10 +212,10 @@ def main(args):
         launch = Launch((sys.executable,), cwd=str(tmp_path), warm_entrypoint="delayed_worker:main")
         job = Job("delayed", "project", "request", launch)
         client.admit("token", [AdmissionItem("key", job)], record={})
-        until(lambda: client.jobs(job_id=job.id)[0]["state"] == "assigned")
-        until(lambda: time.time() >= expires_at)
+        wait_until(lambda: client.jobs(job_id=job.id)[0]["state"] == "assigned")
+        wait_until(lambda: time.time() >= expires_at)
         release.touch()
-        outcome = until(lambda: client.jobs(job_id=job.id)[0]["outcome"])
+        outcome = wait_until(lambda: client.jobs(job_id=job.id)[0]["outcome"])
         assert outcome["error"]["code"] == "session_expired"
         assert not invoked.exists()
     finally:

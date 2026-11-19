@@ -18,7 +18,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_project
-from tests.support.host import admit, job_row, restart, run_job, token, wait_until
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 from tests.support.hang import HANG_SECONDS
 
 
@@ -45,7 +45,7 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
     host.policy(compute=1)
     gate = run_job(
         "actor-gate",
-        f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+        held_until_released(release),
     )
     admit(host, token("gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))

@@ -16,6 +16,7 @@ import pytest
 
 from tests.support.git_fixtures import run_fixture_git
 from tests.support.hang import HANG_SECONDS
+from tests.support.host import until_exists
 
 
 def load_full_suite_module():
@@ -93,12 +94,11 @@ def make_full_suite_repo(repo: Path) -> Path:
 
 
 def lock_helper_code() -> str:
-    return """
+    return f"""
 import importlib.util
 import os
 from pathlib import Path
 import sys
-import time
 
 script_path, lock_path, worktree, release_path, repository = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("feedbax_full_suite_helper", script_path)
@@ -113,10 +113,7 @@ with module.FullSuiteLock(
     command=[repository, "scripts/full_suite.sh"],
 ):
     print("acquired " + str(os.getpid()), flush=True)
-    release = Path(release_path)
-    while not release.exists():
-        time.sleep(0.02)
-"""
+{until_exists("release_path", indent="    ")}"""
 
 
 def start_lock_helper(

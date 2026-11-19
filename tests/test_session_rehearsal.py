@@ -38,7 +38,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, evidence, verify_authorization
 from tests.test_canonical_evaluate_admission import managed_evaluation_definition
-from tests.support.host import wait_until
+from tests.support.host import until_exists, wait_until
 from tests.support.hang import HANG_SECONDS
 
 
@@ -179,23 +179,15 @@ def test_session_rehearses_saved_train_and_evaluate_after_controller_exit(host, 
         gate = tmp_path / "gate"
         gate.mkdir()
         (gate / "session_test_gate.py").write_text(
-            """
+            f"""
 import os
-import time
-from pathlib import Path
 
 from feedbax.training.method_runtime import TrainingLoop
 
 original = TrainingLoop.run_block
 
 def execute(*args, **kwargs):
-    release = Path(os.environ["SESSION_TEST_RELEASE"])
-    deadline = time.monotonic() + 15
-    while not release.exists():
-        if time.monotonic() >= deadline:
-            raise TimeoutError("Controller did not detach")
-        time.sleep(.02)
-    return original(*args, **kwargs)
+{until_exists('os.environ["SESSION_TEST_RELEASE"]', indent="    ")}    return original(*args, **kwargs)
 
 TrainingLoop.run_block = execute
 """

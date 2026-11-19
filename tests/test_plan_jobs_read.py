@@ -5,7 +5,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from statistics import median
-from time import monotonic, perf_counter_ns, sleep
+from time import perf_counter_ns
 
 from fastapi.testclient import TestClient
 import pytest
@@ -24,20 +24,8 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
-from tests.support.hang import HANG_SECONDS
-from tests.support.host import admit, run_job, token
+from tests.support.host import admit, held_until_released, run_job, token, wait_until
 from tests.support.managed_train_fixture import managed_train_payload, managed_train_project
-
-
-def _until(read, ready=bool):
-    deadline = monotonic() + HANG_SECONDS
-    result = None
-    while monotonic() < deadline:
-        result = read()
-        if ready(result):
-            return result
-        sleep(0.02)
-    pytest.fail(f"Host did not reach the expected state. Last observation was {result!r}")
 
 
 def _write_project(root: Path, spec: DocumentTrainingRequestSpec) -> None:
@@ -253,16 +241,13 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(host, tmp_pa
                 data={"manifest_root": str(tmp_path / "other-results")},
             )
             admit(host, token("wrong-store"), wrong_store)
-            _until(lambda: host.jobs(job_id=wrong_store.id)[0]["outcome"])
+            wait_until(lambda: host.jobs(job_id=wrong_store.id)[0]["outcome"])
             gate = replace(
-                run_job("different-project", (
-                    "from pathlib import Path; from time import sleep\n"
-                    f"while not Path({str(release)!r}).exists(): sleep(.02)"
-                ), request=request_id),
+                run_job("different-project", held_until_released(release), request=request_id),
                 data={"manifest_root": str(store)},
             )
             admit(host, token("slot-gate"), gate)
-            _until(lambda: host.jobs(job_id=gate.id)[0]["state"] == "running")
+            wait_until(lambda: host.jobs(job_id=gate.id)[0]["state"] == "running")
 
             renamed = client.post("/api/projects/reach/rename", json={"revision": revision, "name": "renamed"})
             assert renamed.status_code == 200, renamed.text
@@ -291,9 +276,9 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(host, tmp_pa
 
             assert current_attempt().status is JobStatus.QUEUED
             release.touch()
-            finished = _until(current_attempt, lambda row: row.status in {
+            finished = wait_until(lambda: (row := current_attempt()).status in {
                 JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CORRUPT,
-            })
+            } and row)
             canonical_job, = host.jobs(job_id=attempt_id)
             assert finished.status is JobStatus.SUCCEEDED, (finished, canonical_job)
             assert JobStatus.STARTING.value in seen and finished.progress is not None
@@ -342,7 +327,7 @@ def test_plan_joins_exact_train_attempts_and_receipts_across_reload(host, tmp_pa
                 data={"manifest_root": str(store)},
             )
             admit(host, token("later-failure"), failure)
-            _until(lambda: host.jobs(job_id=failure.id)[0]["state"] == "failed")
+            wait_until(lambda: host.jobs(job_id=failure.id)[0]["state"] == "failed")
             after_failure = read()
             retained, failed = after_failure.attempts_by_run[same]
             assert retained == finished and failed.status is JobStatus.FAILED

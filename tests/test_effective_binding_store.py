@@ -20,6 +20,7 @@ from feedbax.persistence.effective_success import (
 )
 from feedbax.persistence.reachability import measure_store
 from scripts.proofs.effective_binding_witness import document_product, prepare, report_request, summarize
+from tests.support.hang import HANG_SECONDS
 
 
 SUPPLIER = b'{"kind":"EvaluationRunManifest","id":"evaluation-1"}'
@@ -142,12 +143,12 @@ def test_interruption_and_competing_publication_have_one_commit_point(tmp_path, 
     )
     process.start()
     try:
-        process.join(15)
+        process.join(HANG_SECONDS)
         assert process.exitcode == 73
     finally:
         if process.is_alive():
             process.kill()
-            process.join(5)
+            process.join(HANG_SECONDS)
     staged = ContentObjectRef.model_validate_json(marker.read_bytes())
     reopened = SuccessView(ImmutableArtifactBlobProvider(root))
     assert reopened.store.get_object(staged)

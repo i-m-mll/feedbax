@@ -26,7 +26,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import states_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.support.host import admit, job_row, restart, run_job, token, wait_until
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 from tests.test_saved_update_series import definition
 from tests.support.store_damage import writable_store_object
 
@@ -61,7 +61,7 @@ def test_accepted_saved_evaluate_recovers_committed_store_attempt(private_host, 
     release = tmp_path / "release"
     gate = run_job(
         "gate",
-        f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+        held_until_released(release),
         project=project,
     )
     admit(host, token("gate"), gate)

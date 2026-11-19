@@ -183,12 +183,12 @@ def test_approved_runpod_offer_opens_in_another_region_and_projects_its_stages(
     release_create, release_ssh = Event(), Event()
 
     def delayed_create(launch):
-        assert release_create.wait(10)
+        assert release_create.wait(HANG_SECONDS)
         return acquire(launch)
 
     def delayed_ssh(resource, **kwargs):
         if kwargs.get("opening"):
-            assert release_ssh.wait(10)
+            assert release_ssh.wait(HANG_SECONDS)
         return endpoint(resource, **kwargs)
 
     def review_quote(request):

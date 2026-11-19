@@ -21,7 +21,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.support.host import admit, job_row, restart, run_job, token, wait_until
+from tests.support.host import HELD_UNTIL_STOPPED, admit, job_row, restart, run_job, token, wait_until
 from tests.support.finite_train import install_finite_gate
 
 
@@ -209,7 +209,7 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     def saved_evaluation():
         return service.read(project, revision=plan.revision).evaluations[rows["evaluate"].key]
 
-    blocker = run_job("occupy-compute", "import time\ntime.sleep(25)")
+    blocker = run_job("occupy-compute", HELD_UNTIL_STOPPED)
     admit(host, blocker.id, blocker)
     wait_until(lambda: job_row(host, blocker.id, "running"))
     try:

@@ -21,15 +21,15 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import store_request
 
 
-def test_client_waits_for_a_host_that_holds_the_lock_before_it_listens(tmp_path):
+def test_client_waits_for_a_host_that_holds_the_lock_before_it_listens(private_hosts):
     from feedbax.host.daemon import Host
 
-    root = tmp_path / "host"
+    root = private_hosts / "host"
 
     async def main():
         host = Host(root)
         ping = asyncio.get_running_loop().run_in_executor(None, HostClient(root).ping)
-        await asyncio.sleep(8)
+        await asyncio.sleep(8)  # real clock: the client still waits after the Host has held its lock for 8 s
         waiting = not ping.done()
         task = asyncio.create_task(host.run())
         try:
@@ -43,8 +43,8 @@ def test_client_waits_for_a_host_that_holds_the_lock_before_it_listens(tmp_path)
     assert reply["pid"] == os.getpid()
 
 
-def test_client_fails_as_soon_as_its_host_exits_at_start(tmp_path, monkeypatch):
-    root = tmp_path / "host"
+def test_client_fails_as_soon_as_its_host_exits_at_start(private_hosts, monkeypatch):
+    root = private_hosts / "host"
     (root / "host.sqlite").mkdir(parents=True, mode=0o700)
     root.chmod(0o700)
     exits = []
@@ -63,7 +63,7 @@ def test_client_fails_as_soon_as_its_host_exits_at_start(tmp_path, monkeypatch):
     assert len(exits) == 1 and failed - exits[0] < 1
 
 
-def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monkeypatch):
+def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monkeypatch, private_hosts):
     monkeypatch.setenv("PYTHONPROFILEIMPORTTIME", "1")
     blobs = ImmutableArtifactBlobProvider(tmp_path / "products")
     schema = "fixture.series.v1"
@@ -92,7 +92,7 @@ def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monk
             data={"manifest_root": str(blobs.root), "run_key": attempt},
         )
 
-    client = HostClient(tmp_path / "host")
+    client = HostClient(private_hosts / "host")
     pid = client.ping()["pid"]
     try:
         admitted = client.admit("light", [
@@ -103,7 +103,7 @@ def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monk
         client.stop(["series", "plot"], "force")
     finally:
         os.kill(pid, signal.SIGTERM)
-    imports = [line.rsplit("|", 1)[-1].strip() for line in (tmp_path / "host" / "host.log").read_text().splitlines()
+    imports = [line.rsplit("|", 1)[-1].strip() for line in (client.root / "host.log").read_text().splitlines()
                if line.startswith("import time:")]
     assert "feedbax.host.daemon" in imports
     assert "jax" not in imports

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import threading
-import time
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -22,6 +21,7 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.persistence import ContentRetentionError, ImmutableArtifactBlobProvider
 from tests.support.hang import HANG_SECONDS
+from tests.support.host import wait_until
 
 
 pytestmark = pytest.mark.feedbax_contract
@@ -388,10 +388,7 @@ def test_detached_scheduled_collection_reclaims_without_parent_activity(tmp_path
     )
 
     assert pid > 0
-    deadline = time.monotonic() + 5
-    while _path(provider, reference.sha256).exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert not _path(provider, reference.sha256).exists()
+    wait_until(lambda: not _path(provider, reference.sha256).exists())
 
 
 def test_nonterminal_restartable_run_requires_durable_terminal_release(tmp_path: Path) -> None:
