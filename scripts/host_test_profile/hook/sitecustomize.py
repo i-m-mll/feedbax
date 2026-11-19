@@ -50,7 +50,7 @@ if DIRECTORY:
         return "other"
 
     record("process_start", argv=sys.argv[:4], ppid=os.getppid(), role=_role(sys.argv), python=sys.executable,
-           jax_cache=os.environ.get("JAX_COMPILATION_CACHE_DIR"))
+           jax_cache=os.environ.get("FEEDBAX_HOST_JAX_CACHE_DIR"))
     def _exit() -> None:
         import resource
 
