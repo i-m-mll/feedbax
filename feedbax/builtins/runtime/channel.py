@@ -433,7 +433,7 @@ class SignalChannel(GraphNode):
 
 
 class Channel(SignalChannel, Component):
-    """Portable Channel with a reconstructible typed configuration."""
+    """Delay a signal by a fixed number of steps, optionally adding noise."""
 
     component_history = History(Change(2, identity=True))
     ports: ClassVar = SignalChannel.ports

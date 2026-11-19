@@ -182,7 +182,7 @@ class LowPassFilter(GraphNode):
 
 
 class FirstOrderFilter(LowPassFilter, Component):
-    """Portable FirstOrderFilter with a reconstructible typed configuration."""
+    """First-order low-pass filter of a signal, integrated with Euler steps."""
 
     component_history = History(Change(2, identity=True))
     ports: ClassVar = LowPassFilter.ports

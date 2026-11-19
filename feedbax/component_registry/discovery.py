@@ -133,7 +133,7 @@ def compile_owner(
         group = cls.__module__.split(".")[2].capitalize()
         if ".equinox" in cls.__module__:
             group = "Equinox"
-    studio = ComponentStudioFacet(group, (inspect.getdoc(cls) or "").split("\n\n", 1)[0])
+    studio = ComponentStudioFacet(group, inspect.cleandoc(vars(cls).get("__doc__") or "").split("\n\n", 1)[0])
     if presentation := cls.component_presentation:
         studio = replace(studio, **presentation.as_kwargs())
     core = source.distribution == "feedbax"

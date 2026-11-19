@@ -329,6 +329,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const definitions = useMemo(() => (registryQuery.data ?? []).filter((definition) => accepts(definition, physical)), [registryQuery.data, physical]);
   const libraryItems = useMemo(() => definitions.map((definition): LibraryItem => ({
     id: definition.name, name: shortName(definition.name), group: definition.category, glyph: <Box />,
+    about: {
+      description: definition.description, inputs: definition.input_ports ?? [], outputs: definition.output_ports ?? [],
+      parameters: (definition.param_schema ?? []).map(({ name }) => name),
+    },
   })), [definitions]);
   const persisted = model && positionsOf(saved, model.id);
   const presentation = model && saved.presentation?.documents?.[model.id];
