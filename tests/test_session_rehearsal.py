@@ -347,10 +347,14 @@ TrainingLoop.run_block = execute
             provider.remove(resource)
 
 
+@pytest.mark.round(
+    "The venue's Host is killed, and the watchdog closes the venue at a real cost ceiling some seconds later."
+)
 def test_watchdog_closes_venue_at_cost_ceiling_after_host_dies(tmp_path):
     provider = LocalVenueProvider(tmp_path / "provider")
     driver = _driver(tmp_path / "controller", provider)
-    # The ceiling leaves room for the venue Host to start on a loaded machine, up to about 2.5 s.
+    # Fixed when the venue is acquired, the ceiling must cover the venue Host's start, up to about
+    # 2.5 s on a loaded machine.
     request = _request(provider, maximum=6_000)
     state = driver.open(request, _authorization(request), adoption_token=secrets.token_urlsafe())
     assert state.launch.ends_at_ms == state.launch.acquired_at_ms + 6_000

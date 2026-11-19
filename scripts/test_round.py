@@ -23,18 +23,24 @@ REMOVALS = {
 
 
 class _HostTests:
-    """Collects the ids of the selected tests that use a Host fixture of `tests.support.host`."""
+    """Collects the ids of the selected tests that can reach a Host fixture of `tests.support.host`.
+
+    A test can reach one when the fixture is in its fixture closure, or in its module's namespace, from which
+    a test can take it through `request.getfixturevalue` without the closure showing it.
+    """
 
     def __init__(self) -> None:
         self.ids: list[str] = []
 
     def pytest_collection_finish(self, session: pytest.Session) -> None:
+        support = sys.modules["tests.support.host"]
+        fixtures = [getattr(support, name) for name in HOST_FIXTURES]
         for item in session.items:
-            definitions = getattr(item, "_fixtureinfo").name2fixturedefs.values()
+            closure = getattr(item, "_fixtureinfo").name2fixturedefs.values()
             if any(
-                definition.func.__module__ == "tests.support.host" and definition.func.__name__ in HOST_FIXTURES
-                for chain in definitions for definition in chain
-            ):
+                definition.func.__module__ == support.__name__ and definition.func.__name__ in HOST_FIXTURES
+                for chain in closure for definition in chain
+            ) or any(value is fixture for value in vars(item.module).values() for fixture in fixtures):
                 self.ids.append(item.nodeid)
 
 
