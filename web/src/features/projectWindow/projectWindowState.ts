@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { shellHost } from '@window-shell/browser/titlebar';
 
 export const projectWindowViews = [
-  'runs', 'model', 'task', 'objective', 'scene', 'results', 'analysis', 'figures', 'document',
+  'runs', 'model', 'task', 'objective', 'training', 'scene', 'results', 'analysis', 'figures', 'document',
 ] as const;
 
 export type ProjectWindowView = typeof projectWindowViews[number];

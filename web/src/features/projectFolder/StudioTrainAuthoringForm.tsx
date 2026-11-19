@@ -28,6 +28,7 @@ import { modelDocumentId, sameAuthoredFile, type AuthoredProject } from './autho
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 import { filesRemoval, sweepValueRuns, useRunRemoval } from './runRemoval';
 import { checkpointStartEdits } from './createCheckpointTrain';
+import { inTrainingDocument } from './trainingDocument';
 import { documentChoice, stepChoice, stepChoiceId, stepGroup } from './referenceChoices';
 import { ReferenceField } from '@/components/values/ReferenceField';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
@@ -47,6 +48,8 @@ interface Props {
   /** The project's Train steps, whose checkpoints the step can start from. */
   readonly trains?: readonly PlanStepView[];
   readonly picking?: ElementSelectionStore;
+  /** The form is the Training view's: it shows the training document's fields, and an edit reaches the `lit` steps. */
+  readonly trainingDocument?: { readonly lit: readonly string[] };
 }
 
 const settingsPrefix = '/settings';
@@ -78,16 +81,21 @@ function validateRecipe(
   };
 }
 
-type RunSelection = Pick<TrainFieldRequest, 'run' | 'rows' | 'axes'>;
+type RunSelection = Pick<TrainFieldRequest, 'run' | 'rows' | 'axes' | 'lit_steps'>;
 
-/** The runs an edit is made for: the named run, and the selected rows and sweep values when they are not the whole step. */
+/**
+ * The runs an edit is made for: the named run, and the selected rows and sweep values when they are not the whole step;
+ * and the steps an edit of a document reaches, none being the step alone.
+ */
 function runSelection(
   run?: StudioSavedTrainKey, rows: readonly string[] = [], axes: Readonly<Record<string, readonly string[]>> = {},
+  lit: readonly string[] = [],
 ): RunSelection {
   if (!run) return {};
   return {
     run, rows: [...rows],
     axes: rows.length ? Object.fromEntries(Object.entries(axes).map(([axis, values]) => [axis, [...values]])) : {},
+    lit_steps: [...lit],
   };
 }
 
@@ -210,7 +218,8 @@ export function StudioTrainAuthoringForm(props: Props) {
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();
   const [methodReason, setMethodReason] = useState<string>();
-  const scope = runSelection(props.run, props.fieldRows, props.fieldAxes);
+  const scope = runSelection(props.run, props.fieldRows, props.fieldAxes, props.trainingDocument?.lit);
+  const shows = (id: string) => !props.trainingDocument || inTrainingDocument(id);
   const definition = useQuery({
     queryKey: ['train-authoring', projectId, stepId, revision, scope],
     queryFn: ({ signal }) => readStudioTrainAuthoring(projectId, stepId, { revision, ...scope }, signal),
@@ -273,8 +282,8 @@ export function StudioTrainAuthoringForm(props: Props) {
   const method = catalog.data?.registries.training_methods?.entries
     .find((entry) => 'key' in entry && entry.key === methodField?.value);
   const settingsSchema = method && 'settings_schema' in method ? method.settings_schema : undefined;
-  const choices = fields.filter(({ id, control }) => id !== '/method' && id !== settingsPrefix && control?.kind !== 'number');
-  const steps = projected.filter(({ id }) => !id.startsWith(settingsPrefix + '/'));
+  const choices = fields.filter(({ id, control }) => id !== '/method' && id !== settingsPrefix && control?.kind !== 'number' && shows(id));
+  const steps = projected.filter(({ id }) => !id.startsWith(settingsPrefix + '/') && shows(id));
   const byPath = new Map(projected.map((field) => [field.id, field]));
   const editable = !!current && !pending && !outside;
   const mixed = shown?.mixed ?? [];
@@ -289,7 +298,7 @@ export function StudioTrainAuthoringForm(props: Props) {
         void catalog.refetch();
       })}>
       <section aria-label={studioName('definition')} className="grid gap-1">
-        {props.trains && <CheckpointStart editor={editor} stepId={stepId} step={props.step} trains={props.trains}
+        {props.trains && !props.trainingDocument && <CheckpointStart editor={editor} stepId={stepId} step={props.step} trains={props.trains}
           picking={props.picking} editable={editable} />}
         {methodField && <div data-field={methodField.id} className="contents"><FieldRow label={methodField.label} labelId={methodLabel}
           below={methodReason && <p role="alert">{methodReason}</p>}>

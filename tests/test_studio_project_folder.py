@@ -1506,6 +1506,16 @@ def test_a_training_document_edit_reaches_the_lit_steps(tmp_path):
                    for key, definition in plan.selected_definitions.items()}
         assert batches == {"train": 6, "other": 5}
 
+        run = {"variant": "default", "step": "train", "row": min(key.row for key in train.requests("train"))}
+        def batches_field(lit):
+            response = train.client.post(f"{_URL}/authoring/train/train/fields", json={
+                "revision": train.revision, "run": run, "lit_steps": list(lit),
+            })
+            assert response.status_code == 200, response.text
+            return next(field for field in response.json()["fields"] if field["id"] == _BATCHES)
+        assert batches_field(("train", "other")).get("mixed")
+        assert not batches_field(()).get("mixed")
+
 
 def test_a_sweep_on_a_training_document_step_is_the_step_s_own(tmp_path):
     root, client = _shared_training(tmp_path)

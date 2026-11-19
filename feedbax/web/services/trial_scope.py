@@ -314,8 +314,8 @@ def train_selection(
 ) -> TrainSelection:
     """The runs a Train edit names, read from the plan of ``revision``, and the write that stores an edit for them.
 
-    Without rows the selection is every run of the step in the named run's variant. ``lit_steps`` are the steps an
-    edit of a document the step reads reaches; none is the step alone.
+    Without rows the selection is every run of the step and of the other ``lit_steps`` in the named run's variant.
+    ``lit_steps`` are the steps an edit of a document the step reads reaches; none is the step alone.
     """
     def users(document: str) -> frozenset[str]:
         plan = folders.read_plan(project_id, revision=revision).plan
@@ -331,9 +331,11 @@ def train_selection(
         raise ProjectFolderInvalid(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}.")
     plan = folders.read_plan(project_id, revision=revision, source_runs=(key,)).plan
     scope = selection_scope(project, plan, key, tuple(rows), axes)
-    shown = tuple(RunKey(key.variant, step_id, row) for row in rows) or tuple(
-        row.key for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, step_id)
-    )
+    lit = {step_id, *lit_steps}
+    shown = tuple(RunKey(key.variant, step_id, row) for row in rows) or tuple(sorted(
+        (row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in lit),
+        key=lambda item: item.step != step_id,
+    ))
     if set(shown) != {key}:
         plan = folders.read_plan(project_id, revision=revision, source_runs=tuple(dict.fromkeys((key, *shown)))).plan
     definitions = plan.selected_definitions
