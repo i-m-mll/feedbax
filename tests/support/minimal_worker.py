@@ -2,15 +2,18 @@
 
 Each delivery of `launch(control)` publishes `checkpoint:1` with `CHECKPOINT`, waits until `release(control,
 job_id)` or the Host's stop file, and reports `succeeded`, or `stopped` at `CHECKPOINT`. With `fail=True` it
-reports the typed failure `update_failed` at once. `train_with(monkeypatch, control)` makes every
+reports the typed failure `update_failed` at once. With `leave_thread=True` it first starts a thread that outlives
+the delivery, and with `load=path` it first imports the Python file at `path`. `train_with(monkeypatch, control)` makes every
 `JobService` launch its Trains with it, so Studio admits, warms, stops and resumes them as it does real ones.
 """
 
 from dataclasses import replace
+import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 
 from tests.support.hang import HANG_SECONDS
@@ -20,13 +23,18 @@ CHECKPOINT = {"completed_updates": 1}
 _REPOSITORY = Path(__file__).resolve().parents[2]
 
 
-def launch(control: Path, *, fail: bool = False):
+def launch(
+    control: Path, *, fail: bool = False, leave_thread: bool = False, load: Path | None = None,
+    project_root: Path | None = None,
+):
     from feedbax.host import Launch
 
+    modes = (*(("fail",) if fail else ()), *(("thread",) if leave_thread else ()), *(("load", str(load)) if load else ()))
     return Launch(
-        (sys.executable, str(control), *(("fail",) if fail else ())),
+        (sys.executable, str(control), *modes),
         cwd=str(_REPOSITORY),
         warm_entrypoint=ENTRYPOINT,
+        project_root=str(project_root) if project_root is not None else None,
     )
 
 
@@ -48,6 +56,13 @@ def train_with(monkeypatch, control: Path) -> None:
 
 def main(args):
     control, *mode = args
+    if "thread" in mode:
+        threading.Thread(target=threading.Event().wait, daemon=True).start()
+    if "load" in mode:
+        path = Path(mode[mode.index("load") + 1])
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = sys.modules[path.stem] = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
     job_id = os.environ["FEEDBAX_HOST_JOB_ID"]
     stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
     released = Path(control) / job_id
@@ -55,7 +70,7 @@ def main(args):
         def emit(kind, data):
             print(json.dumps({"kind": kind, "data": data}), file=events)
 
-        if mode == ["fail"]:
+        if "fail" in mode:
             emit("result", {"outcome": "failed", "error": {"code": "update_failed", "message": "Update failed."}})
             return 1
         emit("publication", {"key": "checkpoint:1", "checkpoint": CHECKPOINT})

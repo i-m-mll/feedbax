@@ -108,7 +108,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         by_id = {job["id"]: job for job in jobs}
         by_kind = {job["request"].partition(":")[0]: job for job in jobs}
         light = [job for job in jobs if job["slot"] == "light"]
-        assert len(light) == 4 and len({job["worker_pid"] for job in light}) == 1
+        assert len(light) == 4
         assert all(job["delivery"] == 1 for job in light)
         activity = expect(client.get("/api/jobs", params={"project": project_id})).json()
         assert {job["kind"] for job in activity["jobs"]} == {

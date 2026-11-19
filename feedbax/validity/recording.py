@@ -189,12 +189,18 @@ class WorkerRecorder:
     def bind_project(self, project: Path, *, environment_root: Path | None = None) -> None:
         root = project.resolve(strict=True)
         lock_root = environment_root.resolve(strict=True) if environment_root is not None else root
-        if self.project is None:
-            self.project = root
-            self._environment_root = lock_root
-            self.observe_new_sources()
-        elif self.project != root or self._environment_root != lock_root:
-            raise ValueError("A managed worker cannot change its project or environment authority")
+        if (self.project, self._environment_root) == (root, lock_root):
+            return
+        if self.held_project is not None:
+            raise ValueError("A managed worker that loaded project code cannot change its project or environment authority")
+        self.project = root
+        self._environment_root = lock_root
+        self.observe_new_sources()
+
+    @property
+    def held_project(self) -> Path | None:
+        """The project this process has loaded code from, which it can never unload."""
+        return self.project if any(source.scope == "project" for source in self.loaded) else None
 
     def changed(self) -> bool:
         if self.installation.versions() != self.installed:

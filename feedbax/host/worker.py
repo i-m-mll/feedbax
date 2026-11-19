@@ -3,9 +3,11 @@
 import importlib
 import json
 import os
+import resource
 import shutil
 import socket
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -14,6 +16,9 @@ from .io import EVIDENCE_FILE, JAX_CACHE_ENV, TOKEN_ENV, append, encode, read_wo
 from .jax_cache import install_when_imported
 from .protocol import MANAGED_ENTRYPOINTS, MAX_RPC_BYTES, VALIDITY_CHECK_ENTRYPOINT
 from .source_roster import SourceRoster
+
+MAX_DELIVERIES = 50
+MAX_PEAK_RSS_BYTES = 2 * 2**30
 
 
 def _redirect(paths: dict) -> None:
@@ -67,6 +72,18 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
     return _serve(profile, control, report, None)
 
 
+def _retirement(threads: set[threading.Thread], served: int) -> str | None:
+    """Why a worker that has just finished a delivery must not take another."""
+    if set(threading.enumerate()) != threads:
+        return "the delivery changed the live Python threads"
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)
+    if peak > MAX_PEAK_RSS_BYTES:
+        return f"peak resident memory {peak / 2**20:.0f} MiB exceeds {MAX_PEAK_RSS_BYTES / 2**20:.0f} MiB"
+    if served >= MAX_DELIVERIES:
+        return f"it has served {served} deliveries"
+    return None
+
+
 def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
     entrypoint, import_error = None, None
     if cache := os.environ.get(JAX_CACHE_ENV):
@@ -82,11 +99,17 @@ def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
     snapshots = _sources() if recorder is None else None
     if recorder is not None:
         recorder.observe_new_sources()
-    reusable = profile.get("light_affinity") is not None
+    # A job with only an argv replaces this process image, so only a warm worker serves again.
+    reusable = bool(profile["warm_entrypoint"])
+    boot_environment = dict(os.environ)
+    boot_streams = (os.dup(1), os.dup(2))
+    served, held = 0, None
     with control:
         while True:
+            if recorder is not None:
+                held = recorder.held_project
             try:
-                control.sendall(encode({"kind": "ready"}))
+                control.sendall(encode({"kind": "ready", "served": served, "project": held and str(held)}))
                 message = receive(control, MAX_RPC_BYTES)
             except (OSError, EOFError):
                 return 0
@@ -103,20 +126,34 @@ def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
                     source_error = error
             if not reusable:
                 control.close()
+            threads = set(threading.enumerate())
+            os.environ.clear()
+            os.environ.update(boot_environment)
             status = _execute(
                 message, report, entrypoint, import_error, reusable=reusable, recorder=recorder, source_error=source_error,
             )
             if not reusable:
                 return status
+            served += 1
             # Failed deliveries can load code without publishing a snapshot.
             source_changed = recorder is not None and recorder.observe_new_sources()
             sys.stdout.flush()
             sys.stderr.flush()
+            for fd, saved in zip((1, 2), boot_streams):
+                os.dup2(saved, fd)
             os.write(report, encode({"status": status}))
             if import_error is not None or source_changed:
                 return status
             if snapshots is not None:
-                snapshots |= {path: info for path, info in _sources().items() if path not in snapshots}
+                loaded = {path: info for path, info in _sources().items() if path not in snapshots}
+                snapshots |= loaded
+                if held is None and (project := message.get("project_root")) is not None:
+                    root = Path(project).resolve()
+                    if any(path.resolve().is_relative_to(root) for path in loaded):
+                        held = root
+            if reason := _retirement(threads, served):
+                print(f"Worker retired after delivery {served}: {reason}.", file=sys.stderr, flush=True)
+                return status
 
 
 def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: bool, recorder, source_error) -> int:
@@ -143,8 +180,6 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
             "FEEDBAX_HOST_STDERR": paths["stderr"],
         }
     )
-    os.environ.pop("FEEDBAX_HOST_COMPLETION_BINDINGS", None)
-    os.environ.pop("FEEDBAX_HOST_COMPLETION_BINDINGS_SHA256", None)
     if "completion_bindings" in paths:
         os.environ["FEEDBAX_HOST_COMPLETION_BINDINGS"] = paths["completion_bindings"]
         if digest := message.get("completion_bindings_sha256"):

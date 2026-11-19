@@ -44,6 +44,7 @@ from tests.support.hang import HANG_SECONDS
 T = TypeVar("T")
 
 PRIVATE_HOSTS_ENV = "FEEDBAX_TEST_PRIVATE_HOSTS"
+FRESH_WORKERS_ENV = "FEEDBAX_HOST_FRESH_WORKERS"
 FOLLOWER_THREAD = "studio-job-activity"
 _STEP_SECONDS = 0.02
 _LISTEN_SECONDS = 0.2
@@ -404,6 +405,13 @@ def private_host(private_hosts) -> Iterator[HostClient]:
     client.ping()
     with _following(client.root, ""):
         yield client
+
+
+@pytest.fixture
+def reusing_host(monkeypatch, request) -> HostClient:
+    """A `private_host` whose workers serve deliveries one after another in every run of `make test-round`."""
+    monkeypatch.delenv(FRESH_WORKERS_ENV, raising=False)
+    return request.getfixturevalue("private_host")
 
 
 _UNDECLARED = (
