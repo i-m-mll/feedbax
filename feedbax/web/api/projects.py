@@ -18,7 +18,6 @@ from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemov
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
-    StudioSweptParameterMissing,
     StudioTrainAuthoring,
     StudioTrainAuthoringRequest,
 )
@@ -123,16 +122,15 @@ def read_train_authoring(
             projection = project_train_fields(
                 snapshot.project, step_id, bundle.training_methods, body.change, selection,
                 read_plan=lambda keys: folders.read_plan(project_id, revision=snapshot.revision, source_runs=keys).plan,
+                class_sweep=body.class_sweep,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
-        edit = projection.edit
-        refused = isinstance(edit, StudioSweptParameterMissing)
         return StudioTrainAuthoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision, fields=projection.fields,
-            settings=projection.settings, mixed=projection.mixed,
-            files=[edit] if edit is not None and not refused else [], documents=projection.documents,
-            refusal=edit if refused else None,
+            settings=projection.settings, mixed=projection.mixed, files=projection.files,
+            documents=projection.documents, refusal=projection.refusal, classes=projection.classes,
+            removed_values=projection.removed,
         )
 
     return _project_response(response, project_fields)

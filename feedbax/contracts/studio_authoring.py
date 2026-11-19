@@ -111,12 +111,6 @@ class StudioSweepEdit(StrictModel):
     sweep_id: ProjectName
 
 
-class StudioToField(StrictModel):
-    kind: Literal["toField"]
-    sweep_id: ProjectName
-    value_id: ProjectName
-
-
 class StudioSetSweepValue(StrictModel):
     kind: Literal["setSweepValue"]
     sweep_id: ProjectName
@@ -134,7 +128,7 @@ class StudioNameSweepValue(StrictModel):
 class StudioAuthoringSweepChange(StrictModel):
     field: str
     edit: Annotated[
-        StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue,
+        StudioToSweep | StudioSweepEdit | StudioSetSweepValue | StudioNameSweepValue,
         Field(discriminator="kind"),
     ]
 
@@ -151,9 +145,44 @@ class StudioRunSelection(StrictModel):
     axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
 
 
+class StudioClassToSweep(StrictModel):
+    kind: Literal["to_sweep"]
+
+
+class StudioClassToValue(StrictModel):
+    """Turns the sweep into its member ``value_id``: the step takes that member's class, parameters and edits."""
+
+    kind: Literal["to_value"]
+    value_id: ProjectName
+
+
+class StudioAddClassMember(StrictModel):
+    """Adds the class ``key`` to the sweep; a parameter the step holds that the class lacks moves to the members that
+    have it."""
+
+    kind: Literal["add_member"]
+    key: str
+
+
+class StudioRemoveClassMember(StrictModel):
+    kind: Literal["remove_member"]
+    value_id: ProjectName
+
+
+class StudioClassSweepChange(StrictModel):
+    """An edit of the sweep over the class-valued field ``field``, a pointer in the Train definition."""
+
+    field: str
+    edit: Annotated[
+        StudioClassToSweep | StudioClassToValue | StudioAddClassMember | StudioRemoveClassMember,
+        Field(discriminator="kind"),
+    ]
+
+
 class StudioTrainAuthoringRequest(StudioRunSelection):
     revision: Sha256
     change: StudioAuthoringChange | None = None
+    class_sweep: StudioClassSweepChange | None = None
 
 
 class StudioSweptParameterMissing(StrictModel):
@@ -161,6 +190,35 @@ class StudioSweptParameterMissing(StrictModel):
 
     class_label: NonemptyText
     parameter_label: NonemptyText
+
+
+class StudioClassMember(StrictModel):
+    id: ProjectName
+    label: str
+    value: str
+    """The member's class key."""
+
+
+class StudioClassSweep(StrictModel):
+    id: ProjectName
+    members: list[StudioClassMember]
+
+
+class StudioClassField(StrictModel):
+    """A class-valued field of the Train definition as the selected runs have it.
+
+    ``classes`` are the keys of the selected runs' classes, in the sweep's order when it is swept. The step's fields
+    below it are the parameters every one of those classes has.
+    """
+
+    id: str
+    label: str
+    options: list[StudioAuthoringOption]
+    classes: list[str]
+    sweep: StudioClassSweep | None = None
+    selected_value: ProjectName | None = None
+    """The member whose runs include the named run."""
+    can_sweep: bool = False
 
 
 class StudioTrainAuthoring(StrictModel):
@@ -175,3 +233,6 @@ class StudioTrainAuthoring(StrictModel):
     files: list[StudioProjectFilePatch]
     documents: list[ProjectName]
     refusal: StudioSweptParameterMissing | None = None
+    classes: list[StudioClassField] = Field(default_factory=list)
+    removed_values: dict[str, list[str]] = Field(default_factory=dict)
+    """Per sweep, the values whose runs the edit removes from the project."""

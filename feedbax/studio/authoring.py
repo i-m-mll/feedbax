@@ -48,6 +48,8 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringRegistry,
     StudioAuthoringSource,
     StudioAuthoringSurface,
+    StudioClassField,
+    StudioClassSweepChange,
     StudioSweptParameterMissing,
 )
 from feedbax.contracts.studio_project import SetProjectValue
@@ -60,8 +62,9 @@ from feedbax.plugins.application import (
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps, sweep_paths
+from feedbax.studio.class_fields import ClassField, edit_class_sweep
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
-from feedbax.studio.selection import TrainSelection
+from feedbax.studio.selection import TrainSelection, merged_files
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
 from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 
@@ -229,8 +232,11 @@ class TrainProjection:
     fields: list[StudioAuthoringField]
     settings: dict[str, JsonValue] | None
     mixed: list[str]
-    edit: StudioProjectFilePatch | StudioSweptParameterMissing | None
+    files: list[StudioProjectFilePatch]
+    refusal: StudioSweptParameterMissing | None
     documents: list[str]
+    classes: list[StudioClassField]
+    removed: dict[str, list[str]]
 
 
 @dataclass(frozen=True)
@@ -331,8 +337,16 @@ def _source(source: ValueSource | None) -> StudioAuthoringSource | None:
 
 
 class _TrainFields:
+    """A Train step's fields as the selected runs have them.
+
+    ``current`` is the definition a write is made against, the step's own when absent. ``selected`` are the selected
+    runs' definitions and ``shown`` the one fields are drawn from; a class-valued field draws the parameters every
+    selected run's class has.
+    """
+
     def __init__(
         self, project: Project, step_id: str, registry: TrainingMethodRegistry, current: dict[str, JsonValue] | None = None,
+        *, shown: dict[str, JsonValue] | None = None, selected: tuple[dict[str, JsonValue], ...] = (),
     ) -> None:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
@@ -363,8 +377,11 @@ class _TrainFields:
             assert isinstance(step.base, InlineBase)
             self.payload = step.base.inline
         self.current = self.payload if current is None else current
+        self.shown = shown if shown is not None else selected[0] if selected else self.payload
+        self.selected = selected or (self.shown,)
         self.sources = (resolved.sources or {}) if isinstance(resolved, ResolvedStep) else {}
         self.fields: dict[str, _Field] = {}
+        self.classes: dict[str, ClassField] = {}
         self.method: RegisteredTrainingMethod | None = None
 
     def set(self, path: _Path, value: JsonValue) -> OverridePatch:
@@ -542,22 +559,38 @@ class _TrainFields:
         if not isinstance(raw, dict):
             return
         schema = registration.settings_model.model_json_schema()
+        seen = self.shown.get("settings")
 
         def fields(
-            path: _Path, values: dict, shape: dict, anchor: tuple[_Path, dict] | None, owner: tuple[str, str, bool] | None,
+            path: _Path, values: dict, held: dict, shape: dict, anchor: tuple[_Path, dict] | None,
+            owner: tuple[str, str, bool] | None, drawn: set[str] | None,
         ) -> None:
+            """Draw the fields below ``path``: ``values`` the step's record there, ``held`` the shown run's."""
             for name, declared in shape.get("properties", {}).items():
+                if drawn is not None and name not in drawn:
+                    continue
                 site = (*path, name)
                 present = name in values
-                leaf = values[name] if present else declared.get("default")
-                props = _schema_node(schema, declared, leaf)
+                leaf = values[name] if present else held.get(name, declared.get("default"))
+                record = held.get(name, leaf)
+                props = _schema_node(schema, declared, record)
                 inner = anchor if present or anchor is not None else (site, leaf)
-                if isinstance(leaf, dict):
+                if isinstance(record, dict):
                     # A chosen class's parameter is named by the field holding the class, and by its own
                     # name only when the class has several: a constant rate is the rate.
                     tag = declared.get("discriminator", {}).get("propertyName")
                     single = tag is not None and len(set(props.get("properties", {})) - {tag}) == 1
-                    fields(site, leaf, props, inner, (name, _title(declared, name), single) if tag is not None else None)
+                    shared = None
+                    if tag is not None:
+                        self.class_field(site, _title(declared, name), tag, leaf if present else None)
+                        shared = set(props.get("properties", {})).intersection(*(
+                            node.get("properties", {}) for payload in self.selected
+                            if (node := _schema_node(schema, declared, _get(payload, site) or record))
+                        ))
+                    fields(
+                        site, leaf if present and isinstance(leaf, dict) else {}, record, props, inner,
+                        (name, _title(declared, name), single) if tag is not None else None, shared,
+                    )
                 elif type(leaf) in (int, float) and props.get("type") in ("number", "integer"):
                     def write(value: _Scalar, site=site, inner=inner) -> list[OverridePatch]:
                         if inner is None:
@@ -575,7 +608,25 @@ class _TrainFields:
                         name=None if owner is None else (owner[0],) if owner[2] else (owner[0], name),
                     )
 
-        fields(("settings",), raw, schema, None, None)
+        fields(("settings",), raw, seen if isinstance(seen, dict) else raw, schema, None, None, None)
+
+    def class_field(self, site: _Path, label: str, tag: str, stored: JsonValue) -> None:
+        """Record the class-valued field at ``site``, ``stored`` the step's record of it."""
+        assert self.method is not None
+        choice = _class_choice_at(self.method.settings_model, self.shown.get("settings"), site[1:])
+        if choice is None:
+            return
+        _, _, classes = choice
+        key = stored.get(tag) if isinstance(stored, dict) else None
+        sweeps = None
+        if not self.linked and isinstance(key, str):
+            def writes(value: JsonValue) -> list[SetProjectValue]:
+                return _step_writes([OverridePatch(op="replace", path=".".join((*site, tag)), value=value)])
+
+            sweeps = FieldSweeps(self.step, SweepTarget(key, writes), label, site[-1:], integer=False)
+        self.classes[pointer(site)] = ClassField(
+            site, label, tag, {key: model for key, model in classes.items() if isinstance(key, str)}, sweeps,
+        )
 
 
 def _title(node: dict, name: str) -> str:
@@ -699,17 +750,27 @@ def project_train_fields(
     selection: TrainSelection,
     *,
     read_plan: _ReadPlan | None = None,
+    class_sweep: StudioClassSweepChange | None = None,
 ) -> TrainProjection:
     """Project the Train step's declared fields and the selected runs' settings, and store one atomic edit for the
     selected runs, or the reason the step's sweep refuses it."""
-    definition = _TrainFields(project, step_id, registry, selection.current)
-    definition.training(read_plan)
     payloads = selection.payloads
-    shown = payloads[0] if payloads else definition.payload
-    settings = shown.get("settings")
+    definition = _TrainFields(project, step_id, registry, selection.current, selected=payloads)
+    definition.training(read_plan)
+    settings = definition.shown.get("settings")
     mixed = _differences([_effective(payload, registry) for payload in payloads]) if payloads else set()
     edit: StudioProjectFilePatch | StudioSweptParameterMissing | None = None
+    files: list[StudioProjectFilePatch] = []
+    removed: dict[str, list[str]] = {}
     documents: set[str] = set()
+    if change is not None and class_sweep is not None:
+        raise ValueError("An edit is a change or a sweep edit, not both.")
+    if class_sweep is not None:
+        made = _class_sweep_edit(definition, class_sweep, selection)
+        if isinstance(made, StudioSweptParameterMissing):
+            edit = made
+        else:
+            files, removed = merged_files(made.files), made.removed
     if change is not None:
         field = definition.fields.get(change.field)
         patches: _Edit = []
@@ -738,13 +799,41 @@ def project_train_fields(
         if isinstance(patches, StudioSweptParameterMissing):
             edit = patches
         elif patches:
-            edit = selection.store(patches)
+            files = [selection.store(patches)]
+    coordinates = selection.row.coordinates if selection.row is not None else {}
     return TrainProjection(
         [field.view for field in definition.fields.values()],
         settings if isinstance(settings, dict) else None,
         sorted(mixed),
-        edit,
+        files,
+        edit if isinstance(edit, StudioSweptParameterMissing) else None,
         sorted(documents),
+        [
+            field.view(
+                list(dict.fromkeys(
+                    key for payload in definition.selected
+                    if isinstance(key := _get(payload, (*field.site, field.tag)), str)
+                )),
+                coordinate.value_id if (members := field.members()) is not None
+                and (coordinate := coordinates.get(members[0])) is not None else None,
+            )
+            for field in definition.classes.values()
+        ],
+        removed,
+    )
+
+
+def _class_sweep_edit(definition: _TrainFields, change: StudioClassSweepChange, selection: TrainSelection):
+    field = definition.classes.get(change.field)
+    if field is None:
+        raise ValueError(f"Train step {definition.step_id!r} has no class field {change.field!r}")
+    stored = _get(definition.payload, field.site)
+    return edit_class_sweep(
+        field, change, stored if isinstance(stored, dict) else {}, scoped=selection.scoped,
+        parameter_label=definition.field_label, store=selection.store,
+        step_file=lambda patches: StudioProjectFilePatch(
+            address=AuthoredFileAddress(kind="step", id=definition.step_id), patches=patches,
+        ),
     )
 
 
@@ -788,6 +877,9 @@ def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> _
             raise ValueError(f"{definition.field_label(('settings', *below))} has no class {change.value!r}")
         if _get(settings, (*below, tag)) == change.value:
             return []
+        swept = definition.classes.get(pointer(("settings", *below)))
+        if swept is not None and swept.covered:
+            raise ValueError(f"{swept.label} is swept; its classes are the sweep's members")
         edit = definition.choose_class(("settings", *below), chosen, chosen.model_config.get("title") or str(change.value))
     else:
         parent = _get(settings, path[1:-1])
@@ -808,7 +900,7 @@ def project_training_numeric_fields(
     project: Project, step_id: str, registry: TrainingMethodRegistry, functions: FunctionRegistry,
     body: TrainFieldRequest, selection: TrainSelection, read_plan: _ReadPlan,
 ) -> TrainFieldResponse:
-    definition = _TrainFields(project, step_id, registry)
+    definition = _TrainFields(project, step_id, registry, shown=selection.current, selected=selection.payloads)
     definition.training(read_plan)
     effective = [_effective(payload, registry) for payload in selection.payloads]
     fields = []
@@ -832,20 +924,21 @@ def project_training_numeric_fields(
             TrainFieldView, numeric, axis, functions, selection.row,
             json.loads(next(iter(values))) if len(values) == 1 else None, mixed=len(values) > 1, id=field_id,
         ))
-        targets[field_id] = field, numeric, axis, step_writes
+        targets[field_id] = field, numeric, axis
     if body.edit is None:
         return TrainFieldResponse(fields=fields)
     if body.field not in targets:
         raise ValueError(f"Train step {step_id!r} has no number field {body.field!r}")
-    field, numeric, axis, step_writes = targets[body.field]
-    prepared = prepare_numeric_field(
-        numeric, axis, body.edit, functions, scoped=selection.scoped, keep_value=step_writes,
-    )
+    field, numeric, axis = targets[body.field]
+    prepared = prepare_numeric_field(numeric, axis, body.edit, functions, scoped=selection.scoped)
     result = prepared.result
     if isinstance(result, tuple):
         return TrainFieldResponse(problems=list(result))
     if isinstance(result, list):
-        files = [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)] if result else []
+        files = merged_files([
+            *([selection.store(prepared.keep)] if prepared.keep else []),
+            *([StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)] if result else []),
+        ])
     elif definition.step.sweep and axis is None:
         return TrainFieldResponse(problems=[Problem(
             code=ProblemCode.STRUCTURE, reason="This Train field has no writable sweep destination.",

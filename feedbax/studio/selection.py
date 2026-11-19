@@ -26,3 +26,15 @@ class TrainSelection:
     current: dict[str, JsonValue] | None
     scoped: bool
     store: Callable[[list[OverridePatch]], StudioProjectFilePatch]
+
+
+def merged_files(files: list[StudioProjectFilePatch]) -> list[StudioProjectFilePatch]:
+    """``files`` with the patches of each file in one entry, in order."""
+    by_address: dict[str, StudioProjectFilePatch] = {}
+    for file in files:
+        key = file.address.model_dump_json()
+        previous = by_address.get(key)
+        by_address[key] = file if previous is None else previous.model_copy(
+            update={"patches": [*previous.patches, *file.patches]},
+        )
+    return list(by_address.values())
