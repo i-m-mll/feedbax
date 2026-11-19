@@ -607,7 +607,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const created = await create;
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: authored } = await created.json() as StudioProjectDocument;
-  const child = 'train-continuation';
+  const child = 'train-2';
   const plan = await (await request.get(`${runsPath}?revision=${authored.revision}&window_map=true`)).json() as StudioSavedTrainRuns;
   const selected = plan.window_map!.rows.filter(({ key }) => key.step === 'train' && sourceKeys.some(({ row }) => row === key.row));
   expect(selected.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.003]);

@@ -1,4 +1,5 @@
 import { ChevronDown } from 'lucide-react';
+import { useRef } from 'react';
 import { studioAccessibleName, studioCountOf, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -31,6 +32,8 @@ export function DocumentPicker({ model, editing, setEditing }: {
 }) {
   const { label, document, documents, count, choose, create, duplicate, rename } = model;
   const edit = (start?: () => Promise<string | undefined>) => start && (async () => setEditing(await start()));
+  // Rename replaces the menu's trigger with the name field, so the closing menu must not return focus elsewhere.
+  const renaming = useRef(false);
 
   if (editing === document && rename) {
     return <InlineEdit value={document} editing className="studio-window-slot__document"
@@ -41,7 +44,7 @@ export function DocumentPicker({ model, editing, setEditing }: {
         rename(name);
       }} />;
   }
-  return <Menu>
+  return <Menu onOpenChange={(open) => { if (open) renaming.current = false; }}>
     <MenuTrigger render={<Button variant="ghost" className="min-w-0 gap-1 px-1" />}
       aria-label={studioAccessibleName(label, document)}>
       <span className="studio-window-slot__document">{document}</span>
@@ -49,14 +52,14 @@ export function DocumentPicker({ model, editing, setEditing }: {
         <span className="whitespace-nowrap text-xs text-shell-muted">{studioCountOf(count.lit, count.users)}</span>}
       <ChevronDown aria-hidden="true" />
     </MenuTrigger>
-    <MenuContent aria-label={studioName(label)}>
+    <MenuContent aria-label={studioName(label)} finalFocus={() => !renaming.current}>
       <MenuRadioGroup value={document} onValueChange={(value: string) => { if (value !== document) choose?.(value); }}>
         {documents.map((name) => <MenuRadioItem key={name} value={name} disabled={!choose}>{name}</MenuRadioItem>)}
       </MenuRadioGroup>
       <MenuSeparator />
       <MenuItem disabled={!create} onClick={edit(create)}>{studioName('new')}</MenuItem>
       <MenuItem disabled={!duplicate} onClick={edit(duplicate)}>{studioName('duplicate')}</MenuItem>
-      <MenuItem disabled={!rename} onClick={() => setEditing(document)}>{studioName('rename')}</MenuItem>
+      <MenuItem disabled={!rename} onClick={() => { renaming.current = true; setEditing(document); }}>{studioName('rename')}</MenuItem>
     </MenuContent>
   </Menu>;
 }

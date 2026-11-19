@@ -23,7 +23,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const graph = (saved: StudioProjectSnapshot) => saved.project.documents?.analyze.payload as unknown as AnalysisDocument;
+  const graph = (saved: StudioProjectSnapshot) => saved.project.documents?.analysis.payload as unknown as AnalysisDocument;
   const mutation = (method: string, route: string) => page.waitForResponse((response) =>
     response.request().method() === method && new URL(response.url()).pathname === route);
 
@@ -77,7 +77,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
-    kind: 'analyze', base: { document: 'analyze' }, inputs: { states: { step: upstream.key.step, row: upstream.key.row } },
+    kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: upstream.key.step, row: upstream.key.row } },
   });
   expect((await plan(created.revision)).edges).toContainEqual(expect.objectContaining({
     from_key: upstream.key, to_key: expect.objectContaining({ step: 'analyze' }),

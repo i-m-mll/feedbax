@@ -230,7 +230,7 @@ it('refuses to create a file from a stale reviewed project', async () => {
   const { editor, create, external } = fixture();
   external(model, [value(2)]);
   await expect(editor.createFile({
-    kind: 'step', id: 'continuation', step: { kind: 'train', base: { step: 'train' } },
+    kind: 'step', id: 'train-2', step: { kind: 'train', base: { step: 'train' } },
   }, initial.revision)).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
   editor.dispose();

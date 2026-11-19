@@ -450,7 +450,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const accepted = await create;
   expect(accepted.status(), await accepted.text()).toBe(201);
   ({ snapshot } = await accepted.json() as StudioProjectDocument);
-  const childId = 'train-continuation';
+  const childId = 'train-2';
   expect(snapshot.project.steps?.[childId]).toMatchObject({
     base: { step: 'train' },
     inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': valueIds } } } },
@@ -549,7 +549,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const rowSaved = await explicit;
   expect(rowSaved.status(), await rowSaved.text()).toBe(201);
   ({ snapshot } = await rowSaved.json() as StudioProjectDocument);
-  const rowChild = 'train-continuation-2';
+  const rowChild = 'train-3';
   expect(snapshot.project.steps?.[rowChild]).toMatchObject({
     base: { step: 'train' },
     inputs: { checkpoint: {

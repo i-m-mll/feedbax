@@ -7,6 +7,7 @@ import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
+import { generatedName, holds } from './generatedName';
 
 export type DocumentRole = 'model' | 'task' | 'objective' | 'analysis' | 'report';
 
@@ -57,12 +58,6 @@ export function documentsOfRole(project: { documents?: Readonly<Record<string, D
   return Object.keys(all).filter((id) => schemas[role].includes(all[id].schema)).sort();
 }
 
-export function freeDocumentName(taken: readonly string[], base: string) {
-  let name = base;
-  for (let number = 2; taken.includes(name); number += 1) name = `${base}-${number}`;
-  return name;
-}
-
 export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
@@ -109,7 +104,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       choose: repoint ? (next) => { void attempt(() => point(studioAccessibleName('select', kind), role, next)); } : undefined,
       create: repoint ? () => attempt(async () => {
         const { saved } = editor.getSnapshot();
-        const id = freeDocumentName(Object.keys(saved.project.documents ?? {}), role);
+        const id = generatedName(role, holds(saved.project.documents));
         await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document: blankDocuments[role] }],
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;

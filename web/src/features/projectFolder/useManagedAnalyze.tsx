@@ -35,6 +35,7 @@ import { savedRunId } from './projectWindowPlan';
 import { placeElement, type Reveal } from './projectWindowProblems';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
+import { generatedName } from './generatedName';
 
 type Source = OperationElement['inputs'][string];
 
@@ -166,8 +167,7 @@ export function useManagedAnalyze({
   }
   function add(kind: 'operations' | 'views', stem: string, value: JsonValue, point?: PresentationPosition) {
     void perform(async () => {
-      let name = stem;
-      for (let number = 2; name === 'states' || name in operations || name in figures; number += 1) name = stem + '-' + number;
+      const name = generatedName(stem, (name) => name === 'states' || name in operations || name in figures);
       const label = studioName(kind === 'operations' ? 'addOperation' : 'addFigure');
       const collection = analysis?.[kind];
       await save(label, [collection ? file([kind, name], value) : file([kind], { [name]: value })]);

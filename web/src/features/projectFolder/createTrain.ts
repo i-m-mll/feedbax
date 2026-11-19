@@ -2,6 +2,7 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import type { Document, StudioProjectCreateFile } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { blankDocuments } from './useProjectDocuments';
+import { generatedName, holds } from './generatedName';
 
 const { model, task, objective } = blankDocuments;
 const taskDocumentSchema = 'feedbax.spec.task_document';
@@ -19,10 +20,7 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
     const existing = documentNames.find((id) => schemas.includes(documents[id].schema));
     if (existing !== undefined) return existing;
 
-    let id = name;
-    for (let number = 2; Object.prototype.hasOwnProperty.call(documents, id); number += 1) {
-      id = `${name}-${number}`;
-    }
+    const id = generatedName(name, holds(documents));
     files.push({ kind: 'document', id, document });
     return id;
   }
@@ -30,9 +28,7 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
   const taskDocument = bindDocument('task', task, [task.schema, taskDocumentSchema]);
   const taskField = documents[taskDocument]?.schema === taskDocumentSchema ? 'task' : 'python_task';
   const objectiveDocument = bindDocument('objective', objective);
-  const steps = saved.project.steps ?? {};
-  let id = 'train';
-  for (let number = 2; Object.prototype.hasOwnProperty.call(steps, id); number += 1) id = `train-${number}`;
+  const id = generatedName('train', holds(saved.project.steps));
   files.push({
     kind: 'step', id,
     step: {

@@ -10,6 +10,7 @@ import {
 import { trainSourceSubset } from './createCheckpointTrain';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
+import { generatedName, holds } from './generatedName';
 
 const rollout = 'feedbax.rollout';
 export const checkpointLabel = (update: number) => studioFormat('checkpointAtUpdate', { update });
@@ -165,8 +166,7 @@ export async function createEvaluation(
   const domain = managedTrialDomain(projection, members);
   if (!domain) throw new Error('Choose managed Train runs that share a trial-set rule.');
   const trialSet: TrialSet = domain.kind === 'fixed' ? { kind: 'every_condition' } : { kind: 'sample', count: 1 };
-  let id = 'evaluate';
-  for (let number = 2; Object.prototype.hasOwnProperty.call(saved.project.steps, id); number += 1) id = 'evaluate-' + number;
+  const id = generatedName('evaluate', holds(saved.project.steps));
   await editor.createFile({
     kind: 'step', id,
     step: {

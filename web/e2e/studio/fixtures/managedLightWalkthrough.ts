@@ -215,7 +215,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(await attempts()).toEqual([...beforeWidening, ...extra].sort());
 
   await selectTwo();
-  const child = 'train-continuation';
+  const child = 'train-2';
   const continued = await addSuccessor('Train', child);
   expect(continued.project.steps?.[child]?.kind).toBe('train');
   const carryover = stepInspector(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });

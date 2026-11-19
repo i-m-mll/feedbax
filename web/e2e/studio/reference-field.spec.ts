@@ -49,8 +49,8 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
     },
   };
   await appendManagedFiles(page.request, initial, [
-    { kind: 'document', id: 'analyze', document: analysis },
-    { kind: 'step', id: 'analyze', step: { kind: 'analyze', base: { document: 'analyze' }, inputs: { states: { step: 'baseline' } } } },
+    { kind: 'document', id: 'analysis', document: analysis },
+    { kind: 'step', id: 'analyze', step: { kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } } } },
   ]);
   const models = Object.entries(initial.project.documents ?? {}).filter(([, { schema }]) => schema === 'feedbax.spec.model')
     .map(([id]) => id);

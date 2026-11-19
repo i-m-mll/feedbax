@@ -188,7 +188,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
-    kind: 'analyze', base: { document: 'analyze' }, inputs: { states: {
+    kind: 'analyze', base: { document: 'analysis' }, inputs: { states: {
       step: evaluateStep,
       ...(paired ? { where: { axes: expect.any(Object) } } : { row: sources[0].key.row }),
     } },
@@ -598,7 +598,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(paired.project.sweep).toEqual(initial.project.sweep);
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Aligned velocity');
   await drawer.getByRole('option', { name: 'Aligned velocity', exact: true }).dblclick();
-  await expect.poll(async () => (await snapshot()).project.documents?.analyze?.payload)
+  await expect.poll(async () => (await snapshot()).project.documents?.analysis?.payload)
     .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
 
   const evaluated = await successor('Evaluate', 'evaluate');
@@ -607,7 +607,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(evaluated.project.steps?.evaluate).toMatchObject({
     kind: 'evaluate', inputs: { subject: { step: 'train', checkpoint: 'last' } },
   });
-  const childId = 'train-continuation';
+  const childId = 'train-2';
   const continuation = await successor('Train', childId);
   const batches = stepInspector.getByRole('textbox', { name: 'Batches', exact: true });
   await expect(batches).toBeEditable();
