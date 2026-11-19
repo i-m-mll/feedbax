@@ -252,7 +252,7 @@ class ProjectPlanRead:
         conditions: dict[RequestId, list[str] | None] = {}
         if evaluation_tasks is not None:
             for run in plan.runs:
-                if run.kind != "train" or run.admission_problem is not None or run.request_id in conditions:
+                if run.kind != "train" or run.request_id in conditions:
                     continue
                 source = plan.train_evaluation_source(run.request_id)
                 if isinstance(source, tuple):

@@ -126,7 +126,11 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
   expect(first.closest('[role="gridcell"]')?.hasAttribute('data-map-group-cell')).toBe(true);
   expect(second.closest('[role="gridcell"]')?.hasAttribute('data-map-group-cell')).toBe(false);
 
+  fireEvent.click(screen.getByRole('article'));
+  expect(header.getAttribute('aria-pressed')).toBe('true');
+
   fireEvent.click(first);
+  expect(header.getAttribute('aria-pressed')).toBe('false');
   fireEvent.click(second, { metaKey: true });
   const scope = { kind: 'rows', stepId: train.id, runIds: ['mid-first', 'mid-second'] };
   expect(selectionChanged).toHaveBeenLastCalledWith({

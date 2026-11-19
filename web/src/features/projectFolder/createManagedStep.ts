@@ -38,8 +38,6 @@ export function analyzeInput(
 ): StepReference | undefined {
   const variant = planVariants(projection)[0];
   if (!variant || !runs.length || runs.some((run) => run.variant !== variant)) return undefined;
-  const completed = new Set(projection.window_map?.evaluations?.filter(({ result }) => result).map(({ key }) => savedRunId(key)));
-  if (!runs.every(({ id }) => completed.has(id))) return undefined;
   const selected = new Set(runs.map(({ id }) => id));
   const rows = stepSourceRows(projection, step.id, variant)
     .filter((row) => selected.has(savedRunId({ ...row, step: step.id })));

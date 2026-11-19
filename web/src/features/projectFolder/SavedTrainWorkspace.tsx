@@ -52,7 +52,7 @@ import {
 } from '@/features/projectWindow/elementSelection';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
-import { canCreateFirstTrain, createFirstTrain } from './createFirstTrain';
+import { createTrain } from './createTrain';
 import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
@@ -917,17 +917,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   function stepInsertion(source?: PipelineMapStepSource): { kinds: StepInsertion; enabled: boolean } | undefined {
     if (!primaryVariant) return undefined;
     if (!source) {
-      if (step && (state.selection?.kind !== 'steps' || state.selection.stepIds.length === 1)) {
-        return stepInsertion({
-          stepId: step.id,
-          selection: state.selection && 'stepId' in state.selection && state.selection.stepId === step.id
-            ? state.selection : null,
-        });
-      }
-      if (!canCreateFirstTrain(saved.project)) return undefined;
+      const chosen = state.selection?.kind === 'steps'
+        ? state.selection.stepIds.length === 1 ? { stepId: state.selection.stepIds[0], selection: null } : undefined
+        : state.selection && { stepId: state.selection.stepId, selection: state.selection };
+      const fromChosen = chosen && stepInsertion(chosen);
+      if (fromChosen) return fromChosen;
       const revision = saved.revision;
       return { kinds: { train: () => void perform(async () => {
-        const id = await createFirstTrain(editor, revision);
+        const id = await createTrain(editor, revision);
         commandScope.selectCreatedStep(id, 'model');
       }) }, enabled: ready && !busy };
     }
@@ -961,7 +958,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         train: () => void perform(async () => { await onNewStep(source, commandScope); }),
         ...(data && managedTrialDomain(data, runs) && { evaluate: () => evaluateTrain(source, data) }),
       },
-      enabled: canAuthorContinuation && !busy && runs.some(({ status }) => status !== 'cannot_run'),
+      enabled: canAuthorContinuation && !busy,
     };
   }
 
