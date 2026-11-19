@@ -1,7 +1,7 @@
 import { Input } from '@base-ui/react/input';
 import clsx from 'clsx';
 import { forwardRef, type ComponentPropsWithoutRef, type ReactNode, type TextareaHTMLAttributes } from 'react';
-import { fieldBox, fieldFrame, fieldInput, glyph } from './styles';
+import { fieldBox, fieldFrame, fieldInput, glyph, leadingSlot } from './styles';
 
 export interface TextFieldProps extends Omit<ComponentPropsWithoutRef<typeof Input>, 'className' | 'onValueChange'> {
   onValueChange?: (value: string) => void;
@@ -16,11 +16,11 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function T
 ) {
   return (
     <div className={clsx(fieldBox, className)}>
-      {leading ? <span className={clsx('flex pl-control-inline text-shell-muted', glyph)}>{leading}</span> : null}
+      {leading ? <span className={leadingSlot}>{leading}</span> : null}
       <Input
         ref={ref}
         aria-invalid={invalid || undefined}
-        className={clsx(fieldInput, leading && 'pl-1.5')}
+        className={clsx(fieldInput, leading && 'pl-1')}
         onValueChange={onValueChange && ((value) => onValueChange(value))}
         {...props}
       />

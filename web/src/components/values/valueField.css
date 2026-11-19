@@ -1,18 +1,3 @@
 .value-field-parts {
   padding-left: var(--space-3);
 }
-
-:root[data-value-mark='hover'] .value-field-constant-mark {
-  opacity: 0;
-}
-
-:root[data-value-mark='hover'] .value-field:hover .value-field-constant-mark,
-:root[data-value-mark='hover'] .value-field:focus-within .value-field-constant-mark,
-:root[data-value-mark='hover'] .value-field-constant-mark[data-popup-open] {
-  opacity: 1;
-}
-
-:root[data-value-mark='quiet'] .value-field-constant-mark {
-  color: var(--text-muted);
-  opacity: 0.6;
-}

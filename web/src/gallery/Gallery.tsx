@@ -1,6 +1,6 @@
 import { installTooltips } from '@window-shell/browser/tooltip';
 import {
-  Box, ChartLine, ChevronDown, Circle, FileText, FlaskConical, Grid2x2, Layers, Maximize, Play, Plus, Search, Settings, Square,
+  Box, ChartLine, ChevronDown, Circle, Cpu, FileText, FlaskConical, Grid2x2, Layers, Maximize, Play, Plus, Search, Settings, Square,
   SquareArrowOutUpRight, StepForward, Waypoints, ZoomIn, ZoomOut, type LucideIcon,
 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
@@ -35,8 +35,6 @@ import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 
 type Theme = 'light' | 'dark';
 type Density = 'compact' | 'regular';
-type Labels = 'beside' | 'above';
-type ValueMark = 'hover' | 'quiet';
 type CardStyle = AppearanceValue<'card'>;
 
 const kinds = [
@@ -246,8 +244,6 @@ export function Gallery() {
   useLayoutEffect(() => installTooltips(), []);
   const theme = useRootAttribute<Theme>('data-theme');
   const density = useRootAttribute<Density>('data-density');
-  const labels = useRootAttribute<Labels>('data-inspector-labels');
-  const valueMark = useRootAttribute<ValueMark>('data-value-mark');
   const cardStyle = useRootAttribute<CardStyle>('data-card');
   const [text, setText] = useState('policy');
   const [number, setNumber] = useState<number | null>(0.001);
@@ -273,12 +269,6 @@ export function Gallery() {
         <SegmentedControl<Density> aria-label="Density" value={density}
           onValueChange={(value) => setAppearance(window, 'density', value)}
           items={[{ value: 'compact', label: 'Compact' }, { value: 'regular', label: 'Regular' }]} />
-        <SegmentedControl<Labels> aria-label="Inspector labels" value={labels}
-          onValueChange={(value) => setAppearance(window, 'inspector-labels', value)}
-          items={[{ value: 'beside', label: 'Beside' }, { value: 'above', label: 'Above' }]} />
-        <SegmentedControl<ValueMark> aria-label="Value mark" value={valueMark}
-          onValueChange={(value) => setAppearance(window, 'value-mark', value)}
-          items={[{ value: 'hover', label: 'Hover' }, { value: 'quiet', label: 'Quiet' }]} />
         <Select<CardStyle> aria-label="Cards" value={cardStyle} onValueChange={(value) => setAppearance(window, 'card', value)}
           items={[{ value: 'flow', label: 'React Flow' }, { value: 'flow-ui', label: 'React Flow UI' }, { value: 'turbo', label: 'Turbo' },
             { value: 'quiet', label: 'Quiet' }, { value: 'ring', label: 'Ring' }]} />
@@ -336,6 +326,7 @@ export function Gallery() {
           <State name="value"><Select aria-label="Kind" items={kinds} value={kind} onValueChange={setKind} className="w-40" /></State>
           <State name="placeholder"><Select aria-label="Kind" items={kinds} value={null} placeholder="Kind" onValueChange={() => undefined} className="w-40" /></State>
           <State name="disabled"><Select aria-label="Kind" items={kinds} value="train" disabled onValueChange={() => undefined} className="w-40" /></State>
+          <State name="leading"><Select aria-label="Kind" items={kinds} value={kind} onValueChange={setKind} leading={<Cpu />} className="w-40" /></State>
         </Group>
 
         <Group name="Combobox">

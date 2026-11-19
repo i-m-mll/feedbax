@@ -389,10 +389,6 @@
     "uncheckedBadge": "Unchecked Dot",
     "mixed": "Mixed",
     "completions": "Completions",
-    "inspectorLabelsBeside": "Labels Beside",
-    "inspectorLabelsAbove": "Labels Above",
-    "valueMarkHover": "Hover Marks",
-    "valueMarkQuiet": "Quiet Marks",
     "addAttachment": "Add Attachment"
   },
   "unit": {
