@@ -23,7 +23,7 @@ test('an optimizer swept with its classes crosses the learning rate, and a membe
   await expect(optimizer.getByRole('button', { name: 'Optimizer kind: Sweep', exact: true })).toBeVisible();
   await pick(picker, 'SGD');
 
-  await expect(table).toHaveAttribute('aria-rowcount', '6');
+  await expect(table).toHaveAttribute('aria-rowcount', '7');
   for (const name of ['optimizer', 'learning-rate']) await expect(table.getByRole('columnheader', { name, exact: true })).toBeVisible();
   await expect(table.getByRole('cell', { name: 'SGD', exact: true })).toHaveCount(3);
   await expect(picker).toHaveAttribute('placeholder', 'Adam, SGD');

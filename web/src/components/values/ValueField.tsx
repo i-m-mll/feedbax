@@ -309,11 +309,11 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
 }
 
 /** A field's kind as a glyph that opens the menu of the kinds its site offers. */
-function KindMark({ model, readOnly, open, onOpenChange, finalFocus, onChoose }: {
-  model: FieldModel; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
+function KindMark({ model, label = model.label, readOnly, open, onOpenChange, finalFocus, onChoose }: {
+  model: FieldModel; label?: string; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
   finalFocus: RefObject<HTMLInputElement>; onChoose(kind: FieldKind): void;
 }) {
-  const { label, kind } = model;
+  const { kind } = model;
   return <Menu open={open} onOpenChange={onOpenChange}>
     <MenuTrigger render={<IconButton size="content" label={studioFieldKindLabel(label, kind)}
       className="flex size-full items-center rounded-control data-[popup-open]:bg-shell-hover"
@@ -339,7 +339,9 @@ function ClassPicker({ model, labelId, inline, readOnly, submit, chooseKind }: {
   if (model.type.kind !== 'class') return null;
   const { options } = model.type;
   const focusText = () => input.current?.focus();
-  const leading = hasMark(model) ? <KindMark model={model} readOnly={readOnly} open={menu} onOpenChange={setMenu}
+  // Inline, the picker shares its box with its class's parameter, whose own mark is named by the field.
+  const markLabel = inline ? studioParameterLabel(model.label, studioName('type')) : model.label;
+  const leading = hasMark(model) ? <KindMark model={model} label={markLabel} readOnly={readOnly} open={menu} onOpenChange={setMenu}
     finalFocus={input} onChoose={(kind) => chooseKind(kind, focusText)} /> : undefined;
   const common = {
     'aria-labelledby': labelId, className: inline ? undefined : 'w-full', inline, disabled: readOnly, leading, inputRef: input,
