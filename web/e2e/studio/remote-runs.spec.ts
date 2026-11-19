@@ -261,7 +261,8 @@ test('Opening refusal survives reload on the exact approved row', async ({ page,
     await page.reload();
     await mapStep(page, 'train').click();
     await expect(runs.getByText('Failed', { exact: true })).toBeVisible();
-    await expect(runs.getByText('Starting the worker service · The worker service could not be started.')).toBeVisible();
+    await runs.getByRole('cell', { name: 'Failed', exact: true }).hover();
+    await expect(page.getByRole('tooltip')).toContainText('Starting the worker service · The worker service could not be started.');
     const persisted = await request.get(`${path}?revision=${snapshot.revision}`);
     const projected = await persisted.json() as StudioSavedTrainRuns;
     expect(projected.rows).toEqual([expect.objectContaining({ status: 'failed', attempts: [] })]);

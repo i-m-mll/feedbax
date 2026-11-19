@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
@@ -75,19 +75,37 @@ function validateRecipe(
   };
 }
 
+function useTrainFieldsQuery(
+  editor: ProjectEditController, stepId: string | undefined, run?: StudioSavedTrainKey, rows: readonly string[] = [],
+  runPending = false,
+) {
+  const { project_id: projectId, revision } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
+  const body = { revision, run, rows: run ? [...rows] : [] };
+  return { body, fields: useQuery({
+    queryKey: ['train-fields', projectId, stepId, body],
+    queryFn: ({ signal }) => projectTrainFields(projectId, stepId!, body, signal),
+    enabled: stepId !== undefined && !runPending,
+    placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
+  }) };
+}
+
+/** A Train step's numeric fields' labels, by the dotted step-local path a sweep exception patches. */
+export function useTrainFieldLabels(editor: ProjectEditController, stepId: string | undefined): ReadonlyMap<string, string> {
+  const { data } = useTrainFieldsQuery(editor, stepId).fields;
+  return useMemo(() => new Map((data?.fields ?? []).map(({ id, label }) => [jsonPointerPath(id), label])), [data]);
+}
+
+function jsonPointerPath(id: string) {
+  return id.split('/').slice(1).map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~')).join('.');
+}
+
 /** The step's numeric fields as the server projects them, and the edit that applies one through the run confirmation. */
 function useTrainFields(
   editor: ProjectEditController, stepId: string, run?: StudioSavedTrainKey, rows: readonly string[] = [], runPending = false,
 ) {
   const { saved, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
-  const body = { revision, run, rows: run ? [...rows] : [] };
-  const fields = useQuery({
-    queryKey: ['train-fields', projectId, stepId, body],
-    queryFn: ({ signal }) => projectTrainFields(projectId, stepId, body, signal),
-    enabled: !runPending,
-    placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
-  });
+  const { body, fields } = useTrainFieldsQuery(editor, stepId, run, rows, runPending);
   const confirmRemoval = useRunRemoval();
   const editable = !fields.isPlaceholderData && !pending && !outside;
   async function edit(field: string, change: ProjectedEdit): Promise<string | undefined> {

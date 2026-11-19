@@ -23,10 +23,21 @@ async function separator(page: Page) {
   });
 }
 
+/** Each drawn view glyph's offset below the separator; a view the step's kind lacks has no glyph. */
 async function glyphOffsets(page: Page) {
   const { line } = await separator(page);
-  return Promise.all(views.map(async (name) =>
-    (await rail(page).getByRole('tab', { name, exact: true }).boundingBox())!.y - line));
+  const offsets = new Map<string, number>();
+  for (const name of views) {
+    const tab = rail(page).getByRole('tab', { name, exact: true });
+    if (await tab.count()) offsets.set(name, (await tab.boundingBox())!.y - line);
+  }
+  return offsets;
+}
+
+/** Every drawn glyph sits in its view's fixed place: one pitch per view, in the views' order, whichever are absent. */
+function expectFixedPlaces(offsets: Map<string, number>, pitch: number) {
+  const first = offsets.get(views[0])!;
+  for (const [name, offset] of offsets) expect(offset).toBeCloseTo(first + views.indexOf(name) * pitch, 0);
 }
 
 async function expectMenuBeside(page: Page, opener: { x: number; y: number; width: number; height: number }) {
@@ -89,7 +100,7 @@ test('the rail separator follows the divider and every view keeps its place', as
     await page.mouse.up();
     const after = await separator(page);
     expect(after.line).toBeCloseTo(after.divider!, 0);
-    for (const offset of await glyphOffsets(page)) expect(offset).toBeGreaterThanOrEqual(0);
+    for (const offset of (await glyphOffsets(page)).values()) expect(offset).toBeGreaterThanOrEqual(0);
   }
 
   const zoomOut = (await rail(page).getByRole('button', { name: 'Zoom Out', exact: true }).boundingBox())!;
@@ -102,17 +113,23 @@ test('the rail separator follows the divider and every view keeps its place', as
   await expect.poll(transform).not.toBe(before);
 
   const trainOffsets = await glyphOffsets(page);
+  const pitch = trainOffsets.get('Model')! - trainOffsets.get('Runs')!;
+  expect(pitch).toBeGreaterThan(0);
+  expectFixedPlaces(trainOffsets, pitch);
   for (const [kind, absent] of [['evaluate', ['Objective', 'Analysis', 'Figures', 'Document']],
     ['analyze', ['Model', 'Task', 'Objective', 'Scene', 'Results', 'Document']]] as const) {
     // The zoomed canvas can carry a card under the window bar, so the step is chosen from the drawer.
     await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${stepOf(kind)}\\b`) }).click();
-    expect(await glyphOffsets(page)).toEqual(trainOffsets);
     await expect(rail(page).getByRole('tab', { name: 'Training', exact: true })).toHaveCount(0);
     for (const name of views) {
       const tab = rail(page).getByRole('tab', { name, exact: true });
-      if ((absent as readonly string[]).includes(name)) await expect(tab).toHaveAttribute('aria-disabled', 'true');
+      if ((absent as readonly string[]).includes(name)) await expect(tab).toHaveCount(0);
       else await expect(tab).not.toHaveAttribute('aria-disabled', 'true');
     }
+    const offsets = await glyphOffsets(page);
+    expect([...offsets.keys()]).toEqual(views.filter((name) => !(absent as readonly string[]).includes(name)));
+    expectFixedPlaces(offsets, pitch);
+    for (const [name, offset] of offsets) if (trainOffsets.has(name)) expect(offset).toBeCloseTo(trainOffsets.get(name)!, 0);
   }
 
   await rail(page).getByRole('button', { name: 'Fit View', exact: true }).click();

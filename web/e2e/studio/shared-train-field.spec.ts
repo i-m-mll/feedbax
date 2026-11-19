@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -40,12 +41,12 @@ test('the inspector edits the saved values for the step and its selected runs, a
   await method.click();
   await expect(page.getByRole('option', { name: /^Supervised gradient\s*feedbax\.builtins$/ })).toBeVisible();
   await page.keyboard.press('Escape');
-  const optimizer = page.getByRole('region', { name: 'Optimizer field', exact: true });
-  await expect(optimizer.getByRole('region', { name: 'Params field', exact: true })).toContainText('Learning Rate');
-  await rate.getByRole('button', { name: 'Learning Rate Value kind: Value', exact: true }).click();
+  const optimizer = page.getByRole('region', { name: 'Optimizer', exact: true });
+  await expect(optimizer.getByRole('region', { name: 'Learning Rate field', exact: true })).toBeVisible();
+  await rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: 'Sweep', exact: true })).toBeEnabled();
   await page.keyboard.press('Escape');
-  await enter(optimizer.getByRole('textbox', { name: 'Type', exact: true }), 'sgd');
+  await pick(optimizer.getByRole('combobox', { name: 'Optimizer', exact: true }), 'SGD');
   await expect.poll(async () => {
     const base = (await saved()).project.steps?.train.base;
     return base && 'inline' in base ? (base.inline as { settings: { optimizer: { type: string } } }).settings.optimizer.type : undefined;

@@ -268,5 +268,5 @@ test('New in the Document header gives an empty report that cannot run', async (
   await expect(document.getByRole('listitem')).toHaveCount(0);
   await expect(document.getByRole('button', { name: 'Add Text', exact: true })).toBeEnabled();
   await expect(document.getByRole('status')).toContainText("Can't run");
-  await expect(document.getByRole('status')).toContainText('The report has no blocks.');
+  await expect(document.getByText('The report has no blocks.')).toBeVisible();
 });

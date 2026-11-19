@@ -65,7 +65,7 @@ import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring } 
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
-import { StudioTrainAuthoringForm, SweepFieldItems } from './StudioTrainAuthoringForm';
+import { StudioTrainAuthoringForm, SweepFieldItems, useTrainFieldLabels } from './StudioTrainAuthoringForm';
 import {
   TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
 } from './StudioTrialAuthoring';
@@ -80,8 +80,12 @@ function valueText(value: JsonValue) {
   return typeof value === 'string' ? value : JSON.stringify(value);
 }
 
-function exceptionFieldLabel(path: string) {
-  if (!path.startsWith('{')) return humanizeLabel(path.split('.').at(-1)!);
+/**
+ * The label of the field a sweep exception patches: a Train field's label from the server, or a model field's name.
+ * A path no field of the step has (the exception outlived its field) is drawn by its last segment.
+ */
+function exceptionFieldLabel(path: string, trainLabels: ReadonlyMap<string, string>) {
+  if (!path.startsWith('{')) return trainLabels.get(path) ?? humanizeLabel(path.split('.').at(-1)!);
   try {
     const address = ModelAddressSchema.safeParse(JSON.parse(path));
     const field = address.success && address.data.element.kind === 'field' ? address.data.element.path.at(-1) : undefined;
@@ -258,6 +262,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       selection.select(selectSweepValue(latestState.current, step.id, sweepId, valueId, extend));
     },
   } : null;
+  const trainLabels = useTrainFieldLabels(editor, step?.kind === 'train' ? step.id : undefined);
   const availableViews = step ? viewsByKind[step.kind] : emptyViews;
   const primaryView = projectWindowSlotView(windowState, 'primary', availableViews);
   const secondaryView = projectWindowSlotView(windowState, 'secondary', availableViews);
@@ -1273,7 +1278,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const exceptions = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step.id && id === variant)
               ?.exceptions?.map(({ id, count, rule }) => ({ id, text: [
                 ...Object.entries(rule.patches ?? {}).flatMap(([path, patch]) => patch
-                  ? [`${exceptionFieldLabel(path)} ${'value' in patch ? valueText(patch.value) : studioName('remove')}`] : []),
+                  ? [`${exceptionFieldLabel(path, trainLabels)} ${'value' in patch ? valueText(patch.value) : studioName('remove')}`] : []),
                 ...exceptionTerms(step, rule.where),
                 count === 1 ? studioFormat('oneRun') : studioFormat('runCount', { count }),
               ].join(' · ') })) ?? [];
