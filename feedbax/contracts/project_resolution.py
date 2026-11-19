@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -292,6 +292,39 @@ def _pack(value: Any, path: str, step: str | None) -> Any:
     if isinstance(value, list):
         return [_pack(item, f"{path}.{index}", step) for index, item in enumerate(value)]
     return value
+
+
+def reference_write_target(value: Any, parts: Sequence[str]) -> tuple[str, str] | None:
+    """Name the document and the dotted path in its payload that a write at ``parts`` of ``value`` reaches.
+
+    A path that passes through a document reference reaches the referenced document at the
+    reference's pointer followed by the rest of the path. A path that ends at a reference
+    replaces the reference, and a path that meets no reference stays where it is: both are ``None``.
+    """
+    for index, part in enumerate(parts):
+        if isinstance(value, dict) and "document" in value and value.keys() <= {"document", "pointer"}:
+            value = DocumentReference.model_validate(value)
+        if isinstance(value, DocumentReference):
+            return value.document, ".".join((*json_pointer_parts(value.pointer), *parts[index:]))
+        if isinstance(value, dict):
+            value = value.get(part)
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            return None
+    return None
+
+
+def document_write_target(payload: Any, path: str) -> tuple[str, str] | None:
+    """Name the document a row's write at ``path`` of a step's payload changes, and where.
+
+    A ``documents.<name>.payload.<path>`` target names it directly; any other path reaches a
+    document only by passing through a reference in the payload.
+    """
+    parts = path.split(".")
+    if len(parts) >= 4 and parts[0] == "documents" and parts[2] == "payload":
+        return parts[1], ".".join(parts[3:])
+    return reference_write_target(payload, parts)
 
 
 def _figure_slot(path: str) -> str | None:
@@ -916,42 +949,17 @@ class _Resolver:
                         raise ValueError("Use an unscoped Model field target in a step sweep")
                     fields.append((path, patch))
                     continue
-                parts = patch.path.split(".")
-                if len(parts) >= 4 and parts[0] == "documents" and parts[2] == "payload":
+                if (target := document_write_target(payload, patch.path)) is not None:
+                    document, document_path = target
                     source, override = (None, None) if origins is None else self.row_source(
                         row.patch_authors.get(patch.path, name), row, patch.path,
                     )
-                    documents.setdefault(parts[1], []).append(_DocumentRowPatch(
-                        patch.model_copy(update={"path": ".".join(parts[3:])}), source, override,
+                    documents.setdefault(document, []).append(_DocumentRowPatch(
+                        patch.model_copy(update={"path": document_path}), source, override,
                     ))
                     continue
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
-                trial_parts = patch.path.split(".", 2)
-                if (
-                    len(trial_parts) == 3 and trial_parts[0] == "trial_documents"
-                    and trial_parts[1] in {"python_task", "task", "objective"}
-                ):
-                    field = trial_parts[1]
-                    trial_path = f"trial_documents.{field}"
-                    trials = payload.get("trial_documents")
-                    selection = trials.get(field) if isinstance(trials, dict) else None
-                    if isinstance(selection, DocumentReference):
-                        task_documents = _Documents(
-                            self.project, name, self.variant_sources, self.read_document,
-                            self.project.steps[name].document_overrides,
-                        )
-                        resolved = task_documents.inline(selection, "payload." + trial_path)
-                        if not isinstance(resolved, dict):
-                            raise ValueError("The trial document must resolve to an object")
-                        document_uses = document_uses.union(task_documents.used)
-                        payload = payload | {"trial_documents": trials | {field: resolved}}
-                        if origins is not None:
-                            override = OverridePatch(path=trial_path, op="replace", value={})
-                            origins = patch_source(
-                                origins, override,
-                                task_documents.source(selection, resolved),
-                            )
                 if patch.path.startswith(MODEL_ATTACHMENTS + ".") and MODEL_ATTACHMENTS not in payload:
                     payload = payload | {MODEL_ATTACHMENTS: {}}
                     if origins is not None:

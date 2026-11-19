@@ -391,6 +391,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectSnapshot,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.training_document import TrainingDocument
 from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinuation, TrialDocuments
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
@@ -464,6 +465,7 @@ AUTHORED_CONTRACT_MODELS = (
     TaskDocument,
     PythonTaskSelection,
     ObjectiveDocument,
+    TrainingDocument,
     TrialDocuments,
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,

@@ -18,6 +18,7 @@ from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocument
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSource
@@ -70,6 +71,7 @@ _TRAIN_DOCUMENT_MODELS = {
     "model": (MODEL_DOCUMENT_SCHEMA_ID, ModelDocument),
     "task": (TASK_DOCUMENT_SCHEMA_ID, TaskDocument),
     "objective": (OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument),
+    "training": (TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument),
 }
 _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
 _GRAPH_BATCH_SIZE = 1
@@ -144,7 +146,6 @@ def authoring_surface(
         name: StudioAuthoredDocumentFamily(schema_id=schema_id, payload_schema=payload)
         for name, (schema_id, payload) in train_documents.items()
     } | {
-        "training-settings": _family(DocumentTrainingConfig),
         "analysis": _family(AnalysisDocument, AnalysisDocument.model_fields["schema_version"].default),
         "figure": StudioAuthoredDocumentFamily(
             schema_id=FIGURE_DOCUMENT_SCHEMA,
