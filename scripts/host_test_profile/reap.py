@@ -1,7 +1,7 @@
-"""End every recorded Host, launcher or worker that is still running after a profiled run.
+"""End every recorded Host, launcher or worker that is still running after a profiled run, and fail if any was.
 
-The plugin ends leaked Hosts that the pytest processes started; this sweeps what other processes started
-(Hosts started by CLI subprocesses, and workers whose Host was killed). Each is recorded as `reaped`.
+The suite's own sweep ends what runs under the invocation's temporary root; this catches what a profiled run
+started elsewhere. Each process ended is recorded as `reaped` and listed, and the exit status is 1.
 """
 
 import json
@@ -40,6 +40,7 @@ with (directory / f"reaped-{os.getpid()}.jsonl").open("a") as stream:
     for pid, event in live.items():
         stream.write(json.dumps({"t": time.time(), "pid": os.getpid(), "test": event.get("test"), "ev": "reaped",
                                  "child": pid, "role": event["role"]}) + "\n")
+ended = dict(live)
 for signum in (signal.SIGTERM, signal.SIGKILL):
     for pid in live:
         try:
@@ -49,4 +50,9 @@ for signum in (signal.SIGTERM, signal.SIGKILL):
     if live:
         time.sleep(3)
     live = {pid: event for pid, event in live.items() if command(pid)}
-print(f"host_test_profile: ended {len(live)} processes still running after SIGTERM", file=sys.stderr)
+for pid, event in ended.items():
+    print(f"host_test_profile: ended {event['role']} {pid} started by {event.get('test')}: {event['argv']}",
+          file=sys.stderr)
+if live:
+    print(f"host_test_profile: still running after SIGKILL: {sorted(live)}", file=sys.stderr)
+sys.exit(1 if ended else 0)
