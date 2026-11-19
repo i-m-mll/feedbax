@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import replace
 import os
@@ -295,7 +296,8 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.jobs import PlanJobReader
     from feedbax.plugins.composition import load_application
     from feedbax.project_folder import ProjectFolderInvalid, SettledProjectPlan
-    from feedbax.web.services.project_plan import read_settled_project_plan
+    from feedbax.contracts.jobs import JobStatus
+    from feedbax.web.services.project_plan import TrainRowHistory, read_settled_project_plan
 
     try:
         location, text, plan, _, _ = _read_plan(args.project_dir)
@@ -320,16 +322,24 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
         output.response(view.response(include_window_map=True, variants=variants))
         return 2 if problems else 0
 
+    named: dict[tuple[str | None, str | None, str | None], list[str]] = defaultdict(list)
+    for problem in view.window_map(variants=variants).problems:
+        named[problem.variant, problem.step, problem.row].append(problem.detail)
     output.write("ADDRESS\tROW\tSTATE\tREASON")
     for row in view.status_rows():
-        if variants is None or run_key(row.key).variant in variants:
+        key = run_key(row.key)
+        if variants is None or key.variant in variants:
+            history = view.history.get(row.key) or view.light.get(row.key)
+            change = history and (history.change if isinstance(history, TrainRowHistory) else history.changed)
+            reason = row.reason or (f"Definition changed at {change.path}." if change and row.status is JobStatus.STALE
+                                    else " | ".join(named[key.variant, key.step, key.row]))
             output.write(
                 "\t".join(
                     (
                         _address(row.key),
                         _status_cell(row.label),
                         row.status.value,
-                        _status_cell(row.reason or ""),
+                        _status_cell(reason),
                     )
                 )
             )

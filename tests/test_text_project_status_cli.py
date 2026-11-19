@@ -7,6 +7,7 @@ from feedbax.contracts.jobs import JobStatus
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
 from feedbax.contracts.project_plan import RunKey
+from feedbax.contracts.studio_place import StudioAnalysisPlace, StudioStepPlace
 from feedbax.host import HostClient
 from feedbax.host.plan_history import plan_ref_key
 from feedbax.jobs import JobService
@@ -90,11 +91,16 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(host, tmp_path,
         studio = service.read(root.name, revision=saved.revision)
         history = studio.history[key]
         assert history.status is state
-        assert table["default/train/default"] == ("default", state.value, history.reason or "")
+        mounted = studio.window_map()
+
+        def named(step):
+            return " | ".join(problem.detail for problem in mounted.problems if (problem.step, problem.row) == (step, "default"))
+
+        changed = f"Definition changed at {history.change.path}." if history.change and state is JobStatus.STALE else None
+        assert table["default/train/default"] == ("default", state.value, history.reason or changed or named("train"))
         evaluation = studio.evaluations[RunKey("default", "baseline", "default")]
         assert evaluation.result is None
-        assert table["default/baseline/default"][1:] == (evaluation.status.value, evaluation.reason or "")
-        mounted = studio.window_map()
+        assert table["default/baseline/default"][1:] == (evaluation.status.value, evaluation.reason or named("baseline"))
         mounted_rows = {
             f"{item.key.variant}/{item.key.step}/{item.key.row}": item.status
             for item in mounted.rows if item.status is not None
@@ -134,7 +140,8 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(host, tmp_path,
     step_path.write_text(json.dumps(step), encoding="utf-8")
     stale = compare(JobStatus.STALE)
     assert stale.change.path == "payload.seed"
-    assert stale.change.path in stale.reason
+    assert stale.change.place == StudioStepPlace(part="step", field="seed")
+    assert stale.reason is None
     assert stale.previous is not None
 
 
@@ -164,7 +171,7 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     assert table["default/analyze/default/profile"][1] == "not_run"
     assert table["default/analyze/default/bad"][1] == "cannot_run"
     _, state, reason = table["default/analyze/default/unused"]
-    assert state == "cannot_run" and "payload.operations.unused.operation" in reason
+    assert state == "cannot_run" and "feedbax.unknown" in reason
     assert table["default/report/default"][1] == "not_run"
     assert "steps/analyze.json" in output.err
     assert "documents/bad-figure.json:payload.layers.0.style.band_alpha" in output.err
@@ -181,8 +188,8 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     (step,) = (step for step in mounted.steps if step.step_id == "analyze")
     assert step.status_counts == {"cannot_run": 1}
     assert any(
-        (problem.element, problem.document, problem.document_path)
-        == ("bad", "bad-figure", "payload.layers.0.style.band_alpha")
+        (problem.place, problem.document_path)
+        == (StudioAnalysisPlace(part="analysis", element="bad"), "payload.layers.0.style.band_alpha")
         for problem in mounted.problems
     )
     assert any(element.name == "profile" and element.status == "not_run" for element in mounted.analysis_elements)

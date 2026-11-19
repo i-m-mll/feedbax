@@ -66,7 +66,7 @@ class CommandOutput:
 
             problem = StudioProjectWindowMapProblem(
                 code=code, path=path, address=address, detail=detail,
-                variant=None, step=None, row=None, document=None,
+                variant=None, step=None, row=None, place=None,
             )
             print(problem.model_dump_json(exclude_unset=True), file=sys.stderr)
         else:

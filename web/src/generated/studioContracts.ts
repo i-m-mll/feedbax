@@ -330,6 +330,7 @@ export interface StudioSavedTrainAttempt {
 
 export interface StudioSavedTrainChange {
   path: string;
+  place: StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace;
   before: JsonValue;
   after: JsonValue;
 }
@@ -3400,6 +3401,11 @@ export type StoreSubset = {
   "query": ManifestPredicate;
 };
 
+export type StudioAnalysisPlace = {
+  "part": "analysis";
+  "element": string;
+};
+
 export type StudioAnalyzeAuthoring = {
   "revision": Sha256;
   "document": string;
@@ -3558,6 +3564,11 @@ export type StudioCheckpointRuleToSweep = {
   "kind": "to_sweep";
 };
 
+export type StudioDefinitionChange = {
+  "path": string;
+  "place": StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace;
+};
+
 export type StudioEvaluateStep = {
   "kind": "evaluate";
   "base": Base;
@@ -3595,6 +3606,11 @@ export type StudioEvaluationPointProgress = {
   "status": "scored" | "failed";
 };
 
+export type StudioInputPlace = {
+  "part": "input";
+  "role": string;
+};
+
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
@@ -3604,6 +3620,21 @@ export type StudioMemberCommand = {
 export type StudioMemberCommandResult = {
   "member": string;
   "snapshot": StudioProjectSnapshot;
+};
+
+export type StudioMethodPlace = {
+  "part": "method";
+};
+
+export type StudioModelPlace = {
+  "part": "model";
+  "document": string | null;
+  "member"?: ModelAddress | null;
+};
+
+export type StudioObjectivePlace = {
+  "part": "objective";
+  "document": string | null;
 };
 
 export type StudioPlanRequest = {
@@ -3700,6 +3731,7 @@ export type StudioProjectWindowMapEdge = {
 export type StudioProjectWindowMapElement = {
   "result"?: StudioSavedLightResult | null;
   "previous"?: StudioSavedLightResult | null;
+  "changed"?: StudioDefinitionChange | null;
   "key": StudioSavedTrainKey;
   "name": string;
   "kind": "analyze" | "render";
@@ -3737,10 +3769,8 @@ export type StudioProjectWindowMapProblem = {
   "variant": string | null;
   "step": string | null;
   "row": string | null;
-  "document": string | null;
-  "element"?: string | null;
+  "place": StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace | null;
   "document_path"?: string | null;
-  "model_address"?: ModelAddress | null;
   "address"?: string | null;
   "layer"?: string | null;
   "authored_path"?: string | null;
@@ -3818,6 +3848,7 @@ export type StudioReportStep = {
 export type StudioSavedLightHistory = {
   "result"?: StudioSavedLightResult | null;
   "previous"?: StudioSavedLightResult | null;
+  "changed"?: StudioDefinitionChange | null;
 };
 
 export type StudioSavedLightResult = {
@@ -3827,6 +3858,11 @@ export type StudioSavedLightResult = {
   "products": Record<string, string>;
   "validity"?: ReceiptValidity | null;
   "provenance"?: AttemptProvenance | null;
+};
+
+export type StudioStepPlace = {
+  "part": "step";
+  "field"?: string | null;
 };
 
 export type StudioSubsetToRowsEdit = {
@@ -3844,6 +3880,12 @@ export type StudioSubsetToRowsRequest = {
 export type StudioTaskChoice = {
   "document": string;
   "problems": Array<Problem>;
+};
+
+export type StudioTaskPlace = {
+  "part": "task";
+  "document": string | null;
+  "parameter"?: string | null;
 };
 
 export type StudioTaskType = {
@@ -3878,6 +3920,11 @@ export type StudioTrainStep = {
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
   "group"?: string | null;
+};
+
+export type StudioTrainingPlace = {
+  "part": "training";
+  "setting"?: string | null;
 };
 
 export type StudioTrialAuthoring = {
@@ -4737,6 +4784,7 @@ export const StudioSavedTrainChangeSchema: z.ZodType<StudioSavedTrainChange> = z
   z
     .object({
       "path": z.string(),
+      "place": z.union([StudioModelPlaceSchema, StudioTaskPlaceSchema, StudioObjectivePlaceSchema, StudioTrainingPlaceSchema, StudioMethodPlaceSchema, StudioAnalysisPlaceSchema, StudioInputPlaceSchema, StudioStepPlaceSchema]),
       "before": jsonValueSchema,
       "after": jsonValueSchema,
     })
@@ -9797,6 +9845,13 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
 
+export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("analysis"),
+    "element": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalysisPlace>;
+
 export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -10003,6 +10058,13 @@ export const StudioCheckpointRuleToSweepSchema: z.ZodType<StudioCheckpointRuleTo
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleToSweep>;
 
+export const StudioDefinitionChangeSchema: z.ZodType<StudioDefinitionChange> = z.lazy(() =>
+  z.object({
+    "path": z.string(),
+    "place": z.union([StudioModelPlaceSchema, StudioTaskPlaceSchema, StudioObjectivePlaceSchema, StudioTrainingPlaceSchema, StudioMethodPlaceSchema, StudioAnalysisPlaceSchema, StudioInputPlaceSchema, StudioStepPlaceSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioDefinitionChange>;
+
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
@@ -10048,6 +10110,13 @@ export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPoin
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluationPointProgress>;
 
+export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("input"),
+    "role": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioInputPlace>;
+
 export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -10062,6 +10131,27 @@ export const StudioMemberCommandResultSchema: z.ZodType<StudioMemberCommandResul
     "snapshot": StudioProjectSnapshotSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommandResult>;
+
+export const StudioMethodPlaceSchema: z.ZodType<StudioMethodPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("method"),
+  }).strict()
+) as unknown as z.ZodType<StudioMethodPlace>;
+
+export const StudioModelPlaceSchema: z.ZodType<StudioModelPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("model"),
+    "document": z.union([z.string(), z.null()]),
+    "member": z.union([ModelAddressSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioModelPlace>;
+
+export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("objective"),
+    "document": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioObjectivePlace>;
 
 export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
   z.object({
@@ -10186,6 +10276,7 @@ export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowM
   z.object({
     "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
     "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
     "key": StudioSavedTrainKeySchema,
     "name": z.string(),
     "kind": z.union([z.literal("analyze"), z.literal("render")]),
@@ -10231,10 +10322,8 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "variant": z.union([z.string(), z.null()]),
     "step": z.union([z.string(), z.null()]),
     "row": z.union([z.string(), z.null()]),
-    "document": z.union([z.string(), z.null()]),
-    "element": z.union([z.string(), z.null()]).optional(),
+    "place": z.union([z.union([StudioModelPlaceSchema, StudioTaskPlaceSchema, StudioObjectivePlaceSchema, StudioTrainingPlaceSchema, StudioMethodPlaceSchema, StudioAnalysisPlaceSchema, StudioInputPlaceSchema, StudioStepPlaceSchema]), z.null()]),
     "document_path": z.union([z.string(), z.null()]).optional(),
-    "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
     "address": z.union([z.string(), z.null()]).optional(),
     "layer": z.union([z.string(), z.null()]).optional(),
     "authored_path": z.union([z.string(), z.null()]).optional(),
@@ -10330,6 +10419,7 @@ export const StudioSavedLightHistorySchema: z.ZodType<StudioSavedLightHistory> =
   z.object({
     "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
     "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSavedLightHistory>;
 
@@ -10343,6 +10433,13 @@ export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z
     "provenance": z.union([AttemptProvenanceSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSavedLightResult>;
+
+export const StudioStepPlaceSchema: z.ZodType<StudioStepPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("step"),
+    "field": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioStepPlace>;
 
 export const StudioSubsetToRowsEditSchema: z.ZodType<StudioSubsetToRowsEdit> = z.lazy(() =>
   z.object({
@@ -10366,6 +10463,14 @@ export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
     "problems": z.array(ProblemSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioTaskChoice>;
+
+export const StudioTaskPlaceSchema: z.ZodType<StudioTaskPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("task"),
+    "document": z.union([z.string(), z.null()]),
+    "parameter": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskPlace>;
 
 export const StudioTaskTypeSchema: z.ZodType<StudioTaskType> = z.lazy(() =>
   z.object({
@@ -10408,6 +10513,13 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainStep>;
+
+export const StudioTrainingPlaceSchema: z.ZodType<StudioTrainingPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("training"),
+    "setting": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainingPlace>;
 
 export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.lazy(() =>
   z.object({

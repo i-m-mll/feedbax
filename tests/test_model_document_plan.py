@@ -18,6 +18,7 @@ from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.contracts import request_identity
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.studio_place import StudioModelPlace
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
 from feedbax.contracts.graph import StudioTaskBindingSpec
@@ -1142,11 +1143,10 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     response = service.response(view, include_window_map=True)
 
     train = next(problem for problem in response.window_map.problems if problem.step == "train")
-    assert train.document == "reach-model"
-    assert train.model_address == ModelAddress.model_validate({
+    assert train.place == StudioModelPlace(part="model", document="reach-model", member=ModelAddress.model_validate({
         "composites": ["arm"] if domain == "spatial_multibody" else [],
         "element": {"kind": "graph"} if domain == "spatial_multibody" else {"kind": "component", "id": "arm"},
-    })
+    }))
     if domain == "spatial_multibody":
         assert train.path == "payload.trial_documents.model.interior.components.arm"
         assert "requires an authored spatial asset" in train.detail
@@ -1156,7 +1156,7 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
         assert train.path == "/trial_documents/model/interior/components/arm"
         assert "no typed model checkpoint owner for solver 'euler'" in train.detail
         evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
-        assert evaluate.model_address == train.model_address
+        assert evaluate.place.member == train.place.member
         assert "no qualified Evaluate realization" in evaluate.detail
 
     snapshot = view.settled

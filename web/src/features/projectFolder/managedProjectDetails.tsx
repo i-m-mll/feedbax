@@ -22,7 +22,8 @@ import {
   type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem, type ModelAddress,
 } from '@/generated/studioContracts';
 import { modelDocumentId, directTrainStep } from './authoredEdits';
-import type { ProblemReveal } from './projectWindowProblems';
+import { placeMember, type Reveal } from './projectWindowProblems';
+import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import type { ProjectEditController } from './projectEditController';
 import { useStoredModelView } from './model/ModelView';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
@@ -69,7 +70,7 @@ interface DetailInputs {
   readonly documentScopes: Readonly<Record<'graph' | 'task', NamedDocumentScope | undefined>>;
   /** Whether the plan read is of the shown revision; a field edit waits for it, since it carries the steps that plan lights. */
   readonly planCurrent: boolean;
-  readonly problemReveal?: ProblemReveal;
+  readonly problemReveal?: Reveal;
   readonly elements: ElementSelectionStore;
   readonly modelPath?: { document: string; path: string[] };
   readonly setModelPath: (document: string, path: string[]) => void;
@@ -78,6 +79,9 @@ interface DetailInputs {
   readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
   readonly drawerSections: DrawerSections;
   readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
+  /** The problems that keep the named run from running. */
+  readonly runProblems?: readonly StudioProjectWindowMapProblem[];
+  readonly revealProblem?: (problem: StudioProjectWindowMapProblem) => void;
 }
 
 const rootModelPath: string[] = [];
@@ -232,7 +236,9 @@ function useSceneSelection(elements: ElementSelectionStore, scene: ResolvedScene
   };
 }
 
-function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluationReplay, elements, drawerSections }: DetailInputs,
+function useSceneDetail({
+  editor, activeView, focus, step, evaluation, evaluationReplay, elements, drawerSections, runProblems = [], revealProblem,
+}: DetailInputs,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const interiors = useMemo(() => model ? planarInteriors(model.value.interior) : [], [model]);
   const [interiorChoice, chooseInterior] = useState<{ scope: string; path: string }>();
@@ -280,7 +286,10 @@ function useSceneDetail({ editor, activeView, focus, step, evaluation, evaluatio
       </div>
       {!evaluating && focus && scene && <DetailReason reason="scenePlaybackUnavailable" name="playback" />}
     </CanvasStrip> : evaluating
-      ? evaluation?.reason ? <p role="status">{studioReason('observed', evaluation.reason)}</p>
+      ? runProblems.length ? <ul role="status" className="p-3 text-sm">{runProblems.map((problem, index) => <li key={index}>
+        <ProblemRow problem={problem} onReveal={revealProblem && (() => revealProblem(problem))} />
+      </li>)}</ul>
+        : evaluation?.reason ? <p role="status">{studioReason('observed', evaluation.reason)}</p>
         : <DetailReason reason="scenePlaybackUnavailable" name="playback" />
       : omission,
     drawer: (scene || trials) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyReplayScene} trials={trials} checkpoints={checkpoints} {...selection} />,
@@ -305,6 +314,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     return result.success ? { id: storedId, value: result.data } : undefined;
   }, [storedId, storedDocument]);
   const reveal = input.problemReveal;
+  const revealedMember = placeMember(reveal?.place);
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
   const graphScope = input.documentScopes.graph;
   const storedView = useStoredModelView({
@@ -326,10 +336,12 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
-    problem: reveal?.problem.model_address && reveal.problem.document === storedId
-      ? { address: reveal.problem.model_address, reason: reveal.problem.detail } : undefined,
-    problems: input.modelProblems?.flatMap((item) => item.model_address && item.document === storedId
-      ? [{ address: item.model_address, reason: item.detail }] : []),
+    problem: revealedMember && revealedMember.document === storedId
+      ? { address: revealedMember.address, reason: reveal!.problem?.detail ?? reveal!.reason } : undefined,
+    problems: input.modelProblems?.flatMap((item) => {
+      const member = placeMember(item.place);
+      return member && member.document === storedId ? [{ address: member.address, reason: item.detail }] : [];
+    }),
     path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
     setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
     sections: input.drawerSections,

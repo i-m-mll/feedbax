@@ -39,9 +39,10 @@ for (const [id, value] of Object.entries(vocabulary.format)) verifyEntry(id, val
 const names = new Map<string, readonly number[]>([
   ['studioName', [0]], ['studioAccessibleName', [0]], ['studioFieldLabel', [0]],
   ['studioFieldValueLabel', []], ['studioFieldKindLabel', [1]], ['studioReplayLabel', []], ['studioRunStatus', [0]],
+  ['studioRunReason', []],
 ]);
 const vocabKeys = new Map<string, readonly number[]>([
-  ...names, ['studioUnit', [0]], ['studioFormat', [0]], ['studioReason', [0]],
+  ...names, ['studioUnit', [0]], ['studioFormat', [0]], ['studioFormatParts', [0]], ['studioReason', [0]],
   ['studioDefinitionStatus', [0]], ['studioCheckpointStatus', [0]],
 ]);
 const visibleText = /[\p{L}\p{N}]/u;

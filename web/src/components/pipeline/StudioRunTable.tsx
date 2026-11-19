@@ -2,7 +2,7 @@ import { appTip } from "@window-shell/browser/tooltip";
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioCollectionProgress, StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioName } from "@/components/activity/studioVocabulary";
+import { studioName, studioRunReason } from "@/components/activity/studioVocabulary";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
   selectionButton,
@@ -139,8 +139,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {items.map((item) => {
             const run = rows[item.index];
             const lit = selected.has(run.id);
-            const summary = run.openingReason ?? (run.status === "stale" || run.results.some(({ validity }) => validity.reasons?.length)
-              ? undefined : run.reason);
+            const reason = run.results.some(({ validity }) => validity.reasons?.length) ? undefined : run.reason;
             const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
               <RunContextMenu key={run.id} runs={[run]} menu={runMenu} trigger={<TableRow
@@ -185,7 +184,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                     {labels.get(sweep.id)?.get(run.values[sweep.id])}
                   </TableCell>
                 ))}
-                <TableCell tabIndex={-1} className={cellFocus} aria-description={summary} {...appTip(summary)}>
+                <TableCell tabIndex={-1} className={cellFocus} aria-description={studioRunReason({ ...run, reason })}
+                  {...appTip(studioRunReason({ ...run, reason }))}>
                   <StudioRunStatus status={run.state} />
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>

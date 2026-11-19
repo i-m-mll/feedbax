@@ -402,8 +402,7 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     key = RunKey("default", "baseline", "default")
     view = read_settled_project_plan(snapshot, jobs)
     row = next(row for row in view.status_rows() if row.key == key)
-    assert row.status == "cannot_run"
-    assert problem.path in row.reason
+    assert row.status == "cannot_run" and row.reason is None
     refused = jobs.admit_plan(folders, snapshot, run_keys=(train.key, key), token=token("unsupported")).items
     assert len(refused) == 2 and all(item.disposition == "rejected" for item in refused)
     assert not host.jobs(project=snapshot.project_id)

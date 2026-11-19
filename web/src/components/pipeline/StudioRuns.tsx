@@ -2,13 +2,13 @@ import { useMemo, useState, type ReactNode } from "react";
 import { StudioRegion, StudioRegionBoundary, useRegionPending, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import {
-  studioAccessibleName, studioCountOf, studioEnvironmentNotice, studioName, studioReason, studioRunStatus, studioValidityReason,
-  type StudioResultState, type StudioValidityRows,
+  studioAccessibleName, studioChangeDetail, studioCountOf, studioEnvironmentNotice, studioName, studioPlaceReason, studioProblemDetail,
+  studioReason, studioRunStatus, studioValidityReason, type StudioPlace, type StudioResultState, type StudioValidityRows,
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
 import { commandAttributes, type StudioCommand, type StudioCommandId } from "@/features/projectWindow/studioCommands";
 import type { PlanRunView, PlanStepView, PlanView } from "@/features/pipeline/planView";
-import { ProblemRow } from "@/features/projectWindow/StudioProblems";
+import { MentionRow } from "@/features/projectWindow/StudioProblems";
 import type { StudioProjectWindowMapProblem } from "@/generated/studioContracts";
 import {
   selectionButton,
@@ -193,24 +193,32 @@ function runName(step: PlanStepView, run: PlanRunView) {
   return values.length ? values.join(" · ") : run.label;
 }
 
-export function StudioRunDetails({ step, state, detail, problems, onRevealProblem }: Pick<RunSelectionProps, "step" | "state"> & {
+/** A reason a run names, which its row reveals. */
+export interface RunMention {
+  readonly place: StudioPlace | null;
+  readonly detail: string;
+  readonly problem?: StudioProjectWindowMapProblem;
+}
+
+export function StudioRunDetails({ step, state, detail, onReveal }: Pick<RunSelectionProps, "step" | "state"> & {
   detail?: ReactNode;
-  /** The project's problems that apply to a run. */
-  problems?: (run: PlanRunView) => readonly StudioProjectWindowMapProblem[];
-  onRevealProblem?: (problem: StudioProjectWindowMapProblem) => void;
+  onReveal?: (run: PlanRunView, mention: RunMention) => void;
 }) {
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
   if (!selected.length) return null;
   const single = selected.length === 1;
   const counts = new Map<StudioResultState, number>();
   const reasons = new Set<string>();
-  const shownProblems = new Map<string, StudioProjectWindowMapProblem>();
+  const mentions = new Map<string, { run: PlanRunView; mention: RunMention }>();
   const openingErrors = new Set(selected.flatMap((run) => run.openingErrors ?? []));
   const validity = new Map<string, { state: StudioResultState; rows: StudioValidityRows }>();
   for (const run of selected) {
     counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
-    const named = problems?.(run) ?? [];
-    for (const problem of named) shownProblems.set(JSON.stringify([problem.code, problem.path, problem.detail]), problem);
+    const named: RunMention[] = [
+      ...(run.problems ?? []).map((problem) => ({ place: problem.place, detail: studioProblemDetail(problem), problem })),
+      ...run.change ? [{ place: run.change.place, detail: studioChangeDetail(run.change) }] : [],
+    ];
+    for (const mention of named) mentions.set(studioPlaceReason(mention.place, mention.detail), { run, mention });
     if (run.reason && !named.length && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
     for (const { validity: { state, reasons: typed = [], environment } } of run.results) {
       const mark = state === "current" ? "succeeded" : state;
@@ -247,9 +255,10 @@ export function StudioRunDetails({ step, state, detail, problems, onRevealProble
     {single && detail ? detail : reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
       {[...reasons].map((reason) => <li key={reason}>{studioReason("observed", reason)}</li>)}
     </ul>}
-    {shownProblems.size > 0 && <ul aria-label={studioName("problems")} className="text-xs">
-      {[...shownProblems].map(([key, problem]) => <li key={key} className="break-words">
-        <ProblemRow problem={problem} onReveal={onRevealProblem && (() => onRevealProblem(problem))} />
+    {mentions.size > 0 && <ul className="text-xs"
+      aria-label={studioName([...mentions.values()].some(({ mention }) => mention.problem) ? "problems" : "changes")}>
+      {[...mentions].map(([key, { run, mention }]) => <li key={key} className="break-words">
+        <MentionRow place={mention.place} detail={mention.detail} onReveal={onReveal && (() => onReveal(run, mention))} />
       </li>)}
     </ul>}
     {openingErrors.size > 0 && <ul className="space-y-1 font-mono text-xs text-shell-muted">

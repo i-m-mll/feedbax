@@ -3072,14 +3072,15 @@ def _request_change(
     )
 
 
-def authored_request_change_path(
+def authored_request_change(
     key: RunKey | ElementKey, old: request_identity.DecodedRequest, new: request_identity.DecodedRequest,
-) -> str:
-    """Locate a canonical request change at its authored Plan address."""
+) -> tuple[str, tuple[str, ...]]:
+    """Locate a canonical request change at its authored Plan address, as text and as keys."""
     if old.kind != new.kind:
-        return key.payload_path(new.kind) if isinstance(key, ElementKey) else "payload"
-    path, _ = _authored_request_change(key, old, new)
-    return path
+        path = key.payload_path(new.kind) if isinstance(key, ElementKey) else "payload"
+        return path, tuple(path.split("."))
+    path, parts = _authored_request_change(key, old, new)
+    return path, parts or tuple(path.split("."))
 
 
 def _authored_request_change(

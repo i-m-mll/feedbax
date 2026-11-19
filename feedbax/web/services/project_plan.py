@@ -32,6 +32,7 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapException,
     StudioProjectWindowMapFigure,
     StudioProjectWindowMapInput,
+    StudioDefinitionChange,
     StudioProjectWindowMapProblem,
     StudioProjectWindowMapRow,
     StudioProjectWindowMapStep,
@@ -54,11 +55,12 @@ from feedbax.contracts.jobs import (
 from feedbax.contracts.project_inputs import (
     BatchCheckpoint, InputBinding, SelectedRow, StepReference, producer_member_key, subset_to_rows,
 )
+from feedbax.contracts.studio_place import StudioStepPlace, definition_place, path_parts
 from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
-    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedRun, RunKey, authored_request_change_path,
+    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedRun, RunKey, authored_request_change,
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
@@ -117,6 +119,7 @@ class LightHistory:
     reason: str | None
     result: StudioSavedLightResult | None
     previous: StudioSavedLightResult | None
+    changed: StudioDefinitionChange | None = None
 
 
 @dataclass(frozen=True)
@@ -173,7 +176,7 @@ class ProjectPlanRead:
             elif isinstance(row, PlannedRun):
                 yield _planned_status(row.key, label, row_problems)
             else:
-                reason = _problem_reasons(row_problems) or "No request could be planned."
+                reason = None if row_problems else "No request could be planned."
                 yield PlanStatusRow(row.key, label, JobStatus.CANNOT_RUN, reason)
 
     @classmethod
@@ -351,7 +354,7 @@ class ProjectPlanRead:
                         attempt.collection_progress for attempt in reversed(self.attempts_by_run.get(row.key, ()))
                         if attempt.status == JobStatus.COLLECTING
                     ), None),
-                    light=StudioSavedLightHistory(result=light.result, previous=light.previous)
+                    light=StudioSavedLightHistory(result=light.result, previous=light.previous, changed=light.changed)
                     if (light := self.light.get(row.key)) is not None else None,
                     evaluation_conditions=conditions.get(row.request_id) if isinstance(row, PlannedRun) else None,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
@@ -380,8 +383,7 @@ class ProjectPlanRead:
                 *(StudioProjectWindowMapProblem(
                     code="cannot_run", path=problem.path, detail=problem.detail,
                     variant=run.key.variant, step=run.key.step, row=run.key.row,
-                    document=run.document_ids.get("payload.trial_documents.model") or run.document_ids.get("payload.graph"),
-                    model_address=problem.model_address,
+                    place=definition_place(path_parts(problem.path), run.document_ids.get, member=problem.model_address),
                 ) for run in plan.runs
                   if includes(run.key.variant) and (problem := run.admission_problem) is not None),
                 *(problem for problem in self.evaluation_problems if includes(problem.variant)),
@@ -397,7 +399,7 @@ class ProjectPlanRead:
                     key=StudioSavedTrainKey.model_validate(element.key.run, from_attributes=True),
                     name=element.key.name, kind=element.kind, request_id=element.request_id,
                     status=statuses[element.key].status, reason=statuses[element.key].reason,
-                    **({"result": light.result, "previous": light.previous}
+                    **({"result": light.result, "previous": light.previous, "changed": light.changed}
                        if (light := self.light.get(element.key)) is not None else {}),
                     figure=StepReference(
                         step=element.key.run.step, row=element.key.run.row,
@@ -446,15 +448,11 @@ def _step_references(
                 yield f"{role}.{key}", reference
 
 
-def _problem_reasons(problems: Iterable[ProjectDiagnostic]) -> str | None:
-    return " | ".join(f"{problem.path}: {problem.detail}" for problem in problems) or None
-
-
 def _planned_status(
     key: RunKey | ElementKey, label: str, problems: list[ProjectDiagnostic],
 ) -> PlanStatusRow:
     status = JobStatus.CANNOT_RUN if problems else JobStatus.NOT_RUN
-    return PlanStatusRow(key, label, status, _problem_reasons(problems))
+    return PlanStatusRow(key, label, status, None)
 
 
 def _analysis_status(
@@ -758,20 +756,23 @@ def _light_history(
     )), None)
     if prior is None and len(successes) > 1:
         prior = successes[-2]
-    changed_path = None
+    changed = None
     if prior is not None and not attempts:
         assert prior.light_success is not None
         store = ImmutableArtifactBlobProvider(settled.store_path)
         request = prior.light_success.request
         old = SuccessView(store).read_request(request)
         new = decode_request(plan.requests[node.request_id], plan.documents.__getitem__)
-        changed_path = authored_request_change_path(key, old, new)
-    problem = node.admission_problem if isinstance(node, PlannedRun) else None
+        path, parts = authored_request_change(key, old, new)
+        changed = StudioDefinitionChange(path=path, place=definition_place(
+            parts, node.document_ids.get if isinstance(node, PlannedRun) else lambda _slot: None,
+            element=key.name if isinstance(key, ElementKey) else None,
+        ))
     status, reason = saved_request_status(
-        attempts, success=current, changed_path=changed_path,
-        problem=f"{problem.path}: {problem.detail}" if problem else None,
+        attempts, success=current, changed=changed is not None,
+        refused=isinstance(node, PlannedRun) and node.admission_problem is not None,
     )
-    return LightHistory(status, reason, _light_result(settled, current), _light_result(settled, prior))
+    return LightHistory(status, reason, _light_result(settled, current), _light_result(settled, prior), changed)
 
 
 def _light_result(settled: SettledProjectPlan, attempt: PlanJobAttempt | None) -> StudioSavedLightResult | None:
@@ -828,8 +829,9 @@ def _evaluation_row(
             raise CannotRun("/inputs/subject/checkpoint", "admitted Train catalogue omits requested batches")
     except CannotRun as error:
         problem = StudioProjectWindowMapProblem(
-            code="cannot_run", path=error.path, detail=str(error),
-            variant=key.variant, step=key.step, row=key.row, document=None,
+            code="cannot_run", path=error.path, detail=error.reason,
+            variant=key.variant, step=key.step, row=key.row,
+            place=definition_place(path_parts(error.path), run.document_ids.get),
         )
     attempts = jobs.by_request.get(run.request_id, ())
     success = next((attempt for attempt in reversed(attempts) if (
@@ -851,7 +853,7 @@ def _evaluation_row(
         success is not None and success.collected_evaluate
     )
     status, reason = saved_request_status(
-        attempts, success=success, problem=problem.detail if problem and not retained else None,
+        attempts, success=success, refused=problem is not None and not retained,
     )
     displayed_attempt = active_plan_attempt(attempts)
     if displayed_attempt is None and attempts:
@@ -914,8 +916,7 @@ def _train_history(
             change = changes[key]
         status, reason = saved_request_status(
             attempts, success=results[-1] if results else None,
-            problem=run.admission_problem.detail if run.admission_problem else None,
-            changed_path=change.path if change else None,
+            refused=run.admission_problem is not None, changed=change is not None,
         )
         history[run.key] = TrainRowHistory(status, reason, _result(current, by_attempt), older, change)
     return MappingProxyType(history)
@@ -983,7 +984,12 @@ def _definition_change(
         if old.id != previous.request_id:
             raise ValueError("Previous Train object has a different request ID")
     except (OSError, ValueError, KeyError):
-        return StudioSavedTrainChange(path="request_id", before=previous.request_id, after=run.request_id)
+        return StudioSavedTrainChange(
+            path="request_id", place=StudioStepPlace(part="step"), before=previous.request_id, after=run.request_id,
+        )
     new = decode_request(settled.plan.requests[run.request_id], settled.plan.documents.__getitem__)
     change = first_request_change(old, new)
-    return StudioSavedTrainChange(path=change.path, before=change.left, after=change.right)
+    return StudioSavedTrainChange(
+        path=change.path, place=definition_place(change.parts or path_parts(change.path), run.document_ids.get),
+        before=change.left, after=change.right,
+    )
