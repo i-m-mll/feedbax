@@ -38,6 +38,11 @@ export function studioFieldLabel(id: StudioNameId, label: string) {
   return studioFormat('fieldLabel', { label, name: studioName(id).toLowerCase() });
 }
 
+/** The accessible name of a chosen class's only parameter, drawn in its field's box under the field's label. */
+export function studioParameterLabel(field: string, parameter: string) {
+  return studioFormat('fieldLabel', { label: field, name: parameter });
+}
+
 export function studioFieldKindLabel(label: string, kind: FieldKind) {
   return studioFormat('fieldKind', { label, name: studioName('kind').toLowerCase(), value: studioName(kind) });
 }

@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import type { FieldKind } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
 import {
-  studioAccessibleName, studioFieldKindLabel, studioFieldLabel, studioName,
+  studioAccessibleName, studioFieldKindLabel, studioFieldLabel, studioName, studioParameterLabel,
 } from '@/components/activity/studioVocabulary';
 import { selectionButton } from '@/features/pipeline/selection';
 import { Button, IconButton } from '@/components/ui/Button';
@@ -210,7 +210,7 @@ function ClassValue({ model, parameter, labelId, picker }: {
     </> : undefined}>
       <ValueText model={named} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
         submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
-        end={picker} name={`${model.label} ${parameter.label}`} />
+        end={picker} parameterOf={[model.label, parameter.label]} />
     </FieldRow>
     {(named.members || named.canList) && <div className="value-field-parts grid gap-1">
       {named.members && <Members model={named} />}
@@ -220,13 +220,13 @@ function ClassValue({ model, parameter, labelId, picker }: {
   </section>;
 }
 
-function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, end, name }: {
+function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, end, parameterOf }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
   chooseKind(kind: FieldKind, focusText: () => void): void;
   end?: ReactNode;
-  /** The input's accessible name, when not the field's label. */
-  name?: string;
+  /** The field and parameter whose names make the input's accessible name, for a chosen class's only parameter. */
+  parameterOf?: readonly [field: string, parameter: string];
 }) {
   const { label, kind } = model;
   const input = useRef<HTMLInputElement>(null);
@@ -297,7 +297,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
     aria-label={studioFieldLabel('selectedValue', label)}>◆</output> : undefined;
   return <>
     <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={differs} end={end} className="min-w-0"
-      aria-label={name} size={end ? Math.max(6, text.length + 1) : undefined}
+      aria-label={parameterOf ? studioParameterLabel(...parameterOf) : undefined} size={end ? Math.max(6, text.length + 1) : undefined}
       placeholder={model.text === null && draft === undefined ? studioName('mixed') : undefined}
       readOnly={readOnly || model.type.kind === 'readOnly'} invalid={invalid}
       aria-describedby={describedBy}
