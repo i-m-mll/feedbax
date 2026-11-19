@@ -11,7 +11,6 @@ from feedbax.contracts.expression_values import (
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import SetProjectValue
 from feedbax.contracts.project_plan import PlannedRow
-from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_LIMIT, ListedAxis, NamedAxis, RangeAxis, RangeValues, SampledAxis, SampleValues,
     sweep_value_identity_bytes,
