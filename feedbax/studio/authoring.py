@@ -23,6 +23,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import (
     DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
 )
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_plan import ProjectPlan, RunKey
 from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step
@@ -45,6 +46,7 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringRegistry,
     StudioAuthoringSource,
     StudioAuthoringSurface,
+    StudioSweptParameterMissing,
 )
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
@@ -530,6 +532,44 @@ def _schema_node(schema: dict, node: dict, value: JsonValue) -> dict:
     return node
 
 
+def _settings_node(schema: dict, settings: JsonValue, path: _Path) -> dict:
+    """The schema that governs the value at ``path`` below the settings."""
+    node, value = _schema_node(schema, schema, settings), settings
+    for name in path:
+        value = value.get(name) if isinstance(value, dict) else None
+        node = _schema_node(schema, node.get("properties", {}).get(name, {}), value)
+    return node
+
+
+def swept_parameter_missing(
+    sweep: Sweep | None, schema: dict, settings: JsonValue, path: _Path, value: JsonValue,
+) -> StudioSweptParameterMissing | None:
+    """The first parameter ``sweep`` writes below ``path`` that ``value``, written there in ``settings``, lacks.
+
+    ``path`` starts at the step (``settings``, ...). The class is named as ``value`` has it, the parameter as the
+    class it replaces has it.
+    """
+    if sweep is None or path[:1] != ("settings",):
+        return None
+    after = _set_in(settings, path[1:], value)
+    for swept in sorted(sweep_paths(sweep)):
+        parts = tuple(swept.split("."))
+        if len(parts) <= len(path) or parts[:len(path)] != path:
+            continue
+        record = value
+        for depth in range(len(path), len(parts)):
+            name = parts[depth]
+            if not isinstance(record, dict) or name not in record:
+                owner = parts[1:depth]
+                held = _settings_node(schema, settings, owner).get("properties", {}).get(name, {})
+                return StudioSweptParameterMissing(
+                    class_label=_title(_settings_node(schema, after, owner), parts[depth - 1]),
+                    parameter_label=_title(held, name),
+                )
+            record = record[name]
+    return None
+
+
 def _set_in(value: JsonValue, path: _Path, leaf: JsonValue) -> JsonValue:
     if not path:
         return leaf
@@ -544,8 +584,11 @@ def project_train_fields(
     change: StudioAuthoringChange | None,
     *,
     read_plan: _ReadPlan | None = None,
-) -> tuple[list[StudioAuthoringField], dict[str, JsonValue] | None, list[SetProjectValue], list[str]]:
-    """Project the Train step's declared fields and authored settings, and plan one atomic, step-local edit."""
+) -> tuple[
+    list[StudioAuthoringField], dict[str, JsonValue] | None, list[SetProjectValue] | StudioSweptParameterMissing, list[str],
+]:
+    """Project the Train step's declared fields and authored settings, and plan one atomic, step-local edit, or the
+    reason the step's sweep refuses it."""
     definition = _TrainFields(project, step_id, registry)
     definition.training(read_plan)
     if definition.step.sweep is not None:
@@ -560,7 +603,7 @@ def project_train_fields(
                 field.view.control = None
 
     settings = definition.payload.get("settings")
-    patches = []
+    patches: list[SetProjectValue] | StudioSweptParameterMissing = []
     documents: set[str] = set()
     if change is not None:
         field = definition.fields.get(change.field)
@@ -584,7 +627,8 @@ def project_train_fields(
                     for patch in patches
                     if (ref := _read(DocumentReference, patch.value)) is not None
                 )
-        patches = definition.authored_edits(change.field, patches)
+        if not isinstance(patches, StudioSweptParameterMissing):
+            patches = definition.authored_edits(change.field, patches)
     return (
         [field.view for field in definition.fields.values()],
         settings if isinstance(settings, dict) else None,
@@ -593,8 +637,11 @@ def project_train_fields(
     )
 
 
-def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> list[SetProjectValue]:
-    """Write one value under ``/settings`` when the method's settings model accepts the result."""
+def _settings_edit(
+    definition: _TrainFields, change: StudioAuthoringChange,
+) -> list[SetProjectValue] | StudioSweptParameterMissing:
+    """Write one value under ``/settings`` when the method's settings model accepts the result and the step's sweep
+    still finds every parameter it writes."""
     path = json_pointer_parts(change.field)
     settings = definition.payload.get("settings")
     if not path or path[0] != "settings" or len(path) < 2 or definition.method is None or not isinstance(settings, dict):
@@ -613,7 +660,10 @@ def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> l
     except ValidationError as error:
         location = ".".join(str(part) for part in error.errors()[0]["loc"]) or path[-1]
         raise ValueError(f"{location}: {error.errors()[0]['msg']}") from error
-    return [definition.set(tuple(path), change.value)]
+    missing = swept_parameter_missing(
+        definition.step.sweep, definition.method.settings_model.model_json_schema(), settings, tuple(path), change.value,
+    )
+    return missing or [definition.set(tuple(path), change.value)]
 
 
 def project_training_numeric_fields(

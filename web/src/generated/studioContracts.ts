@@ -3877,6 +3877,11 @@ export type StudioSubsetToRowsRequest = {
   "attempts": Array<string>;
 };
 
+export type StudioSweptParameterMissing = {
+  "class_label": string;
+  "parameter_label": string;
+};
+
 export type StudioTaskChoice = {
   "document": string;
   "problems": Array<Problem>;
@@ -3902,6 +3907,7 @@ export type StudioTrainAuthoring = {
   "settings": Record<string, JsonValue> | null;
   "patches": Array<ProjectValueEdit>;
   "documents": Array<string>;
+  "refusal"?: StudioSweptParameterMissing | null;
 };
 
 export type StudioTrainAuthoringRequest = {
@@ -10457,6 +10463,13 @@ export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsReques
   }).strict()
 ) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
 
+export const StudioSweptParameterMissingSchema: z.ZodType<StudioSweptParameterMissing> = z.lazy(() =>
+  z.object({
+    "class_label": z.string().min(1),
+    "parameter_label": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioSweptParameterMissing>;
+
 export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -10489,6 +10502,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "settings": z.union([z.record(z.string(), jsonValueSchema), z.null()]),
     "patches": z.array(ProjectValueEditSchema),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
+    "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoring>;
 

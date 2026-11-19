@@ -5,7 +5,7 @@ import { StudioRegion, studioReadState } from '@/components/activity/StudioRegio
 import {
   catalogEntries, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
 } from '@/api/studioAuthoring';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioName, studioSweptParameterMissing } from '@/components/activity/studioVocabulary';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { MenuItem } from '@/components/ui/Menu';
@@ -222,6 +222,7 @@ export function StudioTrainAuthoringForm(props: Props) {
       const recipe = await readStudioTrainAuthoring(projectId, stepId, { revision, change }, editor.signal);
       const latest = editor.getSnapshot();
       if (latest.saved.revision !== revision || latest.pending || latest.outside) throw new ProjectEditConflictError();
+      if (recipe.refusal) return studioSweptParameterMissing(recipe.refusal);
       if (!recipe.patches.length) return undefined;
       const address = { kind: 'step', id: stepId } as const;
       editor.edit(address, label, recipe.patches, validateRecipe(latest.saved.project, address, recipe.documents));

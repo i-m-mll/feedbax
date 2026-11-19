@@ -82,6 +82,27 @@ function constOf(member: Schema, name: string) {
   return fixed(isRecord(member.properties) ? member.properties[name] ?? null : null) ?? null;
 }
 
+/** Whether the schema describes the value: by its type, or for a union of classes, by its class. */
+function fits(schema: JsonValue, value: JsonValue, root: JsonValue): boolean {
+  const resolved = resolve(schema, root, true);
+  const union = Array.isArray(resolved.anyOf) ? resolved.anyOf : Array.isArray(resolved.oneOf) ? resolved.oneOf : undefined;
+  if (value === null) return !!union?.some((member) => isRecord(member) && member.type === 'null');
+  const classes = unionOf(resolved, root);
+  if (!classes) return accepts(resolved, value);
+  const { members, name } = classes;
+  return name !== undefined && isRecord(value)
+    ? members.some((member) => constOf(member, name) === value[name])
+    : members.some((member) => fits(member, value, root));
+}
+
+/** The class's value when it replaces `current`: each parameter it shares with `current` kept, its defaults for the rest. */
+function replacing(member: Schema, name: string, current: JsonValue, root: JsonValue): Record<string, JsonValue> {
+  const properties = isRecord(member.properties) ? member.properties : {};
+  const kept = isRecord(current) ? Object.entries(current)
+    .filter(([key, value]) => key !== name && key in properties && fits(properties[key], value, root)) : [];
+  return { ...defaults(member, root), ...Object.fromEntries(kept), [name]: constOf(member, name) };
+}
+
 /** A class's value before it is edited: each declared default, a nested object's own defaults. */
 function defaults(member: Schema, root: JsonValue): Record<string, JsonValue> {
   return Object.fromEntries(Object.entries(isRecord(member.properties) ? member.properties : {}).flatMap(([name, property]) => {
@@ -181,7 +202,7 @@ function classField(label: string, id: string, name: string, members: readonly S
     id, label, origin, value: chosen ? constOf(chosen, name) : null, type: { kind: 'class', options }, parts,
     change: change && ((next) => {
       const member = members.find((candidate) => constOf(candidate, name) === next);
-      return member && change({ ...defaults(member, context.root), [name]: next });
+      return member && change(replacing(member, name, current, context.root));
     }),
   });
 }
