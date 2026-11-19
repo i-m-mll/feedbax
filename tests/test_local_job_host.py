@@ -1122,17 +1122,23 @@ def test_shutdown_ends_the_host_with_its_live_jobs_and_workers(tmp_path, private
     assert job_row(HostClient(root), job.id)["outcome"]["error"]["code"] == "service_stopped"
 
 
-def test_shutdown_raises_for_a_host_that_does_not_answer(private_hosts):
-    client = HostClient(private_hosts / "host")
-    pid = client.ping()["pid"]
-    os.kill(pid, signal.SIGSTOP)
-    try:
-        with pytest.raises(HostError) as unanswered:
-            client.shutdown(timeout=0.5)
-        assert unanswered.value.code == "disconnected"
-    finally:
-        os.kill(pid, signal.SIGCONT)
-    assert client.ping()["pid"] == pid
+def test_shutdown_raises_for_a_host_that_does_not_answer(tmp_path):
+    import socket
+
+    client = HostClient(tmp_path / "root")
+    assert client.shutdown() == {"status": "absent"}
+    # A process listening at the Host's address that closes each connection unanswered.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(client.address))
+        try:
+            listener.listen()
+            with ThreadPoolExecutor(1) as pool:
+                pool.submit(lambda: listener.accept()[0].close())
+                with pytest.raises(HostError) as unanswered:
+                    HostClient(client.root).shutdown()
+        finally:
+            client.address.unlink()
+    assert unanswered.value.code == "disconnected"
 
 
 @pytest.mark.parametrize("removal", ["rename", "delete"])

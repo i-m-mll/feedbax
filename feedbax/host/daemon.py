@@ -116,7 +116,6 @@ class Host:
         self.retiring: set[str] = set()
         self.retiring_groups: dict[str | None, dict[int, str]] = {}
         self.exiting = False
-        self.shutdown_mode: str | None = None
         self.shutdown_acknowledged = False
         self.force_started: dict[str, float] = {}
         self.identity_errors: set[str] = set()
@@ -269,14 +268,18 @@ class Host:
             raise HostError("runtime_owner", "The installed interpreter's Host has no matching release owner.")
         return self._retire(runtime, mode, owned=owned)
 
-    def _shutdown(self, mode: str) -> dict:
+    async def _shutdown(self, mode: str) -> dict:
+        """End the whole Host's jobs and workers, then reply; the Host exits once the reply is delivered."""
         if mode not in SHUTDOWN_MODES:
             raise HostError("invalid_request", f"Unknown shutdown mode: {mode}")
-        result = self._retire(None, mode, owned=True)
+        jobs = None
+        while (result := self._retire(None, mode, owned=True))["status"] == "settling":
+            jobs = jobs or result["jobs"]
+            self.wake.set()
+            await asyncio.sleep(POLL_SECONDS)
         if result["status"] == "deferred":
             return result
-        self.shutdown_mode = mode
-        return result | {"pid": os.getpid()}
+        return result | {"jobs": jobs or [], "pid": os.getpid()}
 
     def _retire(self, runtime: str | None, mode: str, *, owned: bool) -> dict:
         """Take one step toward ending the jobs and workers of `runtime`, or of the whole Host when it is None.
@@ -811,8 +814,6 @@ class Host:
                 return
             try:
                 self._tick(recovering=recovering)
-                if self.shutdown_mode is not None and self._retire(None, self.shutdown_mode, owned=True)["status"] == "exiting":
-                    self.shutdown_acknowledged = True
             except sqlite3.OperationalError as error:
                 if error.sqlite_errorcode != sqlite3.SQLITE_FULL or not self.reserve.exists():
                     raise
@@ -950,9 +951,7 @@ class Host:
                 self.wake.set()
                 return result
             case "shutdown":
-                result = self._shutdown(**message)
-                self.wake.set()
-                return result
+                return await self._shutdown(**message)
             case "ping":
                 identity = {} if self.stream_id is None else {"stream_id": self.stream_id}
                 return {"version": VERSION, "pid": os.getpid(), **identity}
