@@ -1029,12 +1029,12 @@ export interface ModelFieldRequest {
   run?: StudioSavedTrainKey | null;
   rows?: string[];
   axes?: Record<string, string[]>;
+  lit_steps?: string[];
   revision: string;
   document: string;
   owner: ModelAddress;
   evaluate_scope?: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
   address?: ModelAddress | null;
-  lit_steps?: string[];
   edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
 }
 
@@ -1143,6 +1143,7 @@ export interface TrainFieldRequest {
   run?: StudioSavedTrainKey | null;
   rows?: string[];
   axes?: Record<string, string[]>;
+  lit_steps?: string[];
   revision: string;
   field?: string | null;
   edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
@@ -3916,6 +3917,7 @@ export type StudioTrainAuthoringRequest = {
   "run"?: StudioSavedTrainKey | null;
   "rows"?: Array<string>;
   "axes"?: Record<string, Array<string>>;
+  "lit_steps"?: Array<string>;
   "revision": Sha256;
   "change"?: StudioAuthoringChange | null;
 };
@@ -3962,6 +3964,7 @@ export type StudioTrialAuthoring = {
   "fields": Array<StudioTrialField>;
   "problems": Array<Problem>;
   "files": Array<StudioProjectFilePatch>;
+  "refusal"?: StudioSweptParameterMissing | null;
 };
 
 export type StudioTrialAuthoringRequest = {
@@ -4018,7 +4021,7 @@ export type StudioTrialReset = {
 
 export type StudioTrialSelectDocument = {
   "kind": "select_document";
-  "role": "model" | "task" | "objective";
+  "role": "model" | "task" | "objective" | "training";
   "document": string;
 };
 
@@ -6033,12 +6036,12 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "rows": z.array(z.string()).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+      "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "owner": ModelAddressSchema,
       "evaluate_scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]).nullable().optional(),
       "address": ModelAddressSchema.nullable().optional(),
-      "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
     })
     .strict()
@@ -6195,6 +6198,7 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "rows": z.array(z.string()).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+      "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "field": z.string().nullable().optional(),
       "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
@@ -10525,6 +10529,7 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
     "run": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
     "rows": z.array(z.string()).optional(),
     "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "revision": Sha256Schema,
     "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
   }).strict()
@@ -10577,6 +10582,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "fields": z.array(StudioTrialFieldSchema),
     "problems": z.array(ProblemSchema),
     "files": z.array(StudioProjectFilePatchSchema),
+    "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoring>;
 
@@ -10651,7 +10657,7 @@ export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
 export const StudioTrialSelectDocumentSchema: z.ZodType<StudioTrialSelectDocument> = z.lazy(() =>
   z.object({
     "kind": z.literal("select_document"),
-    "role": z.union([z.literal("model"), z.literal("task"), z.literal("objective")]),
+    "role": z.union([z.literal("model"), z.literal("task"), z.literal("objective"), z.literal("training")]),
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialSelectDocument>;

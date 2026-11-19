@@ -309,7 +309,7 @@ def model_fields(
                 code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
             )])
         write = OverridePatch(op="replace", path=axis.target.patch_path, value=result)
-        return ModelFieldResponse(files=[scoped_file(project, body.run.step, scope, [write])])
+        return ModelFieldResponse(files=scoped_file(project, body.run.step, scope, [write]))
     value = result
     if isinstance(result, LiteralValue):
         if field.address.element.parent.kind == "attachment":
