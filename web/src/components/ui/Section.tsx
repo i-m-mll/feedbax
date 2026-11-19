@@ -19,6 +19,8 @@ export interface SectionProps {
   actions?: ReactNode;
   /** Drawn under the header and above the body, outside the body's scrolling, as a search field. */
   lead?: ReactNode;
+  /** Drawn under the header whether or not the section is open: a field group's own control, as a class's picker. */
+  control?: ReactNode;
   open?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -34,7 +36,7 @@ const header: Record<SectionLevel, string> = {
 };
 
 export function Section({
-  name, nameId, level = 'drawer', actions, lead, open: controlled, defaultOpen = true, onOpenChange, children, className, bodyClassName,
+  name, nameId, level = 'drawer', actions, lead, control, open: controlled, defaultOpen = true, onOpenChange, children, className, bodyClassName,
 }: SectionProps) {
   const [uncontrolled, setUncontrolled] = useState(defaultOpen);
   const open = controlled ?? uncontrolled;
@@ -75,6 +77,7 @@ export function Section({
         </button>
         {actions ? <div className="flex shrink-0 items-center gap-0.5">{actions}</div> : null}
       </div>
+      {control}
       {lead && open ? <div className="shrink-0">{lead}</div> : null}
       {level === 'drawer'
         ? <ScrollFade id={body} hidden={!open} data-section-body className="flex-none">{content}</ScrollFade>

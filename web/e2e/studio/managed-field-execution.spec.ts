@@ -27,7 +27,7 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
-  const rate = training.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  const rate = training.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await expect(rate).toHaveValue('0.001');
   await enter(rate, 'geomspace(0.001, 0.004, 2)');
   await expect.poll(async () => (await save()).project.steps?.train.sweep?.axes?.['learning-rate']).toMatchObject({

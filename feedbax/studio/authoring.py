@@ -221,6 +221,7 @@ class _Field:
     view: StudioAuthoringField
     write: Callable[[_Scalar], list[SetProjectValue]]
     documents: tuple[str, ...]
+    name: _Path
 
 
 def _read[Model: BaseModel](model: type[Model], value: Any) -> Model | None:
@@ -325,6 +326,7 @@ class _TrainFields:
         *,
         source: ValueSource | None = None,
         documents: tuple[str, ...] = (),
+        name: _Path | None = None,
     ) -> None:
         field_id = pointer(path)
         self.fields[field_id] = _Field(
@@ -337,6 +339,7 @@ class _TrainFields:
             ),
             write,
             documents,
+            name or path[-1:],
         )
 
     def named_documents(self, field: str) -> tuple[str, ...]:
@@ -474,7 +477,7 @@ class _TrainFields:
         schema = registration.settings_model.model_json_schema()
 
         def fields(
-            path: _Path, values: dict, shape: dict, anchor: tuple[_Path, dict] | None, title: str | None,
+            path: _Path, values: dict, shape: dict, anchor: tuple[_Path, dict] | None, owner: tuple[str, bool] | None,
         ) -> None:
             for name, declared in shape.get("properties", {}).items():
                 site = (*path, name)
@@ -483,10 +486,11 @@ class _TrainFields:
                 props = _schema_node(schema, declared, leaf)
                 inner = anchor if present or anchor is not None else (site, leaf)
                 if isinstance(leaf, dict):
-                    # A class with one parameter reads as the parameter that holds it: a constant rate is the rate.
+                    # A chosen class's parameter is named by the field holding the class, and by its own
+                    # name only when the class has several.
                     tag = declared.get("discriminator", {}).get("propertyName")
                     single = tag is not None and len(set(props.get("properties", {})) - {tag}) == 1
-                    fields(site, leaf, props, inner, declared.get("title") if single else None)
+                    fields(site, leaf, props, inner, (name, single) if tag is not None else None)
                 elif type(leaf) in (int, float) and props.get("type") in ("number", "integer"):
                     def write(value: _Scalar, site=site, inner=inner) -> list[SetProjectValue]:
                         if inner is None:
@@ -495,12 +499,13 @@ class _TrainFields:
                         return [self.set(root, _set_in(default, site[len(root):], value))]
 
                     self.field(
-                        site, title or props.get("title", name.replace("_", " ").title()), leaf,
+                        site, props.get("title", name.replace("_", " ").title()), leaf,
                         StudioAuthoringNumber(
                             kind="number", min=props.get("minimum"), max=props.get("maximum"),
                             step=1 if props.get("type") == "integer" else None,
                         ),
                         write,
+                        name=None if owner is None else (owner[0],) if owner[1] else (owner[0], name),
                     )
 
         fields(("settings",), raw, schema, None, None)
@@ -636,7 +641,7 @@ def project_training_numeric_fields(
             continue
         path = json_pointer_parts(field_id)
         target = SweepTarget.from_field(view.value, view.control, field.write) if not definition.linked else None
-        axis = FieldSweeps(definition.step, target, view.label, integer=view.control.step == 1) if target is not None else None
+        axis = FieldSweeps(definition.step, target, view.label, field.name, integer=view.control.step == 1) if target is not None else None
         numeric = NumericField(
             path, view.label, view.value,
             Site(expected=ValueType(base=ValueBase.INTEGER if view.control.step == 1 else ValueBase.REAL),

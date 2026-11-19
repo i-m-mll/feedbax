@@ -100,10 +100,13 @@ def paths_match(paths: set[str], other: set[str]) -> bool:
 
 
 class FieldSweeps:
-    def __init__(self, step: Step, target: SweepTarget, label: str, *, integer: bool):
+    """The sweeps over one field; a new axis is named by ``name``, the path segments that identify the field."""
+
+    def __init__(self, step: Step, target: SweepTarget, label: str, name: tuple[str, ...], *, integer: bool):
         self.step = step
         self.target = target
         self.label = label
+        self.name = re.sub(r"[^a-z0-9]+", "-", "-".join(name).lower()).strip("-") or "value"
         self.paths = set(target.entry(target.value).patches)
         self.integer = integer
         self.axes = step.sweep.axes if step.sweep else {}
@@ -185,8 +188,7 @@ class FieldSweeps:
 
     def write_axis(self, axis: Axis) -> list[SetProjectValue]:
         if self.can_sweep:
-            base = re.sub(r"[^a-z0-9]+", "-", self.label.lower()).strip("-") or "value"
-            name = self._fresh_id(base, self.axes)
+            name = self._fresh_id(self.name, self.axes)
             write = self._axis_write(name, axis)
             if self.step.sweep is None:
                 return [SetProjectValue(

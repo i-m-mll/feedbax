@@ -64,14 +64,14 @@ const tag = (value: string) => ({ const: value, default: value, type: 'string' }
 
 /**
  * A method's settings as pydantic emits them: a vector, an optional number, and an optimizer that is a tagged union of
- * classes whose learning rate is itself one.
+ * classes with zero, two and three parameters, whose learning rate is itself a union of classes with one and three.
  */
 const settingsSchema: JsonValue = {
   type: 'object',
   properties: {
     n_reaches: { type: 'integer', title: 'Reaches', default: 8 },
     workspace: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number' }, default: [0.2, 0.3] },
-    optimizer: { title: 'Optimizer', ...tagged('Adam', 'SGD') },
+    optimizer: { title: 'Optimizer', ...tagged('Adam', 'SGD', 'SignSGD') },
     grad_clip: { anyOf: [{ type: 'number' }, { type: 'null' }], default: 1, title: 'Grad Clip' },
   },
   $defs: {
@@ -86,13 +86,15 @@ const settingsSchema: JsonValue = {
       learning_rate: { title: 'Learning Rate', ...tagged('Constant', 'Cosine'), default: { type: 'constant', value: 0.01 } },
       momentum: { title: 'Momentum', anyOf: [{ type: 'number' }, { type: 'null' }], default: null },
     } },
+    SignSGD: { title: 'Sign SGD', type: 'object', properties: { type: tag('signsgd') } },
     Constant: { title: 'Constant', type: 'object', properties: {
       type: tag('constant'), value: { title: 'Value', type: 'number', default: 0.001 },
     } },
-    Cosine: { title: 'Cosine Decay', type: 'object', properties: {
+    Cosine: { title: 'Warmup Cosine Decay', type: 'object', properties: {
       type: tag('cosine'),
       init_value: { title: 'Init Value', type: 'number', default: 0.001 },
       decay_steps: { title: 'Decay Steps', type: 'integer', default: 1000 },
+      alpha: { title: 'Alpha', type: 'number', default: 0 },
     } },
   },
 };
@@ -119,7 +121,7 @@ export function ValueFieldGallery() {
   const decay = useProjected('Decay', 'learning_rate / 10', ['value', 'sweep', 'formula']);
   const raw = useRaw(Object.fromEntries(params.map(({ name, default: value }) => [name, value as JsonValue])));
   const settings = useHistory({
-    optimizer: { type: 'adam', learning_rate: { type: 'cosine', init_value: 0.003, decay_steps: 500 }, b1: 0.9, b2: 0.999 },
+    optimizer: { type: 'adam', learning_rate: { type: 'constant', value: 0.003 }, b1: 0.9, b2: 0.999 },
   });
   const rangeField: StudioFieldView = {
     label: 'Clip', text: 'geomspace(0.1, 10, 3)', site: site(['value', 'sweep', 'formula']),
