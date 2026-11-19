@@ -274,6 +274,16 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
         assert _folder_state(root) == original
 
 
+def test_an_invalid_training_setting_keeps_every_training_field_in_place():
+    registry = new_application_registry_bundle().training_methods
+    raw = managed_train_project(batches=25).model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["batch_size"] = -3
+    fields, _, _, _ = project_train_fields(Project.model_validate(raw), "train", registry, None)
+    values = {field.id: field.value for field in fields}
+    assert values["/training_config/batch_size"] == -3
+    assert values["/training_config/n_batches"] == 25
+
+
 def test_initial_training_settings_retain_the_authored_method_rate_and_batch_count():
     registry = new_application_registry_bundle().training_methods
     project = managed_train_project(batches=25)

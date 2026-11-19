@@ -454,19 +454,19 @@ class _TrainFields:
             lambda value: [self.set(("seed",), value)],
         )
         raw = self.payload.get("training_config")
-        config = _read(DocumentTrainingConfig, raw)
-        if config is not None or raw is None:
-            defaults = DocumentTrainingConfig(batch_size=_GRAPH_BATCH_SIZE)
+        if raw is None or isinstance(raw, dict):
+            # An invalid value is still drawn in its field, so the problem that names it has a place to go.
+            defaults = DocumentTrainingConfig(batch_size=_GRAPH_BATCH_SIZE).model_dump(mode="json")
             for name, schema in DocumentTrainingConfig.model_json_schema()["properties"].items():
                 path = ("training_config", name)
 
                 def write(value: _Scalar, *, name=name, path=path) -> list[SetProjectValue]:
-                    if config is not None:
+                    if raw is not None:
                         return [self.set(path, value)]
-                    return [self.set(("training_config",), defaults.model_dump(mode="json") | {name: value})]
+                    return [self.set(("training_config",), defaults | {name: value})]
 
                 self.field(
-                    path, schema["title"], getattr(config or defaults, name),
+                    path, schema["title"], (raw or defaults).get(name, defaults[name]),
                     StudioAuthoringNumber(kind="number", min=1, step=1), write,
                 )
         if registration is None:
