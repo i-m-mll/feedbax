@@ -87,14 +87,14 @@ def seed(home: str, project_id: str):
 
 
 def seed_step_rename(home: str, project_id: str):
-    """Train, an Evaluate reading it, a Train-scoped project sweep target, a group and a folded sweep."""
+    """Train, an Evaluate reading it, a Train-scoped project sweep target, a group and an arranged sweep order."""
     raw = _evaluation_project()
     raw["steps"] = {name: raw["steps"][name] for name in ("train", "baseline")}
     raw["steps"]["train"]["group"] = "fitting"
     raw["sweep"] = {"axes": {"mass": {"values": {
         "nominal": {"value": 1, "patches": {"steps.train." + _MASS: {"value": 1}}},
     }}}}
-    return _seed(home, project_id, raw, {"steps": {"train": {"sweep_order": ["mass"], "folded_sweep_id": "mass"}}})
+    return _seed(home, project_id, raw, {"steps": {"train": {"sweep_order": ["mass"]}}})
 
 
 def walkthrough_files(batches: str | None = None):

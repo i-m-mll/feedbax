@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, ChevronRight, Plus } from 'lucide-react';
+import { ChevronRight, Plus } from 'lucide-react';
 import { ReactFlowProvider, ViewportPortal, useReactFlow } from '@xyflow/react';
 import {
   memo,
@@ -8,7 +8,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -48,14 +47,9 @@ import {
   type PipelineSelectionState,
   type RunSetsByStep,
 } from '@/features/pipeline/selection';
-import {
-  MapSweepValue,
-  PipelineRunMarks,
-  type ApplyMapSelection,
-} from './PipelineRunMarks';
+import { PipelineRunMarks, type ApplyMapSelection } from './PipelineRunMarks';
 import type { RunMenu } from './RunContextMenu';
 import {
-  foldedMapSweep,
   compactMapCardWidth,
   focusedMapEdgePairs,
   fullMapFits,
@@ -256,121 +250,6 @@ function cardStatus(counts: PlanStepView['statusCounts']): CardStatus | undefine
   return states.length && states.every((state) => state === 'succeeded') ? 'success' : undefined;
 }
 
-export function bindSweepFold(
-  stepId: string, sweep: PlanSweepView, folded: boolean, presentation: PipelineCardPresentation,
-  save: NonNullable<StudioPipelineMapProps['onPresentationChange']>,
-) {
-  return bindStudioCommand(folded ? 'unfold' : 'fold',
-    () => save(stepId, { ...presentation, foldedSweepId: folded ? null : sweep.id }), { subject: sweep.label });
-}
-
-function FoldSweep({ command }: { command: StudioCommand }) {
-  return <Button size="mark" {...commandAttributes(command)} onClick={command.invoke}>
-    {studioName(command.name)}
-  </Button>;
-}
-
-function StepShape({
-  step,
-  sweeps,
-  folded,
-  selection,
-  presentation,
-  applySelection,
-  onPresentationChange,
-}: {
-  step: PlanStepView;
-  sweeps: readonly PlanSweepView[];
-  folded?: PlanSweepView;
-  selection: PipelineSelection | null;
-  presentation: PipelineCardPresentation;
-  applySelection: ApplyMapSelection;
-  onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
-}) {
-  const dragging = useRef<string | null>(null);
-  const [openSweep, setOpenSweep] = useState<string | null>(null);
-
-  function moveSweep(from: number, to: number) {
-    if (!onPresentationChange || from === to || from < 0 || to < 0 || to >= sweeps.length) return;
-    const order = sweeps.map(({ id }) => id);
-    const [moved] = order.splice(from, 1);
-    order.splice(to, 0, moved);
-    onPresentationChange(step.id, { ...presentation, sweepOrder: order });
-  }
-
-  function dropSweep(event: DragEvent, index: number) {
-    if (!dragging.current) return;
-    event.preventDefault();
-    moveSweep(sweeps.findIndex(({ id }) => id === dragging.current), index);
-    dragging.current = null;
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-1 text-xs text-shell-muted">
-      {sweeps.map((sweep, index) => {
-        const isFolded = sweep.id === folded?.id;
-        const label = `${sweep.label} ${sweep.values.length}`;
-        return (
-          <div key={sweep.id} className="inline-flex items-center gap-1">
-            {index > 0 && <span aria-hidden="true">×</span>}
-            <div className="relative">
-              <Button
-                variant="ghost"
-                size="mark"
-                className="aria-expanded:bg-shell-selected"
-                aria-label={studioAccessibleName('sweep', label)}
-                aria-expanded={openSweep === sweep.id}
-                draggable={Boolean(onPresentationChange)}
-                onClick={() => setOpenSweep((open) => open === sweep.id ? null : sweep.id)}
-                onDragStart={(event) => {
-                  dragging.current = sweep.id;
-                  event.dataTransfer.effectAllowed = 'move';
-                  event.dataTransfer.setData('text/plain', sweep.id);
-                }}
-                onDragEnd={() => { dragging.current = null; }}
-                onDragOver={(event) => {
-                  if (dragging.current) event.preventDefault();
-                }}
-                onDrop={(event) => dropSweep(event, index)}
-              >
-                {isFolded ? `(${label})` : label}
-              </Button>
-              {openSweep === sweep.id && (
-                <div className="absolute left-0 top-full z-20 w-max max-w-56 rounded-md border border-shell-divider bg-shell-surface p-2 shadow-md">
-                  <ul className="nowheel max-h-36 space-y-0.5 overflow-y-auto">
-                    {sweep.values.map((value) => (
-                      <li key={value.id}>
-                        <MapSweepValue
-                          sweep={sweep}
-                          value={value}
-                          stepId={step.id}
-                          selection={selection}
-                          applySelection={applySelection}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                  {onPresentationChange && (
-                    <div className="mt-2 flex items-center gap-1 border-t border-shell-divider pt-1">
-                      <FoldSweep command={bindSweepFold(step.id, sweep, isFolded, presentation, onPresentationChange)} />
-                      <IconButton variant="default" size="mark" label={studioAccessibleName('moveEarlier', sweep.label)}
-                        icon={<ArrowLeft aria-hidden="true" />} disabled={index === 0}
-                        onClick={() => moveSweep(index, index - 1)} />
-                      <IconButton variant="default" size="mark" label={studioAccessibleName('moveLater', sweep.label)}
-                        icon={<ArrowRight aria-hidden="true" />} disabled={index === sweeps.length - 1}
-                        onClick={() => moveSweep(index, index + 1)} />
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function NewSweep({ command, menu }: { command: StudioCommand; menu?: SweepMenu }) {
   return (
     <Menu open={!!menu} onOpenChange={(open) => { if (open) command.invoke(); else menu?.close(); }}>
@@ -429,7 +308,9 @@ const StepCard = memo(function StepCard({
   const picked = { kind: 'step', step: step.id } as const;
   const pickable = pick ? pick.accepts(picked) : undefined;
   const sweeps = useMemo(() => orderedMapSweeps(step, presentation), [step, presentation]);
-  const folded = foldedMapSweep(step, sweeps, presentation);
+  const arrange = useMemo(() => onPresentationChange &&
+    ((order: string[]) => onPresentationChange(step.id, { ...presentation, sweepOrder: order })),
+  [onPresentationChange, step.id, presentation]);
   const level = documentLevel(documentScope, step.id);
   const selected = useMemo(() => new Set(
     (compact ? [] : level === 'lit' ? step.runs : selectedRuns(step, selection)).map(({ id }) => id),
@@ -499,25 +380,16 @@ const StepCard = memo(function StepCard({
           style={{ width: `${100 * related / step.runs.length}%` }} />}
       </div> : <>
       <div className="space-y-2 px-3 pb-2 empty:hidden">
-        {sweeps.length > 0 && <StepShape
-          step={step}
-          sweeps={sweeps}
-          folded={folded}
-          selection={selection}
-          presentation={presentation}
-          applySelection={applySelection}
-          onPresentationChange={onPresentationChange}
-        />}
         <PipelineRunMarks
           step={step}
           sweeps={sweeps}
-          folded={folded}
           selection={selection}
           selected={selected}
           upstream={upstream}
           downstream={downstream}
           applySelection={applySelection}
           runMenu={runMenu}
+          arrange={arrange}
         />
       </div>
       {step.inputs.some((input) => input.subset) && (

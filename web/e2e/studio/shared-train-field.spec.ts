@@ -52,9 +52,9 @@ test('the inspector edits the saved values for the step and its selected runs, a
     return base && 'inline' in base ? (base.inline as { settings: { optimizer: { type: string } } }).settings.optimizer.type : undefined;
   }).toBe('sgd');
   await enter(rateText, 'geomspace(1e-4, 1e-2, 5)');
-  await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveText('learning-rate 5');
+  await expect(card.getByRole('button', { name: 'Sweep learning-rate 5', exact: true })).toBeVisible();
   await enter(rateText, '1e-3, 2e-3, 3e-3');
-  await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveText('learning-rate 3');
+  await expect(card.getByRole('button', { name: 'Sweep learning-rate 3', exact: true })).toBeVisible();
   const before = (await plan())!.rows;
   const axes = (await saved()).project.steps?.train.sweep?.axes;
   const initial = axes?.['learning-rate'];
@@ -110,7 +110,7 @@ test('the inspector edits the saved values for the step and its selected runs, a
   await enter(clipText, '0.75');
   await expect.poll(async () => JSON.stringify((await saved()).project.steps?.train.base)).toContain('"grad_clip":0.75');
   await enter(clipText, 'geomspace(0.1, 1, 3)');
-  await expect(card.getByRole('button', { name: 'Sweep grad-clip' })).toHaveText('grad-clip 3');
+  await expect(card.getByRole('button', { name: 'Sweep grad-clip 3', exact: true })).toBeVisible();
   await expect(clip.getByRole('combobox', { name: 'Spacing', exact: true })).toHaveText('Logarithmic');
   await page.reload();
   await expect(clipText).toHaveValue('geomspace(0.1, 1, 3)');

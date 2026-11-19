@@ -9,7 +9,6 @@ import type { RunAddress } from '@/features/pipeline/planView';
 
 export interface PipelineCardPresentation {
   sweepOrder?: readonly string[];
-  foldedSweepId?: string | null;
 }
 
 interface MapEdge {
@@ -122,9 +121,7 @@ export function layoutPipelineMap(plan: PlanView) {
   return { columns, edges: [...edges.values()], upstream, downstream };
 }
 
-const unfoldedMarkCapacity = 1_000;
-
-/** The card's sweeps in shape-line order: the first runs down, the second across. Unless arranged, the longer of the first two runs across. */
+/** The card's sweeps in label order: the first runs down, the second across, the rest are folded. Unless arranged, the longer of the first two runs across. */
 export function orderedMapSweeps(step: PlanStepView, presentation: PipelineCardPresentation) {
   const byId = new Map(step.sweeps.map((sweep) => [sweep.id, sweep]));
   const order = new Set([...(presentation.sweepOrder ?? []), ...byId.keys()]);
@@ -137,76 +134,90 @@ export function orderedMapSweeps(step: PlanStepView, presentation: PipelineCardP
   return [across, down, ...sweeps.slice(2)];
 }
 
-export function foldedMapSweep(
-  step: PlanStepView,
-  sweeps: readonly PlanSweepView[],
-  presentation: PipelineCardPresentation,
-) {
-  if (presentation.foldedSweepId === null) return undefined;
-  const specified = sweeps.find((sweep) => sweep.id === presentation.foldedSweepId);
-  if (specified || step.runs.length <= unfoldedMarkCapacity) return specified;
-  const candidates = sweeps.slice(2);
-  if (!candidates.length) return sweeps[1] ?? sweeps[0];
-  return candidates.reduce((largest, sweep) =>
-    sweep.values.length > largest.values.length ? sweep : largest,
-  );
+/** Where a card draws its sweeps: one sweep runs across; with two or more, the first runs down, the second across, and the rest are folded into each mark. */
+export interface MapAxes {
+  rows?: PlanSweepView;
+  columns?: PlanSweepView;
+  folded: readonly PlanSweepView[];
+}
+
+export function mapAxes(sweeps: readonly PlanSweepView[]): MapAxes {
+  const [first, second, ...folded] = sweeps;
+  return second ? { rows: first, columns: second, folded } : { columns: first, folded: [] };
+}
+
+/** The sweep order with two sweeps exchanged. */
+export function exchangeMapSweeps(sweeps: readonly PlanSweepView[], a: string, b: string) {
+  const order = sweeps.map(({ id }) => id);
+  const from = order.indexOf(a);
+  const to = order.indexOf(b);
+  if (from < 0 || to < 0 || from === to) return undefined;
+  [order[from], order[to]] = [order[to], order[from]];
+  return order;
+}
+
+export interface MapMarkSize {
+  readonly id: 'full' | 'small' | 'smallest';
+  readonly mark: number;
+  readonly gap: number;
+}
+
+export const mapMarkSizes: readonly MapMarkSize[] = [
+  { id: 'full', mark: 16, gap: 4 },
+  { id: 'small', mark: 8, gap: 2 },
+  { id: 'smallest', mark: 4, gap: 1 },
+];
+
+/** The marks' region inside a full card: its width less the card's and the region's padding; its height cap less padding. */
+export const mapMarkRegion = { width: mapCardWidth - 2 * 12 - 2 * 4, height: 224 - 2 * 4 };
+
+function extent(count: number, { mark, gap }: MapMarkSize) {
+  return count * mark + Math.max(0, count - 1) * gap;
+}
+
+/** The largest size at which the marks fit the region in both directions; the smallest when none does, and the region scrolls. */
+export function mapMarkSize(columns: number, rows: number): MapMarkSize {
+  return mapMarkSizes.find((size) =>
+    extent(columns, size) <= mapMarkRegion.width && extent(rows, size) <= mapMarkRegion.height,
+  ) ?? mapMarkSizes[mapMarkSizes.length - 1];
 }
 
 type SweepTerms = Extract<PipelineSelection, { kind: 'values' }>['terms'];
+/** One mark per cell: a run, or every run in the cell, which a press selects by its shown values when it has them all. */
 export type RunMark =
   | { kind: 'run'; run: PlanRunView }
-  | { kind: 'group'; runs: PlanRunView[]; terms: SweepTerms };
+  | { kind: 'group'; runs: PlanRunView[]; terms: SweepTerms | null };
 
-interface MarkCell {
-  row: string | undefined;
-  column: string | undefined;
-  marks: Map<string, RunMark>;
+export interface MarkCell {
+  /** Zero-based; a run with no value on the sweep is in the trailing row or column. */
+  row: number;
+  column: number;
+  mark: RunMark;
 }
 
-function markTerms(run: PlanRunView, visibleSweeps: readonly PlanSweepView[]): SweepTerms | null {
-  const terms = visibleSweeps.flatMap((sweep) => {
-    const valueId = run.values[sweep.id];
-    return valueId === undefined ? [] : [{ sweepId: sweep.id, valueIds: [valueId] }];
-  });
-  return terms.length === visibleSweeps.length ? terms : null;
-}
-
-export function mapRunCells(
-  runs: readonly PlanRunView[],
-  sweeps: readonly PlanSweepView[],
-  folded: PlanSweepView | undefined,
-) {
-  const visibleSweeps = sweeps.filter((sweep) => sweep.id !== folded?.id);
-  const [rowSweep, columnSweep] = visibleSweeps;
-  const rowIds = new Set(rowSweep?.values.map(({ id }) => id));
-  const columnIds = new Set(columnSweep?.values.map(({ id }) => id));
-  const singleFoldValues = new Set(folded && !visibleSweeps.length ? folded.values.map(({ id }) => id) : []);
-  const singleFoldTerms = folded && singleFoldValues.size
-    ? [{ sweepId: folded.id, valueIds: [...singleFoldValues] }]
-    : null;
-  const cells = new Map<string, MarkCell>();
+export function mapRunCells(runs: readonly PlanRunView[], { rows, columns }: MapAxes) {
+  const positions = (sweep?: PlanSweepView) => new Map(sweep?.values.map(({ id }, index) => [id, index]));
+  const rowPositions = positions(rows);
+  const columnPositions = positions(columns);
+  const grouped = new Map<string, { row: number; column: number; runs: PlanRunView[] }>();
   for (const run of runs) {
-    const row = rowSweep && rowIds.has(run.values[rowSweep.id]) ? run.values[rowSweep.id] : undefined;
-    const column = columnSweep && columnIds.has(run.values[columnSweep.id])
-      ? run.values[columnSweep.id]
-      : undefined;
-    const cellKey = JSON.stringify([row ?? null, column ?? null]);
-    let cell = cells.get(cellKey);
-    if (!cell) {
-      cell = { row, column, marks: new Map() };
-      cells.set(cellKey, cell);
-    }
-    const terms = folded && (visibleSweeps.length
-      ? markTerms(run, visibleSweeps)
-      : singleFoldValues.has(run.values[folded.id]) && singleFoldTerms);
-    if (!terms) {
-      cell.marks.set(JSON.stringify(['run', run.id]), { kind: 'run', run });
-      continue;
-    }
-    const markKey = terms === singleFoldTerms ? 'folded' : JSON.stringify(['group', ...terms]);
-    const mark = cell.marks.get(markKey);
-    if (mark?.kind === 'group') mark.runs.push(run);
-    else cell.marks.set(markKey, { kind: 'group', terms, runs: [run] });
+    const row = rows ? rowPositions.get(run.values[rows.id]) ?? rowPositions.size : 0;
+    const column = columns ? columnPositions.get(run.values[columns.id]) ?? columnPositions.size : 0;
+    const key = `${row}:${column}`;
+    const cell = grouped.get(key);
+    if (cell) cell.runs.push(run);
+    else grouped.set(key, { row, column, runs: [run] });
   }
-  return { rowSweep, columnSweep, cells };
+  const shown = [rows, columns].filter((sweep): sweep is PlanSweepView => !!sweep);
+  const cells: MarkCell[] = [...grouped.values()].map(({ row, column, runs }) => {
+    if (runs.length === 1) return { row, column, mark: { kind: 'run', run: runs[0] } };
+    const terms = shown.flatMap((sweep, index) => {
+      const value = sweep.values[index === 0 && rows ? row : column]?.id;
+      return value === undefined ? [] : [{ sweepId: sweep.id, valueIds: [value] }];
+    });
+    return { row, column, mark: { kind: 'group', runs, terms: shown.length && terms.length === shown.length ? terms : null } };
+  });
+  const span = (axis: 'row' | 'column', sweep?: PlanSweepView) =>
+    Math.max(sweep ? sweep.values.length : 1, ...cells.map((cell) => cell[axis] + 1));
+  return { cells, rowCount: cells.length ? span('row', rows) : 0, columnCount: cells.length ? span('column', columns) : 0 };
 }

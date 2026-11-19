@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -32,14 +32,13 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true })).toHaveValue('0.001');
 
   await authorLearningRateSweep(rate);
-  await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveText('learning-rate 3');
-  await card.getByRole('button', { name: 'Sweep learning-rate' }).click();
+  await sweepLabel(card, 'learning-rate').click();
   for (const name of ['0.001', '0.002', '0.003']) {
-    await expect(card.getByRole('listitem').getByRole('button', { name: `Select learning-rate ${name}`, exact: true })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
     await expect(table.getByRole('cell', { name, exact: true })).toBeVisible();
   }
   await expect(table.getByText('Not run', { exact: true })).toHaveCount(3);
-  await card.getByRole('listitem').getByRole('button', { name: 'Select learning-rate 0.002', exact: true }).click();
+  await page.getByRole('menuitem', { name: '0.002', exact: true }).click();
   await expect(rate.getByRole('button', { name: 'Select Learning Rate 0.002', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await mapStep(page, 'train').click();
 
@@ -90,7 +89,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(seedText).toHaveValue(/^\d+,$/);
   await enter(seedText, `${(await seedText.inputValue()).replace(/,$/, '')}, 9`);
   await expect(table).toHaveAttribute('aria-rowcount', '7');
-  await expect(card.getByRole('button', { name: 'Sweep seed' })).toHaveText('seed 2');
+  await expect(card.getByRole('button', { name: 'Sweep seed 2', exact: true })).toBeVisible();
   // Unarranged, the longer of the first two sweeps runs across, so seed comes first.
   await expect(card).toContainText('seed 2 · learning-rate 3');
   await expect(table.getByRole('rowheader').locator('[data-run-ordinal]')).toHaveText(['1', '2', '3', '4', '5', '6']);
@@ -150,7 +149,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(rateText).toHaveValue('0.00275');
   await expect(rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true })).toBeVisible();
   await expect(table).toHaveAttribute('aria-rowcount', '3');
-  await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveCount(0);
+  await expect(sweepLabel(card, 'learning-rate')).toHaveCount(0);
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Forward', exact: true }).click();
   await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');

@@ -243,7 +243,7 @@ def evaluated(tmp_path):
         raw["steps"]["train"]["group"] = "fitting"
         _save_project(folders, PROJECT, Project.model_validate(raw))
         (folders.root / PROJECT / "presentation.json").write_text(
-            '{"steps": {"train": {"sweep_order": ["mass"], "folded_sweep_id": "mass"}}}\n',
+            '{"steps": {"train": {"sweep_order": ["mass"]}}}\n',
         )
         yield client, folders
 
@@ -269,7 +269,7 @@ def test_a_step_rename_rewrites_its_references_and_keeps_every_request(evaluated
     assert steps["baseline"]["inputs"]["subject"]["step"] == "fit"
     targets = {target for value in after["project"]["sweep"]["axes"]["mass"]["values"].values() for target in value["patches"]}
     assert targets and all(target.startswith("steps.fit.{") for target in targets)
-    assert after["presentation"]["steps"] == {"fit": {"sweep_order": ["mass"], "folded_sweep_id": "mass"}}
+    assert after["presentation"]["steps"] == {"fit": {"sweep_order": ["mass"]}}
     renamed = _files(folders)
     assert "steps/fit.json" in renamed and "steps/train.json" not in renamed
     assert _step_requests(folders, after["revision"]) == {

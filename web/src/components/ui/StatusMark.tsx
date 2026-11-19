@@ -32,6 +32,11 @@ const marks = {
   environment: ['text-shell-status-neutral', 'hollow', 'M6 2v8M2 6h8M3.5 3.5l5 5m0-5-5 5'],
 } as const satisfies Record<StatusMarkStatus, readonly [string, Fill, string]>;
 
+/** The status's colour class, for a mark too small to carry its shape. */
+export function statusTone(status: StatusMarkStatus) {
+  return marks[status][0];
+}
+
 export interface StatusMarkProps extends Omit<HTMLAttributes<HTMLSpanElement>, 'children'> {
   status: StatusMarkStatus;
   /** The status's word, read aloud and shown as the tooltip; omit where the mark sits beside it. */

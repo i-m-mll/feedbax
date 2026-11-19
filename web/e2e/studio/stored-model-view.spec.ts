@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
-import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { outlineRow, pick, placeFromLibrary } from './fixtures/controls';
 
@@ -219,9 +219,7 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
   const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
-  await evaluation.getByRole('button', { name: 'Sweep seed 2', exact: true }).click();
-  await evaluation.getByRole('listitem').getByRole('button', { name: 'Select seed control', exact: true }).click();
-  await evaluation.getByRole('button', { name: 'Sweep seed 2', exact: true }).click();
+  await chooseSweepValue(evaluation, 'seed', 'control');
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await addIntervention(page, projectPath, { kind: 'axis_value', axis: 'seed', value: 'control' });
   await mapStep(page, 'baseline').click();
