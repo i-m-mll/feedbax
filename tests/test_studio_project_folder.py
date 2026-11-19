@@ -31,6 +31,8 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.training.methods import TrainingMethodDeclaration, TrainingMethodRegistry
 from feedbax.studio.authoring import project_train_fields
+from feedbax.studio.selection import TrainSelection
+from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from tests.support import external_method_witness
@@ -277,11 +279,25 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
         assert _folder_state(root) == original
 
 
+_WHOLE_STEP = TrainSelection((), None, None, False, lambda writes: writes)
+"""The whole step, storing nothing: an edit is its writes in the step's definition."""
+
+
+def _written(project, writes):
+    """The Train step's definition after ``writes``."""
+    return apply_override_patches(project.steps["train"].base.inline, writes)
+
+
+def _train_fields(project, registry, change=None):
+    projection = project_train_fields(project, "train", registry, change, _WHOLE_STEP)
+    return projection.fields, projection.settings, projection.edit or [], projection.documents
+
+
 def test_an_invalid_training_setting_keeps_every_training_field_in_place():
     registry = new_application_registry_bundle().training_methods
     raw = managed_train_project(batches=25).model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["steps"]["train"]["base"]["inline"]["training_config"]["batch_size"] = -3
-    fields, _, _, _ = project_train_fields(Project.model_validate(raw), "train", registry, None)
+    fields, _, _, _ = _train_fields(Project.model_validate(raw), registry)
     values = {field.id: field.value for field in fields}
     assert values["/training_config/batch_size"] == -3
     assert values["/training_config/n_batches"] == 25
@@ -290,15 +306,15 @@ def test_an_invalid_training_setting_keeps_every_training_field_in_place():
 def test_initial_training_settings_retain_the_authored_method_rate_and_batch_count():
     registry = new_application_registry_bundle().training_methods
     project = managed_train_project(batches=25)
-    _, _, patches, _ = project_train_fields(
-        project, "train", registry,
+    _, _, patches, _ = _train_fields(
+        project, registry,
         StudioAuthoringChange(field="/training_config/snapshot_interval", value=12),
     )
     patch, = patches
-    assert patch.path == "/base/inline/training_config/snapshot_interval"
+    assert patch.path == "training_config.snapshot_interval"
     assert patch.value == 12
 
-    fields, _, patches, _ = project_train_fields(project, "train", registry, None)
+    fields, _, patches, _ = _train_fields(project, registry)
     values = {field.id: field.value for field in fields}
     assert values["/training_config/n_batches"] == 25
     assert values["/settings/optimizer/learning_rate/value"] == (
@@ -308,18 +324,17 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
 
     raw = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["steps"]["train"]["base"]["inline"]["settings"] = {}
-    _, _, (patch,), _ = project_train_fields(
-        Project.model_validate(raw), "train", registry, StudioAuthoringChange(field="/settings/optimizer/b1", value=0.8),
+    _, _, (patch,), _ = _train_fields(Project.model_validate(raw), registry, StudioAuthoringChange(field="/settings/optimizer/b1", value=0.8),
     )
-    assert patch.path == "/base/inline/settings/optimizer"
+    assert patch.path == "settings.optimizer"
     assert StandardTrainingSettings.model_validate({"optimizer": patch.value}).optimizer.b1 == 0.8
 
-    _, _, patches, _ = project_train_fields(
-        project, "train", registry,
+    _, _, patches, _ = _train_fields(
+        project, registry,
         StudioAuthoringChange(field="/seed", value=7.0),
     )
     seed, = patches
-    assert seed.path == "/base/inline/seed"
+    assert seed.path == "seed"
     assert type(seed.value) is int and seed.value == 7
 
 
@@ -334,15 +349,15 @@ def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
         }},
     }
     project = Project.model_validate(raw)
-    fields, settings, _, _ = project_train_fields(project, "train", registry, None)
+    fields, settings, _, _ = _train_fields(project, registry)
     assert {field.id for field in fields} >= {"/method", "/training_config/batch_size"}
     assert settings["optimizer"]["type"] == "adam"
 
     for field in ("/settings/optimizer", "/settings/optimizer/type"):
-        _, _, patches, _ = project_train_fields(project, "train", registry, StudioAuthoringChange(field=field, value="sgd"))
-        assert [(patch.path, patch.value["type"]) for patch in patches] == [("/base/inline/settings/optimizer", "sgd")]
+        _, _, patches, _ = _train_fields(project, registry, StudioAuthoringChange(field=field, value="sgd"))
+        assert _written(project, patches)["settings"]["optimizer"]["type"] == "sgd"
         with pytest.raises(ValueError):
-            project_train_fields(project, "train", registry, StudioAuthoringChange(field=field, value=3))
+            _train_fields(project, registry, StudioAuthoringChange(field=field, value=3))
 
 
 def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_sweep():
@@ -358,7 +373,7 @@ def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_
     project = Project.model_validate(raw)
 
     def choose(schedule: str):
-        _, _, patches, _ = project_train_fields(project, "train", registry, StudioAuthoringChange(
+        _, _, patches, _ = _train_fields(project, registry, StudioAuthoringChange(
             field="/settings/optimizer/learning_rate", value=schedule,
         ))
         return patches
@@ -366,9 +381,9 @@ def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_
     assert choose("constant_schedule") == StudioSweptParameterMissing(
         class_label="Constant", parameter_label="Peak Value",
     )
-    (patch,) = choose("warmup_constant_schedule")
-    assert patch.path == "/base/inline/settings/optimizer/learning_rate"
-    assert patch.value == {"type": "warmup_constant_schedule", "init_value": 0.001, "peak_value": 0.001, "warmup_steps": 100}
+    assert _written(project, choose("warmup_constant_schedule"))["settings"]["optimizer"]["learning_rate"] == {
+        "type": "warmup_constant_schedule", "init_value": 0.001, "peak_value": 0.001, "warmup_steps": 100,
+    }
 
 
 class _PenalizedSettings(StandardTrainingSettings):
@@ -405,23 +420,21 @@ def test_a_method_change_keeps_the_settings_both_methods_declare_and_refuses_one
     settings["grad_clip"] = 2.0
 
     def choose(project: Project, method: str):
-        return project_train_fields(project, "train", registry, StudioAuthoringChange(field="/method", value=method))[2]
+        return _train_fields(project, registry, StudioAuthoringChange(field="/method", value=method))[2]
 
-    method, replaced = choose(Project.model_validate(raw), "probe.penalized")
-    assert (method.path, method.value) == ("/base/inline/method", "probe.penalized")
-    assert replaced.path == "/base/inline/settings"
-    assert replaced.value["optimizer"] == settings["optimizer"]
-    assert (replaced.value["grad_clip"], replaced.value["penalty"]) == (2.0, 0.1)
+    written = _written(project := Project.model_validate(raw), choose(project, "probe.penalized"))
+    assert written["method"] == "probe.penalized"
+    assert written["settings"]["optimizer"] == settings["optimizer"]
+    assert (written["settings"]["grad_clip"], written["settings"]["penalty"]) == (2.0, 0.1)
 
     rate = "settings.optimizer.learning_rate.value"
     raw["steps"]["train"]["sweep"] = {"axes": {"rate": {"values": {
         "slow": {"patches": {rate: {"value": 0.001}}}, "fast": {"patches": {rate: {"value": 0.01}}},
     }}}}
     swept = Project.model_validate(raw)
-    fields, _, _, _ = project_train_fields(swept, "train", registry, None)
+    fields, _, _, _ = _train_fields(swept, registry)
     assert next(field for field in fields if field.id == "/method").control is not None
-    _, replaced = choose(swept, "probe.penalized")
-    assert replaced.value["optimizer"] == settings["optimizer"]
+    assert _written(swept, choose(swept, "probe.penalized"))["settings"]["optimizer"] == settings["optimizer"]
     assert choose(swept, "probe.adversarial") == StudioSweptParameterMissing(
         class_label="probe.adversarial", parameter_label="Learning Rate",
     )
@@ -431,11 +444,11 @@ def test_choosing_another_optimizer_keeps_the_learning_rate():
     registry = new_application_registry_bundle().training_methods
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = 0.003
-    _, _, (patch,), _ = project_train_fields(
-        Project.model_validate(raw), "train", registry, StudioAuthoringChange(field="/settings/optimizer", value="adamw"),
-    )
-    assert patch.value["type"] == "adamw"
-    assert patch.value["learning_rate"] == {"type": "constant_schedule", "value": 0.003}
+    project = Project.model_validate(raw)
+    _, _, patches, _ = _train_fields(project, registry, StudioAuthoringChange(field="/settings/optimizer", value="adamw"))
+    optimizer = _written(project, patches)["settings"]["optimizer"]
+    assert optimizer["type"] == "adamw"
+    assert optimizer["learning_rate"] == {"type": "constant_schedule", "value": 0.003}
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
@@ -480,17 +493,16 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
         reviewed = response.json()
         control = next(item for item in reviewed["fields"] if item["id"] == field_id)
         assert control["value"] == "initialize_from"
-        [layer] = reviewed["patches"]
-        assert layer["path"] == "/deltas/1"
-        policy, = layer["value"]["patches"]
+        [file] = reviewed["files"]
+        [deltas] = file["patches"]
+        assert deltas["path"] == "/deltas" and len(deltas["value"]) == 2
+        policy, = deltas["value"][-1]["patches"]
         assert policy["path"] == carry_path
         assert policy["value"] == {
             "mode": "continue_from", "source_completed_updates": 2,
             "state": "preserve", "schedule": "continue", "rng": "carry",
         }
-        saved = client.patch(_URL, json={
-            "revision": before["revision"], "address": address, "patches": reviewed["patches"],
-        })
+        saved = client.patch(_URL, json={"revision": before["revision"], "files": reviewed["files"]})
         assert saved.status_code == 200, saved.text
         after = saved.json()
         assert after["project"]["steps"]["train"] == before["project"]["steps"]["train"]
@@ -509,7 +521,7 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
             "revision": after["revision"], "change": {**change, "value": "initialize_from"},
         })
         assert restored.status_code == 200, restored.text
-        assert [patch["value"] for patch in restored.json()["patches"][0]["value"]["patches"]] == [
+        assert [patch["value"] for patch in restored.json()["files"][0]["patches"][0]["value"][-1]["patches"]] == [
             "initialize_from",
         ]
 

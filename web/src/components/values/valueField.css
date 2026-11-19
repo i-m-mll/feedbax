@@ -7,3 +7,12 @@
   flex: 1 1 auto;
   min-width: 6ch;
 }
+
+/* A swept value's text is drawn again as its members beneath, so it yields its width before the class's name does. */
+.value-field-class-swept input:not(.field-end input) {
+  flex-shrink: 1000;
+}
+
+.value-field-class-swept .field-end {
+  flex-shrink: 1;
+}

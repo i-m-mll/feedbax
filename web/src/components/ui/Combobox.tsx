@@ -36,7 +36,7 @@ export function Combobox<Value extends string>(
     >
       <BaseCombobox.InputGroup className={clsx(inline ? 'flex h-full min-w-0 items-center' : fieldBox, 'overflow-hidden', className)}>
         <BaseCombobox.Input id={id} placeholder={placeholder} aria-invalid={invalid || undefined}
-          size={inline ? Math.max(1, selected?.label.length ?? 1) : undefined}
+          size={inline ? Math.max(1, (selected?.label ?? placeholder ?? '').length) : undefined}
           className={clsx(fieldInput, 'text-ellipsis', inline && 'pr-0')} {...aria} />
         <BaseCombobox.Trigger tabIndex={-1} {...aria}
           className={clsx('flex h-full w-control shrink-0 items-center justify-center text-shell-muted outline-none', glyph)}>

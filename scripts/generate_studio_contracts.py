@@ -1273,16 +1273,9 @@ def _validate_model_validator_projection(model: type[BaseModel]) -> None:
 
 
 def model_type_hints(model: type[BaseModel]) -> dict[str, Any]:
-    """Resolve model type hints, including acausal forward references."""
-    module_globals = dict(vars(sys.modules[model.__module__]))
-    module_globals.update(
-        {
-            "ComponentSpec": ComponentSpec,
-            "GraphMetadata": GraphMetadata,
-            "AcausalGraphSpec": AcausalGraphSpec,
-        }
-    )
-    return get_type_hints(model, globalns=module_globals, include_extras=True)
+    """Resolve model type hints, each in its declaring class's module, including acausal forward references."""
+    forward = {"ComponentSpec": ComponentSpec, "GraphMetadata": GraphMetadata, "AcausalGraphSpec": AcausalGraphSpec}
+    return get_type_hints(model, localns=forward, include_extras=True)
 
 
 def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:

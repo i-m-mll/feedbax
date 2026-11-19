@@ -24,6 +24,8 @@ export interface SchemaContext {
   readonly projected?: (path: readonly string[]) => FieldModel | undefined;
   /** Where the value at this path comes from, when not from the document itself. */
   readonly origin?: (path: readonly string[]) => string | undefined;
+  /** The value at this path differs between the runs the form shows: it is drawn as Mixed. */
+  readonly mixed?: (path: readonly string[]) => boolean;
 }
 
 const without = (schema: Schema, ...keys: string[]) =>
@@ -112,6 +114,12 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   path: readonly string[] = [key]): FieldModel {
   const projection = context.projected?.(path);
   if (projection) return projection;
+  const field = declaredField(key, property, value, context, path);
+  return context.mixed?.(path) && field.type.kind !== 'group' ? { ...field, value: null, text: null } : field;
+}
+
+function declaredField(key: string, property: JsonValue, value: JsonValue | undefined, context: SchemaContext,
+  path: readonly string[]): FieldModel {
   const outer = resolve(property, context.root);
   const label = typeof outer.title === 'string' ? outer.title : humanizeLabel(key);
   const id = pointer(path);
@@ -176,8 +184,9 @@ function classField(label: string, id: string, name: string, members: readonly S
     const own = resolve(nested, context.root);
     parts[0] = { ...parts[0], label, parameter: typeof own.title === 'string' ? own.title : humanizeLabel(key) };
   }
+  const mixed = context.mixed?.([...path, name]);
   return rawField({
-    id, label, origin, value: chosen ? constOf(chosen, name) : null, type: { kind: 'class', options }, parts,
+    id, label, origin, value: chosen && !mixed ? constOf(chosen, name) : null, type: { kind: 'class', options }, parts,
     change: context.choose && ((key) => context.choose!(path, key)),
   });
 }

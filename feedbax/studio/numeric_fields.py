@@ -13,7 +13,7 @@ from feedbax.contracts.project_plan import PlannedRow
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_LIMIT, ListedAxis, NamedAxis, RangeAxis, RangeValues, SampledAxis, SampleValues,
-    SweepException, SweepExceptionTerms, sweep_value_identity_bytes,
+    sweep_value_identity_bytes,
 )
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringSweepChange, StudioNameSweepValue, StudioSetSweepValue, StudioSweepEdit, StudioToSweep,
@@ -95,7 +95,11 @@ def _list_axis(sweep: FieldSweeps, values: list[int | float]) -> NamedAxis:
         if key is None:
             key = sweep._fresh_id(f"value-{index + 1}", reserved)
             reserved.add(key)
-        entries[key] = sweep.target.entry(value, label)
+        entry = sweep.target.entry(value, label)
+        if key in retained:
+            # Edits made for this value's runs stay with the value.
+            entry = entry.model_copy(update={"patches": old[key].patches | entry.patches})
+        entries[key] = entry
     return NamedAxis(values=entries)
 
 
@@ -244,14 +248,16 @@ def _removed(sweep: FieldSweeps | None, rewrite: _Rewrite) -> dict[str, list[str
 
 def prepare_numeric_field(
     field: NumericField, axis: FieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
-    functions: FunctionRegistry, *, period: float | None = None, rows: tuple[str, ...] = (),
+    functions: FunctionRegistry, *, period: float | None = None, scoped: bool = False,
     keep_value: Callable[[int | float], list[SetProjectValue]] | None = None,
-    selection: SweepExceptionTerms | None = None,
 ) -> PreparedField:
+    """The edit's sweep patches, or the value the caller stores for the selected runs.
+
+    ``scoped`` says the selected runs are not the whole step: then the field keeps its kind and its sweep, and a value
+    is returned as a number for the caller to store by the selection.
+    """
     try:
-        result = _prepare(field, axis, edit, functions, period=period,
-                          selection=selection or (SweepExceptionTerms(rows=list(rows)) if rows else None),
-                          keep_value=keep_value)
+        result = _prepare(field, axis, edit, functions, period=period, scoped=scoped, keep_value=keep_value)
     except ValueError as error:
         return PreparedField((Problem(code=ProblemCode.STRUCTURE, reason=str(error)),))
     if isinstance(result, _Rewrite):
@@ -261,10 +267,10 @@ def prepare_numeric_field(
 
 def _prepare(
     field: NumericField, axis: FieldSweeps | None, edit: FieldTextEdit | FieldKindEdit | FieldNameEdit,
-    functions: FunctionRegistry, *, period: float | None, selection: SweepExceptionTerms | None,
+    functions: FunctionRegistry, *, period: float | None, scoped: bool,
     keep_value: Callable[[int | float], list[SetProjectValue]] | None,
 ) -> int | float | LiteralValue | list[SetProjectValue] | _Rewrite | tuple[Problem, ...]:
-    if selection is not None and edit.kind not in ("text", "name_value"):
+    if scoped and edit.kind not in ("text", "name_value"):
         raise ValueError(f"{field.label} has one kind for every run.")
     covered = axis.covering if axis else []
     previous = covered[0][1] if len(covered) == 1 else None
@@ -321,7 +327,7 @@ def _prepare(
         )
         return sweep().edit(command, field.validate)
     if isinstance(value, SweepList | SweepRange | SweepSample):
-        if selection is not None:
+        if scoped:
             raise ValueError(f"{field.label} has one sweep for every run.")
         owner = sweep()
         if isinstance(value, SweepList):
@@ -343,7 +349,7 @@ def _prepare(
         seed = edit.seed if edit.seed is not None else previous.sampler.seed if isinstance(previous, SampledAxis) else 0
         sampled = _sample_axis(value, field, functions, period, seed, path)
         return _Rewrite(owner.write_axis(sampled), after=_named(owner, sampled))
-    if covered and selection is None:
+    if covered and not scoped:
         if len(covered) != 1:
             raise ValueError(f"{field.label} is swept by {len(covered)} sweeps.")
         assert keep_value is not None
@@ -352,30 +358,6 @@ def _prepare(
             *keep_value(kept),
             SetProjectValue(op="replace", path=pointer(("sweep", "axes", covered[0][0])), value=None),
         ], kept=kept)
-    if field.duration and selection is None:
+    if field.duration and not scoped:
         return field.duration_value(value)
-    numeric = number(value)
-    if selection is None:
-        return numeric
-    owner = sweep()
-    authored = owner.step.sweep
-    if authored is None:
-        raise ValueError(f"{field.label} is not swept.")
-    if len(selection.axes) == 1:
-        (axis_id, values), = selection.axes.items()
-        existing = authored.axes.get(axis_id)
-        if len(values) == 1 and isinstance(existing, NamedAxis) and (entry := existing.values.get(values[0])) is not None:
-            updated = entry.model_copy(update={"patches": entry.patches | owner.target.entry(numeric).patches})
-            return [SetProjectValue(
-                op="replace", path=pointer(("sweep", "axes", axis_id, "values", values[0])),
-                value=updated.model_dump(mode="json", exclude_unset=True),
-            )]
-    name = owner._fresh_id("field", authored.exceptions)
-    exception = SweepException.model_validate({
-        "where": selection.model_dump(mode="json", exclude_unset=True),
-        "patches": owner.target.entry(numeric).patches,
-    })
-    payload = exception.model_dump(mode="json", exclude_defaults=True)
-    if "exceptions" in authored.model_fields_set:
-        return [SetProjectValue(op="add", path=pointer(("sweep", "exceptions", name)), value=payload)]
-    return [SetProjectValue(op="add", path="/sweep/exceptions", value={name: payload})]
+    return number(value)

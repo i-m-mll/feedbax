@@ -1295,7 +1295,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   <FocusedFields request={slot === focusSlot && fieldFocus?.step === step.id ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError}
-                      fieldRows={detailInputs.fieldRows} />}
+                      fieldRows={detailInputs.fieldRows} fieldAxes={detailInputs.fieldAxes} />}
                     {evaluateInputs && <EvaluateSubjectFields step={evaluateInputs} project={saved.project} trains={trainSteps}
                       picking={elements} subset={subjectInput && inputDetail(subjectInput)}
                       onEdit={ready && !busy && wholeStep ? editEvaluateSubject : undefined} />}
