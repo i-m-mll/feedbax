@@ -18,10 +18,12 @@ export function SlotHeader({ view, icon: Icon, picker, children, trailing }: {
   const name = studioName(view);
   const [editing, setEditing] = useState<string>();
   return <header className="studio-window-slot__header">
-    <h2 className="studio-window-slot__name" {...(Icon ? appTip(studioName(view)) : {})}>
-      {Icon && <Icon aria-hidden="true" />}
-      <span className="sr-only">{name}</span>
-    </h2>
+    {Icon
+      ? <h2 className="studio-window-slot__name" {...appTip(studioName(view))}>
+          <Icon aria-hidden="true" />
+          <span className="sr-only">{name}</span>
+        </h2>
+      : <h2 className="sr-only">{name}</h2>}
     <div className="studio-window-slot__controls">
       <StudioRegionBoundary key={view} name={view}>
         {picker && <DocumentPicker model={picker} editing={editing} setEditing={setEditing} />}
