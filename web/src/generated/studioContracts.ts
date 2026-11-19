@@ -3623,6 +3623,7 @@ export type StudioMemberCommandResult = {
 
 export type StudioMethodPlace = {
   "part": "method";
+  "document": string | null;
 };
 
 export type StudioModelPlace = {
@@ -3929,6 +3930,7 @@ export type StudioTrainStep = {
 
 export type StudioTrainingPlace = {
   "part": "training";
+  "document": string | null;
   "setting"?: string | null;
 };
 
@@ -4092,6 +4094,12 @@ export type TaskPort = {
 export type TextSpan = {
   "start": number;
   "end": number;
+};
+
+export type TrainingDocument = {
+  "method": string;
+  "settings": Record<string, JsonValue>;
+  "training_config": DocumentTrainingConfig;
 };
 
 export type TrialDocuments = {
@@ -10139,6 +10147,7 @@ export const StudioMemberCommandResultSchema: z.ZodType<StudioMemberCommandResul
 export const StudioMethodPlaceSchema: z.ZodType<StudioMethodPlace> = z.lazy(() =>
   z.object({
     "part": z.literal("method"),
+    "document": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioMethodPlace>;
 
@@ -10529,6 +10538,7 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
 export const StudioTrainingPlaceSchema: z.ZodType<StudioTrainingPlace> = z.lazy(() =>
   z.object({
     "part": z.literal("training"),
+    "document": z.union([z.string(), z.null()]),
     "setting": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainingPlace>;
@@ -10741,6 +10751,14 @@ export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<TextSpan>;
 
+export const TrainingDocumentSchema: z.ZodType<TrainingDocument> = z.lazy(() =>
+  z.object({
+    "method": z.string(),
+    "settings": z.record(z.string(), jsonValueSchema),
+    "training_config": DocumentTrainingConfigSchema,
+  }).strict()
+) as unknown as z.ZodType<TrainingDocument>;
+
 export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
   z.object({
     "model": ModelDocumentSchema,
@@ -10933,6 +10951,7 @@ export const contractSchemas = {
   TaskDocument: TaskDocumentSchema,
   PythonTaskSelection: PythonTaskSelectionSchema,
   ObjectiveDocument: ObjectiveDocumentSchema,
+  TrainingDocument: TrainingDocumentSchema,
   TrialDocuments: TrialDocumentsSchema,
   StudioTrialAuthoring: StudioTrialAuthoringSchema,
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
@@ -11089,6 +11108,7 @@ export interface ContractTypeMap {
   TaskDocument: TaskDocument;
   PythonTaskSelection: PythonTaskSelection;
   ObjectiveDocument: ObjectiveDocument;
+  TrainingDocument: TrainingDocument;
   TrialDocuments: TrialDocuments;
   StudioTrialAuthoring: StudioTrialAuthoring;
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;

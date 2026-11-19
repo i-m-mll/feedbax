@@ -14,6 +14,7 @@ from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
 from feedbax.contracts.project_io import TextProject
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
@@ -73,7 +74,7 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
     roots = []
     graph_schemas = {GRAPH_SPEC_SCHEMA_ID: GraphSpec, ACAUSAL_GRAPH_SCHEMA_ID: AcausalGraphSpec}
     for name, document in text.project.documents.items():
-        if document.schema_id in (TASK_DOCUMENT_SCHEMA_ID, OBJECTIVE_DOCUMENT_SCHEMA_ID):
+        if document.schema_id in (TASK_DOCUMENT_SCHEMA_ID, OBJECTIVE_DOCUMENT_SCHEMA_ID, TRAINING_DOCUMENT_SCHEMA_ID):
             continue
         model = graph_schemas.get(document.schema_id)
         if model is None:
