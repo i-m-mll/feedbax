@@ -21,12 +21,34 @@ export interface SchemaContext {
 const without = (schema: Schema, ...keys: string[]) =>
   Object.fromEntries(Object.entries(schema).filter(([key]) => !keys.includes(key)));
 
-/** Follows `$ref` into `$defs`. A definition's own title names its class, not the field, so the field's is kept. */
-function resolve(schema: JsonValue, root: JsonValue): Schema {
+/**
+ * Follows `$ref` into `$defs`. A definition's own title names its class, not the field, so the field's is kept unless
+ * `own` asks for the class's.
+ */
+function resolve(schema: JsonValue, root: JsonValue, own = false): Schema {
   if (!isRecord(schema)) return {};
   const ref = schema.$ref;
   if (typeof ref !== 'string' || !ref.startsWith('#/$defs/') || !isRecord(root) || !isRecord(root.$defs)) return schema;
-  return { ...without(resolve(root.$defs[ref.slice('#/$defs/'.length)] ?? null, root), 'title'), ...without(schema, '$ref') };
+  const definition = resolve(root.$defs[ref.slice('#/$defs/'.length)] ?? null, root, own);
+  return { ...(own ? definition : without(definition, 'title')), ...without(schema, '$ref') };
+}
+
+/** A union's members other than null, a nested union's members in its place, and the property that tags them. */
+function unionOf(schema: Schema, root: JsonValue): { members: Schema[]; name?: string } | undefined {
+  const union = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : undefined;
+  if (!union) return undefined;
+  const discriminator = isRecord(schema.discriminator) ? schema.discriminator.propertyName : undefined;
+  let name = typeof discriminator === 'string' ? discriminator : undefined;
+  const members: Schema[] = [];
+  for (const member of union) {
+    const resolved = resolve(member, root, true);
+    const inner = unionOf(resolved, root);
+    if (inner) {
+      members.push(...inner.members);
+      name ??= inner.name;
+    } else if (resolved.type !== 'null') members.push(resolved);
+  }
+  return { members, name: name ?? (members.length > 1 ? tag(members) : undefined) };
 }
 
 function jsonType(value: JsonValue) {
@@ -42,22 +64,31 @@ function accepts(schema: Schema, value: JsonValue) {
     Array.isArray(schema.enum) && schema.enum.includes(value);
 }
 
+function fixed(property: JsonValue): JsonValue | undefined {
+  if (!isRecord(property)) return undefined;
+  if ('const' in property) return property.const;
+  return Array.isArray(property.enum) && property.enum.length === 1 ? property.enum[0] : undefined;
+}
+
 /** The property every member fixes to a constant: a discriminated union's tag. */
 function tag(members: readonly Schema[]) {
   const consts = (member: Schema) => Object.entries(isRecord(member.properties) ? member.properties : {})
-    .filter(([, property]) => isRecord(property) && 'const' in property).map(([name]) => name);
+    .filter(([, property]) => fixed(property) !== undefined).map(([name]) => name);
   const [first, ...rest] = members.map(consts);
   return first?.find((name) => rest.every((names) => names.includes(name)));
 }
 
 function constOf(member: Schema, name: string) {
-  const property = isRecord(member.properties) ? member.properties[name] : undefined;
-  return isRecord(property) ? property.const ?? null : null;
+  return fixed(isRecord(member.properties) ? member.properties[name] ?? null : null) ?? null;
 }
 
-function defaults(member: Schema): Record<string, JsonValue> {
-  return Object.fromEntries(Object.entries(isRecord(member.properties) ? member.properties : {})
-    .flatMap(([name, property]) => isRecord(property) && 'default' in property ? [[name, property.default]] : []));
+/** A class's value before it is edited: each declared default, a nested object's own defaults. */
+function defaults(member: Schema, root: JsonValue): Record<string, JsonValue> {
+  return Object.fromEntries(Object.entries(isRecord(member.properties) ? member.properties : {}).flatMap(([name, property]) => {
+    if (isRecord(property) && 'default' in property) return [[name, property.default]];
+    const resolved = resolve(property, root);
+    return resolved.type === 'object' && !unionOf(resolved, root) ? [[name, defaults(resolved, root)]] : [];
+  }));
 }
 
 export function pointer(path: readonly string[]) {
@@ -76,7 +107,7 @@ export function setIn(value: JsonValue | undefined, path: readonly string[], nex
 /**
  * The field for one value declared by a JSON schema: a method's `settings_schema`, a figure template's, a task's
  * `parameter_schema`. An optional value (`anyOf` with null) is its non-null member; a union of types is the member
- * the value has; a discriminated union is a choice of its tag that swaps the group beneath it.
+ * the value has; a discriminated union is a class: a choice of its tag whose parameters are drawn beneath it.
  */
 export function fromJsonSchema(key: string, property: JsonValue, value: JsonValue | undefined, context: SchemaContext,
   path: readonly string[] = [key]): FieldModel {
@@ -88,14 +119,13 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   const change: RawChange | undefined = context.write && ((next) => context.write!(path, next));
   const origin = context.origin?.(path);
   const current = value ?? outer.default ?? null;
-  const union = Array.isArray(outer.anyOf) ? outer.anyOf : Array.isArray(outer.oneOf) ? outer.oneOf : undefined;
+  const union = unionOf(outer, context.root);
   let schema = outer;
   if (union) {
-    const members = union.map((member) => without(resolve(member, context.root), 'title')).filter((member) => member.type !== 'null');
-    const name = members.length > 1 ? tag(members) : undefined;
-    if (name) return discriminated(label, id, name, members, current, path, context, change);
+    const { members, name } = union;
+    if (name) return classField(label, id, name, members, current, path, context, change, origin);
     const member = members.length === 1 ? members[0] : members.find((candidate) => accepts(candidate, current));
-    schema = { ...(member ?? {}), ...without(outer, 'anyOf', 'oneOf') };
+    schema = { ...without(member ?? {}, 'title'), ...without(outer, 'anyOf', 'oneOf', 'discriminator') };
   }
   if (Array.isArray(schema.enum)) {
     return rawField({ id, label, value: current, change, origin,
@@ -130,21 +160,23 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   return rawField({ id, label, type: { kind: 'readOnly' }, value: current });
 }
 
-function discriminated(label: string, id: string, name: string, members: readonly Schema[], current: JsonValue,
-  path: readonly string[], context: SchemaContext, change: RawChange | undefined): FieldModel {
+/** A value that is one of several classes: a choice of class, the chosen class's parameters as its parts. */
+function classField(label: string, id: string, name: string, members: readonly Schema[], current: JsonValue,
+  path: readonly string[], context: SchemaContext, change: RawChange | undefined, origin: string | undefined): FieldModel {
   const chosen = isRecord(current) ? members.find((member) => constOf(member, name) === current[name]) : undefined;
-  const options: FieldOption[] = members.map((member) => ({
-    value: constOf(member, name), label: String(constOf(member, name)),
-  }));
-  const choice = rawField({ id: pointer([...path, name]), label: humanizeLabel(name), value: chosen ? constOf(chosen, name) : null,
-    type: { kind: 'choice', options },
-    change: change && ((next) => {
-      const member = members.find((candidate) => constOf(candidate, name) === next);
-      return member && change({ ...defaults(member), [name]: next });
-    }) });
-  const rest = chosen && isRecord(chosen.properties) && isRecord(current)
+  const options: FieldOption[] = members.map((member) => {
+    const value = constOf(member, name);
+    return { value, label: typeof member.title === 'string' ? member.title : String(value) };
+  });
+  const parts = chosen && isRecord(chosen.properties) && isRecord(current)
     ? Object.entries(chosen.properties).filter(([key]) => key !== name)
       .map(([key, nested]) => fromJsonSchema(key, nested, current[key], context, [...path, key]))
     : [];
-  return rawField({ id, label, type: { kind: 'group' }, value: current, parts: [choice, ...rest] });
+  return rawField({
+    id, label, origin, value: chosen ? constOf(chosen, name) : null, type: { kind: 'class', options }, parts,
+    change: change && ((next) => {
+      const member = members.find((candidate) => constOf(candidate, name) === next);
+      return member && change({ ...defaults(member, context.root), [name]: next });
+    }),
+  });
 }

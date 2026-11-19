@@ -368,7 +368,7 @@ export function Gallery() {
         </Group>
 
         <Group name="CatalogPicker">
-          <State name="value"><CatalogPicker aria-label="Training method" className="w-64" value={method} onChoose={setMethod}
+          <State name="value"><CatalogPicker aria-label="Method" className="w-64" value={method} onChoose={setMethod}
             entries={[
               { key: 'feedbax.supervised_gradient', label: 'Supervised gradient', package: 'feedbax' },
               { key: 'lab.evolution', label: 'Evolution strategy', package: 'lab-methods' },

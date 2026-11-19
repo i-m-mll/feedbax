@@ -192,7 +192,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   const model = panel('Model');
   const plant = model.getByRole('article', { name: 'Point mass', exact: true }).locator('header');
   const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
-  const batches = panel('Training').getByRole('textbox', { name: 'N Batches', exact: true });
+  const batches = panel('Training').getByRole('textbox', { name: 'Batches', exact: true });
   const batchSize = panel('Training').getByRole('textbox', { name: 'Batch Size', exact: true });
   async function history(keys: string, view: string, suffix = '') {
     await panel(view).focus();
@@ -288,7 +288,7 @@ test('an Inspector edit typed before the field projection arrives is kept and sa
 test('a Model field edit waits for the plan of the revision it edits', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
-  const batches = page.getByRole('tabpanel', { name: 'Training', exact: true }).getByRole('textbox', { name: 'N Batches', exact: true });
+  const batches = page.getByRole('tabpanel', { name: 'Training', exact: true }).getByRole('textbox', { name: 'Batches', exact: true });
   // The page records, in order, each plan that arrives and each field edit sent.
   await page.addInitScript((path) => {
     const order: string[] = [];
