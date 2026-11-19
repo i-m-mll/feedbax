@@ -25,7 +25,7 @@ from feedbax.builtins.training import StandardTrainingSettings
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
-from feedbax.contracts.studio_authoring import StudioAuthoringChange
+from feedbax.contracts.studio_authoring import StudioAuthoringChange, StudioSweptParameterMissing
 from feedbax.host import HostError
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.authoring import project_train_fields
@@ -356,6 +356,32 @@ def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
     assert next(field for field in fields if field.id == "/method").control is None
     with pytest.raises(ValueError, match="read-only"):
         project_train_fields(swept, "train", registry, StudioAuthoringChange(field="/method", value=method.value))
+
+
+def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_sweep():
+    registry = new_application_registry_bundle().training_methods
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"] = {
+        "type": "warmup_cosine_decay_schedule", "peak_value": 0.001,
+    }
+    peak = "settings.optimizer.learning_rate.peak_value"
+    raw["steps"]["train"]["sweep"] = {"axes": {"peak": {"values": {
+        "low": {"patches": {peak: {"value": 0.001}}}, "high": {"patches": {peak: {"value": 0.002}}},
+    }}}}
+    project = Project.model_validate(raw)
+
+    def choose(schedule: dict):
+        _, _, patches, _ = project_train_fields(project, "train", registry, StudioAuthoringChange(
+            field="/settings/optimizer/learning_rate", value=schedule,
+        ))
+        return patches
+
+    assert choose({"type": "constant_schedule", "value": 0.001}) == StudioSweptParameterMissing(
+        class_label="Constant", parameter_label="Peak Value",
+    )
+    warmup = {"type": "warmup_constant_schedule", "init_value": 0.0, "peak_value": 0.001, "warmup_steps": 10}
+    (patch,) = choose(warmup)
+    assert (patch.path, patch.value) == ("/base/inline/settings/optimizer/learning_rate", warmup)
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):

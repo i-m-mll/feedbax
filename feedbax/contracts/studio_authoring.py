@@ -139,6 +139,13 @@ class StudioTrainAuthoringRequest(StrictModel):
     change: StudioAuthoringChange | None = None
 
 
+class StudioSweptParameterMissing(StrictModel):
+    """A class that lacks a parameter the step sweeps, so the step cannot take it; both named by their titles."""
+
+    class_label: NonemptyText
+    parameter_label: NonemptyText
+
+
 class StudioTrainAuthoring(StrictModel):
     project_id: ProjectName
     step_id: ProjectName
@@ -147,3 +154,4 @@ class StudioTrainAuthoring(StrictModel):
     settings: dict[str, JsonValue] | None
     patches: list[ProjectValueEdit]
     documents: list[ProjectName]
+    refusal: StudioSweptParameterMissing | None = None
