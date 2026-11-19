@@ -5,7 +5,7 @@
     "add": "Add",
     "addComponent": "Add Component",
     "insertComponent": "Insert Component",
-    "moveComponent": "Move Component",
+    "moveCard": "Move Card",
     "bindSignal": "Bind Signal",
     "bringSignal": "Bring Signal",
     "setValue": "Set Value",

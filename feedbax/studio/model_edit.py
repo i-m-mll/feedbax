@@ -989,13 +989,16 @@ def apply_model_edit(
         match operation:
             case edits.AddComponent(graph=primary):
                 edit.add_component(operation)
-            case edits.MoveComponents(placements=placements):
+            case edits.MoveCards(placements=placements):
                 primary = placements[0].address
                 for placement in placements:
                     address = placement.address
                     if address.composites != primary.composites:
                         raise _Refusal(address, "select components of one graph")
-                    edit.component(address)
+                    if address.element.kind in ("inputs", "outputs"):
+                        edit.context(address)
+                    else:
+                        edit.component(address)
                     edit.positions[address.to_text()] = placement.position
                     edit.changed.append(address)
             case edits.FlipComponent(address=primary):

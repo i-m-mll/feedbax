@@ -590,15 +590,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
 
   function move(nodes: ModelCard[]) {
-    const placements = nodes.filter((node) => node.data.address.element.kind === 'component' && !node.data.locked)
+    const placements = nodes.filter((node) => !node.data.locked)
       .map((node) => ({ address: node.data.address, position: node.position }));
     if (!placements.length) return;
     setHeld(new Map(placements.map(({ address, position }) => [addressKey(address), position])));
-    void apply(studioName('moveComponent'), { op: 'move_components', placements }, false).finally(() => setHeld(undefined));
+    void apply(studioName('moveCard'), { op: 'move_cards', placements }, false).finally(() => setHeld(undefined));
   }
 
   function makeCard(id: string, index: number, definition?: typeof objects[number][1]): ModelCard {
-    const address = definition ? at(graph, { kind: 'component', id }) : graph;
+    const address = at(graph, definition ? { kind: 'component', id } : { kind: id === inputCard ? 'inputs' : 'outputs' });
     const key = addressKey(address);
     const type = definition?.kind === 'leaf' ? registry.get(definition.type) : undefined;
     const value = definition?.kind === 'leaf' ? definition.fields?.hidden_size ?? definition.fields?.output_size : undefined;
@@ -607,7 +607,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       ? [shortName(type?.name ?? definition.type), typeof value === 'number' ? value : undefined].filter((item) => item !== undefined).join(' · ')
       : definition?.kind === 'composite' ? graphKind(definition) : undefined;
     const ports = portMap.get(id) ?? emptyPorts;
-    const problem = addressedProblems.get(key);
+    const problem = addressedProblems.get(definition ? key : addressKey(graph));
     const enter = definition?.kind === 'composite' ? enterComposite(id).invoke : undefined;
     return {
       id, type: 'modelCard', ariaLabel: name,
@@ -620,10 +620,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           enter();
         } }),
       },
-      position: held?.get(key) ?? (definition ? persisted?.[key] ?? positionAt(index) :
+      position: held?.get(key) ?? persisted?.[key] ?? (definition ? positionAt(index) :
         { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
       selected: !!definition && selectedIds.has(key),
-      draggable: !!definition && editTopology && !locked && !pick,
+      draggable: editTopology && !locked && !pick,
       selectable: !!definition && !pick,
       data: {
         address, name, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
@@ -851,7 +851,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...viewportCommands,
   ];
   function contextual(event: MouseEvent, address: ModelAddress, point: ModelPosition) {
-    if (address.element.kind === 'graph') return;
+    if (address.element.kind === 'inputs' || address.element.kind === 'outputs') return;
     event.preventDefault();
     event.stopPropagation();
     if (!selectedIds.has(addressKey(address))) select(address);

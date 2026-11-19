@@ -522,6 +522,14 @@ export interface GraphElement {
   kind: "graph";
 }
 
+export interface InputsElement {
+  kind: "inputs";
+}
+
+export interface OutputsElement {
+  kind: "outputs";
+}
+
 export interface ComponentElement {
   kind: "component";
   id: string;
@@ -556,7 +564,7 @@ export interface FieldElement {
 
 export interface ModelAddress {
   composites: string[];
-  element: GraphElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
+  element: GraphElement | InputsElement | OutputsElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
 }
 
 export interface SignalType {
@@ -864,14 +872,14 @@ export interface PasteComponents {
   clipboard: ModelClipboard;
 }
 
-export interface PlaceComponent {
+export interface PlaceCard {
   address: ModelAddress;
   position: ModelPosition;
 }
 
-export interface MoveComponents {
-  op: "move_components";
-  placements: PlaceComponent[];
+export interface MoveCards {
+  op: "move_cards";
+  placements: PlaceCard[];
 }
 
 export interface CollapseGraph {
@@ -925,7 +933,7 @@ export interface UngroupComposite {
 }
 
 export interface ModelEditCommand {
-  operation: AddComponent | MoveComponents | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
 }
 
 export interface ModelEditProblem {
@@ -5042,6 +5050,22 @@ export const GraphElementSchema: z.ZodType<GraphElement> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<GraphElement>;
 
+export const InputsElementSchema: z.ZodType<InputsElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("inputs"),
+    })
+    .strict()
+) as unknown as z.ZodType<InputsElement>;
+
+export const OutputsElementSchema: z.ZodType<OutputsElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("outputs"),
+    })
+    .strict()
+) as unknown as z.ZodType<OutputsElement>;
+
 export const ComponentElementSchema: z.ZodType<ComponentElement> = z.lazy(() =>
   z
     .object({
@@ -5102,7 +5126,7 @@ export const ModelAddressSchema: z.ZodType<ModelAddress> = z.lazy(() =>
   z
     .object({
       "composites": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$"))),
-      "element": z.union([GraphElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
+      "element": z.union([GraphElementSchema, InputsElementSchema, OutputsElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelAddress>;
@@ -5696,23 +5720,23 @@ export const PasteComponentsSchema: z.ZodType<PasteComponents> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<PasteComponents>;
 
-export const PlaceComponentSchema: z.ZodType<PlaceComponent> = z.lazy(() =>
+export const PlaceCardSchema: z.ZodType<PlaceCard> = z.lazy(() =>
   z
     .object({
       "address": ModelAddressSchema,
       "position": ModelPositionSchema,
     })
     .strict()
-) as unknown as z.ZodType<PlaceComponent>;
+) as unknown as z.ZodType<PlaceCard>;
 
-export const MoveComponentsSchema: z.ZodType<MoveComponents> = z.lazy(() =>
+export const MoveCardsSchema: z.ZodType<MoveCards> = z.lazy(() =>
   z
     .object({
-      "op": z.literal("move_components"),
-      "placements": z.array(PlaceComponentSchema).min(1),
+      "op": z.literal("move_cards"),
+      "placements": z.array(PlaceCardSchema).min(1),
     })
     .strict()
-) as unknown as z.ZodType<MoveComponents>;
+) as unknown as z.ZodType<MoveCards>;
 
 export const CollapseGraphSchema: z.ZodType<CollapseGraph> = z.lazy(() =>
   z
@@ -5799,7 +5823,7 @@ export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, MoveComponentsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;

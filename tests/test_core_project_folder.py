@@ -84,7 +84,7 @@ def _edit_cases():
     port = {"id": "fresh", "name": "Fresh", "type": {}}
     return {
         "add_component": {"graph": graph, "component": _gain(), "position": point},
-        "move_components": {"placements": [{"address": a, "position": point}]},
+        "move_cards": {"placements": [{"address": a, "position": point}]},
         "flip_component": {"address": a},
         "collapse_graph": {"graph": _address(scope=("wrapper",)), "collapsed": True},
         "route_wire": {"address": ab, "waypoints": [point]},
