@@ -35,7 +35,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const commit: FieldCommit | undefined = project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member'
     ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit));
   const readOnly = !commit;
-  const rule = readOnly || rowSelection || !field.can_change_axis ? undefined : commit;
+  const rule = readOnly || !field.can_change_axis ? undefined : commit;
   const kind = sweep ? 'sweep' : options.kind ?? 'value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
@@ -84,7 +84,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     kind,
     kinds: field.site.kinds.map((value) => ({
       kind: value,
-      enabled: !(readOnly || rowSelection && value !== kind ||
+      // The server says whether the selected rows take a sweep of their own (`can_sweep`) or can end theirs.
+      enabled: !(readOnly || rowSelection && value !== kind && value !== 'sweep' && value !== 'value' ||
         value === 'sweep' && !sweep && !field.can_sweep ||
         value === 'value' && !!sweep && (!choices.length || !field.can_change_axis)),
     })),
@@ -94,7 +95,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
       choose: options.chooseMember,
     },
     parts,
-    canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && !rowSelection,
+    canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && field.can_change_axis,
     differs: effective ?? undefined,
     origin: [field.conversion, origin(options)].filter(Boolean).join(' · ') || undefined,
     names: field.site.site.names ?? [],

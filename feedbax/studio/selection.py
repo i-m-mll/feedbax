@@ -7,6 +7,7 @@ from pydantic import JsonValue
 
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project_plan import PlannedRow
+from feedbax.contracts.project_sweep import AxisCondition
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 
 
@@ -27,6 +28,8 @@ class TrainSelection:
     current: dict[str, JsonValue] | None
     scoped: bool
     store: Callable[[list[OverridePatch]], list[StudioProjectFilePatch]]
+    values: AxisCondition | None = None
+    """The selected runs as a set of values per sweep of the step, when they are exactly those values' runs."""
 
 
 def merged_files(files: list[StudioProjectFilePatch]) -> list[StudioProjectFilePatch]:
