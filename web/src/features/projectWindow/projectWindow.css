@@ -25,6 +25,7 @@
 }
 
 .studio-window-bar__controls {
+  gap: var(--space-1);
   padding-inline-end: var(--space-1);
 }
 
