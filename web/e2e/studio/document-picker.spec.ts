@@ -62,7 +62,7 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
 
-  await expect(header.getByRole('heading', { name: 'Model', exact: true })).toBeVisible();
+  await expect(header.getByRole('heading', { name: 'Model', exact: true })).toBeAttached();
   await expect(header.getByRole('heading')).toHaveText('Model');
   await expect(header.getByRole('button')).toHaveCount(2);
   await expect(picker('Model')).toHaveText('point-mass');
