@@ -312,11 +312,11 @@ export function StudioRunControls({ commands = [], machine, pivotCommand, pivotA
   const run = commands.find(({ id }) => id === "run");
   const stop = commands.find(({ id }) => id === "stop");
   const rest = [...commands.filter((command) => command !== run && command !== stop), ...pivotCommand ? [pivotCommand] : []];
+  const leading: BarEntry<StudioCommand>[] = machine ? [{ control: machine, priority: "normal" }] : [];
   const entries: BarEntry<StudioCommand>[] = [
-    ...machine ? [{ control: machine, priority: "normal" as const }] : [],
     ...rest.map((command) => ({ command: withGlyph(command), priority: lowRunCommands.has(command.id) ? "low" as const : "normal" as const })),
   ];
-  return <CommandBar moreLabel={studioName("more")} entries={entries}
+  return <CommandBar moreLabel={studioName("more")} leading={leading} entries={entries}
     pinned={run ? { action: withGlyph(run), counterpart: stop && withGlyph(stop) } : undefined}
     itemProps={(command) => ({
       ...commandAttributes(command),

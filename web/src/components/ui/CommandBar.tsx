@@ -48,7 +48,8 @@ export interface PinnedCommands<C extends BarCommand> {
 type ItemProps = Omit<IconButtonProps, 'label' | 'icon' | 'onClick' | 'className'>;
 
 export interface CommandBarProps<C extends BarCommand> {
-  /** Drawn first. */
+  /** In display order, before the pinned commands, such as the machine Run runs on. */
+  leading?: readonly BarEntry<C>[];
   pinned?: PinnedCommands<C>;
   /** In display order, after the pinned commands. */
   entries: readonly BarEntry<C>[];
@@ -106,8 +107,9 @@ function entryId<C extends BarCommand>(entry: BarEntry<C>) {
 
 /** A row of commands that never scrolls: the entries that do not fit are rows of a trailing menu. */
 export function CommandBar<C extends BarCommand>({
-  pinned, entries, moreLabel, itemProps, itemClassName, className, ...aria
+  leading = [], pinned, entries: trailing, moreLabel, itemProps, itemClassName, className, ...aria
 }: CommandBarProps<C>) {
+  const entries = [...leading, ...trailing];
   const bar = useRef<HTMLDivElement>(null);
   const measure = useRef<HTMLDivElement>(null);
   const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
@@ -140,6 +142,9 @@ export function CommandBar<C extends BarCommand>({
   }, [signature]);
 
   const overflow = entries.filter((_, index) => hidden.has(index));
+  const drawn = (entry: BarEntry<C>, index: number) => hidden.has(index) ? null : 'command' in entry
+    ? <Command key={entry.command.id} command={entry.command} props={itemProps?.(entry.command)} className={itemClassName} />
+    : <div key={entry.control.id} className="flex shrink-0">{entry.control.bar}</div>;
   return (
     <div ref={bar} role="toolbar" className={clsx('relative flex min-w-0 flex-1 items-center gap-1 overflow-hidden', className)} {...aria}>
       <div ref={measure} aria-hidden="true"
@@ -151,10 +156,9 @@ export function CommandBar<C extends BarCommand>({
           : <div key={entry.control.id} data-measure="entry" className="flex shrink-0">{entry.control.bar}</div>)}
         <IconButton data-measure="trigger" label="" icon={<Ellipsis />} className={itemClassName} />
       </div>
+      {entries.slice(0, leading.length).map(drawn)}
       {pins.map((command) => <Command key={command.id} command={command} props={itemProps?.(command)} className={itemClassName} />)}
-      {entries.map((entry, index) => hidden.has(index) ? null : 'command' in entry
-        ? <Command key={entry.command.id} command={entry.command} props={itemProps?.(entry.command)} className={itemClassName} />
-        : <div key={entry.control.id} className="flex shrink-0">{entry.control.bar}</div>)}
+      {entries.slice(leading.length).map((entry, index) => drawn(entry, leading.length + index))}
       {overflow.length > 0 && <Menu>
         <MenuTrigger render={<IconButton label={moreLabel} icon={<Ellipsis aria-hidden="true" />} className={itemClassName} />} />
         <MenuContent align="end" aria-label={moreLabel}>
