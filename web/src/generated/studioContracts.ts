@@ -3402,6 +3402,11 @@ export type StoreSubset = {
   "query": ManifestPredicate;
 };
 
+export type StudioAddClassMember = {
+  "kind": "add_member";
+  "key": string;
+};
+
 export type StudioAnalysisPlace = {
   "part": "analysis";
   "element": string;
@@ -3563,6 +3568,41 @@ export type StudioCheckpointRuleSet = {
 
 export type StudioCheckpointRuleToSweep = {
   "kind": "to_sweep";
+};
+
+export type StudioClassField = {
+  "id": string;
+  "label": string;
+  "options": Array<StudioAuthoringOption>;
+  "classes": Array<string>;
+  "sweep"?: StudioClassSweep | null;
+  "selected_value"?: string | null;
+  "can_sweep"?: boolean;
+};
+
+export type StudioClassMember = {
+  "id": string;
+  "label": string;
+  "value": string;
+};
+
+export type StudioClassSweep = {
+  "id": string;
+  "members": Array<StudioClassMember>;
+};
+
+export type StudioClassSweepChange = {
+  "field": string;
+  "edit": StudioClassToSweep | StudioClassToValue | StudioAddClassMember | StudioRemoveClassMember;
+};
+
+export type StudioClassToSweep = {
+  "kind": "to_sweep";
+};
+
+export type StudioClassToValue = {
+  "kind": "to_value";
+  "value_id": string;
 };
 
 export type StudioDefinitionChange = {
@@ -3813,6 +3853,11 @@ export type StudioProjectWindowMapSubset = {
   "rank_groups"?: Array<StudioBestRankGroup>;
 };
 
+export type StudioRemoveClassMember = {
+  "kind": "remove_member";
+  "value_id": string;
+};
+
 export type StudioRemovedRuns = {
   "revision": string;
   "runs": Array<StudioSavedTrainKey>;
@@ -3911,6 +3956,8 @@ export type StudioTrainAuthoring = {
   "files": Array<StudioProjectFilePatch>;
   "documents": Array<string>;
   "refusal"?: StudioSweptParameterMissing | null;
+  "classes"?: Array<StudioClassField>;
+  "removed_values"?: Record<string, Array<string>>;
 };
 
 export type StudioTrainAuthoringRequest = {
@@ -3920,6 +3967,7 @@ export type StudioTrainAuthoringRequest = {
   "lit_steps"?: Array<string>;
   "revision": Sha256;
   "change"?: StudioAuthoringChange | null;
+  "class_sweep"?: StudioClassSweepChange | null;
 };
 
 export type StudioTrainStep = {
@@ -9867,6 +9915,13 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
 
+export const StudioAddClassMemberSchema: z.ZodType<StudioAddClassMember> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("add_member"),
+    "key": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAddClassMember>;
+
 export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(() =>
   z.object({
     "part": z.literal("analysis"),
@@ -10079,6 +10134,53 @@ export const StudioCheckpointRuleToSweepSchema: z.ZodType<StudioCheckpointRuleTo
     "kind": z.literal("to_sweep"),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleToSweep>;
+
+export const StudioClassFieldSchema: z.ZodType<StudioClassField> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "label": z.string(),
+    "options": z.array(StudioAuthoringOptionSchema),
+    "classes": z.array(z.string()),
+    "sweep": z.union([StudioClassSweepSchema, z.null()]).optional(),
+    "selected_value": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "can_sweep": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioClassField>;
+
+export const StudioClassMemberSchema: z.ZodType<StudioClassMember> = z.lazy(() =>
+  z.object({
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "label": z.string(),
+    "value": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioClassMember>;
+
+export const StudioClassSweepSchema: z.ZodType<StudioClassSweep> = z.lazy(() =>
+  z.object({
+    "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "members": z.array(StudioClassMemberSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioClassSweep>;
+
+export const StudioClassSweepChangeSchema: z.ZodType<StudioClassSweepChange> = z.lazy(() =>
+  z.object({
+    "field": z.string(),
+    "edit": z.union([StudioClassToSweepSchema, StudioClassToValueSchema, StudioAddClassMemberSchema, StudioRemoveClassMemberSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioClassSweepChange>;
+
+export const StudioClassToSweepSchema: z.ZodType<StudioClassToSweep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("to_sweep"),
+  }).strict()
+) as unknown as z.ZodType<StudioClassToSweep>;
+
+export const StudioClassToValueSchema: z.ZodType<StudioClassToValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("to_value"),
+    "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioClassToValue>;
 
 export const StudioDefinitionChangeSchema: z.ZodType<StudioDefinitionChange> = z.lazy(() =>
   z.object({
@@ -10394,6 +10496,13 @@ export const StudioProjectWindowMapSubsetSchema: z.ZodType<StudioProjectWindowMa
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapSubset>;
 
+export const StudioRemoveClassMemberSchema: z.ZodType<StudioRemoveClassMember> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("remove_member"),
+    "value_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioRemoveClassMember>;
+
 export const StudioRemovedRunsSchema: z.ZodType<StudioRemovedRuns> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
@@ -10521,6 +10630,8 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "files": z.array(StudioProjectFilePatchSchema),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
+    "classes": z.array(StudioClassFieldSchema).optional(),
+    "removed_values": z.record(z.string(), z.array(z.string())).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoring>;
 
@@ -10532,6 +10643,7 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
     "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "revision": Sha256Schema,
     "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
+    "class_sweep": z.union([StudioClassSweepChangeSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoringRequest>;
 
