@@ -161,7 +161,7 @@ it("titles the inspector by step and kind, then by the chosen run's values, and 
   const { rerender } = render(inspect(step, selectStep(emptyPipelineSelection, "train")));
   const inspector = within(document.body);
   expect(inspector.getByRole("heading").textContent).toBe("Train arm");
-  expect(inspector.getByText("Train")).toBeDefined();
+  expect(inspector.getByRole("img", { name: "Train" })).toBeDefined();
   expect(inspector.queryByRole("button", { name: /Objective has no enabled terms/ })).toBeNull();
   rerender(inspect(step, rows(["b"])));
   expect(inspector.getByRole("heading").textContent).toBe("Train arm · Rate 0.003 · Seed 1");

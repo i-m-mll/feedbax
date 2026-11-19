@@ -6,6 +6,7 @@ import {
   studioReason, studioRunStatus, studioValidityReason, type StudioPlace, type StudioResultState, type StudioValidityRows,
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
+import { StepKindMark } from "./StepKindMark";
 import { commandAttributes, type StudioCommand, type StudioCommandId } from "@/features/projectWindow/studioCommands";
 import type { PlanRunView, PlanStepView, PlanView } from "@/features/pipeline/planView";
 import { MentionRow } from "@/features/projectWindow/StudioProblems";
@@ -250,13 +251,13 @@ export function StudioStepInspector({
   const related = upstream.size > 0 || downstream.size > 0;
   return <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-2 text-sm [overflow-wrap:anywhere]">
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-      <h3 className="min-w-0 break-words font-semibold">{title}</h3>
+      <span className="flex min-w-0 items-center gap-1.5"><StepKindMark kind={step.kind} /><h3 className="min-w-0 break-words font-semibold">{title}</h3></span>
       {chosen ? <ul className="contents">
         {[...counts].map(([status, count]) => <li key={status} className="inline-flex items-center gap-1">
           {!single && <span className="tabular-nums">{count}</span>}
           <StudioRunStatus status={status} />
         </li>)}
-      </ul> : <span className="text-shell-muted">{studioName(step.kind)}</span>}
+      </ul> : null}
     </div>
     {validity.size > 0 && <ul aria-label={studioName("reason")} className="divide-y divide-shell-divider border-y border-shell-divider">
       {[...validity].map(([key, { state, rows: { title, changes } }]) => <li key={key} className="py-1 text-xs">
