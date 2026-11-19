@@ -61,7 +61,7 @@ test('one reference field sets an Evaluate subject by list and by crosshair, and
   await page.goto('/?project=' + encodeURIComponent(project));
   await mapStep(page, 'baseline').click();
   await tab(page, 'Runs').click();
-  const inputs = page.getByRole('region', { name: 'Inputs', exact: true });
+  const inputs = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const subject = inputs.getByRole('combobox', { name: 'Subject', exact: true });
   await expect(subject).toHaveText('train');
 

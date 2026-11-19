@@ -389,14 +389,16 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const source = map.getByRole('article', { name: 'Train train', exact: true });
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  const stepInspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const table = runs.getByRole('table', { name: 'Runs' });
   await page.goto(`/?project=${encodeURIComponent(id)}`);
   await mapStep(page, 'train').click();
   await expect(table).toBeInViewport();
   await expect(runs.getByRole('region', { name: 'Definition' })).toHaveCount(0);
-  await expect(drawer.getByRole('region', { name: 'Definition' })).toBeVisible();
+  await expect(drawer).toBeHidden();
+  await expect(stepInspector.getByRole('region', { name: 'Definition' })).toBeVisible();
   await expect(source).toHaveAttribute('data-selected');
-  await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
+  await authorLearningRateSweep(stepInspector.getByRole('region', { name: 'Learning Rate field', exact: true }));
 
   const sweep = source.getByRole('button', { name: /^Sweep \(?learning-rate / });
   await expect(sweep).toHaveText('learning-rate 3');
@@ -584,7 +586,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     const selectedRow = table.getByRole('button', { name: runName(selected[index].label) });
     await selectedRow.click();
     await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
-    await expect(runs.getByRole('region', { name: 'Made From' })).toContainText('train');
+    await expect(inspector.getByRole('button', { name: /^Select Made From train / })).toBeVisible();
     await expect(table.getByRole('progressbar')).toHaveCount(0);
     if (index === 0) {
       await openResultsSlot(page);
@@ -592,7 +594,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
       await expect(inspector).toBeHidden();
       await expect(page.getByRole('button', { name: 'Show Drawer', exact: true })).toBeDisabled();
       await runs.focus();
-      await expect(drawer).toBeVisible();
+      await expect(drawer).toBeHidden();
       await expect(inspector).toBeVisible();
       await page.getByRole('tabpanel', { name: 'Results', exact: true }).focus();
       await expect(drawer).toBeHidden();

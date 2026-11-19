@@ -4,7 +4,7 @@ import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonica
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('Training and Runs edit the same saved values and project the selected source', async ({ page, request }) => {
+test('the inspector edits the saved values for the step and its selected runs, and projects the selected source', async ({ page, request }) => {
   test.setTimeout(55_000);
   const files = await fixture('ordinary-files', '2');
   // Train offers the settings a project authors, so the project authors Grad Clip to edit it.
@@ -33,7 +33,7 @@ test('Training and Runs edit the same saved values and project the selected sour
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   await expect(rateText).toHaveValue('0.001');
   const method = page.getByRole('combobox', { name: 'Method', exact: true });
   await expect(method).toHaveValue('Supervised gradient');
@@ -105,7 +105,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   await expect(batchText).toHaveValue(initialBatches);
   await expect(exceptions).toHaveCount(0);
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   await enter(clipText, '0.75');
   await expect.poll(async () => JSON.stringify((await saved()).project.steps?.train.base)).toContain('"grad_clip":0.75');
   await enter(clipText, 'geomspace(0.1, 1, 3)');

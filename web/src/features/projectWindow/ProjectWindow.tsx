@@ -1,6 +1,6 @@
 import {
   BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings2, Target, Workflow, X,
+  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
@@ -77,7 +77,6 @@ export const viewGlyphs = {
   model: GitBranch,
   task: Crosshair,
   objective: Target,
-  training: Settings2,
   scene: SceneIcon,
   results: BarChart3,
   analysis: Workflow,

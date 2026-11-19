@@ -30,14 +30,13 @@ export async function authorFirstTrain(
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
   const objective = page.getByRole('tabpanel', { name: 'Objective', exact: true });
-  const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const taskX = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
   const nSteps = task.getByRole('textbox', { name: /N Steps/i });
   const weight = objective.getByRole('textbox', { name: 'Weight', exact: true });
-  const nBatches = training.getByRole('textbox', { name: 'Batches', exact: true });
-  const batchSize = training.getByRole('textbox', { name: 'Batch Size', exact: true });
+  const nBatches = inspector.getByRole('textbox', { name: 'Batches', exact: true });
+  const batchSize = inspector.getByRole('textbox', { name: 'Batch Size', exact: true });
   const taskValues = (project: StudioProjectSnapshot['project']) => (
     project.documents?.task?.payload as PythonTaskSelection | undefined
   )?.params;
@@ -156,7 +155,7 @@ export async function authorFirstTrain(
     const authored = terms(project)[0]?.weight;
     return authored && 'value' in authored ? authored.value : undefined;
   });
-  await page.keyboard.press('Meta+5');
+  await page.keyboard.press('Meta+1');
   await setNumber(nBatches, totalUpdates, (project) => config(project)?.n_batches);
   await expect(nBatches).toBeEditable();
   await setNumber(batchSize, 4, (project) => config(project)?.batch_size);
@@ -217,9 +216,7 @@ export async function authorFirstTrain(
     await page.reload();
     await expect(page).toHaveURL(new RegExp(`[?&]project=${snapshot.project_id}(?:&|$)`));
     await activate(page, mapStep(page, 'train'));
-    // The window comes back as it was left, on Training.
-    await expect(page.getByRole('tabpanel', { name: 'Training', exact: true })).toBeVisible();
-    await page.keyboard.press('Meta+1');
+    // The window comes back as it was left, on Runs.
     await expect(runs).toBeVisible();
   }
   await reopen();
@@ -228,7 +225,7 @@ export async function authorFirstTrain(
   await page.keyboard.press('Meta+4');
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
   await expect(weight).toHaveValue('2');
-  await page.keyboard.press('Meta+5');
+  await page.keyboard.press('Meta+1');
   await expect(nBatches).toHaveValue(String(totalUpdates));
   await expect(batchSize).toHaveValue('4');
   return { saved, projectPath, savedProject, plan, plantId: plantId! };

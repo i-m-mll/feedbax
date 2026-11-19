@@ -210,13 +210,13 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const readPlan = () => savedPlan(request, projectPath);
   await page.goto(path);
   await select(page, 'train');
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const train = page.getByRole('article', { name: 'Train train', exact: true });
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   expect((await created).status()).toBe(201);
-  const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
+  const subset = inspector.getByRole('group', { name: 'Subject Subset', exact: true });
   const metric = subset.getByRole('textbox', { name: 'Metric', exact: true });
   const count = subset.getByRole('textbox', { name: 'Count', exact: true });
   const best = subset.getByRole('checkbox', { name: 'Best', exact: true });
@@ -224,12 +224,12 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const order = subset.getByRole('combobox', { name: 'Order', exact: true });
   const per = subset.getByRole('group', { name: 'Per', exact: true })
     .getByRole('checkbox', { name: 'replicate', exact: true });
-  const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
+  const inputs = inspector;
   const members = inputs.getByRole('list', { name: 'Members', exact: true }).getByRole('listitem');
   const groupLabels = ['replicate First', 'replicate Second'];
   const groupedLists = groupLabels.map((label) =>
     inputs.getByRole('list', { name: `Members ${label}`, exact: true }).getByRole('listitem'));
-  const freeze = drawer.getByRole('button', { name: 'To Rows', exact: true });
+  const freeze = inspector.getByRole('button', { name: 'To Rows', exact: true });
   const saveWhere = async (click: () => Promise<void>) => {
     const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
       && new URL(response.url()).pathname === projectPath
@@ -384,13 +384,13 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const map = page.getByRole('region', { name: 'Pipeline Map', exact: true });
   const train = map.getByRole('article', { name: 'Train train', exact: true });
   const evaluated = map.getByRole('article', { name: 'Evaluate evaluate', exact: true });
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const steps = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
   const readPlan = () => savedPlan(request, projectPath);
 
   await page.goto(mounted);
   await select(page, 'train');
-  await authorLearningRateSweep(drawer.getByRole('region', { name: 'Learning Rate field', exact: true }));
+  await authorLearningRateSweep(inspector.getByRole('region', { name: 'Learning Rate field', exact: true }));
   const sweep = train.getByRole('button', { name: /^Sweep learning-rate / });
   await expect(sweep).toHaveText('learning-rate 3');
   const definition = await readPlan();
@@ -420,12 +420,12 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
     inputs: { subject: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': ids.slice(0, 2) } } } },
     sweep: { axes: { subject: { input: 'subject' } } },
   });
-  const inputs = drawer.getByRole('region', { name: 'Inputs', exact: true });
+  const inputs = inspector;
   await expect(inputs).toContainText('learning-rate 0.001, 0.002 · 2 of 3');
   const members = inputs.getByRole('list', { name: 'Members', exact: true });
   await expect(members.getByRole('listitem')).toHaveText(sourceRows.slice(0, 2).map(({ label }) => label));
-  const trialSet = drawer.getByRole('group', { name: 'Trial Set', exact: true });
-  await expect(trialSet.getByRole('combobox')).toBeFocused();
+  const trialSet = inspector.getByRole('group', { name: 'Trial Set', exact: true });
+  await expect(inspector.getByRole('combobox', { name: 'Subject', exact: true })).toBeFocused();
   await pick(trialSet.getByRole('combobox'), 'Selected Conditions');
   for (const condition of conditionIds) await trialSet.getByRole('checkbox', { name: condition, exact: true }).check();
   const edited = (path: string) => page.waitForResponse((response) => {
@@ -451,16 +451,16 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await select(page, 'train');
   const fast = runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button');
   await fast.click();
-  await expect(primary(page).getByRole('region', { name: 'Used By' })).toHaveCount(0);
+  await expect(inspector.getByRole('button', { name: /^Select Used By / })).toHaveCount(0);
   await expect(steps.getByRole('treeitem', { name: /^evaluate\b/ })).toHaveAccessibleDescription('0 of 2');
   const slow = runs(page).getByRole('row').filter({ hasText: '0.001' }).getByRole('button');
   await slow.click();
-  await expect(primary(page).getByRole('region', { name: 'Used By' })).toContainText('1 of 2');
+  await expect(inspector.getByRole('button', { name: /^Select Used By / })).toContainText('1 of 2');
   await expect(steps.getByRole('treeitem', { name: /^evaluate\b/ })).toHaveAccessibleDescription('1 of 2');
   await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
 
   await select(page, 'evaluate');
-  const subset = drawer.getByRole('group', { name: 'Subject Subset', exact: true });
+  const subset = inspector.getByRole('group', { name: 'Subject Subset', exact: true });
   await subset.getByRole('checkbox', { name: '0.003', exact: true }).check();
   const subsetEdit = edited('/inputs/subject/where');
   await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
@@ -480,7 +480,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(inputs).toContainText('3 of 3');
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3);
   await runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button').click();
-  await expect(primary(page).getByRole('region', { name: 'Made From' })).toContainText('1 of 3');
+  await expect(inspector.getByRole('button', { name: /^Select Made From / })).toContainText('1 of 3');
   await expect(steps.getByRole('treeitem', { name: /^train\b/ })).toHaveAccessibleDescription('1 of 3');
   await page.getByRole('button', { name: 'Show Map', exact: true }).click();
   await expect(train.locator('[data-map-focus="upstream"]')).toHaveCount(1);
@@ -578,7 +578,8 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   await launchRows(page, projectPath, [target]);
   await expect(cell('0.003', 'Long Task', 'Done')).toBeVisible({ timeout: 18_000 });
   await expect(pivot.getByRole('button', { name: /Not run$/ })).toHaveCount(3);
-  const lineage = primary(page).getByRole('region', { name: 'Made From', exact: true });
+  const lineage = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('listitem')
+    .filter({ has: page.getByRole('button', { name: /^Select Made From / }) });
   const complete = await read();
   expect(complete.window_map!.evaluations!.map(({ status }) => status)).toEqual([
     'not_run', 'not_run', 'not_run', 'succeeded',
@@ -653,8 +654,8 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   };
   expect(await sourceFor(newRows[2].key)).toMatchObject([{ kind: 'sweep_value', axis: 'learning-rate', value: 'Fast' }]);
   expect(await sourceFor(newRows[0].key)).toMatchObject([{ kind: 'document', name: 'reach-model' }]);
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  const exception = drawer.getByRole('region', { name: 'Exceptions', exact: true })
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const exception = inspector.getByRole('list', { name: 'Exceptions', exact: true })
     .getByRole('listitem').filter({ hasText: 'Mass' });
   await expect(exception).toContainText('learning-rate 0.001 · seed 1, 2 · 2 runs');
   await exception.getByRole('button', { name: 'Remove Exception', exact: true }).click();

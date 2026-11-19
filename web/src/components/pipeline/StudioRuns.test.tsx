@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { PlanStepView, PlanView } from "@/features/pipeline/planView";
 import { emptyPipelineSelection, selectStep, type PipelineSelection, type PipelineSelectionState } from "@/features/pipeline/selection";
 import { bindStudioCommand } from "@/features/projectWindow/studioCommands";
-import { StudioRunControls, StudioRunDetails, StudioRuns } from "./StudioRuns";
+import { StudioRunControls, StudioRuns, StudioStepInspector } from "./StudioRuns";
 
 const train: PlanStepView = {
   id: "train",
@@ -50,7 +50,7 @@ function showRuns(step: PlanStepView, run?: (selection: PipelineSelection | null
         pivotCommand={step.sweeps.length > 1 ? bindStudioCommand("pivot", () => setPivot(!pivot)) : undefined}
         pivotActive={pivot} />
       <StudioRuns plan={plan} region={result} pivotActive={pivot} {...selection} />
-      {state.selection?.kind !== "steps" && <StudioRunDetails {...selection} />}
+      <StudioStepInspector plan={plan} {...selection} onChooseStep={(stepId) => setState(selectStep(state, stepId))} />
     </>;
   }
   return render(<TestRuns />);
@@ -73,9 +73,7 @@ it("identifies runs by ordinal and the fields that differ, and runs the selected
   expect(perform).toHaveBeenLastCalledWith({ kind: "rows", stepId: "train", runIds: ["b", "c"] });
   expect(within(table).queryByText("Learning rate 0.001 → 0.003")).toBeNull();
   expect(screen.getByText("Learning rate 0.001 → 0.003")).toBeDefined();
-  const runs = screen.getByRole("region", { name: "Runs" });
-  expect(within(within(runs).getByRole("region", { name: "Used By" }))
-    .getByRole("button", { name: "Select Test reach 1 of 1" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Select Used By Test reach 1 of 1" })).toBeDefined();
 });
 
 it("puts the opening stage in the status tooltip and keeps provider error lines in the inspector", () => {
@@ -95,7 +93,7 @@ it("puts the opening stage in the status tooltip and keeps provider error lines 
     .toEqual(["Opening machine: connecting", summary]);
   expect(table.queryByText(line)).toBeNull();
   fireEvent.click(table.getByRole("button", { name: /^\d+ B$/ }));
-  expect(within(screen.getByRole("region", { name: "Run Inspector" })).getByText(line)).toBeDefined();
+  expect(screen.getByText(line)).toBeDefined();
 });
 
 it("virtualizes an authoritative 1,000-row result and keeps its full accessible count", () => {
@@ -142,7 +140,7 @@ it("draws a Results differ reason as one row per change", () => {
       ],
     }] } }],
   };
-  render(<StudioRunDetails step={{ ...train, runs: [run] }}
+  render(<StudioStepInspector plan={plan} step={{ ...train, runs: [run] }} onChooseStep={() => {}}
     state={{ ...selectStep(emptyPipelineSelection, "train"), selection: { kind: "rows", stepId: "train", runIds: [run.id] } }} />);
   const reasons = within(screen.getByRole("list", { name: "Reason" }));
   expect(reasons.getByText("Results differ")).toBeDefined();
@@ -150,7 +148,7 @@ it("draws a Results differ reason as one row per change", () => {
     .toEqual(["train revision 1 → 2", "Updates 2 → 6"]);
 });
 
-it("titles the inspector by step and the run's values, and reveals a run's problem from its row", () => {
+it("titles the inspector by step and kind, then by the chosen run's values, and reveals a run's problem from its row", () => {
   const reveal = vi.fn();
   const problem = {
     code: "cannot_run", path: "/trial_documents/objective/terms", detail: "Objective has no enabled terms.",
@@ -158,17 +156,23 @@ it("titles the inspector by step and the run's values, and reveals a run's probl
   } as const;
   const rows = (runIds: string[]) => ({ ...selectStep(emptyPipelineSelection, "train"), selection: { kind: "rows" as const, stepId: "train", runIds } });
   const step = { ...train, runs: train.runs.map((run) => run.id === "b" ? { ...run, problems: [problem] } : run) };
-  const { rerender } = render(<StudioRunDetails step={step} state={rows(["b"])} onReveal={reveal} />);
-  const inspector = within(screen.getByRole("region", { name: "Run Inspector" }));
+  const inspect = (shown: PlanStepView, state: PipelineSelectionState) =>
+    <StudioStepInspector plan={plan} step={shown} state={state} onReveal={reveal} onChooseStep={() => {}} />;
+  const { rerender } = render(inspect(step, selectStep(emptyPipelineSelection, "train")));
+  const inspector = within(document.body);
+  expect(inspector.getByRole("heading").textContent).toBe("Train arm");
+  expect(inspector.getByText("Train")).toBeDefined();
+  expect(inspector.queryByRole("button", { name: /Objective has no enabled terms/ })).toBeNull();
+  rerender(inspect(step, rows(["b"])));
   expect(inspector.getByRole("heading").textContent).toBe("Train arm · Rate 0.003 · Seed 1");
   fireEvent.click(inspector.getByRole("button", { name: /^Objective · Objective has no enabled terms/ }));
   expect(reveal).toHaveBeenCalledWith(step.runs[1], expect.objectContaining({ place: problem.place, problem }));
   const change = { path: "payload.seed", place: { part: "step", field: "seed" }, before: 0, after: 1 } as const;
   const stale = { ...train, runs: train.runs.map((run) => run.id === "b" ? { ...run, status: "stale" as const, change } : run) };
-  rerender(<StudioRunDetails step={stale} state={rows(["b"])} onReveal={reveal} />);
+  rerender(inspect(stale, rows(["b"])));
   fireEvent.click(inspector.getByRole("button", { name: /^Seed · 0 → 1$/ }));
   expect(reveal).toHaveBeenLastCalledWith(stale.runs[1], { place: change.place, detail: "0 → 1" });
-  rerender(<StudioRunDetails step={{ ...evaluate, runs: [{ ...evaluate.runs[0], label: "default" }] }}
-    state={{ ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }} />);
+  rerender(inspect({ ...evaluate, runs: [{ ...evaluate.runs[0], label: "default" }] },
+    { ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }));
   expect(screen.getByRole("heading").textContent).toBe("Test reach");
 });
