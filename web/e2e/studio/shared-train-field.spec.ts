@@ -14,7 +14,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const clip = page.getByRole('region', { name: 'Grad Clip field', exact: true });
   const batches = page.getByRole('region', { name: 'Batches field', exact: true });
-  const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   const clipText = clip.getByRole('textbox', { name: 'Grad Clip', exact: true });
   async function saved() {
     const response = await request.get(projectPath);
@@ -42,7 +42,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   await page.keyboard.press('Escape');
   const optimizer = page.getByRole('region', { name: 'Optimizer field', exact: true });
   await expect(optimizer.getByRole('region', { name: 'Params field', exact: true })).toContainText('Learning Rate');
-  await rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }).click();
+  await rate.getByRole('button', { name: 'Learning Rate Value kind: Value', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: 'Sweep', exact: true })).toBeEnabled();
   await page.keyboard.press('Escape');
   await enter(optimizer.getByRole('textbox', { name: 'Type', exact: true }), 'sgd');

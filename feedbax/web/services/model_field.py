@@ -257,7 +257,7 @@ def model_fields(
         axis = None
         if step is not None:
             target = SweepTarget(numeric.value, partial(_step_field_write, step, field.address), field_key)
-            axis = FieldSweeps(step, target, numeric.label, integer=numeric.site.expected.base == ValueBase.INTEGER)
+            axis = FieldSweeps(step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER)
             if evaluate is not None:
                 # The addressed sweep can set fields inherited from registry defaults.
                 numeric = replace(numeric, stored=True)

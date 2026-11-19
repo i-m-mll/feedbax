@@ -140,7 +140,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
   await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
-  const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await expect(rateText).toHaveValue('0.001,');
   await number(page, rateText, '0.001, 0.002, 0.003');
   await expect(rate.getByText('0.003', { exact: true })).toBeVisible();
@@ -561,7 +561,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('Meta+5');
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
-  const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
   await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   await expect(rateText).toHaveValue('0.001,');

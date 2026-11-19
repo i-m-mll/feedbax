@@ -8,11 +8,13 @@ export interface TextFieldProps extends Omit<ComponentPropsWithoutRef<typeof Inp
   invalid?: boolean;
   leading?: ReactNode;
   trailing?: ReactNode;
+  /** A control sharing the box, at its end past a hairline: a class's picker. */
+  end?: ReactNode;
   className?: string;
 }
 
 export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function TextField(
-  { onValueChange, invalid, leading, trailing, className, ...props }, ref,
+  { onValueChange, invalid, leading, trailing, end, className, ...props }, ref,
 ) {
   return (
     <div className={clsx(fieldBox, className)}>
@@ -25,6 +27,7 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function T
         {...props}
       />
       {trailing ? <span className={clsx('flex pr-control-inline text-shell-muted', glyph)}>{trailing}</span> : null}
+      {end ? <span className="field-end flex h-full min-w-control shrink-[1000] border-l border-shell-field">{end}</span> : null}
     </div>
   );
 });

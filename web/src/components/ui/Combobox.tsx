@@ -16,11 +16,13 @@ export interface ComboboxProps<Value extends string> {
   'aria-label'?: string;
   'aria-labelledby'?: string;
   id?: string;
+  /** Drawn without a frame and as wide as the chosen item, inside another field's box. */
+  inline?: boolean;
   className?: string;
 }
 
 export function Combobox<Value extends string>(
-  { items, value, onValueChange, placeholder, disabled, invalid, id, className, ...aria }: ComboboxProps<Value>,
+  { items, value, onValueChange, placeholder, disabled, invalid, id, inline, className, ...aria }: ComboboxProps<Value>,
 ) {
   const selected = useMemo(() => items.find((item) => item.value === value) ?? null, [items, value]);
   return (
@@ -32,17 +34,18 @@ export function Combobox<Value extends string>(
       disabled={disabled}
       autoHighlight
     >
-      <BaseCombobox.InputGroup className={clsx(fieldBox, 'overflow-hidden', className)}>
+      <BaseCombobox.InputGroup className={clsx(inline ? 'flex h-full min-w-0 items-center' : fieldBox, 'overflow-hidden', className)}>
         <BaseCombobox.Input id={id} placeholder={placeholder} aria-invalid={invalid || undefined}
-          className={fieldInput} {...aria} />
+          size={inline ? Math.max(1, selected?.label.length ?? 1) : undefined}
+          className={clsx(fieldInput, 'text-ellipsis', inline && 'pr-0')} {...aria} />
         <BaseCombobox.Trigger tabIndex={-1} {...aria}
-          className={clsx('flex h-full w-control items-center justify-center text-shell-muted outline-none', glyph)}>
+          className={clsx('flex h-full w-control shrink-0 items-center justify-center text-shell-muted outline-none', glyph)}>
           <ChevronDown />
         </BaseCombobox.Trigger>
       </BaseCombobox.InputGroup>
       <BaseCombobox.Portal container={usePopupLayer()}>
-        <BaseCombobox.Positioner className="z-50 outline-none" sideOffset={4} align="start">
-          <BaseCombobox.Popup className={clsx(popupSurface, 'w-[var(--anchor-width)] max-w-[var(--available-width)] data-[empty]:hidden')}>
+        <BaseCombobox.Positioner className="z-50 outline-none" sideOffset={4} align={inline ? 'end' : 'start'}>
+          <BaseCombobox.Popup className={clsx(popupSurface, inline ? 'w-max min-w-[var(--anchor-width)]' : 'w-[var(--anchor-width)]', 'max-w-[var(--available-width)] data-[empty]:hidden')}>
             <BaseCombobox.List className="max-h-[min(22rem,var(--available-height))] overflow-y-auto">
               {(item: Option<Value>) => (
                 <BaseCombobox.Item key={item.value} value={item} disabled={item.disabled}

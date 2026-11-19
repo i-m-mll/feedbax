@@ -334,7 +334,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
         assert not recipe["problems"], recipe
         saved = client.patch(url, json={"revision": snapshot.revision, "files": recipe["files"]})
         assert saved.status_code == 200, saved.text
-        sampled_axis = folders.read("fields").project.steps["train"].sweep.axes["step"]
+        sampled_axis = folders.read("fields").project.steps["train"].sweep.axes["step-seconds"]
         assert sampled_axis.sampler.distribution.family == "uniform"
         assert sampled_axis.sampler.seed == 8
         expected = [float(jax.random.uniform(jax.random.fold_in(jax.random.key(8), index),
@@ -404,6 +404,33 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
         assert len(sampled["draws"]) == 4
         assert all(type(value) is int and value in (8, 12) for value in sampled["draws"].values())
         assert sampled["sampler"]["distribution"]["family"] == "choice"
+
+
+def test_class_parameter_axes_are_named_by_the_field_holding_the_class(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"] = {
+        "type": "warmup_cosine_decay_schedule", "init_value": 0.0, "peak_value": 1e-3, "warmup_steps": 10, "decay_steps": 100,
+    }
+    _save_project(ProjectFolderService(tmp_path), "class-axes", Project.model_validate(raw))
+    url = "/api/projects/class-axes"
+    endpoint = url + "/authoring/train/train/fields"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        body = {"revision": client.get(url).json()["revision"]}
+
+        recipe = client.post(endpoint, json=body | {
+            "field": "/settings/optimizer/learning_rate/peak_value", "edit": {"kind": "text", "text": "0.001, 0.003"},
+        }).json()
+        assert not recipe["problems"], recipe
+        client.patch(url, json=body | {"files": recipe["files"]}).raise_for_status()
+        body = {"revision": client.get(url).json()["revision"]}
+        recipe = client.post(endpoint, json=body | {
+            "field": "/settings/optimizer/b1", "edit": {"kind": "text", "text": "0.8, 0.9"},
+        }).json()
+        assert not recipe["problems"], recipe
+        client.patch(url, json=body | {"files": recipe["files"]}).raise_for_status()
+        axes = client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]["sweep"]["axes"]
+        assert set(axes) == {"learning-rate-peak-value", "optimizer-b1"}
 
 
 def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):

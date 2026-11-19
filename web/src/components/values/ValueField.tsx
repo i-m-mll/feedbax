@@ -92,6 +92,8 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     else focusText();
   }
 
+  const parameter = type.kind === 'class' && model.parts?.length === 1 ? model.parts[0] : undefined;
+  const boxed = !!parameter && textualKind(parameter.type.kind);
   const widget = (() => {
     switch (type.kind) {
       case 'boolean':
@@ -106,7 +108,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
       }
       case 'class': {
         const index = optionIndex(type.options, model.value);
-        return <Combobox aria-labelledby={labelId} className="w-36" disabled={readOnly}
+        return <Combobox aria-labelledby={labelId} className={boxed ? undefined : 'w-full'} inline={boxed} disabled={readOnly}
           value={index < 0 ? null : String(index)}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => {
@@ -125,7 +127,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     }
   })();
 
-  const textual = !['boolean', 'choice', 'class', 'vector', 'group', 'list'].includes(type.kind);
+  const textual = textualKind(type.kind);
   if (form === 'cell') {
     return <div className="value-field value-field-cell grid min-w-0 gap-0.5 tabular-nums" role="group"
       aria-label={studioFieldLabel('field', label)}>
@@ -141,6 +143,14 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
       onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
   </div>;
+  if (boxed) return <ClassValue model={model} parameter={parameter!} labelId={labelId} picker={widget} />;
+  if (type.kind === 'class' && !model.parts?.length) {
+    return <section className="value-field grid min-w-0 gap-1" aria-label={studioFieldLabel('field', label)}>
+      <FieldRow label={label} labelId={labelId} below={model.origin || reason || model.reason ? below : undefined}>
+        {widget}
+      </FieldRow>
+    </section>;
+  }
   if (type.kind === 'group' || type.kind === 'class' || type.kind === 'list') {
     return <FieldGroup model={model} labelId={labelId} picker={widget}>
       {(model.origin || reason || model.reason) && <div className="field-row-below">{below}</div>}
@@ -159,20 +169,64 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
 const optionIndex = (options: readonly FieldOption[], value: unknown) =>
   options.findIndex((option) => JSON.stringify(option.value) === JSON.stringify(value));
 
-/** A field whose value is a group of fields: a folding header in the label style, a class's picker at its end. */
+const textualKind = (kind: FieldModel['type']['kind']) =>
+  !['boolean', 'choice', 'class', 'vector', 'group', 'list'].includes(kind);
+
+/** A field whose value is a group of fields: a folding header in the label style; a class's picker under it, kept when folded. */
 function FieldGroup({ model, labelId, picker, children }: {
   model: FieldModel; labelId: string; picker: ReactNode; children: ReactNode;
 }) {
-  return <Section level="field" name={model.label} nameId={labelId} actions={picker} bodyClassName="grid gap-1"
+  return <Section level="field" name={model.label} nameId={labelId} control={picker} bodyClassName="grid gap-1"
     className="value-field tabular-nums" {...useFieldGroup(model.id)}>
     {children}
   </Section>;
 }
 
-function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind }: {
+/**
+ * A class with one textual parameter: the parameter is the field's value, in one box with the class's picker at its
+ * end. The parameter's name is not drawn; it names the input, after the field's name.
+ */
+function ClassValue({ model, parameter, labelId, picker }: {
+  model: FieldModel; parameter: FieldModel; labelId: string; picker: ReactNode;
+}) {
+  const id = useId();
+  const reasonId = useId();
+  const originId = useId();
+  const named = { ...parameter, label: model.label };
+  const { busy, reason, setReason, submit } = useSubmit(named);
+  const readOnly = !named.commit || busy;
+  const shown = reason ?? named.reason ?? model.reason;
+  const origin = named.origin ?? model.origin;
+  const describedBy = [origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
+  function chooseKind(kind: FieldKind, focusText: () => void) {
+    if (kind === 'sweep' && named.kind !== 'sweep') void submit({ kind: 'to_sweep' });
+    else if (kind === 'value' && named.kind === 'sweep' && named.keeps) void submit({ kind: 'to_value', value_id: named.keeps });
+    else focusText();
+  }
+  return <section className="value-field value-field-class grid min-w-0 gap-1 tabular-nums" aria-label={studioFieldLabel('field', model.label)}>
+    <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
+      {origin && <span id={originId} className="text-shell-muted">{origin}</span>}
+      {shown && <p role="alert" id={reasonId}>{shown}</p>}
+    </> : undefined}>
+      <ValueText model={named} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
+        submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
+        end={picker} name={`${model.label} ${parameter.label}`} />
+    </FieldRow>
+    {(named.members || named.canList) && <div className="value-field-parts grid gap-1">
+      {named.members && <Members model={named} />}
+      {named.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
+        onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
+    </div>}
+  </section>;
+}
+
+function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, end, name }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
   chooseKind(kind: FieldKind, focusText: () => void): void;
+  end?: ReactNode;
+  /** The input's accessible name, when not the field's label. */
+  name?: string;
 }) {
   const { label, kind } = model;
   const input = useRef<HTMLInputElement>(null);
@@ -242,7 +296,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   const differs = model.differs !== undefined ? <output {...appTip(studioName('selectedValue'))} aria-description={model.differs}
     aria-label={studioFieldLabel('selectedValue', label)}>◆</output> : undefined;
   return <>
-    <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={differs} className="min-w-0"
+    <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={differs} end={end} className="min-w-0"
+      aria-label={name} size={end ? Math.max(6, text.length + 1) : undefined}
       placeholder={model.text === null && draft === undefined ? studioName('mixed') : undefined}
       readOnly={readOnly || model.type.kind === 'readOnly'} invalid={invalid}
       aria-describedby={describedBy}

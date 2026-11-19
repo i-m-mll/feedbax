@@ -29,7 +29,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const rows = table.locator('tbody tr[data-index]');
   await expect(table).toHaveAttribute('aria-rowcount', '2');
-  await expect(rate.getByRole('textbox', { name: 'Learning Rate', exact: true })).toHaveValue('0.001');
+  await expect(rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true })).toHaveValue('0.001');
 
   await authorLearningRateSweep(rate);
   await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveText('learning-rate 3');
@@ -43,7 +43,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(rate.getByRole('button', { name: 'Select Learning Rate 0.002', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await mapStep(page, 'train').click();
 
-  const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   const pending = (await readPlan(request, projectPath)).plan;
   const medium = pending.window_map!.rows.find(({ coordinates }) => coordinates['learning-rate']?.value === 0.002)!;
   await enter(rateText, '0.001, 0.0025, 0.003');
