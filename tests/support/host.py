@@ -10,7 +10,7 @@ is restored. A test that finds a different Host answering, or none, fails and th
 subject is the Host's life, its pool, or Host-wide state.
 
 Loaded as a plugin by `tests/conftest.py`, which also brings the follower-thread check, the session-end
-sweep of leaked Hosts and the `round` marker's rule.
+sweep of leaked processes and the `round` marker's rule.
 """
 
 from collections.abc import Callable, Iterator, Mapping
@@ -358,47 +358,127 @@ def _no_follower_left() -> Iterator[None]:
         pytest.fail(f"The test left {len(left)} {FOLLOWER_THREAD} thread(s) running; close each JobActivity.")
 
 
-def _hosts_under(root: Path) -> list[tuple[int, Path]]:
+_LEAK_GRACE_SECONDS = 1.0
+_interrupted: pytest.StashKey[list[str]] = pytest.StashKey()
+
+
+def _processes() -> dict[int, tuple[int, str]]:
     listing = subprocess.run(
-        ["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True, check=True,
+        ["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, check=True,
         timeout=HANG_SECONDS,
     ).stdout
-    hosts = []
+    processes = {}
     for line in listing.splitlines():
-        pid, _, command = line.strip().partition(" ")
-        argv = command.split()
-        if "attach" in argv or "--root" not in argv[:-1]:
+        pid, ppid, *command = line.split(None, 2)
+        processes[int(pid)] = (int(ppid), command[0] if command else "")
+    return processes
+
+
+def _running_under(roots: list[Path]) -> dict[int, tuple[Path, str]]:
+    """Python processes other than this one and its ancestors whose command line names a path under `roots`.
+
+    That is every Host, relay, venue watchdog, launcher and worker a test started there, whatever its role.
+    """
+    processes = _processes()
+    ancestors, pid = set(), os.getpid()
+    while pid in processes and pid not in ancestors:
+        ancestors.add(pid)
+        pid = processes[pid][0]
+    names = {root.name for root in roots}
+    found = {}
+    for pid, (_, command) in processes.items():
+        if pid in ancestors or not Path(command.partition(" ")[0]).name.lower().startswith("python"):
             continue
-        if not any(argv[i:i + 2] == ["-m", "feedbax.host"] for i in range(len(argv))):
-            continue
-        host_root = Path(argv[argv.index("--root") + 1]).resolve()
-        if host_root.is_relative_to(root):
-            hosts.append((int(pid), host_root))
-    return hosts
+        for token in command.replace("=", " ").split():
+            if not token.startswith("/") or not any(name in token for name in names):
+                continue
+            path = Path(token).resolve()
+            if root := next((root for root in roots if path.is_relative_to(root)), None):
+                found[pid] = (root, command)
+                break
+    return found
+
+
+def _end_all_under(roots: list[Path]) -> dict[int, tuple[Path, str]]:
+    """End every process under `roots` until none is left, and return those that were found running.
+
+    A process still running after a short grace is ended; a watchdog may restart a Host in the meantime,
+    so the scan repeats until it finds nothing.
+    """
+    deadline = time.monotonic() + _LEAK_GRACE_SECONDS
+    while (running := _running_under(roots)) and time.monotonic() < deadline:
+        time.sleep(_STEP_SECONDS)
+    ended = dict(running)
+    deadline = time.monotonic() + HANG_SECONDS
+    while running:
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Processes under {roots} could not be ended: {sorted(running)}")
+        for pid in running:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        time.sleep(_STEP_SECONDS)
+        running = _running_under(roots)
+        ended.update(running)
+    return ended
+
+
+def _owned(root: Path) -> bool:
+    """Whether the pytest process that made the numbered temporary root `root` is still running."""
+    try:
+        pid = int((root / ".lock").read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _listing(ended: dict[int, tuple[Path, str]]) -> list[str]:
+    return [f"  {pid}: {command[:300]}" for pid, (_, command) in sorted(ended.items())]
+
+
+def _report(session: pytest.Session, title: str, lines: list[str]) -> None:
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_sep("=", title, red=True)
+        for line in lines:
+            reporter.write_line(line)
+    else:
+        print("\n".join([title, *lines]), file=sys.stderr)
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """In the controller, end what an earlier run that is no longer running left under its temporary root.
+
+    A run that is killed never reaches its own sweep; its numbered root keeps a `.lock` naming a dead pid.
+    """
+    if hasattr(session.config, "workerinput") or session.config.option.basetemp:
+        return
+    parent = session.config._tmp_path_factory.getbasetemp().resolve().parent
+    orphans = [root.resolve() for root in parent.glob("pytest-*")
+               if root.is_dir() and not root.is_symlink() and not _owned(root)]
+    ended = _end_all_under(orphans) if orphans else {}
+    if ended:
+        roots = sorted({str(root) for root, _ in ended.values()})
+        session.config.stash[_interrupted] = [
+            f"Processes left by an earlier test run that is no longer running, under {', '.join(roots)},"
+            " were still running and were ended:",
+            *_listing(ended),
+        ]
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
-    """In the controller, end every Host still running under the invocation's temporary root and fail the run."""
+    """In the controller, end every process still running under the invocation's temporary root and fail the run."""
     if hasattr(session.config, "workerinput"):
         return
     root = session.config._tmp_path_factory.getbasetemp().resolve()
-    leaked = _hosts_under(root)
-    if not leaked:
-        return
-    for pid, _ in leaked:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    listing = "\n".join(f"  {pid}: {host_root}" for pid, host_root in leaked)
-    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-    message = f"Hosts were still running at the end of the session and were ended:\n{listing}"
-    if reporter is not None:
-        reporter.write_sep("=", "leaked Hosts", red=True)
-        reporter.write_line(message)
-    else:
-        print(message, file=sys.stderr)
-    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    lines = session.config.stash.get(_interrupted, [])
+    if ended := _end_all_under([root]):
+        lines = [*lines, "Processes were still running at the end of the session and were ended:", *_listing(ended)]
+    if lines:
+        _report(session, "leaked processes", lines)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.hookimpl(tryfirst=True)
