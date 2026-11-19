@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { FunctionSquare } from 'lucide-react';
+import { Dices, Link, Sigma, Spline } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { FieldKind } from '@/generated/studioContracts';
@@ -21,8 +21,18 @@ import './valueField.css';
 
 export type ValueFieldForm = 'row' | 'cell';
 
+function Outline({ children }: { children: ReactNode }) {
+  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+    strokeLinecap="round" strokeLinejoin="round">{children}</svg>;
+}
+
 const kindGlyphs: Record<FieldKind, ReactNode> = {
-  value: '·', sweep: '◇', draw: '~', formula: <FunctionSquare aria-hidden="true" />, shape: '∿', link: '↗',
+  value: <Outline><circle cx="12" cy="12" r="6" /></Outline>,
+  sweep: <Outline><circle cx="3.5" cy="12" r="2.5" /><circle cx="12" cy="12" r="2.5" /><circle cx="20.5" cy="12" r="2.5" /></Outline>,
+  draw: <Dices aria-hidden="true" />,
+  formula: <Sigma aria-hidden="true" />,
+  shape: <Spline aria-hidden="true" />,
+  link: <Link aria-hidden="true" />,
 };
 
 /**
@@ -189,11 +199,12 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   }
 
   const markMenu = mark ? <Menu open={menu} onOpenChange={setMenu}>
-    <MenuTrigger render={<IconButton size="mark" label={studioFieldKindLabel(label, kind)}
-      className={kind === 'value' ? 'value-field-constant-mark' : undefined}
-      icon={<span aria-hidden="true" className="flex">{kindGlyphs[kind]}</span>} />} />
+    <MenuTrigger render={<IconButton size="content" label={studioFieldKindLabel(label, kind)}
+      className="flex size-full items-center rounded-control data-[popup-open]:bg-shell-hover"
+      icon={kindGlyphs[kind]} />} />
     <MenuContent aria-label={studioFieldLabel('kinds', label)} finalFocus={input}>
       {model.kinds.map((offer) => <MenuItem key={offer.kind} disabled={readOnly || !offer.enabled}
+        glyph={<span className="flex text-shell-muted">{kindGlyphs[offer.kind]}</span>}
         onClick={() => { setMenu(false); chooseKind(offer.kind, focusText); }}>{studioName(offer.kind)}</MenuItem>)}
     </MenuContent>
   </Menu> : undefined;

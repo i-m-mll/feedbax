@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { usePopupLayer } from '@/components/ui/popupLayer';
-import { disabledLook, fieldFrame, fieldInput, focusRing, glyph, popupItem, popupSurface } from '@/components/ui/styles';
+import { disabledLook, fieldFrame, fieldInput, focusRing, glyph, leadingSlot, popupItem, popupSurface } from '@/components/ui/styles';
 import {
   pickKey, usePick, type ElementSelectionStore, type PickTarget, type ReferencePick,
 } from '@/features/projectWindow/elementSelection';
@@ -60,9 +60,10 @@ export function ReferenceField({ label, groups, value, onChoose, picking, classN
       autoHighlight
     >
       <Combobox.Trigger {...aria}
-        className={clsx(fieldFrame, 'h-control min-w-0 flex-1 cursor-default select-none items-center gap-1 px-control-inline',
+        className={clsx(fieldFrame, 'h-control min-w-0 flex-1 cursor-default select-none items-center gap-1 pr-control-inline',
+          !value?.glyph && 'pl-control-inline',
           'hover:[&:not([data-disabled])]:bg-shell-hover data-[popup-open]:bg-shell-hover', focusRing, glyph, disabledLook)}>
-        {value?.glyph && <span aria-hidden="true" className="flex text-shell-muted">{value.glyph}</span>}
+        {value?.glyph && <span aria-hidden="true" className={leadingSlot}>{value.glyph}</span>}
         <span className="min-w-0 flex-1 truncate text-left">{value?.label ?? '—'}</span>
         <ChevronDown aria-hidden="true" className="text-shell-muted" />
       </Combobox.Trigger>

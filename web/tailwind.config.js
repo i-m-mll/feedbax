@@ -19,6 +19,7 @@ export default {
           subtle: 'var(--surface-toolbar)',
           divider: 'var(--app-divider)',
           control: 'var(--studio-control-border)',
+          field: 'var(--neutral-alpha-10)',
           foreground: 'var(--text-primary)',
           muted: 'var(--text-muted)',
           hover: 'var(--surface-hover)',

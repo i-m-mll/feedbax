@@ -84,6 +84,7 @@ export function ValueFieldGallery() {
   const hidden = useProjected('Hidden size', '64', ['value', 'sweep', 'formula']);
   const rate = useProjected('Learning rate', '0.001', ['value', 'sweep', 'formula']);
   const step = useProjected('Step', '0.01', ['value']);
+  const decay = useProjected('Decay', 'learning_rate / 10', ['value', 'sweep', 'formula']);
   const raw = useRaw(Object.fromEntries(params.map(({ name, default: value }) => [name, value as JsonValue])));
   const [settings, setSettings] = useState<JsonValue>({
     optimizer: { type: 'adam', params: { learning_rate: 0.001, nesterov: false } }, schedule: { kind: 'constant' },
@@ -104,6 +105,7 @@ export function ValueFieldGallery() {
           <ValueField model={project(hidden)} />
           <ValueField model={project(rate)} />
           <ValueField model={project(step)} />
+          <ValueField model={project(decay, { kind: 'formula' })} />
           <ValueField model={fromFieldView(rangeField, { id: 'clip', commit: async () => undefined })} />
           <ValueField model={fromFieldView({ ...hidden.field, label: 'Selected', effective: '96' },
             { id: 'selected', commit: hidden.commit, rowSelection: true })} />
