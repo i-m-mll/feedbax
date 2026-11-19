@@ -270,10 +270,10 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
     contentType: 'application/json',
   });
   const sceneTab = page.getByRole('tab', { name: 'Scene', exact: true });
-  await expect(sceneTab).toHaveAttribute('aria-keyshortcuts', 'Meta+5');
+  await expect(sceneTab).toHaveAttribute('aria-keyshortcuts', 'Meta+6');
   const [replayed] = await Promise.all([
     post(page, projectPath + '/evaluate-replay'),
-    page.keyboard.press('Meta+5'),
+    page.keyboard.press('Meta+6'),
   ]);
   await expect(sceneTab).toHaveAttribute('aria-selected', 'true');
   expect(replayed.ok(), await replayed.text()).toBe(true);
@@ -654,7 +654,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await page.keyboard.press('Meta+1');
   await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 12_000 });
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
-  await page.keyboard.press('Meta+6');
+  await page.keyboard.press('Meta+7');
   await expect(results).toBeFocused();
   await expect(results.getByRole('img', { name: 'Loss' })).toBeVisible();
   await page.keyboard.press('Escape');

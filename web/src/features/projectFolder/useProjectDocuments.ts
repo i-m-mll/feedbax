@@ -1,7 +1,9 @@
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
-import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
+import {
+  studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
+} from '@/components/activity/studioVocabulary';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
 import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
@@ -9,12 +11,22 @@ import type {
 import type { ProjectEditController } from './projectEditController';
 import { generatedName, holds } from './generatedName';
 
-export type DocumentRole = 'model' | 'task' | 'objective' | 'analysis' | 'report';
+export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
+
+const supervisedTrainMethod = 'feedbax.supervised_gradient';
 
 export const blankDocuments = {
   model: { schema: 'feedbax.spec.model', payload: { step_seconds: 0.01, ports: {}, interior: {} } },
   task: { schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} } },
   objective: { schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] } },
+  training: {
+    schema: 'feedbax.spec.training_document',
+    payload: {
+      method: supervisedTrainMethod,
+      settings: { optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } } },
+      training_config: { n_batches: 1000, batch_size: 64 },
+    },
+  },
   analysis: {
     schema: 'feedbax.analysis_document.v1',
     payload: {
@@ -31,12 +43,13 @@ const schemas: Record<DocumentRole, readonly string[]> = {
   model: [blankDocuments.model.schema],
   task: [blankDocuments.task.schema, 'feedbax.spec.task_document'],
   objective: [blankDocuments.objective.schema],
+  training: [blankDocuments.training.schema],
   analysis: [blankDocuments.analysis.schema],
   report: [blankDocuments.report.schema],
 };
 
 const labels: Record<DocumentRole, StudioNameId> = {
-  model: 'modelDocument', task: 'taskDocument', objective: 'objectiveDocument',
+  model: 'modelDocument', task: 'taskDocument', objective: 'objectiveDocument', training: 'trainingDocument',
   analysis: 'analysisDocument', report: 'reportDocument',
 };
 
@@ -61,6 +74,9 @@ export function documentsOfRole(project: { documents?: Readonly<Record<string, D
 export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
+  /** The document a step did not take in a role, and why: it lacks a parameter the step sweeps. */
+  const [refused, setRefused] = useState<{ step: string; role: DocumentRole; reason: string }>();
+  const refuse = (role: DocumentRole, reason?: string) => setRefused(reason && stepId ? { step: stepId, role, reason } : undefined);
 
   async function use(role: DocumentRole, document: string, revision: string): Promise<StudioProjectFilePatch[]> {
     if (!stepId) return [];
@@ -71,6 +87,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const result = await readStudioTrialAuthoring(projectId, {
       revision, run, scope, change: { kind: 'select_document', role, document },
     }, editor.signal);
+    refuse(role, result.refusal ? studioSweptParameterMissing(result.refusal) : undefined);
     return result.files;
   }
 
@@ -101,6 +118,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const repoint = editable && !!stepId && selectable.has(role);
     return {
       label: labels[role], document, documents, count,
+      refusal: refused?.step === stepId && refused?.role === role ? refused.reason : undefined,
       choose: repoint ? (next) => { void attempt(() => point(studioAccessibleName('select', kind), role, next)); } : undefined,
       create: repoint ? () => attempt(async () => {
         const { saved } = editor.getSnapshot();

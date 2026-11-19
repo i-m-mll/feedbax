@@ -14,6 +14,8 @@ export interface DocumentPickerModel {
   readonly document: string;
   readonly documents: readonly string[];
   readonly count?: { readonly lit: number; readonly users: number };
+  /** Why the last document chosen was not taken. */
+  readonly refusal?: string;
   readonly choose?: (document: string) => void;
   /** Each resolves to the document now shown, whose name then goes into editing. */
   readonly create?: () => Promise<string | undefined>;
@@ -30,7 +32,7 @@ export function DocumentPicker({ model, editing, setEditing }: {
   editing: string | undefined;
   setEditing: (document: string | undefined) => void;
 }) {
-  const { label, document, documents, count, choose, create, duplicate, rename } = model;
+  const { label, document, documents, count, refusal, choose, create, duplicate, rename } = model;
   const edit = (start?: () => Promise<string | undefined>) => start && (async () => setEditing(await start()));
   // Rename replaces the menu's trigger with the name field, so the closing menu must not return focus elsewhere.
   const renaming = useRef(false);
@@ -44,7 +46,7 @@ export function DocumentPicker({ model, editing, setEditing }: {
         rename(name);
       }} />;
   }
-  return <Menu onOpenChange={(open) => { if (open) renaming.current = false; }}>
+  return <><Menu onOpenChange={(open) => { if (open) renaming.current = false; }}>
     <MenuTrigger render={<Button variant="ghost" className="min-w-0 gap-1 px-1" />}
       aria-label={studioAccessibleName(label, document)}>
       <span className="studio-window-slot__document">{document}</span>
@@ -61,5 +63,6 @@ export function DocumentPicker({ model, editing, setEditing }: {
       <MenuItem disabled={!duplicate} onClick={edit(duplicate)}>{studioName('duplicate')}</MenuItem>
       <MenuItem disabled={!rename} onClick={() => { renaming.current = true; setEditing(document); }}>{studioName('rename')}</MenuItem>
     </MenuContent>
-  </Menu>;
+  </Menu>
+  {refusal && <span role="alert" className="min-w-0 truncate text-xs text-shell-muted">{refusal}</span>}</>;
 }

@@ -55,6 +55,7 @@ import {
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { createTrain } from './createTrain';
+import { trainingDocumentId } from './trainingDocument';
 import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
@@ -68,6 +69,7 @@ import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemov
 import { StudioTrainAuthoringForm, SweepFieldItems, useTrainFieldLabels } from './StudioTrainAuthoringForm';
 import {
   TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
+  type TrialChangeScope,
 } from './StudioTrialAuthoring';
 import { useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
@@ -120,7 +122,7 @@ async function checkpointNewStep(source: PipelineMapStepSource, scope: ProjectWi
 }
 
 const viewsByKind = {
-  train: ['runs', 'model', 'task', 'objective', 'scene', 'results'],
+  train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
   evaluate: ['runs', 'model', 'task', 'scene', 'results'],
   analyze: ['runs', 'analysis', 'figures'],
   report: ['runs', 'document'],
@@ -263,7 +265,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     },
   } : null;
   const trainLabels = useTrainFieldLabels(editor, step?.kind === 'train' ? step.id : undefined);
-  const availableViews = step ? viewsByKind[step.kind] : emptyViews;
+  const trainingDocument = step?.kind === 'train' ? trainingDocumentId(step.documentIds) : undefined;
+  const availableViews = !step ? emptyViews : trainingDocument ? viewsByKind[step.kind]
+    : viewsByKind[step.kind].filter((view) => view !== 'training');
   const primaryView = projectWindowSlotView(windowState, 'primary', availableViews);
   const secondaryView = projectWindowSlotView(windowState, 'secondary', availableViews);
   const focusSlot = secondaryView && windowState.focusedSlot === 'secondary' ? 'secondary' : 'primary';
@@ -273,9 +277,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ? problemReveal.reveal : undefined;
   /** A revealed place among the step's own fields, which the inspector draws and reveals instead of a banner. */
   const fieldReveal = revealed?.view === 'runs' && placeField(revealed.place) ? revealed : undefined;
-  function documentScope(field: 'graph' | 'task'): NamedDocumentScope | undefined {
-    const document = field === 'graph' ? modelDocumentId(step?.documentIds)
-      : step?.documentIds?.['payload.trial_documents.task'] ?? step?.documentIds?.['payload.trial_documents.python_task'];
+  /** The steps a view of the document the step reads in `field` lights: all that use it, less those taken out. */
+  function documentScope(field: 'graph' | 'task' | 'objective' | 'training'): NamedDocumentScope | undefined {
+    const ids = step?.documentIds;
+    const document = field === 'graph' ? modelDocumentId(ids)
+      : field === 'task' ? ids?.['payload.trial_documents.task'] ?? ids?.['payload.trial_documents.python_task']
+        : field === 'objective' ? ids?.['payload.trial_documents.objective'] : trainingDocumentId(ids);
     if (!document || !step || !singleStep || !data || step.kind !== 'train') return undefined;
     const localVariant = Boolean(saved.project.sweep && !primaryVariant && field === 'graph');
     if (!localVariant && !wholeStep) return undefined;
@@ -286,9 +293,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const excluded = excludedUsers[key] ?? [];
     return { document, key, users, lit: new Set([...users].filter((id) => id === step.id || !excluded.includes(id))) };
   }
-  const documentScopes = { graph: documentScope('graph'), task: documentScope('task') };
+  const documentScopes = {
+    graph: documentScope('graph'), task: documentScope('task'),
+    objective: documentScope('objective'), training: documentScope('training'),
+  };
   const activeDocumentScope = windowState.mode === 'map' ? undefined
-    : focusView === 'model' ? documentScopes.graph : focusView === 'task' ? documentScopes.task : undefined;
+    : focusView === 'model' ? documentScopes.graph
+      : focusView === 'task' || focusView === 'objective' || focusView === 'training' ? documentScopes[focusView]
+        : undefined;
   function chooseMapStep(id: string, extend: boolean) {
     if (extend && activeDocumentScope && activeDocumentScope.users.size > 1) {
       if (activeDocumentScope.localVariant || id === step?.id || !activeDocumentScope.users.has(id)) return;
@@ -436,14 +448,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ? undefined : trialScope || undefined;
   const documentEditable = !pending && !outside && !snapshot.saving;
   const trialEditable = documentEditable && Boolean(trialScope);
+  /** A whole-step edit of a Train step's Task or Objective reaches the steps its view lights. */
+  const trialChangeScope: TrialChangeScope = (change) => {
+    if (trialEditScope || step?.kind !== 'train' || !trialScope || trialScope.kind !== 'step') return trialEditScope;
+    const lit = change.kind === 'task' ? documentScopes.task?.lit
+      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
+    return lit && { kind: 'step', lit_steps: [...lit] };
+  };
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
-    trialEditable, trialEditScope, runRemoval.confirm);
+    trialEditable, trialChangeScope, runRemoval.confirm);
   const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,
     selectable: new Set<DocumentRole>([
-      ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective'] as const : ['task'] as const,
+      ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['task'] as const,
       ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
     ]),
     onError: setCommandError,
@@ -1251,10 +1270,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const element = named(document);
             const selected = element && { term: element.id, field: element.field };
             return {
-              picker: pickDocument('objective', value.objective_document ?? undefined),
+              picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
               body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} />),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
               inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
+            };
+          }
+          if (view === 'training') {
+            const scope = documentScopes.training;
+            return {
+              padded: true,
+              picker: pickDocument('training', trainingDocument, scope),
+              body: authoring ? withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
+                runPending={!data && !projection.isError} trainingDocument={{ lit: scope ? [...scope.lit] : [] }}
+                fieldRows={scope ? undefined : detailInputs.fieldRows} fieldAxes={scope ? undefined : detailInputs.fieldAxes} />)
+                : noView,
             };
           }
           if (view === 'model' || view === 'task' || view === 'scene') {

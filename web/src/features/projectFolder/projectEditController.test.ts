@@ -129,7 +129,7 @@ function fixture(settleMs = 400, start = initial) {
 
 afterEach(() => vi.useRealTimers());
 
-it('binds the first compatible documents by name, scaffolds only the missing type and names the Train freely', async () => {
+it('binds the first compatible documents by name, scaffolds only the missing types and names the Train freely', async () => {
   const { editor } = fixture(400, {
     ...initial,
     project: { steps: { train: {} as never }, documents: {
@@ -149,11 +149,12 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
     { kind: 'document', id: 'objective-2', document: {
       schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
     } },
+    { kind: 'document', id: 'training', document: expect.objectContaining({ schema: 'feedbax.spec.training_document' }) },
     expect.objectContaining({ kind: 'step', id: 'train-2', step: expect.objectContaining({
       base: { inline: expect.objectContaining({ trial_documents: {
         model: { document: 'a-model' }, task: { document: 'a-task' },
         objective: { document: 'objective-2' },
-      } }) },
+      }, settings: { document: 'training', pointer: '/settings' } }) },
     }) }),
   ], initial.revision);
   editor.dispose();

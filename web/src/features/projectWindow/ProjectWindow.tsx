@@ -1,6 +1,6 @@
 import {
   BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Target, Workflow, X,
+  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
@@ -82,6 +82,7 @@ export const viewGlyphs = {
   analysis: Workflow,
   figures: Image,
   document: FileText,
+  training: Settings2,
 } satisfies Record<ProjectWindowView, LucideIcon>;
 
 const modes = [
