@@ -167,7 +167,9 @@ def test_shared_cache_lifecycle(tmp_path, outcome, workers, override, returncode
             assert {record["cache"] for record in observed.values()} == {env["CACHE_CALLER_DIR"]}
             continue
         assert {record["cache"] for record in observed.values()} == {str(expected)}
-        assert (expected / ".lockfile").exists() == (outcome != "collection")
+        names = {path.name for path in expected.iterdir()}
+        assert all(name.endswith("-cache") for name in names), names
+        assert bool(names) == (outcome != "collection")
         if outcome == "success" and invocation == 1:
             assert sum(record["misses"] for record in observed.values()) == 0, observed
             assert sum(record["hits"] for record in observed.values()) > 0, observed

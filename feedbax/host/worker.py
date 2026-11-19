@@ -10,7 +10,8 @@ import time
 import traceback
 from pathlib import Path
 
-from .io import EVIDENCE_FILE, TOKEN_ENV, append, encode, read_worker_result, receive, write_json
+from .io import EVIDENCE_FILE, JAX_CACHE_ENV, TOKEN_ENV, append, encode, read_worker_result, receive, write_json
+from .jax_cache import install_when_imported
 from .protocol import MANAGED_ENTRYPOINTS, MAX_RPC_BYTES, VALIDITY_CHECK_ENTRYPOINT
 from .source_roster import SourceRoster
 
@@ -68,6 +69,8 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
 
 def _serve(profile: dict, control: socket.socket, report: int, recorder) -> int:
     entrypoint, import_error = None, None
+    if cache := os.environ.get(JAX_CACHE_ENV):
+        install_when_imported(Path(cache))
     try:
         for module in profile["preload"]:
             importlib.import_module(module)

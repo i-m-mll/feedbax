@@ -1,9 +1,9 @@
 """Configure the JAX compilation cache of a pytest invocation.
 
-Test processes and the Hosts they start share one persistent cache across invocations and
-worktrees: an entry is keyed by the lowered program and the jaxlib version, so it is a
-function of its inputs, and the maximum size makes JAX take a file lock for every read and
-write. Tests whose subject is the cache configure a directory of their own.
+Test processes and the Hosts they start share one Feedbax-managed cache across invocations
+and worktrees: an entry is keyed by the lowered program and the jaxlib version, so it is a
+function of its inputs. The controller evicts it once at the start of a session. Tests whose
+subject is the cache configure a directory of their own.
 """
 
 from contextlib import ExitStack
@@ -11,11 +11,21 @@ import os
 from pathlib import Path
 
 import jax
-from jax.experimental.compilation_cache import compilation_cache
+from jax._src import compilation_cache
 import pytest
 
-from feedbax.host.io import JAX_CACHE_ENV, JAX_CACHE_MAX_SIZE, private_directory
+from feedbax.host import jax_cache
+from feedbax.host.io import JAX_CACHE_ENV, private_directory
 from scripts.full_suite import shared_cache_root
+
+
+_RESTORED = (
+    "jax_enable_compilation_cache",
+    "jax_compilation_cache_dir",
+    "jax_persistent_cache_min_compile_time_secs",
+    "jax_persistent_cache_min_entry_size_bytes",
+    "jax_raise_persistent_cache_errors",
+)
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -30,17 +40,10 @@ def pytest_configure(config: pytest.Config) -> None:
         shared = shared_cache_root(Path(config.rootpath)) / "jax_compilation"
         scope.enter_context(pytest.MonkeyPatch.context()).setenv(JAX_CACHE_ENV, str(shared))
     cache_dir = private_directory(Path(os.environ[JAX_CACHE_ENV]).expanduser())
+    if not hasattr(config, "workerinput"):
+        jax_cache.evict(cache_dir)
 
-    settings = {
-        "jax_compilation_cache_dir": str(cache_dir),
-        "jax_persistent_cache_min_compile_time_secs": 0.0,
-        "jax_persistent_cache_min_entry_size_bytes": 0,
-        "jax_compilation_cache_max_size": JAX_CACHE_MAX_SIZE,
-        "jax_raise_persistent_cache_errors": True,
-    }
-    # The initialized persistent cache retains its path across config updates.
     scope.callback(compilation_cache.reset_cache)
-    for name, value in settings.items():
+    for name in _RESTORED:
         scope.callback(jax.config.update, name, getattr(jax.config, name))
-        jax.config.update(name, value)
-    compilation_cache.reset_cache()
+    jax_cache.install(cache_dir)

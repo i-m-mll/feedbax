@@ -12,15 +12,16 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.host import live_evaluate
+from feedbax.host import jax_cache, live_evaluate
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection
 from feedbax.host.completion import CompletionFileError
-from feedbax.host.io import JAX_CACHE_ENV, JAX_CACHE_MAX_SIZE, TOKEN_ENV, encode, private_directory, socket_path, write_json
+from feedbax.host.io import JAX_CACHE_ENV, TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
@@ -172,11 +173,7 @@ class Host:
             {
                 TOKEN_ENV: token,
                 "PYTHONUNBUFFERED": "1",
-                "JAX_COMPILATION_CACHE_DIR": str(self.cache),
-                "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
-                "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0",
-                "JAX_COMPILATION_CACHE_MAX_SIZE": str(JAX_CACHE_MAX_SIZE),
-                "JAX_RAISE_PERSISTENT_CACHE_ERRORS": "true",
+                JAX_CACHE_ENV: str(self.cache),
             }
         )
         ours, theirs = socket.socketpair()
@@ -1009,6 +1006,7 @@ class Host:
                 self.wake.set()
 
     async def run(self) -> None:
+        threading.Thread(target=jax_cache.evict, args=(self.cache,), name="jax-cache-evict", daemon=True).start()
         self.address.unlink(missing_ok=True)
         server = await asyncio.start_unix_server(self._accept, str(self.address), limit=MAX_RPC_BYTES)
         try:
