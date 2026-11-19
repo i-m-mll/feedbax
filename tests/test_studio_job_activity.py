@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import threading
-import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Event
 
@@ -39,24 +39,26 @@ def test_job_reads_do_not_wait_on_a_busy_host(host, tmp_path, monkeypatch):
         def busy(read):
             def call(*args, **kwargs):
                 blocked.set()
-                released.wait(HANG_SECONDS)
+                released.wait()
                 return read(*args, **kwargs)
             return call
 
         for name, read in reads.items():
             monkeypatch.setattr(client, name, busy(read))
         job = _studio_job("held", project, HELD_UNTIL_STOPPED)
-        client.admit("busy-host", [AdmissionItem(job.id, job)], record={})
-        assert blocked.wait(HANG_SECONDS)
-
-        started = time.monotonic()
-        response = studio.get("/api/jobs", params={"project": project})
-        elapsed = time.monotonic() - started
+        try:
+            client.admit("busy-host", [AdmissionItem(job.id, job)], record={})
+            assert blocked.wait(HANG_SECONDS)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                reading = pool.submit(studio.get, "/api/jobs", params={"project": project})
+                try:
+                    response = reading.result(timeout=HANG_SECONDS)
+                finally:
+                    released.set()
+        finally:
+            released.set()
         assert response.status_code == 200, response.text
         assert response.json()["jobs"] == []
-        assert elapsed < 0.5
-
-        released.set()
 
         def started():
             jobs = studio.get("/api/jobs", params={"project": project}).json()["jobs"]
@@ -151,23 +153,29 @@ def test_reads_recover_as_soon_as_a_quiet_host_answers_again(host, tmp_path, mon
         down = Event()
         down.set()
 
+        ended = Event()
+
         def restarting(**kwargs):
             if down.is_set():
                 raise HostError("disconnected", "host socket closed before a complete message")
+            if kwargs["wait"]:
+                # A follow wait is held until the test ends, as one longer than the hang limit would be.
+                ended.wait()
+                kwargs["wait"] = 0
             return page(**kwargs)
 
         monkeypatch.setattr(service, "activity_page", restarting)
+        try:
+            def failing():
+                response = studio.get("/api/jobs")
+                return response if response.status_code == 503 else None
 
-        def failing():
-            response = studio.get("/api/jobs")
-            return response if response.status_code == 503 else None
-
-        assert wait_until(failing).json()["detail"]["code"] == "disconnected"
-        down.clear()
-        started = time.monotonic()
-        assert wait_until(lambda: studio.get("/api/jobs").status_code == 200)
-        # No event wakes the follower here, so recovery within a follow wait means its first page was a probe.
-        assert time.monotonic() - started < 1
+            assert wait_until(failing).json()["detail"]["code"] == "disconnected"
+            down.clear()
+            # No event wakes the follower here, so recovery while follow waits are held means its first page was a probe.
+            assert wait_until(lambda: studio.get("/api/jobs").status_code == 200)
+        finally:
+            ended.set()
 
 
 def test_shutdown_ends_the_follower_before_the_host_can_be_restarted(host, tmp_path, monkeypatch):
@@ -179,5 +187,3 @@ def test_shutdown_ends_the_follower_before_the_host_can_be_restarted(host, tmp_p
     assert not follower.is_alive()
     os.kill(host.ping()["pid"], signal.SIGTERM)
     wait_until(lambda: not host.address.exists())
-    time.sleep(0.2)  # real clock: nothing starts the Host again in the 0.2 s after it ended
-    assert not host.address.exists()

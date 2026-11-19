@@ -3,9 +3,8 @@
 import asyncio
 import os
 import signal
-import subprocess
 import sys
-import time
+import threading
 
 import pytest
 
@@ -19,8 +18,12 @@ from feedbax.host.protocol import LIGHT_ENTRYPOINT
 from feedbax.light_jobs import LightDelivery
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import store_request
+from tests.support.hang import HANG_SECONDS
 
 
+@pytest.mark.round(
+    "A client keeps waiting, with no time limit of its own, while a Host holds its lock for 8 s before it listens."
+)
 def test_client_waits_for_a_host_that_holds_the_lock_before_it_listens(private_hosts):
     from feedbax.host.daemon import Host
 
@@ -44,23 +47,27 @@ def test_client_waits_for_a_host_that_holds_the_lock_before_it_listens(private_h
 
 
 def test_client_fails_as_soon_as_its_host_exits_at_start(private_hosts, monkeypatch):
+    from feedbax.host import client as client_module
+
     root = private_hosts / "host"
     (root / "host.sqlite").mkdir(parents=True, mode=0o700)
     root.chmod(0o700)
-    exits = []
+    # The client's own wait for a starting Host outlasts the test's, so only the Host's exit can end it in time.
+    monkeypatch.setattr(client_module, "HANG_SECONDS", 10 * HANG_SECONDS)
+    errors = []
 
-    class Recorded(subprocess.Popen):
-        def wait(self, timeout=None):
-            status = super().wait(timeout)
-            exits.append(time.monotonic())
-            return status
+    def ping():
+        try:
+            HostClient(root).ping()
+        except HostError as error:
+            errors.append(error)
 
-    monkeypatch.setattr(subprocess, "Popen", Recorded)
-    with pytest.raises(HostError, match="host.log") as error:
-        HostClient(root).ping()
-    failed = time.monotonic()
-    assert error.value.code == "unavailable"
-    assert len(exits) == 1 and failed - exits[0] < 1
+    pinging = threading.Thread(target=ping, daemon=True)
+    pinging.start()
+    pinging.join(HANG_SECONDS)
+    assert not pinging.is_alive(), "The client waited past its Host's exit."
+    (error,) = errors
+    assert error.code == "unavailable" and "host.log" in str(error)
 
 
 def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monkeypatch, private_hosts):

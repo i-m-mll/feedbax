@@ -142,9 +142,8 @@ def test_silent_runpod_ssh_stall_expires_and_replays_the_same_stream(tmp_path, m
                     call.result(timeout=HANG_SECONDS)
                 elapsed = monotonic() - started
                 record_property("ssh_stall_seconds", round(elapsed, 3))
-                assert error.value.code == "disconnected" and 8 < elapsed <= 18
-                closed_by_client = relay.result(timeout=3)  # real clock: the relay sees the client close within 3 s
-                assert closed_by_client, "The peer closed before the SSH client detected the stall."
+                assert error.value.code == "disconnected" and 8 < elapsed <= 18  # real clock: OpenSSH's stall timers end the call 8 to 18 s after the freeze
+                assert relay.result(timeout=HANG_SECONDS), "The peer closed before the SSH client detected the stall."
                 assert jobs.history.observation(request.id) == before
             finally:
                 finished.set()

@@ -278,6 +278,7 @@ class TestRenderModelHtml:
 class TestPerformance:
     """Tests for performance requirements."""
 
+    @pytest.mark.round("Rendering a model of 20 entries to HTML takes under 2 s of real time.")
     def test_render_typical_model_under_2_seconds(self):
         """Test that rendering completes in reasonable time."""
         import time
@@ -296,5 +297,5 @@ class TestPerformance:
         html = render_model_html(model, max_depth=5)
         elapsed = time.time() - start
 
-        assert elapsed < 2.0, f"Rendering took {elapsed:.2f}s, expected < 2s"
+        assert elapsed < 2.0, f"Rendering took {elapsed:.2f}s, expected < 2s"  # real clock: the rendering budget
         assert len(html) > 0

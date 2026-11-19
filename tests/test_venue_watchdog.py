@@ -128,7 +128,7 @@ def test_detached_watchdog_recovers_host_then_retries_termination(tmp_path):
         wait_until(confirmation.exists)
         timestamps = [int(line) for line in calls.read_text().splitlines()]
         assert len(timestamps) == 2
-        assert all(timestamp >= ends_at_ms for timestamp in timestamps)
+        assert all(timestamp >= ends_at_ms for timestamp in timestamps)  # real clock: no termination is tried before the cutoff
     finally:
         stop_host(client, ping)
 

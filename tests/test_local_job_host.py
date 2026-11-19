@@ -6,7 +6,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -225,10 +224,11 @@ Path({str(child_pid)!r}).write_text(str(os.getpid()))
     )
     admit(host, "force", ignores_term)
     wait_until(lambda: child_pid.exists() and child_pid.read_text())
-    start = time.monotonic()
     host.stop([ignores_term.id], "force")
-    wait_until(lambda: job_row(host, ignores_term.id, "stopped"))
-    assert time.monotonic() - start < 5
+    # The worker ignores the stop's SIGTERM and holds until killed, so it ends only by the Host's escalation.
+    stopped = wait_until(lambda: job_row(host, ignores_term.id, "stopped"))
+    assert stopped["stop_mode"] == "force"
+    assert not psutil.pid_exists(int(child_pid.read_text()))
 
     crash = run_job("crash", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)")
     admit(host, "crash", crash)
@@ -1076,8 +1076,10 @@ def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_pat
     assert wait_until(lambda: alive(str(profiles)))
 
     def waiting():
-        with pytest.raises(HostError):
+        # A reply would mean the Host served the poll to its end before exiting.
+        with pytest.raises(HostError) as ended:
             HostClient(client.root).events(after=0, wait=30)
+        assert ended.value.code == "disconnected"
 
     def connections():
         return len(psutil.Process(pid).net_connections(kind="unix"))
@@ -1087,9 +1089,7 @@ def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_pat
         poll = pool.submit(waiting)
         wait_until(lambda: connections() > idle)
         os.kill(pid, signal.SIGTERM)
-        started = time.monotonic()
         assert wait_until(lambda: not process_exists(pid))
-        assert time.monotonic() - started < 2
         poll.result(timeout=HANG_SECONDS)
     assert wait_until(lambda: not alive(str(profiles)))
 
@@ -1128,18 +1128,27 @@ def test_shutdown_ends_a_connection_accepted_before_its_handler_ran(tmp_path):
         reader, writer = await asyncio.open_unix_connection(str(host.address))
         writer.write(json.dumps(dict(version=VERSION, op="events", after=0, projects=[], limit=1, wait=3)).encode() + b"\n")
         await writer.drain()
-        await asyncio.wait({task}, timeout=1)  # real clock: shutdown ends before the 3 s long poll would
+        await asyncio.wait({task}, timeout=HANG_SECONDS)
+        # A reply would mean the handler served the poll to its end before shutdown finished.
+        try:
+            answered = await reader.read()
+        except ConnectionResetError:
+            answered = b""
         writer.close()
-        return task.done()
+        return task.done() and answered == b""
 
     assert _run_host(tmp_path, probe, accepted=accepted)
 
 
-def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path):
+def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path, monkeypatch):
     import socket
 
+    from feedbax.host import daemon
     from feedbax.host.io import encode
     from feedbax.host.protocol import VERSION
+
+    # The handler's reply limit outlasts the test's wait, so only shutdown itself can end the handler in time.
+    monkeypatch.setattr(daemon, "HANG_SECONDS", 10 * HANG_SECONDS)
 
     async def probe(host, task):
         host.store.record_put("large", {"value": "x" * 4_000_000})
@@ -1150,7 +1159,7 @@ def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path):
             await loop.sock_sendall(sock, encode({"version": VERSION, "op": "record_get", "key": "large"}))
             assert await loop.sock_recv(sock, 1) == b"{"
             task.cancel()
-            await asyncio.wait({task}, timeout=1)  # real clock: shutdown ends within 1 s, not at the 120 s reply limit
+            await asyncio.wait({task}, timeout=HANG_SECONDS)
             return task.done()
 
     assert _run_host(tmp_path, probe)
@@ -1164,6 +1173,13 @@ def test_shutdown_does_not_wait_for_a_reply_its_handler_already_handed_off(tmp_p
     from feedbax.host.protocol import VERSION
 
     monkeypatch.setattr(daemon, "HANG_SECONDS", 0.2)
+    returned = asyncio.Event()
+
+    async def accepted(task, serve, reader, writer):
+        try:
+            await serve(reader, writer)
+        finally:
+            returned.set()
 
     async def probe(host, task):
         host.store.record_put("large", {"value": "x" * 4_000_000})
@@ -1173,10 +1189,10 @@ def test_shutdown_does_not_wait_for_a_reply_its_handler_already_handed_off(tmp_p
             await loop.sock_connect(sock, str(host.address))
             await loop.sock_sendall(sock, encode({"version": VERSION, "op": "record_get", "key": "large"}))
             assert await loop.sock_recv(sock, 1) == b"{"
-            # Past the reply limit the handler's own work is over; the client still holds its socket open.
-            await asyncio.sleep(1)  # real clock: the handler's 0.2 s reply limit has passed
+            # Once the handler has given up its reply its own work is over; the client still holds its socket open.
+            await asyncio.wait_for(returned.wait(), HANG_SECONDS)
             task.cancel()
             await asyncio.wait({task}, timeout=HANG_SECONDS)
             return task.done()
 
-    assert _run_host(tmp_path, probe)
+    assert _run_host(tmp_path, probe, accepted=accepted)

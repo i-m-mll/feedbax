@@ -190,6 +190,10 @@ def test_close_requires_exact_acknowledgements_and_retains_evidence(tmp_path, mo
     asyncio.run(reopen_without_fence())
 
 
+@pytest.mark.round(
+    "A venue session really expires, 4 s after it opens, between a job's assignment and the end of its worker's"
+    " import."
+)
 def test_worker_that_finishes_cold_import_after_expiry_never_invokes_job(tmp_path):
     root = tmp_path / "venue"
     release = tmp_path / "release"
@@ -213,7 +217,7 @@ def main(args):
         job = Job("delayed", "project", "request", launch)
         client.admit("token", [AdmissionItem("key", job)], record={})
         wait_until(lambda: client.jobs(job_id=job.id)[0]["state"] == "assigned")
-        wait_until(lambda: time.time() >= expires_at)
+        wait_until(lambda: time.time() >= expires_at)  # real clock: the session's 4 s have passed
         release.touch()
         outcome = wait_until(lambda: client.jobs(job_id=job.id)[0]["outcome"])
         assert outcome["error"]["code"] == "session_expired"
