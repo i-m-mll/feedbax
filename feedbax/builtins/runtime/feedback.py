@@ -117,7 +117,7 @@ class StateSelection(GraphNode):
 
 
 class SelectState(StateSelection, Component):
-    """Portable SelectState with a reconstructible typed configuration."""
+    """Output the parts of a state found at the configured paths."""
 
     model_facts = ModelFacts()
 

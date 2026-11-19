@@ -679,7 +679,7 @@ class CallableActivation(GraphNode):
 
 
 class Activation(CallableActivation, Component):
-    """Portable Activation with a reconstructible typed configuration."""
+    """Apply a named activation function elementwise."""
 
     ports: ClassVar = CallableActivation.ports
 
@@ -1253,7 +1253,7 @@ class LinearLayer(GraphNode):
 
 
 class Linear(LinearLayer, Component):
-    """Portable linear layer with a named activation."""
+    """Affine layer followed by a named elementwise activation."""
 
     component_history = History(Change(2, migrate=lambda params: {**params, "initialization": "random"}))
     model_facts = ModelFacts(values=(
