@@ -97,9 +97,10 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     });
 
     await expect.poll(() => observer.subscriptions().map((stream) => stream.projects)).toEqual([[projectId]]);
-    const established = observer.subscriptions();
+    const streamed = () => observer.subscriptions().map(({ projects }) => [...projects].sort());
+    const established = streamed();
     await open(second);
-    await expect.poll(observer.subscriptions).toEqual(established);
+    await expect.poll(streamed).toEqual(established);
     for (const job of queued) {
       expect(job.reason).toBeTruthy();
       for (const window of [page, second]) {
@@ -129,7 +130,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     expect(stopped).toMatchObject({ status: 'stopped', can_resume: true });
     expect(stopped?.progress?.completed_updates).toBeGreaterThan(0);
     await page.close();
-    await expect.poll(observer.subscriptions).toEqual(established);
+    await expect.poll(streamed).toEqual(established);
 
     const resumed = post(second, `/api/jobs/${first.job_id}/resume`);
     await resume.click();
@@ -298,6 +299,50 @@ test('reads Connecting while the event stream is refused and catches up when it 
     await expect(bar.getByRole('status')).toHaveCount(0);
   } finally {
     await drainProjects(request, [snapshot.project_id]);
+    await observer.close();
+  }
+});
+
+test('one window holds the event stream for all and hands it on when it closes', async ({ context, page, request, baseURL }) => {
+  test.setTimeout(40_000);
+  if (!baseURL) throw new Error('The real Studio origin is required');
+  await context.addInitScript(() => {
+    const Shared = window.SharedWorker;
+    Object.assign(window, { sharedWorkersStarted: 0 });
+    window.SharedWorker = function (...args: ConstructorParameters<typeof SharedWorker>) {
+      Object.assign(window, { sharedWorkersStarted: (window as unknown as { sharedWorkersStarted: number }).sharedWorkersStarted + 1 });
+      return new Shared(...args);
+    } as unknown as typeof SharedWorker;
+  });
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const observer = await observeJobStreams(baseURL);
+  const second = await context.newPage();
+  const bar = (window: Page) => window.locator('[data-studio-focus-region="bottom"]');
+  const open = async (window: Page) => {
+    await window.goto(observer.origin + '/?project=' + snapshot.project_id);
+    await mapStep(window, 'train').click();
+    await expect(window.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
+  };
+  try {
+    await open(page);
+    await open(second);
+    await expect.poll(() => observer.subscriptions().length).toBe(1);
+    for (const window of [page, second]) await expect(bar(window).getByRole('status')).toHaveCount(0);
+
+    await page.close();
+    await expect.poll(() => observer.subscriptions().length, { timeout: 5_000 }).toBe(1);
+    await expect(second.getByRole('button', { name: 'Run', exact: true })).toBeEnabled({ timeout: 1_000 });
+    await expect(bar(second).getByRole('status')).toHaveCount(0);
+    const admission = await request.post(`${projectPath}/train-runs`, { data: {
+      token: 'after-handover', revision: snapshot.revision,
+      run_keys: [{ variant: 'default', step: 'train', row: 'default' }],
+    } });
+    expect(admission.status(), await admission.text()).toBe(202);
+    await expect(second.locator('[data-map-step="train"] [data-status-mark="succeeded"]')).toBeVisible({ timeout: firstJobTimeout });
+    expect(await second.evaluate(() => (window as unknown as { sharedWorkersStarted: number }).sharedWorkersStarted)).toBe(0);
+  } finally {
+    await drainProjects(request, [snapshot.project_id]);
+    await second.close();
     await observer.close();
   }
 });

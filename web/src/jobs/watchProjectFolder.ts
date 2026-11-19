@@ -1,10 +1,6 @@
 import type { StudioProjectRevision } from '@/generated/studioContracts';
-import JobsWorker from '@/jobs/studioJobWorker?sharedworker';
-import {
-  STUDIO_JOBS_WORKER_NAME,
-  type StudioJobWorkerCommand,
-  type StudioJobWorkerMessage,
-} from './studioJobConnection';
+import type { StudioJobCommand, StudioJobPort } from './studioJobConnection';
+import { openJobPort } from './studioJobStream';
 
 export function watchProjectFolder(
   id: StudioProjectRevision['project_id'],
@@ -13,18 +9,18 @@ export function watchProjectFolder(
     connected: () => void;
   },
 ): () => void {
-  let port: MessagePort | null = null;
+  let port: StudioJobPort | null = null;
 
   function open() {
     if (port) return;
-    const opened = new JobsWorker({ name: STUDIO_JOBS_WORKER_NAME }).port;
+    const opened = openJobPort();
     port = opened;
-    opened.onmessage = ({ data }: MessageEvent<StudioJobWorkerMessage>) => {
+    opened.onmessage = ({ data }) => {
       if (port !== opened) return;
       if (data.type === 'folder-connected') handlers.connected();
       if (data.type === 'folder-revision' && data.revision.project_id === id) handlers.revision(data.revision);
     };
-    opened.postMessage({ type: 'subscribe-folder', folderId: id } satisfies StudioJobWorkerCommand);
+    opened.postMessage({ type: 'subscribe-folder', folderId: id } satisfies StudioJobCommand);
   }
 
   function close() {
@@ -32,7 +28,7 @@ export function watchProjectFolder(
     const closing = port;
     port = null;
     closing.onmessage = null;
-    closing.postMessage({ type: 'release' } satisfies StudioJobWorkerCommand);
+    closing.postMessage({ type: 'release' } satisfies StudioJobCommand);
     closing.close();
   }
 

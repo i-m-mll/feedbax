@@ -19,13 +19,9 @@ import {
 } from '@/api/jobs';
 import type { StudioActivityJob, StudioJobEvent, StudioJobSnapshot } from '@/generated/studioContracts';
 import { studioFormat, studioName, studioRunStatus, studioStep } from '@/components/activity/studioVocabulary';
-import {
-  STUDIO_JOBS_WORKER_NAME,
-  type StudioJobWorkerCommand,
-  type StudioJobWorkerMessage,
-} from '@/jobs/studioJobConnection';
+import type { StudioJobCommand, StudioJobMessage, StudioJobPort } from '@/jobs/studioJobConnection';
+import { openJobPort } from '@/jobs/studioJobStream';
 import { serviceDidNotRespond, serviceResponded, streamChanged } from '@/api/connection';
-import JobsWorker from '@/jobs/studioJobWorker?sharedworker';
 
 const jobsKey = ['studio-jobs'] as const;
 const historyKey = (projectId: string | null) => ['studio-job-history', projectId] as const;
@@ -57,10 +53,10 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
   const [announcements, setAnnouncements] = useState<{ id: number; text: string }[]>([]);
   const announcementId = useRef(0);
   const retry = useRef<(() => void) | null>(null);
-  const activePort = useRef<MessagePort | null>(null);
+  const activePort = useRef<StudioJobPort | null>(null);
 
   useEffect(() => {
-    let port: MessagePort | null = null;
+    let port: StudioJobPort | null = null;
     let generation = 0;
     let historyBoundary: AbortController | undefined;
     let buffered: StudioJobEvent[] | null = null;
@@ -202,9 +198,9 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     function open() {
       if (port) return;
       warm();
-      port = new JobsWorker({ name: STUDIO_JOBS_WORKER_NAME }).port;
+      port = openJobPort();
       activePort.current = port;
-      port.onmessage = ({ data }: MessageEvent<StudioJobWorkerMessage>) => {
+      port.onmessage = ({ data }: { data: StudioJobMessage }) => {
         switch (data.type) {
           case 'attached':
             void hydrate();
@@ -214,6 +210,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
             break;
           case 'state':
             streamChanged(data.state === 'connected');
+            if (data.state === 'connecting') snapshotReady = false;
             if (data.state === 'disconnected') {
               streamLost = true;
               snapshotReady = false;
@@ -241,7 +238,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
             break;
         }
       };
-      port.postMessage({ type: 'subscribe', projectId } satisfies StudioJobWorkerCommand);
+      port.postMessage({ type: 'subscribe', projectId } satisfies StudioJobCommand);
     }
 
     function close() {
@@ -251,7 +248,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       void cache.cancelQueries({ queryKey: history, exact: true });
       if (port) {
         port.onmessage = null;
-        port.postMessage({ type: 'release' } satisfies StudioJobWorkerCommand);
+        port.postMessage({ type: 'release' } satisfies StudioJobCommand);
         port.close();
       }
       activePort.current = null;
@@ -270,7 +267,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       warm();
       if (!port) open();
       else {
-        if (ownsSnapshot) port.postMessage({ type: 'retry' } satisfies StudioJobWorkerCommand);
+        if (ownsSnapshot) port.postMessage({ type: 'retry' } satisfies StudioJobCommand);
         void hydrate();
       }
     }
@@ -294,7 +291,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     refresh,
     acknowledge: async (jobId: string) => {
       const result = await acknowledgeStudioJob(jobId);
-      activePort.current?.postMessage({ type: 'seen', jobId: result.job_id } satisfies StudioJobWorkerCommand);
+      activePort.current?.postMessage({ type: 'seen', jobId: result.job_id } satisfies StudioJobCommand);
     },
   }), [projectId, refresh]);
 
