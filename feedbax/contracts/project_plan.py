@@ -977,7 +977,7 @@ def _encode_row(
                 term.enabled for term in spec.trial_documents.objective.terms
             ) else checkpoint_problem
         )
-        if problem is None and encoded.train_task is not None:
+        if encoded.train_task is not None:
             selection = encoded.train_task.python_selection
             evaluation_source = selection if selection is not None else condition_ids
         return _LoweredRow(
