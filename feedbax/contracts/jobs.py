@@ -510,6 +510,7 @@ class StudioLocalSession(StrictModel):
 class StudioRemoteSession(StrictModel):
     id: UUID
     name: str
+    profile: str = Field(min_length=1)
     state: Literal["queued", "opening", "open", "closing", "unreachable", "off"]
     hourly_microusd: int = Field(ge=0)
     estimated_cost_microusd: int = Field(ge=0)

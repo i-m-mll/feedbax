@@ -1340,7 +1340,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
                 ? runCommands : undefined}
                 machine={studioRunMachineControl({ catalog: machineCatalog.data, value: requestedMachine,
-                  disabled: busy || machineCatalog.isPending,
+                  disabled: busy || machineCatalog.isPending || !connected,
                   onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run && studioRunReason(run)} />,
               inspector: <StudioStepInspector plan={plan} step={step} state={state} onReveal={revealRunMention}

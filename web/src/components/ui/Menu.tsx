@@ -103,13 +103,20 @@ export const MenuGroup = BaseMenu.Group;
 
 export const MenuRadioGroup = BaseMenu.RadioGroup;
 
-export function MenuRadioItem({ value, disabled, children }: { value: string; disabled?: boolean; children: ReactNode }) {
+export function MenuRadioItem({ value, disabled, mark, children }: {
+  value: string;
+  disabled?: boolean;
+  /** A mark after the label, such as a machine's state. */
+  mark?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <BaseMenu.RadioItem className={popupItem} value={value} disabled={disabled} closeOnClick>
       <span className="flex size-[1em] shrink-0 items-center justify-center">
         <BaseMenu.RadioItemIndicator keepMounted={false}><Check /></BaseMenu.RadioItemIndicator>
       </span>
       <span className={primaryText}>{children}</span>
+      {mark}
     </BaseMenu.RadioItem>
   );
 }

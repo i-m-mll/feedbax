@@ -1,5 +1,5 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
-import type { StatusMarkStatus } from '@/components/ui/StatusMark';
+import type { ResultStatus } from '@/components/ui/StatusMark';
 import type {
   ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, FieldKind, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
   StudioDefinitionChange, StudioPlanReviewSource, StudioProjectWindowMapProblem, StudioSavedEvaluationResult,
@@ -12,7 +12,7 @@ export type StudioNameId = keyof typeof vocabulary.name;
 export type StudioReasonId = keyof typeof vocabulary.reason;
 export type StudioRunStatusId = StudioActivityJob['status'];
 /** A run's status with its result's validity folded in: what one mark draws. */
-export type StudioResultState = StatusMarkStatus;
+export type StudioResultState = ResultStatus;
 
 const runStatus = vocabulary.status.run satisfies Record<StudioResultState, string>;
 const stepGlyphs = {
