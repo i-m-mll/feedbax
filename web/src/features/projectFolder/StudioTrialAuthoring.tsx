@@ -47,8 +47,10 @@ export function useTrialAuthoring(
     queryKey: ['trial-authoring', project, revision, run],
     queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
     enabled: enabled && !!run,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
+      JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
   });
-  const commit: Commit | undefined = editable && !busy && run && query.data ? async (name, change, removes) => {
+  const commit: Commit | undefined = editable && !busy && run && query.data && !query.isPlaceholderData ? async (name, change, removes) => {
     if (writing.current) return studioReason('saving', studioName('project'));
     writing.current = true;
     setBusy(true);

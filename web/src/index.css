@@ -116,16 +116,33 @@
   --panel-header-padding-inline: var(--space-3);
 }
 
+/* Overlay scrollbars: the thumb shows while its region scrolls (`data-scrolling`, set by
+   showScrollbarsWhileScrolling) and while the pointer is over the region; its track keeps its width, so showing it
+   moves nothing. */
+@property --scrollbar-thumb {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
 * {
+  --scrollbar-thumb: transparent;
   scrollbar-width: thin;
-  scrollbar-color: var(--text-chrome-faint) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+:hover, [data-scrolling] { --scrollbar-thumb: var(--text-chrome-faint); }
+
+@media (prefers-reduced-motion: no-preference) {
+  * { transition: --scrollbar-thumb 240ms ease-out; }
+  [data-scrolling] { transition-duration: 80ms; }
 }
 
 @supports selector(::-webkit-scrollbar) {
   * { scrollbar-width: auto; scrollbar-color: auto; }
-  ::-webkit-scrollbar { width: var(--space-2); height: var(--space-2); background: transparent; }
+  ::-webkit-scrollbar { width: calc(var(--space-2) * 2 / 3); height: calc(var(--space-2) * 2 / 3); background: transparent; }
   ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--text-chrome-faint); border-radius: var(--radius-sm); }
+  ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: var(--radius-sm); }
 }
 
 :root[data-section-chevron='edge'] [data-section-disclosure] { margin-inline-start: auto; }
@@ -137,6 +154,8 @@
   --fade-bottom: 0px;
   --fade-left: 0px;
   --fade-right: 0px;
+  /* Content scrolled into view stops clear of the fades. */
+  scroll-padding-block: calc(var(--fade-inset-top) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
   -webkit-mask-image:
     linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
     linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);

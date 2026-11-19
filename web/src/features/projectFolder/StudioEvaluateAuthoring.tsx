@@ -1,4 +1,5 @@
-import { useId, useState, type ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
+import { useDraft } from '@/hooks/useDraft';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
@@ -34,7 +35,7 @@ export function CheckpointRuleEditor({ initial, disabled, readOnly, onSave, onTo
   onToSweep?(): void;
 }) {
   const saved = formatCheckpointRule(initial);
-  const [draft, setDraft] = useState(saved);
+  const [draft, setDraft] = useDraft(saved);
   const errorId = useId();
   const parsed = parseCheckpointRule(draft);
   const reason = 'reason' in parsed ? parsed.reason : undefined;
@@ -116,7 +117,7 @@ function BestEditor({ rule, sweeps, disabled, onChange }: {
 function TrialSetEditor({ initial, domain, disabled, onSave }: {
   initial: TrialSet; domain: TrialDomain; disabled: boolean; onSave(rule: TrialSet): void;
 }) {
-  const [rule, setRule] = useState(initial);
+  const [rule, setRule] = useDraft(initial);
   const select = useId();
   const choices = domain.kind === 'fixed'
     ? [
@@ -169,7 +170,7 @@ export function StudioEvaluateAuthoring({
   onToRows?(): void;
 }) {
   const { terms, trialSet } = authored;
-  const [draft, setDraft] = useState(terms);
+  const [draft, setDraft] = useDraft(terms);
   const changed = JSON.stringify(draft) !== JSON.stringify(terms);
   const best = draft.best ? BestSchema.safeParse({ ...draft.best, by: draft.best.by.trim() }) : undefined;
   const hasMembers = draft.rows?.length !== 0 && Object.values(draft.axes ?? {}).every((values) => values.length > 0);

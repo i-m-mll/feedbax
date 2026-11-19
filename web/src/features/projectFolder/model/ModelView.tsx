@@ -82,6 +82,14 @@ function idFor(end: { owner: string; component?: string }) {
   return end.owner === 'component' ? end.component! : end.owner === 'outputs' ? outputCard : inputCard;
 }
 
+/** Whether two read bodies read the same subject, whatever revision each reads it at. */
+function sameSubject(previous: unknown, next: object | false | undefined) {
+  if (!previous || typeof previous !== 'object' || !next) return false;
+  const { revision: _previous, ...a } = previous as { revision?: string };
+  const { revision: _next, ...b } = next as { revision?: string };
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function currentGraph(composites: string[]): ModelAddress {
   return { composites, element: { kind: 'graph' } };
 }
@@ -189,6 +197,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
     enabled: active && !!projectionBody && !evaluate,
+    placeholderData: (previous, query) => sameSubject(query?.queryKey[2], projectionBody) ? previous : undefined,
   });
   const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   const markedPorts = useMemo(() => new Map([
@@ -199,6 +208,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
     queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
     enabled: active && !!model && !!readBody,
+    placeholderData: (previous, query) => sameSubject(query?.queryKey[2], readBody) ? previous : undefined,
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
   const shownModel = evaluate ? effectiveModel : model?.value;
