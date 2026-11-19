@@ -385,7 +385,7 @@ def _saved_chain(folders):
                         },
                         {"path": "seed", "op": "add", "value": 7},
                         {
-                            "path": "settings.optimizer.params.learning_rate",
+                            "path": "settings.optimizer.learning_rate.value",
                             "value": 0.0005,
                         },
                     ],
@@ -516,7 +516,7 @@ def test_saved_stateful_train_fork(host, tmp_path, monkeypatch, state_policy):
         "schedule": "restart" if preserve else "continue",
         "rng": "carry" if preserve else "reset",
     }
-    child["settings"]["optimizer"]["params"]["learning_rate"] = 0.0005
+    child["settings"]["optimizer"]["learning_rate"]["value"] = 0.0005
     if not preserve:
         child["settings"]["optimizer"]["type"] = "adamw"
         child["trial_documents"]["model"]["interior"]["components"]["cell"]["fields"]["trainable"] = False

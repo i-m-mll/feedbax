@@ -559,15 +559,6 @@ CROSS_FIELD_REFINEMENTS.update(
                 "(value.kind === 'absolute' && value.batch == null) || (value.kind !== 'absolute' && value.batch != null)",
             ),
         ),
-        "LrScheduleSpec": (
-            _typescript_refinement(
-                "lr-schedule.shape",
-                "learning-rate schedule fields must match its kind",
-                "(value.kind === 'warmup_cosine' || value.kind === 'delayed_cosine') && "
-                "(value.total_steps == null || (value.constant_lr_iterations ?? 0) >= value.total_steps || "
-                "(value.kind === 'warmup_cosine' && (value.constant_lr_iterations ?? 0) < 1))",
-            ),
-        ),
         "SelectionSpec": (
             _typescript_refinement(
                 "selection.identity",
@@ -628,7 +619,6 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "WorkspaceReplayTrial": frozenset({"validate_trial_lengths"}),
     "WorkspaceReplayProduct": frozenset({"validate_source_mode"}),
     "BatchScheduleOriginSpec": frozenset({"_validate_origin"}),
-    "LrScheduleSpec": frozenset({"_validate_schedule_shape"}),
     "SelectionSpec": frozenset({"_validate_selection_spec"}),
 }
 

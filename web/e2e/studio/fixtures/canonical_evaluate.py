@@ -145,7 +145,7 @@ def task_pivot_files():
     train["sweep"] = {"axes": {
         "learning-rate": {"values": {
             name: {"label": name, "value": rate, "patches": {
-                "settings.optimizer.params.learning_rate": {"value": rate},
+                "settings.optimizer.learning_rate.value": {"value": rate},
             }} for name, rate in (("Slow", 0.001), ("Medium", 0.002), ("Fast", 0.003))
         }},
         "seed": {"values": {

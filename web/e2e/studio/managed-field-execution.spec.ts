@@ -31,7 +31,7 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
   await expect(rate).toHaveValue('0.001');
   await enter(rate, 'geomspace(0.001, 0.004, 2)');
   await expect.poll(async () => (await save()).project.steps?.train.sweep?.axes?.['learning-rate']).toMatchObject({
-    path: 'settings.optimizer.params.learning_rate',
+    path: 'settings.optimizer.learning_rate.value',
     range: { start: 0.001, stop: 0.004, count: 2, scale: 'log' },
   });
 

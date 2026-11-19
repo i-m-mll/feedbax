@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, get_args, overload
 
+import optax
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 from feedbax.contracts.migrations import default_spec_registry
@@ -57,6 +58,7 @@ from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
+from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 
 
 _TRAIN = REQUEST_KINDS["train"].spec_type
@@ -67,11 +69,11 @@ _TRAIN_DOCUMENT_MODELS = {
 }
 _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
 _GRAPH_BATCH_SIZE = 1
-_OPTIMIZER_RATE = ("settings", "optimizer", "params", "learning_rate")
 type _Path = tuple[str, ...]
 type _Scalar = str | int | float
 type _ReadPlan = Callable[[tuple[RunKey, ...]], ProjectPlan]
 _CHECKPOINT_POLICY = ("checkpoint_initialization",)
+_OPTAX_ORIGIN = StudioAuthoringOrigin(package="optax", distribution="optax", version=optax.__version__)
 _MISSING = object()
 _CHECKPOINT_CHOICES = {"initialize_from": "Initialize model only", "continue_from": "Carry training state"}
 
@@ -186,6 +188,19 @@ def authoring_surface(
                 ],
                 origins=_origins(task_records),
             ),
+            **{
+                family: StudioAuthoringRegistry(
+                    entries=[
+                        StudioAuthoringDeclaration(
+                            key=entry.key, label=entry.label, renamed_from=(),
+                            settings_schema=entry.model.model_json_schema(),
+                        )
+                        for entry in entries.values()
+                    ],
+                    origins={key: _OPTAX_ORIGIN for key in entries},
+                )
+                for family, entries in (("optimizers", OPTIMIZERS), ("schedules", SCHEDULES))
+            },
             FIGURE_TEMPLATES.family: StudioAuthoringRegistry(
                 entries=[
                     StudioAuthoringDeclaration(
@@ -458,30 +473,59 @@ class _TrainFields:
             return
         schema = registration.settings_model.model_json_schema()
 
-        def fields(path: _Path, values: dict, shape: dict) -> None:
-            for name, leaf in values.items():
-                props = shape.get("properties", {}).get(name, {})
-                if "$ref" in props:
-                    props = schema["$defs"][props["$ref"].rsplit("/", 1)[-1]]
-                if "anyOf" in props:
-                    props = props | next((member for member in props["anyOf"] if member.get("type") != "null"), {})
+        def fields(
+            path: _Path, values: dict, shape: dict, anchor: tuple[_Path, dict] | None, title: str | None,
+        ) -> None:
+            for name, declared in shape.get("properties", {}).items():
                 site = (*path, name)
+                present = name in values
+                leaf = values[name] if present else declared.get("default")
+                props = _schema_node(schema, declared, leaf)
+                inner = anchor if present or anchor is not None else (site, leaf)
                 if isinstance(leaf, dict):
-                    fields(site, leaf, props)
-                elif type(leaf) in (int, float):
-                    minimum = props.get("minimum")
-                    if site == _OPTIMIZER_RATE:
-                        minimum = 0
+                    # A class with one parameter reads as the parameter that holds it: a constant rate is the rate.
+                    tag = declared.get("discriminator", {}).get("propertyName")
+                    single = tag is not None and len(set(props.get("properties", {})) - {tag}) == 1
+                    fields(site, leaf, props, inner, declared.get("title") if single else None)
+                elif type(leaf) in (int, float) and props.get("type") in ("number", "integer"):
+                    def write(value: _Scalar, site=site, inner=inner) -> list[SetProjectValue]:
+                        if inner is None:
+                            return [self.set(site, value)]
+                        root, default = inner
+                        return [self.set(root, _set_in(default, site[len(root):], value))]
+
                     self.field(
-                        site, props.get("title", name.replace("_", " ").title()), leaf,
+                        site, title or props.get("title", name.replace("_", " ").title()), leaf,
                         StudioAuthoringNumber(
-                            kind="number", min=minimum, max=props.get("maximum"),
+                            kind="number", min=props.get("minimum"), max=props.get("maximum"),
                             step=1 if props.get("type") == "integer" else None,
                         ),
-                        lambda value, site=site: [self.set(site, value)],
+                        write,
                     )
 
-        fields(("settings",), raw, schema)
+        fields(("settings",), raw, schema, None, None)
+
+
+def _schema_node(schema: dict, node: dict, value: JsonValue) -> dict:
+    """The schema that governs ``value``: references followed, an optional's value member, a tagged union's chosen class."""
+    while "$ref" in node:
+        node = schema["$defs"][node["$ref"].rsplit("/", 1)[-1]] | {k: v for k, v in node.items() if k != "$ref"}
+    if "anyOf" in node:
+        members = [member for member in node["anyOf"] if member.get("type") != "null"]
+        rest = {k: v for k, v in node.items() if k != "anyOf"}
+        return _schema_node(schema, rest | members[0], value) if len(members) == 1 else rest
+    if "discriminator" in node:
+        tag = node["discriminator"]["propertyName"]
+        chosen = node["discriminator"]["mapping"].get(value.get(tag)) if isinstance(value, dict) else None
+        return _schema_node(schema, {"$ref": chosen}, value) if isinstance(chosen, str) else {}
+    return node
+
+
+def _set_in(value: JsonValue, path: _Path, leaf: JsonValue) -> JsonValue:
+    if not path:
+        return leaf
+    record = value if isinstance(value, dict) else {}
+    return record | {path[0]: _set_in(record.get(path[0]), path[1:], leaf)}
 
 
 def project_train_fields(
@@ -638,6 +682,6 @@ def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
         or (control.max is not None and value > control.max)
     ):
         raise ValueError(f"{value!r} is outside the range of {field.label}")
-    if field.id in {"/settings/grad_clip", pointer(_OPTIMIZER_RATE)} and value <= 0:
+    if field.id == "/settings/grad_clip" and value <= 0:
         raise ValueError(f"{field.label} is {value!r}, not positive")
     return int(value) if control.step == 1 else value

@@ -21,6 +21,7 @@ from feedbax.contracts import project_plan, request_identity
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
+from feedbax.builtins.training import StandardTrainingSettings
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
@@ -287,9 +288,18 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
     fields, _, patches, _ = project_train_fields(project, "train", registry, None)
     values = {field.id: field.value for field in fields}
     assert values["/training_config/n_batches"] == 25
-    assert values["/settings/optimizer/params/learning_rate"] == (
-        project.steps["train"].base.inline["settings"]["optimizer"]["params"]["learning_rate"]
+    assert values["/settings/optimizer/learning_rate/value"] == (
+        project.steps["train"].base.inline["settings"]["optimizer"]["learning_rate"]["value"]
     )
+    assert (values["/settings/grad_clip"], values["/settings/optimizer/b1"]) == (1.0, 0.9)
+
+    raw = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["base"]["inline"]["settings"] = {}
+    _, _, (patch,), _ = project_train_fields(
+        Project.model_validate(raw), "train", registry, StudioAuthoringChange(field="/settings/optimizer/b1", value=0.8),
+    )
+    assert patch.path == "/base/inline/settings/optimizer"
+    assert StandardTrainingSettings.model_validate({"optimizer": patch.value}).optimizer.b1 == 0.8
 
     _, _, patches, _ = project_train_fields(
         project, "train", registry,
@@ -329,7 +339,7 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     train = raw["steps"]["train"]
     carry_path = "checkpoint_initialization"
-    rate_path = "settings.optimizer.params.learning_rate"
+    rate_path = "settings.optimizer.learning_rate.value"
     train["sweep"] = {"axes": {"rate": {"values": {
         "slow": {"patches": {rate_path: {"value": 0.001}}},
         "fast": {"patches": {rate_path: {"value": 0.003}}},

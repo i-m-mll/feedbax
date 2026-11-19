@@ -2163,21 +2163,6 @@ export interface TrainContinuation {
   schedule: "continue" | "restart";
 }
 
-export interface LrScheduleSpec {
-  kind?: "constant" | "warmup_cosine" | "delayed_cosine";
-  learning_rate_0: number;
-  total_steps?: number | null;
-  constant_lr_iterations?: number;
-  warmup_init_fraction?: number;
-  cosine_annealing_alpha?: number;
-}
-
-export interface OptimizerSpec {
-  type: string;
-  params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
-  lr_schedule?: LrScheduleSpec | null;
-}
-
 export interface TaskTimelineCue {
   epoch: string;
   label: string;
@@ -8038,38 +8023,6 @@ export const TrainContinuationSchema: z.ZodType<TrainContinuation> = z.lazy(() =
     })
     .strict()
 ) as unknown as z.ZodType<TrainContinuation>;
-
-export const LrScheduleSpecSchema: z.ZodType<LrScheduleSpec> = z.lazy(() =>
-  z
-    .object({
-      "kind": z.union([z.literal("constant"), z.literal("warmup_cosine"), z.literal("delayed_cosine")]).optional(),
-      "learning_rate_0": z.number().finite().gt(0.0),
-      "total_steps": z.number().int().safe().gt(0).nullable().optional(),
-      "constant_lr_iterations": z.number().int().safe().gte(0).optional(),
-      "warmup_init_fraction": z.number().finite().gte(0.0).optional(),
-      "cosine_annealing_alpha": z.number().finite().gte(0.0).optional(),
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"kind": "constant", "constant_lr_iterations": 0, "warmup_init_fraction": 0.0, "cosine_annealing_alpha": 0.0}, ...input };
-      if ((value.kind === 'warmup_cosine' || value.kind === 'delayed_cosine') && (value.total_steps == null || (value.constant_lr_iterations ?? 0) >= value.total_steps || (value.kind === 'warmup_cosine' && (value.constant_lr_iterations ?? 0) < 1))) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "learning-rate schedule fields must match its kind",
-        });
-      }
-    })
-) as unknown as z.ZodType<LrScheduleSpec>;
-
-export const OptimizerSpecSchema: z.ZodType<OptimizerSpec> = z.lazy(() =>
-  z
-    .object({
-      "type": z.string(),
-      "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
-      "lr_schedule": LrScheduleSpecSchema.nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<OptimizerSpec>;
 
 export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
   z

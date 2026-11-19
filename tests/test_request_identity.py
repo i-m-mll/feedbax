@@ -112,7 +112,7 @@ def test_inline_trial_memo_preserves_canonical_requests_and_window_facts():
     inputs = {"checkpoint": (
         InputMember(key="first", reference=ProductRef(request_id=first.id, role="checkpoint")),
     )}
-    spec.settings["optimizer"]["params"]["learning_rate"] = 0.007
+    spec.settings["optimizer"]["learning_rate"]["value"] = 0.007
     assert compare(spec, inputs).id != first.id
     spec.settings["wide"] = 1e20
     wide = compare(spec, inputs)

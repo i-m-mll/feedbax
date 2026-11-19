@@ -156,10 +156,6 @@ from feedbax.contracts.studio_api import (
     SuccessResponse,
     TrainingTrajectoryPayload,
 )
-from feedbax.contracts.training import (
-    LrScheduleSpec,
-    OptimizerSpec,
-)
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
 from feedbax.contracts.jobs import (
@@ -726,8 +722,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ComponentDefinition,
     DocumentTrainingConfig,
     TrainContinuation,
-    LrScheduleSpec,
-    OptimizerSpec,
     TaskTimelineCue,
     SampledTaskTrial,
     TaskTrialSampleRequest,

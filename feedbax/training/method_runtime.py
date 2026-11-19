@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from jaxtyping import PyTree
     from pydantic import BaseModel
 
-    from feedbax.contracts.training import OptimizerSpec
     from feedbax.objectives.document import ObjectiveExecutor, ObjectiveResult
     from feedbax.runtime.trial_execution import TrialExecution
     from feedbax.tasks.document import Trial
@@ -149,7 +148,7 @@ class TrainingContext[S: BaseModel]:
 
     @staticmethod
     def optimizer(
-        spec: OptimizerSpec, *, gradient_clip: float | None = None,
+        spec: BaseModel, *, gradient_clip: float | None = None,
     ) -> optax.GradientTransformationExtraArgs:
         from feedbax.training.optimizers import build_step_optimizer
 
