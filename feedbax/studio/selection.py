@@ -18,23 +18,22 @@ class TrainSelection:
     for them is made against: the named run's when they are rows or sweep values, else the step's own. ``scoped`` says
     they are not the whole step.
     ``store`` puts writes at paths in the step's definition where the scope keeps them: on the step, in a sweep value's
-    patches, as an exception, or on a variant.
+    patches, as an exception, or on a variant; a write through a document reference is stored in the document or as a
+    difference from it.
     """
 
     payloads: tuple[dict[str, JsonValue], ...]
     row: PlannedRow | None
     current: dict[str, JsonValue] | None
     scoped: bool
-    store: Callable[[list[OverridePatch]], StudioProjectFilePatch]
+    store: Callable[[list[OverridePatch]], list[StudioProjectFilePatch]]
 
 
 def merged_files(files: list[StudioProjectFilePatch]) -> list[StudioProjectFilePatch]:
-    """``files`` with the patches of each file in one entry, in order."""
-    by_address: dict[str, StudioProjectFilePatch] = {}
+    """One patch per file, holding its patches in order."""
+    merged: dict[tuple[str, str], StudioProjectFilePatch] = {}
     for file in files:
-        key = file.address.model_dump_json()
-        previous = by_address.get(key)
-        by_address[key] = file if previous is None else previous.model_copy(
-            update={"patches": [*previous.patches, *file.patches]},
-        )
-    return list(by_address.values())
+        key = (file.address.kind, file.address.id)
+        prior = merged.get(key)
+        merged[key] = file if prior is None else prior.model_copy(update={"patches": [*prior.patches, *file.patches]})
+    return list(merged.values())

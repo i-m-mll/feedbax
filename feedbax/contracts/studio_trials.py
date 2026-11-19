@@ -14,6 +14,7 @@ from feedbax.contracts.model_edit import (
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project import ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 from feedbax.contracts.task_document import Epoch, PythonTaskSelection, TaskDocument
 from feedbax.expression_site import SiteProjection
@@ -59,7 +60,7 @@ class StudioTrialDocumentEdit(StrictModel):
 
 class StudioTrialSelectDocument(StrictModel):
     kind: Literal["select_document"]
-    role: Literal["model", "task", "objective"]
+    role: Literal["model", "task", "objective", "training"]
     document: ProjectName
 
 
@@ -122,3 +123,5 @@ class StudioTrialAuthoring(StrictModel):
     fields: list[StudioTrialField]
     problems: list[Problem]
     files: list[StudioProjectFilePatch]
+    refusal: StudioSweptParameterMissing | None = None
+    """Why the chosen document was not taken: it lacks a parameter the step sweeps."""

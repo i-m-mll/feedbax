@@ -92,7 +92,7 @@ def edit_class_sweep(
     *,
     scoped: bool,
     parameter_label: Callable[[_Path], str],
-    store: Callable[[list[OverridePatch]], StudioProjectFilePatch],
+    store: Callable[[list[OverridePatch]], list[StudioProjectFilePatch]],
     step_file: Callable[[list[SetProjectValue]], StudioProjectFilePatch],
 ) -> ClassSweepEdit | StudioSweptParameterMissing:
     """The files that make ``change`` to the sweep over ``field``, or the parameter a new member's class lacks.
@@ -123,7 +123,7 @@ def edit_class_sweep(
         if kept is None:
             raise ValueError(f"{field.label} has no member {edit.value_id!r}.")
         return ClassSweepEdit(
-            [store(patch_writes(kept.patches)), step_file([drop_axis(name)])],
+            [*store(patch_writes(kept.patches)), step_file([drop_axis(name)])],
             {name: [value_id for value_id in values if value_id != edit.value_id]},
         )
     if edit.kind == "remove_member":
@@ -146,7 +146,7 @@ def edit_class_sweep(
     added = sweeps._fresh_id(key, values)
     after = NamedAxis(values=moved_values | {added: sweeps.target.entry(key, field.title(key))})
     removals = [OverridePatch(op="remove", path=".".join((*field.site, parameter))) for parameter in moved]
-    return ClassSweepEdit([*([store(removals)] if removals else []), step_file(sweeps.write_axis(after))])
+    return ClassSweepEdit([*(store(removals) if removals else []), step_file(sweeps.write_axis(after))])
 
 
 def _swept_parameter_missing(

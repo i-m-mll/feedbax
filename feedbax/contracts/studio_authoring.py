@@ -137,12 +137,13 @@ class StudioRunSelection(StrictModel):
     """The runs an edit is made for: a named run and, when they are not the whole step, the selected rows.
 
     Rows that are exactly the runs of a set of values per sweep, named in ``axes``, are stored by those values;
-    other rows are stored by row.
+    other rows are stored by row. ``lit_steps`` are the steps an edit of a document reaches; none is the edited step.
     """
 
     run: StudioSavedTrainKey | None = None
     rows: list[str] = Field(default_factory=list)
     axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
+    lit_steps: list[ProjectName] = Field(default_factory=list)
 
 
 class StudioClassToSweep(StrictModel):

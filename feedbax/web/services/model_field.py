@@ -216,7 +216,7 @@ def _kept_files(project, step_id: str, step: Step, writes: list[OverridePatch]) 
         *([StudioProjectFilePatch(
             address=AuthoredFileAddress(kind="step", id=step_id), patches=_step_field_writes(step, fields),
         )] if fields else []),
-        *([scoped_file(project, step_id, EvaluateAttachmentStep(kind="step"), rest)] if rest else []),
+        *(scoped_file(project, step_id, EvaluateAttachmentStep(kind="step"), rest) if rest else []),
     ]
 
 
@@ -329,7 +329,7 @@ def model_fields(
                 code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
             )])
         write = OverridePatch(op="replace", path=axis.target.patch_path, value=result)
-        return ModelFieldResponse(files=[scoped_file(project, body.run.step, scope, [write])])
+        return ModelFieldResponse(files=scoped_file(project, body.run.step, scope, [write]))
     value = result
     if isinstance(result, LiteralValue):
         if field.address.element.parent.kind == "attachment":
