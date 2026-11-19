@@ -12,7 +12,7 @@ from pathlib import Path
 from threading import Barrier, Event
 
 from fastapi.testclient import TestClient
-from pydantic import JsonValue
+from pydantic import Field, JsonValue
 import pytest
 
 from feedbax._atomic import write_bytes_atomic
@@ -21,16 +21,19 @@ from feedbax.contracts import project_plan, request_identity
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
-from feedbax.builtins.training import StandardTrainingSettings
+from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.studio_authoring import StudioAuthoringChange, StudioSweptParameterMissing
 from feedbax.host import HostError
 from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.declarations import DistributionSource, callable_declaration
+from feedbax.training.methods import TrainingMethodDeclaration, TrainingMethodRegistry
 from feedbax.studio.authoring import project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
+from tests.support import external_method_witness
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.hang import HANG_SECONDS
 
@@ -335,27 +338,11 @@ def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
     assert {field.id for field in fields} >= {"/method", "/training_config/batch_size"}
     assert settings["optimizer"]["type"] == "adam"
 
-    _, _, patches, _ = project_train_fields(
-        project, "train", registry, StudioAuthoringChange(field="/settings/optimizer/type", value="sgd"),
-    )
-    assert [(patch.path, patch.value) for patch in patches] == [("/base/inline/settings/optimizer/type", "sgd")]
-    with pytest.raises(ValueError):
-        project_train_fields(
-            project, "train", registry, StudioAuthoringChange(field="/settings/optimizer/type", value=3),
-        )
-    method = next(field for field in fields if field.id == "/method")
-    assert method.control is not None
-    project_train_fields(project, "train", registry, StudioAuthoringChange(field="/method", value=method.value))
-
-    # A method change rewrites the settings, so a sweep over a setting refuses it.
-    raw["steps"]["train"]["sweep"]["axes"]["rate"] = {"values": {
-        "slow": {"patches": {"settings.optimizer.params.learning_rate": {"value": 0.01}}},
-    }}
-    swept = Project.model_validate(raw)
-    fields, _, _, _ = project_train_fields(swept, "train", registry, None)
-    assert next(field for field in fields if field.id == "/method").control is None
-    with pytest.raises(ValueError, match="read-only"):
-        project_train_fields(swept, "train", registry, StudioAuthoringChange(field="/method", value=method.value))
+    for field in ("/settings/optimizer", "/settings/optimizer/type"):
+        _, _, patches, _ = project_train_fields(project, "train", registry, StudioAuthoringChange(field=field, value="sgd"))
+        assert [(patch.path, patch.value["type"]) for patch in patches] == [("/base/inline/settings/optimizer", "sgd")]
+        with pytest.raises(ValueError):
+            project_train_fields(project, "train", registry, StudioAuthoringChange(field=field, value=3))
 
 
 def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_sweep():
@@ -370,18 +357,85 @@ def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_
     }}}}
     project = Project.model_validate(raw)
 
-    def choose(schedule: dict):
+    def choose(schedule: str):
         _, _, patches, _ = project_train_fields(project, "train", registry, StudioAuthoringChange(
             field="/settings/optimizer/learning_rate", value=schedule,
         ))
         return patches
 
-    assert choose({"type": "constant_schedule", "value": 0.001}) == StudioSweptParameterMissing(
+    assert choose("constant_schedule") == StudioSweptParameterMissing(
         class_label="Constant", parameter_label="Peak Value",
     )
-    warmup = {"type": "warmup_constant_schedule", "init_value": 0.0, "peak_value": 0.001, "warmup_steps": 10}
-    (patch,) = choose(warmup)
-    assert (patch.path, patch.value) == ("/base/inline/settings/optimizer/learning_rate", warmup)
+    (patch,) = choose("warmup_constant_schedule")
+    assert patch.path == "/base/inline/settings/optimizer/learning_rate"
+    assert patch.value == {"type": "warmup_constant_schedule", "init_value": 0.001, "peak_value": 0.001, "warmup_steps": 100}
+
+
+class _PenalizedSettings(StandardTrainingSettings):
+    penalty: float = Field(default=0.1, gt=0)
+
+
+def _penalized(state, ctx):
+    return supervised_gradient(state, ctx)
+
+
+def _three_methods() -> TrainingMethodRegistry:
+    """The standard method, one that shares its optimizer, and one whose settings have no optimizer."""
+    registry = TrainingMethodRegistry()
+    source = DistributionSource("probe", "probe", "0")
+    registry.register_declaration(
+        supervised_gradient, callable_declaration(supervised_gradient), key="feedbax.supervised_gradient", source=source,
+    )
+    registry.register_declaration(
+        _penalized, TrainingMethodDeclaration(settings_model=_PenalizedSettings, init=lambda *_: None, label="Penalized"),
+        key="probe.penalized", source=source,
+    )
+    registry.register_declaration(
+        external_method_witness.adversarial, callable_declaration(external_method_witness.adversarial),
+        key="probe.adversarial", source=source,
+    )
+    return registry
+
+
+def test_a_method_change_keeps_the_settings_both_methods_declare_and_refuses_one_without_a_swept_parameter():
+    registry = _three_methods()
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    settings = raw["steps"]["train"]["base"]["inline"]["settings"]
+    settings["optimizer"]["learning_rate"]["value"] = 0.003
+    settings["grad_clip"] = 2.0
+
+    def choose(project: Project, method: str):
+        return project_train_fields(project, "train", registry, StudioAuthoringChange(field="/method", value=method))[2]
+
+    method, replaced = choose(Project.model_validate(raw), "probe.penalized")
+    assert (method.path, method.value) == ("/base/inline/method", "probe.penalized")
+    assert replaced.path == "/base/inline/settings"
+    assert replaced.value["optimizer"] == settings["optimizer"]
+    assert (replaced.value["grad_clip"], replaced.value["penalty"]) == (2.0, 0.1)
+
+    rate = "settings.optimizer.learning_rate.value"
+    raw["steps"]["train"]["sweep"] = {"axes": {"rate": {"values": {
+        "slow": {"patches": {rate: {"value": 0.001}}}, "fast": {"patches": {rate: {"value": 0.01}}},
+    }}}}
+    swept = Project.model_validate(raw)
+    fields, _, _, _ = project_train_fields(swept, "train", registry, None)
+    assert next(field for field in fields if field.id == "/method").control is not None
+    _, replaced = choose(swept, "probe.penalized")
+    assert replaced.value["optimizer"] == settings["optimizer"]
+    assert choose(swept, "probe.adversarial") == StudioSweptParameterMissing(
+        class_label="probe.adversarial", parameter_label="Learning Rate",
+    )
+
+
+def test_choosing_another_optimizer_keeps_the_learning_rate():
+    registry = new_application_registry_bundle().training_methods
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = 0.003
+    _, _, (patch,), _ = project_train_fields(
+        Project.model_validate(raw), "train", registry, StudioAuthoringChange(field="/settings/optimizer", value="adamw"),
+    )
+    assert patch.value["type"] == "adamw"
+    assert patch.value["learning_rate"] == {"type": "constant_schedule", "value": 0.003}
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
