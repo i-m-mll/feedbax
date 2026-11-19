@@ -143,7 +143,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
       onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
   </div>;
-  if (boxed) return <ClassValue model={model} parameter={parameter!} labelId={labelId} picker={widget} />;
+  if (boxed) return <ClassValue model={model} parameter={parameter!} labelId={labelId} picker={widget} pickReason={reason} />;
   if (type.kind === 'class' && !model.parts?.length) {
     return <section className="value-field grid min-w-0 gap-1" aria-label={studioFieldLabel('field', label)}>
       <FieldRow label={label} labelId={labelId} below={model.origin || reason || model.reason ? below : undefined}>
@@ -186,15 +186,17 @@ function FieldGroup({ model, labelId, picker, children }: {
  * A class with one textual parameter: the parameter is the field's value, in one box with the class's picker at its
  * end. The parameter's name is not drawn; it names the input, after the field's name.
  */
-function ClassValue({ model, parameter, labelId, picker }: {
+function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   model: FieldModel; parameter: FieldModel; labelId: string; picker: ReactNode;
+  /** Why the source refused the last class chosen in the picker. */
+  pickReason?: string;
 }) {
   const id = useId();
   const reasonId = useId();
   const originId = useId();
   const { busy, reason, setReason, submit } = useSubmit(parameter);
   const readOnly = !parameter.commit || busy;
-  const shown = reason ?? parameter.reason ?? model.reason;
+  const shown = reason ?? pickReason ?? parameter.reason ?? model.reason;
   const origin = parameter.origin ?? model.origin;
   const describedBy = [origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
   function chooseKind(kind: FieldKind, focusText: () => void) {
