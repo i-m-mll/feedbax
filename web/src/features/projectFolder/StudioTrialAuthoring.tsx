@@ -26,6 +26,7 @@ import type {
 import { authoredPointer } from './authoredEdits';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
+import { ScrollFade } from '@/components/ui/ScrollFade';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 /** Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. */
@@ -135,7 +136,7 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
 }) {
   return <Drawer>
     {taskGroups(view).map(({ id, nodes }) => nodes.length > 0 && <DrawerSection key={id} sections={sections} id={`task.${id}`}
-      name={studioName(id)} count={nodes.length}>
+      name={studioName(id)}>
       <Tree aria-label={studioName(id)} nodes={nodes} selected={selected && nodes.some((node) => node.id === selected) ? [selected] : []}
         onSelectedChange={(ids) => select(ids.at(-1) ?? null)} />
     </DrawerSection>)}
@@ -237,7 +238,7 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
   const sources = [...view.outputs.map(({ value }) => value), ...view.variables, ...view.signals]
     .filter(({ type }) => type.base === 'real' || type.base === 'integer');
   const chosen = sources.find(({ id }) => id === source) ?? sources[0];
-  return <div className="grid gap-3 overflow-auto p-3 text-sm">
+  return <ScrollFade className="grid gap-3 p-3 text-sm">
     <div className="flex items-center gap-2">
       <Select className="min-w-0" aria-label={studioName('measureSource')} value={chosen?.id ?? null} disabled={!commit || !sources.length}
         items={sources.map(({ id, name }) => ({ value: id, label: humanizeLabel(name) }))} onValueChange={setSource} />
@@ -280,7 +281,7 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
         </tr>;
       })}</tbody>
     </Table>
-  </div>;
+  </ScrollFade>;
 }
 
 export function TrialObjectiveOutline({ sections, view, commit, selected, select }: {
@@ -295,7 +296,7 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
     id: term.id, name: term.name ?? studioAccessibleName('term', index + 1), muted: term.enabled === false,
   }));
   return <Drawer>
-    <DrawerSection sections={sections} id="objective.outline" name={studioName('outline')} count={terms.length}>
+    <DrawerSection sections={sections} id="objective.outline" name={studioName('outline')}>
       <Tree ref={tree} aria-label={studioName('objectiveTerms')} nodes={nodes} selected={selected ? [selected] : []}
         onSelectedChange={(ids) => select(ids.at(-1) ?? null)}
         onRename={commit && ((id, name) => {

@@ -70,6 +70,7 @@ import {
 import { useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
+import { ScrollFade } from '@/components/ui/ScrollFade';
 
 type EditorSession = ReturnType<typeof bindProjectEditor>;
 
@@ -1279,7 +1280,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation}
                   onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
                 </DrawerSection>}
-                {exceptions.length > 0 && <DrawerSection sections={drawerSections} id="runs.exceptions" name={studioName('exceptions')} count={exceptions.length}>
+                {exceptions.length > 0 && <DrawerSection sections={drawerSections} id="runs.exceptions" name={studioName('exceptions')}>
                   <SweepExceptions exceptions={exceptions}
                     onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />
                 </DrawerSection>}
@@ -1350,7 +1351,7 @@ function ProblemDestination({ reveal, action, children }: { reveal: ProblemRevea
       </p>
       {action}
     </div>
-    <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+    <ScrollFade className="flex-1">{children}</ScrollFade>
   </div>;
 }
 

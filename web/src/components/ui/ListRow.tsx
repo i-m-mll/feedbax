@@ -6,7 +6,8 @@ import { focusRing, glyph } from './styles';
 export interface ListRowProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
   name: ReactNode;
   depth?: number;
-  expanded?: boolean;
+  /** A branch's state; `null` keeps the disclosure's place empty for a leaf among branches; undefined draws no place. */
+  expanded?: boolean | null;
   onExpandedChange?: (expanded: boolean, deep: boolean) => void;
   glyph?: ReactNode;
   trailing?: ReactNode;
@@ -18,18 +19,18 @@ export interface ListRowProps extends Omit<HTMLAttributes<HTMLDivElement>, 'chil
 export const ListRow = forwardRef<HTMLDivElement, ListRowProps>(function ListRow(
   { name, depth = 0, expanded, onExpandedChange, glyph: icon, trailing, selected, holdsSelection, disabled, className, style, ...props }, ref,
 ) {
-  const indent = `calc(var(--row-padding-inline) + ${depth} * 1.25em)`;
+  const indent = `calc(var(--space-1) + ${depth} * 1.25em)`;
   return (
     <div
       ref={ref}
       aria-selected={selected}
       aria-disabled={disabled || undefined}
-      aria-expanded={expanded}
+      aria-expanded={expanded ?? undefined}
       data-selected={selected || undefined}
       data-holds-selection={holdsSelection || undefined}
       data-disabled={disabled || undefined}
       className={clsx(
-        'relative flex h-row min-w-0 cursor-default select-none items-center gap-1.5 rounded-row pr-row-inline text-shell-foreground',
+        'relative flex h-row min-w-0 cursor-default select-none items-center gap-1.5 rounded-list-row pr-row-inline text-shell-foreground',
         'hover:[&:not([data-disabled])]:bg-shell-row-hover data-[selected]:bg-shell-row-selected data-[selected]:font-medium',
         'data-[disabled]:text-shell-muted',
         'after:pointer-events-none after:absolute after:bottom-[2px] after:left-[calc(var(--row-indent)+1.15em+0.375rem)]',
@@ -40,14 +41,14 @@ export const ListRow = forwardRef<HTMLDivElement, ListRowProps>(function ListRow
       style={{ paddingInlineStart: indent, '--row-indent': indent, ...style } as CSSProperties}
       {...props}
     >
-      <span
-        className={clsx('flex w-[1.15em] justify-center text-shell-muted transition-transform', expanded && 'rotate-90')}
-        onClick={expanded === undefined ? undefined : (event) => { event.stopPropagation(); onExpandedChange?.(!expanded, event.altKey); }}
-        onDoubleClick={expanded === undefined ? undefined : (event) => event.stopPropagation()}
+      {expanded === undefined ? null : <span
+        className={clsx('flex w-[1.15em] shrink-0 justify-center text-shell-muted transition-transform', expanded && 'rotate-90')}
+        onClick={expanded === null ? undefined : (event) => { event.stopPropagation(); onExpandedChange?.(!expanded, event.altKey); }}
+        onDoubleClick={expanded === null ? undefined : (event) => event.stopPropagation()}
         aria-hidden
       >
-        {expanded === undefined ? null : <ChevronRight />}
-      </span>
+        {expanded === null ? null : <ChevronRight />}
+      </span>}
       {icon ? <span className="flex text-shell-muted">{icon}</span> : null}
       <span className="min-w-0 flex-1 truncate">{name}</span>
       {trailing ? <span className="flex shrink-0 items-center gap-1 text-sm text-shell-muted">{trailing}</span> : null}

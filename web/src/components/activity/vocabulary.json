@@ -389,6 +389,8 @@
     "uncheckedBadge": "Unchecked Dot",
     "mixed": "Mixed",
     "completions": "Completions",
+    "sectionChevronAfterName": "Chevron After",
+    "sectionChevronEdge": "Chevron Edge",
     "addAttachment": "Add Attachment"
   },
   "unit": {

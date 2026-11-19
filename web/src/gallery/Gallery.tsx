@@ -21,7 +21,7 @@ import {
 } from '@/components/ui/Menu';
 import { NumberField } from '@/components/ui/NumberField';
 import { ScrollFade } from '@/components/ui/ScrollFade';
-import { Section } from '@/components/ui/Section';
+import { Section, SectionStack } from '@/components/ui/Section';
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { Slider } from '@/components/ui/Slider';
@@ -96,7 +96,7 @@ function TreeDemo() {
   const [entered, setEntered] = useState<string>();
   return (
     <div className="grid gap-2">
-      <div className="h-72 w-72 overflow-auto rounded-control border border-shell-divider">
+      <ScrollFade axis="both" className="h-72 w-72 rounded-control border border-shell-divider">
         <Tree ref={tree} aria-label="Outline" nodes={treeNodes(outline, names)} defaultExpanded={['model']}
           selected={selected} onSelectedChange={setSelected} onRename={rename} onActivate={setEntered}
           menu={(node) => (
@@ -106,7 +106,7 @@ function TreeDemo() {
               <MenuItem>Remove</MenuItem>
             </>
           )} />
-      </div>
+      </ScrollFade>
       <div className="flex gap-2">
         <Button onClick={() => { setSelected(['noise']); }}>Select Noise</Button>
         <Button onClick={() => tree.current?.reveal('muscles')}>Reveal Muscles</Button>
@@ -119,33 +119,55 @@ function TreeDemo() {
 
 const components = ['Linear', 'GRU', 'LSTM', 'MLP', 'Noise', 'Delay', 'Arm', 'Muscles', 'Point Mass', 'Feedback'];
 
-function DrawerDemo() {
+const libraryGroups = [
+  { name: 'Networks', items: ['Linear', 'GRU', 'LSTM', 'MLP'] },
+  { name: 'Mechanics', items: ['Arm', 'Muscles', 'Point Mass', 'Delay', 'Noise', 'Feedback'] },
+  { name: 'Runtime', items: Array.from({ length: 24 }, (_, index) => `Operator ${index + 1}`) },
+];
+
+function DrawerDemo({ content }: { content: 'short' | 'overflowing' }) {
   const [shown, setShown] = useState(true);
-  const [open, setOpen] = useState<Record<string, boolean>>({ library: true, outline: true });
+  const [open, setOpen] = useState<Record<string, boolean>>({ library: true, outline: true, Runtime: true });
   const [selected, setSelected] = useState<string[]>(['gru']);
   const fold = (section: string) => ({
-    open: open[section], onOpenChange: (next: boolean) => setOpen((now) => ({ ...now, [section]: next })),
+    open: open[section] ?? false, onOpenChange: (next: boolean) => setOpen((now) => ({ ...now, [section]: next })),
   });
+  const groups = content === 'short' ? libraryGroups.slice(0, 1) : libraryGroups;
   return (
-    <div className="grid gap-2">
-      <div className="flex h-96 w-64 flex-col rounded-control border border-shell-divider" data-testid="drawer">
-        {shown ? <>
-          <Section name="Library" count={components.length} {...fold('library')}
-            actions={<IconButton size="mark" label="New Component" icon={<Plus />} />}>
-            <div className="grid gap-px p-1">
-              {components.map((name) => <ListRow key={name} tabIndex={0} name={name} glyph={<Box />} />)}
-            </div>
+    <State name={content}>
+      <div className="h-96 w-64 rounded-control border border-shell-divider" data-testid={`drawer-${content}`}>
+        {shown ? <SectionStack>
+          <Section name="Library" {...fold('library')}
+            actions={<IconButton size="mark" label="New Component" icon={<Plus />} />}
+            lead={<div className="border-b border-[color:var(--neutral-alpha-06)] p-2">
+              <TextField aria-label="Search Library" leading={<Search />} />
+            </div>}>
+            {groups.map((group) => <Section key={group.name} level="group" name={group.name} {...fold(group.name)}>
+              <div className="grid gap-px px-1 pb-1">
+                {group.items.map((name) => <ListRow key={name} tabIndex={0} name={name} glyph={<Box />} />)}
+              </div>
+            </Section>)}
           </Section>
           <Section name="Outline" {...fold('outline')}>
-            <Tree aria-label="Outline" nodes={treeNodes(outline, {})} defaultExpanded={['model', 'encoder']}
-              selected={selected} onSelectedChange={setSelected} />
+            <Tree aria-label="Outline" nodes={treeNodes(content === 'short' ? outline.slice(0, 1) : outline, {})}
+              defaultExpanded={['model', 'encoder']} selected={selected} onSelectedChange={setSelected} />
           </Section>
-          <Section name="Exceptions" count={0} defaultOpen={false}>
-            <div className="p-2 text-sm text-shell-muted">None</div>
-          </Section>
-        </> : null}
+        </SectionStack> : null}
       </div>
       <Button onClick={() => setShown(!shown)}>{shown ? 'Hide' : 'Show'}</Button>
+    </State>
+  );
+}
+
+function FieldGroupDemo() {
+  return (
+    <div className="w-64 rounded-control border border-shell-divider p-1">
+      <Section level="field" name="Optimizer">
+        <div className="grid gap-2 px-2 pb-2">
+          <TextField aria-label="Learning Rate" defaultValue="0.001" />
+          <TextField aria-label="Beta" defaultValue="0.9" />
+        </div>
+      </Section>
     </div>
   );
 }
@@ -436,7 +458,9 @@ export function Gallery() {
         </Group>
 
         <Group name="Section">
-          <DrawerDemo />
+          <DrawerDemo content="short" />
+          <DrawerDemo content="overflowing" />
+          <FieldGroupDemo />
         </Group>
 
         <Group name="ScrollFade">

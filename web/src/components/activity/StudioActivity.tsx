@@ -194,7 +194,7 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
       </>}
       <dt>{studioName('runs')}</dt><dd>{machine.job_ids.length}</dd>
     </dl>
-    {opening.length > 0 && <Section nested name={studioName('openingHistory')} defaultOpen={false}>
+    {opening.length > 0 && <Section level="group" name={studioName('openingHistory')} defaultOpen={false}>
       <ol className="list-disc ps-5">
         {opening.map(({ step, observed_at_ms }, index) => <li key={index}>
           {studioOpeningStep(step)} · {studioDateTime(observed_at_ms)}

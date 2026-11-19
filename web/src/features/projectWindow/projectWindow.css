@@ -111,8 +111,6 @@
 
 .studio-window-map__compact {
   height: 100%;
-  min-width: 0;
-  overflow: auto hidden;
   white-space: nowrap;
 }
 
@@ -146,8 +144,6 @@
 
 .studio-window-side__contents {
   height: 100%;
-  min-height: 0;
-  overflow: auto;
 }
 
 .studio-window-side__contents[data-populated] {
@@ -248,12 +244,6 @@
   white-space: nowrap;
   font-size: var(--text-xs);
   font-weight: 600;
-}
-
-.studio-window-slot__body {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
 }
 
 .studio-window-slot__body[data-padded] {
@@ -410,7 +400,7 @@
   field-sizing: content;
 }
 
-.studio-window-side__contents[data-populated]:has(> .studio-window-region-content > [data-drawer-sections]) {
+.studio-window-side__contents[data-populated]:has(> .studio-window-region-content > [data-section-stack]) {
   padding: 0;
   overflow: hidden;
 }

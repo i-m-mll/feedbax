@@ -20,6 +20,7 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
+import { ScrollFade } from "@/components/ui/ScrollFade";
 import { CommandBar, withGlyph, type BarControl, type BarEntry } from "@/components/ui/CommandBar";
 import { Select } from "@/components/ui/Select";
 import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/ui/Table";
@@ -129,7 +130,7 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
             items={step.sweeps.filter(({ id }) => id !== y.id).map(({ id, label }) => ({ value: id, label }))} />
         </label>
       </div>
-      <div className="max-h-96 overflow-auto rounded-surface border border-shell-divider">
+      <ScrollFade axis="both" className="max-h-96 rounded-surface border border-shell-divider [--fade-inset-top:var(--row-height)]">
         <Table aria-label={studioName("pivot")}>
           <thead><tr>
             <TableHeaderCell scope="col">{y.label}</TableHeaderCell>
@@ -173,7 +174,7 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
             ))}
           </tbody>
         </Table>
-      </div>
+      </ScrollFade>
       {pivot.unplaced.length > 0 && (
         <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={pivot.unplaced} related={related}
           runMenu={runMenu} />
@@ -296,15 +297,15 @@ function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstre
   const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const selection = { step, state, onSelectionChange };
   return <div className="flex h-full min-h-0 flex-col">
-    <div className="min-h-0 flex-1 overflow-auto">
+    <ScrollFade axis="both" className="flex-1">
       {pivotActive
         ? <StudioRunPivot {...selection} rows={step.runs} related={related} runMenu={runMenu} />
         : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} fillSlot />}
-    </div>
-    {(upstream.size > 0 || downstream.size > 0) && <div className="max-h-36 shrink-0 overflow-auto px-2 pb-2 text-sm">
+    </ScrollFade>
+    {(upstream.size > 0 || downstream.size > 0) && <ScrollFade className="max-h-36 shrink-0 px-2 pb-2 text-sm">
       <StudioRunLineage plan={plan} upstream={upstream} downstream={downstream} single={selected.length === 1}
         upstreamDetail={upstreamDetail} onChoose={(id) => onSelectionChange(selectStep(state, id))} />
-    </div>}
+    </ScrollFade>}
   </div>;
 }
 

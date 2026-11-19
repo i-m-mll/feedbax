@@ -1098,16 +1098,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       </div>
     </div> : null,
     drawer: model && <Drawer>
-      <DrawerSection sections={sections} id="model.library" name={studioName('library')}>
-        <StudioRegion state={studioReadState(
-          'library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); },
-        )}>
-          <LibraryList sections={sections} section="model.library" searchName="searchLibrary"
-            items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
-            onInspect={(name) => setLibraryItem(registry.get(name))}
-            onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
-        </StudioRegion>
-      </DrawerSection>
+      <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"
+        state={studioReadState('library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); })}
+        items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
+        onInspect={(name) => setLibraryItem(registry.get(name))}
+        onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
       <DrawerSection sections={sections} id="model.outline" name={studioName('outline')}>
         {outline && <Tree ref={outlineTree} aria-label={studioName('outline')} nodes={outline.nodes}
           selected={selected.flatMap((address) => outlineRow(address) ?? [])}

@@ -37,14 +37,24 @@ export const ScrollFade = forwardRef<HTMLDivElement, ScrollFadeProps>(function S
     if (!node) return;
     const update = () => mark(node);
     const sizes = new ResizeObserver(update);
+    const children = new MutationObserver(() => { observeChildren(); update(); });
     const observeChildren = () => {
       sizes.disconnect();
+      children.disconnect();
       sizes.observe(node);
-      for (const child of node.children) sizes.observe(child);
+      children.observe(node, { childList: true });
+      const observe = (parent: Element) => {
+        for (const child of parent.children) {
+          if (getComputedStyle(child).display !== 'contents') sizes.observe(child);
+          else {
+            children.observe(child, { childList: true });
+            observe(child);
+          }
+        }
+      };
+      observe(node);
     };
-    const children = new MutationObserver(() => { observeChildren(); update(); });
     observeChildren();
-    children.observe(node, { childList: true });
     update();
     return () => { sizes.disconnect(); children.disconnect(); };
   }, []);

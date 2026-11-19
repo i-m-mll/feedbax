@@ -53,6 +53,7 @@ export default {
         'shell-control': 'var(--radius-lg)',
         control: 'var(--radius-md)',
         row: 'var(--radius-sm)',
+        'list-row': 'var(--radius-lg)',
         surface: 'var(--radius-lg)'
       },
       boxShadow: {
