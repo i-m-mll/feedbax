@@ -1,7 +1,7 @@
 import { installTooltips } from '@window-shell/browser/tooltip';
 import {
-  Box, ChartLine, ChevronDown, Circle, Cpu, FileText, FlaskConical, Layers, Maximize, Play, Plus, Search, Settings, Square, Waypoints,
-  ZoomIn, ZoomOut,
+  Box, ChartLine, ChevronDown, Circle, Cpu, FileText, FlaskConical, Grid2x2, Layers, Maximize, Play, Plus, Search, Settings, Square,
+  SquareArrowOutUpRight, StepForward, Waypoints, ZoomIn, ZoomOut, type LucideIcon,
 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { setAppearance, type AppearanceValue } from '@/appearance/appearance';
@@ -221,14 +221,14 @@ function State({ name, children }: { name: string; children: ReactNode }) {
 
 function CommandBarDemo() {
   const [last, setLast] = useState('');
-  const command = <G extends BarCommand['glyph']>(id: string, title: string, glyph: G, enabled = true) =>
+  const command = (id: string, title: string, glyph: LucideIcon, enabled = true) =>
     ({ id, title, label: title, glyph, enabled, invoke: () => setLast(title) });
   const pinned = { action: command('run', 'Run', Play), counterpart: command('stop', 'Stop', Square, false) };
   const entries: BarEntry<BarCommand>[] = [
     { command: command('add', 'Add', Plus), priority: 'normal' },
-    { command: command('resume', 'Resume', undefined), priority: 'normal' },
-    { command: command('open', 'Open Run', undefined), priority: 'low' },
-    { command: command('pivot', 'Pivot', undefined), priority: 'low' },
+    { command: command('resume', 'Resume', StepForward), priority: 'normal' },
+    { command: command('open', 'Open Run', SquareArrowOutUpRight), priority: 'low' },
+    { command: command('pivot', 'Pivot', Grid2x2), priority: 'low' },
   ];
   return (
     <div className="space-y-2">

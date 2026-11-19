@@ -32,7 +32,8 @@ import type { PlanStepView } from '@/features/pipeline/planView';
 import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
-import { problemReason, type ProblemReveal } from './projectWindowProblems';
+import type { ProblemReveal } from './projectWindowProblems';
+import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 
 type Source = OperationElement['inputs'][string];
@@ -244,7 +245,7 @@ export function useManagedAnalyze({
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
       onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
-    {selectedProblems.map((problem) => <p key={problem.path + problem.detail} role="status">{problemReason(problem)}</p>)}
+    {selectedProblems.map((problem) => <ProblemRow key={problem.path + problem.detail} problem={problem} />)}
     {selectedPlan && <p role="status">{studioRunStatus(selectedPlan.status)}
       {selectedPlan.reason && <span className="block text-shell-muted">{selectedPlan.reason}</span>}
     </p>}

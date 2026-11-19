@@ -1,8 +1,28 @@
 import { TriangleAlert, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { problemReason, problemTarget } from '@/features/projectFolder/projectWindowProblems';
+import type { StudioProjectWindowMapProblem } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from './studioCommands';
 import { Button, IconButton } from '@/components/ui/Button';
+
+/** A problem as every list draws it: pressed, it reveals the object the problem names. */
+export function ProblemRow({ problem, context = [], onReveal }: {
+  problem: StudioProjectWindowMapProblem;
+  /** What the surrounding list does not already say, such as the step or variant. */
+  context?: readonly string[];
+  onReveal?: () => void;
+}) {
+  const entry = <>
+    <span className="font-medium">{problemTarget(problem).label}</span>{' · '}{problemReason(problem)}
+    {context.length > 0 && <span className="block text-xs text-shell-muted">{context.join(' · ')}</span>}
+  </>;
+  return onReveal
+    ? <Button variant="ghost" size="content" className="block w-full rounded-control px-control-inline py-1 text-left" onClick={onReveal}>
+      {entry}
+    </Button>
+    : <div className="px-control-inline py-1">{entry}</div>;
+}
 
 export function StudioProblems({ command, count, open, opener, onOpen, onClose, children }: {
   command: StudioCommand;

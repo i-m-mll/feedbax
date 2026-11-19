@@ -28,10 +28,10 @@ import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { foldedMapSweep, orderedMapSweeps, type PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
-import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
+import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
-import { StudioProblems } from '@/features/projectWindow/StudioProblems';
+import { ProblemRow, StudioProblems } from '@/features/projectWindow/StudioProblems';
 import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
@@ -586,6 +586,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   function addressedStep(problem: StudioProjectWindowMapProblem) {
     return data?.window_map?.steps.find(({ step_id, variant: scope }) =>
       step_id === problem.step && scope === (problem.variant ?? variant));
+  }
+  function runProblems(run: PlanRunView) {
+    return problems.filter((problem) => problem.step === step?.id && run.variant !== undefined &&
+      (problem.variant === null || problem.variant === run.variant) &&
+      (problem.row == null || savedRunId({ variant: run.variant, step: problem.step, row: problem.row }) === run.id));
   }
   function revealProblem(problem: StudioProjectWindowMapProblem) {
     const destination = addressedStep(problem);
@@ -1285,13 +1290,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   {listedInputs.length > 0 && <dl>{listedInputs.map((input) => <div key={input.id} className="border-t border-shell-divider py-1">
                     <dt>{input.label}</dt>
                     {!(step.kind === 'train' && input.id === 'checkpoint') &&
-                      <dd className="text-shell-muted">{plan.steps.find((item) => item.id === input.sourceStepId)?.label}</dd>}
+                      <dd>{input.sourceStepId && <Button variant="bare" size="content" className="text-shell-muted hover:underline"
+                        onClick={() => selection.select(selectStep(state, input.sourceStepId!))}>
+                        {plan.steps.find((item) => item.id === input.sourceStepId)?.label}
+                      </Button>}</dd>}
                     {inputDetail(input)}
                   </div>)}</dl>}
                 </DrawerSection>}
               </Drawer> : undefined,
               inspector: selectedRuns(step, state.selection).length > 0
-                ? <StudioRunDetails step={step} state={state}
+                ? <StudioRunDetails step={step} state={state} problems={runProblems} onRevealProblem={revealProblem}
                   detail={selectedEvaluation?.checkpoint_series
                     ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation} /> : undefined} /> : undefined,
               body: withProblem(<StudioRuns plan={plan} {...runSelection}
@@ -1360,17 +1368,10 @@ function ProblemList({ problems, onChoose, canReveal, showVariant }: {
   }
   return <div className="space-y-2">{[...groups].map(([name, entries]) => <section key={name ?? ''}>
     {name && <h2 className="font-medium">{name}</h2>}
-    <ul>{entries.map((problem, index) => {
-      const { label } = problemTarget(problem);
-      const context = [problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].filter(Boolean);
-      const entry = <><span className="font-medium">{label}</span>{' · '}{problemReason(problem)}
-        {context.length > 0 && <span className="block text-xs text-shell-muted">{context.join(' · ')}</span>}
-      </>;
-      return <li key={index} className="break-words">
-        {canReveal(problem)
-          ? <Button variant="ghost" align="start" className="block w-full !h-auto py-1 !whitespace-normal" onClick={() => onChoose(problem)}>{entry}</Button>
-          : <div className="px-control-inline py-1">{entry}</div>}
-      </li>;
-    })}</ul>
+    <ul>{entries.map((problem, index) => <li key={index} className="break-words">
+      <ProblemRow problem={problem}
+        context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].flatMap((part) => part ? [part] : [])}
+        onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />
+    </li>)}</ul>
   </section>)}</div>;
 }
