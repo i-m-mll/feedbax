@@ -30,7 +30,7 @@ function Outline({ children }: { children: ReactNode }) {
 }
 
 const kindGlyphs: Record<FieldKind, ReactNode> = {
-  value: <Outline><circle cx="12" cy="12" r="6" /></Outline>,
+  value: <Outline><circle cx="12" cy="12" r="2.5" /></Outline>,
   sweep: <Outline><circle cx="3.5" cy="12" r="2.5" /><circle cx="12" cy="12" r="2.5" /><circle cx="20.5" cy="12" r="2.5" /></Outline>,
   draw: <Dices aria-hidden="true" />,
   formula: <Sigma aria-hidden="true" />,
