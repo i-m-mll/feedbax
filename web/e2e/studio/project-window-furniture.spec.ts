@@ -5,7 +5,7 @@ import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canon
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-const views = ['Runs', 'Model', 'Task', 'Objective', 'Scene', 'Results', 'Analysis', 'Figures', 'Document'];
+const views = ['Runs', 'Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Analysis', 'Figures', 'Document'];
 const rail = (page: Page) => page.getByRole('navigation', { name: 'Details', exact: true });
 const drawer = (page: Page) => page.getByRole('complementary', { name: 'Map Drawer', exact: true });
 const menu = (page: Page) => page.getByRole('menu');
@@ -116,11 +116,10 @@ test('the rail separator follows the divider and every view keeps its place', as
   const pitch = trainOffsets.get('Model')! - trainOffsets.get('Runs')!;
   expect(pitch).toBeGreaterThan(0);
   expectFixedPlaces(trainOffsets, pitch);
-  for (const [kind, absent] of [['evaluate', ['Objective', 'Analysis', 'Figures', 'Document']],
-    ['analyze', ['Model', 'Task', 'Objective', 'Scene', 'Results', 'Document']]] as const) {
+  for (const [kind, absent] of [['evaluate', ['Objective', 'Training', 'Analysis', 'Figures', 'Document']],
+    ['analyze', ['Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Document']]] as const) {
     // The zoomed canvas can carry a card under the window bar, so the step is chosen from the drawer.
     await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${stepOf(kind)}\\b`) }).click();
-    await expect(rail(page).getByRole('tab', { name: 'Training', exact: true })).toHaveCount(0);
     for (const name of views) {
       const tab = rail(page).getByRole('tab', { name, exact: true });
       if ((absent as readonly string[]).includes(name)) await expect(tab).toHaveCount(0);

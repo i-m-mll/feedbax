@@ -42,12 +42,10 @@ export async function authorFirstTrain(
   )?.params;
   const terms = (project: StudioProjectSnapshot['project']) =>
     (project.documents?.objective?.payload as unknown as ObjectiveDocument | undefined)?.terms ?? [];
-  const config = (project: StudioProjectSnapshot['project']) => {
-    const base = project.steps?.train?.base;
-    return base && 'inline' in base
-      ? base.inline.training_config as { n_batches?: number; batch_size?: number }
-      : undefined;
-  };
+  /** A new Train step reads its training config from the `training` document. */
+  const config = (project: StudioProjectSnapshot['project']) => (
+    project.documents?.training?.payload as { training_config?: { n_batches?: number; batch_size?: number } } | undefined
+  )?.training_config;
 
   await expect(page.getByRole('button', { name: 'New Step', exact: true })).toBeEnabled();
   await palette(page, 'newStep', 'New Step');
@@ -165,10 +163,15 @@ export async function authorFirstTrain(
   expect(saved.revision).not.toBe(snapshot.revision);
   expect(saved.project.steps?.train?.base).toMatchObject({ inline: {
     trial_documents: { model: { document: 'model' }, python_task: { document: 'task' }, objective: { document: 'objective' } },
+    method: { document: 'training', pointer: '/method' },
+    settings: { document: 'training', pointer: '/settings' },
+    training_config: { document: 'training', pointer: '/training_config' },
+  } });
+  expect(saved.project.documents?.training?.payload).toMatchObject({
     method: 'feedbax.supervised_gradient',
     settings: { optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } } },
     training_config: { n_batches: totalUpdates, batch_size: 4 },
-  } });
+  });
   const savedModel = saved.project.documents?.model?.payload as unknown as ModelDocument;
   expect(savedModel.interior.components).toMatchObject({
     [linearId!]: { kind: 'leaf', type: 'feedbax.Linear', fields: {
