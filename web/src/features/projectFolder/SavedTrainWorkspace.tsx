@@ -43,7 +43,8 @@ import {
   ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
-  type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type ModelAddress,
+  type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type ModelAddress, type PatchValue,
+  type StudioClassField,
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
@@ -66,7 +67,9 @@ import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring } 
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
-import { StudioTrainAuthoringForm, SweepFieldItems, useTrainFieldLabels } from './StudioTrainAuthoringForm';
+import {
+  jsonPointerPath, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
+} from './StudioTrainAuthoringForm';
 import {
   TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
@@ -96,6 +99,32 @@ function exceptionFieldLabel(path: string, trainLabels: ReadonlyMap<string, stri
     return path;
   }
 }
+/**
+ * What an exception's patches change, one text each. A class chosen for the runs reads by the field and the class's
+ * label (`Optimizer AdamW`); the parameters choosing it wrote are the class's and are not listed.
+ */
+function exceptionPatchTexts(
+  patches: Readonly<Record<string, PatchValue | null>>, trainLabels: ReadonlyMap<string, string>,
+  classes: readonly StudioClassField[],
+): string[] {
+  const entries = Object.entries(patches);
+  const chosen = classes.flatMap((field) => {
+    const path = jsonPointerPath(field.id);
+    for (const [at, patch] of entries) {
+      const option = patch && 'value' in patch && at.startsWith(path + '.') && !at.slice(path.length + 1).includes('.')
+        ? field.options.find(({ value }) => value === patch.value) : undefined;
+      if (option) return [{ path, tag: at, text: `${field.label} ${option.label}` }];
+    }
+    return [];
+  });
+  return entries.flatMap(([path, patch]) => {
+    const pick = chosen.find((entry) => path === entry.tag);
+    if (pick) return [pick.text];
+    if (!patch || chosen.some((entry) => path.startsWith(entry.path + '.'))) return [];
+    return [`${exceptionFieldLabel(path, trainLabels)} ${'value' in patch ? valueText(patch.value) : studioName('remove')}`];
+  });
+}
+
 type WindowPanel = { kind: 'activity' } | {
   kind: 'problems';
   scope: { step: string; variant: string | null; element?: ModelAddress } | null;
@@ -266,6 +295,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   } : null;
   const trainLabels = useTrainFieldLabels(editor, step?.kind === 'train' ? step.id : undefined);
   const trainingDocument = step?.kind === 'train' ? trainingDocumentId(step.documentIds) : undefined;
+  const trainClasses = useTrainClassFields(editor, step?.kind === 'train' ? step.id : undefined);
   const availableViews = !step ? emptyViews : trainingDocument ? viewsByKind[step.kind]
     : viewsByKind[step.kind].filter((view) => view !== 'training');
   const primaryView = projectWindowSlotView(windowState, 'primary', availableViews);
@@ -1302,8 +1332,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
             const exceptions = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step.id && id === variant)
               ?.exceptions?.map(({ id, count, rule }) => ({ id, text: [
-                ...Object.entries(rule.patches ?? {}).flatMap(([path, patch]) => patch
-                  ? [`${exceptionFieldLabel(path, trainLabels)} ${'value' in patch ? valueText(patch.value) : studioName('remove')}`] : []),
+                ...exceptionPatchTexts(rule.patches ?? {}, trainLabels, trainClasses),
                 ...exceptionTerms(step, rule.where),
                 count === 1 ? studioFormat('oneRun') : studioFormat('runCount', { count }),
               ].join(' · ') })) ?? [];

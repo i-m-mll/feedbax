@@ -97,3 +97,32 @@ test('a class chosen from a tagged union draws its parameters, a class-valued on
   expect(unset.type.kind).toBe('class');
   expect(unset.value).toBeUndefined();
 });
+
+test('a class field the source shows with several classes draws only the parameters all of them have', () => {
+  const schema: JsonValue = {
+    type: 'object',
+    properties: { optimizer: { title: 'Optimizer', oneOf: [{ $ref: '#/$defs/Adam' }, { $ref: '#/$defs/SGD' }],
+      discriminator: { propertyName: 'type', mapping: {} } } },
+    $defs: {
+      Adam: { title: 'Adam', type: 'object', properties: {
+        type: { const: 'adam' }, rate: { type: 'number' }, b1: { type: 'number' } } },
+      SGD: { title: 'SGD', type: 'object', properties: {
+        type: { const: 'sgd' }, rate: { type: 'number' }, momentum: { type: 'number' } } },
+    },
+  };
+  const value = { optimizer: { type: 'adam', rate: 0.1, b1: 0.8 } };
+  const members = { values: [
+    { id: 'adam', text: 'Adam', option: 'adam', selected: false }, { id: 'sgd', text: 'SGD', option: 'sgd', selected: false },
+  ] };
+  const field = { kind: 'sweep', kinds: [], members } as const;
+  const draw = (classes: JsonValue[]) => fromJsonSchema('', schema, value, {
+    root: schema, classed: (path) => path.join('/') === 'optimizer' ? { classes, field } : undefined,
+  }, []).parts![0];
+
+  const both = draw(['adam', 'sgd']);
+  expect(both.parts!.map(({ label }) => label)).toEqual(['Rate']);
+  expect([both.value, both.text, both.kind, both.members]).toEqual([undefined, 'Adam, SGD', 'sweep', members]);
+  const adam = draw(['adam']);
+  expect(adam.parts!.map(({ label }) => label)).toEqual(['Rate', 'B1']);
+  expect(adam.value).toBe('adam');
+});

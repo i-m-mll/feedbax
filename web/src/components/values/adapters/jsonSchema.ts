@@ -26,6 +26,17 @@ export interface SchemaContext {
   readonly origin?: (path: readonly string[]) => string | undefined;
   /** The value at this path differs between the runs the form shows: it is drawn as Mixed. */
   readonly mixed?: (path: readonly string[]) => boolean;
+  /** The source's account of the class-valued field at this path, where it has one. */
+  readonly classed?: (path: readonly string[]) => ClassProjection | undefined;
+}
+
+/**
+ * A class-valued field as its source projects it: the classes of the runs the form shows, and the field's kind,
+ * members and edits. With several classes, only the parameters all of them have are drawn.
+ */
+export interface ClassProjection {
+  readonly classes: readonly JsonValue[];
+  readonly field: Pick<FieldModel, 'kind' | 'kinds' | 'keeps' | 'members' | 'commit'>;
 }
 
 const without = (schema: Schema, ...keys: string[]) =>
@@ -167,7 +178,10 @@ function declaredField(key: string, property: JsonValue, value: JsonValue | unde
   return rawField({ id, label, type: { kind: 'readOnly' }, value: current });
 }
 
-/** A value that is one of several classes: a choice of class, the chosen class's parameters as its parts. */
+/**
+ * A value that is one of several classes: a choice of class, the chosen class's parameters as its parts. Where the
+ * source shows several classes, the parts are the parameters every one of them has, and the field reads by their names.
+ */
 function classField(label: string, id: string, name: string, members: readonly Schema[], current: JsonValue,
   path: readonly string[], context: SchemaContext, origin: string | undefined): FieldModel {
   const chosen = isRecord(current) ? members.find((member) => constOf(member, name) === current[name]) : undefined;
@@ -175,18 +189,29 @@ function classField(label: string, id: string, name: string, members: readonly S
     const value = constOf(member, name);
     return { value, label: typeof member.title === 'string' ? member.title : String(value) };
   });
-  const parameters = chosen && isRecord(chosen.properties) && isRecord(current)
-    ? Object.entries(chosen.properties).filter(([key]) => key !== name)
+  const projection = context.classed?.(path);
+  const shown = projection
+    ? members.filter((member) => projection.classes.some((key) => key === constOf(member, name)))
+    : chosen ? [chosen] : [];
+  const owner = chosen && shown.includes(chosen) ? chosen : shown[0];
+  const parameters = owner && isRecord(owner.properties) && isRecord(current)
+    ? Object.entries(owner.properties).filter(([key]) => key !== name &&
+      shown.every((member) => isRecord(member.properties) && key in member.properties))
     : [];
   const parts = parameters.map(([key, nested]) => fromJsonSchema(key, nested, (current as Record<string, JsonValue>)[key], context, [...path, key]));
   if (parts.length === 1) {
     const [[key, nested]] = parameters;
     const own = resolve(nested, context.root);
-    parts[0] = { ...parts[0], label, parameter: typeof own.title === 'string' ? own.title : humanizeLabel(key) };
+    const title = typeof own.title === 'string' ? own.title : humanizeLabel(key);
+    // A swept class draws its members between the field and the parameter, so the parameter is named for itself.
+    parts[0] = projection?.field.kind === 'sweep' ? { ...parts[0], label: title } : { ...parts[0], label, parameter: title };
   }
-  const mixed = context.mixed?.([...path, name]);
-  return rawField({
-    id, label, origin, value: chosen && !mixed ? constOf(chosen, name) : null, type: { kind: 'class', options }, parts,
+  const single = shown.length === 1 && !context.mixed?.([...path, name]) ? shown[0] : undefined;
+  const model = rawField({
+    id, label, origin, value: single ? constOf(single, name) : null, type: { kind: 'class', options }, parts,
     change: context.choose && ((key) => context.choose!(path, key)),
   });
+  if (!projection) return model;
+  const labels = shown.map((member) => options[members.indexOf(member)].label);
+  return { ...model, ...projection.field, text: labels.join(', ') };
 }
