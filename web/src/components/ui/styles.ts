@@ -6,9 +6,12 @@ export const glyph = '[&_svg]:size-[1.15em] [&_svg]:shrink-0';
 export const disabledLook = 'data-[disabled]:cursor-default data-[disabled]:opacity-45';
 
 export const fieldFrame =
-  'flex rounded-control border border-shell-control bg-shell-surface text-shell-foreground ' +
+  'flex rounded-control border border-shell-field bg-shell-surface text-shell-foreground ' +
   'focus-within:outline focus-within:outline-2 focus-within:-outline-offset-1 focus-within:outline-shell-accent ' +
   'has-[[aria-invalid=true]]:border-shell-status-failure has-[input:disabled]:opacity-45 has-[textarea:disabled]:opacity-45';
+
+/** A field's leading glyph: a 1.5 em box 4 px inside the border, the same in every field type. */
+export const leadingSlot = 'ml-1 flex size-[1.5em] shrink-0 items-center justify-center text-shell-muted ' + glyph;
 
 export const fieldBox = 'h-control items-center ' + fieldFrame;
 

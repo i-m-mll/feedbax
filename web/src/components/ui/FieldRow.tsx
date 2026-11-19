@@ -14,10 +14,7 @@ export interface FieldRowProps {
   className?: string;
 }
 
-/**
- * An inspector row: a label and a field. Beside each other in a 40% label column, or the label above, by the
- * `inspector-labels` comparison; a row too narrow for both stacks.
- */
+/** An inspector row: a small muted label above its field. */
 export function FieldRow({ label, htmlFor, labelId, children, below, className }: FieldRowProps) {
   return (
     <div className={clsx('field-row', className)}>
