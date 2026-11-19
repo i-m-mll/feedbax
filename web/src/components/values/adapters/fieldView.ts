@@ -32,8 +32,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const { label, sweep, unit } = field;
   const { rowSelection = false, multipleRows = false } = options;
   const project = options.commit;
-  const commit: FieldCommit | undefined = project && ((edit) =>
-    project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit));
+  const commit: FieldCommit | undefined = project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member'
+    ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit));
   const readOnly = !commit;
   const rule = readOnly || rowSelection || !field.can_change_axis ? undefined : commit;
   const kind = sweep ? 'sweep' : options.kind ?? 'value';
