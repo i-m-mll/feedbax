@@ -263,8 +263,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await page.reload();
   await activate(page, mapStep(page, 'evaluate'));
   await page.keyboard.press('Meta+1');
-  const label = projection.window_map!.rows.find(({ key }) => key.step === pending.key.step && key.row === pending.key.row)!.label;
-  await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(label) }));
+    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(pending.key.step) }));
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('button', { name: /^Select Made From / })).toContainText('1 of 3');

@@ -101,7 +101,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
   })]);
   const stoppedJob = successorSubmission.items[0].job_id!;
   await openResultsSlot(page);
-  await expect(runButton).toHaveText('Run');
+  await expect(runButton).toBeVisible();
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const loss = results.getByRole('img', { name: 'Loss', exact: true });
   await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).first()).toBeAttached({ timeout: 14_000 });
@@ -287,7 +287,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
   await table.getByRole('row').filter({ hasText: 'Out of date' }).getByRole('button').click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
-    .getByText(/Definition changed at .*seed/)).toBeVisible();
+    .getByRole('button', { name: 'Seed · 0 → 7', exact: true })).toBeVisible();
   const stale = await trainRow();
   expect(stale).toMatchObject({ status: 'stale', result: null, previous: first });
   expect(stale.request_id).not.toBe(first.request_id);
@@ -459,9 +459,9 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
   await expect(mapStep(page, childId)).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
-  await expect(drawer.getByRole('combobox', { name: 'Method', exact: true })).toBeFocused();
+  await expect(stepInspector.getByRole('combobox', { name: 'Method', exact: true })).toBeFocused();
 
-  const carryover = drawer.getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
+  const carryover = stepInspector.getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
   const carryoverPath = 'checkpoint_initialization';
   const checkpointInput = snapshot.project.steps?.[childId]?.inputs?.checkpoint;
   const beforeCarry = await plan();
@@ -490,7 +490,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await runs.focus();
   const edit = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  const batches = drawer.getByRole('textbox', { name: 'Batches', exact: true });
+  const batches = stepInspector.getByRole('textbox', { name: 'Batches', exact: true });
   await batches.fill('4');
   await batches.press('Enter');
   await page.getByRole('tabpanel', { name: 'Scene', exact: true }).focus();

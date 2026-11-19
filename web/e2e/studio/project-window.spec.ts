@@ -145,12 +145,12 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   expect(saved.ok(), await saved.text()).toBe(true);
   expect((await saved.json()).result.status).toBe('applied');
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Select default · Out of date', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Select train · Out of date', exact: true })).toBeVisible();
   await expect(drawer.getByRole('treeitem', { name: 'train Out of date', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
   await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Select default · Done', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Select train · Done', exact: true })).toBeVisible();
   await expect(drawer.getByRole('treeitem', { name: 'train Done', exact: true })).toBeVisible();
 });
 
