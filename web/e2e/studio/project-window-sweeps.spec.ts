@@ -166,7 +166,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   }
   const base = kept.project.steps?.train.base;
   expect(base && 'inline' in base ? base.inline : {}).toMatchObject({
-    settings: { optimizer: { params: { learning_rate: 0.00275 } } },
+    settings: { optimizer: { learning_rate: { value: 0.00275 } } },
   });
 });
 

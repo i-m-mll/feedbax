@@ -410,14 +410,14 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
     raw["steps"].pop("baseline")
     _save_project(ProjectFolderService(tmp_path), "managed-rate", Project.model_validate(raw))
     url = "/api/projects/managed-rate"
-    field_path = "/settings/optimizer/params/learning_rate"
+    field_path = "/settings/optimizer/learning_rate/value"
     endpoint = url + "/authoring/train/train/fields"
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         initial = client.get(url).json()
         body = {"revision": initial["revision"]}
         fields = client.post(endpoint, json=body).json()["fields"]
-        rate, = [field for field in fields if field["label"] == "Learning Rate"]
-        assert rate["id"] == field_path and rate["can_sweep"]
+        rate, = [field for field in fields if field["id"] == field_path]
+        assert rate["can_sweep"]
         response = client.post(endpoint, json=body | {
             "field": field_path, "edit": {"kind": "text", "text": "geomspace(1e-4, 1e-2, 5)"},
         })
@@ -443,7 +443,7 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
         for key, expected in zip(keys, np.geomspace(1e-4, 1e-2, 5), strict=True):
             resolved = plan.selected_definitions[key]
             assert "learning_rate" not in resolved.payload["training_config"]
-            assert resolved.payload["settings"]["optimizer"]["params"]["learning_rate"] == pytest.approx(expected)
+            assert resolved.payload["settings"]["optimizer"]["learning_rate"]["value"] == pytest.approx(expected)
             assert resolved.sources["/payload" + field_path].kind == "sweep_value"
 
         body = {"revision": reopened["revision"]}
@@ -685,10 +685,10 @@ def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value()
     model = raw["documents"]["reach-model"]["payload"]
     model["interior"]["components"]["plant"]["fields"]["mass"] = model["step_seconds"] = 0.01
     train = raw["steps"]["train"]
-    optimizer = train["base"]["inline"]["settings"]["optimizer"]["params"]
+    optimizer = train["base"]["inline"]["settings"]["optimizer"]["learning_rate"]
     mass = "/interior/components/plant/fields/mass"
     alias = {"document": "reach-model", "pointer": mass}
-    optimizer["learning_rate"] = alias
+    optimizer["value"] = alias
     train["model_attachments"] = {"change-mass": [{
         "op": "set_field",
         "address": {"composites": [], "element": {
@@ -705,7 +705,7 @@ def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value()
         assert plan == compile_project(project)
         (run,) = plan.runs
         spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-        assert spec.settings["optimizer"]["params"]["learning_rate"] == expected_rate
+        assert spec.settings["optimizer"]["learning_rate"]["value"] == expected_rate
         return run.request_id
 
     before = train_request(0.02)

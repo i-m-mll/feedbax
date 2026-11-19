@@ -509,7 +509,7 @@ def _constant_task_binding_spec() -> dict:
 
 def _training_spec(**overrides) -> dict:
     spec: dict[str, Any] = {
-        "optimizer": {"type": "adam", "params": {"learning_rate": 0.1}},
+        "optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.1}},
         "loss": {
             "type": "TargetStateLoss",
             "label": "output_zero",

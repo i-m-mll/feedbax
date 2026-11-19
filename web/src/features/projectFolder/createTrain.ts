@@ -49,7 +49,7 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
         },
         method: supervisedTrainMethod,
         settings: {
-          optimizer: { type: 'adam', params: { learning_rate: 0.001 } },
+          optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } },
         },
       } },
     },

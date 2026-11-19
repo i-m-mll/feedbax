@@ -167,7 +167,7 @@ export async function authorFirstTrain(
   expect(saved.project.steps?.train?.base).toMatchObject({ inline: {
     trial_documents: { model: { document: 'model' }, python_task: { document: 'task' }, objective: { document: 'objective' } },
     method: 'feedbax.supervised_gradient',
-    settings: { optimizer: { type: 'adam', params: { learning_rate: 0.001 } } },
+    settings: { optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } } },
     training_config: { n_batches: totalUpdates, batch_size: 4 },
   } });
   const savedModel = saved.project.documents?.model?.payload as unknown as ModelDocument;

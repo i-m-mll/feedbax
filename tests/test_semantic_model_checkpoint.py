@@ -25,7 +25,7 @@ from feedbax.contracts.method_checkpoint import (
     MethodCheckpointIdentity,
     method_checkpoint_extra_path,
 )
-from feedbax.contracts.training import OptimizerSpec
+from feedbax.training.optimizers import OPTIMIZERS
 from feedbax.dataset import Dataset, Variable
 from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.persistence.array_container import ArrayContainerReader
@@ -149,14 +149,14 @@ def test_stateful_graph_adam_checkpoint_preserves_the_optimizer_abi(tmp_path):
 
     def optimizer_state(**params):
         settings = StandardTrainingSettings(
-            optimizer=OptimizerSpec(type="adam", params={"learning_rate": 0.001, **params}),
+            optimizer=OPTIMIZERS["adam"].model.model_validate({"learning_rate": {"type": "constant_schedule", "value": 0.001}, **params}),
         )
         return stack_replicas((_init_supervised(settings, model, jax.random.key(0)).extra,))
 
     source = optimizer_state()
     written = _publish(tmp_path / "adam", graph, (model,), (model,), extra=source)
     selected = _open(written.root, written.latest_pointer)
-    assert eqx.tree_equal(selected.restore_extra(optimizer_state(learning_rate=0.01)), source)
+    assert eqx.tree_equal(selected.restore_extra(optimizer_state(learning_rate={"type": "constant_schedule", "value": 0.01})), source)
     with pytest.raises(CheckpointCustodyError):
         selected.restore_extra(optimizer_state(b1=0.8))
 

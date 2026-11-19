@@ -9,11 +9,9 @@ from pydantic import Field
 
 from feedbax.compiler.trainability import model_trainability
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.training import OptimizerSpec
 from feedbax.training.method_runtime import TrainingContext
 from feedbax.training.methods import TrainingMetrics, TrainingState, training_method
-from feedbax.training.optimizers import build_step_optimizer
+from feedbax.training.optimizers import DEFAULT_OPTIMIZER, OptimizerSpec, build_step_optimizer, optimizer_configuration
 
 if TYPE_CHECKING:
     from jax import Array
@@ -23,9 +21,7 @@ if TYPE_CHECKING:
 
 
 class StandardTrainingSettings(StrictModel):
-    optimizer: OptimizerSpec = Field(
-        default_factory=lambda: OptimizerSpec(type="adam", params={"learning_rate": 0.001}),
-    )
+    optimizer: OptimizerSpec = Field(default=DEFAULT_OPTIMIZER)
     grad_clip: float | None = Field(default=1.0, gt=0, allow_inf_nan=False)
 
 
@@ -39,10 +35,8 @@ class _OptimizerState(eqx.Module):
 def _init_supervised(settings: StandardTrainingSettings, model: Graph, _key: Array) -> TrainingState:
     optimizer = build_step_optimizer(settings.optimizer, gradient_clip=settings.grad_clip)
     _, trainable = model_trainability(model)
-    config = settings.optimizer
-    params = {name: value for name, value in config.params.items() if name != "learning_rate"}
     state = _OptimizerState(
-        (config.type.lower(), canonical_json_v2_bytes(params), settings.grad_clip),
+        (*optimizer_configuration(settings.optimizer), settings.grad_clip),
         optimizer.init(eqx.filter(model, trainable)),
     )
     return TrainingState(model, state)

@@ -33,7 +33,6 @@ from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_re
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
 from feedbax.plugins.bootstrap import BootstrapState
-from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
 from scripts.generate_studio_contracts import (
     AUTHORED_CONTRACT_MODELS,
     CONTRACT_MODEL_NAMES,
@@ -184,7 +183,6 @@ def test_generated_studio_contracts_include_nested_model_dependencies() -> None:
         for name in sorted(referenced_models)
         if (type_counts[name], validator_counts[name]) != (1, 1)
     } == {}
-    assert types.index(LrScheduleSpec.__name__) < types.index(OptimizerSpec.__name__)
 
 
 def test_generated_studio_contracts_are_current() -> None:

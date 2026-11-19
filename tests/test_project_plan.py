@@ -27,7 +27,7 @@ from tests.support.managed_train_fixture import (
 )
 
 
-LEARNING_RATE = "settings.optimizer.params.learning_rate"
+LEARNING_RATE = "settings.optimizer.learning_rate.value"
 
 
 def _project_data():
@@ -454,7 +454,7 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
         "axes": {
             "seed": {
                 "values": {
-                    name: {"patches": {"settings.optimizer.params.learning_rate": {"value": value}}}
+                    name: {"patches": {"settings.optimizer.learning_rate.value": {"value": value}}}
                     for name, value in (("a", .001), ("b", .002), ("c", .003))
                 }
             }

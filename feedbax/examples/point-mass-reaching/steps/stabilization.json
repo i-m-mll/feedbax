@@ -6,8 +6,9 @@
       "settings": {
         "optimizer": {
           "type": "adam",
-          "params": {
-            "learning_rate": 0.001
+          "learning_rate": {
+            "type": "constant_schedule",
+            "value": 0.001
           }
         }
       },

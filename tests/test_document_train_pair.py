@@ -24,7 +24,6 @@ from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.jobs import JobStatus
-from feedbax.contracts.training import OptimizerSpec
 from feedbax.expression_builtins import register_builtins
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
@@ -113,7 +112,7 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
         (command,) = ctx.rollout(state.model, trials, trial_keys).values()
         return next_state, {**metrics, "command": command, "move_start": trials.epochs.starts[:, -1]}
 
-    settings = StandardTrainingSettings(optimizer=OptimizerSpec(type="adam", params={"learning_rate": 0.003}))
+    settings = StandardTrainingSettings.model_validate({"optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.003}}})
     initial = initialize_method(method, settings, models=(graph,), seed=seed, replica_ids=("0",))
     result = TrainingLoop(
         replace(method, update=observe), settings, execution=paired.execution, objective=paired.objective,
@@ -261,7 +260,7 @@ def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, a
 def test_document_learning_rate_sweep_projects_only_after_expansion(authored, prepared_trials):
     raw = document_project(authored)
     raw["steps"]["train"]["sweep"] = {"axes": {"rate": {
-        "path": "settings.optimizer.params.learning_rate",
+        "path": "settings.optimizer.learning_rate.value",
         "range": {"start": 1e-4, "stop": 1e-2, "count": 3, "scale": "log"},
     }}}
     memo = ProjectPlanMemo()
@@ -282,7 +281,7 @@ def test_document_learning_rate_sweep_projects_only_after_expansion(authored, pr
         decoded = decode_request(data, plan.documents.__getitem__)
         assert isinstance(decoded.spec, DocumentTrainingRequestSpec)
         optimizer = decoded.spec.settings["optimizer"]
-        rate = optimizer["params"]["learning_rate"]
+        rate = optimizer["learning_rate"]["value"]
         assert isinstance(rate, float)
         assert encode_request(decoded.spec, decoded.inputs).data == data
         rates.append(rate)
@@ -298,7 +297,7 @@ def test_document_learning_rate_sweep_projects_only_after_expansion(authored, pr
 
 
 def _two_optimizer_rates(raw):
-    path = "settings.optimizer.params.learning_rate"
+    path = "settings.optimizer.learning_rate.value"
     raw["steps"]["train"]["sweep"] = {"axes": {"rate": {"values": {
         name: {"patches": {path: {"value": value}}}
         for name, value in (("low", 0.001), ("high", 0.01))
@@ -402,7 +401,7 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
 @pytest.mark.parametrize("wide, reject", [(1e20, True), (1e21, False)])
 def test_saved_window_keeps_verification_for_wide_float_requests(authored, tmp_path, wide, reject):
     raw = document_project(authored)
-    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["params"]["learning_rate"] = wide
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = wide
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "wide", Project.model_validate(raw))
     settled = folders.read_plan("wide", revision=None)
@@ -510,7 +509,7 @@ def document_project(authored, *, evaluation=False):
                 },
                 "training_config": {"n_batches": 2, "batch_size": 4},
                 "method": "feedbax.supervised_gradient",
-                "settings": {"optimizer": {"type": "adam", "params": {"learning_rate": 0.001}}},
+                "settings": {"optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.001}}},
             }}},
         },
     }
@@ -534,7 +533,7 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host, tmp_path, 
     raw = document_project(authored, evaluation=True)
     payload = raw["steps"]["train"]["base"]["inline"]["settings"]
     rate = 0.003
-    payload["optimizer"]["params"]["learning_rate"] = rate
+    payload["optimizer"]["learning_rate"]["value"] = rate
     _save_project(folders, project, Project.model_validate(raw))
     plan = folders.read_plan(project, revision=None)
     train = RunKey("default", "train", "default")
@@ -543,7 +542,7 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host, tmp_path, 
     assert train_job.disposition == "admitted", train_job
     (accepted,) = host.jobs(job_id=train_job.job_id, include_launch=True)
     prepared = accepted["launch"]["payload"]["spec"]
-    assert prepared["settings"]["optimizer"]["params"]["learning_rate"] == rate
+    assert prepared["settings"]["optimizer"]["learning_rate"]["value"] == rate
     # A GPU venue passes its backend and x64 settings to ordinary Jobs admission.
     with monkeypatch.context() as venue:
         venue.setenv("JAX_PLATFORMS", "cuda")
