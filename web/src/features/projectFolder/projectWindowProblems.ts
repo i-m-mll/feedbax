@@ -61,14 +61,26 @@ export function removeGraphVariation(
   return patch && { address, patches: [patch] };
 }
 
-export type RevealView = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'document' | 'runs';
+export type RevealView = 'model' | 'task' | 'objective' | 'analysis' | 'document' | 'runs';
 
-/** The view of a step that draws a place. */
+/** The view of a step that draws a place. A step's own fields are drawn in the Runs view's inspector. */
 export function placeView(place: StudioPlace | null): RevealView {
   switch (place?.part) {
-    case 'model': case 'task': case 'objective': case 'training': case 'analysis': return place.part;
-    case 'method': return 'training';
+    case 'model': case 'task': case 'objective': case 'analysis': return place.part;
     default: return 'runs';
+  }
+}
+
+/**
+ * Whether a place is among a step's own fields, drawn in the inspector, and which: `target` is the `data-field` the
+ * inspector gives that field, absent when the place names the fields as a whole.
+ */
+export function placeField(place: StudioPlace | null): { target?: string } | null {
+  switch (place?.part) {
+    case 'training': return place.setting ? { target: `/training_config/${place.setting}` } : {};
+    case 'method': return { target: '/method' };
+    case 'step': return place.field ? { target: `/${place.field}` } : null;
+    default: return null;
   }
 }
 

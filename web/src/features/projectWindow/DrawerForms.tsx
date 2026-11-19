@@ -1,4 +1,4 @@
-import { useMemo, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { useLayoutEffect, useMemo, useRef, type Dispatch, type ReactNode, type RefObject, type SetStateAction } from 'react';
 import { Section, SectionStack, type SectionProps } from '@/components/ui/Section';
 import {
   sectionOpen, withSectionOpen, type ProjectWindowSection, type ProjectWindowState,
@@ -38,14 +38,49 @@ export function DrawerSection({ sections, id, initially = true, forceOpen, ...pr
     onOpenChange={(open) => sections.setOpen(id, open)} />;
 }
 
-const inspectorField = [
-  'input:not([disabled]):not([type="hidden"])', 'textarea:not([disabled])', 'select:not([disabled])',
-  '[role="combobox"]:not([aria-disabled="true"])',
-].map((field) => `[data-studio-focus-region="inspector"] ${field}`).join(', ');
+const field = [
+  'input:not([disabled]):not([type="hidden"]):not([readonly]):not([aria-hidden="true"])', 'textarea:not([disabled])',
+  'select:not([disabled])', '[role="combobox"]:not([aria-disabled="true"])',
+].join(', ');
+const inspectorField = field.split(', ').map((item) => `[data-studio-focus-region="inspector"] ${item}`).join(', ');
 
 /** Return on a drawer row with nothing inside it: focus moves to the inspector's first field once the inspector shows it. */
 export function focusInspectorField(frames = 30) {
-  const field = document.querySelector<HTMLElement>(inspectorField);
-  if (field) field.focus();
+  const found = document.querySelector<HTMLElement>(inspectorField);
+  if (found) found.focus();
   else if (frames > 0) requestAnimationFrame(() => focusInspectorField(frames - 1));
+}
+
+/** A request to put the keyboard on a field: the one whose `data-field` is `target`, or else the first. */
+export interface FieldFocusRequest {
+  readonly key: string;
+  readonly target?: string;
+}
+
+/** Puts the keyboard on the requested field of `root` as soon as `root` shows a field. */
+export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusRequest | undefined, onFocused: () => void) {
+  const focused = useRef(onFocused);
+  focused.current = onFocused;
+  const target = request?.target;
+  useLayoutEffect(() => {
+    const element = root.current;
+    if (!request || !element) return;
+    const attempt = () => {
+      // The named field once it can take the keyboard; the first field when the fields shown do not include it.
+      const named = target === undefined ? null : element.querySelector(`[data-field="${CSS.escape(target)}"]`);
+      const shown = named === null && (target === undefined || element.querySelector('[data-field]') !== null ||
+        element.querySelector('[aria-busy="true"]') === null);
+      const chosen = named ? named.querySelector<HTMLElement>(field) : shown ? element.querySelector<HTMLElement>(field) : null;
+      if (!chosen) return false;
+      chosen.focus();
+      focused.current();
+      return true;
+    };
+    if (attempt()) return;
+    const observer = new MutationObserver(() => { if (attempt()) observer.disconnect(); });
+    observer.observe(element, {
+      childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'readonly', 'aria-disabled'],
+    });
+    return () => observer.disconnect();
+  }, [request?.key]);
 }

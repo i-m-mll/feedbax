@@ -6,15 +6,17 @@ import { commandAttributes, type StudioCommand } from './studioCommands';
 import { Button, IconButton } from '@/components/ui/Button';
 
 /** A reason that names a place: pressed, it reveals the place. Every list of problems and changes draws this row. */
-export function MentionRow({ place, detail, context = [], onReveal }: {
+export function MentionRow({ place, detail, context = [], placeShown = true, onReveal }: {
   place: StudioPlace | null;
   detail: string;
+  /** False where the surrounding heading or region already names the place. */
+  placeShown?: boolean;
   /** What the surrounding list does not already say, such as the step or variant. */
   context?: readonly string[];
   onReveal?: () => void;
 }) {
   const entry = <>
-    <span className="font-medium">{studioPlaceName(place)}</span>{' · '}{detail}
+    {placeShown && <><span className="font-medium">{studioPlaceName(place)}</span>{' · '}</>}{detail}
     {context.length > 0 && <span className="block text-xs text-shell-muted">{context.join(' · ')}</span>}
   </>;
   return onReveal
@@ -27,6 +29,7 @@ export function MentionRow({ place, detail, context = [], onReveal }: {
 export function ProblemRow({ problem, ...row }: {
   problem: StudioProjectWindowMapProblem;
   context?: readonly string[];
+  placeShown?: boolean;
   onReveal?: () => void;
 }) {
   return <MentionRow place={problem.place} detail={studioProblemDetail(problem)} {...row} />;

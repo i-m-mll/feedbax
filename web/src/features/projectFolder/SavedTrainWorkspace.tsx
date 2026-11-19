@@ -15,14 +15,14 @@ import {
 import { isMemberName } from './projectMemberName';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/StepInsertMenu';
-import { StudioRunControls, StudioRunDetails, StudioRuns, type RunMention } from '@/components/pipeline/StudioRuns';
+import { InspectorRow, StudioRunControls, StudioRuns, StudioStepInspector, type RunMention } from '@/components/pipeline/StudioRuns';
 import type { RunMenu } from '@/components/pipeline/RunContextMenu';
 import type { ActivityResultState } from '@/components/activity/StudioActivity';
 import { useResultValidity } from './useResultValidity';
 import { useFollowingQuery } from '@/hooks/useFollowingQuery';
 import { StudioMachineApproval, studioRunMachineControl } from '@/components/pipeline/StudioRunMachine';
 import { SweepExceptions } from '@/components/pipeline/SweepExceptions';
-import { Drawer, DrawerSection, useDrawerSections } from '@/features/projectWindow/DrawerForms';
+import { useDrawerSections, useFieldFocus, type FieldFocusRequest } from '@/features/projectWindow/DrawerForms';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
@@ -59,7 +59,7 @@ import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpo
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows } from './projectWindowPlan';
-import { placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
+import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
@@ -116,7 +116,7 @@ async function checkpointNewStep(source: PipelineMapStepSource, scope: ProjectWi
 }
 
 const viewsByKind = {
-  train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
+  train: ['runs', 'model', 'task', 'objective', 'scene', 'results'],
   evaluate: ['runs', 'model', 'task', 'scene', 'results'],
   analyze: ['runs', 'analysis', 'figures'],
   report: ['runs', 'document'],
@@ -196,7 +196,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     reveal: Reveal;
   }>();
   const [excludedUsers, setExcludedUsers] = useState<Readonly<Record<string, readonly string[]>>>({});
-  const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
+  /** A field of a step's definition to put the keyboard on once the Runs view's inspector shows it. */
+  const [fieldFocus, setFieldFocus] = useState<FieldFocusRequest & { step: string }>();
   const [focusFirstModel, setFocusFirstModel] = useState<string>();
   const insertMenu = useStepInsertMenu();
   const latestRevision = useRef(saved.revision);
@@ -265,6 +266,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const revealed = problemReveal?.revision === saved.revision && problemReveal.variant === variant &&
     problemReveal.reveal.step === step?.id && problemReveal.runId === (state.focus?.runId ?? null)
     ? problemReveal.reveal : undefined;
+  /** A revealed place among the step's own fields, which the inspector draws and reveals instead of a banner. */
+  const fieldReveal = revealed?.view === 'runs' && placeField(revealed.place) ? revealed : undefined;
   function documentScope(field: 'graph' | 'task'): NamedDocumentScope | undefined {
     const document = field === 'graph' ? modelDocumentId(step?.documentIds)
       : step?.documentIds?.['payload.trial_documents.task'] ?? step?.documentIds?.['payload.trial_documents.python_task'];
@@ -614,13 +617,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const view = kind === 'analyze' ? 'analysis' : kind === 'report' ? 'document'
       : viewsByKind[kind].some((item) => item === named) ? named : 'runs';
     const runId = row ? savedRunId(row.key) : null;
+    const field = view === 'runs' ? placeField(place) : null;
     selection.select(runId
       ? selectRun(state, { stepId, runId })
       : selectStep(state, stepId), scope);
     setExcludedUsers({});
     setProblemReveal({ revision: saved.revision, variant: scope, runId, reveal: { step: stepId, place, view, reason, problem } });
-    setWindowState((current) => showProjectWindowView(current, view, focusSlot));
-    requestSlotFocus((count) => count + 1);
+    setWindowState((current) => showProjectWindowView(field ? { ...current, inspectorOpen: true } : current, view, focusSlot));
+    if (field) setFieldFocus({ key: crypto.randomUUID(), step: stepId, target: field.target });
+    else requestSlotFocus((count) => count + 1);
     setPanel(null);
   }
   function revealProblem(problem: StudioProjectWindowMapProblem) {
@@ -754,10 +759,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     selectCreatedStep: (id, view = 'runs') => {
       selection.select(selectStep(state, id));
       if (view === 'model') setFocusFirstModel(id);
-      if (view === 'runs') setFocusCreatedStep(id);
+      if (view === 'runs') setFieldFocus({ key: crypto.randomUUID(), step: id });
       if (view === 'analysis' || view === 'document') requestSlotFocus((count) => count + 1);
       setWindowState((current) => showProjectWindowView(
-        view === 'runs' ? { ...current, detailsDrawerOpen: true } : current, view,
+        view === 'runs' ? { ...current, inspectorOpen: true } : current, view,
       ));
     },
   };
@@ -796,12 +801,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const evaluateInputs = authored?.kind === 'evaluate' ? authored : undefined;
   const trainSteps = plan.steps.filter(({ kind }) => kind === 'train');
   const subjectInput = evaluateInputs && step?.inputs.find(({ id }) => id === 'subject');
-  const listedInputs = step?.inputs.filter(({ id }) => !evaluateInputs || !['subject', 'task', 'objective'].includes(id)) ?? [];
+  /** The steps this step reads, each a link, and the inputs no field of the step draws. */
+  const listedInputs = step?.inputs.filter(({ id, sourceStepId }) =>
+    sourceStepId || !evaluateInputs || !['subject', 'task', 'objective'].includes(id)) ?? [];
   function inputDetail({ id, subset }: PlanStepView['inputs'][number]) {
     return <>
       {id === 'subject' && subjectCheckpoint !== undefined &&
-        <dd className="text-shell-muted">{checkpointLabel(subjectCheckpoint)}</dd>}
-      {subset && <dd className="text-shell-muted">
+        <div className="px-control-inline text-shell-muted">{checkpointLabel(subjectCheckpoint)}</div>}
+      {subset && <div className="px-control-inline text-shell-muted">
         {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
         {subset.memberGroups?.map(({ label, members }) => <div key={members[0]?.id} className="mt-1">
           {label && <div className="font-medium">{label}</div>}
@@ -810,7 +817,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             {members.map(({ id, label }) => <li key={id}>{label}</li>)}
           </ol>
         </div>)}
-      </dd>}
+      </div>}
     </>;
   }
 
@@ -1205,7 +1212,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} resultState={activityResultState} />}
         renderView={(view, slot) => {
           const details = slot === 'primary' ? primary : secondary;
-          const withProblem = (body: ReactNode) => revealed?.view === view && slot === focusSlot
+          const withProblem = (body: ReactNode) => revealed?.view === view && slot === focusSlot && !fieldReveal
             ? <ProblemDestination reveal={revealed} action={graphRepair && <Button
               disabled={!ready || snapshot.saving || busy} onClick={removeRefusedVariation}>
               {studioName('removeVariation')}
@@ -1277,61 +1284,54 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   disabled: busy || machineCatalog.isPending,
                   onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run && studioRunReason(run)} />,
-              drawer: (authoring || evaluateInputs || step.inputs.length > 0 || exceptions.length > 0 || evaluationCheckpointRule ||
-                evaluationEditor) ? <Drawer>
-                {(authoring || evaluationCheckpointRule || evaluationEditor) && <DrawerSection sections={drawerSections} id="runs.definition"
-                  name={studioName(step.kind === 'train' ? 'training' : step.kind)} bodyClassName="grid content-start gap-3 p-2">
-                {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError} fieldRows={detailInputs.fieldRows}
-                    focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
-                    onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}
-                {evaluationCheckpointRule &&
-                  <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, saved.revision, checkpointScope])}
-                    initial={evaluationCheckpointRule}
-                    disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
-                    onSave={editEvaluationCheckpoint}
-                    onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
-                {evaluationEditor && data && variant && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
-                  authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
-                  source={evaluationEditor.source} sourceRows={stepSourceRows(data, evaluationEditor.source.id, variant)}
-                  domain={evaluationEditor.domain}
-                  editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
-                  disabled={!ready || busy} focusTrialSet={focusCreatedStep === step.id && focusSlot === slot}
-                  onTrialSetFocused={() => setFocusCreatedStep(undefined)} onEdit={editEvaluation}
-                  onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
-                </DrawerSection>}
-                {exceptions.length > 0 && <DrawerSection sections={drawerSections} id="runs.exceptions" name={studioName('exceptions')}>
-                  <SweepExceptions exceptions={exceptions}
-                    onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />
-                </DrawerSection>}
-                {(evaluateInputs || listedInputs.length > 0) && <DrawerSection sections={drawerSections} id="runs.inputs" name={studioName('inputs')} bodyClassName="px-1">
-                  {evaluateInputs && <EvaluateSubjectFields step={evaluateInputs} project={saved.project} trains={trainSteps}
-                    picking={elements} subset={subjectInput && <dl>{inputDetail(subjectInput)}</dl>}
-                    onEdit={ready && !busy && wholeStep ? editEvaluateSubject : undefined} />}
-                  {listedInputs.length > 0 && <dl>{listedInputs.map((input) => <div key={input.id} className="border-t border-shell-divider py-1">
-                    <dt>{input.label}</dt>
-                    {!(step.kind === 'train' && input.id === 'checkpoint') &&
-                      <dd>{input.sourceStepId && <Button variant="bare" size="content" className="text-shell-muted hover:underline"
-                        onClick={() => selection.select(selectStep(state, input.sourceStepId!))}>
-                        {plan.steps.find((item) => item.id === input.sourceStepId)?.label}
-                      </Button>}</dd>}
-                    {inputDetail(input)}
-                  </div>)}</dl>}
-                </DrawerSection>}
-              </Drawer> : undefined,
-              inspector: selectedRuns(step, state.selection).length > 0
-                ? <StudioRunDetails step={step} state={state} onReveal={revealRunMention}
-                  detail={selectedEvaluation?.checkpoint_series
-                    ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation}
-                      onShowStep={(stepId) => selection.select(selectStep(state, stepId))} /> : undefined} /> : undefined,
+              inspector: <StudioStepInspector plan={plan} step={step} state={state} onReveal={revealRunMention}
+                onChooseStep={(stepId) => selection.select(selectStep(state, stepId))}
+                revealed={fieldReveal && { place: fieldReveal.place, detail: fieldReveal.reason, problem: fieldReveal.problem }}
+                upstreamDetail={checkpointLineage()}
+                detail={selectedEvaluation?.checkpoint_series
+                  ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation}
+                    onShowStep={(stepId) => selection.select(selectStep(state, stepId))} /> : undefined}
+                fields={(authoring || evaluateInputs || evaluationCheckpointRule || evaluationEditor) &&
+                  <FocusedFields request={slot === focusSlot && fieldFocus?.step === step.id ? fieldFocus : undefined}
+                    onFocused={() => setFieldFocus(undefined)}>
+                    {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError}
+                      fieldRows={detailInputs.fieldRows} />}
+                    {evaluateInputs && <EvaluateSubjectFields step={evaluateInputs} project={saved.project} trains={trainSteps}
+                      picking={elements} subset={subjectInput && inputDetail(subjectInput)}
+                      onEdit={ready && !busy && wholeStep ? editEvaluateSubject : undefined} />}
+                    {evaluationCheckpointRule &&
+                      <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, saved.revision, checkpointScope])}
+                        initial={evaluationCheckpointRule}
+                        disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
+                        onSave={editEvaluationCheckpoint}
+                        onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
+                    {evaluationEditor && data && variant && <StudioEvaluateAuthoring key={`${step.id}:${saved.revision}`}
+                      authored={{ ...evaluationEditor.authored, hasWhere: evaluationEditor.authored.subject.where !== undefined }}
+                      source={evaluationEditor.source} sourceRows={stepSourceRows(data, evaluationEditor.source.id, variant)}
+                      domain={evaluationEditor.domain}
+                      editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
+                      disabled={!ready || busy} onEdit={editEvaluation}
+                      onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
+                  </FocusedFields>}
+                attachments={(exceptions.length > 0 || listedInputs.length > 0) && <>
+                  {exceptions.length > 0 && <SweepExceptions exceptions={exceptions}
+                    onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />}
+                  {listedInputs.length > 0 && <ul aria-label={studioName('inputs')}>{listedInputs.map((input) => {
+                    const source = input.sourceStepId && plan.steps.find((item) => item.id === input.sourceStepId);
+                    return <li key={input.id}>
+                      <InspectorRow onClick={input.sourceStepId ? () => selection.select(selectStep(state, input.sourceStepId!)) : undefined}>
+                        <span className="text-shell-muted">{input.label}</span>
+                        {source && <>{' · '}{source.label}</>}
+                      </InspectorRow>
+                      {input !== subjectInput && inputDetail(input)}
+                    </li>;
+                  })}</ul>}
+                </>} />,
               body: withProblem(<StudioRuns plan={plan} {...runSelection}
                 region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
                   ? { kind: 'result', missing: [] } : { kind: 'empty' })}
-                pending={planPending} pivotActive={Boolean(pivot) && pivotActive} upstreamDetail={checkpointLineage()} runMenu={runMenu} />),
+                pending={planPending} pivotActive={Boolean(pivot) && pivotActive} runMenu={runMenu} />),
             };
-          }
-          if (view === 'training' && authoring) {
-            return { padded: true, body: withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
-              fieldRows={detailInputs.fieldRows} />) };
           }
           const resultsFailure = planError('results');
           if (view === 'results' && (resultsFailure || !projection.data || (!pending && !outside && connected))) return {
@@ -1358,6 +1358,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   );
 }
 
+/** The step's fields in the inspector, putting the keyboard on the requested one once it shows. */
+function FocusedFields({ request, onFocused, children }: {
+  request: FieldFocusRequest | undefined; onFocused(): void; children: ReactNode;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  useFieldFocus(root, request, onFocused);
+  return <div ref={root} className="grid content-start gap-3">{children}</div>;
+}
+
 function ProblemDestination({ reveal, action, children }: { reveal: Reveal; action?: ReactNode; children: ReactNode }) {
   const reason = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
@@ -1379,6 +1388,12 @@ function ProblemDestination({ reveal, action, children }: { reveal: Reveal; acti
 function problemHolder(problem: StudioProjectWindowMapProblem) {
   const place = problem.place;
   return place && 'document' in place && place.document ? place.document : problem.step;
+}
+
+/** Whether a place is its document as a whole, which the group heading naming that document already says. */
+function namedByHolder(problem: StudioProjectWindowMapProblem, holder: string | null) {
+  const place = problem.place;
+  return !!place && 'document' in place && place.document === holder && !(place.part === 'task' && place.parameter);
 }
 
 function ProblemList({ problems, onChoose, canReveal, showVariant }: {
@@ -1403,6 +1418,7 @@ function ProblemList({ problems, onChoose, canReveal, showVariant }: {
       <ul>{entries.map((problem, index) => <li key={index} className="break-words">
         <ProblemRow problem={problem}
           context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].flatMap((part) => part ? [part] : [])}
+          placeShown={!namedByHolder(problem, name)}
           onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />
       </li>)}</ul>
     </section>;

@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useId, useRef, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
@@ -41,8 +41,6 @@ interface Props {
   readonly fieldRows?: readonly string[];
   readonly step?: PlanStepView;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
-  readonly focusFirstField?: boolean;
-  readonly onFirstFieldFocused?: () => void;
   /** The project's Train steps, whose checkpoints the step can start from. */
   readonly trains?: readonly PlanStepView[];
   readonly picking?: ElementSelectionStore;
@@ -173,7 +171,7 @@ function CheckpointStart({ editor, stepId, step, trains, picking, editable }: {
 }
 
 export function StudioTrainAuthoringForm(props: Props) {
-  const { editor, stepId, onChooseSweepValue, focusFirstField, onFirstFieldFocused } = props;
+  const { editor, stepId, onChooseSweepValue } = props;
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
@@ -187,7 +185,6 @@ export function StudioTrainAuthoringForm(props: Props) {
   const numeric = useTrainFields(editor, stepId, props.run, props.fieldRows, props.runPending);
   const active = useRef<AbortController | null>(null);
   const command = useRef<AbortController | null>(null);
-  const region = useRef<HTMLElement | null>(null);
   const shown = definition.data;
   const current = shown?.revision === revision ? shown : null;
 
@@ -196,14 +193,6 @@ export function StudioTrainAuthoringForm(props: Props) {
     active.current = lifetime;
     return () => lifetime.abort();
   }, [editor, stepId]);
-
-  useLayoutEffect(() => {
-    if (!focusFirstField || !current || numeric.fields.isFetching) return;
-    const first = region.current?.querySelector<HTMLElement>('input:not([readonly]):not(:disabled):not([aria-hidden="true"])');
-    if (!first) return;
-    first.focus();
-    onFirstFieldFocused?.();
-  }, [focusFirstField, current, onFirstFieldFocused, numeric.fields.isFetching]);
 
   async function apply(change: NonNullable<StudioTrainAuthoringRequest['change']>, label: string): Promise<string | undefined> {
     const lifetime = active.current;
@@ -256,18 +245,20 @@ export function StudioTrainAuthoringForm(props: Props) {
         void numeric.fields.refetch();
         void catalog.refetch();
       })}>
-      <section ref={region} aria-label={studioName('definition')} className="grid gap-1">
+      <section aria-label={studioName('definition')} className="grid gap-1">
         {props.trains && <CheckpointStart editor={editor} stepId={stepId} step={props.step} trains={props.trains}
           picking={props.picking} editable={editable} />}
-        {methodField && <FieldRow label={methodField.label} labelId={methodLabel}>
+        {methodField && <div data-field={methodField.id} className="contents"><FieldRow label={methodField.label} labelId={methodLabel}>
           <CatalogPicker aria-labelledby={methodLabel} className="w-full" entries={methods}
             value={typeof methodField.value === 'string' ? methodField.value : null}
             disabled={!editable || !methodField.control}
             onChoose={(key) => { void apply({ field: '/method', value: key }, methodField.label); }} />
-        </FieldRow>}
-        {choices.map((field) => <ValueField key={field.id} model={choiceField(field,
-          editable ? (value) => apply({ field: field.id, value }, field.label) : undefined)} />)}
-        {steps.map((field) => { const model = fieldModel(field); return <ValueField key={model.id} model={model} />; })}
+        </FieldRow></div>}
+        {choices.map((field) => <div key={field.id} data-field={field.id} className="contents"><ValueField model={choiceField(field,
+          editable ? (value) => apply({ field: field.id, value }, field.label) : undefined)} /></div>)}
+        {steps.map((field) => { const model = fieldModel(field); return <div key={model.id} data-field={field.id} className="contents">
+          <ValueField model={model} />
+        </div>; })}
         {settingsSchema && current?.settings && <SettingsForm schema={settingsSchema} value={current.settings}
           projected={(path) => {
             const field = byPath.get(settingsPrefix + pointer(path));

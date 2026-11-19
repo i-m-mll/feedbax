@@ -598,13 +598,14 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
 
   const evaluated = await successor('Evaluate', 'evaluate');
-  await expect(drawer.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeFocused();
+  const stepInspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await expect(stepInspector.getByRole('combobox', { name: 'Subject', exact: true })).toBeFocused();
   expect(evaluated.project.steps?.evaluate).toMatchObject({
     kind: 'evaluate', inputs: { subject: { step: 'train', checkpoint: 'last' } },
   });
   const childId = 'train-continuation';
   const continuation = await successor('Train', childId);
-  const batches = drawer.getByRole('textbox', { name: 'Batches', exact: true });
+  const batches = stepInspector.getByRole('textbox', { name: 'Batches', exact: true });
   await expect(batches).toBeEditable();
   const prepared = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === path + '/authoring/train/' + childId + '/fields'

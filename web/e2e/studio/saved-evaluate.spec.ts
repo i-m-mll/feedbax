@@ -564,7 +564,7 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   expect(planned.checkpoint_series?.requested).toEqual([2, 4]);
   await page.reload();
   await chooseStep(page, 'evaluate');
-  await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toBeVisible();
   await expect(field).toHaveValue('every 2');
   await field.fill('2, 2');
   await expect(page.getByRole('button', { name: 'Apply Checkpoints' })).toBeDisabled();
@@ -634,7 +634,7 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   });
 
   await chooseStep(page, 'evaluate');
-  await reveal(page, 'Drawer');
+  await reveal(page, 'Inspector');
   await tab(page, 'Runs').click();
   async function edit(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>
@@ -666,7 +666,7 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   expect(undone.project.steps!.evaluate.sweep?.axes?.update).toBeUndefined();
   await page.reload();
   await chooseStep(page, 'evaluate');
-  await reveal(page, 'Drawer');
+  await reveal(page, 'Inspector');
   await expect(field).toHaveValue('4, 3, 2');
 });
 
@@ -685,14 +685,14 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   await page.goto(`/?project=${project}`);
   await chooseStep(page, 'evaluate');
   await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'comparison');
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await reveal(page, 'Drawer');
-  const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await reveal(page, 'Inspector');
+  const field = inspector.getByRole('textbox', { name: 'Checkpoints', exact: true });
   await expect(field).toHaveValue('last');
   const saving = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
   await field.fill('every 2 from 3');
-  await drawer.getByRole('button', { name: 'Apply Checkpoints' }).click();
+  await inspector.getByRole('button', { name: 'Apply Checkpoints' }).click();
   const response = await saving;
   expect(response.ok(), await response.text()).toBe(true);
   const after = await response.json() as StudioProjectSnapshot;
@@ -727,9 +727,9 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   const before = await plan(snapshot.revision);
   await page.goto(`/?project=${snapshot.project_id}`);
   await chooseStep(page, 'evaluate');
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await reveal(page, 'Drawer');
-  const field = drawer.getByRole('textbox', { name: 'Checkpoints', exact: true });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await reveal(page, 'Inspector');
+  const field = inspector.getByRole('textbox', { name: 'Checkpoints', exact: true });
   async function save(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>
       response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
@@ -742,7 +742,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
     .getByRole('button', { name: 'Select replicate left', exact: true }).click();
   await expect(field).toHaveValue('every 2');
   await field.fill('3');
-  const axis = await save(() => drawer.getByRole('button', { name: 'Apply Checkpoints' }).click());
+  const axis = await save(() => inspector.getByRole('button', { name: 'Apply Checkpoints' }).click());
   const axisPlan = await plan(axis.revision);
   expect(axisPlan.left.checkpoint_series?.requested).toEqual([3]);
   expect(axisPlan.right.request_id).toBe(before.right.request_id);
@@ -751,7 +751,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   await plans(page).getByRole('button', { name: /replicate=right/ }).click();
   await expect(field).toHaveValue('every 2');
   await field.fill('1, 4');
-  const row = await save(() => drawer.getByRole('button', { name: 'Apply Checkpoints' }).click());
+  const row = await save(() => inspector.getByRole('button', { name: 'Apply Checkpoints' }).click());
   const rowPlan = await plan(row.revision);
   expect(rowPlan.right.checkpoint_series?.requested).toEqual([1, 4]);
   expect(rowPlan.left.request_id).toBe(axisPlan.left.request_id);
@@ -810,8 +810,8 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
     where: { rows: [{ key: train.key.row, variant: train.key.variant, row: train.key.row }] },
     checkpoint: { at },
   });
-  await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText(label);
-  await expect(page.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeFocused();
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toContainText(label);
+  await expect(page.getByRole('combobox', { name: 'Subject', exact: true })).toBeFocused();
   const [consumer] = await submit(page, runsPath);
   expect(consumer.disposition).toBe('admitted');
   await expect(plans(page).getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
@@ -823,11 +823,11 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   });
   await page.reload();
   await chooseStep(page, 'evaluate');
-  await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText(label);
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toContainText(label);
   const row = plans(page).getByRole('button').first();
   await row.click();
-  const lineage = page.getByRole('tabpanel', { name: 'Runs', exact: true })
-    .getByRole('region', { name: 'Made From', exact: true });
+  const lineage = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('listitem')
+    .filter({ has: page.getByRole('button', { name: /^Select Made From / }) });
   await lineage.getByRole('button', { name: label, exact: true }).click();
   await expect(checkpoint.getByRole('heading')).toHaveText(label);
 

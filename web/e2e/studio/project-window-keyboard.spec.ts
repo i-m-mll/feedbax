@@ -100,8 +100,9 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   ]);
 
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
-  await tab('Training').click();
-  await expect(page.getByRole('textbox', { name: 'Batches', exact: true })).toBeEnabled();
+  await tab('Runs').click();
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('textbox', { name: 'Batches', exact: true })).toBeEnabled();
   await tab('Task').click();
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
   const reach = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
@@ -242,7 +243,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(evaluated.project.steps!.evaluate.inputs?.subject).toEqual({
     step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': [selected.coordinates['learning-rate'].value_id] } },
   });
-  await expect(page.getByRole('region', { name: 'Inputs', exact: true })).toContainText('1 of 3');
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toContainText('1 of 3');
   const projection = await plan(evaluated.revision);
   const [pending] = projection.window_map!.evaluations!;
   expect(projection.window_map?.evaluations).toHaveLength(1);
@@ -265,17 +266,18 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const label = projection.window_map!.rows.find(({ key }) => key.step === pending.key.step && key.row === pending.key.row)!.label;
   await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(label) }));
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
-  await expect(runs.getByRole('region', { name: 'Made From', exact: true })).toContainText('1 of 3');
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('button', { name: /^Select Made From / })).toContainText('1 of 3');
   expect(await evaluatedRow()).toEqual(result);
   await info.attach('managed-checkpoint-and-evaluate', {
     body: JSON.stringify({ project: saved.project_id, paused, continued, result }),
     contentType: 'application/json',
   });
   const sceneTab = page.getByRole('tab', { name: 'Scene', exact: true });
-  await expect(sceneTab).toHaveAttribute('aria-keyshortcuts', 'Meta+6');
+  await expect(sceneTab).toHaveAttribute('aria-keyshortcuts', 'Meta+5');
   const [replayed] = await Promise.all([
     post(page, projectPath + '/evaluate-replay'),
-    page.keyboard.press('Meta+6'),
+    page.keyboard.press('Meta+5'),
   ]);
   await expect(sceneTab).toHaveAttribute('aria-selected', 'true');
   expect(replayed.ok(), await replayed.text()).toBe(true);
@@ -501,9 +503,9 @@ test('the window commands, tab rail and selection history work without a pointer
   await page.keyboard.press('Meta+4');
   await expect(trainTab('Objective').getByRole('table')).toBeVisible();
   await scanStudio(page, info, 'train-objective');
-  await page.keyboard.press('Meta+5');
-  await expect(trainTab('Training').getByRole('textbox', { name: 'Batches', exact: true })).toBeVisible();
-  await scanStudio(page, info, 'train-training');
+  await page.keyboard.press('Meta+1');
+  await expect(region(page, 'inspector').getByRole('textbox', { name: 'Batches', exact: true })).toBeVisible();
+  await scanStudio(page, info, 'train-runs-inspector');
   await page.keyboard.press('Meta+2');
   await expect(trainTab('Model')).toBeFocused();
   await page.keyboard.press('F6');
@@ -559,7 +561,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const card = page.getByRole('article', { name: 'Train train', exact: true });
   await page.goto(`/?project=${snapshot.project_id}`);
   await expect(mapStep(page, 'train')).toBeVisible();
-  await page.keyboard.press('Meta+5');
+  await page.keyboard.press('Meta+1');
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
@@ -619,9 +621,9 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   expect(plan.rows.filter(({ key }) => key.step === child).map(({ key }) => key.row)).toEqual(sourceKeys.map(({ row }) => row));
 
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await expect(drawer.getByRole('combobox', { name: 'Method', exact: true })).toBeFocused();
-  const batches = drawer.getByRole('textbox', { name: 'Batches' });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await expect(inspector.getByRole('combobox', { name: 'Method', exact: true })).toBeFocused();
+  const batches = inspector.getByRole('textbox', { name: 'Batches' });
   const childEdit = page.waitForResponse((response) => response.request().method() === 'PATCH' &&
     new URL(response.url()).pathname === projectPath);
   await number(page, batches, '1200');
@@ -658,7 +660,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await page.keyboard.press('Meta+1');
   await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 12_000 });
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
-  await page.keyboard.press('Meta+7');
+  await page.keyboard.press('Meta+6');
   await expect(results).toBeFocused();
   await expect(results.getByRole('img', { name: 'Loss' })).toBeVisible();
   await page.keyboard.press('Escape');

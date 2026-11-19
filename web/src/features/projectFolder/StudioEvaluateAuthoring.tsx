@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useState, type ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
@@ -113,19 +113,11 @@ function BestEditor({ rule, sweeps, disabled, onChange }: {
   </div>;
 }
 
-function TrialSetEditor({ initial, domain, disabled, focus, onFocused, onSave }: {
+function TrialSetEditor({ initial, domain, disabled, onSave }: {
   initial: TrialSet; domain: TrialDomain; disabled: boolean; onSave(rule: TrialSet): void;
-  focus: boolean; onFocused(): void;
 }) {
   const [rule, setRule] = useState(initial);
   const select = useId();
-  useLayoutEffect(() => {
-    const trigger = document.getElementById(select);
-    if (focus && !disabled && trigger) {
-      trigger.focus();
-      onFocused();
-    }
-  }, [focus, disabled, onFocused, select]);
   const choices = domain.kind === 'fixed'
     ? [
       { value: 'every_condition', label: studioName('everyCondition') },
@@ -165,7 +157,7 @@ function TrialSetEditor({ initial, domain, disabled, focus, onFocused, onSave }:
 }
 
 export function StudioEvaluateAuthoring({
-  authored, source, sourceRows, domain, disabled, editSubject, focusTrialSet, onTrialSetFocused, onEdit, onToRows,
+  authored, source, sourceRows, domain, disabled, editSubject, onEdit, onToRows,
 }: {
   authored: { terms: SubsetTerms; trialSet: TrialSet; hasWhere: boolean };
   source: PlanStepView;
@@ -173,8 +165,6 @@ export function StudioEvaluateAuthoring({
   domain: TrialDomain | undefined;
   disabled: boolean;
   editSubject: boolean;
-  focusTrialSet: boolean;
-  onTrialSetFocused(): void;
   onEdit(name: string, edit: ProjectValueEdit): void;
   onToRows?(): void;
 }) {
@@ -232,7 +222,7 @@ export function StudioEvaluateAuthoring({
       {onToRows && <Button className="justify-self-start" disabled={disabled || changed} onClick={onToRows}>{studioName('toRows')}</Button>}
       {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
     </fieldset>}
-    {domain && <TrialSetEditor initial={trialSet} domain={domain} disabled={disabled} focus={focusTrialSet} onFocused={onTrialSetFocused}
+    {domain && <TrialSetEditor initial={trialSet} domain={domain} disabled={disabled}
       onSave={(rule) => onEdit(studioName('applyTrials'), { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
   </div>;
 }
