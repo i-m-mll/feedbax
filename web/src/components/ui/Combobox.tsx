@@ -3,7 +3,7 @@ import clsx from 'clsx';
 import { Check, ChevronDown } from 'lucide-react';
 import { useMemo } from 'react';
 import type { Option } from './Select';
-import { fieldBox, fieldInput, glyph, popupItem, popupSurface } from './styles';
+import { fieldBox, fieldInput, glyph, popupItem, popupSurface, primaryText, secondaryText } from './styles';
 import { usePopupLayer } from './popupLayer';
 
 export interface ComboboxProps<Value extends string> {
@@ -54,8 +54,8 @@ export function Combobox<Value extends string>(
                     <BaseCombobox.ItemIndicator className="flex"><Check /></BaseCombobox.ItemIndicator>
                   </span>
                   {item.glyph}
-                  <span className="flex-1 truncate">{item.label}</span>
-                  {item.detail ? <span className="truncate pl-4 text-shell-muted">{item.detail}</span> : null}
+                  <span className={primaryText}>{item.label}</span>
+                  {item.detail ? <span className={secondaryText}>{item.detail}</span> : null}
                 </BaseCombobox.Item>
               )}
             </BaseCombobox.List>

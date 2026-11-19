@@ -89,7 +89,7 @@ it("puts the opening stage in the status tooltip and keeps provider error lines 
   });
   const table = within(screen.getByRole("table", { name: "Runs" }));
   expect(table.queryByText("Opening machine: connecting")).toBeNull();
-  expect(table.getAllByRole("cell").filter((cell) => cell.getAttribute("aria-description")).map((cell) => cell.dataset.appTip))
+  expect(table.getAllByRole("cell").filter((cell) => cell.getAttribute("aria-description")).map((cell) => cell.querySelector<HTMLElement>("[data-app-tip]")?.dataset.appTip))
     .toEqual(["Opening machine: connecting", summary]);
   expect(table.queryByText(line)).toBeNull();
   fireEvent.click(table.getByRole("button", { name: /^\d+ B$/ }));

@@ -25,3 +25,7 @@ export const popupSurface =
 export const popupItem =
   'flex h-row cursor-default select-none items-center gap-2 rounded-row px-row-inline outline-none ' +
   'data-[highlighted]:bg-shell-hover data-[disabled]:opacity-45 ' + glyph;
+
+export const primaryText = 'min-w-0 flex-auto truncate';
+
+export const secondaryText = 'min-w-0 shrink-[1000] truncate pl-4 text-shell-muted';

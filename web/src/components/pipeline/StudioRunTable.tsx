@@ -184,9 +184,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                     {labels.get(sweep.id)?.get(run.values[sweep.id])}
                   </TableCell>
                 ))}
-                <TableCell tabIndex={-1} className={cellFocus} aria-description={studioRunReason({ ...run, reason })}
-                  {...appTip(studioRunReason({ ...run, reason }))}>
-                  <StudioRunStatus status={run.state} />
+                <TableCell tabIndex={-1} className={cellFocus} aria-description={studioRunReason({ ...run, reason })}>
+                  <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>
                   {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}

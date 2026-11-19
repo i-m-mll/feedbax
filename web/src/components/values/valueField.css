@@ -1,5 +1,5 @@
 .value-field-parts {
-  padding-left: var(--space-3);
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
 }
 
 /* The value keeps its width and at least six characters; the class's picker shrinks first. */

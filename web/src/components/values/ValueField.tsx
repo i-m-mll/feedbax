@@ -16,7 +16,7 @@ import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { Select } from '@/components/ui/Select';
 import { Section } from '@/components/ui/Section';
-import { popupItem, popupSurface } from '@/components/ui/styles';
+import { popupItem, popupSurface, primaryText, secondaryText } from '@/components/ui/styles';
 import { TextField } from '@/components/ui/TextField';
 import { completions, hasMark, type Completion, type FieldEdit, type FieldModel, type FieldOption } from './fieldModel';
 import { useFieldGroup } from './fieldGroups';
@@ -157,7 +157,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
       {parts(!!model.parts?.length)}
     </FieldGroup>;
   }
-  return <section className="value-field grid min-w-0 gap-1 tabular-nums" aria-label={studioFieldLabel('field', label)}>
+  return <section className="value-field grid min-w-0 tabular-nums" aria-label={studioFieldLabel('field', label)}>
     <FieldRow label={label} labelId={labelId} htmlFor={textual ? id : undefined}
       below={model.origin || reason || model.reason ? below : undefined}>
       {widget}
@@ -202,7 +202,7 @@ function ClassValue({ model, parameter, labelId, picker }: {
     else if (kind === 'value' && parameter.kind === 'sweep' && parameter.keeps) void submit({ kind: 'to_value', value_id: parameter.keeps });
     else focusText();
   }
-  return <section className="value-field value-field-class grid min-w-0 gap-1 tabular-nums" aria-label={studioFieldLabel('field', model.label)}>
+  return <section className="value-field value-field-class grid min-w-0 tabular-nums" aria-label={studioFieldLabel('field', model.label)}>
     <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
       {origin && <span id={originId} className="text-shell-muted">{origin}</span>}
       {shown && <p role="alert" id={reasonId}>{shown}</p>}
@@ -326,10 +326,10 @@ function CompletionList({ id, anchor, items, highlight, onChoose }: {
     className={clsx(popupSurface, 'fixed z-50 max-h-64 overflow-y-auto')}
     style={{ left: box.left, top: box.bottom + 4, minWidth: box.width }}>
     {items.map((item, index) => <div key={item.id} id={`${id}-${index}`} role="option" aria-selected={index === highlight}
-      data-highlighted={index === highlight ? '' : undefined} className={clsx(popupItem, 'justify-between')}
+      data-highlighted={index === highlight ? '' : undefined} className={popupItem}
       onMouseDown={(event) => { event.preventDefault(); onChoose(item); }}>
-      <span className="truncate">{item.label}</span>
-      <span className="truncate pl-4 text-shell-muted">{item.detail}</span>
+      <span className={primaryText}>{item.label}</span>
+      <span className={secondaryText}>{item.detail}</span>
     </div>)}
   </div>, layer);
 }
