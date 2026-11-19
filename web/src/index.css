@@ -113,16 +113,32 @@
   --panel-header-padding-inline: var(--space-3);
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-chrome-faint) transparent;
+}
+
+@supports selector(::-webkit-scrollbar) {
+  * { scrollbar-width: auto; scrollbar-color: auto; }
+  ::-webkit-scrollbar { width: var(--space-2); height: var(--space-2); background: transparent; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--text-chrome-faint); border-radius: var(--radius-sm); }
+}
+
+:root[data-section-chevron='edge'] [data-section-disclosure] { margin-inline-start: auto; }
+
 .studio-scroll-fade {
+  /* Where the top fade starts, below content pinned to the top such as a table's header. */
+  --fade-inset-top: 0px;
   --fade-top: 0px;
   --fade-bottom: 0px;
   --fade-left: 0px;
   --fade-right: 0px;
   -webkit-mask-image:
-    linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent),
+    linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
     linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
   mask-image:
-    linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent),
+    linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
     linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
@@ -407,21 +423,3 @@ body {
   height: 8px;
 }
 
-.local-x-scrollbar::-webkit-scrollbar {
-  height: 9px;
-}
-
-.local-x-scrollbar::-webkit-scrollbar-track {
-  background: var(--surface-toolbar);
-  border-radius: 999px;
-}
-
-.local-x-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--app-divider);
-  border: 2px solid var(--surface-toolbar);
-  border-radius: 999px;
-}
-
-.local-x-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
-}

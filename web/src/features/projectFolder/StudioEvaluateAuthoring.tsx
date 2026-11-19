@@ -22,6 +22,7 @@ import {
 } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
 import { savedRunId } from './projectWindowPlan';
+import { ScrollFade } from '@/components/ui/ScrollFade';
 
 type Choice = { id: string; label: string };
 
@@ -69,10 +70,10 @@ function Checkboxes({ options, selected, disabled, onToggle }: {
   disabled?: boolean;
   onToggle(id: string, checked: boolean): void;
 }) {
-  return <div className="grid max-h-40 overflow-auto">
+  return <ScrollFade className="grid max-h-40">
     {options.map(({ id, label }) => <Checkbox key={id} label={label} checked={selected.includes(id)} disabled={disabled}
       onCheckedChange={(checked) => onToggle(id, checked)} />)}
-  </div>;
+  </ScrollFade>;
 }
 
 function toggle(ids: readonly string[], id: string, checked: boolean) {

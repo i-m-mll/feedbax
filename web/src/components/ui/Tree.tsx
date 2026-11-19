@@ -106,6 +106,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
     return list;
   }, [nodes, expanded]);
 
+  const branches = useMemo(() => [...entries.values()].some(({ node }) => branch(node)), [entries]);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const holders = useMemo(() => {
     const set = new Set<string>();
@@ -316,7 +317,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
       {visible.map((node) => {
         const { depth, parent } = entries.get(node.id)!;
         const level = siblings(node.id);
-        const open = branch(node) ? expanded.has(node.id) : undefined;
+        const open = branch(node) ? expanded.has(node.id) : branches ? null : undefined;
         const carried = node.disabled ? undefined : dragData?.(node);
         return (
           <ListRow

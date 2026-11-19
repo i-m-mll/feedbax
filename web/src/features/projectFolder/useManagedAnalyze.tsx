@@ -293,14 +293,10 @@ export function useManagedAnalyze({
     </Button>}
   </Inspector>;
   const drawer = <Drawer>
-    <DrawerSection sections={sections} id="analysis.library" name={studioName('library')}>
-      <StudioRegion state={catalogState}>
-        <LibraryList sections={sections} section="analysis.library" searchName="searchLibrary" items={library}
-          selected={shownItem?.id} dragType={canEdit ? operationDragType : undefined}
-          onInspect={(id) => setInspected({ scope, id })}
-          onPlace={canEdit ? (id) => place(id) : undefined} />
-      </StudioRegion>
-    </DrawerSection>
+    <LibraryList sections={sections} section="analysis.library" name={studioName('library')} searchName="searchLibrary"
+      state={catalogState} items={library} selected={shownItem?.id} dragType={canEdit ? operationDragType : undefined}
+      onInspect={(id) => setInspected({ scope, id })}
+      onPlace={canEdit ? (id) => place(id) : undefined} />
   </Drawer>;
   const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => {
     const caption = figureDefinition(name, view.figure)?.caption;

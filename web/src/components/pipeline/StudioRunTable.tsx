@@ -11,6 +11,7 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
+import { ScrollFade } from "@/components/ui/ScrollFade";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
 import { RunContextMenu, type RunMenu } from "./RunContextMenu";
 
@@ -120,7 +121,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
   const bottom = last ? virtual.getTotalSize() - last.end : 0;
 
   return (
-    <div ref={scroll} className={`${fillSlot ? "h-full" : "max-h-96"} overflow-auto`}>
+    <ScrollFade ref={scroll} axis="both" className={`${fillSlot ? "h-full" : "max-h-96"} [--fade-inset-top:var(--row-height)]`}>
       <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1}>
         <thead className="sticky top-0 z-10">
           <tr aria-rowindex={1}>
@@ -198,6 +199,6 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {bottom > 0 && <tr aria-hidden="true"><td colSpan={width} style={{ height: bottom }} /></tr>}
         </tbody>
       </Table>
-    </div>
+    </ScrollFade>
   );
 }

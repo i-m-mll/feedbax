@@ -16,6 +16,7 @@ import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRun
 import { studioName, studioReason } from './studioVocabulary';
 import { LossPlot, studioRunHistory } from './StudioTrainingLoss';
 import { PlotTrack, plotHeight, plotWidth, projectSeries } from './studioPlot';
+import { ScrollFade } from '@/components/ui/ScrollFade';
 
 const emptyJobs: readonly StudioActivityJob[] = [];
 const emptyEvents: readonly StudioJobEvent[] = [];
@@ -87,9 +88,9 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
       </div>
       <section aria-label={studioName('log')} className="min-w-0 space-y-1">
         <h4 className="text-xs font-medium">{studioName('log')}</h4>
-        <pre className="min-h-9 max-h-32 select-text overflow-auto whitespace-pre-wrap break-words rounded border border-shell-divider bg-shell-surface p-2 text-xs text-shell-muted">
-          {job.log_tail?.join('\n') ?? data.log}
-        </pre>
+        <ScrollFade className="min-h-9 max-h-32 rounded border border-shell-divider bg-shell-surface p-2">
+          <pre className="select-text whitespace-pre-wrap break-words text-xs text-shell-muted">{job.log_tail?.join('\n') ?? data.log}</pre>
+        </ScrollFade>
       </section>
     </>
   );

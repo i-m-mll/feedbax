@@ -393,6 +393,8 @@
     "inspectorLabelsAbove": "Labels Above",
     "valueMarkHover": "Hover Marks",
     "valueMarkQuiet": "Quiet Marks",
+    "sectionChevronAfterName": "Chevron After",
+    "sectionChevronEdge": "Chevron Edge",
     "addAttachment": "Add Attachment"
   },
   "unit": {

@@ -756,7 +756,7 @@ function MapLine({
     return { ...choose, ...stepGestures(rename, enterStep, stepId, 'line', choose.onKeyDown) };
   };
   return (
-    <div className="flex items-center gap-2 overflow-auto p-2">
+    <ScrollFade axis="x" className="flex items-center gap-2 p-2">
       {groups.map((steps, index) => (
         <div key={index} className="flex shrink-0 items-center gap-2">
           {index > 0 && <ChevronRight aria-hidden="true" className="h-4 w-4 text-shell-muted" />}
@@ -783,7 +783,7 @@ function MapLine({
           ))}
         </div>
       ))}
-    </div>
+    </ScrollFade>
   );
 }
 

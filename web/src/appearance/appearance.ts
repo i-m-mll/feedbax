@@ -17,6 +17,9 @@ export const comparisonChoices = {
   unchecked: { initial: 'hollow', commands: { hollow: 'uncheckedHollow', badge: 'uncheckedBadge' } },
   'inspector-labels': { initial: 'beside', commands: { beside: 'inspectorLabelsBeside', above: 'inspectorLabelsAbove' } },
   'value-mark': { initial: 'hover', commands: { hover: 'valueMarkHover', quiet: 'valueMarkQuiet' } },
+  'section-chevron': {
+    initial: 'after-name', commands: { 'after-name': 'sectionChevronAfterName', edge: 'sectionChevronEdge' },
+  },
 } as const;
 
 export const appearanceChoices = { ...settingChoices, ...comparisonChoices } as const;

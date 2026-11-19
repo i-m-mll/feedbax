@@ -1,5 +1,5 @@
 import { useMemo, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { Section, type SectionProps } from '@/components/ui/Section';
+import { Section, SectionStack, type SectionProps } from '@/components/ui/Section';
 import {
   sectionOpen, withSectionOpen, type ProjectWindowSection, type ProjectWindowState,
 } from './projectWindowState';
@@ -21,7 +21,7 @@ export function useDrawerSections(
 
 /** A drawer's body: a stack of sections that share its height. */
 export function Drawer({ children }: { children: ReactNode }) {
-  return <div data-drawer-sections className="flex h-full min-h-0 flex-col">{children}</div>;
+  return <SectionStack>{children}</SectionStack>;
 }
 
 export interface DrawerSectionProps extends Omit<SectionProps, 'open' | 'defaultOpen' | 'onOpenChange'> {
