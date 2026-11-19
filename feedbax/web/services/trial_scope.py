@@ -166,6 +166,10 @@ def _overlap(left: str, right: str) -> bool:
     return left == right or left.startswith(right + "/") or right.startswith(left + "/")
 
 
+def _covers(outer: str, inner: str) -> bool:
+    return inner == outer or inner.startswith(outer + "/")
+
+
 def _step_difference(project: Project, step: str, document: str, local: list[DocumentEdit]) -> StudioProjectFilePatch:
     authored = project.steps[step]
     differences = authored.model_dump(mode="json")["document_overrides"]
@@ -209,7 +213,8 @@ def document_files(
                 elif any(requested.path != edit.path or edit.op != "replace" for requested in affected):
                     raise ProjectFolderInvalid(f"{step} has an overlapping document difference.")
         else:
-            local = [*previous, *edits]
+            local = [*(edit for edit in previous if not any(_covers(requested.path, edit.path) for requested in edits)),
+                     *edits]
         if local != previous:
             files.append(_step_difference(project, step, document, local))
     return files

@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from pydantic import Field, JsonValue
 import pytest
 
+from feedbax.contracts.project import document_edit_ops
 from feedbax._atomic import write_bytes_atomic
 from feedbax import project_folder
 from feedbax.contracts import project_plan, request_identity
@@ -1505,6 +1506,9 @@ def test_a_training_document_edit_reaches_the_lit_steps(tmp_path):
         batches = {key.step: definition.payload["training_config"]["n_batches"]
                    for key, definition in plan.selected_definitions.items()}
         assert batches == {"train": 6, "other": 5}
+        train.number("train", _BATCHES, {"kind": "text", "text": "7"})
+        overrides = document_edit_ops(load_text_project(root).project.steps["train"].document_overrides["training"])
+        assert [(edit.path, edit.value) for edit in overrides] == [("/training_config/n_batches", 7)]
 
         run = {"variant": "default", "step": "train", "row": min(key.row for key in train.requests("train"))}
         def batches_field(lit):
