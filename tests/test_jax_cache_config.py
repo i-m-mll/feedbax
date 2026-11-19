@@ -107,7 +107,7 @@ def test_shared_cache_lifecycle(tmp_path, outcome, workers, override, returncode
     repo = Path(__file__).resolve().parents[1]
     corpus = tmp_path / "corpus"
     corpus.mkdir()
-    subprocess.run(["git", "init", "-q", str(corpus)], check=True, timeout=10)
+    subprocess.run(["git", "init", "-q", str(corpus)], check=True, timeout=HANG_SECONDS)
     records = tmp_path / "records"
     records.mkdir()
     (corpus / "conftest.py").write_text(_CONFTEST)
