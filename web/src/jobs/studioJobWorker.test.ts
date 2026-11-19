@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { StudioJobWorkerCommand, StudioJobWorkerMessage } from './studioJobConnection';
 
 class EventStream {
+  static readonly CLOSED = 2;
+  readyState = 0;
   closed = false;
   onopen?: () => void;
   onerror?: () => void;
@@ -57,6 +59,27 @@ const jobs = (cursor: number) => ({
   request_id: 'fit',
   kind: 'progress',
   data: {},
+});
+
+it('reopens a stream the browser closed, after the last event it delivered', () => {
+  vi.useFakeTimers();
+  try {
+    const training = attach({ type: 'subscribe', projectId: 'training' });
+    const [first] = streams;
+    first.onopen!();
+    first.emit('message', jobs(4));
+    first.readyState = EventStream.CLOSED;
+    first.onerror!();
+    expect(training.messages()).toContainEqual({ type: 'state', state: 'disconnected' });
+    expect(streams).toHaveLength(1);
+    vi.advanceTimersByTime(250);
+    expect(streams).toHaveLength(2);
+    expect(streams[1].query().get('after')).toBe('4');
+    streams[1].onopen!();
+    expect(training.messages().at(-1)).toEqual({ type: 'state', state: 'connected' });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 const revision = (id: string, content = 'a') => ({

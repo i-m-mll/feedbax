@@ -452,6 +452,7 @@ export interface StudioLocalSession {
 export interface StudioRemoteSession {
   id: string;
   name: string;
+  profile: string;
   state: "queued" | "opening" | "open" | "closing" | "unreachable" | "off";
   hourly_microusd: number;
   estimated_cost_microusd: number;
@@ -4988,6 +4989,7 @@ export const StudioRemoteSessionSchema: z.ZodType<StudioRemoteSession> = z.lazy(
     .object({
       "id": z.string().uuid(),
       "name": z.string(),
+      "profile": z.string().min(1),
       "state": z.union([z.literal("queued"), z.literal("opening"), z.literal("open"), z.literal("closing"), z.literal("unreachable"), z.literal("off")]),
       "hourly_microusd": z.number().int().safe().gte(0),
       "estimated_cost_microusd": z.number().int().safe().gte(0),

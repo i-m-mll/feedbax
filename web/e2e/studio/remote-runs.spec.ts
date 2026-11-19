@@ -5,7 +5,7 @@ import type {
   StudioActivityJob, StudioJobEventHistory, StudioJobSnapshot, StudioMachineApprovalReceipt, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { pick } from './fixtures/controls';
+import { pick, popupListbox } from './fixtures/controls';
 
 test.use({ studioBackend: 'remote' });
 
@@ -25,8 +25,12 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   const machine = page.getByRole('combobox', { name: 'Machine' });
-  await expect(machine).toHaveText(/^This Mac/);
-  await pick(machine, /^Rehearsal Machine/);
+  await expect(machine).toHaveText('This Mac');
+  await expect(machine.getByRole('img')).toHaveCount(0);
+  await machine.click();
+  await expect(popupListbox(page).getByRole('option')).toHaveText(['This Mac', 'Rehearsal Machine']);
+  await page.keyboard.press('Escape');
+  await pick(machine, 'Rehearsal Machine');
   const run = page.getByRole('button', { name: 'Run', exact: true });
   await run.click();
   const approval = page.getByRole('dialog', { name: 'Needs approval' });
@@ -67,12 +71,25 @@ test('Machine approval reviews the saved selection and collects the remote resul
         expect(approvalReceipt).toEqual({ session_id: expect.any(String) });
         await expect(approval).toBeHidden();
         await expect(runs.getByText('Queued', { exact: true })).toBeVisible();
+        await expect(machine.getByRole('img', { name: 'Queued', exact: true })).toBeVisible();
         expect(await readdir(join(fixtureRoot, 'venues'))).toEqual([]);
       } finally {
         await unlink(queueGate);
       }
       await expect(runs.getByRole('cell', { name: 'Starting', exact: true }))
         .toHaveAccessibleDescription('Opening machine: starting the worker service');
+      const opening = machine.getByRole('img', { name: 'Opening', exact: true });
+      await expect(machine).toHaveText('Rehearsal Machine');
+      await expect(opening).toHaveAttribute('data-app-tip', 'Opening · Starting the worker service');
+      await machine.click();
+      await expect(popupListbox(page).getByRole('option', { name: 'Rehearsal Machine Opening', exact: true })
+        .getByRole('img', { name: 'Opening', exact: true })).toBeVisible();
+      await page.keyboard.press('Escape');
+      const spin = () => opening.locator('svg').evaluate((svg) => getComputedStyle(svg).animationName);
+      expect(await spin()).not.toBe('none');
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      expect(await spin()).toBe('none');
+      await page.emulateMedia({ reducedMotion: null });
       expect(await attempts()).toEqual([]);
     } finally {
       await unlink(openingGate);
@@ -282,16 +299,18 @@ test('The Machine picker follows provider failure and recovery without reload', 
   await mapStep(page, 'train').click();
   const machine = page.getByRole('combobox', { name: 'Machine' });
   const run = page.getByRole('button', { name: 'Run', exact: true });
-  await pick(machine, 'Rehearsal Machine · Ready');
+  await pick(machine, 'Rehearsal Machine');
   await writeFile(outage, '');
   try {
     await run.click();
-    await expect(machine).toHaveText('Rehearsal Machine · Unreachable');
-    await expect(machine).toHaveAccessibleDescription('The provider did not answer.');
+    await expect(machine).toHaveText('Rehearsal Machine');
+    await expect(machine.getByRole('img', { name: 'Unreachable', exact: true }))
+      .toHaveAttribute('data-app-tip', 'Unreachable · The provider did not answer.');
+    await expect(machine).toHaveAccessibleDescription('Unreachable · The provider did not answer.');
     await expect(run).toBeDisabled();
   } finally {
     await unlink(outage);
   }
-  await expect(machine).toHaveText('Rehearsal Machine · Ready', { timeout: 12_000 });
+  await expect(machine.getByRole('img')).toHaveCount(0, { timeout: 12_000 });
   await expect(run).toBeEnabled();
 });

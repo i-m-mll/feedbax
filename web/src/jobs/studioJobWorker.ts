@@ -10,6 +10,7 @@ import type {
   StudioJobWorkerCommand,
   StudioJobWorkerMessage,
 } from './studioJobConnection';
+import { reconnectDelay } from '@/api/backoff';
 
 const worker = self as unknown as SharedWorkerGlobalScope;
 type Subscription =
@@ -22,6 +23,8 @@ let subscription = '';
 let cursor = 0;
 let connection: StudioJobConnection = 'connecting';
 let foldersReady = false;
+let reopenAttempt = 0;
+let reopenTimer: ReturnType<typeof setTimeout> | undefined;
 
 function broadcastJobs(message: StudioJobWorkerMessage) {
   for (const [port, topic] of subscriptions) {
@@ -39,6 +42,16 @@ function setConnection(next: StudioJobConnection) {
   broadcastJobs({ type: 'state', state: next });
 }
 
+/** Closes a failed stream and opens it again after the next backoff step. */
+function lose(stream: EventSource) {
+  stream.close();
+  source = null;
+  foldersReady = false;
+  setConnection('disconnected');
+  clearTimeout(reopenTimer);
+  reopenTimer = setTimeout(() => reconcile(true), reconnectDelay(reopenAttempt++));
+}
+
 function reconcile(force = false) {
   const projects = new Set<string>();
   const folders = new Set<string>();
@@ -49,6 +62,8 @@ function reconcile(force = false) {
   const selected = JSON.stringify([[...projects].sort(), [...folders].sort()]);
   if (subscriptions.size && source && selected === subscription && !force) return;
   subscription = selected;
+  clearTimeout(reopenTimer);
+  reopenTimer = undefined;
   source?.close();
   source = null;
   foldersReady = false;
@@ -67,21 +82,23 @@ function reconcile(force = false) {
     try {
       receive(JSON.parse(event.data));
     } catch {
-      stream.close();
-      source = null;
-      foldersReady = false;
-      setConnection('disconnected');
+      lose(stream);
     }
   };
   stream.onopen = () => {
     if (source !== stream) return;
     foldersReady = false;
+    reopenAttempt = 0;
     setConnection('connected');
   };
   stream.onerror = () => {
     if (source !== stream) return;
-    foldersReady = false;
-    setConnection('disconnected');
+    // The browser retries a stream that lost its connection; one it closed is reopened here.
+    if (stream.readyState === EventSource.CLOSED) lose(stream);
+    else {
+      foldersReady = false;
+      setConnection('disconnected');
+    }
   };
   stream.onmessage = read((data) => {
     const event = StudioJobEventSchema.parse(data);

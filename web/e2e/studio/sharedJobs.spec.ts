@@ -268,6 +268,40 @@ test('opens a ninth project window while one stream serves active projects', { t
   }
 });
 
+test('reads Connecting while the event stream is refused and catches up when it returns', async ({ page, request, baseURL }) => {
+  test.setTimeout(40_000);
+  if (!baseURL) throw new Error('The real Studio origin is required');
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const observer = await observeJobStreams(baseURL);
+  const bar = page.locator('[data-studio-focus-region="bottom"]');
+  const card = page.locator('[data-map-step="train"]');
+  try {
+    await page.goto(observer.origin + '/?project=' + snapshot.project_id);
+    await mapStep(page, 'train').click();
+    await expect(card.locator('[data-status-mark="not_run"]')).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Machine' })).toBeEnabled();
+    observer.blockStreams(true);
+    await expect(bar.getByRole('status')).toHaveText('Connecting', { timeout: 2_000 });
+    await expect(page.getByRole('combobox', { name: 'Machine' })).toBeDisabled();
+    const admission = await request.post(`${projectPath}/train-runs`, { data: {
+      token: 'stream-refused', revision: snapshot.revision,
+      run_keys: [{ variant: 'default', step: 'train', row: 'default' }],
+    } });
+    expect(admission.status(), await admission.text()).toBe(202);
+    await expect.poll(async () => (await projectJobs(request, snapshot.project_id)).map(({ status }) => status),
+      { timeout: firstJobTimeout }).toEqual(['succeeded']);
+    await expect(bar.getByRole('status')).toHaveText('Connecting');
+    await expect(bar.getByRole('alert')).toHaveCount(0);
+    await expect(card.locator('[data-status-mark="succeeded"]')).toHaveCount(0);
+    observer.blockStreams(false);
+    await expect(card.locator('[data-status-mark="succeeded"]')).toBeVisible({ timeout: 8_000 });
+    await expect(bar.getByRole('status')).toHaveCount(0);
+  } finally {
+    await drainProjects(request, [snapshot.project_id]);
+    await observer.close();
+  }
+});
+
 test('names an unreadable run only in its own project window', async ({
   context, page, request, baseURL, studio,
 }) => {

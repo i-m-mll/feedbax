@@ -1,14 +1,16 @@
 import { appTip } from '@window-shell/browser/tooltip';
 import { Monitor } from 'lucide-react';
 import { useId, type ReactNode } from 'react';
-import { studioDateTime, studioMachineStatus, studioMoney, studioName, studioRunStatus, studioUnit } from '@/components/activity/studioVocabulary';
+import { studioDateTime, studioMachineStatus, studioMoney, studioName, studioOpeningStep, studioRunStatus, studioUnit } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import type { BarControl } from '@/components/ui/CommandBar';
 import { Dialog } from '@/components/ui/Dialog';
 import { MenuGroup, MenuGroupLabel, MenuRadioGroup, MenuRadioItem } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
+import { StatusMark, type MachineMarkStatus } from '@/components/ui/StatusMark';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
-import type { ExecutionTargets, StudioMachineQuote } from '@/generated/studioContracts';
+import type { ExecutionTargets, StudioMachineQuote, StudioRemoteSession, TargetOption } from '@/generated/studioContracts';
+import { useStudioJobs } from '@/hooks/useStudioJobs';
 
 interface MachineProps {
   catalog?: ExecutionTargets;
@@ -17,40 +19,77 @@ interface MachineProps {
   onChange: (value: string) => void;
 }
 
-function machineChoices({ catalog, value }: Pick<MachineProps, 'catalog' | 'value'>) {
+type MachineState = 'ready' | 'queued' | 'opening' | 'closing' | 'unreachable' | 'off';
+
+const machineMarks = {
+  ready: undefined, queued: 'busy', opening: 'busy', closing: 'busy', unreachable: 'unreachable', off: 'off',
+} as const satisfies Record<MachineState, MachineMarkStatus | undefined>;
+
+const busyStates: readonly MachineState[] = ['opening', 'queued', 'closing'];
+
+interface MachineChoice {
+  value: string;
+  label: string;
+  state: MachineState;
+  /** The opening step or the reason, when there is one. */
+  detail?: string;
+  disabled: boolean;
+}
+
+function profileState(profileId: string, availability: TargetOption['availability'], sessions: readonly StudioRemoteSession[]) {
+  if (availability.state !== 'ready') return { state: availability.state, detail: availability.reason };
+  const mine = sessions.filter((session) => session.profile === profileId);
+  const session = busyStates.map((state) => mine.find((candidate) => candidate.state === state)).find(Boolean);
+  if (!session) return { state: 'ready' as const };
+  const step = session.state === 'opening' ? session.opening_observations?.at(-1)?.step : undefined;
+  return { state: session.state as MachineState, detail: step && studioOpeningStep(step) };
+}
+
+function useMachineChoices({ catalog, value }: Pick<MachineProps, 'catalog' | 'value'>) {
+  const sessions = useStudioJobs().data?.sessions
+    .filter((session): session is StudioRemoteSession => 'profile' in session) ?? [];
   const local = catalog?.default ?? 'local';
   const selection = value ?? local;
-  const current = catalog?.targets.find(({ profile }) => profile.id === selection);
-  const unavailable = current && current.availability.state !== 'ready' ? current.availability : undefined;
-  const items = [
+  const known = catalog?.targets.some(({ profile }) => profile.id === selection);
+  const items: MachineChoice[] = [
     ...catalog?.targets.map(({ profile, availability }) => ({
-      value: profile.id, label: `${profile.label} · ${studioMachineStatus(availability.state)}`,
-      disabled: availability.state !== 'ready',
-    })) ?? [{ value: local, label: studioName('thisMac'), disabled: false }],
-    ...selection !== local && !current ? [{ value: selection, label: studioMachineStatus('off'), disabled: true }] : [],
+      value: profile.id, label: profile.label, disabled: availability.state !== 'ready',
+      ...profileState(profile.id, availability, sessions),
+    })) ?? [{ value: local, label: studioName('thisMac'), state: 'ready' as const, disabled: false }],
+    ...selection !== local && !known ? [{ value: selection, label: selection, state: 'off' as const, disabled: true }] : [],
   ];
-  return { selection, unavailable, items };
+  return { selection, items, current: items.find((item) => item.value === selection) };
+}
+
+function MachineMark({ state, detail }: Pick<MachineChoice, 'state' | 'detail'>) {
+  const mark = machineMarks[state];
+  if (!mark) return null;
+  const word = studioMachineStatus(state);
+  return <StatusMark status={mark} label={word} tip={detail ? `${word} · ${detail}` : word} />;
 }
 
 function StudioRunMachine({ catalog, value, disabled, onChange }: MachineProps) {
-  const { selection, unavailable, items } = machineChoices({ catalog, value });
+  const { selection, items, current } = useMachineChoices({ catalog, value });
   const id = useId();
+  const described = current && current.state !== 'ready';
   return <div className="flex shrink-0" {...appTip(studioName('machine'))}>
     <Select value={selection} disabled={disabled} aria-label={studioName('machine')}
-      aria-describedby={unavailable ? id : undefined} className="max-w-48"
-      leading={<Monitor aria-hidden="true" />} onValueChange={onChange} items={items} />
-    {unavailable && <span id={id} className="sr-only">
-      {unavailable.reason}
+      aria-describedby={described ? id : undefined} className="max-w-48"
+      leading={<Monitor aria-hidden="true" />} onValueChange={onChange}
+      items={items.map((item) => ({ ...item, mark: <MachineMark {...item} /> }))} />
+    {described && <span id={id} className="sr-only">
+      {[studioMachineStatus(current.state), current.detail].filter(Boolean).join(' · ')}
     </span>}
   </div>;
 }
 
 function StudioRunMachineMenu({ catalog, value, disabled, onChange }: MachineProps) {
-  const { selection, items } = machineChoices({ catalog, value });
+  const { selection, items } = useMachineChoices({ catalog, value });
   return <MenuGroup>
     <MenuGroupLabel>{studioName('machine')}</MenuGroupLabel>
     <MenuRadioGroup value={selection} onValueChange={(next: string) => onChange(next)} disabled={disabled}>
-      {items.map((item) => <MenuRadioItem key={item.value} value={item.value} disabled={item.disabled}>{item.label}</MenuRadioItem>)}
+      {items.map((item) => <MenuRadioItem key={item.value} value={item.value} disabled={item.disabled}
+        mark={<MachineMark {...item} />}>{item.label}</MenuRadioItem>)}
     </MenuRadioGroup>
   </MenuGroup>;
 }

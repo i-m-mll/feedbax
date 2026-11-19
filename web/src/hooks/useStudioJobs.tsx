@@ -24,7 +24,7 @@ import {
   type StudioJobWorkerCommand,
   type StudioJobWorkerMessage,
 } from '@/jobs/studioJobConnection';
-import { serviceDidNotRespond, serviceResponded, subscribeConnection, getConnection } from '@/api/connection';
+import { serviceDidNotRespond, serviceResponded, streamChanged } from '@/api/connection';
 import JobsWorker from '@/jobs/studioJobWorker?sharedworker';
 
 const jobsKey = ['studio-jobs'] as const;
@@ -67,7 +67,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
     let historyReady = false;
     let snapshotReady = false;
     let machineUpdatePending = false;
-    let streamDown = false;
+    let streamLost = false;
     let historyCursors = new Map<string, number>();
     let announcedThrough = 0;
     const statuses = new Map<string, StudioActivityJob['status']>();
@@ -213,12 +213,17 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
             void hydrate(true);
             break;
           case 'state':
-            streamDown = data.state === 'disconnected';
-            if (streamDown) {
+            streamChanged(data.state === 'connected');
+            if (data.state === 'disconnected') {
+              streamLost = true;
               snapshotReady = false;
               serviceDidNotRespond();
             }
-            if (data.state === 'connected') serviceResponded();
+            if (data.state === 'connected') {
+              serviceResponded();
+              if (streamLost) warm();
+              streamLost = false;
+            }
             if (data.state === 'connected' && !snapshotReady && buffered === null) void hydrate();
             break;
           case 'event':
@@ -270,9 +275,6 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       }
     }
     retry.current = retryConnection;
-    const stopReconnecting = ownsSnapshot ? subscribeConnection(() => {
-      if (streamDown && getConnection().kind === 'connected') retryConnection();
-    }) : undefined;
     open();
     window.addEventListener('pagehide', close);
     window.addEventListener('pageshow', open);
@@ -282,7 +284,6 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
       window.removeEventListener('pageshow', open);
       window.removeEventListener('studio-native-reconnected', retryConnection);
       retry.current = null;
-      stopReconnecting?.();
       close();
     };
   }, [cache, ownsSnapshot, parentRefresh, projectId]);

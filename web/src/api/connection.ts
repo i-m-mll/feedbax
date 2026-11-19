@@ -1,8 +1,11 @@
 import { useSyncExternalStore } from 'react';
+import { reconnectDelay } from './backoff';
 
 /**
- * The window's connection to the Studio service, derived from requests that got no response.
- * `since` is when the window last stopped being connected: page load, or the loss.
+ * The window's connection to the Studio service. It is connected only while its requests are
+ * answered and its event stream is open; it is unreachable while a request goes unanswered and
+ * the service's health does not answer either. `since` is when the window last stopped being
+ * connected: page load, or the loss.
  */
 export type StudioConnection =
   | { kind: 'connected' }
@@ -10,11 +13,12 @@ export type StudioConnection =
   | { kind: 'unreachable'; since: number };
 
 export const connectionGraceMs = 1000;
-const probeDelays = [250, 500, 1000, 2000, 4000] as const;
 const probeTimeoutMs = 5000;
 
 let state: StudioConnection = { kind: 'connecting', since: Date.now() };
 let probing = false;
+let probeFailed = false;
+let streamOpen = false;
 let attempt = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 const listeners = new Set<() => void>();
@@ -22,6 +26,12 @@ const listeners = new Set<() => void>();
 function publish(next: StudioConnection) {
   state = next;
   for (const listener of listeners) listener();
+}
+
+function settle() {
+  const kind = probing ? probeFailed ? 'unreachable' : 'connecting' : streamOpen ? 'connected' : 'connecting';
+  if (kind === state.kind) return;
+  publish(kind === 'connected' ? { kind } : { kind, since: state.kind === 'connected' ? Date.now() : state.since });
 }
 
 function schedule(delay: number) {
@@ -37,25 +47,33 @@ async function probe() {
     serviceResponded();
   } catch {
     if (!probing) return;
-    if (state.kind !== 'unreachable') publish({ kind: 'unreachable', since: state.kind === 'connected' ? Date.now() : state.since });
-    schedule(probeDelays[Math.min(++attempt, probeDelays.length - 1)]);
+    probeFailed = true;
+    settle();
+    schedule(reconnectDelay(++attempt));
   }
 }
 
 export function serviceResponded() {
   probing = false;
+  probeFailed = false;
   attempt = 0;
   clearTimeout(timer);
   timer = undefined;
-  if (state.kind !== 'connected') publish({ kind: 'connected' });
+  settle();
 }
 
 export function serviceDidNotRespond() {
   if (probing) return;
   probing = true;
   attempt = 0;
-  if (state.kind === 'connected') publish({ kind: 'connecting', since: Date.now() });
-  schedule(probeDelays[0]);
+  settle();
+  schedule(reconnectDelay(0));
+}
+
+/** Records whether the window's event stream is open; the stream reopens itself. */
+export function streamChanged(open: boolean) {
+  streamOpen = open;
+  settle();
 }
 
 /** Tries the service now instead of at the next backoff step. */
