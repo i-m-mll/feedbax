@@ -173,7 +173,9 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   await expect(page.getByRole('article', { name: 'Report report', exact: true })).not.toHaveAttribute('data-map-related', /.+/);
   await activate(page, sourceRow(0));
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
-  await expect(inspector.getByRole('heading', { name: prefix[0].label, exact: true })).toBeVisible();
+  // The inspector is titled by the run's step and its sweep values.
+  expect(prefix[0].label).toBe('learning-rate=0.001');
+  await expect(inspector.getByRole('heading', { name: 'train · learning-rate 0.001', exact: true })).toBeVisible();
   for (const [step, kind, count] of [[pairedStep, 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
     await expect(used.filter({ hasText: step })).toHaveCount(1);
     await expect(outline.getByRole('treeitem', { name: new RegExp(`^${step}\\b`) })).toHaveAccessibleDescription(count);

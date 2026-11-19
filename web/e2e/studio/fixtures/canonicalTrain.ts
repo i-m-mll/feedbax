@@ -55,6 +55,15 @@ export function runName(label: string) {
   return new RegExp(`^\\d+ ${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 }
 
+type RowKey = { readonly variant: string; readonly step: string; readonly row: string };
+
+/** The label the Runs table draws for a saved row: a step's only run in its variant is named by its step. */
+export function drawnRunLabel(rows: readonly { key: RowKey; label: string }[], key: RowKey) {
+  const siblings = rows.filter((row) => row.key.variant === key.variant && row.key.step === key.step);
+  if (siblings.length === 1) return key.step;
+  return siblings.find((row) => row.key.row === key.row)!.label;
+}
+
 export function mapStep(page: Page, stepId: string) {
   return page.locator(`[data-map-step="${stepId}"] button[data-canvas-focus]`);
 }

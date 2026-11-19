@@ -261,9 +261,11 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   if (grouped) {
     await expect(per).toBeChecked();
     await expect(inputs).toContainText('Per replicate');
-    await expect(inputs.getByRole('list')).toHaveCount(2);
-    await expect(inputs.getByRole('list').nth(0)).toHaveAccessibleName(`Members ${groupLabels[0]}`);
-    await expect(inputs.getByRole('list').nth(1)).toHaveAccessibleName(`Members ${groupLabels[1]}`);
+    // The inspector also lists the step's inputs and lineage; the subset's members are the lists named Members.
+    const memberGroups = inputs.getByRole('list', { name: /^Members\b/ });
+    await expect(memberGroups).toHaveCount(2);
+    await expect(memberGroups.nth(0)).toHaveAccessibleName(`Members ${groupLabels[0]}`);
+    await expect(memberGroups.nth(1)).toHaveAccessibleName(`Members ${groupLabels[1]}`);
   }
   for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
   const waiting = await readPlan();
@@ -600,7 +602,8 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await model.getByRole('article', { name: 'Plant', exact: true }).locator('header').click();
   const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
-  await expect(mass).toHaveAccessibleDescription('Document · reach-model');
+  // The value comes from the inspected document itself, so the field names no source.
+  await expect(mass).toHaveAccessibleDescription('');
   await page.getByRole('article', { name: 'Train train', exact: true })
     .getByRole('button', { name: 'Select learning-rate 0.003', exact: true }).click();
   await model.focus();

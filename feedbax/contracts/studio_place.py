@@ -118,5 +118,6 @@ def definition_place(
         case "params" if rest[:1] == ("variation",):
             return StudioModelPlace(part="model", document=None, member=member)
     if member is not None:
-        return StudioModelPlace(part="model", document=None, member=member)
+        model = document("payload.trial_documents.model") or document("payload.graph")
+        return StudioModelPlace(part="model", document=model, member=member)
     return StudioStepPlace(part="step", field=field)
