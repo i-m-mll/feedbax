@@ -24,7 +24,9 @@ from feedbax.web.app import create_app
 from tests.support import minimal_worker
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_desktop_project_open import _desktop_clients
-from tests.support.host import admit, private_host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import (
+    HELD_UNTIL_STOPPED, admit, held_until_released, job_row, private_host as host_fixture, restart, run_job, wait_until,
+)
 from tests.support.hang import HANG_SECONDS
 
 host = host_fixture
@@ -59,8 +61,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
     foreign_hold = tmp_path / "foreign-release"
     foreign = run_job(
         "foreign",
-        f"from pathlib import Path; from time import sleep\n"
-        f"while not Path({str(foreign_hold)!r}).exists(): sleep(.02)",
+        held_until_released(foreign_hold),
         slot="light",
     )
     admit(host, "foreign", foreign)
@@ -101,8 +102,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert browser.post(f"{ACTIVITY}/stop", headers=origin, json={"mode": "force"}).status_code == 403
 
         hold = tmp_path / "release"
-        gate = run_job("unrelated", f"from pathlib import Path; from time import sleep\n"
-                       f"while not Path({str(hold)!r}).exists(): sleep(.02)")
+        gate = run_job("unrelated", held_until_released(hold))
         host.policy(compute=1)
         admit(host, "gate", gate)
         wait_until(lambda: job_row(host, gate.id, "running"))
@@ -159,7 +159,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
             host.admit(name, [AdmissionItem(job.id, job)], record={"target": job.data["target"]})
             return job
 
-        probe = admit_probe("stubborn", "import time; time.sleep(40)")
+        probe = admit_probe("stubborn", HELD_UNTIL_STOPPED)
         wait_until(lambda: job_row(host, probe.id, "running"))
         assert control.post(f"{ACTIVITY}/stop", json={"mode": "force"}).status_code == 200
         wait_until(lambda: job_row(host, probe.id)["outcome"])
@@ -175,7 +175,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert observed["terminal"]["id"] == failed_probe.id
         assert observed["terminal"]["status"] == "failed"
 
-        stubborn = admit_probe("quit-escalation", "import time; time.sleep(40)")
+        stubborn = admit_probe("quit-escalation", HELD_UNTIL_STOPPED)
         wait_until(lambda: job_row(host, stubborn.id, "running"))
         with ThreadPoolExecutor(max_workers=1) as executor:
             quitting = executor.submit(control.post, "/_desktop/stop", json={"disposition": "checkpoint"})
@@ -300,7 +300,9 @@ def test_warming_after_restart_keeps_one_idle_worker_for_the_next_train(host, tm
         assert len(idle) == 1, f"The pool keeps {len(idle)} idle workers of the Train profile, not one."
 
 
-def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_host(tmp_path, monkeypatch):
+def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_host(
+    tmp_path, monkeypatch, private_hosts,
+):
     from feedbax.host.io import append
     from feedbax.jobs import JobService
     from feedbax.web.services.desktop_jobs import StudioJobLifecycle
@@ -310,7 +312,7 @@ def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_h
     runtime = os.path.realpath(sys.executable)
     release = Path(runtime).parent.parent
     monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(release))
-    host = HostClient(tmp_path / "host")
+    host = HostClient(private_hosts / "host")
     owner = host.ping()["pid"]
     attempt = replace(
         Job("attempt", "project", "train:attempt", minimal_worker.launch(tmp_path)),
@@ -353,7 +355,7 @@ def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_h
     "An owned Host exits under a running real Train, and the Train resumes from its checkpoint "
     "on a new Host."
 )
-def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch):
+def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch, private_hosts):
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.host import HostError
     from feedbax.host.process import process_group_member_pids
@@ -363,7 +365,7 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
     from feedbax.training.method_checkpoint import read_method_checkpoint
     from feedbax.web.services.project_folder import ProjectFolderService
 
-    root = tmp_path / "host"
+    root = private_hosts / "host"
     runtime = os.path.realpath(sys.executable)
     release = Path(runtime).parent.parent
     monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(release))
@@ -439,13 +441,23 @@ ready, released = map(Path, sys.argv[1:])
 
 class Server:
     started = False
-    should_exit = False
+
+    def __init__(self):
+        self.exit = asyncio.Event()
+
+    @property
+    def should_exit(self):
+        return self.exit.is_set()
+
+    @should_exit.setter
+    def should_exit(self, value):
+        if value:
+            self.exit.set()
 
     async def serve(self, *, sockets):
         self.started = True
         ready.touch()
-        while not self.should_exit:
-            await asyncio.sleep(0.01)
+        await self.exit.wait()
         assert released.exists()
 
 class Runtime:

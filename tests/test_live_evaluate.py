@@ -46,7 +46,7 @@ def test_live_evaluate_replays_prefix_and_backfills_exact_interrupted_checkpoint
     (tmp_path / "stop_at_publication.py").write_text("""
 import os
 from pathlib import Path
-from time import monotonic, sleep
+import threading
 
 from feedbax.training_host_worker import _Events
 
@@ -60,10 +60,7 @@ def append(self, kind, data, **kwargs):
         return
     signal = Path(os.environ["CUT_MARKER"])
     signal.touch()
-    deadline = monotonic() + 20
-    while monotonic() < deadline:
-        sleep(.01)
-    raise TimeoutError("expected worker-loss injection")
+    threading.Event().wait()
 
 _Events.append = append
 """)

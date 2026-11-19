@@ -20,7 +20,7 @@ from feedbax.orchestration.runpod import SubprocessRunPodTransport
 from feedbax.orchestration.session_jobs import SessionJobs
 from feedbax.persistence.ssh_store import SSHStoreConnection
 from tests.support.session_venue import LocalVenueProvider
-from tests.support.host import admit, job_row, run_job, wait_until
+from tests.support.host import admit, held_until_released, job_row, run_job, wait_until
 from tests.test_session_rehearsal import _authorization, _driver, _jobs, _request
 from tests.support.hang import HANG_SECONDS
 
@@ -119,16 +119,10 @@ def test_silent_runpod_ssh_stall_expires_and_replays_the_same_stream(tmp_path, m
         with _loopback_sshd(tmp_path) as port, socket.socket() as listener, ThreadPoolExecutor(2) as workers:
             listener.bind(("127.0.0.1", 0))
             listener.listen(1)
-            listener.settimeout(5)
+            listener.settimeout(HANG_SECONDS)
             monkeypatch.setattr(provider, "client", lambda _resource, _access: ssh_client(port))
             jobs = SessionJobs(driver, request.id, _jobs)
-            worker = run_job("held", f"""
-from pathlib import Path
-from time import sleep
-while not Path({str(release)!r}).exists():
-    sleep(0.02)
-print("finished", flush=True)
-""")
+            worker = run_job("held", held_until_released(release) + 'print("finished", flush=True)\n')
             admit(jobs.host, "one-job", worker)
             wait_until(lambda: job_row(jobs.host, worker.id, "running"))
             jobs.poll()
@@ -149,7 +143,8 @@ print("finished", flush=True)
                 elapsed = monotonic() - started
                 record_property("ssh_stall_seconds", round(elapsed, 3))
                 assert error.value.code == "disconnected" and 8 < elapsed <= 18
-                assert relay.result(timeout=3), "The peer closed before the SSH client detected the stall."
+                closed_by_client = relay.result(timeout=3)  # real clock: the relay sees the client close within 3 s
+                assert closed_by_client, "The peer closed before the SSH client detected the stall."
                 assert jobs.history.observation(request.id) == before
             finally:
                 finished.set()

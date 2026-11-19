@@ -25,7 +25,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.support.host import admit, job_row, restart, run_job, token, wait_until
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 from tests.support.finite_train import damaged_checkpoint_model, install_finite_gate
 
 
@@ -447,7 +447,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     host.policy(compute=1)
     release = tmp_path / "release-pinned"
     gate = run_job(
-        "hold-pinned", f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+        "hold-pinned", held_until_released(release),
         project=plan.project_id,
     )
     admit(host, token("hold-pinned"), gate)

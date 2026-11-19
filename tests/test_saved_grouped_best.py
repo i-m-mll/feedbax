@@ -25,7 +25,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.support.host import admit, job_row, restart, run_job, token, wait_until
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 from tests.test_saved_best_evaluate import authored_best
 
 
@@ -202,7 +202,7 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
         assert "/inputs/subject" not in origins
 
     release = tmp_path / "release"
-    gate = run_job("gate", f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+    gate = run_job("gate", held_until_released(release),
                    project=project)
     admit(host, token("gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))

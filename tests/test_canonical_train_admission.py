@@ -33,7 +33,7 @@ from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, verify_t
 from feedbax.validity.evidence import evidence_objects
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_payload
-from tests.support.host import admit, job_row, restart, run_job, token, wait_until
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 
 
 @pytest.mark.round(
@@ -85,7 +85,7 @@ def test_saved_train_admission_uses_exact_plan_request_through_terminal_custody(
     release = tmp_path / "release"
     gate = run_job(
         "gate",
-        f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+        held_until_released(release),
         project=project,
     )
     admit(host, "gate", gate)

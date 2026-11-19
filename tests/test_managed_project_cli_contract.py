@@ -21,7 +21,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.store_damage import writable_store_object
-from tests.support.host import admit, job_row, run_job, token, wait_until
+from tests.support.host import admit, held_until_released, job_row, run_job, token, wait_until
 from tests.test_text_project_plan_cli import _edit, _write_walkthrough
 
 
@@ -44,8 +44,7 @@ def test_managed_commands_share_http_contracts_and_exit_codes(host, tmp_path, mo
     host.policy(compute=1)
     gate = run_job(
         "cli-contract-gate",
-        f"from pathlib import Path\nimport time\n"
-        f"while not Path({str(release)!r}).exists(): time.sleep(.01)",
+        held_until_released(release),
     )
     admit(host, token("gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))

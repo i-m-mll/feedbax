@@ -6,8 +6,15 @@ fixed: it is started with the environment captured at session start, each test's
 is restored. A test that finds a different Host answering, or none, fails and the Host is replaced.
 `FEEDBAX_TEST_PRIVATE_HOSTS=1` gives every test its own Host through the same fixture.
 
-`private_host` is a Host of the test's own, started from the environment of the moment, for tests whose
-subject is the Host's life, its pool, or Host-wide state.
+A test starts a Host only where it has said it will. Every start by a `HostClient` in this process is
+recorded, and a test that is not marked `round` fails for each start at a root outside its `private_hosts`
+directory. `private_hosts` is where a test whose subject is a Host's start, life, pool, Host-wide state or
+environment starts its own Hosts, and it ends them afterwards; `private_host` is a started Host there. The
+support's own starts (the shared Host, its restart and replacement, and every Host under
+`FEEDBAX_TEST_PRIVATE_HOSTS=1`) are not client starts. A Host started by a child process of the test is the
+product's own and is not recorded; the session-end sweep fails the run if one is left.
+
+A job that holds its slot until released or stopped is `held_until_released` or `HELD_UNTIL_STOPPED`.
 
 Loaded as a plugin by `tests/conftest.py`, which also brings the follower-thread check, the session-end
 sweep of leaked processes and the `round` marker's rule.
@@ -17,6 +24,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import cache
+import asyncio
 import itertools
 import os
 from pathlib import Path
@@ -30,8 +38,7 @@ from typing import TypeVar
 import pytest
 
 from feedbax.host import AdmissionItem, HostClient, HostError, Job, Launch
-from feedbax.host.io import private_directory
-from feedbax.host.python import same_python_argv
+from feedbax.host import client as _client_module
 from tests.support.hang import HANG_SECONDS
 
 T = TypeVar("T")
@@ -52,6 +59,9 @@ class _Started:
 
 
 _started: dict[Path, _Started] = {}
+_launch_host = _client_module.launch_host
+_client_starts: list[Path] = []
+_declared: Path | None = None
 _listening: HostClient | None = None
 _namespace = ""
 _tests = itertools.count()
@@ -72,15 +82,18 @@ def _answering(root: Path) -> int | None:
         return None
 
 
+def _recorded_launch(root: Path, env: Mapping[str, str] | None = None) -> subprocess.Popen:
+    _client_starts.append(root.resolve())
+    return _launch_host(root, env)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    _client_module.launch_host = _recorded_launch
+
+
 def _launch(root: Path, env: Mapping[str, str]) -> _Started:
-    private_directory(root)
+    process = _launch_host(root, env)
     log_path = root / "host.log"
-    with log_path.open("ab") as log:
-        process = subprocess.Popen(
-            same_python_argv("-m", "feedbax.host", "--root", str(root)),
-            stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, env=dict(env),
-        )
-    threading.Thread(target=process.wait, daemon=True).start()
     deadline = time.monotonic() + HANG_SECONDS
     while (pid := _answering(root)) is None:
         if process.poll() is not None:
@@ -193,6 +206,41 @@ def wait_until(read: Callable[[], T]) -> T:
                     raise
                 cursor = None
         time.sleep(max(0.0, _STEP_SECONDS - (time.monotonic() - began)))
+
+
+async def wait_until_async(read: Callable[[], T]) -> T:
+    """Return the first truthy value of `read` within a running event loop, evaluating it every `_STEP_SECONDS`.
+
+    It fails after `HANG_SECONDS`.
+    """
+    deadline = time.monotonic() + HANG_SECONDS
+    while not (value := read()):
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"The expected state did not arrive within {HANG_SECONDS} s.")
+        await asyncio.sleep(_STEP_SECONDS)
+    return value
+
+
+def until_exists(*paths: str, indent: str = "") -> str:
+    """Source of a statement that waits until a file exists at one of `paths`, each a Python expression.
+
+    It goes into the source of a job or a worker module a test writes; `indent` prefixes each of its lines.
+    """
+    source = (
+        "import pathlib as _pathlib, time as _time\n"
+        f"while not any(_pathlib.Path(_path).exists() for _path in ({', '.join(paths)},)):\n"
+        f"    _time.sleep({_STEP_SECONDS / 2})\n"
+    )
+    return "".join(f"{indent}{line}\n" for line in source.splitlines())
+
+
+def held_until_released(release: Path) -> str:
+    """Source of a job that holds its slot until a file exists at `release`."""
+    return until_exists(repr(str(release)))
+
+
+HELD_UNTIL_STOPPED = "import threading\nthreading.Event().wait()\n"
+"""Source of a job that holds its slot until it is stopped."""
 
 
 def _head(client: HostClient) -> int | None:
@@ -336,16 +384,52 @@ def _serve(served: _Served, namespace: str) -> Iterator[HostClient]:
 
 
 @pytest.fixture
-def private_host(tmp_path) -> Iterator[HostClient]:
-    """A Host of the test's own, started on first use with the environment of the moment."""
-    client = HostClient(tmp_path / "host")
+def private_hosts(tmp_path) -> Iterator[Path]:
+    """The directory under which this test starts Hosts of its own; each is ended when the test ends."""
+    global _declared
+    directory = (tmp_path / "hosts").resolve()
+    directory.mkdir()
+    _declared = directory
+    yield directory
+    for root in dict.fromkeys(_client_starts):
+        if root.is_relative_to(directory) and (pid := _answering(root)) is not None:
+            _stop_live(_client(root))
+            _end(pid)
+
+
+@pytest.fixture
+def private_host(private_hosts) -> Iterator[HostClient]:
+    """A Host of the test's own under `private_hosts`, started with the environment of the moment."""
+    client = HostClient(private_hosts / "host")
     client.ping()
     with _following(client.root, ""):
-        try:
-            yield client
-        finally:
-            _stop_live(client)
-            _end(client.ping()["pid"])
+        yield client
+
+
+_UNDECLARED = (
+    "This test started a Host at {root} that it did not declare. Take the `host` fixture to run on the shared"
+    " Host. If a Host of its own is part of what the test is about (its start, life, pool, Host-wide state or"
+    " environment), take `private_host`, or take `private_hosts` and start it under that directory. If it"
+    " needs cold real workers or a real clock, mark it `round`."
+)
+
+
+@pytest.fixture(autouse=True)
+def _hosts_declared(request) -> Iterator[None]:
+    """Fail a fast-tier test for each Host its clients started outside its `private_hosts` directory.
+
+    Starts made between tests (by a fixture of a wider scope) count for the next test.
+    """
+    global _declared
+    yield
+    starts, declared = list(dict.fromkeys(_client_starts)), _declared
+    _client_starts.clear()
+    _declared = None
+    if request.node.get_closest_marker("round") is not None:
+        return
+    undeclared = [root for root in starts if declared is None or not root.is_relative_to(declared)]
+    if undeclared:
+        pytest.fail("\n".join(_UNDECLARED.format(root=root) for root in undeclared))
 
 
 @pytest.fixture(autouse=True)

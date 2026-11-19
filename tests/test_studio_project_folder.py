@@ -597,7 +597,7 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     def pause_old_compile(project, **kwargs):
         if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1:
             entered.set()
-            assert release.wait(5)
+            assert release.wait(HANG_SECONDS)
         return compile_project(project, **kwargs)
 
     monkeypatch.setattr(project_folder, "compile_project", pause_old_compile)
@@ -606,7 +606,7 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
             service.read_plan, "reach", revision=opened["revision"], source_runs=(selected,)
         )
         try:
-            assert entered.wait(5)
+            assert entered.wait(HANG_SECONDS)
             with client:
                 changed = _edit_mass(client, _URL, opened, 4)
             current = _read_plan(client, root, changed, selected)

@@ -42,6 +42,25 @@ def default_root() -> Path:
     ).expanduser()
 
 
+def launch_host(root: Path, env: Mapping[str, str] | None = None) -> subprocess.Popen:
+    """Start a Host process at `root` in a session of its own, logging to its `host.log`.
+
+    Every start by a client goes through here; `env` replaces the inherited environment.
+    """
+    private_directory(root)
+    with (root / "host.log").open("ab") as log:
+        process = subprocess.Popen(
+            same_python_argv("-m", "feedbax.host", "--root", str(root)),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            env=None if env is None else dict(env),
+        )
+    threading.Thread(target=process.wait, daemon=True).start()
+    return process
+
+
 class StdioAttachment:
     """Open an authenticated transport to the venue's stdio attachment command."""
 
@@ -124,16 +143,7 @@ class HostClient:
             except (FileNotFoundError, ConnectionRefusedError):
                 if not self._start_allowed:
                     raise
-                private_directory(self.root)
-                with (self.root / "host.log").open("ab") as log:
-                    process = subprocess.Popen(
-                        same_python_argv("-m", "feedbax.host", "--root", str(self.root)),
-                        stdin=subprocess.DEVNULL,
-                        stdout=log,
-                        stderr=log,
-                        start_new_session=True,
-                    )
-                threading.Thread(target=process.wait, daemon=True).start()
+                process = launch_host(self.root)
             deadline = time.monotonic() + HANG_SECONDS
             while True:
                 try:
