@@ -1,4 +1,4 @@
-.PHONY: nb2py py2nb checkout test test-all lint lint-all lint-fatal typecheck typecheck-all format ci
+.PHONY: nb2py py2nb checkout test test-all test-round lint lint-all lint-fatal typecheck typecheck-all format ci
 
 nb2py:
 	$(MAKE) -C dev nb2py
@@ -14,6 +14,9 @@ test:
 
 test-all:
 	uv run pytest tests/ -q
+
+test-round:
+	uv run python -m scripts.test_round
 
 lint:
 	uv run ruff check tests/test_batch_reshape_nan_bypass.py

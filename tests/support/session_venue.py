@@ -24,6 +24,7 @@ from feedbax.host.session import initialize_session
 from feedbax.orchestration.session import (
     ProviderMachineObservation, ProviderResource, SessionError, SessionLaunch, SessionRealization, SessionRequest,
 )
+from tests.support.hang import HANG_SECONDS
 
 
 ENVIRONMENT = hashlib.sha256(f"{sys.executable}:{sys.version}".encode()).hexdigest()
@@ -115,7 +116,7 @@ class LocalVenueProvider:
             )
         threading.Thread(target=process.wait, daemon=True).start()
         write_json(directory / "host-process.json", {"pid": process.pid, "token": host_token})
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_SECONDS
         while not socket_path((directory / "host").resolve()).exists():
             if process.poll() is not None or time.monotonic() >= deadline:
                 raise SessionError(f"Local venue Host did not start. See {directory / 'host.log'}.")
@@ -168,7 +169,7 @@ def remove_directory(directory: Path) -> None:
             raise SessionError(f"Local venue process identity could not be verified: {error}")
         if state == "verified":
             os.killpg(pid, signal.SIGTERM)
-            deadline = time.monotonic() + 8
+            deadline = time.monotonic() + HANG_SECONDS
             while verify(pid, token)[0] != "gone":
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Venue Host did not exit.")

@@ -16,6 +16,7 @@ from pathlib import Path
 import httpx
 
 from tests.support.runpod_session import FakeRunPod
+from tests.support.hang import HANG_SECONDS
 
 
 ACCOUNT_KEY = "feedbax-local-test-account-key"
@@ -67,7 +68,7 @@ Path({str(self.boot_armed)!r}).touch()
         assert argv[5:7] == ["/etc/ssh", "/start.sh"]
         argv[5:7] = [str(ssh_directory), str(start)]
         result = subprocess.run(
-            argv, timeout=12, capture_output=True, check=False,
+            argv, timeout=HANG_SECONDS, capture_output=True, check=False,
             env=os.environ | {"RUNPOD_API_KEY": POD_KEY, "RUNPOD_POD_ID": self.pod_id,
                               "FEEDBAX_BOOT_SSH_KEY": self.secret_value},
         )
@@ -111,4 +112,4 @@ Path({str(self.boot_armed)!r}).touch()
                 yield f"http://127.0.0.1:{server.server_port}"
             finally:
                 server.shutdown()
-                running.join(timeout=2)
+                running.join(timeout=HANG_SECONDS)

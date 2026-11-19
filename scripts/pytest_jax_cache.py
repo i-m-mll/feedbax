@@ -1,70 +1,49 @@
-"""Scope the JAX compilation cache to one pytest invocation by default."""
+"""Configure the JAX compilation cache of a pytest invocation.
+
+Test processes and the Hosts they start share one Feedbax-managed cache across invocations
+and worktrees: an entry is keyed by the lowered program and the jaxlib version, so it is a
+function of its inputs. The controller evicts it once at the start of a session. Tests whose
+subject is the cache configure a directory of their own.
+"""
 
 from contextlib import ExitStack
 import os
 from pathlib import Path
 
 import jax
-from jax.experimental.compilation_cache import compilation_cache
+from jax._src import compilation_cache
 import pytest
 
-from scripts.full_suite import owned_suite_temporary_root
+from feedbax.host import jax_cache
+from feedbax.host.io import JAX_CACHE_ENV, private_directory
+from scripts.full_suite import shared_cache_root
 
 
-_INVOCATION_CACHE_ROOT = pytest.StashKey[Path]()
-
-
-@pytest.hookimpl(optionalhook=True)
-def pytest_configure_node(node) -> None:
-    """Give workers the controller-owned root without ownership of its cleanup."""
-    if root := node.config.stash.get(_INVOCATION_CACHE_ROOT, None):
-        node.workerinput["feedbax_jax_cache_root"] = str(root)
+_RESTORED = (
+    "jax_enable_compilation_cache",
+    "jax_compilation_cache_dir",
+    "jax_persistent_cache_min_compile_time_secs",
+    "jax_persistent_cache_min_entry_size_bytes",
+    "jax_raise_persistent_cache_errors",
+)
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Scope JAX cache configuration and any owned cache bytes to this invocation."""
+    """Point this process and the Hosts it starts at the shared cache until cleanup."""
     if os.environ.get("FEEDBAX_DISABLE_JAX_COMPILATION_CACHE") == "1":
         return
 
     scope = ExitStack()
     config.add_cleanup(scope.close)
-    worker_input = getattr(config, "workerinput", {})
-    worker_root = worker_input.get("feedbax_jax_cache_root")
-    explicit = os.environ.get("FEEDBAX_JAX_COMPILATION_CACHE_DIR")
-    if worker_root is None and explicit is not None:
-        cache_dir = Path(explicit).expanduser()
-    else:
-        if worker_root is not None:
-            root = Path(worker_root)
-            process_name = worker_input["workerid"]
-        else:
-            root_env = {}
-            if parent := os.environ.get("FEEDBAX_JAX_TEST_CACHE_ROOT"):
-                parent_path = Path(parent).expanduser()
-                parent_path.mkdir(parents=True, exist_ok=True)
-                root_env["TMPDIR"] = str(parent_path)
-            root = scope.enter_context(owned_suite_temporary_root(root_env or None))
-            config.stash[_INVOCATION_CACHE_ROOT] = root
-            process_name = "controller"
-        cache_dir = root / process_name / "jax_compilation"
-        patch = scope.enter_context(pytest.MonkeyPatch.context())
-        # Child processes inherit their launching worker's cache, not the controller's.
-        patch.setenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", str(cache_dir))
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    if JAX_CACHE_ENV not in os.environ:
+        shared = shared_cache_root(Path(config.rootpath)) / "jax_compilation"
+        scope.enter_context(pytest.MonkeyPatch.context()).setenv(JAX_CACHE_ENV, str(shared))
+    cache_dir = private_directory(Path(os.environ[JAX_CACHE_ENV]).expanduser())
+    if not hasattr(config, "workerinput"):
+        jax_cache.evict(cache_dir)
 
-    min_compile_secs = float(
-        os.environ.get("FEEDBAX_JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
-    )
-    min_entry_size = int(os.environ.get("FEEDBAX_JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0"))
-    settings = {
-        "jax_compilation_cache_dir": str(cache_dir),
-        "jax_persistent_cache_min_compile_time_secs": min_compile_secs,
-        "jax_persistent_cache_min_entry_size_bytes": min_entry_size,
-    }
-    # The initialized persistent cache retains its path across config updates.
     scope.callback(compilation_cache.reset_cache)
-    for name, value in settings.items():
+    for name in _RESTORED:
         scope.callback(jax.config.update, name, getattr(jax.config, name))
-        jax.config.update(name, value)
-    compilation_cache.reset_cache()
+    jax_cache.install(cache_dir)

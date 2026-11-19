@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from tests.support.hang import HANG_SECONDS
 
 
 def fixture_git_environment() -> dict[str, str]:
@@ -37,5 +38,5 @@ def run_fixture_git(root: Path, *args: str) -> str:
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=HANG_SECONDS,
     ).stdout.strip()

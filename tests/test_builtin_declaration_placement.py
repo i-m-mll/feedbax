@@ -7,6 +7,7 @@ import sys
 from textwrap import dedent
 
 import pytest
+from tests.support.hang import HANG_SECONDS
 
 
 @pytest.mark.skipif(
@@ -54,6 +55,6 @@ def test_concrete_declarations_live_in_builtins(tmp_path):
             "FEEDBAX_HOST_ROOT": str(tmp_path / "host"),
             "FEEDBAX_TRAJECTORIES_DIR": str(tmp_path / "trajectories"),
         },
-        text=True, capture_output=True, timeout=45,
+        text=True, capture_output=True, timeout=HANG_SECONDS,
     )
     assert result.returncode == 0, result.stderr

@@ -23,6 +23,7 @@ from feedbax.persistence.effective_success import PublicationConflict, SuccessVi
 from feedbax.persistence.reachability import measure_store
 from feedbax.persistence.store_sync import collect_success, collect_success_evidence, sync_store
 from scripts.proofs.effective_binding_witness import document_product, report_request
+from tests.support.hang import HANG_SECONDS
 
 
 def _interrupt_after_clone(
@@ -109,12 +110,12 @@ def test_selected_receipt_sync_survives_interruption(tmp_path):
     )
     child.start()
     try:
-        child.join(15)
+        child.join(HANG_SECONDS)
         assert child.exitcode == 74
     finally:
         if child.is_alive():
             child.kill()
-            child.join(5)
+            child.join(HANG_SECONDS)
     first_clone = ContentObjectRef.model_validate_json(marker.read_bytes())
     assert first_clone not in selected_refs
     assert destination.get_object(first_clone) == source.get_object(first_clone)

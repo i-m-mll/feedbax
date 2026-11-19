@@ -22,6 +22,7 @@ from feedbax.orchestration.session import (
     SessionRequest,
 )
 from tests.support.runpod_session import FakeRunPod, FakeRunPodCutoff, runpod_resources
+from tests.support.hang import HANG_SECONDS
 
 
 def _launch(resources: RunPodResources, *, environment: str = "e" * 64) -> SessionLaunch:
@@ -108,7 +109,7 @@ def test_runpod_boot_installs_pinned_key_and_arms_guard_before_start(tmp_path):
         **os.environ, _BOOT_KEY: private, "RUNPOD_API_KEY": "fixture-pod-token", "LD_LIBRARY_PATH": "/image/cuda",
     }
     unarmed = subprocess.run(
-        [*command, "/usr/bin/false"], env=environment, timeout=5, capture_output=True, text=True,
+        [*command, "/usr/bin/false"], env=environment, timeout=HANG_SECONDS, capture_output=True, text=True,
     )
     assert unarmed.returncode != 0 and unarmed.stdout == ""
     armed = subprocess.run([
@@ -116,7 +117,7 @@ def test_runpod_boot_installs_pinned_key_and_arms_guard_before_start(tmp_path):
         'test -z "${FEEDBAX_BOOT_SSH_KEY:-}${LD_LIBRARY_PATH:-}" && test "$RUNPOD_API_KEY" = fixture-pod-token'
         ' && test ! -e "$1" && printf "armed\\n"',
         "guard", str(tmp_path / "ssh_host_ed25519_key"),
-    ], env=environment, timeout=5, capture_output=True, text=True, check=True)
+    ], env=environment, timeout=HANG_SECONDS, capture_output=True, text=True, check=True)
     assert armed.stdout.splitlines() == ["armed", "start"]
     assert armed.stderr.splitlines() == ["RunPod venue cutoff guard armed.", "RunPod pinned SSH host key installed."]
     assert (tmp_path / "ssh_host_ed25519_key.pub").read_text() == public + "\n"

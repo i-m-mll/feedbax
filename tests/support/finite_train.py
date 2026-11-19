@@ -6,6 +6,7 @@ from pathlib import Path
 
 from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
 from feedbax.persistence.method_checkpoint import method_checkpoint_files
+from tests.support.hang import HANG_SECONDS
 from tests.support.store_damage import writable_store_object
 
 
@@ -25,7 +26,7 @@ def damaged_checkpoint_model(checkpoint):
 
 
 def install_finite_gate(jobs, tmp_path, *, stop_at, resume_at):
-    (tmp_path / "finite_gate.py").write_text("""
+    (tmp_path / "finite_gate.py").write_text(f"HANG_SECONDS = {HANG_SECONDS}\n" + """
 import json
 import os
 from pathlib import Path
@@ -36,7 +37,7 @@ from feedbax.training_host_worker import _Events
 run_block = TrainingLoop.run_block
 
 def wait(path):
-    deadline = monotonic() + 22
+    deadline = monotonic() + HANG_SECONDS
     while not path.exists():
         if monotonic() > deadline:
             raise TimeoutError(f"Jobs did not release {path.name}")

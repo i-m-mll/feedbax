@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.support.hang import HANG_SECONDS
 
 pytestmark = pytest.mark.feedbax_contract
 
@@ -28,7 +29,7 @@ def _run_import_probe(source: str) -> dict[str, Any]:
         text=True,
         capture_output=True,
         check=False,
-        timeout=30,
+        timeout=HANG_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr

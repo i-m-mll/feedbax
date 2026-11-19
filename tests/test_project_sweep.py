@@ -546,6 +546,7 @@ def test_to_rows_can_pin_empty_fanout_without_inventing_an_implicit_row():
     assert expand_sweep(manual, inputs={"subject": [SweepInputMember("new")]}) == ()
 
 
+@pytest.mark.round("Counting and expanding a sweep of 100 and 10 000 rows takes under 0.2 s and 2 s of real time.")
 def test_sweep_editor_expansion_budget():
     for width, seconds in ((10, 0.2), (100, 2.0)):
         sweep = Sweep.model_validate(
@@ -559,4 +560,4 @@ def test_sweep_editor_expansion_budget():
         start = perf_counter()
         assert count_sweep(sweep) == len(expand_sweep(sweep)) == width**2
         elapsed = perf_counter() - start
-        assert elapsed < seconds, f"{width**2} rows expanded in {elapsed:.3f}s"
+        assert elapsed < seconds, f"{width**2} rows expanded in {elapsed:.3f}s"  # real clock: the expansion budget

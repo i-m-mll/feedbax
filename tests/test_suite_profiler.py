@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.support.hang import HANG_SECONDS
 
 
 @pytest.mark.parametrize("workers", ["0", "2"])
@@ -48,7 +49,7 @@ def test_skip():
         env={**os.environ, "FEEDBAX_SUITE_PROFILE_RAW": str(output)},
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HANG_SECONDS,
         check=False,
     )
     assert result.returncode == 1, result.stdout + result.stderr
@@ -94,7 +95,7 @@ def test_profiler_retains_worker_crash_without_worker_output(tmp_path):
         env={**os.environ, "FEEDBAX_SUITE_PROFILE_RAW": str(output)},
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=HANG_SECONDS,
         check=False,
     )
     assert result.returncode == 1, result.stdout + result.stderr

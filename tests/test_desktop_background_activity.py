@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -17,12 +18,16 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.__main__ import _register_stop
 from feedbax.desktop.activity import register_activity
-from feedbax.host import HostClient
+from feedbax.host import HostClient, Job
 from feedbax.host.protocol import AdmissionItem
 from feedbax.web.app import create_app
+from tests.support import minimal_worker
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_desktop_project_open import _desktop_clients
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import (
+    HELD_UNTIL_STOPPED, admit, held_until_released, job_row, private_host as host_fixture, restart, run_job, wait_until,
+)
+from tests.support.hang import HANG_SECONDS
 
 host = host_fixture
 ACTIVITY = "/_desktop/activity"
@@ -56,8 +61,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
     foreign_hold = tmp_path / "foreign-release"
     foreign = run_job(
         "foreign",
-        f"from pathlib import Path; from time import sleep\n"
-        f"while not Path({str(foreign_hold)!r}).exists(): sleep(.02)",
+        held_until_released(foreign_hold),
         slot="light",
     )
     admit(host, "foreign", foreign)
@@ -98,8 +102,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert browser.post(f"{ACTIVITY}/stop", headers=origin, json={"mode": "force"}).status_code == 403
 
         hold = tmp_path / "release"
-        gate = run_job("unrelated", f"from pathlib import Path; from time import sleep\n"
-                       f"while not Path({str(hold)!r}).exists(): sleep(.02)")
+        gate = run_job("unrelated", held_until_released(hold))
         host.policy(compute=1)
         admit(host, "gate", gate)
         wait_until(lambda: job_row(host, gate.id, "running"))
@@ -107,7 +110,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert control.get(ACTIVITY).json()["count"] == 1
         browser.close()
         hold.touch()
-        wait_until(lambda: job_row(host, completed, "running"), timeout=20)
+        wait_until(lambda: job_row(host, completed, "running"))
         assert control.get(ACTIVITY).json()["count"] == 1
 
         requested = control.post(f"{ACTIVITY}/open").json()
@@ -126,7 +129,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert {path.name for path in projects.iterdir()} == {"reach", "long"}
         jobs = reopened.get("/api/jobs").json()["jobs"]
         assert any(job["job_id"] == completed for job in jobs)
-        finished = wait_until(lambda: job_row(host, completed, "succeeded"), timeout=25)
+        finished = wait_until(lambda: job_row(host, completed, "succeeded"))
         assert finished["progress"]["completed_updates"] == 160
         terminal = control.get(ACTIVITY, params={"after": initial_cursor}).json()
         while terminal["terminal"] is None:
@@ -141,10 +144,10 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert control.get(ACTIVITY).json()["terminal"] is None
 
         stopping = launch(reopened, "long")
-        wait_until(lambda: job_row(host, stopping, "running"), timeout=20)
+        wait_until(lambda: job_row(host, stopping, "running"))
         reply = control.post(f"{ACTIVITY}/stop", json={"mode": "checkpoint"})
         assert reply.status_code == 200 and reply.json()[0]["error"] is None, reply.text
-        stopped = wait_until(lambda: job_row(host, stopping, "stopped"), timeout=20)
+        stopped = wait_until(lambda: job_row(host, stopping, "stopped"))
         assert stopped["checkpoint"]
         assert control.get(ACTIVITY).json()["count"] == 0
 
@@ -156,7 +159,7 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
             host.admit(name, [AdmissionItem(job.id, job)], record={"target": job.data["target"]})
             return job
 
-        probe = admit_probe("stubborn", "import time; time.sleep(40)")
+        probe = admit_probe("stubborn", HELD_UNTIL_STOPPED)
         wait_until(lambda: job_row(host, probe.id, "running"))
         assert control.post(f"{ACTIVITY}/stop", json={"mode": "force"}).status_code == 200
         wait_until(lambda: job_row(host, probe.id)["outcome"])
@@ -172,14 +175,14 @@ def test_background_activity_lifecycle(host, tmp_path, monkeypatch):
         assert observed["terminal"]["id"] == failed_probe.id
         assert observed["terminal"]["status"] == "failed"
 
-        stubborn = admit_probe("quit-escalation", "import time; time.sleep(40)")
+        stubborn = admit_probe("quit-escalation", HELD_UNTIL_STOPPED)
         wait_until(lambda: job_row(host, stubborn.id, "running"))
         with ThreadPoolExecutor(max_workers=1) as executor:
             quitting = executor.submit(control.post, "/_desktop/stop", json={"disposition": "checkpoint"})
             wait_until(lambda: job_row(host, stubborn.id, "stopping"))
             assert not quitting.done()
             assert control.post(f"{ACTIVITY}/stop", json={"mode": "force"}).status_code == 200
-            quit_service = quitting.result(timeout=12)
+            quit_service = quitting.result(timeout=HANG_SECONDS)
         assert quit_service.status_code == 200 and quit_service.json()["status"] == "ready_to_stop", quit_service.text
         assert server.should_exit and host.ping()["pid"] == initial_host
         assert job_row(host, foreign.id)["state"] == "running"
@@ -203,6 +206,10 @@ def test_background_observation_does_not_start_an_idle_host(tmp_path, monkeypatc
         assert not HostClient(root).address.exists()
 
 
+@pytest.mark.round(
+    "After a Host restart a real Train worker is imported ahead of use and the next Train runs "
+    "in it."
+)
 @pytest.mark.parametrize("desktop_owned", [False, True], ids=["standalone", "desktop-owned"])
 def test_warming_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch, desktop_owned):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
@@ -250,7 +257,105 @@ def test_warming_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch, de
         assert acceptance == {"kind": "accepted", "data": {"token": profile.parent.name}}
 
 
-def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch):
+@pytest.mark.parametrize("desktop_owned", [False, True], ids=["standalone", "desktop-owned"])
+def test_warming_after_restart_keeps_one_idle_worker_for_the_next_train(host, tmp_path, monkeypatch, desktop_owned):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
+    if desktop_owned:
+        monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(Path(sys.executable).resolve().parent.parent))
+    else:
+        monkeypatch.delenv("FEEDBAX_DESKTOP_RELEASE_ROOT", raising=False)
+    minimal_worker.train_with(monkeypatch, tmp_path)
+    projects = tmp_path / "projects"
+    _project(projects / "reach", batches=2)
+    app = create_app(projects_dir=projects)
+
+    def workers():
+        return set((host.root / "workers").glob("*/profile.json"))
+
+    with TestClient(app) as studio:
+        assert studio.post("/api/jobs/warm").status_code == 202
+        original = wait_until(workers)
+        restart(host)
+        assert studio.post("/api/jobs/warm").status_code == 202
+        (replacement,) = wait_until(lambda: workers() - original)
+        assert studio.post("/api/jobs/warm").status_code == 202
+
+        opened = studio.get("/api/projects/reach/open")
+        assert opened.status_code == 200, opened.text
+        submitted = studio.post("/api/projects/reach/train-runs", json={
+            "revision": opened.json()["snapshot"]["revision"], "token": "restart-train",
+            "run_keys": [{"variant": "default", "step": "train", "row": "default"}],
+        })
+        assert submitted.status_code == 202, submitted.text
+        (item,) = submitted.json()["items"]
+        job = item["job_id"]
+        minimal_worker.release(tmp_path, job)
+        done = wait_until(lambda: job_row(host, job, "succeeded"))
+        log = host.root / "deliveries" / job / str(done["delivery"]) / "events.jsonl"
+        with log.open() as stream:
+            acceptance = json.loads(stream.readline())
+        assert acceptance == {"kind": "accepted", "data": {"token": replacement.parent.name}}
+        idle = workers() - original - {replacement}
+        assert len(idle) == 1, f"The pool keeps {len(idle)} idle workers of the Train profile, not one."
+
+
+def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_host(
+    tmp_path, monkeypatch, private_hosts,
+):
+    from feedbax.host.io import append
+    from feedbax.jobs import JobService
+    from feedbax.web.services.desktop_jobs import StudioJobLifecycle
+    from feedbax.plugins.application import new_application_registry_bundle
+
+    registries = new_application_registry_bundle()
+    runtime = os.path.realpath(sys.executable)
+    release = Path(runtime).parent.parent
+    monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(release))
+    host = HostClient(private_hosts / "host")
+    owner = host.ping()["pid"]
+    attempt = replace(
+        Job("attempt", "project", "train:attempt", minimal_worker.launch(tmp_path)),
+        data={"run_key": "run", "stage_id": "train", "scenario_id": "base", "label": "Train",
+              "coordinates": {}, "runtime": runtime},
+    )
+    try:
+        admit(host, "attempt", attempt)
+        def checkpointed():
+            row = job_row(host, attempt.id, "running")
+            return row if row and row["checkpoint"] else None
+
+        before = wait_until(checkpointed)
+        cursor = host.events()["head"]
+        retiring = JobService(HostClient(host.root), registries)
+        result = asyncio.run(StudioJobLifecycle(retiring, release).stop("interrupt", timeout_seconds=8))
+        assert result["status"] == "ready_to_stop", result
+        assert not host.address.exists()
+        log = host.root / "deliveries" / attempt.id / str(before["delivery"]) / "events.jsonl"
+        append(log, "terminal", {"outcome": "failed"}, sync=True)
+
+        assert host.ping()["pid"] != owner
+        interrupted = job_row(host, attempt.id, "interrupted")
+        assert interrupted is not None and interrupted["checkpoint"] == before["checkpoint"]
+        assert interrupted["outcome"]["error"]["code"] == "service_stopped"
+        events = host.events(after=cursor)["events"]
+        assert [event["job_id"] for event in events if event["kind"] == "terminal"] == [attempt.id]
+        resumed = JobService(host, registries).resume(attempt.id, "resume")
+        assert resumed.continues == attempt.id
+        (successor,) = host.jobs(job_id=resumed.job_id, include_launch=True)
+        assert successor["launch"]["payload"]["resume"] == before["checkpoint"]
+        minimal_worker.release(tmp_path, resumed.job_id)
+        wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
+    finally:
+        wait_until(lambda: host.retire_runtime(runtime, str(release), "force")["status"] == "absent")
+        wait_until(lambda: not subprocess.run(["pgrep", "-f", str(host.root)], capture_output=True).stdout)
+
+
+@pytest.mark.round(
+    "An owned Host exits under a running real Train, and the Train resumes from its checkpoint "
+    "on a new Host."
+)
+def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_path, monkeypatch, private_hosts):
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.host import HostError
     from feedbax.host.process import process_group_member_pids
@@ -260,7 +365,7 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
     from feedbax.training.method_checkpoint import read_method_checkpoint
     from feedbax.web.services.project_folder import ProjectFolderService
 
-    root = tmp_path / "host"
+    root = private_hosts / "host"
     runtime = os.path.realpath(sys.executable)
     release = Path(runtime).parent.parent
     monkeypatch.setenv("FEEDBAX_DESKTOP_RELEASE_ROOT", str(release))
@@ -286,7 +391,7 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
                 row = job_row(host, attempt, "running")
                 return row if row and row["checkpoint"] else None
 
-            before = wait_until(checkpointed, timeout=20)
+            before = wait_until(checkpointed)
             source = PublishedTrainingCheckpoint.model_validate(before["checkpoint"])
             model = read_method_checkpoint(source.checkpoint_root, source.pointer, components=new_application_registry_bundle().components).model
             assert model is not None
@@ -315,15 +420,13 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
         assert resumed.continues == attempt
         (successor,) = host.jobs(job_id=resumed.job_id, include_launch=True)
         assert successor["launch"]["payload"]["resume"] == before["checkpoint"]
-        done = wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=22)
+        done = wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
         assert done["progress"]["completed_updates"] == 1000
     finally:
         wait_until(lambda: host.retire_runtime(runtime, str(release), "force")["status"] == "absent")
 
 
 def test_service_signal_waits_for_runtime_release_and_exits_successfully(tmp_path):
-    import subprocess
-
     marker = tmp_path / "ready"
     completed = tmp_path / "released"
     with subprocess.Popen([sys.executable, "-c", """
@@ -338,13 +441,23 @@ ready, released = map(Path, sys.argv[1:])
 
 class Server:
     started = False
-    should_exit = False
+
+    def __init__(self):
+        self.exit = asyncio.Event()
+
+    @property
+    def should_exit(self):
+        return self.exit.is_set()
+
+    @should_exit.setter
+    def should_exit(self, value):
+        if value:
+            self.exit.set()
 
     async def serve(self, *, sockets):
         self.started = True
         ready.touch()
-        while not self.should_exit:
-            await asyncio.sleep(0.01)
+        await self.exit.wait()
         assert released.exists()
 
 class Runtime:
@@ -362,9 +475,9 @@ async def run():
 asyncio.run(run())
 """, str(marker), str(completed)]) as process:
         try:
-            wait_until(marker.exists, timeout=5)
+            wait_until(marker.exists)
             process.terminate()
-            assert process.wait(timeout=5) == 0 and completed.exists()
+            assert process.wait(timeout=HANG_SECONDS) == 0 and completed.exists()
         finally:
             if process.poll() is None:
                 process.kill()

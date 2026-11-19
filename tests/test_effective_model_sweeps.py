@@ -18,7 +18,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored, document_project  # noqa: F401
-from tests.test_local_job_host import host, job_row, wait_until  # noqa: F401
+from tests.support.host import job_row, token, wait_until
 from tests.test_model_document_plan import _add_attachment, _attachment_address, _attachment_owner, _model_controller
 
 
@@ -107,7 +107,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     assert patch["value"]["params"]["scale"] == 0.25
 
     train_job, evaluate_job = [
-        jobs.admit_plan(folders, snapshot, run_keys=(key,), token=key.step).items[0]
+        jobs.admit_plan(folders, snapshot, run_keys=(key,), token=token(key.step)).items[0]
         for key in (train.key, evaluate.key)
     ]
     for job in (train_job, evaluate_job):
@@ -115,7 +115,6 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     trained, evaluated = [
         wait_until(
             lambda: job_row(host, job.job_id, "succeeded") or job_row(host, job.job_id, "failed"),
-            timeout=26,
         )
         for job in (train_job, evaluate_job)
     ]

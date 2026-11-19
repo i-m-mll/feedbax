@@ -15,6 +15,8 @@ import tomllib
 import pytest
 
 from tests.support.git_fixtures import run_fixture_git
+from tests.support.hang import HANG_SECONDS
+from tests.support.host import until_exists
 
 
 def load_full_suite_module():
@@ -58,7 +60,7 @@ def test_affected_collection_omits_an_unrelated_failing_test(tmp_path: Path) -> 
         capture_output=True,
         text=True,
         check=False,
-        timeout=25,
+        timeout=HANG_SECONDS,
     )
     reference = subprocess.run(
         [*command, "--no-memo"],
@@ -67,7 +69,7 @@ def test_affected_collection_omits_an_unrelated_failing_test(tmp_path: Path) -> 
         capture_output=True,
         text=True,
         check=False,
-        timeout=25,
+        timeout=HANG_SECONDS,
     )
 
     assert affected.returncode == 0, affected.stdout + affected.stderr
@@ -92,12 +94,11 @@ def make_full_suite_repo(repo: Path) -> Path:
 
 
 def lock_helper_code() -> str:
-    return """
+    return f"""
 import importlib.util
 import os
 from pathlib import Path
 import sys
-import time
 
 script_path, lock_path, worktree, release_path, repository = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("feedbax_full_suite_helper", script_path)
@@ -112,10 +113,7 @@ with module.FullSuiteLock(
     command=[repository, "scripts/full_suite.sh"],
 ):
     print("acquired " + str(os.getpid()), flush=True)
-    release = Path(release_path)
-    while not release.exists():
-        time.sleep(0.02)
-"""
+{until_exists("release_path", indent="    ")}"""
 
 
 def start_lock_helper(
@@ -399,7 +397,7 @@ def test_mjx_slow(): pass
             env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": ""},
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=HANG_SECONDS,
             check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -419,32 +417,6 @@ def test_representative_nodes_have_expected_optional_markers() -> None:
     assert _assigned_pytest_marker(mjx_source) == "optional_mjx"
     assert "optional_mjx" in _class_pytest_markers(backend_source, "TestMJXBackendState")
     assert "optional_mjx" not in _class_pytest_markers(backend_source, "TestDiffraxBackendSubstep")
-
-
-def test_jax_cache_env_exposes_base_root_without_exact_cache_dir(monkeypatch, tmp_path) -> None:
-    full_suite = load_full_suite_module()
-    cache_root = tmp_path / "cache"
-
-    monkeypatch.delenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", raising=False)
-    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
-
-    full_suite.configure_jax_cache_env(cache_root)
-
-    assert "FEEDBAX_JAX_COMPILATION_CACHE_DIR" not in full_suite.os.environ
-    assert full_suite.os.environ["FEEDBAX_JAX_TEST_CACHE_ROOT"] == str(cache_root)
-
-
-def test_jax_cache_env_preserves_explicit_exact_cache_dir(monkeypatch, tmp_path) -> None:
-    full_suite = load_full_suite_module()
-    cache_root = tmp_path / "cache"
-
-    monkeypatch.setenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", "/explicit/jax-cache")
-    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
-
-    full_suite.configure_jax_cache_env(cache_root)
-
-    assert full_suite.os.environ["FEEDBAX_JAX_COMPILATION_CACHE_DIR"] == "/explicit/jax-cache"
-    assert "FEEDBAX_JAX_TEST_CACHE_ROOT" not in full_suite.os.environ
 
 
 def test_tracked_change_disables_memo_recording(monkeypatch, tmp_path: Path) -> None:
@@ -533,7 +505,7 @@ def test_full_suite_lock_refuses_and_reports_holder(tmp_path: Path, holder_repos
     contender = start_lock_helper(
         script_path, lock_path, Path("/worktrees/contender"), contender_release
     )
-    contender_stdout, contender_stderr = contender.communicate(timeout=5)
+    contender_stdout, contender_stderr = contender.communicate(timeout=HANG_SECONDS)
     assert contender.returncode != 0
     assert contender_stdout == ""
     assert "Full suite already running; active holder:" in contender_stderr
@@ -544,7 +516,7 @@ def test_full_suite_lock_refuses_and_reports_holder(tmp_path: Path, holder_repos
     assert "started_at=" in contender_stderr
 
     holder_release.touch()
-    holder_stdout, holder_stderr = holder.communicate(timeout=5)
+    holder_stdout, holder_stderr = holder.communicate(timeout=HANG_SECONDS)
     assert holder.returncode == 0, holder_stderr
     assert holder_stdout == ""
     released_metadata = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -592,14 +564,14 @@ def test_full_suite_lock_recovers_after_abnormal_holder_exit(tmp_path: Path) -> 
     assert holder.stdout.readline().startswith("acquired ")
 
     os.kill(holder.pid, signal.SIGKILL)
-    holder.wait(timeout=5)
+    holder.wait(timeout=HANG_SECONDS)
     contender = start_lock_helper(
         script_path, lock_path, Path("/worktrees/after-interrupt"), contender_release
     )
     assert contender.stdout is not None
     assert contender.stdout.readline().startswith("acquired ")
     contender_release.touch()
-    _, contender_stderr = contender.communicate(timeout=5)
+    _, contender_stderr = contender.communicate(timeout=HANG_SECONDS)
     assert contender.returncode == 0, contender_stderr
 
     # The kernel releases the advisory lock after SIGKILL. The next holder
@@ -628,8 +600,6 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     external_directory.chmod(0o555)
     observed_root = None
 
-    monkeypatch.delenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", raising=False)
-    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
     monkeypatch.setenv("TMPDIR", str(caller_root))
     monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(tmp_path / "lock"))
     monkeypatch.setenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", "1")
@@ -647,7 +617,6 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     def run_pytest(command, *, cwd, env, check):
         nonlocal observed_root
         observed_root = Path(env["TMPDIR"])
-        assert Path(env["FEEDBAX_JAX_TEST_CACHE_ROOT"]) == observed_root / "jax-cache"
         assert cwd == repo_root
         assert check is False
         assert observed_root.parent == caller_root
@@ -682,8 +651,6 @@ def test_main_removes_sealed_temporary_tree_after_interruption(monkeypatch, tmp_
     caller_root.mkdir()
     observed_root = None
 
-    monkeypatch.delenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", raising=False)
-    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
     monkeypatch.setenv("TMPDIR", str(caller_root))
     monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(tmp_path / "lock"))
     monkeypatch.setenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", "1")
@@ -701,7 +668,6 @@ def test_main_removes_sealed_temporary_tree_after_interruption(monkeypatch, tmp_
     def interrupt_pytest(command, *, cwd, env, check):
         nonlocal observed_root
         observed_root = Path(env["TMPDIR"])
-        assert Path(env["FEEDBAX_JAX_TEST_CACHE_ROOT"]) == observed_root / "jax-cache"
         sealed_snapshot = observed_root / "sealed-repo-snapshot"
         sealed_snapshot.mkdir()
         sealed_file = sealed_snapshot / "partial-fixture.bin"

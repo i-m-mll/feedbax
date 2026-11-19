@@ -6,75 +6,23 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
+import psutil
 import pytest
 
 from feedbax.host import AdmissionItem, Edge, HostClient, HostError, Job, Launch
+from tests.support import minimal_worker
+from tests.support.hang import HANG_SECONDS
+from tests.support.host import (
+    HELD_UNTIL_STOPPED, admit, held_until_released, job_row, private_host, restart, run_job, until_exists, wait_until,
+    wait_until_async,
+)
 
 
-@pytest.fixture
-def host(tmp_path):
-    client = HostClient(tmp_path / "host")
-    client.ping()
-    try:
-        yield client
-    finally:
-        live = [job["id"] for job in client.jobs() if job["outcome"] is None]
-        if live:
-            client.stop(live, "force")
-            wait_until(lambda: all(job["outcome"] is not None for job in client.jobs()))
-        os.kill(client.ping()["pid"], signal.SIGTERM)
-        wait_until(lambda: not client.address.exists())
-
-
-def wait_until(read, *, timeout=12):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        value = read()
-        if value:
-            return value
-        time.sleep(0.02)
-    raise AssertionError("The host did not reach the expected state.")
-
-
-def run_job(name, source, *, project="project", request=None, edges=(), slot="compute"):
-    return Job(
-        name,
-        project,
-        request or name,
-        Launch((sys.executable, "-c", source)),
-        edges=edges,
-        slot=slot,
-    )
-
-
-def admit(host, token, *jobs):
-    return host.admit(token, [AdmissionItem(job.id, job) for job in jobs], record={})
-
-
-def job_row(host, name, state=None):
-    rows = host.jobs(job_id=name)
-    return rows[0] if rows and (state is None or rows[0]["state"] == state) else None
-
-
-def restart(host):
-    before = host.ping()["pid"]
-    os.kill(before, signal.SIGKILL)
-
-    def new_pid():
-        try:
-            pid = host.ping()["pid"]
-        except HostError as error:
-            if error.code != "disconnected":
-                raise
-            return None
-        return pid if pid != before else None
-
-    wait_until(new_pid)
+host = private_host
 
 
 def test_host_keeps_attempt_and_cursor_across_daemon_restart(host, tmp_path):
@@ -86,9 +34,7 @@ import time
 with open({str(executions)!r}, "a") as stream:
     print("started", file=stream)
 print("live", flush=True)
-while not Path({str(release)!r}).exists():
-    time.sleep(0.01)
-print("completed", flush=True)
+{held_until_released(release)}print("completed", flush=True)
 """
     main = run_job("main", source)
     alias = run_job("alias", source, request=main.request)
@@ -133,9 +79,7 @@ with open(os.environ["FEEDBAX_HOST_EVENT_LOG"], "a") as stream:
     stream.write('{{"kind":"publication","data":{{"key":"checkpoint:7","checkpoint":{{"step":7}}}}}}\\n')
     stream.flush()
     os.fsync(stream.fileno())
-while not Path({str(release)!r}).exists():
-    time.sleep(0.01)
-""",
+{held_until_released(release)}""",
     )
     dependent = run_job(
         "dependent",
@@ -156,38 +100,8 @@ while not Path({str(release)!r}).exists():
 @pytest.mark.parametrize("stop_first", [False, True])
 def test_completion_edges_are_bound_to_one_attempt(host, tmp_path, stop_first):
     """Exercise real daemon scheduling with controlled worker events."""
-    release = tmp_path / "release"
     deliveries = tmp_path / "deliveries"
-    (tmp_path / "phase_fixture.py").write_text("""
-import json
-import os
-from pathlib import Path
-import time
-
-def main(args):
-    payload = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
-    stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-    release = Path(payload["release"])
-    with Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]).open("a", buffering=1) as stream:
-        checkpoint = {"completed_updates": 1}
-        print(json.dumps({
-            "kind": "publication", "data": {"key": "checkpoint:1", "checkpoint": checkpoint},
-        }), file=stream)
-        while not release.exists() and not stop.exists():
-            time.sleep(0.01)
-        print(json.dumps({
-            "kind": "result",
-            "data": {"outcome": "stopped", "checkpoint": checkpoint}
-                if stop.exists() else {"outcome": "succeeded"},
-        }), file=stream)
-    return 0
-""")
-    launch = Launch(
-        (sys.executable,),
-        cwd=str(tmp_path),
-        warm_entrypoint="phase_fixture:main",
-        payload={"release": str(release)},
-    )
+    launch = minimal_worker.launch(tmp_path)
     prefix = Job("prefix", "project", "prefix-request", launch)
     successor = run_job(
         "successor",
@@ -196,7 +110,7 @@ def main(args):
         slot="light",
     )
     submission = admit(host, "phases", successor, prefix)
-    wait_until(lambda: job_row(host, prefix.id)["checkpoint"] == {"completed_updates": 1})
+    wait_until(lambda: job_row(host, prefix.id)["checkpoint"] == minimal_worker.CHECKPOINT)
     assert job_row(host, successor.id)["state"] == "queued"
     assert not deliveries.exists()
     if stop_first:
@@ -206,12 +120,12 @@ def main(args):
         assert blocked["outcome"]["error"]["code"] == "dependency_ended"
         continued = Job("continued", prefix.project, prefix.request, launch, continues=prefix.id)
         admit(host, "continuation", continued)
-        release.touch()
+        minimal_worker.release(tmp_path, continued.id)
         wait_until(lambda: job_row(host, continued.id, "succeeded"))
         assert job_row(host, successor.id)["state"] == "blocked"
         assert not deliveries.exists()
     else:
-        release.touch()
+        minimal_worker.release(tmp_path, prefix.id)
         finished = wait_until(lambda: job_row(host, successor.id, "succeeded"))
         assert finished["delivery"] == 1
         assert admit(host, "phases", successor, prefix) == submission
@@ -219,44 +133,15 @@ def main(args):
 
 
 def test_warm_entrypoint_reports_checkpoint_stop_and_typed_error(host, tmp_path):
-    module = tmp_path / "worker_fixture.py"
-    module.write_text("""
-import json
-import os
-import time
-from pathlib import Path
-
-def main(args):
-    payload = json.loads(Path(os.environ["FEEDBAX_HOST_INPUT"]).read_text())
-    log = Path(os.environ["FEEDBAX_HOST_EVENT_LOG"])
-    if payload["fail"]:
-        result = {"outcome": "failed", "error": {"code": "update_failed", "message": "Update failed."}}
-    else:
-        while not Path(os.environ["FEEDBAX_HOST_STOP_FILE"]).exists():
-            time.sleep(0.01)
-        result = {"outcome": "stopped", "checkpoint": {"step": 4}}
-    with log.open("a") as stream:
-        stream.write(json.dumps({"kind": "result", "data": result}) + "\\n")
-    return int(payload["fail"])
-""")
-
-    def make_launch(*, fail):
-        return Launch(
-            (sys.executable,),
-            cwd=str(tmp_path),
-            warm_entrypoint="worker_fixture:main",
-            payload={"fail": fail},
-        )
-
-    host.warm(make_launch(fail=False))
-    first = Job("first", "project", "request", make_launch(fail=False))
+    host.warm(minimal_worker.launch(tmp_path))
+    first = Job("first", "project", "request", minimal_worker.launch(tmp_path))
     admit(host, "stop", first)
     wait_until(lambda: job_row(host, first.id, "running"))
     assert host.stop([first.id], "checkpoint")[0]["state"] == "stopping"
     stopped = wait_until(lambda: job_row(host, first.id, "stopped"))
-    assert stopped["checkpoint"] == {"step": 4}
-    continued = Job("continued", "project", "request", make_launch(fail=True), continues=first.id)
-    independent = Job("independent", "project", "request", make_launch(fail=False))
+    assert stopped["checkpoint"] == minimal_worker.CHECKPOINT
+    continued = Job("continued", "project", "request", minimal_worker.launch(tmp_path, fail=True), continues=first.id)
+    independent = Job("independent", "project", "request", minimal_worker.launch(tmp_path))
     admit(host, "rerun", independent)
     wait_until(lambda: job_row(host, independent.id, "running"))
     with pytest.raises(HostError) as refusal:
@@ -274,15 +159,10 @@ def test_studio_resume_retires_only_the_continued_attempt(host):
     from feedbax.jobs import JobService
     from feedbax.plugins.application import new_application_registry_bundle
 
-    worker = """
+    worker = "import os\n" + until_exists('os.environ["FEEDBAX_HOST_STOP_FILE"]') + """
 import json
-import os
-import time
 from pathlib import Path
 
-stop_file = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-while not stop_file.exists():
-    time.sleep(.01)
 with Path(os.environ["FEEDBAX_HOST_EVENT_LOG"]).open("a") as log:
     log.write(json.dumps({"kind": "result", "data": {
         "outcome": "stopped", "checkpoint": {"step": 4},
@@ -340,15 +220,15 @@ import time
 from pathlib import Path
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 Path({str(child_pid)!r}).write_text(str(os.getpid()))
-time.sleep(120)
-""",
+{HELD_UNTIL_STOPPED}""",
     )
     admit(host, "force", ignores_term)
     wait_until(lambda: child_pid.exists() and child_pid.read_text())
-    start = time.monotonic()
     host.stop([ignores_term.id], "force")
-    wait_until(lambda: job_row(host, ignores_term.id, "stopped"), timeout=5)
-    assert time.monotonic() - start < 5
+    # The worker ignores the stop's SIGTERM and holds until killed, so it ends only by the Host's escalation.
+    stopped = wait_until(lambda: job_row(host, ignores_term.id, "stopped"))
+    assert stopped["stop_mode"] == "force"
+    assert not psutil.pid_exists(int(child_pid.read_text()))
 
     crash = run_job("crash", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)")
     admit(host, "crash", crash)
@@ -361,6 +241,49 @@ time.sleep(120)
     outcome = wait_until(lambda: job_row(host, fault.id, "failed"))["outcome"]
     assert outcome["signal"] == signal.SIGABRT
     assert outcome["error"]["code"] == "worker_signal"
+
+
+def test_host_that_dies_committing_a_terminal_commits_it_on_the_next_host(host, tmp_path, monkeypatch):
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    marker = probe / "died"
+    job = Job("attempt", "project", "request", minimal_worker.launch(tmp_path))
+    (probe / "sitecustomize.py").write_text(f"""
+import os
+from pathlib import Path
+from feedbax.host.store import Store
+
+finished = Store.finished
+
+def die_once(self, row, outcome):
+    marker = Path({str(marker)!r})
+    if row["id"] == {job.id!r} and not marker.exists():
+        marker.touch()
+        os._exit(81)
+    return finished(self, row, outcome)
+
+Store.finished = die_once
+""")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(probe), os.environ.get("PYTHONPATH", ""))))
+    restart(host)
+    admit(host, "attempt", job)
+    wait_until(lambda: job_row(host, job.id, "running"))
+    minimal_worker.release(tmp_path, job.id)
+    wait_until(marker.exists)
+
+    def ended():
+        try:
+            row = job_row(host, job.id)
+        except HostError as error:
+            if error.code != "disconnected":
+                raise
+            return None
+        return row if row["outcome"] is not None else None
+
+    row = wait_until(ended)
+    assert (row["state"], row["delivery"]) == ("succeeded", 1), row
+    terminals = [event for event in host.events()["events"] if event["kind"] == "terminal"]
+    assert [event["job_id"] for event in terminals] == [job.id]
 
 
 def test_admission_of_cyclic_dependencies_leaves_no_partial_jobs(host):
@@ -425,9 +348,7 @@ def main(args):
             return 1
         checkpoint = {"completed_updates": 1, "attempt": job_id}
         emit("publication", {"key": "checkpoint:1", "checkpoint": checkpoint})
-        while not (root / f"release-{job_id}").exists() and not stop.exists():
-            time.sleep(0.01)
-        if stop.exists():
+""" + until_exists('root / f"release-{job_id}"', "stop", indent="        ") + """        if stop.exists():
             emit("result", {"outcome": "stopped", "checkpoint": checkpoint})
             return 0
         if mode == "missing":
@@ -485,16 +406,7 @@ with open({str(output)!r}, "a") as stream:
 
 def _completion_gate(tmp_path, *, project="project"):
     release = tmp_path / "open-gate"
-    return run_job(
-        "gate",
-        f"""
-import time
-from pathlib import Path
-while not Path({str(release)!r}).exists():
-    time.sleep(0.01)
-""",
-        project=project,
-    )
+    return run_job("gate", held_until_released(release), project=project)
 
 
 def _bound_edge(host, job_id="consumer"):
@@ -737,6 +649,10 @@ def test_authenticated_completion_reports_definitive_dependency_errors(
     assert not (tmp_path / "consumed.jsonl").exists()
 
 
+@pytest.mark.round(
+    "A real Train worker's completion is bound to its attempt across two Host restarts and a "
+    "Studio resume."
+)
 def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     host, tmp_path, monkeypatch, request
 ):
@@ -780,18 +696,12 @@ def pause_first_update(self, state, *, completed, count):
     result = run_block(self, state, completed=completed, count=count)
     if completed == 0:
         Path({str(stop_ready)!r}).touch()
-        stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-        deadline = time.monotonic() + 15
-        while not stop.exists():
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Host did not deliver checkpoint stop.")
-            time.sleep(0.01)
-    return result
+{until_exists('os.environ["FEEDBAX_HOST_STOP_FILE"]', indent="        ")}    return result
 
 TrainingLoop.run_block = pause_first_update
 """)
 
-    service = JobService(host, new_application_registry_bundle())
+    service = JobService(HostClient(host.root), new_application_registry_bundle())
     monkeypatch.setattr(
         service,
         "_training_worker",
@@ -809,7 +719,13 @@ TrainingLoop.run_block = pause_first_update
     app.include_router(projects.router)
     app.state.job_service = service
     app.state.job_activity = JobActivity(service)
-    request.addfinalizer(app.state.job_activity.close)
+
+    def close_studio():
+        # As the application lifespan does: the follower's long poll ends with the client.
+        service.host.close()
+        app.state.job_activity.close()
+
+    request.addfinalizer(close_studio)
     app.state.remote_runs = None
     app.state.project_folders = ProjectFolderService(tmp_path / "projects")
     client = TestClient(app)
@@ -892,11 +808,11 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
         f"/api/jobs/{consumer.id}/resume", json={"token": "internal-resume"}
     )
     assert hidden_resume.status_code == 404
-    wait_until(lambda: stop_ready.exists() or job_row(host, producer)["outcome"], timeout=20)
+    wait_until(lambda: stop_ready.exists() or job_row(host, producer)["outcome"])
     assert stop_ready.exists(), job_row(host, producer)
     stopping = client.post("/api/jobs/stop", json={"job_ids": [producer], "mode": "checkpoint"})
     assert stopping.status_code == 202, stopping.text
-    wait_until(lambda: job_row(host, producer)["outcome"], timeout=20)
+    wait_until(lambda: job_row(host, producer)["outcome"])
     stopped = job_row(host, producer)
     assert stopped["state"] == "stopped", stopped
     assert stopped["outcome"]["store_job_entry"]
@@ -941,7 +857,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     assert continuation["request_id"] == stopped["request"]
     resumed_launch = host.jobs(job_id=continued, include_launch=True)[0]["launch"]
     assert resumed_launch["payload"]["resume"] == checkpoint
-    wait_until(lambda: job_row(host, continued)["outcome"], timeout=20)
+    wait_until(lambda: job_row(host, continued)["outcome"])
     finished = job_row(host, continued)
     assert finished["state"] == "succeeded", finished
     assert finished["outcome"]["store_success"]
@@ -998,7 +914,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
     latest = Path(completion["checkpoint"]["checkpoint_root"]) / LATEST_NAME
     latest.write_text("This mutable pointer is outside the pinned completion closure.")
     (tmp_path / "open-gate").touch()
-    terminal = wait_until(lambda: job_row(host, consumer.id)["outcome"], timeout=20)
+    terminal = wait_until(lambda: job_row(host, consumer.id)["outcome"])
     assert terminal["outcome"] == "succeeded", host.events()["events"][-10:]
     assert job_row(host, consumer.id)["delivery"] == 1
     assert json.loads((tmp_path / "verified.json").read_text()) == pinned
@@ -1096,7 +1012,7 @@ Path({str(tmp_path / "verified.json")!r}).write_text(json.dumps(bindings[0]))
                 "scheme": "http",
                 "server": ("testserver", 80),
             }
-            await asyncio.wait_for(app(scope, receive, send), timeout=5)
+            await asyncio.wait_for(app(scope, receive, send), timeout=HANG_SECONDS)
         return notices, replay
 
     notices, replay = asyncio.run(observe_folder())
@@ -1139,12 +1055,12 @@ def test_resumed_consumer_inherits_its_pinned_completion(host, tmp_path, complet
     assert json.loads((tmp_path / "consumed.jsonl").read_text()) == {"bindings": [pinned]}
 
 
-def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_path):
-    (tmp_path / "slow_import.py").write_text("import time\ntime.sleep(60)\ndef main(*args, **kwargs):\n    return 0\n")
-    client = HostClient(tmp_path / "host")
+def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_path, private_hosts):
+    (tmp_path / "slow_import.py").write_text(HELD_UNTIL_STOPPED + "def main(*args, **kwargs):\n    return 0\n")
+    client = HostClient(private_hosts / "host")
     pid = client.ping()["pid"]
     client.warm(Launch((sys.executable,), cwd=str(tmp_path), warm_entrypoint="slow_import:main", payload={}))
-    profiles = tmp_path / "host" / "workers"
+    profiles = client.root / "workers"
     wait_until(lambda: any(profiles.glob("*/profile.json")))
 
     def process_exists(process):
@@ -1160,18 +1076,22 @@ def test_sigterm_ends_the_host_without_waiting_for_a_warm_or_a_long_poll(tmp_pat
     assert wait_until(lambda: alive(str(profiles)))
 
     def waiting():
-        with pytest.raises(HostError):
-            HostClient(tmp_path / "host").events(after=0, wait=30)
+        # A reply would mean the Host served the poll to its end before exiting.
+        with pytest.raises(HostError) as ended:
+            HostClient(client.root).events(after=0, wait=30)
+        assert ended.value.code == "disconnected"
 
+    def connections():
+        return len(psutil.Process(pid).net_connections(kind="unix"))
+
+    idle = connections()
     with ThreadPoolExecutor(1) as pool:
         poll = pool.submit(waiting)
-        time.sleep(0.5)
+        wait_until(lambda: connections() > idle)
         os.kill(pid, signal.SIGTERM)
-        started = time.monotonic()
-        assert wait_until(lambda: not process_exists(pid), timeout=5)
-        assert time.monotonic() - started < 2
-        poll.result(timeout=5)
-    assert wait_until(lambda: not alive(str(profiles)), timeout=5)
+        assert wait_until(lambda: not process_exists(pid))
+        poll.result(timeout=HANG_SECONDS)
+    assert wait_until(lambda: not alive(str(profiles)))
 
 
 
@@ -1186,8 +1106,7 @@ def _run_host(tmp_path, probe, *, accepted=None):
             serve = host.serve
             host.serve = lambda reader, writer: accepted(task, serve, reader, writer)
         task = asyncio.create_task(host.run())
-        while not host.address.exists():
-            await asyncio.sleep(0.001)
+        await wait_until_async(host.address.exists)
         try:
             return await probe(host, task)
         finally:
@@ -1209,18 +1128,27 @@ def test_shutdown_ends_a_connection_accepted_before_its_handler_ran(tmp_path):
         reader, writer = await asyncio.open_unix_connection(str(host.address))
         writer.write(json.dumps(dict(version=VERSION, op="events", after=0, projects=[], limit=1, wait=3)).encode() + b"\n")
         await writer.drain()
-        await asyncio.wait({task}, timeout=1)
+        await asyncio.wait({task}, timeout=HANG_SECONDS)
+        # A reply would mean the handler served the poll to its end before shutdown finished.
+        try:
+            answered = await reader.read()
+        except ConnectionResetError:
+            answered = b""
         writer.close()
-        return task.done()
+        return task.done() and answered == b""
 
     assert _run_host(tmp_path, probe, accepted=accepted)
 
 
-def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path):
+def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path, monkeypatch):
     import socket
 
+    from feedbax.host import daemon
     from feedbax.host.io import encode
     from feedbax.host.protocol import VERSION
+
+    # The handler's reply limit outlasts the test's wait, so only shutdown itself can end the handler in time.
+    monkeypatch.setattr(daemon, "HANG_SECONDS", 10 * HANG_SECONDS)
 
     async def probe(host, task):
         host.store.record_put("large", {"value": "x" * 4_000_000})
@@ -1231,7 +1159,7 @@ def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(tmp_path):
             await loop.sock_sendall(sock, encode({"version": VERSION, "op": "record_get", "key": "large"}))
             assert await loop.sock_recv(sock, 1) == b"{"
             task.cancel()
-            await asyncio.wait({task}, timeout=1)
+            await asyncio.wait({task}, timeout=HANG_SECONDS)
             return task.done()
 
     assert _run_host(tmp_path, probe)
@@ -1244,7 +1172,14 @@ def test_shutdown_does_not_wait_for_a_reply_its_handler_already_handed_off(tmp_p
     from feedbax.host.io import encode
     from feedbax.host.protocol import VERSION
 
-    monkeypatch.setattr(daemon, "REPLY_SECONDS", 0.2)
+    monkeypatch.setattr(daemon, "HANG_SECONDS", 0.2)
+    returned = asyncio.Event()
+
+    async def accepted(task, serve, reader, writer):
+        try:
+            await serve(reader, writer)
+        finally:
+            returned.set()
 
     async def probe(host, task):
         host.store.record_put("large", {"value": "x" * 4_000_000})
@@ -1254,10 +1189,10 @@ def test_shutdown_does_not_wait_for_a_reply_its_handler_already_handed_off(tmp_p
             await loop.sock_connect(sock, str(host.address))
             await loop.sock_sendall(sock, encode({"version": VERSION, "op": "record_get", "key": "large"}))
             assert await loop.sock_recv(sock, 1) == b"{"
-            # Past the reply limit the handler's own work is over; the client still holds its socket open.
-            await asyncio.sleep(1)
+            # Once the handler has given up its reply its own work is over; the client still holds its socket open.
+            await asyncio.wait_for(returned.wait(), HANG_SECONDS)
             task.cancel()
-            await asyncio.wait({task}, timeout=1)
+            await asyncio.wait({task}, timeout=HANG_SECONDS)
             return task.done()
 
-    assert _run_host(tmp_path, probe)
+    assert _run_host(tmp_path, probe, accepted=accepted)

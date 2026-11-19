@@ -22,6 +22,7 @@ from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE
 from feedbax.builtins.runtime.filters import LowPassFilter
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.state import CartesianState
+from tests.support.hang import HANG_SECONDS
 
 
 pytestmark = pytest.mark.usefixtures("enable_jax_x64")
@@ -262,7 +263,7 @@ def test_solver_checkpoint_continuation_survives_cold_and_warm_processes(tmp_pat
                 ],
                 capture_output=True,
                 text=True,
-                timeout=25,
+                timeout=HANG_SECONDS,
             )
             assert process.returncode == 0, process.stdout + process.stderr
             results.append(json.loads(process.stdout))

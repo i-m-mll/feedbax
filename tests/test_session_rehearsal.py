@@ -38,11 +38,9 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, evidence, verify_authorization
 from tests.test_canonical_evaluate_admission import managed_evaluation_definition
-from tests import test_local_job_host
+from tests.support.host import until_exists, wait_until
+from tests.support.hang import HANG_SECONDS
 
-
-host_fixture = test_local_job_host.host
-wait_until = test_local_job_host.wait_until
 
 PROJECT = "reaching"
 TRAIN = RunKey("default", "train", "default")
@@ -121,7 +119,11 @@ def _terminal_without_rpc(database: Path):
     return rows if len(rows) == 2 and all(row[2] is not None for row in rows) else None
 
 
-def test_session_rehearses_saved_train_and_evaluate_after_controller_exit(host_fixture, tmp_path, monkeypatch):
+@pytest.mark.round(
+    "A controller process exits after delegating to a venue Host of its own, whose real Train "
+    "and Evaluate are collected exactly."
+)
+def test_session_rehearses_saved_train_and_evaluate_after_controller_exit(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
     provider_root = tmp_path / "provider"
@@ -177,23 +179,15 @@ def test_session_rehearses_saved_train_and_evaluate_after_controller_exit(host_f
         gate = tmp_path / "gate"
         gate.mkdir()
         (gate / "session_test_gate.py").write_text(
-            """
+            f"""
 import os
-import time
-from pathlib import Path
 
 from feedbax.training.method_runtime import TrainingLoop
 
 original = TrainingLoop.run_block
 
 def execute(*args, **kwargs):
-    release = Path(os.environ["SESSION_TEST_RELEASE"])
-    deadline = time.monotonic() + 15
-    while not release.exists():
-        if time.monotonic() >= deadline:
-            raise TimeoutError("Controller did not detach")
-        time.sleep(.02)
-    return original(*args, **kwargs)
+{until_exists('os.environ["SESSION_TEST_RELEASE"]', indent="    ")}    return original(*args, **kwargs)
 
 TrainingLoop.run_block = execute
 """
@@ -201,11 +195,11 @@ TrainingLoop.run_block = execute
         process = subprocess.run(
             [sys.executable, "-m", __name__, str(controller_root), str(provider_root),
              str(folders.root), str(gate), str(request.id)],
-            capture_output=True, text=True, timeout=22,
+            capture_output=True, text=True, timeout=HANG_SECONDS,
         )
         assert process.returncode == 0, process.stdout + process.stderr
         (gate / "release").touch()
-        rows = wait_until(lambda: _terminal_without_rpc(venue / "host" / "host.sqlite"), timeout=31)
+        rows = wait_until(lambda: _terminal_without_rpc(venue / "host" / "host.sqlite"))
         assert [row[1] for row in rows] == ["succeeded", "succeeded"], rows
         train_id, evaluation_id = (row[0] for row in rows)
 
@@ -264,7 +258,7 @@ TrainingLoop.run_block = execute
         assert all(row["project"] == project_id for row in attempts)
         assert all(row["data"]["target"] == state.placement.model_dump(mode="json") for row in attempts)
         assert all(SuccessView(source).read_receipt(ref).target == state.placement for ref in receipts.values())
-        local_jobs = _jobs(host_fixture)
+        local_jobs = _jobs(host)
 
         def collect(attempt):
             result = local_jobs.collect_session_attempt(
@@ -345,15 +339,20 @@ TrainingLoop.run_block = execute
             provider.remove(resource)
 
 
+@pytest.mark.round(
+    "The venue's Host is killed, and the watchdog closes the venue at a real cost ceiling some seconds later."
+)
 def test_watchdog_closes_venue_at_cost_ceiling_after_host_dies(tmp_path):
     provider = LocalVenueProvider(tmp_path / "provider")
     driver = _driver(tmp_path / "controller", provider)
-    request = _request(provider, maximum=2_000)
+    # Fixed when the venue is acquired, the ceiling must cover the venue Host's start, up to about
+    # 2.5 s on a loaded machine.
+    request = _request(provider, maximum=6_000)
     state = driver.open(request, _authorization(request), adoption_token=secrets.token_urlsafe())
-    assert state.launch.ends_at_ms == state.launch.acquired_at_ms + 2_000
+    assert state.launch.ends_at_ms == state.launch.acquired_at_ms + 6_000
     venue = driver.attach(request.id)
     os.kill(venue.ping()["pid"], signal.SIGKILL)
-    wait_until(lambda: not driver.inventory(), timeout=6)
+    wait_until(lambda: not driver.inventory())
     assert driver.close(request.id).remaining == ()
 
 

@@ -111,17 +111,12 @@ def seed_jax_cache(shared: Path, host_root: Path) -> None:
 
 
 def publish_jax_cache(host_root: Path, shared: Path) -> None:
-    """Link this home's complete JAX cache entries, which JAX names by content, into the shared cache.
-
-    JAX writes an entry's access-time file after its value, so a value without one may be partial.
-    """
-    for atime in (host_root / "jax").glob("*-atime"):
-        value = atime.with_name(atime.name.removesuffix("-atime") + "-cache")
-        for entry in (value, atime):
-            try:
-                os.link(entry, shared / entry.name)
-            except FileExistsError:
-                pass
+    """Link this home's JAX cache entries, which JAX names by content and Feedbax writes whole, into the shared cache."""
+    for entry in (host_root / "jax").glob("*-cache"):
+        try:
+            os.link(entry, shared / entry.name)
+        except FileExistsError:
+            pass
 
 
 def stop_host_workers(host_root: Path) -> None:

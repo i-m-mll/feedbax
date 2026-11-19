@@ -25,10 +25,9 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 from tests.test_saved_best_evaluate import authored_best
 
-host = host_fixture
 
 
 def grouped_project():
@@ -203,12 +202,12 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
         assert "/inputs/subject" not in origins
 
     release = tmp_path / "release"
-    gate = run_job("gate", f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+    gate = run_job("gate", held_until_released(release),
                    project=project)
-    admit(host, "gate", gate)
+    admit(host, token("gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))
     runs = [*trains, *ranks.values()]
-    submitted = jobs.admit_plan(folders, saved, run_keys=tuple(run.key for run in runs), token="grouped")
+    submitted = jobs.admit_plan(folders, saved, run_keys=tuple(run.key for run in runs), token=token("grouped"))
     assert [item.disposition for item in submitted.items] == ["admitted"] * len(runs)
     ids = {run.key: item.job_id for run, item in zip(runs, submitted.items, strict=True)}
     for run in ranks.values():
@@ -220,7 +219,7 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
     for run in runs:
         row = wait_until(lambda: (
             current if (current := job_row(host, ids[run.key]))["outcome"] is not None else None
-        ), timeout=28)
+        ))
         assert row["state"] == "succeeded", row["outcome"]
     scores = {}
     for run in trains:
@@ -312,8 +311,8 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
             "upstream", winner.step, step=winner.step, variant=winner.variant, row=winner.row,
         )
     key = groups[-1].ranks[0]
-    evaluated, = jobs.admit_plan(folders, frozen, run_keys=(fixed[key].key,), token="frozen").items
+    evaluated, = jobs.admit_plan(folders, frozen, run_keys=(fixed[key].key,), token=token("frozen")).items
     assert evaluated.disposition == "admitted"
-    wait_until(lambda: job_row(host, evaluated.job_id, "succeeded"), timeout=22)
+    wait_until(lambda: job_row(host, evaluated.job_id, "succeeded"))
     fresh = SuccessView(view.store).read_attempt(evaluated.job_id)
     assert fresh.receipt.effective == view.read_attempt(ids[ranks[key].key]).receipt.effective

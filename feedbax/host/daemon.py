@@ -12,20 +12,22 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.host import live_evaluate
+from feedbax.host import jax_cache, live_evaluate
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection
 from feedbax.host.completion import CompletionFileError
-from feedbax.host.io import TOKEN_ENV, encode, private_directory, socket_path, write_json
+from feedbax.host.io import JAX_CACHE_ENV, TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, local_filesystem
 from feedbax.host.process import verify
 from feedbax.host.protocol import (
-    LIGHT_ENTRYPOINT, LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError, JsonObject, SessionCloseClaim, SessionStatus,
+    HANG_SECONDS, LIGHT_ENTRYPOINT, LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError, JsonObject,
+    SessionCloseClaim, SessionStatus,
 )
 from feedbax.host.session import SessionFence
 from feedbax.host.store import Store, StorePublicationPending
@@ -34,8 +36,6 @@ LOG_LINE_LIMIT = 8192
 EVENT_LINE_LIMIT = 2 * 1024 * 1024
 POLL_SECONDS = 0.20
 TERM_GRACE = 2
-# How long a connection may take to send its request, or to take its reply, before the Host drops it.
-REPLY_SECONDS = 5
 RESERVE_BYTES = 2 * 1024 * 1024
 _SESSION_READS = {
     "ping", "events", "jobs_snapshot", "stopped_checkpoint", "checkpoint_producer", "jobs", "submissions",
@@ -80,7 +80,7 @@ class Host:
         self.address = socket_path(root)
         self.deliveries = private_directory(root / "deliveries")
         self.worker_root = private_directory(root / "workers")
-        self.cache = private_directory(root / "jax")
+        self.cache = private_directory(Path(os.environ.get(JAX_CACHE_ENV) or root / "jax").expanduser())
         self.store = Store(root / "host.sqlite")
         self.stream_id: str | None = None
         if self.session is not None:
@@ -173,11 +173,7 @@ class Host:
             {
                 TOKEN_ENV: token,
                 "PYTHONUNBUFFERED": "1",
-                "JAX_COMPILATION_CACHE_DIR": str(self.cache),
-                "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
-                "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0",
-                "JAX_COMPILATION_CACHE_MAX_SIZE": str(1024**3),
-                "JAX_RAISE_PERSISTENT_CACHE_ERRORS": "true",
+                JAX_CACHE_ENV: str(self.cache),
             }
         )
         ours, theirs = socket.socketpair()
@@ -971,7 +967,7 @@ class Host:
             if self.closing:
                 return
             try:
-                raw = await asyncio.wait_for(reader.readline(), REPLY_SECONDS)
+                raw = await asyncio.wait_for(reader.readline(), HANG_SECONDS)
                 if not raw.endswith(b"\n"):
                     return
                 message = json.loads(raw)
@@ -999,7 +995,7 @@ class Host:
                     writer.transport.abort()
                 else:
                     writer.close()
-                    await asyncio.wait_for(writer.wait_closed(), REPLY_SECONDS)
+                    await asyncio.wait_for(writer.wait_closed(), HANG_SECONDS)
             except (OSError, TimeoutError):
                 writer.transport.abort()
             finally:
@@ -1010,6 +1006,7 @@ class Host:
                 self.wake.set()
 
     async def run(self) -> None:
+        threading.Thread(target=jax_cache.evict, args=(self.cache,), name="jax-cache-evict", daemon=True).start()
         self.address.unlink(missing_ok=True)
         server = await asyncio.start_unix_server(self._accept, str(self.address), limit=MAX_RPC_BYTES)
         try:

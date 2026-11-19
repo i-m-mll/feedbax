@@ -29,6 +29,7 @@ from feedbax.orchestration.repo_snapshot import (
     verify_repo_snapshot,
 )
 from tests.support.git_fixtures import run_fixture_git
+from tests.support.hang import HANG_SECONDS
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -380,7 +381,6 @@ _SEALER_SCRIPT = """
 import json
 import os
 import sys
-import time
 import traceback
 from pathlib import Path
 
@@ -390,10 +390,8 @@ index, source, parent, gate, result = sys.argv[1:6]
 expected = int(os.environ["FEEDBAX_TEST_SEALER_COUNT"])
 gate_path = Path(gate)
 (gate_path / f"ready-{index}").write_text("", encoding="utf-8")
-deadline = time.monotonic() + 120.0
 while len(list(gate_path.glob("ready-*"))) < expected:
-    if time.monotonic() > deadline:
-        raise TimeoutError("concurrent sealers failed to rendezvous")
+    pass
 
 try:
     record = seal_repo_snapshot("repo", source, snapshot_parent=parent).record
@@ -455,7 +453,7 @@ def _run_concurrent_sealers(tmp_path: Path, sources: list[Path], parent: Path) -
         for index, source in enumerate(sources)
     ]
     for process in processes:
-        assert process.wait(timeout=180) == 0, "a concurrent sealer process crashed"
+        assert process.wait(timeout=HANG_SECONDS) == 0, "a concurrent sealer process crashed"
     return [json.loads(path.read_text(encoding="utf-8")) for path in results]
 
 

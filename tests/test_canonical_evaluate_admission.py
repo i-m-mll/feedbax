@@ -35,10 +35,8 @@ from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.validity.evidence import stage_evidence
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 from tests.support.store_damage import writable_store_object
-
-host = host_fixture
 
 
 def _save_project(folders, project, authored):
@@ -145,8 +143,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     assert by_key[baseline].request_id != by_key[conditions["heavy"]].request_id
     assert all(by_key[key].request_id.startswith("evaluate:") for key in keys)
 
-    def launch(service, rows, token):
-        return service.admit_plan(folders, plan, run_keys=rows, token=token)
+    def launch(service, rows, name):
+        return service.admit_plan(folders, plan, run_keys=rows, token=token(name))
 
     unsupported = RunKey("default", "unsupported", "default")
     (selector,) = launch(jobs, (unsupported,), "unsupported-selector").items
@@ -160,7 +158,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     release = tmp_path / "release"
     gate = run_job(
         "gate",
-        f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+        held_until_released(release),
         project=project,
     )
     admit(host, "gate", gate)
@@ -188,10 +186,10 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     (stopped,) = jobs.stop((queued.job_id,), "checkpoint")
     assert stopped.job.status == "stopped" and not stopped.job.can_resume
     with pytest.raises(JobConflict, match="resubmit the saved Evaluate row"):
-        jobs.resume(queued.job_id, "evaluate-resume")
+        jobs.resume(queued.job_id, token("evaluate-resume"))
     release.touch()
 
-    trained = wait_until(lambda: job_row(host, source.job_id, "succeeded"), timeout=24)
+    trained = wait_until(lambda: job_row(host, source.job_id, "succeeded"))
     settled_plan = folders.read_plan(project, revision=None).plan
     assert settled_plan.requests == plan.plan.requests
     assert settled_plan.documents == plan.plan.documents
@@ -233,7 +231,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     for key, item in zip(keys, submitted.items, strict=True):
         row = wait_until(lambda: (
             job_row(host, item.job_id, "succeeded") or job_row(host, item.job_id, "failed")
-        ), timeout=22)
+        ))
         assert row["state"] == "succeeded", row.get("outcome")
         assert row["request"] == by_key[key].request_id
         (edge,) = row["edges"]

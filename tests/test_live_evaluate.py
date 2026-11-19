@@ -22,10 +22,8 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_payload
 from tests.test_canonical_evaluate_admission import _save_project
-from tests.test_local_job_host import host as host_fixture, job_row, restart, wait_until
+from tests.support.host import job_row, restart, token, wait_until
 from tests.test_saved_update_series import definition
-
-host = host_fixture
 
 
 def test_live_evaluate_replays_prefix_and_backfills_exact_interrupted_checkpoint(host, tmp_path, monkeypatch):
@@ -48,7 +46,7 @@ def test_live_evaluate_replays_prefix_and_backfills_exact_interrupted_checkpoint
     (tmp_path / "stop_at_publication.py").write_text("""
 import os
 from pathlib import Path
-from time import monotonic, sleep
+import threading
 
 from feedbax.training_host_worker import _Events
 
@@ -62,10 +60,7 @@ def append(self, kind, data, **kwargs):
         return
     signal = Path(os.environ["CUT_MARKER"])
     signal.touch()
-    deadline = monotonic() + 20
-    while monotonic() < deadline:
-        sleep(.01)
-    raise TimeoutError("expected worker-loss injection")
+    threading.Event().wait()
 
 _Events.append = append
 """)
@@ -86,7 +81,7 @@ _Events.append = append
         for step in ("baseline", "other")
     }
     run_keys = tuple(rows[step].key for step in ("train", "baseline", "other"))
-    admission = jobs.admit_plan(folders, plan, run_keys=run_keys, token="joint")
+    admission = jobs.admit_plan(folders, plan, run_keys=run_keys, token=token("joint"))
     assert all(item.disposition == "admitted" for item in admission.items), admission
     attempts = {json.loads(item.run_key)[1]: item.job_id for item in admission.items}
     producer, evaluation, ordinary = (attempts[step] for step in ("train", "baseline", "other"))
@@ -97,7 +92,7 @@ _Events.append = append
             if event["job_id"] == job_id and event["kind"] == "evaluation_point"
         ]
 
-    wait_until(lambda: (tmp_path / "before-point").exists(), timeout=20)
+    wait_until(lambda: (tmp_path / "before-point").exists())
     prefix = wait_until(lambda: found if len(found := points(evaluation)) == 2 else None)
     assert [point["checkpoint"]["completed_updates"] for point in prefix] == [2, 4]
     service = ProjectPlanService(folders, jobs)
@@ -207,12 +202,12 @@ _Events.append = append
     assert restarted.pending.next_update == 8
     assert restarted.points == attempt.points
     assert service.evaluation_objective(project, read) == active_curve
-    assert jobs.admit_plan(folders, plan, run_keys=run_keys, token="joint") == admission
+    assert jobs.admit_plan(folders, plan, run_keys=run_keys, token=token("joint")) == admission
 
-    resumed = jobs.resume(producer, "exact-resume")
-    wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=22)
-    result = wait_until(lambda: job_row(host, evaluation, "succeeded"), timeout=22)
-    wait_until(lambda: job_row(host, ordinary, "succeeded"), timeout=22)
+    resumed = jobs.resume(producer, token("exact-resume"))
+    wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
+    result = wait_until(lambda: job_row(host, evaluation, "succeeded"))
+    wait_until(lambda: job_row(host, ordinary, "succeeded"))
     bound = result["edges"][0]["binding"]
     assert bound["checkpoint_selection"]["lineage"] == [producer, resumed.job_id]
     assert [point["checkpoint"]["completed_updates"] for point in points(evaluation)] == [2, 4, 8]
@@ -234,8 +229,8 @@ _Events.append = append
     assert [point.checkpoint.completed_updates for point in retained_curve.points] == [2, 4, 6, 8]
     with live.open_states() as dataset:
         assert dataset.data("update").tolist() == [2, 4, 6, 8]
-    (late,) = jobs.admit_plan(folders, plan, run_keys=(rows["baseline"].key,), token="late").items
-    wait_until(lambda: job_row(host, late.job_id, "succeeded"), timeout=22)
+    (late,) = jobs.admit_plan(folders, plan, run_keys=(rows["baseline"].key,), token=token("late")).items
+    wait_until(lambda: job_row(host, late.job_id, "succeeded"))
     ordinary_result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=late.job_id)
     assert job_row(host, late.job_id)["data"]["placement_detail"]["reason"] == "late"
     assert ordinary_result._manifest().metadata["placement"] == "ordinary"

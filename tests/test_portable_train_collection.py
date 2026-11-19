@@ -26,11 +26,14 @@ from tests.support.finite_train import install_finite_gate
 from tests.support.store_damage import writable_store_object
 from tests.support.store_transport import loopback_store
 from tests.test_canonical_train_admission import _saved_chain
-from tests.test_local_job_host import host as host_fixture, restart, wait_until
+from tests.support.host import private_host as host_fixture, restart, wait_until
 
 host = host_fixture
 
 
+@pytest.mark.round(
+    "Real Train results move between two Hosts and resume after the first is removed."
+)
 def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     registries = new_application_registry_bundle()
@@ -55,7 +58,7 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
             (row,) = client.jobs(job_id=job, include_launch=True)
             return row if row["outcome"] is not None else None
 
-        result = wait_until(read, timeout=32)
+        result = wait_until(read)
         assert result["state"] == expected, result["outcome"]
         return result
 
@@ -83,7 +86,7 @@ def test_collect_train_and_resume_a_stopped_successor_after_venue_removal(host, 
         gate.mkdir()
         install_finite_gate(gated, gate, stop_at=3, resume_at=8)
         stopped_id = launch(gated, folders, reviewed, child, "venue-stop")
-        wait_until(lambda: (gate / "before-stop").exists(), timeout=32)
+        wait_until(lambda: (gate / "before-stop").exists())
         (stop,) = gated.stop((stopped_id,), "checkpoint")
         assert stop.error is None
         stopped = terminal(venue, stopped_id, "stopped")

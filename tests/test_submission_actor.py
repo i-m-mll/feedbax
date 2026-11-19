@@ -18,11 +18,8 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_project
-from tests.test_local_job_host import admit, job_row, restart, run_job, wait_until
-from tests.test_local_job_host import host as host_fixture
-
-
-host = host_fixture
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
+from tests.support.hang import HANG_SECONDS
 
 
 def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, monkeypatch):
@@ -48,9 +45,9 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
     host.policy(compute=1)
     gate = run_job(
         "actor-gate",
-        f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+        held_until_released(release),
     )
-    admit(host, "gate", gate)
+    admit(host, token("gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))
 
     def cli(*flags, env_label=None):
@@ -59,7 +56,7 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
             env["FEEDBAX_ACTOR_LABEL"] = env_label
         result = subprocess.run(
             [sys.executable, "-m", "feedbax.cli", "run", str(projects / project), "train", *flags],
-            cwd=Path(__file__).resolve().parents[1], env=env, text=True, capture_output=True, timeout=12,
+            cwd=Path(__file__).resolve().parents[1], env=env, text=True, capture_output=True, timeout=HANG_SECONDS,
         )
         assert result.returncode == 0, result.stderr
         return result.stdout.splitlines()[0].removeprefix("Submission ")
@@ -88,23 +85,25 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
     assert "actor" not in before["launch"]["payload"]
     assert before["request"] == planned.request_id
 
-    legacy = run_job("actor-legacy", "pass", project="legacy", request=planned.request_id)
-    legacy_record = {"project": "legacy", "continues": None, "runs": {}}
+    legacy_project = token("legacy")
+    legacy = run_job("actor-legacy", "pass", project=legacy_project, request=planned.request_id)
+    later = run_job("actor-later", "pass", project=legacy_project, request=planned.request_id)
+    legacy_record = {"project": legacy_project, "continues": None, "runs": {}}
     legacy_data = {
         "run_key": "old", "stage_id": "old", "scenario_id": "default",
         "label": "Old attempt", "coordinates": {}, "manifest_root": str(tmp_path / "legacy-store"),
     }
     old_submission = host.admit(
-        "actor-legacy", [AdmissionItem("old", replace(legacy, data=legacy_data))], record=legacy_record,
+        token("actor-legacy"), [AdmissionItem("old", replace(legacy, data=legacy_data))], record=legacy_record,
     )
     restart(host)
     with TestClient(create_app(projects_dir=projects)) as client:
         assert "actor" not in client.get(f"/api/submissions/{old_submission['id']}").json()
-        assert "actor" not in client.get("/api/jobs", params={"project": "legacy"}).json()["jobs"][0]
+        assert "actor" not in client.get("/api/jobs", params={"project": legacy_project}).json()["jobs"][0]
         stored = client.get(f"/api/submissions/{labelled_id}").json()
         assert stored["actor"] == {"client": "cli", "label": "explicit actor"}
         attached = client.post(f"/api/projects/{project}/train-runs", json={
-            "revision": reviewed.revision, "run_keys": [asdict(key)], "token": "studio-attached",
+            "revision": reviewed.revision, "run_keys": [asdict(key)], "token": token("studio-attached"),
         })
         assert attached.status_code == 202, attached.text
         assert attached.json()["actor"] == {"client": "studio"}
@@ -116,23 +115,23 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
 
         # A queued legacy attempt can receive an attachment from a current client.
         legacy_attachment = host.admit(
-            "actor-legacy-attach",
-            [AdmissionItem("old", replace(legacy, id="actor-later", data=legacy_data))],
+            token("actor-legacy-attach"),
+            [AdmissionItem("old", replace(later, data=legacy_data))],
             record=legacy_record | {"actor": {"client": "cli", "label": "Later actor"}},
         )
         assert legacy_attachment["items"][0]["disposition"] == "attached"
         assert jobs.submission(legacy_attachment["id"]).actor.label == "Later actor"
-        assert jobs.jobs(project="legacy").jobs[0].actor is None
+        assert jobs.jobs(project=legacy_project).jobs[0].actor is None
 
         release.touch()
-        finished = wait_until(lambda: job_row(host, origin.job_id, "succeeded"), timeout=24)
+        finished = wait_until(lambda: job_row(host, origin.job_id, "succeeded"))
         receipt = finished["outcome"]["receipt"]
         manifest = canonical_manifest_path(
             "TrainingRunManifest", receipt["manifest_id"], root=reviewed.store_path,
         ).read_bytes()
         assert b'"actor"' not in manifest and b'explicit actor' not in manifest
         new = client.post(f"/api/projects/{project}/train-runs", json={
-            "revision": reviewed.revision, "run_keys": [asdict(key)], "token": "studio-new",
+            "revision": reviewed.revision, "run_keys": [asdict(key)], "token": token("studio-new"),
         })
         assert new.status_code == 202, new.text
         studio = new.json()
@@ -142,4 +141,4 @@ def test_saved_cli_actor_and_studio_activity_survive_restart(host, tmp_path, mon
         assert [(job["request_id"], job["actor"]) for job in activity] == [
             (planned.request_id, stored["actor"]), (planned.request_id, studio["actor"]),
         ]
-        wait_until(lambda: job_row(host, studio["items"][0]["job_id"], "succeeded"), timeout=24)
+        wait_until(lambda: job_row(host, studio["items"][0]["job_id"], "succeeded"))

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import threading
-import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Event
 
@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 from feedbax.host import HostError
 from feedbax.host.protocol import AdmissionItem
 from feedbax.web.app import create_app
-from tests.test_local_job_host import host as host_fixture, run_job, wait_until
+from tests.support.hang import HANG_SECONDS
+from tests.support.host import HELD_UNTIL_STOPPED, private_host as host_fixture, run_job, wait_until
 
 host = host_fixture
 
@@ -38,24 +39,26 @@ def test_job_reads_do_not_wait_on_a_busy_host(host, tmp_path, monkeypatch):
         def busy(read):
             def call(*args, **kwargs):
                 blocked.set()
-                released.wait(30)
+                released.wait()
                 return read(*args, **kwargs)
             return call
 
         for name, read in reads.items():
             monkeypatch.setattr(client, name, busy(read))
-        job = _studio_job("held", project, "import time; time.sleep(30)")
-        client.admit("busy-host", [AdmissionItem(job.id, job)], record={})
-        assert blocked.wait(10)
-
-        started = time.monotonic()
-        response = studio.get("/api/jobs", params={"project": project})
-        elapsed = time.monotonic() - started
+        job = _studio_job("held", project, HELD_UNTIL_STOPPED)
+        try:
+            client.admit("busy-host", [AdmissionItem(job.id, job)], record={})
+            assert blocked.wait(HANG_SECONDS)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                reading = pool.submit(studio.get, "/api/jobs", params={"project": project})
+                try:
+                    response = reading.result(timeout=HANG_SECONDS)
+                finally:
+                    released.set()
+        finally:
+            released.set()
         assert response.status_code == 200, response.text
         assert response.json()["jobs"] == []
-        assert elapsed < 0.5
-
-        released.set()
 
         def started():
             jobs = studio.get("/api/jobs", params={"project": project}).json()["jobs"]
@@ -71,7 +74,7 @@ def _admit(client, token: str, *jobs) -> None:
 def test_an_unreadable_record_is_listed_only_for_its_own_project(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
-    sleep = "import time; time.sleep(30)"
+    sleep = HELD_UNTIL_STOPPED
     with TestClient(create_app(projects_dir=tmp_path / "projects")) as studio:
         client = studio.app.state.job_service.host
         invalid = replace(_studio_job("invalid", "a", sleep), request="unknown-kind")
@@ -95,8 +98,14 @@ def test_an_unreadable_record_is_listed_only_for_its_own_project(host, tmp_path,
 
         cursor = read("b")["cursor"]
         _admit(client, "second", _studio_job("second", "b", sleep))
-        _, page = studio.app.state.job_activity.events(after=cursor, projects=("b",), wait=10, machine=True)
-        assert "second" in {event.job_id for event in page.events}
+
+        def second_listed():
+            nonlocal cursor
+            _, page = studio.app.state.job_activity.events(after=cursor, projects=("b",), wait=0.2, machine=True)
+            cursor = page.cursor
+            return "second" in {event.job_id for event in page.events}
+
+        assert wait_until(second_listed)
         assert {job["job_id"] for job in read("b")["jobs"]} == {"first", "second"}
 
 
@@ -115,7 +124,7 @@ def test_the_follower_recovers_from_one_unexpected_error(host, tmp_path, monkeyp
             return page(**kwargs)
 
         monkeypatch.setattr(service, "activity_page", once)
-        _admit(service.host, "wake", _studio_job("after", "p", "import time; time.sleep(30)"))
+        _admit(service.host, "wake", _studio_job("after", "p", HELD_UNTIL_STOPPED))
 
         def failing():
             response = studio.get("/api/jobs")
@@ -135,37 +144,38 @@ def test_reads_recover_as_soon_as_a_quiet_host_answers_again(host, tmp_path, mon
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
     with TestClient(create_app(projects_dir=tmp_path / "projects")) as studio:
         service = studio.app.state.job_service
-        job = _studio_job("quiet", "p", "import time; time.sleep(30)")
+        job = _studio_job("quiet", "p", HELD_UNTIL_STOPPED)
         _admit(service.host, "quiet", job)
 
         page = service.activity_page
-
-        def settled():
-            head = page(after=0, wait=0).head
-            time.sleep(0.5)
-            return head == page(after=0, wait=0).head == studio.get("/api/jobs").json()["cursor"]
-
-        assert wait_until(settled)
+        wait_until(lambda: service.host.jobs(job_id=job.id)[0]["state"] == "running")
+        assert wait_until(lambda: page(after=0, wait=0).head == studio.get("/api/jobs").json()["cursor"])
         down = Event()
         down.set()
+
+        ended = Event()
 
         def restarting(**kwargs):
             if down.is_set():
                 raise HostError("disconnected", "host socket closed before a complete message")
+            if kwargs["wait"]:
+                # A follow wait is held until the test ends, as one longer than the hang limit would be.
+                ended.wait()
+                kwargs["wait"] = 0
             return page(**kwargs)
 
         monkeypatch.setattr(service, "activity_page", restarting)
+        try:
+            def failing():
+                response = studio.get("/api/jobs")
+                return response if response.status_code == 503 else None
 
-        def failing():
-            response = studio.get("/api/jobs")
-            return response if response.status_code == 503 else None
-
-        assert wait_until(failing).json()["detail"]["code"] == "disconnected"
-        down.clear()
-        started = time.monotonic()
-        assert wait_until(lambda: studio.get("/api/jobs").status_code == 200)
-        # No event wakes the follower here, so recovery within a follow wait means its first page was a probe.
-        assert time.monotonic() - started < 1
+            assert wait_until(failing).json()["detail"]["code"] == "disconnected"
+            down.clear()
+            # No event wakes the follower here, so recovery while follow waits are held means its first page was a probe.
+            assert wait_until(lambda: studio.get("/api/jobs").status_code == 200)
+        finally:
+            ended.set()
 
 
 def test_shutdown_ends_the_follower_before_the_host_can_be_restarted(host, tmp_path, monkeypatch):
@@ -177,5 +187,3 @@ def test_shutdown_ends_the_follower_before_the_host_can_be_restarted(host, tmp_p
     assert not follower.is_alive()
     os.kill(host.ping()["pid"], signal.SIGTERM)
     wait_until(lambda: not host.address.exists())
-    time.sleep(0.2)
-    assert not host.address.exists()

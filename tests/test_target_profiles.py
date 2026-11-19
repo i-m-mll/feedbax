@@ -21,9 +21,7 @@ from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
-from tests.test_local_job_host import host as host_fixture, wait_until
-
-host = host_fixture
+from tests.support.host import token, wait_until
 
 
 def test_unprofiled_session_request_keeps_its_saved_identity():
@@ -81,7 +79,7 @@ def test_target_catalog_and_default_saved_submission_share_one_contract(tmp_path
         assert client.get("/api/orchestration/targets", params={"kind": "unknown"}).status_code == 422
 
         url = "/api/projects/reaching/train-runs"
-        request = {"revision": before.revision, "run_keys": [asdict(key)], "token": "placement-test"}
+        request = {"revision": before.revision, "run_keys": [asdict(key)], "token": token("placement-test")}
         denied = client.post(url, json=request | {"target": "missing"})
         assert denied.status_code == 409 and "approve" in denied.text
         assert host.jobs(project=before.project_id) == []
@@ -95,13 +93,13 @@ def test_target_catalog_and_default_saved_submission_share_one_contract(tmp_path
         service = client.app.state.job_service
         remote = SessionTarget(kind="session", profile="demo", driver=provider.target, session_id=uuid4())
         with pytest.raises(HostError, match="authenticated Host session"):
-            service.admit_plan(folders, before, run_keys=(key,), token="wrong-host", placement=remote)
+            service.admit_plan(folders, before, run_keys=(key,), token=token("wrong-host"), placement=remote)
 
         def finished():
             (job,) = host.jobs(project=before.project_id, job_id=job_id)
             return job if job["outcome"] is not None else None
 
-        job = wait_until(finished, timeout=25)
+        job = wait_until(finished)
         assert job["state"] == "succeeded", job["outcome"]
         assert job["request"] == original and job["data"]["target"] == submission["target"]
         activity = client.get("/api/jobs", params={"project": before.project_id}).json()["jobs"]

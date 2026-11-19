@@ -17,6 +17,7 @@ from feedbax.orchestration.runpod import SubprocessRunPodTransport
 from feedbax.orchestration.runpod_session import RunPodEnvironment, RunPodSessionProvider
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition
 from feedbax.orchestration.session import SessionError
+from tests.support.hang import HANG_SECONDS
 
 
 def _environment(root: Path, **uv_source) -> RunPodEnvironment:
@@ -59,7 +60,7 @@ def test_venue_stages_and_runs_exact_uv_offline(tmp_path):
     digest = hashlib.sha256(binary).hexdigest()
     root = tmp_path / "session"
     env = {**os.environ, "UV_OFFLINE": "1", "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
-    uv_version = subprocess.check_output([executable, "--version"], timeout=5).decode().split()[1]
+    uv_version = subprocess.check_output([executable, "--version"], timeout=HANG_SECONDS).decode().split()[1]
     # The CUDA probe is independent of staging and requires JAX in the venue venv.
     script = Path(runpod_bootstrap.__file__).read_text() + """
 _PROBE = 'print("{}")'
@@ -69,7 +70,7 @@ bootstrap(lambda _: ("repo-digest", 1))
     def call(action: str, payload: bytes, *arguments: str, check: bool = True):
         return subprocess.run(
             [sys.executable, "-I", "-c", script, action, str(root), *arguments],
-            input=payload, check=check, capture_output=True, env=env, timeout=8,
+            input=payload, check=check, capture_output=True, env=env, timeout=HANG_SECONDS,
         )
 
     prepare = json.dumps({"uv_sha256": digest}).encode()
@@ -88,7 +89,7 @@ bootstrap(lambda _: ("repo-digest", 1))
     )
     subprocess.run(
         [executable, "lock", "--offline", "--python", sys.executable],
-        cwd=incoming, env=env, timeout=5, capture_output=True, check=True,
+        cwd=incoming, env=env, timeout=HANG_SECONDS, capture_output=True, check=True,
     )
     install = json.dumps({
         "uv_sha256": digest, "uv_version": uv_version, "content_sha256": "repo-digest", "file_count": 1,

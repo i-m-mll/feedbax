@@ -31,6 +31,7 @@ from feedbax.studio.authoring import project_train_fields
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
+from tests.support.hang import HANG_SECONDS
 
 
 _URL = "/api/projects/reach"
@@ -596,7 +597,7 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
     def pause_old_compile(project, **kwargs):
         if project.documents[_MODEL].payload["interior"]["components"]["plant"]["fields"]["mass"] == 1:
             entered.set()
-            assert release.wait(5)
+            assert release.wait(HANG_SECONDS)
         return compile_project(project, **kwargs)
 
     monkeypatch.setattr(project_folder, "compile_project", pause_old_compile)
@@ -605,13 +606,13 @@ def test_in_flight_plan_keeps_the_revision_it_loaded(study, monkeypatch):
             service.read_plan, "reach", revision=opened["revision"], source_runs=(selected,)
         )
         try:
-            assert entered.wait(5)
+            assert entered.wait(HANG_SECONDS)
             with client:
                 changed = _edit_mass(client, _URL, opened, 4)
             current = _read_plan(client, root, changed, selected)
         finally:
             release.set()
-        old = previous.result(timeout=5)
+        old = previous.result(timeout=HANG_SECONDS)
 
     assert (old.revision, old.semantic_root) == (opened["revision"], opened["semantic_root"])
     assert (
@@ -936,13 +937,13 @@ def test_rename_and_patch_from_one_revision_have_one_winner(study):
     start = Barrier(2)
 
     def rename():
-        start.wait(timeout=4)
+        start.wait(timeout=HANG_SECONDS)
         return client.post(f"{_URL}/rename", json={
             "revision": original["revision"], "name": "renamed",
         })
 
     def patch():
-        start.wait(timeout=4)
+        start.wait(timeout=HANG_SECONDS)
         return _patch(client, original["revision"], 3)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -1063,7 +1064,7 @@ def test_named_sweep_edit_preserves_value_ids_order_and_other_request(study):
 def test_competing_writers_from_one_revision_have_one_winner(study):
     root, client = study
     revision = _read(client)["revision"]
-    start = Barrier(2, timeout=5)
+    start = Barrier(2, timeout=HANG_SECONDS)
 
     def save(value):
         writer = TestClient(create_app(projects_dir=root.parent))

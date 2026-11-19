@@ -25,10 +25,9 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
 from tests.support.finite_train import damaged_checkpoint_model, install_finite_gate
 
-host = host_fixture
 
 
 def _train(step, batches):
@@ -99,13 +98,13 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     host.policy(compute=1)
     install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4)
 
-    def launch(token, *steps):
-        return jobs.admit_plan(folders, plan, run_keys=tuple(by_step[name].key for name in steps), token=token)
+    def launch(name, *steps):
+        return jobs.admit_plan(folders, plan, run_keys=tuple(by_step[step].key for step in steps), token=token(name))
 
     def terminal(job_id, state):
         row = wait_until(lambda: (
             row if (row := job_row(host, job_id)) and row["outcome"] is not None else None
-        ), timeout=22)
+        ))
         assert row["state"] == state, row.get("outcome")
         return row
 
@@ -114,7 +113,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     assert source["launch"]["payload"]["checkpoint_catalog"] == [2, 4]
     admitted = launch("consumers", "ordered", "cadence")
     assert all(item.disposition == "admitted" for item in admitted.items)
-    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    wait_until(lambda: (tmp_path / "before-stop").exists())
     jobs.stop([producer.job_id], "checkpoint")
     stopped = terminal(producer.job_id, "stopped")
     assert stopped["outcome"]["checkpoint"]["completed_updates"] == 3
@@ -124,8 +123,8 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
         row = job_row(host, item.job_id, "queued")
         assert row["delivery"] == 0 and not row["edges"][0]["satisfied"]
 
-    resumed = jobs.resume(producer.job_id, token="resume")
-    wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+    resumed = jobs.resume(producer.job_id, token=token("resume"))
+    wait_until(lambda: (tmp_path / "resumed-interior").exists())
     host.policy(compute=2)
     try:
         rows = [terminal(item.job_id, "succeeded") for item in admitted.items]
@@ -257,7 +256,7 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
     assert by_edited_step["train"].request_id == by_step["train"].request_id
     late = by_edited_step["late"]
     assert not service.read(project, revision=edited.revision).evaluations[late.key].can_run
-    (late_item,) = jobs.admit_plan(folders, edited, run_keys=(late.key,), token="late").items
+    (late_item,) = jobs.admit_plan(folders, edited, run_keys=(late.key,), token=token("late")).items
     assert late_item.disposition == "rejected"
     assert late_item.reason == "/inputs/subject/checkpoint: admitted Train catalogue omits requested batches"
     (stale_train,) = launch("stale-producer", "train").items
@@ -303,15 +302,15 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
 
     plan, by_step = save()
 
-    def launch(token, *names, service=jobs):
+    def launch(name, *names, service=jobs):
         return service.admit_plan(
-            folders, plan, run_keys=tuple(by_step[name].key for name in names), token=token,
+            folders, plan, run_keys=tuple(by_step[step].key for step in names), token=token(name),
         ).items
 
     def terminal(job_id, state):
         row = wait_until(lambda: (
             row if (row := job_row(host, job_id)) and row["outcome"] is not None else None
-        ), timeout=22)
+        ))
         assert row["state"] == state, row.get("outcome")
         return row
 
@@ -332,7 +331,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     (producer,) = launch("producer", "train")
     last, exact = launch("consumers", "last", "exact")
     assert {last.disposition, exact.disposition} == {"admitted"}
-    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    wait_until(lambda: (tmp_path / "before-stop").exists())
     pending(last)
     pending(exact)
     jobs.stop([producer.job_id], "checkpoint")
@@ -364,8 +363,8 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     plan, by_step = save()
     service = ProjectPlanService(folders, jobs)
     assert service.read(project, revision=plan.revision).evaluations[by_step["late"].key].can_run
-    resumed = jobs.resume(producer.job_id, token="resume")
-    wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+    resumed = jobs.resume(producer.job_id, token=token("resume"))
+    wait_until(lambda: (tmp_path / "resumed-interior").exists())
     pending(last)
     try:
         host.policy(compute=2)
@@ -419,12 +418,12 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     (tmp_path / "resume-model-factor").write_text("1.25")
     [first_resume] = host.jobs(job_id=resumed.job_id, include_launch=True)
     sibling = Job(
-        id="current-sibling", project=plan.project_id, request=first_resume["request"],
+        id=token("current-sibling"), project=plan.project_id, request=first_resume["request"],
         launch=Launch(**first_resume["launch"]), continues=producer.job_id,
         data={key: value for key, value in first_resume["data"].items() if key != "run_key"},
     )
     host.admit(
-        "resume-again", [AdmissionItem("sibling", sibling)],
+        token("resume-again"), [AdmissionItem("sibling", sibling)],
         record={"project": sibling.project, "target": first_resume["data"]["target"]},
     )
     terminal(sibling.id, "succeeded")
@@ -436,7 +435,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     assert {reason.kind for reason in now.result.validity.reasons} == {"input"}
 
     (fresh,) = jobs.admit_plan(
-        folders, plan, run_keys=(future_run.key,), token="evaluate-current-sibling", reuse_completed=True,
+        folders, plan, run_keys=(future_run.key,), token=token("evaluate-current-sibling"), reuse_completed=True,
     ).items
     assert fresh.disposition == "admitted"
     future_selection = terminal(fresh.job_id, "succeeded")["edges"][0]["binding"]["checkpoint_selection"]
@@ -448,10 +447,10 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     host.policy(compute=1)
     release = tmp_path / "release-pinned"
     gate = run_job(
-        "hold-pinned", f"from pathlib import Path\nimport time\nwhile not Path({str(release)!r}).exists(): time.sleep(.01)",
+        "hold-pinned", held_until_released(release),
         project=plan.project_id,
     )
-    admit(host, "hold-pinned", gate)
+    admit(host, token("hold-pinned"), gate)
     try:
         wait_until(lambda: job_row(host, gate.id, "running"))
         (late,) = launch("late", "late")
@@ -492,16 +491,16 @@ def test_saved_fixed_evaluate_reuses_only_equal_current_train_model(host, tmp_pa
     train, evaluate = by_step["train"], by_step["baseline"]
     service = ProjectPlanService(folders, jobs)
 
-    def submit(token, *runs, reuse=False):
+    def submit(name, *runs, reuse=False):
         return jobs.admit_plan(
-            folders, saved, run_keys=tuple(run.key for run in runs), token=token, reuse_completed=reuse,
+            folders, saved, run_keys=tuple(run.key for run in runs), token=token(name), reuse_completed=reuse,
         ).items
 
     def succeed(item):
         assert item.disposition == "admitted", item
         row = wait_until(lambda: (
             row if (row := job_row(host, item.job_id)) and row["outcome"] is not None else None
-        ), timeout=22)
+        ))
         assert row["state"] == "succeeded", row.get("outcome")
         return row
 

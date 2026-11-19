@@ -21,11 +21,10 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
-from tests.test_local_job_host import host as host_fixture, wait_until
+from tests.support.host import token, wait_until
 from tests.test_project_analyze_plan import _operations
 from tests.test_project_report_plan import _report_project
 
-host = host_fixture
 _TRIALS = ["0", "1"]
 
 
@@ -78,7 +77,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
             jobs = host.jobs(project=project_id)
             return jobs if len(jobs) == count and all(job["outcome"] is not None for job in jobs) else None
 
-        jobs = wait_until(settled, timeout=42)
+        jobs = wait_until(settled)
         assert all(job["state"] == "succeeded" for job in jobs), {
             job["request"]: job["outcome"] for job in jobs if job["state"] != "succeeded"
         }
@@ -88,9 +87,9 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         def revision():
             return expect(client.get(path)).json()["revision"]
 
-        def run(rev, token, *steps, reuse_completed=False):
+        def run(rev, name, *steps, reuse_completed=False):
             return expect(client.post(f"{path}/train-runs", json={
-                "revision": rev, "token": token, "reuse_completed": reuse_completed,
+                "revision": rev, "token": token(name), "reuse_completed": reuse_completed,
                 "run_keys": [{"variant": "default", "step": step, "row": "default"} for step in steps],
             }), 202).json()["items"]
 
@@ -258,7 +257,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         revision = client.get(path).json()["revision"]
         response = client.post(f"{path}/train-runs", json={
             "revision": revision,
-            "token": "paired",
+            "token": token("paired"),
             "run_keys": [
                 address("train"), *(address("conditions", rows[key]) for key in order),
                 address("analyze"), address("report"),
@@ -271,7 +270,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
             jobs = host.jobs(project=review.project_id)
             return jobs if len(jobs) == 7 and all(job["outcome"] is not None for job in jobs) else None
 
-        jobs = wait_until(terminal, timeout=44)
+        jobs = wait_until(terminal)
         assert all(job["state"] == "succeeded" for job in jobs), jobs
 
     by_request = {job["request"]: job for job in jobs}

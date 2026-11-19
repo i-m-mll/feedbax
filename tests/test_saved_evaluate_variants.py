@@ -24,10 +24,9 @@ from feedbax.builtins.reaching import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
-from tests.test_local_job_host import host as host_fixture, job_row, wait_until
+from tests.support.host import job_row, token, wait_until
 from tests.test_model_document_plan import _add_attachment, _attachment_owner
 
-host = host_fixture
 
 
 def _patch(path, value, *, op="replace"):
@@ -227,13 +226,13 @@ def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, mon
     jobs = JobService(host, new_application_registry_bundle())
     refused = jobs.admit_plan(
         folders, plan, run_keys=tuple(row.key for row in plan.plan.rows if row.key.step == "refused"),
-        token="refused-task-patch",
+        token=token("refused-task-patch"),
     ).items
     assert len(refused) == 2 and all(item.disposition == "rejected" and item.job_id is None for item in refused)
-    assert not host.jobs()
+    assert not host.jobs(project=plan.project_id)
 
     started = jobs.admit_plan(
-        folders, plan, run_keys=(*producers, *(run.key for run in selected)), token="selected-task-patch",
+        folders, plan, run_keys=(*producers, *(run.key for run in selected)), token=token("selected-task-patch"),
     ).items
     assert all(item.disposition == "admitted" for item in started)
     targets = []
@@ -241,7 +240,7 @@ def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, mon
         settled = wait_until(lambda: (
             job_row(host, item.job_id, "succeeded") or job_row(host, item.job_id, "failed")
             or job_row(host, item.job_id, "blocked")
-        ), timeout=30)
+        ))
         assert settled["state"] == "succeeded", settled["outcome"]
         producer = producers[run.inputs["subject"].producer]
         inherited = decode_request(
@@ -303,21 +302,21 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     ]
 
     (train,) = jobs.admit_plan(
-        folders, reviewed, run_keys=(RunKey("default", "train", "default"),), token="train",
+        folders, reviewed, run_keys=(RunKey("default", "train", "default"),), token=token("train"),
     ).items
     (refused,) = jobs.admit_plan(
-        folders, reviewed, run_keys=(RunKey("default", "incompatible", "default"),), token="incompatible",
+        folders, reviewed, run_keys=(RunKey("default", "incompatible", "default"),), token=token("incompatible"),
     ).items
     assert refused.disposition == "rejected" and refused.job_id is None
     started = jobs.admit_plan(
-        folders, reviewed, run_keys=tuple(planned[name].key for name in cases), token="variants",
+        folders, reviewed, run_keys=tuple(planned[name].key for name in cases), token=token("variants"),
     )
     assert [item.disposition for item in started.items] == ["admitted"] * len(cases)
 
     def settled(job_id):
         return wait_until(lambda: (
             job_row(host, job_id, "succeeded") or job_row(host, job_id, "failed")
-        ), timeout=25)
+        ))
 
     trained = settled(train.job_id)
     assert trained["state"] == "succeeded", trained["outcome"]

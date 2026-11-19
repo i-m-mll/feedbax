@@ -21,10 +21,9 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
-from tests.test_local_job_host import admit, host as host_fixture, job_row, restart, run_job, wait_until
+from tests.support.host import HELD_UNTIL_STOPPED, admit, job_row, restart, run_job, token, wait_until
 from tests.support.finite_train import install_finite_gate
 
-host = host_fixture
 
 
 def definition(rule):
@@ -76,9 +75,9 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     first = folders.read_plan(project, revision=None)
     train = next(run for run in first.plan.runs if run.kind == "train")
     jobs = JobService(host, registry)
-    (producer,) = jobs.admit_plan(folders, first, run_keys=(train.key,), token="train").items
+    (producer,) = jobs.admit_plan(folders, first, run_keys=(train.key,), token=token("train")).items
     assert producer.disposition == "admitted"
-    finished = wait_until(lambda: job_row(host, producer.job_id, "succeeded"), timeout=20)
+    finished = wait_until(lambda: job_row(host, producer.job_id, "succeeded"))
     assert "checkpoint_catalog" not in host.jobs(job_id=producer.job_id, include_launch=True)[0]["launch"]["payload"]
 
     raw["steps"]["baseline"]["inputs"]["subject"]["checkpoint"] = [{"at": 4}, {"at": 1}, {"at": 2}, {"at": 6}]
@@ -92,12 +91,12 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     assert next(run for run in first.plan.runs if run.kind == "evaluate").request_id != rows["baseline"].request_id
 
     run_keys = (rows["baseline"].key, rows["empty"].key)
-    submission = jobs.admit_plan(folders, plan, run_keys=run_keys, token="evaluation")
+    submission = jobs.admit_plan(folders, plan, run_keys=run_keys, token=token("evaluation"))
     for item, expected, observed in zip(submission.items, ([4, 1, 2, 6], [1, 5]), ([4, 2], []), strict=True):
         assert item.disposition == "admitted"
         row = wait_until(lambda: (
             row if (row := job_row(host, item.job_id))["outcome"] is not None else None
-        ), timeout=20)
+        ))
         assert row["state"] == "succeeded", row["outcome"]
         selection = row["edges"][0]["binding"]["checkpoint_selection"]
         assert selection["requested"] == expected
@@ -134,7 +133,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
             if not observed:
                 assert dataset.descriptor.variables == {}
     restart(host)
-    assert jobs.admit_plan(folders, plan, run_keys=run_keys, token="evaluation") == submission
+    assert jobs.admit_plan(folders, plan, run_keys=run_keys, token=token("evaluation")) == submission
     for item in submission.items:
         jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=item.job_id)
     service = ProjectPlanService(folders, jobs)
@@ -185,7 +184,7 @@ def test_saved_series_settles_late_partial_and_all_gap_results(host, tmp_path, m
     original = closure_manifest.read_bytes()
     try:
         closure_manifest.write_bytes(original + b" ")
-        (corrupt,) = jobs.admit_plan(folders, new_plan, run_keys=(empty.key,), token="corrupt-closure").items
+        (corrupt,) = jobs.admit_plan(folders, new_plan, run_keys=(empty.key,), token=token("corrupt-closure")).items
         assert corrupt.disposition == "admitted"
         rejected = wait_until(lambda: job_row(host, corrupt.job_id, "blocked"))
         assert rejected["outcome"]["error"]["code"] == "dependency_corrupt"
@@ -210,12 +209,12 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     def saved_evaluation():
         return service.read(project, revision=plan.revision).evaluations[rows["evaluate"].key]
 
-    blocker = run_job("occupy-compute", "import time\ntime.sleep(25)")
+    blocker = run_job("occupy-compute", HELD_UNTIL_STOPPED)
     admit(host, blocker.id, blocker)
     wait_until(lambda: job_row(host, blocker.id, "running"))
     try:
         producer, evaluate = jobs.admit_plan(
-            folders, plan, run_keys=(rows["train"].key, rows["evaluate"].key), token="series",
+            folders, plan, run_keys=(rows["train"].key, rows["evaluate"].key), token=token("series"),
         ).items
         assert producer.disposition == evaluate.disposition == "admitted"
         queued = saved_evaluation().checkpoint_attempt
@@ -225,7 +224,7 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
         assert queued.pending.state == "queued" and queued.pending.next_update == 2
     finally:
         host.stop([blocker.id], "force")
-    wait_until(lambda: (tmp_path / "before-stop").exists(), timeout=16)
+    wait_until(lambda: (tmp_path / "before-stop").exists())
     jobs.stop([producer.job_id], "checkpoint")
     wait_until(lambda: job_row(host, producer.job_id, "stopped"))
     assert job_row(host, evaluate.job_id, "queued") is not None
@@ -247,17 +246,17 @@ def test_completed_resume_settles_gaps_while_its_parent_remains_resumable(host, 
     }
     restart(host)
     assert saved_evaluation().checkpoint_attempt.model_dump(mode="json") == attempt
-    resumed = jobs.resume(producer.job_id, "resume")
+    resumed = jobs.resume(producer.job_id, token("resume"))
     try:
-        wait_until(lambda: (tmp_path / "resumed-interior").exists(), timeout=16)
+        wait_until(lambda: (tmp_path / "resumed-interior").exists())
         pending = saved_evaluation().checkpoint_attempt.pending
         assert pending.producer_job_id == resumed.job_id
         assert pending.state == "running"
         assert pending.next_update is None
     finally:
         (tmp_path / "finish-train").touch()
-    wait_until(lambda: job_row(host, resumed.job_id, "succeeded"), timeout=20)
-    result = wait_until(lambda: job_row(host, evaluate.job_id, "succeeded"), timeout=20)
+    wait_until(lambda: job_row(host, resumed.job_id, "succeeded"))
+    result = wait_until(lambda: job_row(host, evaluate.job_id, "succeeded"))
     selection = result["edges"][0]["binding"]["checkpoint_selection"]
     assert selection["lineage"] == [producer.job_id, resumed.job_id]
     assert selection["closure"]["product"]["producer_job_id"] == resumed.job_id

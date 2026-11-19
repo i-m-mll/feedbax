@@ -40,6 +40,7 @@ from feedbax.validity.computation import (
     compare_environment_prefix,
     pytree_operands,
 )
+from tests.support.hang import HANG_SECONDS
 
 
 class Objects:
@@ -213,7 +214,7 @@ print(capture_arguments(arrays, static=static).sha256)
         subprocess.check_output(
             [sys.executable, "-c", snippet],
             env={**os.environ, "PYTHONHASHSEED": str(seed), "JAX_PLATFORMS": "cpu"},
-            timeout=20,
+            timeout=HANG_SECONDS,
         ).strip()
         for seed in (19, 271)
     ]

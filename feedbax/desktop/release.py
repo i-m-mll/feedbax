@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from feedbax.host.io import private_directory
+from feedbax.host.jax_cache import install_when_imported
+
 RELEASE_SCHEMA = "feedbax.desktop.release.v1"
 SERVICE_PROTOCOL = 1
 PRODUCTION_BUNDLE_ID = "org.feedbax.studio"
@@ -113,8 +116,6 @@ class AppPaths:
             FEEDBAX_EXPERIMENTS_CONFIG_DIR=str(self.config),
             FEEDBAX_RUNS_DIR=str(self.workspace / "runs"),
             FEEDBAX_HOST_ROOT=str(self.host),
-            FEEDBAX_JAX_COMPILATION_CACHE_DIR=str(self.cache / "jax"),
-            JAX_COMPILATION_CACHE_DIR=str(self.cache / "jax"),
             JAX_PLATFORMS="cpu",
             TMPDIR=str(self.cache / "tmp"),
             PYTHONDONTWRITEBYTECODE="1",
@@ -125,6 +126,7 @@ class AppPaths:
             os.environ.pop("FEEDBAX_DESKTOP_STATE", None)
         for directory in (self.control, self.settings, self.workspace, self.cache / "tmp"):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        install_when_imported(private_directory(private_directory(self.host) / "jax"))
         control_stat = self.control.stat(follow_symlinks=False)
         if not self.control.is_dir() or self.control.is_symlink():
             raise ValueError(f"desktop control path is not a private directory: {self.control}")

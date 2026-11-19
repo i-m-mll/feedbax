@@ -48,6 +48,7 @@ from feedbax.training.model_checkpoint import (
     ModelCheckpointError,
     SemanticModelWriter,
 )
+from tests.support.hang import HANG_SECONDS
 
 
 def _publish(root, graph, models, templates, *, extra=(), assets=None, replica_ids=("0",)):
@@ -289,7 +290,7 @@ def test_asset_backed_model_slot_round_trips_from_checkpoint_closure(tmp_path):
             sys.executable, "-m", "tests.test_semantic_model_checkpoint",
             str(written.root), str(pointer), str(output),
         ],
-        capture_output=True, text=True, timeout=35, check=True,
+        capture_output=True, text=True, timeout=HANG_SECONDS, check=True,
     )
     for actual, reference in zip(json.loads(output.read_bytes()), expected, strict=True):
         np.testing.assert_array_equal(actual, reference)
