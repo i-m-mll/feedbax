@@ -406,28 +406,31 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       }
     }
   }
-  const evaluated = step?.kind === 'evaluate' && namedRun && state.selection;
+  const trialSelection = trialStep && namedRun && state.selection;
   const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const modelProblems = data?.window_map?.problems.filter((problem) => problem.model_address &&
     (problem.step === step?.id || step?.kind === 'evaluate' && problem.document === modelSource) &&
     (problem.variant === null || problem.variant === variant) &&
     (!problem.row || !namedRun || problem.step !== step?.id || problem.row === namedRun.row));
-  const axis = evaluated && state.selection?.kind === 'values' && state.selection.terms.length === 1
+  const axis = trialSelection && state.selection?.kind === 'values' && state.selection.terms.length === 1
     ? state.selection.terms[0] : undefined;
-  const evaluateScope = evaluated && (state.selection?.kind === 'steps'
+  const trialScope = trialSelection && (state.selection?.kind === 'steps'
     ? singleStep ? (primaryVariant ? { kind: 'step' } as const : { kind: 'variant', variant: namedRun.variant } as const) : undefined
     : axis?.valueIds.length === 1 ? { kind: 'axis_value', axis: axis.sweepId, value: axis.valueIds[0] } as const
       : selectedDefinitionRows.length ? { kind: 'rows', rows: selectedDefinitionRows.map(({ key }) => key.row) } as const
         : undefined);
+  const evaluateScope = step?.kind === 'evaluate' ? trialScope : undefined;
+  // A Train step's whole-step edit is unscoped: the server writes its shared documents for every step that uses them.
+  const trialEditScope = step?.kind === 'train' && trialScope && (trialScope.kind === 'step' || trialScope.kind === 'variant')
+    ? undefined : trialScope || undefined;
   const documentEditable = !pending && !outside && !snapshot.saving;
-  const trialEditable = documentEditable && Boolean(evaluateScope ||
-    wholeStep && !authored?.sweep && !authored?.deltas?.length && step?.kind === 'train');
+  const trialEditable = documentEditable && Boolean(trialScope);
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
-    trialEditable, evaluateScope || undefined, runRemoval.confirm);
+    trialEditable, trialEditScope, runRemoval.confirm);
   const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
   const pickDocument = useProjectDocuments({
-    editor, stepId: step?.id, run: namedRun, scope: evaluateScope || undefined,
+    editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,
     selectable: new Set<DocumentRole>([
       ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective'] as const : ['task'] as const,

@@ -54,7 +54,7 @@ from feedbax.plugins.application import (
 )
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
-from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
+from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps, paths_match, sweep_paths
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
 
@@ -496,9 +496,14 @@ def project_train_fields(
     definition = _TrainFields(project, step_id, registry)
     definition.training(read_plan)
     if definition.step.sweep is not None:
+        swept = sweep_paths(definition.step.sweep)
         for field in definition.fields.values():
-            # A swept step keeps its axes' fields; a field that is not a number would rewrite what they sweep.
-            if not isinstance(field.view.control, StudioAuthoringNumber):
+            control = field.view.control
+            # A swept step keeps its sweep's fields; a choice that writes a swept path would rewrite what it sweeps.
+            if isinstance(control, StudioAuthoringChoice) and paths_match(swept, {
+                ".".join(json_pointer_parts(patch.path)[2:])
+                for option in control.options for patch in field.write(option.value)
+            }):
                 field.view.control = None
 
     settings = definition.payload.get("settings")
