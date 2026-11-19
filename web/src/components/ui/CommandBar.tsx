@@ -1,13 +1,13 @@
 import clsx from 'clsx';
 import { Ellipsis, type LucideIcon } from 'lucide-react';
-import { Fragment, useLayoutEffect, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { Button, IconButton } from './Button';
+import { Fragment, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { IconButton, type IconButtonProps } from './Button';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from './Menu';
 
 /** A bound command as a bar draws it: the records `bindStudioCommand` produces satisfy this. */
 export interface BarCommand {
   readonly id: string;
-  /** The visible name. */
+  /** The name, shown in the trailing menu. */
   readonly title: string;
   /** The accessible name, which may add the command's subject. */
   readonly label: string;
@@ -27,11 +27,17 @@ export interface BarControl {
 export type BarPriority = 'normal' | 'low';
 
 export type BarEntry<C extends BarCommand> =
-  | { readonly command: C; readonly priority: BarPriority }
+  | { readonly command: GlyphCommand<C>; readonly priority: BarPriority }
   | { readonly control: BarControl; readonly priority: BarPriority };
 
-/** A command that may be drawn as its glyph alone. */
+/** A command a bar can hold: a bar draws every command as its glyph, with its name as tooltip. */
 export type GlyphCommand<C extends BarCommand> = C & { readonly glyph: LucideIcon };
+
+/** The command as a bar holds it; a command without a glyph has no place in a bar. */
+export function withGlyph<C extends BarCommand>(command: C): GlyphCommand<C> {
+  if (!command.glyph) throw new Error(`Bar command ${command.id} has no glyph`);
+  return command as GlyphCommand<C>;
+}
 
 /** The bar's one pinned action and its counterpart, such as Run and Stop. They never move to the trailing menu. */
 export interface PinnedCommands<C extends BarCommand> {
@@ -39,10 +45,10 @@ export interface PinnedCommands<C extends BarCommand> {
   readonly counterpart?: GlyphCommand<C>;
 }
 
-type ItemProps = Omit<ComponentPropsWithoutRef<typeof Button>, 'children' | 'onClick' | 'className'>;
+type ItemProps = Omit<IconButtonProps, 'label' | 'icon' | 'onClick' | 'className'>;
 
 export interface CommandBarProps<C extends BarCommand> {
-  /** Drawn first, by name when they fit and by glyph otherwise. */
+  /** Drawn first. */
   pinned?: PinnedCommands<C>;
   /** In display order, after the pinned commands. */
   entries: readonly BarEntry<C>[];
@@ -59,17 +65,10 @@ export interface BarWidths {
   readonly available: number;
   readonly gap: number;
   readonly trigger: number;
-  readonly pinnedNamed: readonly number[];
-  readonly pinnedGlyph: readonly number[];
+  readonly pinned: readonly number[];
   readonly entries: readonly { readonly width: number; readonly priority: BarPriority }[];
 }
 
-export interface BarFit {
-  /** The pinned commands are drawn as glyphs. */
-  readonly compact: boolean;
-  /** Indices of the entries that are rows of the trailing menu. */
-  readonly hidden: ReadonlySet<number>;
-}
 
 const rank: Record<BarPriority, number> = { low: 0, normal: 1 };
 
@@ -80,32 +79,25 @@ export function overflowOrder(priorities: readonly BarPriority[]) {
     .map(({ index }) => index);
 }
 
-export function fitBar({ available, gap, trigger, pinnedNamed, pinnedGlyph, entries }: BarWidths): BarFit {
+/** Indices of the entries that are rows of the trailing menu. */
+export function fitBar({ available, gap, trigger, pinned, entries }: BarWidths): ReadonlySet<number> {
   const span = (widths: readonly number[]) =>
     widths.reduce((sum, width) => sum + width, 0) + gap * Math.max(0, widths.length - 1);
-  const order = overflowOrder(entries.map(({ priority }) => priority));
-  for (const compact of [false, true]) {
-    const pinned = compact ? pinnedGlyph : pinnedNamed;
-    const hidden = new Set<number>();
-    const shown = () => entries.flatMap(({ width }, index) => hidden.has(index) ? [] : [width]);
-    if (span([...pinned, ...shown()]) <= available) return { compact, hidden };
-    for (const index of order) {
-      hidden.add(index);
-      if (span([...pinned, ...shown(), trigger]) <= available) return { compact, hidden };
-    }
+  const hidden = new Set<number>();
+  const shown = () => entries.flatMap(({ width }, index) => hidden.has(index) ? [] : [width]);
+  if (span([...pinned, ...shown()]) <= available) return hidden;
+  for (const index of overflowOrder(entries.map(({ priority }) => priority))) {
+    hidden.add(index);
+    if (span([...pinned, ...shown(), trigger]) <= available) return hidden;
   }
-  return { compact: true, hidden: new Set(entries.keys()) };
+  return hidden;
 }
 
-function Command<C extends BarCommand>({ command, props, className, named }: {
-  command: C; props?: ItemProps; className?: string; named: boolean;
+function Command<C extends BarCommand>({ command, props, className }: {
+  command: GlyphCommand<C>; props?: ItemProps; className?: string;
 }) {
-  const Glyph = command.glyph;
-  return Glyph && !named
-    ? <IconButton label={command.label} icon={<Glyph aria-hidden="true" />} disabled={!command.enabled}
-      onClick={command.invoke} className={className} {...props} />
-    : <Button aria-label={command.label === command.title ? undefined : command.label} disabled={!command.enabled}
-      onClick={command.invoke} className={className} {...props}>{command.title}</Button>;
+  return <IconButton label={command.label} icon={<command.glyph aria-hidden="true" />} disabled={!command.enabled}
+    onClick={command.invoke} className={className} {...props} />;
 }
 
 function entryId<C extends BarCommand>(entry: BarEntry<C>) {
@@ -118,12 +110,12 @@ export function CommandBar<C extends BarCommand>({
 }: CommandBarProps<C>) {
   const bar = useRef<HTMLDivElement>(null);
   const measure = useRef<HTMLDivElement>(null);
-  const [fit, setFit] = useState<BarFit>({ compact: false, hidden: new Set() });
+  const [hidden, setHidden] = useState<ReadonlySet<number>>(new Set());
   const pins = pinned ? [pinned.action, ...pinned.counterpart ? [pinned.counterpart] : []] : [];
   const signature = [
-    ...pins.map(({ id, title }) => `pin:${id}:${title}`),
+    ...pins.map(({ id }) => `pin:${id}`),
     ...entries.map((entry) => 'command' in entry
-      ? `${entry.command.id}:${entry.command.title}:${entry.command.glyph ? 1 : 0}:${entry.priority}`
+      ? `${entry.command.id}:${entry.priority}`
       : `${entry.control.id}:${entry.priority}`),
   ].join('|');
 
@@ -135,9 +127,8 @@ export function CommandBar<C extends BarCommand>({
       const width = (role: string) => [...ruler.querySelectorAll<HTMLElement>(`:scope > [data-measure="${role}"]`)]
         .map((item) => item.offsetWidth);
       const gap = parseFloat(getComputedStyle(ruler).columnGap) || 0;
-      setFit(fitBar({
-        available: node.clientWidth, gap, trigger: width('trigger')[0] ?? 0,
-        pinnedNamed: width('named'), pinnedGlyph: width('glyph'),
+      setHidden(fitBar({
+        available: node.clientWidth, gap, trigger: width('trigger')[0] ?? 0, pinned: width('pinned'),
         entries: width('entry').map((itemWidth, index) => ({ width: itemWidth, priority: entries[index]!.priority })),
       }));
     };
@@ -148,25 +139,21 @@ export function CommandBar<C extends BarCommand>({
     return () => sizes.disconnect();
   }, [signature]);
 
-  const overflow = entries.filter((_, index) => fit.hidden.has(index));
+  const overflow = entries.filter((_, index) => hidden.has(index));
   return (
     <div ref={bar} role="toolbar" className={clsx('relative flex min-w-0 flex-1 items-center gap-1 overflow-hidden', className)} {...aria}>
       <div ref={measure} aria-hidden="true"
         className="pointer-events-none invisible absolute start-0 top-0 flex w-max items-center gap-1">
-        {pins.map((command) => <Button key={`named:${command.id}`} data-measure="named" className={itemClassName}>{command.title}</Button>)}
-        {pins.map((command) => <IconButton key={`glyph:${command.id}`} data-measure="glyph" label="" icon={<command.glyph />}
+        {pins.map((command) => <IconButton key={command.id} data-measure="pinned" label="" icon={<command.glyph />}
           className={itemClassName} />)}
         {entries.map((entry) => 'command' in entry
-          ? entry.command.glyph
-            ? <IconButton key={entry.command.id} data-measure="entry" label="" icon={<entry.command.glyph />} className={itemClassName} />
-            : <Button key={entry.command.id} data-measure="entry" className={itemClassName}>{entry.command.title}</Button>
+          ? <IconButton key={entry.command.id} data-measure="entry" label="" icon={<entry.command.glyph />} className={itemClassName} />
           : <div key={entry.control.id} data-measure="entry" className="flex shrink-0">{entry.control.bar}</div>)}
         <IconButton data-measure="trigger" label="" icon={<Ellipsis />} className={itemClassName} />
       </div>
-      {pins.map((command) => <Command key={command.id} command={command} props={itemProps?.(command)} className={itemClassName}
-        named={!fit.compact} />)}
-      {entries.map((entry, index) => fit.hidden.has(index) ? null : 'command' in entry
-        ? <Command key={entry.command.id} command={entry.command} props={itemProps?.(entry.command)} className={itemClassName} named={false} />
+      {pins.map((command) => <Command key={command.id} command={command} props={itemProps?.(command)} className={itemClassName} />)}
+      {entries.map((entry, index) => hidden.has(index) ? null : 'command' in entry
+        ? <Command key={entry.command.id} command={entry.command} props={itemProps?.(entry.command)} className={itemClassName} />
         : <div key={entry.control.id} className="flex shrink-0">{entry.control.bar}</div>)}
       {overflow.length > 0 && <Menu>
         <MenuTrigger render={<IconButton label={moreLabel} icon={<Ellipsis aria-hidden="true" />} className={itemClassName} />} />
@@ -174,9 +161,8 @@ export function CommandBar<C extends BarCommand>({
           {overflow.map((entry) => {
             if ('control' in entry) return <Fragment key={entryId(entry)}>{entry.control.menu}</Fragment>;
             const { command } = entry;
-            const Glyph = command.glyph;
             return <MenuItem key={command.id} disabled={!command.enabled} onClick={command.invoke}
-              glyph={Glyph ? <Glyph aria-hidden="true" /> : <span aria-hidden="true" className="size-[1.15em] shrink-0" />}>
+              glyph={<command.glyph aria-hidden="true" />}>
               {command.title}
             </MenuItem>;
           })}

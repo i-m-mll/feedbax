@@ -13,7 +13,7 @@ import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
 import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { Button, IconButton } from '@/components/ui/Button';
-import { CommandBar } from '@/components/ui/CommandBar';
+import { CommandBar, withGlyph } from '@/components/ui/CommandBar';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
@@ -371,7 +371,7 @@ export function ProjectWindow({
               value: target, label: command.label, icon: <Icon aria-hidden="true" />, disabled: !command.enabled,
               attributes: commandAttributes(command),
             }))} />
-          <CommandBar entries={[steps, back, forward].map((command) => ({ command, priority: 'normal' }))} moreLabel={studioName('more')} itemClassName="studio-window-control"
+          <CommandBar entries={[steps, back, forward].map((command) => ({ command: withGlyph(command), priority: 'normal' }))} moreLabel={studioName('more')} itemClassName="studio-window-control"
             itemProps={(command) => ({
               ...commandAttributes(command),
               ...(command === steps ? { 'aria-pressed': mapDrawerVisible, 'aria-controls': ids.mapDrawer } : {}),

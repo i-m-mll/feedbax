@@ -7,7 +7,9 @@ import {
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
 import { commandAttributes, type StudioCommand, type StudioCommandId } from "@/features/projectWindow/studioCommands";
-import type { PlanRunView, PlanView } from "@/features/pipeline/planView";
+import type { PlanRunView, PlanStepView, PlanView } from "@/features/pipeline/planView";
+import { ProblemRow } from "@/features/projectWindow/StudioProblems";
+import type { StudioProjectWindowMapProblem } from "@/generated/studioContracts";
 import {
   selectionButton,
   indexPlanLineage,
@@ -18,7 +20,7 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
-import { CommandBar, type BarControl, type BarEntry, type GlyphCommand } from "@/components/ui/CommandBar";
+import { CommandBar, withGlyph, type BarControl, type BarEntry } from "@/components/ui/CommandBar";
 import { Select } from "@/components/ui/Select";
 import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/ui/Table";
 import { StudioRunTable, type RunSelectionProps } from "./StudioRunTable";
@@ -68,7 +70,7 @@ function StudioRunLineage({
                     <span className="min-w-0 truncate">{step.label}</span>{" "}
                     <span className="shrink-0 tabular-nums text-shell-muted">{summary}</span>
                   </Button>
-                  {single && <ul className="ps-2 text-shell-muted">
+                  {single && step.runs.length > 1 && <ul className="ps-2 text-shell-muted">
                     {step.runs.filter(({ id }) => members.has(id)).map(({ id, label }) => <li key={id}>{label}</li>)}
                   </ul>}
                 </li>
@@ -180,19 +182,35 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
   );
 }
 
-export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps, "step" | "state"> & {
+/** What tells a run apart within its step: its sweep values, or its own name when it has none. */
+function runName(step: PlanStepView, run: PlanRunView) {
+  const values = step.sweeps.flatMap((sweep) => {
+    const value = run.values[sweep.id];
+    return value === undefined || sweep.values.length < 2 ? []
+      : [`${sweep.label} ${sweep.values.find(({ id }) => id === value)?.label ?? value}`];
+  });
+  return values.length ? values.join(" · ") : run.label;
+}
+
+export function StudioRunDetails({ step, state, detail, problems, onRevealProblem }: Pick<RunSelectionProps, "step" | "state"> & {
   detail?: ReactNode;
+  /** The project's problems that apply to a run. */
+  problems?: (run: PlanRunView) => readonly StudioProjectWindowMapProblem[];
+  onRevealProblem?: (problem: StudioProjectWindowMapProblem) => void;
 }) {
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
   if (!selected.length) return null;
   const single = selected.length === 1;
   const counts = new Map<StudioResultState, number>();
   const reasons = new Set<string>();
+  const shownProblems = new Map<string, StudioProjectWindowMapProblem>();
   const openingErrors = new Set(selected.flatMap((run) => run.openingErrors ?? []));
   const validity = new Map<string, { state: StudioResultState; rows: StudioValidityRows }>();
   for (const run of selected) {
     counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
-    if (run.reason && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
+    const named = problems?.(run) ?? [];
+    for (const problem of named) shownProblems.set(JSON.stringify([problem.code, problem.path, problem.detail]), problem);
+    if (run.reason && !named.length && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
     for (const { validity: { state, reasons: typed = [], environment } } of run.results) {
       const mark = state === "current" ? "succeeded" : state;
       for (const reason of typed) {
@@ -205,8 +223,9 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
       }
     }
   }
+  const title = single && step.runs.length > 1 ? `${step.label} · ${runName(step, selected[0])}` : step.label;
   return <section className="space-y-2 text-sm" aria-label={studioName("inspector")}>
-    {single && <h3 className="font-semibold">{selected[0].label}</h3>}
+    <h3 className="font-semibold">{title}</h3>
     <ul className="flex flex-wrap gap-x-3 gap-y-1">
       {[...counts].map(([status, count]) => <li key={status} className="inline-flex items-center gap-1">
         {!single && <span className="tabular-nums">{count}</span>}
@@ -227,6 +246,11 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
     {single && detail ? detail : reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
       {[...reasons].map((reason) => <li key={reason}>{studioReason("observed", reason)}</li>)}
     </ul>}
+    {shownProblems.size > 0 && <ul aria-label={studioName("problems")} className="text-xs">
+      {[...shownProblems].map(([key, problem]) => <li key={key} className="break-words">
+        <ProblemRow problem={problem} onReveal={onRevealProblem && (() => onRevealProblem(problem))} />
+      </li>)}
+    </ul>}
     {openingErrors.size > 0 && <ul className="space-y-1 font-mono text-xs text-shell-muted">
       {[...openingErrors].map((line) => <li key={line}>{line}</li>)}
     </ul>}
@@ -234,11 +258,6 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
 }
 
 const lowRunCommands = new Set<StudioCommandId>(["openRun", "pivot"]);
-
-function glyphCommand(command: StudioCommand): GlyphCommand<StudioCommand> {
-  if (!command.glyph) throw new Error(`Pinned command ${command.id} has no glyph`);
-  return command as GlyphCommand<StudioCommand>;
-}
 
 /** The Runs header: Run and Stop are pinned, the Machine picker is normal, Open Run and Pivot are low. */
 export function StudioRunControls({ commands = [], machine, pivotCommand, pivotActive, reason }: {
@@ -253,10 +272,10 @@ export function StudioRunControls({ commands = [], machine, pivotCommand, pivotA
   const rest = [...commands.filter((command) => command !== run && command !== stop), ...pivotCommand ? [pivotCommand] : []];
   const entries: BarEntry<StudioCommand>[] = [
     ...machine ? [{ control: machine, priority: "normal" as const }] : [],
-    ...rest.map((command) => ({ command, priority: lowRunCommands.has(command.id) ? "low" as const : "normal" as const })),
+    ...rest.map((command) => ({ command: withGlyph(command), priority: lowRunCommands.has(command.id) ? "low" as const : "normal" as const })),
   ];
   return <CommandBar moreLabel={studioName("more")} entries={entries}
-    pinned={run ? { action: glyphCommand(run), counterpart: stop && glyphCommand(stop) } : undefined}
+    pinned={run ? { action: withGlyph(run), counterpart: stop && withGlyph(stop) } : undefined}
     itemProps={(command) => ({
       ...commandAttributes(command),
       ...(command === pivotCommand ? { pressed: pivotActive } : {}),

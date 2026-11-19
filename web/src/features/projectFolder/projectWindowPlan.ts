@@ -91,6 +91,17 @@ export function projectWindowPlan(
     subjects.set(evaluation.bound_subject.key, evaluation.bound_subject);
   }
   const sourceRows = new Map(map?.rows.map((row) => [savedRunId(row.key), row]));
+  const stepRowCounts = new Map<string, number>();
+  for (const { key } of map?.rows ?? []) {
+    const step = JSON.stringify([key.variant, key.step]);
+    stepRowCounts.set(step, (stepRowCounts.get(step) ?? 0) + 1);
+  }
+  /** A step's only run is named by its step: the row key of a step without a sweep distinguishes nothing. */
+  const rowName = (id: string, fallback: string) => {
+    const row = sourceRows.get(id);
+    if (!row) return fallback;
+    return stepRowCounts.get(JSON.stringify([row.key.variant, row.key.step])) === 1 ? row.key.step : row.label;
+  };
   const stepSources = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, inputs }) =>
     [step_id, inputs.find(({ id }) => id === 'subject')?.source_step_id]));
   const train = new Map(saved?.rows.map((row) => [savedRunId(row.key), row]));
@@ -116,14 +127,14 @@ export function projectWindowPlan(
           const bound = subjectsByStep.get(consumer)?.get(id);
           const rank = index + 1;
           return { id, label: bound ? studioFormat('boundRankedMember', {
-            rank, producer: sourceRows.get(savedRunId({ ...bound, step: producer }))?.label ?? bound.row,
+            rank, producer: rowName(savedRunId({ ...bound, step: producer }), bound.row),
           }) : studioFormat('rankedMember', { rank }) };
         }) };
       });
     }
     return subset.members?.length ? [{ members: subset.members.map((key) => {
       const id = savedRunId(key);
-      return { id, label: sourceRows.get(id)?.label ?? key.row };
+      return { id, label: rowName(id, key.row) };
     }) }] : undefined;
   }
   for (const row of map?.rows ?? []) {
@@ -164,7 +175,7 @@ export function projectWindowPlan(
       ...(elementResults.get(id) ?? []).flatMap(savedResult),
     ].map((result) => [result.requestId, result])).values()];
     addRun(row.key.step, {
-      id, values, label: producer?.label ?? row.label, status: row.status, reason, variant: row.key.variant,
+      id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label), status: row.status, reason, variant: row.key.variant,
       state: runResultState(row.status, results, checking), results,
       openingReason,
       openingErrors: openingErrors.length ? openingErrors : undefined,

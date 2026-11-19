@@ -1,3 +1,4 @@
+import { appTip } from "@window-shell/browser/tooltip";
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioCollectionProgress, StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
@@ -183,9 +184,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                     {labels.get(sweep.id)?.get(run.values[sweep.id])}
                   </TableCell>
                 ))}
-                <TableCell tabIndex={-1} className={cellFocus}>
+                <TableCell tabIndex={-1} className={cellFocus} aria-description={summary} {...appTip(summary)}>
                   <StudioRunStatus status={run.state} />
-                  {summary && <div className="truncate text-xs text-shell-muted">{summary}</div>}
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>
                   {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
