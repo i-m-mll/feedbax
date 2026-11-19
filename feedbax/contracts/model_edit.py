@@ -38,14 +38,14 @@ class ModelSelection(StrictModel):
     selection: Annotated[tuple[ModelAddress, ...], Field(min_length=1)]
 
 
-class PlaceComponent(StrictModel):
+class PlaceCard(StrictModel):
     address: ModelAddress
     position: ModelPosition
 
 
-class MoveComponents(StrictModel):
-    op: Literal["move_components"]
-    placements: Annotated[tuple[PlaceComponent, ...], Field(min_length=1)]
+class MoveCards(StrictModel):
+    op: Literal["move_cards"]
+    placements: Annotated[tuple[PlaceCard, ...], Field(min_length=1)]
 
 
 class FlipComponent(StrictModel):
@@ -187,7 +187,7 @@ class UngroupComposite(StrictModel):
 
 class ModelEditCommand(StrictModel):
     operation: Annotated[
-        AddComponent | MoveComponents | FlipComponent | CollapseGraph | RouteWire
+        AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire
         | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort
         | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire
         | BringSignalIn | CopyComponents | CutComponents

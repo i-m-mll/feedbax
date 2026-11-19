@@ -152,8 +152,11 @@ export function attachmentAddress(owner: ModelAddress, id: string): ModelAddress
 }
 
 export function fieldAddress(address: ModelAddress, ...path: (string | number)[]): ModelAddress {
-  if (address.element.kind === 'field') throw new Error('A field must name its owning element');
-  return at(address, { kind: 'field', parent: address.element, path });
+  const parent = address.element;
+  if (parent.kind === 'field' || parent.kind === 'inputs' || parent.kind === 'outputs') {
+    throw new Error('A field must name its owning element');
+  }
+  return at(address, { kind: 'field', parent, path });
 }
 
 export function graphKind(component: CompositeComponent) {
