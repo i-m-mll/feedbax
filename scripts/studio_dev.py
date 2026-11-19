@@ -169,12 +169,14 @@ def claim_test_home(home: Path, paths: AppPaths, args: argparse.Namespace, scope
 
 def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: str) -> int:
     paths = AppPaths.resolve(instance_root=home)
+    port = args.port or (3009 if args.preview or args.preview_from else 3008)
+    backend_port = args.backend_port or port + 5000
     if args.owner is not None:
         claim_test_home(home, paths, args, scope)
     paths.configure_studio(desktop=False)
     os.environ.update(
         FEEDBAX_REPO_SNAPSHOT_CACHE_DIR=str(paths.cache / "snapshots"),
-        VITE_FEEDBAX_API_PORT=str(args.backend_port),
+        VITE_FEEDBAX_API_PORT=str(backend_port),
         FEEDBAX_VITE_CACHE_DIR=str(paths.cache / "vite"),
         XDG_CACHE_HOME=str(paths.cache),
     )
@@ -198,11 +200,10 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         if build_code:
             return build_code
         front = [*vite, "preview", "--outDir", dist]
-    port = args.port or (3009 if args.preview or args.preview_from else 3008)
 
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((HOST, args.backend_port))
+        listener.bind((HOST, backend_port))
         fd = listener.fileno()
         api = subprocess.Popen([*backend, "--fd", str(fd)], cwd=ROOT, pass_fds=(fd,))
     scope.callback(stop, api)
@@ -220,7 +221,7 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--home", type=Path, help="keep Studio data in this directory")
     parser.add_argument("--port", type=int, help="frontend port (default: 3008 or 3009 with --preview)")
-    parser.add_argument("--backend-port", type=int, default=8000)
+    parser.add_argument("--backend-port", type=int, help="backend port (default: the frontend port plus 5000)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--preview", action="store_true", help="build and serve the production frontend")
     mode.add_argument("--preview-from", type=Path, help="serve the existing production frontend build")
