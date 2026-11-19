@@ -34,9 +34,9 @@ class DocumentTrainingConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    n_batches: int = Field(default=2000, gt=0, lt=2**31)
+    n_batches: int = Field(default=2000, gt=0, lt=2**31, title="Batches")
     batch_size: int = Field(default=128, gt=0)
-    snapshot_interval: int = Field(default=100, gt=0)
+    snapshot_interval: int = Field(default=100, gt=0, title="Checkpoint Interval")
     replicates: int = Field(default=1, gt=0)
 
 

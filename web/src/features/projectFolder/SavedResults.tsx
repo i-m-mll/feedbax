@@ -3,6 +3,7 @@ import { StudioRegion, useRegionPending, type StudioRegionState } from '@/compon
 import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
+import { Section } from '@/components/ui/Section';
 import type { StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { savedRunId, type SavedTrainRow as SavedRow } from './projectWindowPlan';
 import { StudioEvaluationResults } from './StudioEvaluationResults';
@@ -53,11 +54,8 @@ function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTr
   return (
     <>
       {selection && <StudioTrainResults {...plot} row={row} selection={selection} />}
-      {results.length > 0 && <details className="mt-3 rounded-surface border border-shell-divider p-3 text-sm"
-        onToggle={(event) => setComparing(event.currentTarget.open)}>
-        <summary className="cursor-pointer font-medium">
-          {studioName(results.length === 2 ? 'compareResults' : results[0].name)}
-        </summary>
+      {results.length > 0 && <Section level="group" className="mt-3" bodyClassName="text-sm" open={comparing}
+        onOpenChange={setComparing} name={studioName(results.length === 2 ? 'compareResults' : results[0].name)}>
         {row.change && (
           <p className="mt-2 break-all">
             <code>{row.change.path}</code>{' '}
@@ -67,7 +65,7 @@ function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTr
         <div className="mt-2 grid gap-3 sm:grid-cols-2">
           {results.map(({ name, result }) => <ResultDetail key={name} name={name} result={result} />)}
         </div>
-      </details>}
+      </Section>}
     </>
   );
 }

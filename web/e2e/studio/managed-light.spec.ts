@@ -604,7 +604,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   });
   const childId = 'train-continuation';
   const continuation = await successor('Train', childId);
-  const batches = drawer.getByRole('textbox', { name: 'N Batches', exact: true });
+  const batches = drawer.getByRole('textbox', { name: 'Batches', exact: true });
   await expect(batches).toBeEditable();
   const prepared = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === path + '/authoring/train/' + childId + '/fields'

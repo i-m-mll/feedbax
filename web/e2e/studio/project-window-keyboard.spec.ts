@@ -101,7 +101,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
 
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
   await tab('Training').click();
-  await expect(page.getByRole('textbox', { name: 'N Batches', exact: true })).toBeEnabled();
+  await expect(page.getByRole('textbox', { name: 'Batches', exact: true })).toBeEnabled();
   await tab('Task').click();
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
   const reach = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
@@ -502,7 +502,7 @@ test('the window commands, tab rail and selection history work without a pointer
   await expect(trainTab('Objective').getByRole('table')).toBeVisible();
   await scanStudio(page, info, 'train-objective');
   await page.keyboard.press('Meta+5');
-  await expect(trainTab('Training').getByRole('textbox', { name: 'N Batches', exact: true })).toBeVisible();
+  await expect(trainTab('Training').getByRole('textbox', { name: 'Batches', exact: true })).toBeVisible();
   await scanStudio(page, info, 'train-training');
   await page.keyboard.press('Meta+2');
   await expect(trainTab('Model')).toBeFocused();
@@ -620,8 +620,8 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
 
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await expect(drawer.getByRole('combobox', { name: 'Training method' })).toBeFocused();
-  const batches = drawer.getByRole('textbox', { name: 'N Batches' });
+  await expect(drawer.getByRole('combobox', { name: 'Method', exact: true })).toBeFocused();
+  const batches = drawer.getByRole('textbox', { name: 'Batches' });
   const childEdit = page.waitForResponse((response) => response.request().method() === 'PATCH' &&
     new URL(response.url()).pathname === projectPath);
   await number(page, batches, '1200');

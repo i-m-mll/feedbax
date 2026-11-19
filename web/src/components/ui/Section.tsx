@@ -57,7 +57,7 @@ export function Section({
         className,
       )}
     >
-      <div className={clsx('flex h-row shrink-0 items-center gap-0.5 px-1', header[level], glyph)}>
+      <div className={clsx('flex h-row shrink-0 items-center gap-0.5', level !== 'field' && 'px-1', header[level], glyph)}>
         <button
           type="button"
           aria-expanded={open}
@@ -65,6 +65,7 @@ export function Section({
           onClick={toggle}
           className={clsx(
             'flex h-full min-w-0 flex-1 cursor-default select-none items-center gap-1 rounded-list-row px-1 text-left hover:bg-shell-row-hover',
+            level === 'field' && '-ml-1',
             focusRing,
           )}
         >

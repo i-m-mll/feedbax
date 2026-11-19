@@ -36,7 +36,7 @@ export async function authorFirstTrain(
   const taskX = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
   const nSteps = task.getByRole('textbox', { name: /N Steps/i });
   const weight = objective.getByRole('textbox', { name: 'Weight', exact: true });
-  const nBatches = training.getByRole('textbox', { name: 'N Batches', exact: true });
+  const nBatches = training.getByRole('textbox', { name: 'Batches', exact: true });
   const batchSize = training.getByRole('textbox', { name: 'Batch Size', exact: true });
   const taskValues = (project: StudioProjectSnapshot['project']) => (
     project.documents?.task?.payload as PythonTaskSelection | undefined

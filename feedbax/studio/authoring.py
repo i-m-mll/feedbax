@@ -439,7 +439,7 @@ class _TrainFields:
             return [self.set(("method",), selected), self.set(("settings",), defaults)]
 
         self.field(
-            ("method",), "Training method", key if isinstance(key, str) else None,
+            ("method",), "Method", key if isinstance(key, str) else None,
             _options({name: method.label or name for name, method in registrations.items()}),
             method_change,
         )

@@ -13,7 +13,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   const card = page.getByRole('article', { name: 'Train train', exact: true });
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const clip = page.getByRole('region', { name: 'Grad Clip field', exact: true });
-  const batches = page.getByRole('region', { name: 'N Batches field', exact: true });
+  const batches = page.getByRole('region', { name: 'Batches field', exact: true });
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
   const clipText = clip.getByRole('textbox', { name: 'Grad Clip', exact: true });
   async function saved() {
@@ -35,7 +35,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await expect(rateText).toHaveValue('0.001');
-  const method = page.getByRole('combobox', { name: 'Training method', exact: true });
+  const method = page.getByRole('combobox', { name: 'Method', exact: true });
   await expect(method).toHaveValue('Supervised gradient');
   await method.click();
   await expect(page.getByRole('option', { name: /^Supervised gradient\s*feedbax\.builtins$/ })).toBeVisible();
@@ -74,15 +74,15 @@ test('Training and Runs edit the same saved values and project the selected sour
   await selectValue.click();
   await expect(selectValue).toHaveAttribute('aria-pressed', 'true');
   await expect(rate.getByLabel('Learning Rate selected value', { exact: true })).toBeVisible();
-  const batchText = batches.getByRole('textbox', { name: 'N Batches', exact: true });
+  const batchText = batches.getByRole('textbox', { name: 'Batches', exact: true });
   const initialBatches = await batchText.inputValue();
   const override = String(Number(initialBatches) + 1);
   await enter(batchText, override);
-  await expect(batches.getByLabel('N Batches selected value', { exact: true })).toBeVisible();
+  await expect(batches.getByLabel('Batches selected value', { exact: true })).toBeVisible();
   await expect(batchText).toHaveValue(override);
   await expect(rateText).toBeVisible();
   const exceptions = page.getByRole('list').filter({ has: page.getByRole('button', { name: 'Remove Exception' }) });
-  await expect(exceptions.getByRole('listitem')).toHaveText([`N Batches ${override} · learning-rate 0.0025 · 1 run`]);
+  await expect(exceptions.getByRole('listitem')).toHaveText([`Batches ${override} · learning-rate 0.0025 · 1 run`]);
   const scoped = (await plan())!.rows;
   expect(scoped.filter((row, index) => row.request_id !== after[index].request_id)).toHaveLength(1);
   await batchText.fill('77');
