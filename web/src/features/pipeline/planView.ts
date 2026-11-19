@@ -1,5 +1,7 @@
 import type { StudioResultState, StudioRunStatusId } from "@/components/activity/studioVocabulary";
-import type { ReceiptValidity, StudioActivityJob } from "@/generated/studioContracts";
+import type {
+  ReceiptValidity, StudioActivityJob, StudioDefinitionChange, StudioProjectWindowMapProblem, StudioSavedTrainChange,
+} from "@/generated/studioContracts";
 
 export interface RunAddress {
   readonly stepId: string;
@@ -37,6 +39,11 @@ export interface PlanRunView {
   /** The status with the results' validity folded in; what the run's mark draws. */
   readonly state: StudioResultState;
   readonly results: readonly PlanResultView[];
+  /** The problems that keep the run from running; each names its place. */
+  readonly problems?: readonly StudioProjectWindowMapProblem[];
+  /** The definition change that left the run's retained result out of date. */
+  readonly change?: StudioDefinitionChange | StudioSavedTrainChange;
+  /** What the run's attempts report, which names nothing in the definition. */
   readonly reason?: string;
   readonly openingReason?: string;
   readonly openingErrors?: readonly string[];

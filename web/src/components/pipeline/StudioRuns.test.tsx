@@ -154,15 +154,15 @@ it("titles the inspector by step and the run's values, and reveals a run's probl
   const reveal = vi.fn();
   const problem = {
     code: "cannot_run", path: "/trial_documents/objective/terms", detail: "Objective has no enabled terms.",
-    variant: "default", step: "train", row: "b", document: "model",
+    variant: "default", step: "train", row: "b", place: { part: "objective", document: "objective" },
   } as const;
   const rows = (runIds: string[]) => ({ ...selectStep(emptyPipelineSelection, "train"), selection: { kind: "rows" as const, stepId: "train", runIds } });
-  const { rerender } = render(<StudioRunDetails step={train} state={rows(["b"])}
-    problems={(run) => run.id === "b" ? [problem] : []} onRevealProblem={reveal} />);
+  const step = { ...train, runs: train.runs.map((run) => run.id === "b" ? { ...run, problems: [problem] } : run) };
+  const { rerender } = render(<StudioRunDetails step={step} state={rows(["b"])} onReveal={reveal} />);
   const inspector = within(screen.getByRole("region", { name: "Run Inspector" }));
   expect(inspector.getByRole("heading").textContent).toBe("Train arm · Rate 0.003 · Seed 1");
-  fireEvent.click(inspector.getByRole("button", { name: /Objective has no enabled terms/ }));
-  expect(reveal).toHaveBeenCalledWith(problem);
+  fireEvent.click(inspector.getByRole("button", { name: /^Objective · Objective has no enabled terms/ }));
+  expect(reveal).toHaveBeenCalledWith(step.runs[1], expect.objectContaining({ place: problem.place, problem }));
   rerender(<StudioRunDetails step={{ ...evaluate, runs: [{ ...evaluate.runs[0], label: "default" }] }}
     state={{ ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }} />);
   expect(screen.getByRole("heading").textContent).toBe("Test reach");

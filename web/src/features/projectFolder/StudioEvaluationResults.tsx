@@ -1,27 +1,33 @@
+import { Fragment, type ReactNode } from 'react';
 import { UpdateCadenceSchema, type StudioSavedEvaluationRow } from '@/generated/studioContracts';
 import { Button } from '@/components/ui/Button';
 import { Table, TableCell, TableHeaderCell, TableRowHeader } from '@/components/ui/Table';
-import { studioCheckpointStatus, studioEvaluationPlacement, studioFormat, studioName, studioReason, studioReplayLabel } from '@/components/activity/studioVocabulary';
+import { studioCheckpointStatus, studioEvaluationPlacement, studioFormat, studioFormatParts, studioName, studioReason, studioReplayLabel } from '@/components/activity/studioVocabulary';
 
 const percent = new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 });
 
-export function StudioEvaluationAttemptDetails({ evaluation }: { evaluation: StudioSavedEvaluationRow }) {
+export function StudioEvaluationAttemptDetails({ evaluation, onShowStep }: {
+  evaluation: StudioSavedEvaluationRow;
+  /** Select the Train step the evaluation waits for. */
+  onShowStep?: (step: string) => void;
+}) {
   const attempt = evaluation.checkpoint_attempt;
   const placement = attempt?.placement.location ?? evaluation.result?.placement;
   const pending = attempt?.pending;
   const subject = evaluation.checkpoint_series?.subject;
-  let detail = evaluation.reason;
+  let detail: ReactNode = evaluation.reason;
   if (pending && subject) {
-    const step = subject.step;
+    const step = onShowStep
+      ? <Button variant="bare" size="content" className="hover:underline" onClick={() => onShowStep(subject.step)}>{subject.step}</Button>
+      : subject.step;
     const { next_update: update, recovery_update: recovery } = pending;
-    if (pending.state === 'resumable') {
-      detail = recovery == null ? studioFormat('waitingForTrainResume', { step })
-        : update == null ? studioFormat('waitingForCheckpointRecovery', { step, recovery })
-          : studioFormat('waitingForCheckpointResume', { step, recovery, update });
-    } else {
-      detail = update == null ? studioFormat('waitingForCheckpoints', { step })
-        : studioFormat('waitingForCheckpoint', { step, update });
-    }
+    const parts = pending.state === 'resumable'
+      ? recovery == null ? studioFormatParts('waitingForTrainResume', { step })
+        : update == null ? studioFormatParts('waitingForCheckpointRecovery', { step, recovery })
+          : studioFormatParts('waitingForCheckpointResume', { step, recovery, update })
+      : update == null ? studioFormatParts('waitingForCheckpoints', { step })
+        : studioFormatParts('waitingForCheckpoint', { step, update });
+    detail = parts.map((part, index) => <Fragment key={index}>{part}</Fragment>);
   }
   let budgetNotice: string | undefined;
   if (attempt?.placement.reason === 'over_budget' && attempt.placement.predicted_update_fraction != null) {

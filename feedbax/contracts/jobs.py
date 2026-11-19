@@ -12,13 +12,13 @@ from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import AttemptProvenance
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
-from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind
 from feedbax.contracts.project_sweep import SweepException
+from feedbax.contracts.studio_place import StudioPlace, definition_place, path_parts
 from feedbax.contracts.validation_placement import ValidationPlacement
 
 
@@ -222,8 +222,14 @@ class StudioSavedTrainResult(StrictModel):
     provenance: AttemptProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
-class StudioSavedTrainChange(StrictModel):
+class StudioDefinitionChange(StrictModel):
+    """The first authored field that differs from the definition of a retained result."""
+
     path: str
+    place: StudioPlace
+
+
+class StudioSavedTrainChange(StudioDefinitionChange):
     before: JsonValue
     after: JsonValue
 
@@ -259,6 +265,7 @@ class StudioSavedLightResult(StrictModel):
 class StudioSavedLightHistory(StrictModel):
     result: StudioSavedLightResult | None = None
     previous: StudioSavedLightResult | None = None
+    changed: StudioDefinitionChange | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioProjectWindowMapRow(StrictModel):
@@ -327,10 +334,8 @@ class StudioProjectWindowMapProblem(StrictModel):
     variant: str | None
     step: str | None
     row: str | None
-    document: str | None
-    element: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    place: StudioPlace | None
     document_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    model_address: ModelAddress | None = Field(default=None, exclude_if=lambda value: value is None)
 
     address: str | None = Field(default=None, exclude_if=lambda value: value is None)
     layer: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -339,10 +344,16 @@ class StudioProjectWindowMapProblem(StrictModel):
     @classmethod
     def from_diagnostic(cls, diagnostic: ProjectDiagnostic, *, declaration: str) -> StudioProjectWindowMapProblem:
         source = f"steps/{diagnostic.step}.json" if diagnostic.step else declaration
-        problem = cls.model_validate(diagnostic, from_attributes=True)
-        problem.address = diagnostic.authored_file or source
-        problem.layer = diagnostic.layer
-        return problem
+        return cls(
+            code=diagnostic.code, path=diagnostic.path, detail=diagnostic.detail,
+            variant=diagnostic.variant, step=diagnostic.step, row=diagnostic.row,
+            place=definition_place(
+                path_parts(diagnostic.path), lambda _slot: diagnostic.document,
+                element=diagnostic.element, member=diagnostic.model_address,
+            ) if diagnostic.step else None,
+            document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
+            layer=diagnostic.layer, authored_path=diagnostic.authored_path,
+        )
 
 
 class StudioPlanRequestAddress(StrictModel):

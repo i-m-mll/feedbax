@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from hashlib import sha256
+import copy
 import json
 from pathlib import Path
 from statistics import median
@@ -123,6 +124,11 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
     }
     data["steps"]["broken"] = {"kind": "train", "base": {"document": "missing"}}
     data["steps"]["invalid"] = {"kind": "train", "base": {"inline": {}}}
+    trial = data["steps"]["fit"]["base"]["inline"]["trial_documents"]
+    data["documents"]["unscored"] = copy.deepcopy(data["documents"][trial["objective"]["document"]])
+    data["documents"]["unscored"]["payload"]["terms"] = []
+    data["steps"]["unscored"] = copy.deepcopy(data["steps"]["fit"]) | {"sweep": None}
+    data["steps"]["unscored"]["base"]["inline"]["trial_documents"]["objective"] = {"document": "unscored"}
     for name, content in dump_text_project(
         Project.model_validate(data), ProjectConfiguration(project="reach", store="results")
     ).items():
@@ -151,7 +157,7 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
             json.loads(condition_id) for condition_id in row["evaluation_conditions"]
         ]
         for row in window["rows"]
-        if "evaluation_conditions" in row
+        if "evaluation_conditions" in row and row["key"]["step"] == "fit"
     } == {("default", "fit", row): trial_variables for row in ("seed=a", "seed=b")}
     steps = {step["step_id"]: step for step in window["steps"]}
     assert steps["fit"]["document_ids"] == {
@@ -187,11 +193,13 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
     }
     row = next(item for item in window["rows"] if item["key"] == fit_a)
     assert row["coordinates"]["seed"]["label"] == "11"
-    assert all(item["key"]["step"] == "fit" for item in response["rows"])
+    assert {item["key"]["step"] for item in response["rows"]} == {"fit", "unscored"}
     assert any(
-        (problem["step"], problem["document"], problem["code"]) == ("broken", "missing", "missing_document")
+        (problem["step"], problem["code"]) == ("broken", "missing_document")
         for problem in window["problems"]
     )
+    (unscored,) = (problem for problem in window["problems"] if problem["step"] == "unscored")
+    assert unscored["place"] == {"part": "objective", "document": "unscored"}
     assert not (root / "results").exists()
 
 

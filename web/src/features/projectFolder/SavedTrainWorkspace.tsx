@@ -5,7 +5,9 @@ import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSaved
 import { apiErrorMessage, isUnanswered } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
-import { studioAccessibleName, studioCountOf, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import {
+  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
+} from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
   bindSweepFold, StudioPipelineMap, StudioPipelineMapDrawer, type MapStepRename, type PipelineMapStepSource,
@@ -13,7 +15,7 @@ import {
 import { isMemberName } from './projectMemberName';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/StepInsertMenu';
-import { StudioRunControls, StudioRunDetails, StudioRuns } from '@/components/pipeline/StudioRuns';
+import { StudioRunControls, StudioRunDetails, StudioRuns, type RunMention } from '@/components/pipeline/StudioRuns';
 import type { RunMenu } from '@/components/pipeline/RunContextMenu';
 import type { ActivityResultState } from '@/components/activity/StudioActivity';
 import { useResultValidity } from './useResultValidity';
@@ -57,7 +59,7 @@ import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpo
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows } from './projectWindowPlan';
-import { problemReason, problemTarget, removeGraphVariation, type ProblemReveal } from './projectWindowProblems';
+import { placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
@@ -191,7 +193,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     revision: string;
     variant: string | null;
     runId: string | null;
-    reveal: ProblemReveal;
+    reveal: Reveal;
   }>();
   const [excludedUsers, setExcludedUsers] = useState<Readonly<Record<string, readonly string[]>>>({});
   const [focusCreatedStep, setFocusCreatedStep] = useState<string>();
@@ -261,7 +263,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const focusSlot = secondaryView && windowState.focusedSlot === 'secondary' ? 'secondary' : 'primary';
   const focusView = focusSlot === 'secondary' ? secondaryView : primaryView;
   const revealed = problemReveal?.revision === saved.revision && problemReveal.variant === variant &&
-    problemReveal.reveal.problem.step === step?.id && problemReveal.runId === (state.focus?.runId ?? null)
+    problemReveal.reveal.step === step?.id && problemReveal.runId === (state.focus?.runId ?? null)
     ? problemReveal.reveal : undefined;
   function documentScope(field: 'graph' | 'task'): NamedDocumentScope | undefined {
     const document = field === 'graph' ? modelDocumentId(step?.documentIds)
@@ -409,8 +411,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const evaluated = step?.kind === 'evaluate' && namedRun && state.selection;
   const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
-  const modelProblems = data?.window_map?.problems.filter((problem) => problem.model_address &&
-    (problem.step === step?.id || step?.kind === 'evaluate' && problem.document === modelSource) &&
+  const modelProblems = data?.window_map?.problems.filter((problem) => placeMember(problem.place) &&
+    (problem.step === step?.id || step?.kind === 'evaluate' && placeMember(problem.place)?.document === modelSource) &&
     (problem.variant === null || problem.variant === variant) &&
     (!problem.row || !namedRun || problem.step !== step?.id || problem.row === namedRun.row));
   const axis = evaluated && state.selection?.kind === 'values' && state.selection.terms.length === 1
@@ -467,9 +469,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     namedRun, documentScopes, planCurrent: !!data, elements, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
-      const owner = modelProblems?.find((problem) => problem.model_address && holds(element, problem.model_address));
+      const owner = modelProblems?.find((problem) => {
+        const member = placeMember(problem.place);
+        return member && holds(element, member.address);
+      });
       if (owner?.step) setPanel({ kind: 'problems', scope: { step: owner.step, variant, element }, opener });
     },
+    runProblems: namedRun && step?.runs.find(({ id }) => id === savedRunId(namedRun))?.problems,
+    revealProblem,
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
     fieldAxes: state.selection?.kind === 'values' ? Object.fromEntries(
       state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
@@ -580,41 +587,50 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const shownProblems = problemScope ? problems.filter((problem) =>
     problem.step === problemScope.step &&
     (problem.variant === null || problem.variant === problemScope.variant) &&
-    (!problemScope.element || !!problem.model_address && holds(problemScope.element, problem.model_address))) : problems;
+    (!problemScope.element || holdsMember(problemScope.element, problem))) : problems;
   function openProjectProblems(opener: HTMLElement | null = null) {
     setPanel({ kind: 'problems', scope: null, opener });
   }
-  function addressedStep(problem: StudioProjectWindowMapProblem) {
+  function holdsMember(element: ModelAddress, problem: StudioProjectWindowMapProblem) {
+    const member = placeMember(problem.place);
+    return !!member && holds(element, member.address);
+  }
+  function addressedStep(at: { step: string | null; variant: string | null }) {
     return data?.window_map?.steps.find(({ step_id, variant: scope }) =>
-      step_id === problem.step && scope === (problem.variant ?? variant));
+      step_id === at.step && scope === (at.variant ?? variant));
   }
-  function runProblems(run: PlanRunView) {
-    return problems.filter((problem) => problem.step === step?.id && run.variant !== undefined &&
-      (problem.variant === null || problem.variant === run.variant) &&
-      (problem.row == null || savedRunId({ variant: run.variant, step: problem.step, row: problem.row }) === run.id));
-  }
-  function revealProblem(problem: StudioProjectWindowMapProblem) {
-    const destination = addressedStep(problem);
+  /** Show the place a reason names in its step's view, at the run the reason belongs to. */
+  function reveal(at: { step: string | null; variant: string | null; row: string | null }, place: StudioPlace | null,
+    reason: string, problem?: StudioProjectWindowMapProblem) {
+    const destination = addressedStep(at);
     if (!destination) return;
     const { step_id: stepId, variant: scope, kind } = destination;
     const row = data?.window_map?.rows.find(({ key }) =>
-      key.step === stepId && key.row === problem.row && key.variant === scope);
-    const target = problemTarget(problem);
+      key.step === stepId && key.row === at.row && key.variant === scope);
+    const named = placeView(place);
     const view = kind === 'analyze' ? 'analysis' : kind === 'report' ? 'document'
-      : viewsByKind[kind].some((item) => item === target.view) ? target.view : 'runs';
+      : viewsByKind[kind].some((item) => item === named) ? named : 'runs';
     const runId = row ? savedRunId(row.key) : null;
     selection.select(runId
       ? selectRun(state, { stepId, runId })
       : selectStep(state, stepId), scope);
     setExcludedUsers({});
-    setProblemReveal({ revision: saved.revision, variant: scope, runId, reveal: { problem, target: { ...target, view } } });
+    setProblemReveal({ revision: saved.revision, variant: scope, runId, reveal: { step: stepId, place, view, reason, problem } });
     setWindowState((current) => showProjectWindowView(current, view, focusSlot));
     requestSlotFocus((count) => count + 1);
     setPanel(null);
   }
-  const graphRepair = revealed && removeGraphVariation(saved.project, revealed.problem);
+  function revealProblem(problem: StudioProjectWindowMapProblem) {
+    reveal(problem, problem.place, studioProblemDetail(problem), problem);
+  }
+  function revealRunMention(run: PlanRunView, mention: RunMention) {
+    if (mention.problem) return revealProblem(mention.problem);
+    const [variantId, stepId, rowId] = JSON.parse(run.id) as [string, string, string];
+    reveal({ variant: variantId, step: stepId, row: rowId }, mention.place, mention.detail);
+  }
+  const graphRepair = revealed?.problem && removeGraphVariation(saved.project, revealed.problem);
   function removeRefusedVariation() {
-    if (!graphRepair || !revealed || !ready || snapshot.saving || busy) return;
+    if (!graphRepair || !revealed?.problem || !ready || snapshot.saving || busy) return;
     const { step: stepId, variant: variantId } = revealed.problem;
     void perform(async () => {
       if (!await runRemoval.confirm((row) => row.key.step === stepId && (!variantId || row.key.variant === variantId))) return;
@@ -1186,7 +1202,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           onClose={() => setPanel(null)} onOpenRun={openActivityRun} projectNames={names} resultState={activityResultState} />}
         renderView={(view, slot) => {
           const details = slot === 'primary' ? primary : secondary;
-          const withProblem = (body: ReactNode) => revealed?.target.view === view && slot === focusSlot
+          const withProblem = (body: ReactNode) => revealed?.view === view && slot === focusSlot
             ? <ProblemDestination reveal={revealed} action={graphRepair && <Button
               disabled={!ready || snapshot.saving || busy} onClick={removeRefusedVariation}>
               {studioName('removeVariation')}
@@ -1257,7 +1273,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 machine={studioRunMachineControl({ catalog: machineCatalog.data, value: requestedMachine,
                   disabled: busy || machineCatalog.isPending,
                   onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}
-                pivotCommand={pivot} pivotActive={pivotActive} reason={run?.reason} />,
+                pivotCommand={pivot} pivotActive={pivotActive} reason={run && studioRunReason(run)} />,
               drawer: (authoring || evaluateInputs || step.inputs.length > 0 || exceptions.length > 0 || evaluationCheckpointRule ||
                 evaluationEditor) ? <Drawer>
                 {(authoring || evaluationCheckpointRule || evaluationEditor) && <DrawerSection sections={drawerSections} id="runs.definition"
@@ -1300,9 +1316,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 </DrawerSection>}
               </Drawer> : undefined,
               inspector: selectedRuns(step, state.selection).length > 0
-                ? <StudioRunDetails step={step} state={state} problems={runProblems} onRevealProblem={revealProblem}
+                ? <StudioRunDetails step={step} state={state} onReveal={revealRunMention}
                   detail={selectedEvaluation?.checkpoint_series
-                    ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation} /> : undefined} /> : undefined,
+                    ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation}
+                      onShowStep={(stepId) => selection.select(selectStep(state, stepId))} /> : undefined} /> : undefined,
               body: withProblem(<StudioRuns plan={plan} {...runSelection}
                 region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
                   ? { kind: 'result', missing: [] } : { kind: 'empty' })}
@@ -1338,7 +1355,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   );
 }
 
-function ProblemDestination({ reveal, action, children }: { reveal: ProblemReveal; action?: ReactNode; children: ReactNode }) {
+function ProblemDestination({ reveal, action, children }: { reveal: Reveal; action?: ReactNode; children: ReactNode }) {
   const reason = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     reason.current?.focus();
@@ -1346,13 +1363,19 @@ function ProblemDestination({ reveal, action, children }: { reveal: ProblemRevea
   return <div className="flex h-full min-h-0 flex-col">
     <div className="flex items-center justify-between gap-2 border-b border-shell-divider px-3 py-2 text-sm">
       <p ref={reason} tabIndex={-1}>
-        <span className="font-medium">{reveal.target.label}</span>{' · '}
-        {action && <>{reveal.problem.path}{' · '}</>}{problemReason(reveal.problem)}
+        <span className="font-medium">{studioPlaceName(reveal.place)}</span>{' · '}
+        {action && reveal.problem && <>{reveal.problem.path}{' · '}</>}{reveal.reason}
       </p>
       {action}
     </div>
     <ScrollFade className="flex-1">{children}</ScrollFade>
   </div>;
+}
+
+/** The document a problem's place is in, or else its step: what the Problems panel groups it under. */
+function problemHolder(problem: StudioProjectWindowMapProblem) {
+  const place = problem.place;
+  return place && 'document' in place && place.document ? place.document : problem.step;
 }
 
 function ProblemList({ problems, onChoose, canReveal, showVariant }: {
@@ -1363,16 +1386,22 @@ function ProblemList({ problems, onChoose, canReveal, showVariant }: {
 }) {
   const groups = new Map<string | null, StudioProjectWindowMapProblem[]>();
   for (const problem of problems) {
-    const name = problem.document ?? problem.step ?? null;
+    const name = problemHolder(problem);
     if (!groups.has(name)) groups.set(name, []);
     groups.get(name)!.push(problem);
   }
-  return <div className="space-y-2">{[...groups].map(([name, entries]) => <section key={name ?? ''}>
-    {name && <h2 className="font-medium">{name}</h2>}
-    <ul>{entries.map((problem, index) => <li key={index} className="break-words">
-      <ProblemRow problem={problem}
-        context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].flatMap((part) => part ? [part] : [])}
-        onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />
-    </li>)}</ul>
-  </section>)}</div>;
+  return <div className="space-y-2">{[...groups].map(([name, entries]) => {
+    const first = entries.find(canReveal);
+    return <section key={name ?? ''}>
+      {name && <h2 className="font-medium">{first
+        ? <Button variant="ghost" size="content" className="rounded-control px-control-inline text-left font-medium"
+          onClick={() => onChoose(first)}>{name}</Button>
+        : name}</h2>}
+      <ul>{entries.map((problem, index) => <li key={index} className="break-words">
+        <ProblemRow problem={problem}
+          context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].flatMap((part) => part ? [part] : [])}
+          onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />
+      </li>)}</ul>
+    </section>;
+  })}</div>;
 }

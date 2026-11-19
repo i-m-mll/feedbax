@@ -153,7 +153,7 @@ export function projectWindowPlan(
     const bound = evaluations.get(id)?.bound_subject;
     const sourceStep = stepSources.get(row.key.step);
     const producer = sourceStep && bound ? sourceRows.get(savedRunId({ ...bound, step: sourceStep })) : undefined;
-    const change = training?.change;
+    const change = training?.change ?? row.light?.changed ?? undefined;
     const acquiringFailed = row.status === 'failed' && row.opening_step === 'acquiring' && row.reason;
     const [summary, ...openingErrors] = acquiringFailed ? acquiringFailed.split('\n') : [];
     const openingReason = row.status === 'starting' && row.opening_step
@@ -162,9 +162,7 @@ export function projectWindowPlan(
       : row.status === 'failed' && row.opening_step
         ? [studioOpeningStep(row.opening_step), row.reason].filter(Boolean).join(' · ')
         : undefined;
-    const reason = change && row.status === 'stale'
-      ? [row.reason, `${JSON.stringify(change.before)} → ${JSON.stringify(change.after)}`].filter(Boolean).join(' ')
-      : openingReason ? openingReason
+    const reason = openingReason ? openingReason
       : row.opening_step ? [studioOpeningStep(row.opening_step), row.reason].filter(Boolean).join(' · ')
       : row.reason ?? undefined;
     const evaluation = evaluations.get(id);
@@ -176,6 +174,9 @@ export function projectWindowPlan(
     ].map((result) => [result.requestId, result])).values()];
     addRun(row.key.step, {
       id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label), status: row.status, reason, variant: row.key.variant,
+      problems: map?.problems.filter((problem) => problem.step === row.key.step &&
+        (problem.variant === null || problem.variant === row.key.variant) && (problem.row == null || problem.row === row.key.row)),
+      change: change && row.status === 'stale' ? change : undefined,
       state: runResultState(row.status, results, checking), results,
       openingReason,
       openingErrors: openingErrors.length ? openingErrors : undefined,
