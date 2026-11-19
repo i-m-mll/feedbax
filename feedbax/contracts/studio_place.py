@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Literal
 
 from pydantic import Field
@@ -61,11 +61,13 @@ StudioPlace = Annotated[
 _INPUT_DOCUMENTS = {"subject": "model", "model": "model", "task": "task", "python_task": "task", "objective": "objective"}
 
 
-def path_parts(path: str) -> tuple[str, ...]:
+def path_parts(path: str | None) -> tuple[str, ...]:
     """Split a diagnostic path, written as a JSON pointer or a dotted path, into its keys."""
+    if not path:
+        return ()
     if path.startswith("/"):
         return tuple(part.replace("~1", "/").replace("~0", "~") for part in path[1:].split("/"))
-    return tuple(path.split(".")) if path else ()
+    return tuple(path.split("."))
 
 
 def _document_place(kind: str, document: str | None, rest: Sequence[str], member: ModelAddress | None) -> StudioPlace:
@@ -82,11 +84,14 @@ def definition_place(
     *,
     element: str | None = None,
     member: ModelAddress | None = None,
+    variation: Callable[[str], str | None] = lambda _name: None,
 ) -> StudioPlace:
     """Name the part of a step's definition at ``parts``, a path from the step's root or its payload.
 
     ``document`` answers which project document supplies the definition at a slot such as
     ``payload.trial_documents.objective``, or ``None`` when the step holds it inline.
+    ``variation`` answers the dotted path a named variation entry patches, so the entry is placed
+    where its field lives.
     """
     if element is not None:
         return StudioAnalysisPlace(part="analysis", element=element)
@@ -116,7 +121,28 @@ def definition_place(
         case "method" | "settings":
             return StudioMethodPlace(part="method")
         case "params" if rest[:1] == ("variation",):
+            target = path_parts(variation(rest[1])) if len(rest) > 1 else ()
+            if target[:1] == ("task",):
+                return _document_place("task", document("payload.task"), target[1:], member)
             return StudioModelPlace(part="model", document=None, member=member)
     if member is not None:
-        return StudioModelPlace(part="model", document=None, member=member)
+        model = document("payload.trial_documents.model") or document("payload.graph")
+        return StudioModelPlace(part="model", document=model, member=member)
     return StudioStepPlace(part="step", field=field)
+
+
+def variation_targets(params: object) -> Callable[[str], str | None]:
+    """The dotted path each named entry of a request's ``params.variation`` patches."""
+    variation = params.get("variation") if isinstance(params, Mapping) else None
+
+    def target(name: str) -> str | None:
+        if isinstance(variation, Mapping):
+            edit = variation.get(name)
+        elif isinstance(variation, list) and name.isdigit() and int(name) < len(variation):
+            edit = variation[int(name)]
+        else:
+            return None
+        path = edit.get("path") if isinstance(edit, Mapping) else None
+        return path if isinstance(path, str) else None
+
+    return target

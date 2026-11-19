@@ -108,6 +108,8 @@ class ProjectDiagnostic:
     model_address: ModelAddress | None = None
     authored_file: str | None = None
     authored_path: str | None = None
+    variation_target: str | None = None
+    """The dotted path the variation entry at ``path`` patches, which places the problem."""
 
 
 @dataclass(frozen=True)
