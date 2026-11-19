@@ -56,6 +56,8 @@ export interface FieldModel {
   readonly members?: FieldMembers;
   /** The member a sweep keeps when Value is chosen from its kind menu. */
   readonly keeps?: string;
+  /** A chosen class's only parameter's own name; its `label` is the field holding the class, since the parameter is that field's value. */
+  readonly parameter?: string;
   /** The value's parts: a vector's components side by side; otherwise indented rows under the field (a group's members, a rule's first, last and count). */
   readonly parts?: readonly FieldModel[];
   /** The sweep may be turned into its listed values. */

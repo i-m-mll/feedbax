@@ -477,7 +477,7 @@ class _TrainFields:
         schema = registration.settings_model.model_json_schema()
 
         def fields(
-            path: _Path, values: dict, shape: dict, anchor: tuple[_Path, dict] | None, owner: tuple[str, bool] | None,
+            path: _Path, values: dict, shape: dict, anchor: tuple[_Path, dict] | None, owner: tuple[str, str, bool] | None,
         ) -> None:
             for name, declared in shape.get("properties", {}).items():
                 site = (*path, name)
@@ -487,10 +487,10 @@ class _TrainFields:
                 inner = anchor if present or anchor is not None else (site, leaf)
                 if isinstance(leaf, dict):
                     # A chosen class's parameter is named by the field holding the class, and by its own
-                    # name only when the class has several.
+                    # name only when the class has several: a constant rate is the rate.
                     tag = declared.get("discriminator", {}).get("propertyName")
                     single = tag is not None and len(set(props.get("properties", {})) - {tag}) == 1
-                    fields(site, leaf, props, inner, (name, single) if tag is not None else None)
+                    fields(site, leaf, props, inner, (name, _title(declared, name), single) if tag is not None else None)
                 elif type(leaf) in (int, float) and props.get("type") in ("number", "integer"):
                     def write(value: _Scalar, site=site, inner=inner) -> list[SetProjectValue]:
                         if inner is None:
@@ -499,16 +499,20 @@ class _TrainFields:
                         return [self.set(root, _set_in(default, site[len(root):], value))]
 
                     self.field(
-                        site, props.get("title", name.replace("_", " ").title()), leaf,
+                        site, owner[1] if owner is not None and owner[2] else _title(props, name), leaf,
                         StudioAuthoringNumber(
                             kind="number", min=props.get("minimum"), max=props.get("maximum"),
                             step=1 if props.get("type") == "integer" else None,
                         ),
                         write,
-                        name=None if owner is None else (owner[0],) if owner[1] else (owner[0], name),
+                        name=None if owner is None else (owner[0],) if owner[2] else (owner[0], name),
                     )
 
         fields(("settings",), raw, schema, None, None)
+
+
+def _title(node: dict, name: str) -> str:
+    return node.get("title", name.replace("_", " ").title())
 
 
 def _schema_node(schema: dict, node: dict, value: JsonValue) -> dict:

@@ -192,15 +192,14 @@ function ClassValue({ model, parameter, labelId, picker }: {
   const id = useId();
   const reasonId = useId();
   const originId = useId();
-  const named = { ...parameter, label: model.label };
-  const { busy, reason, setReason, submit } = useSubmit(named);
-  const readOnly = !named.commit || busy;
-  const shown = reason ?? named.reason ?? model.reason;
-  const origin = named.origin ?? model.origin;
+  const { busy, reason, setReason, submit } = useSubmit(parameter);
+  const readOnly = !parameter.commit || busy;
+  const shown = reason ?? parameter.reason ?? model.reason;
+  const origin = parameter.origin ?? model.origin;
   const describedBy = [origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
   function chooseKind(kind: FieldKind, focusText: () => void) {
-    if (kind === 'sweep' && named.kind !== 'sweep') void submit({ kind: 'to_sweep' });
-    else if (kind === 'value' && named.kind === 'sweep' && named.keeps) void submit({ kind: 'to_value', value_id: named.keeps });
+    if (kind === 'sweep' && parameter.kind !== 'sweep') void submit({ kind: 'to_sweep' });
+    else if (kind === 'value' && parameter.kind === 'sweep' && parameter.keeps) void submit({ kind: 'to_value', value_id: parameter.keeps });
     else focusText();
   }
   return <section className="value-field value-field-class grid min-w-0 gap-1 tabular-nums" aria-label={studioFieldLabel('field', model.label)}>
@@ -208,13 +207,13 @@ function ClassValue({ model, parameter, labelId, picker }: {
       {origin && <span id={originId} className="text-shell-muted">{origin}</span>}
       {shown && <p role="alert" id={reasonId}>{shown}</p>}
     </> : undefined}>
-      <ValueText model={named} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
+      <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
         submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
-        end={picker} parameterOf={[model.label, parameter.label]} />
+        end={picker} parameterOf={[model.label, parameter.parameter!]} />
     </FieldRow>
-    {(named.members || named.canList) && <div className="value-field-parts grid gap-1">
-      {named.members && <Members model={named} />}
-      {named.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
+    {(parameter.members || parameter.canList) && <div className="value-field-parts grid gap-1">
+      {parameter.members && <Members model={parameter} />}
+      {parameter.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
         onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
     </div>}
   </section>;

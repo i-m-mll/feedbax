@@ -85,7 +85,7 @@ test('a class chosen from a tagged union draws its parameters, a class-valued on
   expect(optimizer.parts!.map(({ label }) => label)).toEqual(['B1', 'Rate']);
   const rate = optimizer.parts![1];
   expect(rate.value).toBe('cosine');
-  expect(rate.parts!.map(({ label, text }) => [label, text])).toEqual([['Steps', '3']]);
+  expect(rate.parts!.map(({ label, parameter, text }) => [label, parameter, text])).toEqual([['Rate', 'Steps', '3']]);
   await rate.commit!({ kind: 'set', value: 'constant' });
   await optimizer.commit!({ kind: 'set', value: 'sgd' });
   expect(written).toEqual([

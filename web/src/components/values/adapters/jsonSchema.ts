@@ -168,10 +168,15 @@ function classField(label: string, id: string, name: string, members: readonly S
     const value = constOf(member, name);
     return { value, label: typeof member.title === 'string' ? member.title : String(value) };
   });
-  const parts = chosen && isRecord(chosen.properties) && isRecord(current)
+  const parameters = chosen && isRecord(chosen.properties) && isRecord(current)
     ? Object.entries(chosen.properties).filter(([key]) => key !== name)
-      .map(([key, nested]) => fromJsonSchema(key, nested, current[key], context, [...path, key]))
     : [];
+  const parts = parameters.map(([key, nested]) => fromJsonSchema(key, nested, (current as Record<string, JsonValue>)[key], context, [...path, key]));
+  if (parts.length === 1) {
+    const [[key, nested]] = parameters;
+    const own = resolve(nested, context.root);
+    parts[0] = { ...parts[0], label, parameter: typeof own.title === 'string' ? own.title : humanizeLabel(key) };
+  }
   return rawField({
     id, label, origin, value: chosen ? constOf(chosen, name) : null, type: { kind: 'class', options }, parts,
     change: change && ((next) => {
