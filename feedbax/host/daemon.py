@@ -51,8 +51,9 @@ class Worker:
     profile_key: str
     profile_dir: Path
     runtime_owner: str | None
-    reusable: bool
     ready: bool = False
+    served: int = 0
+    project: str | None = None
     retiring_since: float | None = None
     job_id: str | None = None
     data: bytes = b""
@@ -108,6 +109,7 @@ class Host:
         self.profiles: dict[str, dict] = {}
         self.release_owner = os.environ.get("FEEDBAX_DESKTOP_RELEASE_ROOT")
         self.interpreter = os.path.realpath(sys.executable)
+        self.fresh_workers = os.environ.get("FEEDBAX_HOST_FRESH_WORKERS") == "1"
         self.retiring: set[str] = set()
         self.retiring_groups: dict[str, dict[int, str]] = {}
         self.exiting = False
@@ -197,10 +199,7 @@ class Host:
             raise
         finally:
             theirs.close()
-        worker = Worker(
-            process, token, ours, key, profile_dir, profile["runtime_owner"],
-            reusable="light_affinity" in profile,
-        )
+        worker = Worker(process, token, ours, key, profile_dir, profile["runtime_owner"])
         self.workers[process.pid] = worker
         self.loop.add_reader(ours.fileno(), self._worker_ready, worker)
         return worker
@@ -214,9 +213,12 @@ class Host:
             self._close_control(worker)
         else:
             worker.data += data
-            if worker.data.endswith(b"\n"):
-                worker.ready = json.loads(worker.data)["kind"] == "ready"
-                worker.data = b""
+            *lines, worker.data = worker.data.split(b"\n")
+            for line in lines:
+                report = json.loads(line)
+                # A ready report sent before the Host's last delivery reached the worker is stale.
+                if report["kind"] == "ready" and report["served"] == worker.served:
+                    worker.ready, worker.project = True, report["project"]
         self.wake.set()
 
     def _close_control(self, worker: Worker) -> None:
@@ -237,11 +239,7 @@ class Host:
             self.profiles[key] = profile
 
     def _maintain_pool(self) -> None:
-        pending = {
-            worker.profile_key
-            for worker in self.workers.values()
-            if (worker.reusable or worker.job_id is None) and worker.control.fileno() >= 0
-        }
+        pending = {worker.profile_key for worker in self.workers.values() if worker.control.fileno() >= 0}
         # Keep one imported worker per recently used environment. Drop unused profiles
         # before they can grow resident memory with the number of opened projects.
         while len(self.profiles) > 4:
@@ -354,8 +352,7 @@ class Host:
         bindings = self.store.completion_bindings(row["id"])
         launch = json.loads(row["launch"])
         key, profile = self._profile(launch, row["slot"], self._runtime(json.loads(row["data"])))
-        reusable = "light_affinity" in profile
-        if reusable and self._light_busy(key):
+        if "light_affinity" in profile and self._light_busy(key):
             return
         origins = None
         try:
@@ -373,28 +370,20 @@ class Host:
         if launch["warm_entrypoint"]:
             self.profiles.pop(key, None)
             self.profiles[key] = profile
-        worker = next(
-            (
-                worker
-                for worker in self.workers.values()
-                if worker.profile_key == key
-                and worker.job_id is None
-                and worker.ready
-                and worker.control.fileno() >= 0
-            ),
-            None,
+        project = launch.get("project_root")
+        project = os.path.realpath(project) if project is not None else None
+        candidates = [
+            candidate for candidate in self.workers.values()
+            if candidate.profile_key == key and candidate.job_id is None and candidate.control.fileno() >= 0
+            and candidate.project in (None, project)
+        ]
+        # A worker that has served a delivery takes another only once it has reported ready since;
+        # until then it may still retire. One that has served none may take its first while importing.
+        worker = next((candidate for candidate in candidates if candidate.ready), None) or next(
+            (candidate for candidate in candidates if candidate.served == 0), None,
         )
-        if worker is None:
-            worker = next(
-                (
-                    candidate
-                    for candidate in self.workers.values()
-                    if candidate.profile_key == key
-                    and candidate.job_id is None
-                    and candidate.control.fileno() >= 0
-                ),
-                None,
-            )
+        if worker is None and candidates:
+            return
         if worker is None:
             try:
                 worker = self._spawn(key, profile)
@@ -455,6 +444,7 @@ class Host:
                 self.store.ingest(row, "phase", data)
         worker.job_id = row["id"]
         worker.ready = False
+        worker.served += 1
         self.wake.set()
         message = encode(
             {
@@ -720,18 +710,26 @@ class Host:
                 if verify(pid, worker.token)[0] != "gone":
                     continue
                 self.workers.pop(pid)
-                if worker.job_id is None:
+                if worker.served == 0:
                     self.profiles.pop(worker.profile_key, None)
                 shutil.rmtree(worker.profile_dir)
         active = self.store.active()
         for row in active:
             self._observe(row, self._paths(row), recovering=recovering)
         live = {row["id"] for row in self.store.active()}
+        idle: dict[str, list[Worker]] = {}
         for worker in self.workers.values():
-            if worker.reusable and worker.job_id is not None and worker.job_id not in live:
+            if worker.job_id is not None and worker.job_id not in live:
+                state = self.store.get(worker.job_id)["state"]
                 worker.job_id = None
-                if worker.profile_key not in self.profiles:
+                if self.fresh_workers or state != "succeeded" or worker.profile_key not in self.profiles:
                     self._close_control(worker)
+            if worker.job_id is None and worker.control.fileno() >= 0:
+                idle.setdefault(worker.profile_key, []).append(worker)
+        # Keep one idle worker per profile: one any project may use, then the one that has served most.
+        for workers in idle.values():
+            for extra in sorted(workers, key=lambda worker: (worker.project is None, worker.served))[:-1]:
+                self._close_control(extra)
         self.store.resolve_completions()
         self.store.settle_blocked()
         if self.session is None or self.session.accepts_work:

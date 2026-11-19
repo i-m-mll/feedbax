@@ -25,7 +25,8 @@ from tests.support import minimal_worker
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_desktop_project_open import _desktop_clients
 from tests.support.host import (
-    HELD_UNTIL_STOPPED, admit, held_until_released, job_row, private_host as host_fixture, restart, run_job, wait_until,
+    HELD_UNTIL_STOPPED, admit, held_until_released, job_row, private_host as host_fixture, restart, reusing_host, run_job,
+    wait_until,
 )
 from tests.support.hang import HANG_SECONDS
 
@@ -258,7 +259,10 @@ def test_warming_rewarms_idle_host_after_restart(host, tmp_path, monkeypatch, de
 
 
 @pytest.mark.parametrize("desktop_owned", [False, True], ids=["standalone", "desktop-owned"])
-def test_warming_after_restart_keeps_one_idle_worker_for_the_next_train(host, tmp_path, monkeypatch, desktop_owned):
+def test_warming_after_restart_keeps_one_idle_worker_for_the_next_train(
+    reusing_host, tmp_path, monkeypatch, desktop_owned,
+):
+    host = reusing_host
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
     if desktop_owned:
@@ -296,8 +300,7 @@ def test_warming_after_restart_keeps_one_idle_worker_for_the_next_train(host, tm
         with log.open() as stream:
             acceptance = json.loads(stream.readline())
         assert acceptance == {"kind": "accepted", "data": {"token": replacement.parent.name}}
-        idle = workers() - original - {replacement}
-        assert len(idle) == 1, f"The pool keeps {len(idle)} idle workers of the Train profile, not one."
+        assert workers() - original == {replacement}, "The pool keeps a worker beside the one that served the Train."
 
 
 def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_host(

@@ -405,3 +405,23 @@ def test_checkpoint_custody_carries_incremental_observations_to_another_store(tm
     assert not {final.evidence.sha256, final_source.content.sha256} & set(reachability.eligible_digests)
     with pytest.raises(ValueError, match="Store, attempt or coordinate"):
         read_execution_evidence(destination, final.model_copy(update={"completed_updates": 2}))
+
+
+def test_recorder_follows_each_delivery_project_until_it_loads_project_code(tmp_path, monkeypatch):
+    first, second = tmp_path / "first", tmp_path / "second"
+    for project in (first, second):
+        project.mkdir()
+    (second / "_held_project_source.py").write_text("value = 1\n")
+    recorder = WorkerRecorder({}, boot_ns=time.time_ns())
+    recorder.bind_project(first)
+    recorder.bind_project(second)
+    assert recorder.held_project is None
+    monkeypatch.syspath_prepend(str(second))
+    monkeypatch.setitem(sys.modules, "_held_project_source", None)
+    monkeypatch.delitem(sys.modules, "_held_project_source")
+    importlib.import_module("_held_project_source")
+    recorder.observe_new_sources()
+    assert recorder.held_project == second.resolve()
+    recorder.bind_project(second)
+    with pytest.raises(ValueError, match="loaded project code"):
+        recorder.bind_project(first)

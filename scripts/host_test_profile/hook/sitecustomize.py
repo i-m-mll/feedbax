@@ -134,8 +134,8 @@ if DIRECTORY:
         encode = module.encode
 
         def wrapped(value):
-            if value == {"kind": "ready"}:
-                record("worker_ready")
+            if isinstance(value, dict) and value.get("kind") == "ready":
+                record("worker_ready", served=value.get("served"))
             return encode(value)
 
         module.encode = wrapped

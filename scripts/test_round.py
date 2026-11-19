@@ -1,8 +1,9 @@
 """Run the round tier and check that removing what the Host tests share changes only time.
 
-Runs `pytest -m round`, then the fast tier's Host tests three times: as usual, with
-`FEEDBAX_TEST_PRIVATE_HOSTS=1` and with `FEEDBAX_DISABLE_JAX_COMPILATION_CACHE=1`. It fails
-when the round tier fails or when any test id's outcome in the last two runs differs from the
+Runs `pytest -m round`, then the fast tier's Host tests four times: as usual, with
+`FEEDBAX_TEST_PRIVATE_HOSTS=1`, with `FEEDBAX_DISABLE_JAX_COMPILATION_CACHE=1` and with
+`FEEDBAX_HOST_FRESH_WORKERS=1`. It fails
+when the round tier fails or when any test id's outcome in the last three runs differs from the
 first. Arguments (paths and selection options, `tests` by default) choose the tests of both.
 """
 
@@ -15,10 +16,11 @@ import xml.etree.ElementTree as ElementTree
 
 import pytest
 
-HOST_FIXTURES = {"host", "private_host"}
+HOST_FIXTURES = {"host", "private_host", "reusing_host"}
 REMOVALS = {
     "private Hosts": {"FEEDBAX_TEST_PRIVATE_HOSTS": "1"},
     "no compile cache": {"FEEDBAX_DISABLE_JAX_COMPILATION_CACHE": "1"},
+    "fresh workers": {"FEEDBAX_HOST_FRESH_WORKERS": "1"},
 }
 
 
