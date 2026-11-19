@@ -82,8 +82,18 @@ test('the inspector edits the saved values for the step and its selected runs, a
   await expect(batches.getByLabel('Batches selected value', { exact: true })).toBeVisible();
   await expect(batchText).toHaveValue(override);
   await expect(rateText).toBeVisible();
-  const exceptions = page.getByRole('list').filter({ has: page.getByRole('button', { name: 'Remove Exception' }) });
-  await expect(exceptions.getByRole('listitem')).toHaveText([`Batches ${override} · learning-rate 0.0025 · 1 run`]);
+  // An edit for exactly one sweep value's runs is stored on that value, not as an exception.
+  async function storedOnValue() {
+    const sweep = (await saved()).project.steps?.train.sweep;
+    const axis = sweep?.axes?.['learning-rate'] as { values?: Record<string, { patches: Record<string, { value?: unknown }> }> } | undefined;
+    const values = Object.values(axis?.values ?? {});
+    return {
+      exceptions: Object.keys(sweep?.exceptions ?? {}).length,
+      batches: values.flatMap(({ patches }) => Object.entries(patches)
+        .filter(([path]) => path.endsWith('n_batches')).map(([, patch]) => patch.value)),
+    };
+  }
+  await expect.poll(storedOnValue).toEqual({ exceptions: 0, batches: [Number(override)] });
   const scoped = (await plan())!.rows;
   expect(scoped.filter((row, index) => row.request_id !== after[index].request_id)).toHaveLength(1);
   await batchText.fill('77');
@@ -101,10 +111,10 @@ test('the inspector edits the saved values for the step and its selected runs, a
   await expect.poll(async () => (await plan())?.rows.map(({ request_id }) => request_id)).toEqual(scoped.map(({ request_id }) => request_id));
   await selectValue.click();
   await expect(batchText).toHaveValue(override);
-  await exceptions.getByRole('button', { name: 'Remove Exception', exact: true }).click();
-  await expect.poll(async () => (await saved()).project.steps?.train.sweep?.exceptions ?? {}).toEqual({});
+  await page.getByRole('tabpanel', { name: 'Runs', exact: true }).focus();
+  await page.keyboard.press('Meta+Z');
+  await expect.poll(storedOnValue).toEqual({ exceptions: 0, batches: [] });
   await expect(batchText).toHaveValue(initialBatches);
-  await expect(exceptions).toHaveCount(0);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   await enter(clipText, '0.75');
