@@ -507,7 +507,7 @@ export function ProjectWindow({
                     pointerTransition.current = undefined;
                     focusSlot(slot);
                   }}>
-                  <SlotHeader view={view} icon={viewGlyphs[view]} picker={region.picker}
+                  <SlotHeader view={view} icon={split ? viewGlyphs[view] : undefined} picker={region.picker}
                     trailing={split ? <WindowButton command={closeCommand(slot)} icon={X} />
                       : <WindowButton command={splitCommand} icon={Columns2} />}>
                     {region.header}
