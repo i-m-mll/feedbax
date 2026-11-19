@@ -3,10 +3,13 @@ import type {
   ValueType,
 } from '@/generated/studioContracts';
 
-/** What a field holds, which decides its widget. A vector, list or group is drawn through its parts. */
+/**
+ * What a field holds, which decides its widget. A vector, list or group is drawn through its parts. A class is a group
+ * whose value is one of several classes: `value` is the chosen class's option value and the parts are its parameters.
+ */
 export type FieldType =
   | { readonly kind: 'number' | 'integer' | 'string' | 'readOnly' | 'vector' | 'list' | 'group' }
-  | { readonly kind: 'choice'; readonly options: readonly FieldOption[] }
+  | { readonly kind: 'choice' | 'class'; readonly options: readonly FieldOption[] }
   | { readonly kind: 'boolean' };
 
 export interface FieldOption {

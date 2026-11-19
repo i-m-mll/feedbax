@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { JsonValue, ParamSchema, SiteProjection, StudioFieldView } from '@/generated/studioContracts';
+import { Button } from '@/components/ui/Button';
 import { ValueField } from '@/components/values/ValueField';
 import { fromFieldView, type ProjectedEdit } from '@/components/values/adapters/fieldView';
 import { setIn } from '@/components/values/adapters/jsonSchema';
@@ -55,25 +56,56 @@ const params: ParamSchema[] = [
   { name: 'checkpoint', type: 'object', default: { path: 'run/7' } },
 ];
 
-/** A method's settings: a referenced group with free parameters, an optional number, and a discriminated union. */
+const tagged = (...classes: string[]) => ({
+  oneOf: classes.map((name) => ({ $ref: `#/$defs/${name}` })),
+  discriminator: { propertyName: 'type', mapping: Object.fromEntries(classes.map((name) => [name.toLowerCase(), `#/$defs/${name}`])) },
+});
+const tag = (value: string) => ({ const: value, default: value, type: 'string' });
+
+/**
+ * A method's settings as pydantic emits them: a vector, an optional number, and an optimizer that is a tagged union of
+ * classes whose learning rate is itself one.
+ */
 const settingsSchema: JsonValue = {
   type: 'object',
   properties: {
     n_reaches: { type: 'integer', title: 'Reaches', default: 8 },
     workspace: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number' }, default: [0.2, 0.3] },
-    optimizer: { $ref: '#/$defs/Optimizer' },
+    optimizer: { title: 'Optimizer', ...tagged('Adam', 'SGD') },
     grad_clip: { anyOf: [{ type: 'number' }, { type: 'null' }], default: 1, title: 'Grad Clip' },
-    schedule: { oneOf: [{ $ref: '#/$defs/Constant' }, { $ref: '#/$defs/Cosine' }] },
   },
   $defs: {
-    Optimizer: { title: 'Optimizer', type: 'object', properties: {
-      type: { type: 'string', enum: ['adam', 'sgd'], title: 'Type' },
-      params: { type: 'object', additionalProperties: { anyOf: [{ type: 'number' }, { type: 'boolean' }] } },
+    Adam: { title: 'Adam', type: 'object', properties: {
+      type: tag('adam'),
+      learning_rate: { title: 'Learning Rate', ...tagged('Constant', 'Cosine'), default: { type: 'constant', value: 0.001 } },
+      b1: { title: 'B1', type: 'number', default: 0.9 },
+      b2: { title: 'B2', type: 'number', default: 0.999 },
     } },
-    Constant: { type: 'object', properties: { kind: { const: 'constant' } } },
-    Cosine: { type: 'object', properties: { kind: { const: 'cosine' }, warmup: { type: 'integer', default: 100 } } },
+    SGD: { title: 'SGD', type: 'object', properties: {
+      type: tag('sgd'),
+      learning_rate: { title: 'Learning Rate', ...tagged('Constant', 'Cosine'), default: { type: 'constant', value: 0.01 } },
+      momentum: { title: 'Momentum', anyOf: [{ type: 'number' }, { type: 'null' }], default: null },
+    } },
+    Constant: { title: 'Constant', type: 'object', properties: {
+      type: tag('constant'), value: { title: 'Value', type: 'number', default: 0.001 },
+    } },
+    Cosine: { title: 'Cosine Decay', type: 'object', properties: {
+      type: tag('cosine'),
+      init_value: { title: 'Init Value', type: 'number', default: 0.001 },
+      decay_steps: { title: 'Decay Steps', type: 'integer', default: 1000 },
+    } },
   },
 };
+
+/** The settings with each write kept, so Undo restores the value before the last one. */
+function useHistory(initial: JsonValue) {
+  const [history, setHistory] = useState<readonly JsonValue[]>([initial]);
+  return {
+    value: history.at(-1)!,
+    write: (path: readonly string[], next: JsonValue) => setHistory((past) => [...past, setIn(past.at(-1), path, next)]),
+    undo: history.length > 1 ? () => setHistory((past) => past.slice(0, -1)) : undefined,
+  };
+}
 
 function useRaw(initial: Record<string, JsonValue>) {
   const [values, setValues] = useState(initial);
@@ -86,8 +118,8 @@ export function ValueFieldGallery() {
   const step = useProjected('Step', '0.01', ['value']);
   const decay = useProjected('Decay', 'learning_rate / 10', ['value', 'sweep', 'formula']);
   const raw = useRaw(Object.fromEntries(params.map(({ name, default: value }) => [name, value as JsonValue])));
-  const [settings, setSettings] = useState<JsonValue>({
-    optimizer: { type: 'adam', params: { learning_rate: 0.001, nesterov: false } }, schedule: { kind: 'constant' },
+  const settings = useHistory({
+    optimizer: { type: 'adam', learning_rate: { type: 'cosine', init_value: 0.003, decay_steps: 500 }, b1: 0.9, b2: 0.999 },
   });
   const rangeField: StudioFieldView = {
     label: 'Clip', text: 'geomspace(0.1, 10, 3)', site: site(['value', 'sweep', 'formula']),
@@ -117,8 +149,8 @@ export function ValueFieldGallery() {
             model={fromParamSchema(schema, raw.values[schema.name], raw.change(schema.name))} />)}
         </div>
         <div className="grid w-80 content-start gap-2 rounded-control border border-shell-divider p-2" aria-label="SettingsForm">
-          <SettingsForm schema={settingsSchema} value={settings}
-            write={(path, value) => { setSettings((current) => setIn(current, path, value)); }} />
+          <SettingsForm schema={settingsSchema} value={settings.value} write={settings.write} />
+          <Button className="justify-self-start" disabled={!settings.undo} onClick={settings.undo}>Undo</Button>
           <ValueField model={fromParamSchema({ name: 'locked', type: 'float', default: 3 }, undefined)} />
         </div>
       </div>

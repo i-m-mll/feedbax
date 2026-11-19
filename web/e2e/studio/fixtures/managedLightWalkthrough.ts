@@ -230,7 +230,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     },
   }]);
   await expect(carryover).toHaveText('Carry training state');
-  const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
+  const batchCount = drawer(page).getByRole('textbox', { name: 'Batches', exact: true });
   await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');
   await number(page, batchCount, String(additionalUpdates));

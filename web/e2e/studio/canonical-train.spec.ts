@@ -154,8 +154,8 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
   await expect(results.locator('[aria-description="Last loss at update 1202"]')).toHaveText(
     formatTrainingLoss(last),
   );
-  await page.locator('summary').filter({ hasText: /^Current Result$/ }).click();
-  const successorResult = page.getByRole('region', { name: 'Current Result' });
+  await page.getByRole('button', { name: 'Current Result', exact: true }).click();
+  const successorResult = page.getByRole('region', { name: 'Current Result' }).first();
   await expect(successorResult).not.toContainText(evidence.successor.request);
   await expect(successorResult).not.toContainText(evidence.successor.receipt.manifest_sha256);
   await expect(successorResult.getByRole('button', { name: 'Copy Details', exact: true })).toBeEnabled();
@@ -297,7 +297,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(await trainRow()).toMatchObject({ status: 'stale', result: null, previous: first, attempts: [] });
 
   await select('train');
-  await editNumber('N Batches', 10000, '2');
+  await editNumber('Batches', 10000, '2');
   const stoppedJob = await runSelected('train');
   const stop = await request.post('/api/jobs/stop', { data: { job_ids: [stoppedJob], mode: 'force' } });
   expect(stop.status(), await stop.text()).toBe(202);
@@ -305,7 +305,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(await trainRow()).toMatchObject({ result: null, previous: first });
 
   await openResultsSlot(page);
-  await results.locator('summary').getByText('Previous Result', { exact: true }).click();
+  await results.getByRole('button', { name: 'Previous Result', exact: true }).click();
   const stopped = await observed();
   expect(stopped).toMatchObject({ current: null, previous: first });
   await expectLoss(firstJob, stopped.loss.previous);
@@ -313,7 +313,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await expect(loss.locator('polyline')).toHaveCount(1);
   await results.getByRole('button', { name: 'Close Slot', exact: true }).click();
 
-  await editNumber('N Batches', 2, '10000');
+  await editNumber('Batches', 2, '10000');
   const changedJob = await runSelected('train');
   await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 14_000 });
   const changed = await trainRow();
@@ -324,9 +324,9 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   expect(evidence).toMatchObject({ current: changed.result, previous: first });
   async function compare() {
     await openResultsSlot(page);
-    await results.locator('summary').getByText('Compare Results', { exact: true }).click();
-    await expect(results.locator('details[open]')).toContainText(changed.change!.path);
-    await expect(results.locator('details[open]')).toContainText(/0\s*→\s*7/);
+    await results.getByRole('button', { name: 'Compare Results', exact: true }).click();
+    await expect(results.getByRole('region', { name: 'Compare Results', exact: true })).toContainText(changed.change!.path);
+    await expect(results.getByRole('region', { name: 'Compare Results', exact: true })).toContainText(/0\s*→\s*7/);
     await expect(loss.locator('polyline')).toHaveCount(2);
     await expectLoss(changedJob, evidence.loss.current);
     await expectLoss(firstJob, evidence.loss.previous);
@@ -364,7 +364,7 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await page.reload();
   await select('train');
   await openResultsSlot(page);
-  await results.locator('summary').getByText('Compare Results', { exact: true }).click();
+  await results.getByRole('button', { name: 'Compare Results', exact: true }).click();
   await expectLoss(changedJob, evidence.loss.current);
   expect(withheld).toBe(evidence.loss.previous.length);
   await expect(loss.locator(`[data-result-attempt="${firstJob}"] polyline`)).toHaveCount(0);
@@ -457,7 +457,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
   await expect(mapStep(page, childId)).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
-  await expect(drawer.getByRole('combobox', { name: 'Training method' })).toBeFocused();
+  await expect(drawer.getByRole('combobox', { name: 'Method', exact: true })).toBeFocused();
 
   const carryover = drawer.getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
   const carryoverPath = 'checkpoint_initialization';
@@ -488,7 +488,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await runs.focus();
   const edit = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  const batches = drawer.getByRole('textbox', { name: 'N Batches', exact: true });
+  const batches = drawer.getByRole('textbox', { name: 'Batches', exact: true });
   await batches.fill('4');
   await batches.press('Enter');
   await page.getByRole('tabpanel', { name: 'Scene', exact: true }).focus();

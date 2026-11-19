@@ -10,13 +10,16 @@ import {
 import { selectionButton } from '@/features/pipeline/selection';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
+import { Combobox } from '@/components/ui/Combobox';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { Select } from '@/components/ui/Select';
+import { Section } from '@/components/ui/Section';
 import { popupItem, popupSurface } from '@/components/ui/styles';
 import { TextField } from '@/components/ui/TextField';
-import { completions, hasMark, type Completion, type FieldEdit, type FieldModel } from './fieldModel';
+import { completions, hasMark, type Completion, type FieldEdit, type FieldModel, type FieldOption } from './fieldModel';
+import { useFieldGroup } from './fieldGroups';
 import './valueField.css';
 
 export type ValueFieldForm = 'row' | 'cell';
@@ -95,11 +98,20 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
         return <Checkbox aria-labelledby={labelId} checked={model.value === true} disabled={readOnly}
           aria-describedby={describedBy} onCheckedChange={(checked) => void submit({ kind: 'set', value: checked })} />;
       case 'choice': {
-        const index = type.options.findIndex(({ value }) => JSON.stringify(value) === JSON.stringify(model.value));
+        const index = optionIndex(type.options, model.value);
         return <Select aria-labelledby={labelId} aria-describedby={describedBy} className="w-full" disabled={readOnly}
           value={index < 0 ? null : String(index)} placeholder={studioName('mixed')}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => void submit({ kind: 'set', value: type.options[Number(position)].value })} />;
+      }
+      case 'class': {
+        const index = optionIndex(type.options, model.value);
+        return <Combobox aria-labelledby={labelId} className="w-36" disabled={readOnly}
+          value={index < 0 ? null : String(index)}
+          items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
+          onValueChange={(position) => {
+            if (position !== null && Number(position) !== index) void submit({ kind: 'set', value: type.options[Number(position)].value });
+          }} />;
       }
       case 'vector':
         return <div className="grid min-w-0 auto-cols-[minmax(0,1fr)] grid-flow-col gap-1">
@@ -113,7 +125,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     }
   })();
 
-  const textual = !['boolean', 'choice', 'vector', 'group', 'list'].includes(type.kind);
+  const textual = !['boolean', 'choice', 'class', 'vector', 'group', 'list'].includes(type.kind);
   if (form === 'cell') {
     return <div className="value-field value-field-cell grid min-w-0 gap-0.5 tabular-nums" role="group"
       aria-label={studioFieldLabel('field', label)}>
@@ -123,19 +135,38 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     </div>;
   }
 
-  const indented = type.kind !== 'vector' && !!model.parts?.length;
+  const parts = (indented: boolean) => (indented || model.members || model.canList) && <div className="value-field-parts grid gap-1">
+    {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
+    {model.members && <Members model={model} />}
+    {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
+      onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
+  </div>;
+  if (type.kind === 'group' || type.kind === 'class' || type.kind === 'list') {
+    return <FieldGroup model={model} labelId={labelId} picker={widget}>
+      {(model.origin || reason || model.reason) && <div className="field-row-below">{below}</div>}
+      {parts(!!model.parts?.length)}
+    </FieldGroup>;
+  }
   return <section className="value-field grid min-w-0 gap-1 tabular-nums" aria-label={studioFieldLabel('field', label)}>
     <FieldRow label={label} labelId={labelId} htmlFor={textual ? id : undefined}
       below={model.origin || reason || model.reason ? below : undefined}>
       {widget}
     </FieldRow>
-    {(indented || model.members || model.canList) && <div className="value-field-parts grid gap-1">
-      {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
-      {model.members && <Members model={model} />}
-      {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
-        onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
-    </div>}
+    {parts(type.kind !== 'vector' && !!model.parts?.length)}
   </section>;
+}
+
+const optionIndex = (options: readonly FieldOption[], value: unknown) =>
+  options.findIndex((option) => JSON.stringify(option.value) === JSON.stringify(value));
+
+/** A field whose value is a group of fields: a folding header in the label style, a class's picker at its end. */
+function FieldGroup({ model, labelId, picker, children }: {
+  model: FieldModel; labelId: string; picker: ReactNode; children: ReactNode;
+}) {
+  return <Section level="field" name={model.label} nameId={labelId} actions={picker} bodyClassName="grid gap-1"
+    className="value-field tabular-nums" {...useFieldGroup(model.id)}>
+    {children}
+  </Section>;
 }
 
 function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind }: {

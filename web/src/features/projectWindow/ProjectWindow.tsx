@@ -18,13 +18,14 @@ import { ScrollFade } from '@/components/ui/ScrollFade';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { FieldGroups } from '@/components/values/fieldGroups';
 import { useElementSize } from '@/hooks/useElementSize';
 import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
 import {
-  closeProjectWindowSlot, defaultProjectWindowState, projectWindowSlotView, projectWindowViews, showProjectWindowView,
-  type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
+  closeProjectWindowSlot, defaultProjectWindowState, projectWindowSlotView, projectWindowViews, sectionOpen,
+  showProjectWindowView, withSectionOpen, type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
 import type { DocumentPickerModel } from './DocumentPicker';
 import { SlotHeader } from './SlotHeader';
@@ -352,9 +353,14 @@ export function ProjectWindow({
     onResize: (size: number) => resize(key, size),
   });
   const focusedOwner = `${focusedSlot}:${shownViews[focusedSlot]}`;
-  const regionBody = (name: StudioCommand['name'], body: ReactNode, owner?: string) => (
+  const regionBody = (name: StudioCommand['name'], body: ReactNode, owner?: string, view?: ProjectWindowView | null) => (
     <div className="studio-window-region-content">
-      <StudioRegionBoundary key={owner} name={name}>{body}</StudioRegionBoundary>
+      <StudioRegionBoundary key={owner} name={name}>
+        {view ? <FieldGroups.Provider value={{
+          isOpen: (field) => sectionOpen(state, `${view}.field${field}`),
+          setOpen: (field, open) => onStateChange((current) => withSectionOpen(current, `${view}.field${field}`, open)),
+        }}>{body}</FieldGroups.Provider> : body}
+      </StudioRegionBoundary>
     </div>
   );
 
@@ -465,7 +471,7 @@ export function ProjectWindow({
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
             <ScrollFade className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
-              {regionBody('detailsDrawer', focusedRegion?.drawer, focusedOwner)}
+              {regionBody('detailsDrawer', focusedRegion?.drawer, focusedOwner, shownViews[focusedSlot])}
             </ScrollFade>
             {detailsDrawerVisible && (
               <ResizeSeparator label={studioName('detailsDrawer')} controls={ids.detailsDrawer} axis="x" direction={1}
@@ -508,7 +514,7 @@ export function ProjectWindow({
                     {region.header}
                   </SlotHeader>
                   <ScrollFade key={view} axis="both" className="studio-window-slot__body" data-padded={region.padded ? '' : undefined}>
-                    {regionBody(view, region.body)}
+                    {regionBody(view, region.body, undefined, view)}
                   </ScrollFade>
                 </section>
                 {slot === 'secondary' && fit.secondary.open && (
@@ -521,7 +527,7 @@ export function ProjectWindow({
           <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
             <ScrollFade className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>
-              {regionBody('windowInspector', focusedRegion?.inspector, focusedOwner)}
+              {regionBody('windowInspector', focusedRegion?.inspector, focusedOwner, shownViews[focusedSlot])}
             </ScrollFade>
             {inspectorVisible && (
               <ResizeSeparator label={studioName('windowInspector')} controls={ids.inspector} axis="x" direction={-1}

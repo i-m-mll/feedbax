@@ -1261,7 +1261,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               drawer: (authoring || evaluateInputs || step.inputs.length > 0 || exceptions.length > 0 || evaluationCheckpointRule ||
                 evaluationEditor) ? <Drawer>
                 {(authoring || evaluationCheckpointRule || evaluationEditor) && <DrawerSection sections={drawerSections} id="runs.definition"
-                  name={studioName(step.kind === 'train' ? 'training' : step.kind)} bodyClassName="grid content-start gap-3 p-1">
+                  name={studioName(step.kind === 'train' ? 'training' : step.kind)} bodyClassName="grid content-start gap-3 p-2">
                 {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError} fieldRows={detailInputs.fieldRows}
                     focusFirstField={ready && focusCreatedStep === step.id && focusSlot === slot}
                     onFirstFieldFocused={() => setFocusCreatedStep(undefined)} />}

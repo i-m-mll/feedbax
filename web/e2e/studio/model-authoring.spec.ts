@@ -187,7 +187,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   await Promise.all([patch(), page.keyboard.press('Meta+Shift+Z')]);
   await expect(objective.getByRole('textbox', { name: 'Weight', exact: true })).toHaveValue('2');
   await tab('Training').click();
-  await edit(panel('Training').getByRole('textbox', { name: 'N Batches', exact: true }), '2');
+  await edit(panel('Training').getByRole('textbox', { name: 'Batches', exact: true }), '2');
   await edit(panel('Training').getByRole('textbox', { name: 'Batch Size', exact: true }), '4');
   await expect.poll(async () => (await saved()).project.steps?.train.base).toMatchObject({
     inline: { training_config: { n_batches: 2, batch_size: 4 } },
