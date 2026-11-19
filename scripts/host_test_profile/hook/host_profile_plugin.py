@@ -1,12 +1,11 @@
-"""Pytest plugin: label child processes with the running test, record its phase timings, and end leaked Hosts.
+"""Pytest plugin: label child processes with the running test, record its phase timings, and name leaked Hosts.
 
 A Host started by a session-scoped fixture, and any later Host on its root, belongs to the session. Every other
-Host belongs to the test that started it, so one still running after that test's teardown is a leak. It is
-recorded as `host_leaked` and terminated, so it does not load the tests that follow.
+Host belongs to the test that started it, so one still running after that test's teardown is a leak, recorded
+as `host_leaked` with the test that owns it. It is left running: the suite's own sweep ends it and fails the run.
 """
 
 import os
-import signal
 import time
 
 import pytest
@@ -43,20 +42,7 @@ def _alive(process) -> bool:
         return False
 
 
-def _end(process) -> None:
-    for signum, wait in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 2.0)):
-        try:
-            os.kill(process.pid, signum)
-        except ProcessLookupError:
-            return
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            if not _alive(process):
-                return
-            time.sleep(0.05)
-
-
-def _reap(test) -> None:
+def _record_leaks(test) -> None:
     live = [(process, owner) for process, owner in STARTED_HOSTS
             if (test is None or owner == test) and _alive(process)]
     deadline = time.monotonic() + GRACE_SECONDS
@@ -65,7 +51,7 @@ def _reap(test) -> None:
         live = [(process, owner) for process, owner in live if _alive(process)]
     for process, owner in live:
         record("host_leaked", host=process.pid, owner=owner)
-        _end(process)
+        STARTED_HOSTS.remove((process, owner))
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -81,8 +67,8 @@ def pytest_fixture_setup(fixturedef, request):
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_teardown(item, nextitem):
     yield
-    _reap(item.nodeid)
+    _record_leaks(item.nodeid)
 
 
 def pytest_unconfigure(config):
-    _reap(None)
+    _record_leaks(None)
