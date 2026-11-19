@@ -114,12 +114,13 @@ class FieldSweeps:
             (name, axis) for name, axis in self.axes.items()
             if axis is not None and paths_match(self.paths, _axis_paths(axis))
         ]
-        self.simple = (
-            step.sweep is None or (
-                step.sweep.combination in (None, "cross")
-                and not step.sweep.rows
-                and all(exception is None for exception in step.sweep.exceptions.values())
-            )
+        exceptions = [exception for exception in step.sweep.exceptions.values() if exception is not None] if step.sweep else []
+        crossed = step.sweep is None or (step.sweep.combination in (None, "cross") and not step.sweep.rows)
+        self.simple = crossed and not exceptions
+        # A new crossed axis keeps an exception's meaning only when it selects by axis coordinates and leaves this field alone.
+        self.extendable = crossed and not any(
+            exception.where is None or exception.where.rows is not None or paths_match(self.paths, set(exception.patches))
+            for exception in exceptions
         )
 
     def to_list(self, axis: ListedAxis | GeneratedAxis) -> NamedAxis:
@@ -135,7 +136,7 @@ class FieldSweeps:
 
     @property
     def can_sweep(self) -> bool:
-        return self.simple and not self.covering
+        return self.extendable and not self.covering
 
     def _editable_list(self, axis: NamedAxis) -> bool:
         return self.simple and self.may_edit_member(axis)
