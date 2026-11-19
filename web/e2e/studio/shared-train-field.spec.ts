@@ -1,10 +1,11 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test('Training and Runs edit the same saved values and project the selected source', async ({ page, request }) => {
+test('the inspector edits the saved values for the step and its selected runs, and projects the selected source', async ({ page, request }) => {
   test.setTimeout(55_000);
   const files = await fixture('ordinary-files', '2');
   // Train offers the settings a project authors, so the project authors Grad Clip to edit it.
@@ -13,8 +14,8 @@ test('Training and Runs edit the same saved values and project the selected sour
   const card = page.getByRole('article', { name: 'Train train', exact: true });
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const clip = page.getByRole('region', { name: 'Grad Clip field', exact: true });
-  const batches = page.getByRole('region', { name: 'N Batches field', exact: true });
-  const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  const batches = page.getByRole('region', { name: 'Batches field', exact: true });
+  const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   const clipText = clip.getByRole('textbox', { name: 'Grad Clip', exact: true });
   async function saved() {
     const response = await request.get(projectPath);
@@ -33,19 +34,19 @@ test('Training and Runs edit the same saved values and project the selected sour
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   await expect(rateText).toHaveValue('0.001');
-  const method = page.getByRole('combobox', { name: 'Training method', exact: true });
+  const method = page.getByRole('combobox', { name: 'Method', exact: true });
   await expect(method).toHaveValue('Supervised gradient');
   await method.click();
   await expect(page.getByRole('option', { name: /^Supervised gradient\s*feedbax\.builtins$/ })).toBeVisible();
   await page.keyboard.press('Escape');
-  const optimizer = page.getByRole('region', { name: 'Optimizer field', exact: true });
-  await expect(optimizer.getByRole('region', { name: 'Params field', exact: true })).toContainText('Learning Rate');
+  const optimizer = page.getByRole('region', { name: 'Optimizer', exact: true });
+  await expect(optimizer.getByRole('region', { name: 'Learning Rate field', exact: true })).toBeVisible();
   await rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: 'Sweep', exact: true })).toBeEnabled();
   await page.keyboard.press('Escape');
-  await enter(optimizer.getByRole('textbox', { name: 'Type', exact: true }), 'sgd');
+  await pick(optimizer.getByRole('combobox', { name: 'Optimizer', exact: true }), 'SGD');
   await expect.poll(async () => {
     const base = (await saved()).project.steps?.train.base;
     return base && 'inline' in base ? (base.inline as { settings: { optimizer: { type: string } } }).settings.optimizer.type : undefined;
@@ -62,7 +63,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   expect(Object.values(values).map(({ label }) => label)).toEqual([undefined, undefined, undefined]);
   for (const entry of Object.values(values)) {
     const patches = entry.patches;
-    expect(Object.keys(patches)).toEqual(['settings.optimizer.params.learning_rate']);
+    expect(Object.keys(patches)).toEqual(['settings.optimizer.learning_rate.value']);
   }
   await enter(rateText, '0.001, 0.0025, 0.003');
   await expect.poll(async () => (await plan())?.rows.filter((row, index) => row.request_id !== before[index].request_id).length).toBe(1);
@@ -74,15 +75,15 @@ test('Training and Runs edit the same saved values and project the selected sour
   await selectValue.click();
   await expect(selectValue).toHaveAttribute('aria-pressed', 'true');
   await expect(rate.getByLabel('Learning Rate selected value', { exact: true })).toBeVisible();
-  const batchText = batches.getByRole('textbox', { name: 'N Batches', exact: true });
+  const batchText = batches.getByRole('textbox', { name: 'Batches', exact: true });
   const initialBatches = await batchText.inputValue();
   const override = String(Number(initialBatches) + 1);
   await enter(batchText, override);
-  await expect(batches.getByLabel('N Batches selected value', { exact: true })).toBeVisible();
+  await expect(batches.getByLabel('Batches selected value', { exact: true })).toBeVisible();
   await expect(batchText).toHaveValue(override);
   await expect(rateText).toBeVisible();
   const exceptions = page.getByRole('list').filter({ has: page.getByRole('button', { name: 'Remove Exception' }) });
-  await expect(exceptions.getByRole('listitem')).toHaveText([`N Batches ${override} · learning-rate 0.0025 · 1 run`]);
+  await expect(exceptions.getByRole('listitem')).toHaveText([`Batches ${override} · learning-rate 0.0025 · 1 run`]);
   const scoped = (await plan())!.rows;
   expect(scoped.filter((row, index) => row.request_id !== after[index].request_id)).toHaveLength(1);
   await batchText.fill('77');
@@ -105,7 +106,7 @@ test('Training and Runs edit the same saved values and project the selected sour
   await expect(batchText).toHaveValue(initialBatches);
   await expect(exceptions).toHaveCount(0);
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   await enter(clipText, '0.75');
   await expect.poll(async () => JSON.stringify((await saved()).project.steps?.train.base)).toContain('"grad_clip":0.75');
   await enter(clipText, 'geomspace(0.1, 1, 3)');
@@ -144,4 +145,58 @@ test('two runs of a 4 × 2 sweep take a value as one exception, and removing it 
   await expect(exceptions).toHaveCount(0);
   await expect(batchText).toHaveValue(rule);
   await expect(batch.getByLabel('Batch Size selected value', { exact: true })).toHaveCount(0);
+});
+
+test('choosing an optimizer keeps the inspector still, and reveals only the parameters it brings in', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  await page.setViewportSize({ width: 1440, height: 640 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
+  const optimizer = page.getByRole('region', { name: 'Optimizer', exact: true });
+  const choice = optimizer.getByRole('combobox', { name: 'Optimizer', exact: true });
+  await expect(choice).toHaveValue('Adam');
+  /** The Inspector's scroll, its clear area (inside the edge fades), and the Optimizer field's label and picker. */
+  const view = () => choice.evaluate((control) => {
+    const scroller = control.closest('.studio-scroll-fade')!;
+    const { scrollPaddingTop, scrollPaddingBottom } = getComputedStyle(scroller);
+    const { top } = scroller.getBoundingClientRect();
+    return {
+      scrollTop: scroller.scrollTop,
+      max: scroller.scrollHeight - scroller.clientHeight,
+      clearTop: top + parseFloat(scrollPaddingTop),
+      clearBottom: top + scroller.clientHeight - parseFloat(scrollPaddingBottom),
+      label: document.getElementById(control.getAttribute('aria-labelledby')!)!.getBoundingClientRect().top,
+      picker: control.getBoundingClientRect().bottom,
+    };
+  });
+  const scrollBy = (delta: number) => choice.evaluate((control, by) => { control.closest('.studio-scroll-fade')!.scrollTop += by; }, delta);
+  const placePicker = async () => { const { picker, clearBottom } = await view(); await scrollBy(picker - clearBottom); };
+  const bottom = (field: string) => page.getByRole('region', { name: `${field} field`, exact: true })
+    .evaluate((element) => element.getBoundingClientRect().bottom);
+
+  // SGD has fewer parameters than Adam, and they fit below the picker: the Inspector stays where it is.
+  await scrollBy((await view()).label - (await view()).clearTop);
+  const end = await view();
+  await pick(choice, 'SGD');
+  await expect(page.getByRole('region', { name: 'B1 field', exact: true })).toHaveCount(0);
+  const removed = await view();
+  expect(Math.abs(removed.scrollTop - Math.min(end.scrollTop, removed.max))).toBeLessThanOrEqual(1);
+  expect(removed.scrollTop).toBeGreaterThan(0);
+
+  // Fromage's Min Norm fits above the picker: it ends at the bottom of the clear area, and the picker stays in view.
+  await placePicker();
+  await pick(choice, 'Fromage');
+  await expect.poll(async () => Math.abs(await bottom('Min Norm') - (await view()).clearBottom)).toBeLessThanOrEqual(1);
+  expect((await view()).label).toBeGreaterThan((await view()).clearTop);
+
+  // Adam's parameters are taller than the Inspector: the field's label ends at the top of the clear area.
+  await placePicker();
+  await pick(choice, 'Adam');
+  await expect(page.getByRole('region', { name: 'Nesterov field', exact: true })).toBeAttached();
+  await expect.poll(async () => { const { label, clearTop } = await view(); return Math.abs(label - clearTop); }).toBeLessThanOrEqual(1);
+  const revealed = await view();
+  expect(await bottom('Nesterov')).toBeGreaterThan(revealed.clearBottom);
+  expect(revealed.scrollTop).toBeLessThan(revealed.max);
 });

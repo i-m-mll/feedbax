@@ -52,6 +52,14 @@ class GraphElement(StrictModel):
     kind: Literal["graph"]
 
 
+class InputsElement(StrictModel):
+    kind: Literal["inputs"]
+
+
+class OutputsElement(StrictModel):
+    kind: Literal["outputs"]
+
+
 class ComponentElement(StrictModel):
     kind: Literal["component"]
     id: ModelElementId
@@ -95,7 +103,7 @@ class FieldElement(StrictModel):
 
 
 AddressedElement = Annotated[
-    GraphElement | ComponentElement | WireElement | PhysicalConnectionElement
+    GraphElement | InputsElement | OutputsElement | ComponentElement | WireElement | PhysicalConnectionElement
     | PortElement | AttachmentElement | FieldElement,
     Field(discriminator="kind"),
 ]
@@ -139,6 +147,8 @@ class ModelAddress(StrictModel):
                 return (*element_label(element.parent), element.id)
             if isinstance(element, GraphElement):
                 return ()
+            if isinstance(element, InputsElement | OutputsElement):
+                return (element.kind,)
             return (element.id,)
 
         return ".".join((*self.composites, *element_label(self.element)))

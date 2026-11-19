@@ -1,6 +1,6 @@
 import { expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type { StudioActivityJob, StudioJobSnapshot, StudioJobSubmission } from '../../../src/generated/studioContracts';
-import { mapStep, runName, runProjectFixture } from './canonicalTrain';
+import { drawnRunLabel, mapStep, runName, runProjectFixture } from './canonicalTrain';
 import { authorFirstTrain } from './firstTrainAuthoring';
 import { activate, palette, post, tabTo } from './studioKeyboard';
 import { hostPid, processExists } from './studioRecovery';
@@ -40,7 +40,7 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   const selectRun = async () => {
     await activate(page, mapStep(page, 'train'));
     await page.keyboard.press('Meta+1');
-    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(row.label) }));
+    await activate(page, runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button', { name: runName(drawnRunLabel(settled.rows, row.key)) }));
   };
   const openRun = async () => {
     await expect(runs.getByRole('button', { name: 'Open Run', exact: true })).toBeEnabled();

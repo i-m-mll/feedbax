@@ -1,3 +1,4 @@
+import type { HTMLAttributes } from 'react';
 import { StatusMark } from '@/components/ui/StatusMark';
 import type { StoreTransferProgress, StudioActivityJob } from '@/generated/studioContracts';
 import {
@@ -12,9 +13,9 @@ import {
 
 const integer = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 
-export function StudioRunStatus({ status }: { status: StudioResultState }) {
+export function StudioRunStatus({ status, ...props }: { status: StudioResultState } & HTMLAttributes<HTMLSpanElement>) {
   return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-shell-muted">
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-shell-muted" {...props}>
       <StatusMark status={status} />
       {studioRunStatus(status)}
     </span>

@@ -25,13 +25,13 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
   };
   await page.goto(url);
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Training', exact: true }).click();
-  const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
-  const rate = training.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
+  const training = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const rate = training.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await expect(rate).toHaveValue('0.001');
   await enter(rate, 'geomspace(0.001, 0.004, 2)');
   await expect.poll(async () => (await save()).project.steps?.train.sweep?.axes?.['learning-rate']).toMatchObject({
-    path: 'settings.optimizer.params.learning_rate',
+    path: 'settings.optimizer.learning_rate.value',
     range: { start: 0.001, stop: 0.004, count: 2, scale: 'log' },
   });
 
@@ -61,7 +61,7 @@ test('saves and runs managed optimizer and attachment sweeps', { tag: '@round' }
   expect(new Set(before.rows.map(({ request_id }) => request_id)).size).toBe(4);
   await page.reload();
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   await expect(rate).toHaveValue('geomspace(0.001, 0.004, 2)');
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   // The reloaded window reopens the Model where it was left, inside the controller.

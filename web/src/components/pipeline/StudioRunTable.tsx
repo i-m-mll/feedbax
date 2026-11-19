@@ -1,7 +1,8 @@
+import { appTip } from "@window-shell/browser/tooltip";
 import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioCollectionProgress, StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioName } from "@/components/activity/studioVocabulary";
+import { studioName, studioRunReason } from "@/components/activity/studioVocabulary";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
   selectionButton,
@@ -11,6 +12,7 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
+import { ScrollFade } from "@/components/ui/ScrollFade";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
 import { RunContextMenu, type RunMenu } from "./RunContextMenu";
 
@@ -120,7 +122,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
   const bottom = last ? virtual.getTotalSize() - last.end : 0;
 
   return (
-    <div ref={scroll} className={`${fillSlot ? "h-full" : "max-h-96"} overflow-auto`}>
+    <ScrollFade ref={scroll} axis="both" className={`${fillSlot ? "h-full" : "max-h-96"} [--fade-inset-top:var(--row-height)]`}>
       <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1}>
         <thead className="sticky top-0 z-10">
           <tr aria-rowindex={1}>
@@ -137,8 +139,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {items.map((item) => {
             const run = rows[item.index];
             const lit = selected.has(run.id);
-            const summary = run.openingReason ?? (run.status === "stale" || run.results.some(({ validity }) => validity.reasons?.length)
-              ? undefined : run.reason);
+            const reason = run.results.some(({ validity }) => validity.reasons?.length) ? undefined : run.reason;
             const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
               <RunContextMenu key={run.id} runs={[run]} menu={runMenu} trigger={<TableRow
@@ -183,9 +184,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                     {labels.get(sweep.id)?.get(run.values[sweep.id])}
                   </TableCell>
                 ))}
-                <TableCell tabIndex={-1} className={cellFocus}>
-                  <StudioRunStatus status={run.state} />
-                  {summary && <div className="truncate text-xs text-shell-muted">{summary}</div>}
+                <TableCell tabIndex={-1} className={cellFocus} aria-description={studioRunReason({ ...run, reason })}>
+                  <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>
                   {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
@@ -198,6 +198,6 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {bottom > 0 && <tr aria-hidden="true"><td colSpan={width} style={{ height: bottom }} /></tr>}
         </tbody>
       </Table>
-    </div>
+    </ScrollFade>
   );
 }

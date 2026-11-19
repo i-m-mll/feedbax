@@ -1,7 +1,7 @@
 import { installTooltips } from '@window-shell/browser/tooltip';
 import {
-  Box, ChartLine, ChevronDown, Circle, FileText, FlaskConical, Layers, Maximize, Play, Plus, Search, Settings, Square, Waypoints,
-  ZoomIn, ZoomOut,
+  Box, ChartLine, ChevronDown, Circle, Cpu, FileText, FlaskConical, Grid2x2, Layers, Maximize, Play, Plus, Search, Settings, Square,
+  SquareArrowOutUpRight, StepForward, Waypoints, ZoomIn, ZoomOut, type LucideIcon,
 } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { setAppearance, type AppearanceValue } from '@/appearance/appearance';
@@ -13,6 +13,7 @@ import { Checkbox } from '@/components/ui/Checkbox';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { Combobox } from '@/components/ui/Combobox';
 import { Dialog } from '@/components/ui/Dialog';
+import { HoverCard, HoverCardTrigger, createHoverCardHandle } from '@/components/ui/HoverCard';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { ListRow } from '@/components/ui/ListRow';
 import {
@@ -21,7 +22,7 @@ import {
 } from '@/components/ui/Menu';
 import { NumberField } from '@/components/ui/NumberField';
 import { ScrollFade } from '@/components/ui/ScrollFade';
-import { Section } from '@/components/ui/Section';
+import { Section, SectionStack } from '@/components/ui/Section';
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { Slider } from '@/components/ui/Slider';
@@ -35,8 +36,6 @@ import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 
 type Theme = 'light' | 'dark';
 type Density = 'compact' | 'regular';
-type Labels = 'beside' | 'above';
-type ValueMark = 'hover' | 'quiet';
 type CardStyle = AppearanceValue<'card'>;
 
 const kinds = [
@@ -98,7 +97,7 @@ function TreeDemo() {
   const [entered, setEntered] = useState<string>();
   return (
     <div className="grid gap-2">
-      <div className="h-72 w-72 overflow-auto rounded-control border border-shell-divider">
+      <ScrollFade axis="both" className="h-72 w-72 rounded-control border border-shell-divider">
         <Tree ref={tree} aria-label="Outline" nodes={treeNodes(outline, names)} defaultExpanded={['model']}
           selected={selected} onSelectedChange={setSelected} onRename={rename} onActivate={setEntered}
           menu={(node) => (
@@ -108,7 +107,7 @@ function TreeDemo() {
               <MenuItem>Remove</MenuItem>
             </>
           )} />
-      </div>
+      </ScrollFade>
       <div className="flex gap-2">
         <Button onClick={() => { setSelected(['noise']); }}>Select Noise</Button>
         <Button onClick={() => tree.current?.reveal('muscles')}>Reveal Muscles</Button>
@@ -121,33 +120,63 @@ function TreeDemo() {
 
 const components = ['Linear', 'GRU', 'LSTM', 'MLP', 'Noise', 'Delay', 'Arm', 'Muscles', 'Point Mass', 'Feedback'];
 
-function DrawerDemo() {
+const libraryGroups = [
+  { name: 'Networks', items: ['Linear', 'GRU', 'LSTM', 'MLP'] },
+  { name: 'Mechanics', items: ['Arm', 'Muscles', 'Point Mass', 'Delay', 'Noise', 'Feedback'] },
+  { name: 'Runtime', items: Array.from({ length: 24 }, (_, index) => `Operator ${index + 1}`) },
+];
+
+function DrawerDemo({ content }: { content: 'short' | 'overflowing' }) {
   const [shown, setShown] = useState(true);
-  const [open, setOpen] = useState<Record<string, boolean>>({ library: true, outline: true });
+  const [open, setOpen] = useState<Record<string, boolean>>({ library: true, outline: true, Runtime: true });
   const [selected, setSelected] = useState<string[]>(['gru']);
   const fold = (section: string) => ({
-    open: open[section], onOpenChange: (next: boolean) => setOpen((now) => ({ ...now, [section]: next })),
+    open: open[section] ?? false, onOpenChange: (next: boolean) => setOpen((now) => ({ ...now, [section]: next })),
   });
+  const groups = content === 'short' ? libraryGroups.slice(0, 1) : libraryGroups;
+  const [card] = useState(() => createHoverCardHandle<string>());
   return (
-    <div className="grid gap-2">
-      <div className="flex h-96 w-64 flex-col rounded-control border border-shell-divider" data-testid="drawer">
-        {shown ? <>
-          <Section name="Library" count={components.length} {...fold('library')}
-            actions={<IconButton size="mark" label="New Component" icon={<Plus />} />}>
-            <div className="grid gap-px p-1">
-              {components.map((name) => <ListRow key={name} tabIndex={0} name={name} glyph={<Box />} />)}
-            </div>
+    <State name={content}>
+      <div className="h-96 w-64 rounded-control border border-shell-divider" data-testid={`drawer-${content}`}>
+        {shown ? <SectionStack>
+          <Section name="Library" {...fold('library')}
+            actions={<IconButton size="mark" label="New Component" icon={<Plus />} />}
+            lead={<div className="border-b border-[color:var(--neutral-alpha-06)] p-2">
+              <TextField aria-label="Search Library" leading={<Search />} />
+            </div>}>
+            {groups.map((group) => <Section key={group.name} level="group" name={group.name} {...fold(group.name)}>
+              <div className="grid gap-px px-1 pb-1">
+                {group.items.map((name) => <HoverCardTrigger key={name} handle={card} payload={name}
+                  render={<ListRow tabIndex={0} name={name} glyph={<Box />} draggable />} />)}
+              </div>
+            </Section>)}
           </Section>
+          <HoverCard handle={card} beside={(trigger) => trigger.closest('[data-section-stack]')}>
+            {(name) => <div className="grid gap-2">
+              <div className="font-medium">{name}</div>
+              <p className="text-shell-muted">A component that transforms its input.</p>
+            </div>}
+          </HoverCard>
           <Section name="Outline" {...fold('outline')}>
-            <Tree aria-label="Outline" nodes={treeNodes(outline, {})} defaultExpanded={['model', 'encoder']}
-              selected={selected} onSelectedChange={setSelected} />
+            <Tree aria-label="Outline" nodes={treeNodes(content === 'short' ? outline.slice(0, 1) : outline, {})}
+              defaultExpanded={['model', 'encoder']} selected={selected} onSelectedChange={setSelected} />
           </Section>
-          <Section name="Exceptions" count={0} defaultOpen={false}>
-            <div className="p-2 text-sm text-shell-muted">None</div>
-          </Section>
-        </> : null}
+        </SectionStack> : null}
       </div>
       <Button onClick={() => setShown(!shown)}>{shown ? 'Hide' : 'Show'}</Button>
+    </State>
+  );
+}
+
+function FieldGroupDemo() {
+  return (
+    <div className="w-64 rounded-control border border-shell-divider p-1">
+      <Section level="field" name="Optimizer">
+        <div className="grid gap-2 px-2 pb-2">
+          <TextField aria-label="Learning Rate" defaultValue="0.001" />
+          <TextField aria-label="Beta" defaultValue="0.9" />
+        </div>
+      </Section>
     </div>
   );
 }
@@ -223,14 +252,14 @@ function State({ name, children }: { name: string; children: ReactNode }) {
 
 function CommandBarDemo() {
   const [last, setLast] = useState('');
-  const command = <G extends BarCommand['glyph']>(id: string, title: string, glyph: G, enabled = true) =>
+  const command = (id: string, title: string, glyph: LucideIcon, enabled = true) =>
     ({ id, title, label: title, glyph, enabled, invoke: () => setLast(title) });
   const pinned = { action: command('run', 'Run', Play), counterpart: command('stop', 'Stop', Square, false) };
   const entries: BarEntry<BarCommand>[] = [
     { command: command('add', 'Add', Plus), priority: 'normal' },
-    { command: command('resume', 'Resume', undefined), priority: 'normal' },
-    { command: command('open', 'Open Run', undefined), priority: 'low' },
-    { command: command('pivot', 'Pivot', undefined), priority: 'low' },
+    { command: command('resume', 'Resume', StepForward), priority: 'normal' },
+    { command: command('open', 'Open Run', SquareArrowOutUpRight), priority: 'low' },
+    { command: command('pivot', 'Pivot', Grid2x2), priority: 'low' },
   ];
   return (
     <div className="space-y-2">
@@ -246,8 +275,6 @@ export function Gallery() {
   useLayoutEffect(() => installTooltips(), []);
   const theme = useRootAttribute<Theme>('data-theme');
   const density = useRootAttribute<Density>('data-density');
-  const labels = useRootAttribute<Labels>('data-inspector-labels');
-  const valueMark = useRootAttribute<ValueMark>('data-value-mark');
   const cardStyle = useRootAttribute<CardStyle>('data-card');
   const [text, setText] = useState('policy');
   const [number, setNumber] = useState<number | null>(0.001);
@@ -273,12 +300,6 @@ export function Gallery() {
         <SegmentedControl<Density> aria-label="Density" value={density}
           onValueChange={(value) => setAppearance(window, 'density', value)}
           items={[{ value: 'compact', label: 'Compact' }, { value: 'regular', label: 'Regular' }]} />
-        <SegmentedControl<Labels> aria-label="Inspector labels" value={labels}
-          onValueChange={(value) => setAppearance(window, 'inspector-labels', value)}
-          items={[{ value: 'beside', label: 'Beside' }, { value: 'above', label: 'Above' }]} />
-        <SegmentedControl<ValueMark> aria-label="Value mark" value={valueMark}
-          onValueChange={(value) => setAppearance(window, 'value-mark', value)}
-          items={[{ value: 'hover', label: 'Hover' }, { value: 'quiet', label: 'Quiet' }]} />
         <Select<CardStyle> aria-label="Cards" value={cardStyle} onValueChange={(value) => setAppearance(window, 'card', value)}
           items={[{ value: 'flow', label: 'React Flow' }, { value: 'flow-ui', label: 'React Flow UI' }, { value: 'turbo', label: 'Turbo' },
             { value: 'quiet', label: 'Quiet' }, { value: 'ring', label: 'Ring' }]} />
@@ -336,6 +357,7 @@ export function Gallery() {
           <State name="value"><Select aria-label="Kind" items={kinds} value={kind} onValueChange={setKind} className="w-40" /></State>
           <State name="placeholder"><Select aria-label="Kind" items={kinds} value={null} placeholder="Kind" onValueChange={() => undefined} className="w-40" /></State>
           <State name="disabled"><Select aria-label="Kind" items={kinds} value="train" disabled onValueChange={() => undefined} className="w-40" /></State>
+          <State name="leading"><Select aria-label="Kind" items={kinds} value={kind} onValueChange={setKind} leading={<Cpu />} className="w-40" /></State>
         </Group>
 
         <Group name="Combobox">
@@ -346,7 +368,7 @@ export function Gallery() {
         </Group>
 
         <Group name="CatalogPicker">
-          <State name="value"><CatalogPicker aria-label="Training method" className="w-64" value={method} onChoose={setMethod}
+          <State name="value"><CatalogPicker aria-label="Method" className="w-64" value={method} onChoose={setMethod}
             entries={[
               { key: 'feedbax.supervised_gradient', label: 'Supervised gradient', package: 'feedbax' },
               { key: 'lab.evolution', label: 'Evolution strategy', package: 'lab-methods' },
@@ -445,7 +467,9 @@ export function Gallery() {
         </Group>
 
         <Group name="Section">
-          <DrawerDemo />
+          <DrawerDemo content="short" />
+          <DrawerDemo content="overflowing" />
+          <FieldGroupDemo />
         </Group>
 
         <Group name="ScrollFade">

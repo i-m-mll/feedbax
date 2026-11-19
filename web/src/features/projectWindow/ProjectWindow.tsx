@@ -1,6 +1,6 @@
 import {
   BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings2, Target, Workflow, X,
+  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
@@ -13,17 +13,19 @@ import { canvasViewportIcons } from '@/components/canvas/CanvasStrip';
 import type { CanvasViewportCommand } from '@/components/canvas/StudioCanvas';
 import { ResizeSeparator } from '@/components/layout/ResizeSeparator';
 import { Button, IconButton } from '@/components/ui/Button';
-import { CommandBar } from '@/components/ui/CommandBar';
+import { CommandBar, withGlyph } from '@/components/ui/CommandBar';
+import { ScrollFade } from '@/components/ui/ScrollFade';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { FieldGroups } from '@/components/values/fieldGroups';
 import { useElementSize } from '@/hooks/useElementSize';
 import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
 import {
-  closeProjectWindowSlot, defaultProjectWindowState, projectWindowSlotView, projectWindowViews, showProjectWindowView,
-  type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
+  closeProjectWindowSlot, defaultProjectWindowState, projectWindowSlotView, projectWindowViews, sectionOpen,
+  showProjectWindowView, withSectionOpen, type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
 import type { DocumentPickerModel } from './DocumentPicker';
 import { SlotHeader } from './SlotHeader';
@@ -42,6 +44,8 @@ export interface ProjectWindowViewRegion {
   header?: ReactNode;
   drawer?: ReactNode;
   inspector?: ReactNode;
+  /** The body is a form or report, drawn at the slot's inset rather than to its edges. */
+  padded?: boolean;
 }
 
 export interface ProjectWindowProps {
@@ -73,7 +77,6 @@ export const viewGlyphs = {
   model: GitBranch,
   task: Crosshair,
   objective: Target,
-  training: Settings2,
   scene: SceneIcon,
   results: BarChart3,
   analysis: Workflow,
@@ -349,9 +352,14 @@ export function ProjectWindow({
     onResize: (size: number) => resize(key, size),
   });
   const focusedOwner = `${focusedSlot}:${shownViews[focusedSlot]}`;
-  const regionBody = (name: StudioCommand['name'], body: ReactNode, owner?: string) => (
+  const regionBody = (name: StudioCommand['name'], body: ReactNode, owner?: string, view?: ProjectWindowView | null) => (
     <div className="studio-window-region-content">
-      <StudioRegionBoundary key={owner} name={name}>{body}</StudioRegionBoundary>
+      <StudioRegionBoundary key={owner} name={name}>
+        {view ? <FieldGroups.Provider value={{
+          isOpen: (field) => sectionOpen(state, `${view}.field${field}`),
+          setOpen: (field, open) => onStateChange((current) => withSectionOpen(current, `${view}.field${field}`, open)),
+        }}>{body}</FieldGroups.Provider> : body}
+      </StudioRegionBoundary>
     </div>
   );
 
@@ -371,14 +379,14 @@ export function ProjectWindow({
               value: target, label: command.label, icon: <Icon aria-hidden="true" />, disabled: !command.enabled,
               attributes: commandAttributes(command),
             }))} />
-          <CommandBar entries={[steps, back, forward].map((command) => ({ command, priority: 'normal' }))} moreLabel={studioName('more')} itemClassName="studio-window-control"
+          <CommandBar entries={[steps, back, forward].map((command) => ({ command: withGlyph(command), priority: 'normal' }))} moreLabel={studioName('more')} itemClassName="studio-window-control"
             itemProps={(command) => ({
               ...commandAttributes(command),
               ...(command === steps ? { 'aria-pressed': mapDrawerVisible, 'aria-controls': ids.mapDrawer } : {}),
             })} />
         </div>
         <div className="shell-frame__cell studio-window-bar__project" data-separated="">
-          <h1 className="min-w-0 truncate text-sm font-semibold">{projectName}</h1>
+          <h1 className="min-w-0 truncate text-base font-normal">{projectName}</h1>
           {saveStatus}
           {variant}
         </div>
@@ -399,18 +407,18 @@ export function ProjectWindow({
             </div>
             <aside id={ids.mapDrawer} data-studio-focus-region="steps" tabIndex={-1} aria-label={studioName('mapDrawer')} className="studio-window-side"
               hidden={!mapDrawerVisible} style={{ width: fit.mapDrawer.size }}>
-              <div className="studio-window-side__contents">
+              <ScrollFade className="studio-window-side__contents">
                 {regionBody('mapDrawer', mapDrawer)}
-              </div>
+              </ScrollFade>
               {mapDrawerVisible && (
                 <ResizeSeparator label={studioName('mapDrawer')} controls={ids.mapDrawer} axis="x" direction={1}
                   layout={fit.mapDrawer} className="studio-window-resize studio-window-resize--right" {...resizeProps('mapDrawerWidth')} />
               )}
             </aside>
           </div>
-          {!fullMapVisible && <div className="studio-window-map__compact" data-studio-focus-region="map" tabIndex={-1}>
+          {!fullMapVisible && <ScrollFade axis="x" className="studio-window-map__compact" data-studio-focus-region="map" tabIndex={-1}>
             {regionBody('pipelineMap', compactMap)}
-          </div>}
+          </ScrollFade>}
         </section>
         <div className="studio-window-panel__divider">
           {mode === 'both' && fit.mapHeight.open && (
@@ -449,6 +457,7 @@ export function ProjectWindow({
             }}>
             {tabCommands.map((command) => {
               const view = command.id;
+              if (!command.enabled) return <span key={view} aria-hidden="true" className="studio-window-control" />;
               const selected = shownViews[focusedSlot] === view;
               return (
                 <WindowButton key={view} command={command} icon={viewGlyphs[view]} controls={selected ? ids[focusedSlot] : undefined}
@@ -460,9 +469,9 @@ export function ProjectWindow({
         <section id={ids.details} className="studio-window-details" hidden={!detailsVisible} aria-label={studioName('details')}>
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
-            <div className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
-              {regionBody('detailsDrawer', focusedRegion?.drawer, focusedOwner)}
-            </div>
+            <ScrollFade className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
+              {regionBody('detailsDrawer', focusedRegion?.drawer, focusedOwner, shownViews[focusedSlot])}
+            </ScrollFade>
             {detailsDrawerVisible && (
               <ResizeSeparator label={studioName('detailsDrawer')} controls={ids.detailsDrawer} axis="x" direction={1}
                 layout={fit.detailsDrawer} className="studio-window-resize studio-window-resize--right" {...resizeProps('detailsDrawerWidth')} />
@@ -498,14 +507,14 @@ export function ProjectWindow({
                     pointerTransition.current = undefined;
                     focusSlot(slot);
                   }}>
-                  <SlotHeader view={view} icon={viewGlyphs[view]} picker={region.picker}
+                  <SlotHeader view={view} icon={split ? viewGlyphs[view] : undefined} picker={region.picker}
                     trailing={split ? <WindowButton command={closeCommand(slot)} icon={X} />
                       : <WindowButton command={splitCommand} icon={Columns2} />}>
                     {region.header}
                   </SlotHeader>
-                  <div key={view} className="studio-window-slot__body">
-                    {regionBody(view, region.body)}
-                  </div>
+                  <ScrollFade key={view} axis="both" className="studio-window-slot__body" data-padded={region.padded ? '' : undefined}>
+                    {regionBody(view, region.body, undefined, view)}
+                  </ScrollFade>
                 </section>
                 {slot === 'secondary' && fit.secondary.open && (
                   <ResizeSeparator label={studioName('slotWidth')} controls={ids.secondary} axis="x" direction={-1}
@@ -516,9 +525,9 @@ export function ProjectWindow({
           })}
           <aside id={ids.inspector} data-studio-focus-region="inspector" tabIndex={-1} aria-label={studioName('windowInspector')} className="studio-window-side studio-window-side--inspector"
             hidden={!inspectorVisible} style={{ width: fit.inspector.size }}>
-            <div className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>
-              {regionBody('windowInspector', focusedRegion?.inspector, focusedOwner)}
-            </div>
+            <ScrollFade className="studio-window-side__contents" data-populated={focusedRegion?.inspector ? '' : undefined}>
+              {regionBody('windowInspector', focusedRegion?.inspector, focusedOwner, shownViews[focusedSlot])}
+            </ScrollFade>
             {inspectorVisible && (
               <ResizeSeparator label={studioName('windowInspector')} controls={ids.inspector} axis="x" direction={-1}
                 layout={fit.inspector} className="studio-window-resize studio-window-resize--left" {...resizeProps('inspectorWidth')} />

@@ -2,23 +2,26 @@ import { useMemo, useState, type ReactNode } from "react";
 import { StudioRegion, StudioRegionBoundary, useRegionPending, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import {
-  studioAccessibleName, studioCountOf, studioEnvironmentNotice, studioName, studioReason, studioRunStatus, studioValidityReason,
-  type StudioResultState, type StudioValidityRows,
+  studioAccessibleName, studioChangeDetail, studioCountOf, studioEnvironmentNotice, studioName, studioPlaceReason, studioProblemDetail,
+  studioReason, studioRunStatus, studioValidityReason, type StudioPlace, type StudioResultState, type StudioValidityRows,
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
+import { StepKindMark } from "./StepKindMark";
 import { commandAttributes, type StudioCommand, type StudioCommandId } from "@/features/projectWindow/studioCommands";
-import type { PlanRunView, PlanView } from "@/features/pipeline/planView";
+import type { PlanRunView, PlanStepView, PlanView } from "@/features/pipeline/planView";
+import { MentionRow } from "@/features/projectWindow/StudioProblems";
+import type { StudioProjectWindowMapProblem } from "@/generated/studioContracts";
 import {
   selectionButton,
   indexPlanLineage,
   selectedRuns,
   selectRun,
-  selectStep,
   selectSweepGroup,
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
-import { CommandBar, type BarControl, type BarEntry, type GlyphCommand } from "@/components/ui/CommandBar";
+import { ScrollFade } from "@/components/ui/ScrollFade";
+import { CommandBar, withGlyph, type BarControl, type BarEntry } from "@/components/ui/CommandBar";
 import { Select } from "@/components/ui/Select";
 import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/ui/Table";
 import { StudioRunTable, type RunSelectionProps } from "./StudioRunTable";
@@ -30,10 +33,10 @@ interface StudioRunsProps extends RunSelectionProps {
   /** The runs shown are of an earlier revision while the shown revision's plan is read. */
   pending?: boolean;
   pivotActive?: boolean;
-  upstreamDetail?: ReactNode;
   runMenu?: RunMenu;
 }
 
+/** The steps the chosen runs were made from and are used by, one row each; pressed, a row selects its step. */
 function StudioRunLineage({
   plan,
   upstream,
@@ -49,37 +52,33 @@ function StudioRunLineage({
   single: boolean;
   upstreamDetail?: ReactNode;
 }) {
-  return (
-    <div className="space-y-2">
-      {([["madeFrom", upstream], ["usedBy", downstream]] as const).map(([name, runs]) => (
-        runs.size > 0 && <section key={name} aria-label={studioName(name)} className="border-t border-shell-divider pt-2">
-          <h3 className="font-medium">{studioName(name)}</h3>
-          <ul>
-            {plan.steps.map((step) => {
-              const members = runs.get(step.id);
-              if (!members?.size) return null;
-              const summary = studioCountOf(members.size, step.runs.length);
-              return (
-                <li key={step.id}>
-                  <Button
-                    variant="ghost" aria-label={studioAccessibleName("select", `${step.label} ${summary}`)}
-                    onClick={() => onChoose(step.id)} className="w-full justify-between"
-                  >
-                    <span className="min-w-0 truncate">{step.label}</span>{" "}
-                    <span className="shrink-0 tabular-nums text-shell-muted">{summary}</span>
-                  </Button>
-                  {single && <ul className="ps-2 text-shell-muted">
-                    {step.runs.filter(({ id }) => members.has(id)).map(({ id, label }) => <li key={id}>{label}</li>)}
-                  </ul>}
-                </li>
-              );
-            })}
-          </ul>
-          {name === "madeFrom" && single && upstreamDetail}
-        </section>
-      ))}
-    </div>
-  );
+  return <>
+    {([["madeFrom", upstream], ["usedBy", downstream]] as const).map(([name, runs]) => plan.steps.map((step) => {
+      const members = runs.get(step.id);
+      if (!members?.size) return null;
+      const summary = studioCountOf(members.size, step.runs.length);
+      return <li key={`${name}:${step.id}`}>
+        <InspectorRow aria-label={studioAccessibleName("select", `${studioName(name)} ${step.label} ${summary}`)}
+          onClick={() => onChoose(step.id)}>
+          <span className="text-shell-muted">{studioName(name)}</span>{" · "}{step.label}{" · "}
+          <span className="tabular-nums text-shell-muted">{summary}</span>
+        </InspectorRow>
+        {single && step.runs.length > 1 && <ul className="ps-4 text-shell-muted">
+          {step.runs.filter(({ id }) => members.has(id)).map(({ id, label }) => <li key={id}>{label}</li>)}
+        </ul>}
+        {name === "madeFrom" && single && upstreamDetail}
+      </li>;
+    }))}
+  </>;
+}
+
+/** One row under the inspector's hairline: an input or a step the runs relate to. */
+export function InspectorRow({ children, ...props }: { children: ReactNode; onClick?: () => void; "aria-label"?: string }) {
+  return props.onClick
+    ? <Button variant="ghost" size="content" className="block w-full truncate rounded-control px-control-inline py-1 text-left" {...props}>
+      {children}
+    </Button>
+    : <div className="truncate px-control-inline py-1">{children}</div>;
 }
 
 function groupPivotRows(rows: readonly PlanRunView[], rowAxis: string, columnAxis: string) {
@@ -127,7 +126,7 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
             items={step.sweeps.filter(({ id }) => id !== y.id).map(({ id, label }) => ({ value: id, label }))} />
         </label>
       </div>
-      <div className="max-h-96 overflow-auto rounded-surface border border-shell-divider">
+      <ScrollFade axis="both" className="max-h-96 rounded-surface border border-shell-divider [--fade-inset-top:var(--row-height)]">
         <Table aria-label={studioName("pivot")}>
           <thead><tr>
             <TableHeaderCell scope="col">{y.label}</TableHeaderCell>
@@ -171,7 +170,7 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
             ))}
           </tbody>
         </Table>
-      </div>
+      </ScrollFade>
       {pivot.unplaced.length > 0 && (
         <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={pivot.unplaced} related={related}
           runMenu={runMenu} />
@@ -180,19 +179,62 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
   );
 }
 
-export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps, "step" | "state"> & {
+/** What tells a run apart within its step: its sweep values, or its own name when it has none. */
+function runName(step: PlanStepView, run: PlanRunView) {
+  const values = step.sweeps.flatMap((sweep) => {
+    const value = run.values[sweep.id];
+    return value === undefined || sweep.values.length < 2 ? []
+      : [`${sweep.label} ${sweep.values.find(({ id }) => id === value)?.label ?? value}`];
+  });
+  return values.length ? values.join(" · ") : run.label;
+}
+
+/** A reason a run names, which its row reveals. */
+export interface RunMention {
+  readonly place: StudioPlace | null;
+  readonly detail: string;
+  readonly problem?: StudioProjectWindowMapProblem;
+}
+
+/**
+ * The Runs view's inspector: the step or chosen runs on a title line, the runs' reasons, the step's fields resolved for
+ * them, then under a hairline the rows of what attaches to the step (exceptions, inputs) and the steps the runs relate to.
+ */
+export function StudioStepInspector({
+  plan, step, state, detail, fields, attachments, revealed, upstreamDetail, onReveal, onChooseStep,
+}: Pick<RunSelectionProps, "step" | "state"> & {
+  plan: PlanView;
+  /** What a single chosen run's result adds to its reasons. */
   detail?: ReactNode;
+  fields?: ReactNode;
+  attachments?: ReactNode;
+  /** A reason revealed at this step, drawn among its reasons. */
+  revealed?: RunMention;
+  upstreamDetail?: ReactNode;
+  onReveal?: (run: PlanRunView, mention: RunMention) => void;
+  onChooseStep: (stepId: string) => void;
 }) {
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
-  if (!selected.length) return null;
+  const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
+  const roots = useMemo(() => selected.map(({ id }) => ({ stepId: step.id, runId: id })), [selected, step.id]);
+  const upstream = useMemo(() => lineage.upstream(roots), [lineage, roots]);
+  const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
+  const chosen = state.selection?.kind !== "steps" && selected.length > 0;
   const single = selected.length === 1;
   const counts = new Map<StudioResultState, number>();
   const reasons = new Set<string>();
-  const openingErrors = new Set(selected.flatMap((run) => run.openingErrors ?? []));
+  const mentions = new Map<string, { run?: PlanRunView; mention: RunMention }>();
+  const openingErrors = new Set(chosen ? selected.flatMap((run) => run.openingErrors ?? []) : []);
   const validity = new Map<string, { state: StudioResultState; rows: StudioValidityRows }>();
-  for (const run of selected) {
+  if (revealed) mentions.set(studioPlaceReason(revealed.place, revealed.detail), { mention: revealed });
+  for (const run of chosen ? selected : []) {
     counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
-    if (run.reason && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
+    const named: RunMention[] = [
+      ...(run.problems ?? []).map((problem) => ({ place: problem.place, detail: studioProblemDetail(problem), problem })),
+      ...run.change ? [{ place: run.change.place, detail: studioChangeDetail(run.change) }] : [],
+    ];
+    for (const mention of named) mentions.set(studioPlaceReason(mention.place, mention.detail), { run, mention });
+    if (run.reason && !named.length && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
     for (const { validity: { state, reasons: typed = [], environment } } of run.results) {
       const mark = state === "current" ? "succeeded" : state;
       for (const reason of typed) {
@@ -205,14 +247,18 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
       }
     }
   }
-  return <section className="space-y-2 text-sm" aria-label={studioName("inspector")}>
-    {single && <h3 className="font-semibold">{selected[0].label}</h3>}
-    <ul className="flex flex-wrap gap-x-3 gap-y-1">
-      {[...counts].map(([status, count]) => <li key={status} className="inline-flex items-center gap-1">
-        {!single && <span className="tabular-nums">{count}</span>}
-        <StudioRunStatus status={status} />
-      </li>)}
-    </ul>
+  const title = chosen && single && step.runs.length > 1 ? `${step.label} · ${runName(step, selected[0])}` : step.label;
+  const related = upstream.size > 0 || downstream.size > 0;
+  return <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-2 text-sm [overflow-wrap:anywhere]">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+      <span className="flex min-w-0 items-center gap-1.5"><StepKindMark kind={step.kind} /><h3 className="min-w-0 break-words font-semibold">{title}</h3></span>
+      {chosen ? <ul className="contents">
+        {[...counts].map(([status, count]) => <li key={status} className="inline-flex items-center gap-1">
+          {!single && <span className="tabular-nums">{count}</span>}
+          <StudioRunStatus status={status} />
+        </li>)}
+      </ul> : null}
+    </div>
     {validity.size > 0 && <ul aria-label={studioName("reason")} className="divide-y divide-shell-divider border-y border-shell-divider">
       {[...validity].map(([key, { state, rows: { title, changes } }]) => <li key={key} className="py-1 text-xs">
         <div className="flex min-h-row items-center gap-1.5">
@@ -224,21 +270,36 @@ export function StudioRunDetails({ step, state, detail }: Pick<RunSelectionProps
         </ul>}
       </li>)}
     </ul>}
-    {single && detail ? detail : reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
+    {chosen && single && detail ? detail : reasons.size > 0 && <ul className="space-y-1 text-xs text-shell-muted">
       {[...reasons].map((reason) => <li key={reason}>{studioReason("observed", reason)}</li>)}
+    </ul>}
+    {mentions.size > 0 && <ul className="text-xs"
+      aria-label={studioName([...mentions.values()].some(({ mention }) => mention.problem) ? "problems" : "changes")}>
+      {[...mentions].map(([key, { run, mention }]) => <li key={key} className="break-words">
+        <MentionRow place={mention.place} detail={mention.detail} placeShown={!namedByStep(mention.place)}
+          onReveal={run && onReveal && (() => onReveal(run, mention))} />
+      </li>)}
     </ul>}
     {openingErrors.size > 0 && <ul className="space-y-1 font-mono text-xs text-shell-muted">
       {[...openingErrors].map((line) => <li key={line}>{line}</li>)}
     </ul>}
-  </section>;
+    {fields}
+    {(attachments || related) && <div className="grid gap-px border-t border-shell-divider pt-1">
+      {attachments}
+      {related && <ul>
+        <StudioRunLineage plan={plan} upstream={upstream} downstream={downstream} single={single}
+          upstreamDetail={upstreamDetail} onChoose={onChooseStep} />
+      </ul>}
+    </div>}
+  </div>;
+}
+
+/** Whether a place is the step itself, which the inspector's title line already names. */
+function namedByStep(place: StudioPlace | null) {
+  return place === null || place.part === "step" && !place.field;
 }
 
 const lowRunCommands = new Set<StudioCommandId>(["openRun", "pivot"]);
-
-function glyphCommand(command: StudioCommand): GlyphCommand<StudioCommand> {
-  if (!command.glyph) throw new Error(`Pinned command ${command.id} has no glyph`);
-  return command as GlyphCommand<StudioCommand>;
-}
 
 /** The Runs header: Run and Stop are pinned, the Machine picker is normal, Open Run and Pivot are low. */
 export function StudioRunControls({ commands = [], machine, pivotCommand, pivotActive, reason }: {
@@ -253,10 +314,10 @@ export function StudioRunControls({ commands = [], machine, pivotCommand, pivotA
   const rest = [...commands.filter((command) => command !== run && command !== stop), ...pivotCommand ? [pivotCommand] : []];
   const entries: BarEntry<StudioCommand>[] = [
     ...machine ? [{ control: machine, priority: "normal" as const }] : [],
-    ...rest.map((command) => ({ command, priority: lowRunCommands.has(command.id) ? "low" as const : "normal" as const })),
+    ...rest.map((command) => ({ command: withGlyph(command), priority: lowRunCommands.has(command.id) ? "low" as const : "normal" as const })),
   ];
   return <CommandBar moreLabel={studioName("more")} entries={entries}
-    pinned={run ? { action: glyphCommand(run), counterpart: stop && glyphCommand(stop) } : undefined}
+    pinned={run ? { action: withGlyph(run), counterpart: stop && withGlyph(stop) } : undefined}
     itemProps={(command) => ({
       ...commandAttributes(command),
       ...(command === pivotCommand ? { pressed: pivotActive } : {}),
@@ -268,25 +329,15 @@ export function StudioRunControls({ commands = [], machine, pivotCommand, pivotA
     })} />;
 }
 
-function RunsContent({ plan, step, state, onSelectionChange, pivotActive, upstreamDetail, runMenu }: StudioRunsProps) {
+function RunsContent({ plan, step, state, onSelectionChange, pivotActive, runMenu }: StudioRunsProps) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
-  const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
-  const roots = useMemo(() => selected.map(({ id }) => ({ stepId: step.id, runId: id })), [selected, step.id]);
-  const upstream = useMemo(() => lineage.upstream(roots), [lineage, roots]);
-  const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const selection = { step, state, onSelectionChange };
-  return <div className="flex h-full min-h-0 flex-col">
-    <div className="min-h-0 flex-1 overflow-auto">
-      {pivotActive
-        ? <StudioRunPivot {...selection} rows={step.runs} related={related} runMenu={runMenu} />
-        : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} fillSlot />}
-    </div>
-    {(upstream.size > 0 || downstream.size > 0) && <div className="max-h-36 shrink-0 overflow-auto px-2 pb-2 text-sm">
-      <StudioRunLineage plan={plan} upstream={upstream} downstream={downstream} single={selected.length === 1}
-        upstreamDetail={upstreamDetail} onChoose={(id) => onSelectionChange(selectStep(state, id))} />
-    </div>}
-  </div>;
+  return <ScrollFade axis="both" className="h-full min-h-0">
+    {pivotActive
+      ? <StudioRunPivot {...selection} rows={step.runs} related={related} runMenu={runMenu} />
+      : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} fillSlot />}
+  </ScrollFade>;
 }
 
 export function StudioRuns(props: StudioRunsProps) {

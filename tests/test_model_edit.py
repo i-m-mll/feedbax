@@ -90,6 +90,27 @@ def _start(deep_name="inner", *, decorated=False, fanout=False, default=False):
     })
 
 
+def test_boundary_cards_keep_positions_until_their_graph_goes():
+    inner = ModelAddress.model_validate(_address(("outer", "child"), "inputs"))
+    root = ModelAddress.model_validate(_address((), "outputs"))
+    moved = _execute(_start(), "move_cards", placements=[
+        {"address": inner.model_dump(mode="json"), "position": {"x": 5, "y": 6}},
+    ])
+    moved = _execute(moved.state, "move_cards", placements=[
+        {"address": root.model_dump(mode="json"), "position": {"x": 7, "y": 8}},
+    ])
+    later = _execute(moved.state, "flip_component", address=_address((), "component", id="same"))
+    assert later.state.positions[inner.to_text()].x == 5
+    assert later.state.positions[root.to_text()].y == 8
+    ungrouped = _execute(later.state, "ungroup", address=_address(("outer",), "component", id="child"))
+    assert inner.to_text() not in ungrouped.state.positions
+    assert root.to_text() in ungrouped.state.positions
+    missing = _execute(_start(), "move_cards", placements=[
+        {"address": _address(("absent",), "inputs"), "position": {"x": 0, "y": 0}},
+    ])
+    assert isinstance(missing, ModelEditProblem)
+
+
 def test_ungroup_preserves_attachment_order_and_refuses_shared_delay():
     address = _address(("outer",), "component", id="child")
     accepted = _execute(_start(decorated=True), "ungroup", address=address)

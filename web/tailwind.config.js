@@ -19,6 +19,7 @@ export default {
           subtle: 'var(--surface-toolbar)',
           divider: 'var(--app-divider)',
           control: 'var(--studio-control-border)',
+          field: 'var(--neutral-alpha-10)',
           foreground: 'var(--text-primary)',
           muted: 'var(--text-muted)',
           hover: 'var(--surface-hover)',
@@ -52,11 +53,13 @@ export default {
         'shell-control': 'var(--radius-lg)',
         control: 'var(--radius-md)',
         row: 'var(--radius-sm)',
+        'list-row': 'var(--radius-lg)',
         surface: 'var(--radius-lg)'
       },
       boxShadow: {
         soft: 'var(--studio-shadow-soft)',
-        lift: 'var(--studio-shadow-lift)'
+        lift: 'var(--studio-shadow-lift)',
+        segment: 'var(--segment-shadow)'
       },
       fontFamily: {
         sans: 'var(--font-ui)'

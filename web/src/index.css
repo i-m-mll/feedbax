@@ -17,6 +17,8 @@
   --studio-scroll-fade: 1.5rem;
   /* A region whose read for the shown revision is still pending after its delay; the whole region recedes together. */
   --studio-region-pending-opacity: .6;
+  --segment-raised: var(--surface-main);
+  --segment-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
   --card-surface: var(--surface-main);
   --card-border: var(--app-divider);
   --card-border-hover: var(--studio-control-border);
@@ -54,6 +56,11 @@
 }
 
 
+/* The content's inset shadow is drawn only in light mode, as in Mandible. */
+:root:not([data-theme='light']) {
+  --shell-inset-shadow: none;
+}
+
 :root[data-theme='dark'] {
   --studio-shell-accent: #c1aedf;
   --studio-scrim: rgba(0, 0, 0, 0.5);
@@ -73,6 +80,7 @@
   --studio-objective-lightness: 0.68;
   --studio-shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.32);
   --studio-shadow-lift: 0 18px 40px rgba(0, 0, 0, 0.44);
+  --segment-raised: var(--neutral-alpha-12);
 }
 
 .studio-objective {
@@ -113,16 +121,51 @@
   --panel-header-padding-inline: var(--space-3);
 }
 
+/* Overlay scrollbars: the thumb shows while its region scrolls (`data-scrolling`, set by
+   showScrollbarsWhileScrolling) and while the pointer is over the region; its track keeps its width, so showing it
+   moves nothing. */
+@property --scrollbar-thumb {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
+* {
+  --scrollbar-thumb: transparent;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+:hover, [data-scrolling] { --scrollbar-thumb: var(--text-chrome-faint); }
+
+@media (prefers-reduced-motion: no-preference) {
+  * { transition: --scrollbar-thumb 240ms ease-out; }
+  [data-scrolling] { transition-duration: 80ms; }
+}
+
+@supports selector(::-webkit-scrollbar) {
+  * { scrollbar-width: auto; scrollbar-color: auto; }
+  ::-webkit-scrollbar { width: calc(var(--space-2) * 2 / 3); height: calc(var(--space-2) * 2 / 3); background: transparent; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: var(--radius-sm); }
+}
+
+:root[data-section-chevron='edge'] [data-section-disclosure] { margin-inline-start: auto; }
+
 .studio-scroll-fade {
+  /* Where the top fade starts, below content pinned to the top such as a table's header. */
+  --fade-inset-top: 0px;
   --fade-top: 0px;
   --fade-bottom: 0px;
   --fade-left: 0px;
   --fade-right: 0px;
+  /* Content scrolled into view stops clear of the fades. */
+  scroll-padding-block: calc(var(--fade-inset-top) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
   -webkit-mask-image:
-    linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent),
+    linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
     linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
   mask-image:
-    linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent),
+    linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
     linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
@@ -159,10 +202,20 @@
   opacity: 1;
 }
 
+/* Keyboard focus recolours the selection ring; a card never draws two rings. */
 .studio-card:focus-visible,
-.studio-card:has(> .studio-card__head :focus-visible) {
-  outline: var(--card-selected-width) solid var(--card-focus);
-  outline-offset: calc(var(--card-selected-outset) + 2px);
+.studio-card:has(> .studio-card__head [data-canvas-focus]:focus-visible) {
+  outline: none;
+}
+
+.studio-card:focus-visible::after,
+.studio-card:has(> .studio-card__head [data-canvas-focus]:focus-visible)::after {
+  box-shadow: inset 0 0 0 max(var(--card-selected-width), 1.5px) var(--card-focus);
+  opacity: 1;
+}
+
+.studio-card__head [data-canvas-focus]:focus-visible {
+  outline: none;
 }
 
 [data-region-pending] {
@@ -407,21 +460,3 @@ body {
   height: 8px;
 }
 
-.local-x-scrollbar::-webkit-scrollbar {
-  height: 9px;
-}
-
-.local-x-scrollbar::-webkit-scrollbar-track {
-  background: var(--surface-toolbar);
-  border-radius: 999px;
-}
-
-.local-x-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--app-divider);
-  border: 2px solid var(--surface-toolbar);
-  border-radius: 999px;
-}
-
-.local-x-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
-}

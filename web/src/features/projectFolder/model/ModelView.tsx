@@ -82,6 +82,14 @@ function idFor(end: { owner: string; component?: string }) {
   return end.owner === 'component' ? end.component! : end.owner === 'outputs' ? outputCard : inputCard;
 }
 
+/** Whether two read bodies read the same subject, whatever revision each reads it at. */
+function sameSubject(previous: unknown, next: object | false | undefined) {
+  if (!previous || typeof previous !== 'object' || !next) return false;
+  const { revision: _previous, ...a } = previous as { revision?: string };
+  const { revision: _next, ...b } = next as { revision?: string };
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function currentGraph(composites: string[]): ModelAddress {
   return { composites, element: { kind: 'graph' } };
 }
@@ -189,6 +197,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
     enabled: active && !!projectionBody && !evaluate,
+    placeholderData: (previous, query) => sameSubject(query?.queryKey[2], projectionBody) ? previous : undefined,
   });
   const projectedPorts = useMemo(() => new Map(projection.data?.ports?.map(({ address, type }) => [addressKey(address), type])), [projection.data]);
   const markedPorts = useMemo(() => new Map([
@@ -199,6 +208,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
     queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
     enabled: active && !!model && !!readBody,
+    placeholderData: (previous, query) => sameSubject(query?.queryKey[2], readBody) ? previous : undefined,
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
   const shownModel = evaluate ? effectiveModel : model?.value;
@@ -280,7 +290,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
     const model = fromFieldView(field, {
       id: addressKey(field.address),
-      planSources: field.sources,
+      planSources: field.sources?.filter((source) => !(source.kind === 'document' && source.name === fieldBody.document)),
       source: attachments.data?.field_sources?.[addressKey(field.address)] ??
         attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ??
         attachments.data?.source ?? undefined,
@@ -329,6 +339,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const definitions = useMemo(() => (registryQuery.data ?? []).filter((definition) => accepts(definition, physical)), [registryQuery.data, physical]);
   const libraryItems = useMemo(() => definitions.map((definition): LibraryItem => ({
     id: definition.name, name: shortName(definition.name), group: definition.category, glyph: <Box />,
+    about: {
+      description: definition.description, inputs: definition.input_ports ?? [], outputs: definition.output_ports ?? [],
+      parameters: (definition.param_schema ?? []).map(({ name }) => name),
+    },
   })), [definitions]);
   const persisted = model && positionsOf(saved, model.id);
   const presentation = model && saved.presentation?.documents?.[model.id];
@@ -586,29 +600,29 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
 
   function move(nodes: ModelCard[]) {
-    const placements = nodes.filter((node) => node.data.address.element.kind === 'component' && !node.data.locked)
+    const placements = nodes.filter((node) => !node.data.locked)
       .map((node) => ({ address: node.data.address, position: node.position }));
     if (!placements.length) return;
     setHeld(new Map(placements.map(({ address, position }) => [addressKey(address), position])));
-    void apply(studioName('moveComponent'), { op: 'move_components', placements }, false).finally(() => setHeld(undefined));
+    void apply(studioName('moveCard'), { op: 'move_cards', placements }, false).finally(() => setHeld(undefined));
   }
 
   function makeCard(id: string, index: number, definition?: typeof objects[number][1]): ModelCard {
-    const address = definition ? at(graph, { kind: 'component', id }) : graph;
+    const address = at(graph, definition ? { kind: 'component', id } : { kind: id === inputCard ? 'inputs' : 'outputs' });
     const key = addressKey(address);
     const type = definition?.kind === 'leaf' ? registry.get(definition.type) : undefined;
     const value = definition?.kind === 'leaf' ? definition.fields?.hidden_size ?? definition.fields?.output_size : undefined;
     const name = definition?.name ?? studioName(id === inputCard ? 'inputs' : 'outputs');
-    const caption = definition?.kind === 'leaf'
+    const description = definition?.kind === 'leaf'
       ? [shortName(type?.name ?? definition.type), typeof value === 'number' ? value : undefined].filter((item) => item !== undefined).join(' · ')
       : definition?.kind === 'composite' ? graphKind(definition) : undefined;
     const ports = portMap.get(id) ?? emptyPorts;
-    const problem = addressedProblems.get(key);
+    const problem = addressedProblems.get(definition ? key : addressKey(graph));
     const enter = definition?.kind === 'composite' ? enterComposite(id).invoke : undefined;
     return {
       id, type: 'modelCard', ariaLabel: name,
       domAttributes: {
-        'aria-description': [caption, problem].filter(Boolean).join(' · ') || undefined,
+        'aria-description': [description, problem].filter(Boolean).join(' · ') || undefined,
         ...(enter && { onKeyDownCapture: (event: KeyboardEvent<HTMLElement>) => {
           if (event.target !== event.currentTarget || event.key !== 'Enter') return;
           event.preventDefault();
@@ -616,13 +630,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           enter();
         } }),
       },
-      position: held?.get(key) ?? (definition ? persisted?.[key] ?? positionAt(index) :
+      position: held?.get(key) ?? persisted?.[key] ?? (definition ? positionAt(index) :
         { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
       selected: !!definition && selectedIds.has(key),
-      draggable: !!definition && editTopology && !locked && !pick,
+      draggable: editTopology && !locked && !pick,
       selectable: !!definition && !pick,
       data: {
-        address, name, caption, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
+        address, name, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
         locked: locked || !editTopology, physicalConnections: !!physical, stacked: definition?.kind === 'composite',
         selected: !!definition && selectedIds.has(key),
         holdsSelection: definition?.kind === 'composite' && selected.some((item) =>
@@ -847,7 +861,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...viewportCommands,
   ];
   function contextual(event: MouseEvent, address: ModelAddress, point: ModelPosition) {
-    if (address.element.kind === 'graph') return;
+    if (address.element.kind === 'inputs' || address.element.kind === 'outputs') return;
     event.preventDefault();
     event.stopPropagation();
     if (!selectedIds.has(addressKey(address))) select(address);
@@ -1098,16 +1112,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       </div>
     </div> : null,
     drawer: model && <Drawer>
-      <DrawerSection sections={sections} id="model.library" name={studioName('library')}>
-        <StudioRegion state={studioReadState(
-          'library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); },
-        )}>
-          <LibraryList sections={sections} section="model.library" searchName="searchLibrary"
-            items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
-            onInspect={(name) => setLibraryItem(registry.get(name))}
-            onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
-        </StudioRegion>
-      </DrawerSection>
+      <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"
+        state={studioReadState('library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); })}
+        items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
+        onInspect={(name) => setLibraryItem(registry.get(name))}
+        onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
       <DrawerSection sections={sections} id="model.outline" name={studioName('outline')}>
         {outline && <Tree ref={outlineTree} aria-label={studioName('outline')} nodes={outline.nodes}
           selected={selected.flatMap((address) => outlineRow(address) ?? [])}

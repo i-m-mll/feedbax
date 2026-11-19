@@ -6,7 +6,9 @@ import { StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import App from './App';
 import './index.css';
 import '@xyflow/react/dist/style.css';
+import { showScrollbarsWhileScrolling } from '@/components/ui/scrollbars';
 
+showScrollbarsWhileScrolling();
 const queryClient = createStudioQueryClient();
 const query = new URLSearchParams(window.location.search);
 

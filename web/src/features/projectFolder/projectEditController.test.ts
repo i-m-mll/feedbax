@@ -4,7 +4,7 @@ import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, Stud
 import { addressKey, applyAuthoredEdits, presentationAddress } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
-import { createFirstTrain } from './createFirstTrain';
+import { createTrain } from './createTrain';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
 
 const model: AuthoredFileAddress = { kind: 'document', id: 'model' };
@@ -129,10 +129,10 @@ function fixture(settleMs = 400, start = initial) {
 
 afterEach(() => vi.useRealTimers());
 
-it('binds the first compatible documents by name and scaffolds only the missing type', async () => {
+it('binds the first compatible documents by name, scaffolds only the missing type and names the Train freely', async () => {
   const { editor } = fixture(400, {
     ...initial,
-    project: { documents: {
+    project: { steps: { train: {} as never }, documents: {
       model: { schema: 'feedbax.spec.model', payload: {} },
       task: { schema: 'feedbax.spec.python_task', payload: {} },
       objective: { schema: 'feedbax.report_document.v1', payload: {} },
@@ -141,15 +141,15 @@ it('binds the first compatible documents by name and scaffolds only the missing 
     } },
   });
   const create = vi.spyOn(editor, 'createFiles').mockResolvedValue(initial);
-  await expect(createFirstTrain(editor, hex(99))).rejects.toBeInstanceOf(ProjectEditConflictError);
+  await expect(createTrain(editor, hex(99))).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
 
-  await createFirstTrain(editor, initial.revision);
+  await createTrain(editor, initial.revision);
   expect(create).toHaveBeenCalledWith('New Step', [
     { kind: 'document', id: 'objective-2', document: {
       schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
     } },
-    expect.objectContaining({ kind: 'step', id: 'train', step: expect.objectContaining({
+    expect.objectContaining({ kind: 'step', id: 'train-2', step: expect.objectContaining({
       base: { inline: expect.objectContaining({ trial_documents: {
         model: { document: 'a-model' }, task: { document: 'a-task' },
         objective: { document: 'objective-2' },

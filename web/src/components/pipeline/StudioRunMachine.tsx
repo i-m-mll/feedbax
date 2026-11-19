@@ -1,3 +1,5 @@
+import { appTip } from '@window-shell/browser/tooltip';
+import { Monitor } from 'lucide-react';
 import { useId, type ReactNode } from 'react';
 import { studioDateTime, studioMachineStatus, studioMoney, studioName, studioRunStatus, studioUnit } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
@@ -33,15 +35,14 @@ function machineChoices({ catalog, value }: Pick<MachineProps, 'catalog' | 'valu
 function StudioRunMachine({ catalog, value, disabled, onChange }: MachineProps) {
   const { selection, unavailable, items } = machineChoices({ catalog, value });
   const id = useId();
-  return <label className="flex shrink-0 items-center gap-1">
-    {studioName('machine')}
+  return <div className="flex shrink-0" {...appTip(studioName('machine'))}>
     <Select value={selection} disabled={disabled} aria-label={studioName('machine')}
       aria-describedby={unavailable ? id : undefined} className="max-w-48"
-      onValueChange={onChange} items={items} />
+      leading={<Monitor aria-hidden="true" />} onValueChange={onChange} items={items} />
     {unavailable && <span id={id} className="sr-only">
       {unavailable.reason}
     </span>}
-  </label>;
+  </div>;
 }
 
 function StudioRunMachineMenu({ catalog, value, disabled, onChange }: MachineProps) {

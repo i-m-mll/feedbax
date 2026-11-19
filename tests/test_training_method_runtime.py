@@ -11,12 +11,11 @@ import numpy as np
 from pydantic import BaseModel
 
 from feedbax.contracts.request_specs import TrainContinuation
-from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.runtime.graph import Graph
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value, stack_replicas
 from feedbax.training.methods import TrainingMethodRegistry, TrainingState, training_method
-from feedbax.training.optimizers import build_step_optimizer
+from feedbax.training.optimizers import OPTIMIZERS, build_step_optimizer
 from feedbax.training.train_driver import (
     TRAIN_DRIVER_REVISION, TrainSchedule, carries_method_state, drive_train, train_start_clock,
 )
@@ -85,11 +84,9 @@ def test_replica_failure_keeps_the_same_committed_prefix_after_resume():
 
 
 def test_optimizer_rate_follows_explicit_step_after_clock_reset():
-    schedule = LrScheduleSpec(
-        kind="delayed_cosine", learning_rate_0=0.25,
-        constant_lr_iterations=0, total_steps=4, cosine_annealing_alpha=0.0,
-    )
-    optimizer = build_step_optimizer(OptimizerSpec(type="sgd", lr_schedule=schedule))
+    optimizer = build_step_optimizer(OPTIMIZERS["sgd"].model.model_validate({
+        "learning_rate": {"type": "cosine_decay_schedule", "init_value": 0.25, "decay_steps": 4},
+    }))
     gradient = jnp.asarray(1.0, dtype=jnp.float32)
     restart = optimizer.init(jnp.zeros_like(gradient))
 

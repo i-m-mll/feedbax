@@ -330,6 +330,7 @@ export interface StudioSavedTrainAttempt {
 
 export interface StudioSavedTrainChange {
   path: string;
+  place: StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace;
   before: JsonValue;
   after: JsonValue;
 }
@@ -522,6 +523,14 @@ export interface GraphElement {
   kind: "graph";
 }
 
+export interface InputsElement {
+  kind: "inputs";
+}
+
+export interface OutputsElement {
+  kind: "outputs";
+}
+
 export interface ComponentElement {
   kind: "component";
   id: string;
@@ -556,7 +565,7 @@ export interface FieldElement {
 
 export interface ModelAddress {
   composites: string[];
-  element: GraphElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
+  element: GraphElement | InputsElement | OutputsElement | ComponentElement | WireElement | PhysicalConnectionElement | PortElement | AttachmentElement | FieldElement;
 }
 
 export interface SignalType {
@@ -864,14 +873,14 @@ export interface PasteComponents {
   clipboard: ModelClipboard;
 }
 
-export interface PlaceComponent {
+export interface PlaceCard {
   address: ModelAddress;
   position: ModelPosition;
 }
 
-export interface MoveComponents {
-  op: "move_components";
-  placements: PlaceComponent[];
+export interface MoveCards {
+  op: "move_cards";
+  placements: PlaceCard[];
 }
 
 export interface CollapseGraph {
@@ -925,7 +934,7 @@ export interface UngroupComposite {
 }
 
 export interface ModelEditCommand {
-  operation: AddComponent | MoveComponents | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
 }
 
 export interface ModelEditProblem {
@@ -2163,21 +2172,6 @@ export interface TrainContinuation {
   schedule: "continue" | "restart";
 }
 
-export interface LrScheduleSpec {
-  kind?: "constant" | "warmup_cosine" | "delayed_cosine";
-  learning_rate_0: number;
-  total_steps?: number | null;
-  constant_lr_iterations?: number;
-  warmup_init_fraction?: number;
-  cosine_annealing_alpha?: number;
-}
-
-export interface OptimizerSpec {
-  type: string;
-  params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
-  lr_schedule?: LrScheduleSpec | null;
-}
-
 export interface TaskTimelineCue {
   epoch: string;
   label: string;
@@ -3407,6 +3401,11 @@ export type StoreSubset = {
   "query": ManifestPredicate;
 };
 
+export type StudioAnalysisPlace = {
+  "part": "analysis";
+  "element": string;
+};
+
 export type StudioAnalyzeAuthoring = {
   "revision": Sha256;
   "document": string;
@@ -3565,6 +3564,11 @@ export type StudioCheckpointRuleToSweep = {
   "kind": "to_sweep";
 };
 
+export type StudioDefinitionChange = {
+  "path": string;
+  "place": StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace;
+};
+
 export type StudioEvaluateStep = {
   "kind": "evaluate";
   "base": Base;
@@ -3602,6 +3606,11 @@ export type StudioEvaluationPointProgress = {
   "status": "scored" | "failed";
 };
 
+export type StudioInputPlace = {
+  "part": "input";
+  "role": string;
+};
+
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
@@ -3611,6 +3620,21 @@ export type StudioMemberCommand = {
 export type StudioMemberCommandResult = {
   "member": string;
   "snapshot": StudioProjectSnapshot;
+};
+
+export type StudioMethodPlace = {
+  "part": "method";
+};
+
+export type StudioModelPlace = {
+  "part": "model";
+  "document": string | null;
+  "member"?: ModelAddress | null;
+};
+
+export type StudioObjectivePlace = {
+  "part": "objective";
+  "document": string | null;
 };
 
 export type StudioPlanRequest = {
@@ -3707,6 +3731,7 @@ export type StudioProjectWindowMapEdge = {
 export type StudioProjectWindowMapElement = {
   "result"?: StudioSavedLightResult | null;
   "previous"?: StudioSavedLightResult | null;
+  "changed"?: StudioDefinitionChange | null;
   "key": StudioSavedTrainKey;
   "name": string;
   "kind": "analyze" | "render";
@@ -3744,10 +3769,8 @@ export type StudioProjectWindowMapProblem = {
   "variant": string | null;
   "step": string | null;
   "row": string | null;
-  "document": string | null;
-  "element"?: string | null;
+  "place": StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace | null;
   "document_path"?: string | null;
-  "model_address"?: ModelAddress | null;
   "address"?: string | null;
   "layer"?: string | null;
   "authored_path"?: string | null;
@@ -3825,6 +3848,7 @@ export type StudioReportStep = {
 export type StudioSavedLightHistory = {
   "result"?: StudioSavedLightResult | null;
   "previous"?: StudioSavedLightResult | null;
+  "changed"?: StudioDefinitionChange | null;
 };
 
 export type StudioSavedLightResult = {
@@ -3834,6 +3858,11 @@ export type StudioSavedLightResult = {
   "products": Record<string, string>;
   "validity"?: ReceiptValidity | null;
   "provenance"?: AttemptProvenance | null;
+};
+
+export type StudioStepPlace = {
+  "part": "step";
+  "field"?: string | null;
 };
 
 export type StudioSubsetToRowsEdit = {
@@ -3848,9 +3877,20 @@ export type StudioSubsetToRowsRequest = {
   "attempts": Array<string>;
 };
 
+export type StudioSweptParameterMissing = {
+  "class_label": string;
+  "parameter_label": string;
+};
+
 export type StudioTaskChoice = {
   "document": string;
   "problems": Array<Problem>;
+};
+
+export type StudioTaskPlace = {
+  "part": "task";
+  "document": string | null;
+  "parameter"?: string | null;
 };
 
 export type StudioTaskType = {
@@ -3867,6 +3907,7 @@ export type StudioTrainAuthoring = {
   "settings": Record<string, JsonValue> | null;
   "patches": Array<ProjectValueEdit>;
   "documents": Array<string>;
+  "refusal"?: StudioSweptParameterMissing | null;
 };
 
 export type StudioTrainAuthoringRequest = {
@@ -3885,6 +3926,11 @@ export type StudioTrainStep = {
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
   "group"?: string | null;
+};
+
+export type StudioTrainingPlace = {
+  "part": "training";
+  "setting"?: string | null;
 };
 
 export type StudioTrialAuthoring = {
@@ -4744,6 +4790,7 @@ export const StudioSavedTrainChangeSchema: z.ZodType<StudioSavedTrainChange> = z
   z
     .object({
       "path": z.string(),
+      "place": z.union([StudioModelPlaceSchema, StudioTaskPlaceSchema, StudioObjectivePlaceSchema, StudioTrainingPlaceSchema, StudioMethodPlaceSchema, StudioAnalysisPlaceSchema, StudioInputPlaceSchema, StudioStepPlaceSchema]),
       "before": jsonValueSchema,
       "after": jsonValueSchema,
     })
@@ -5042,6 +5089,22 @@ export const GraphElementSchema: z.ZodType<GraphElement> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<GraphElement>;
 
+export const InputsElementSchema: z.ZodType<InputsElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("inputs"),
+    })
+    .strict()
+) as unknown as z.ZodType<InputsElement>;
+
+export const OutputsElementSchema: z.ZodType<OutputsElement> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("outputs"),
+    })
+    .strict()
+) as unknown as z.ZodType<OutputsElement>;
+
 export const ComponentElementSchema: z.ZodType<ComponentElement> = z.lazy(() =>
   z
     .object({
@@ -5102,7 +5165,7 @@ export const ModelAddressSchema: z.ZodType<ModelAddress> = z.lazy(() =>
   z
     .object({
       "composites": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$"))),
-      "element": z.union([GraphElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
+      "element": z.union([GraphElementSchema, InputsElementSchema, OutputsElementSchema, ComponentElementSchema, WireElementSchema, PhysicalConnectionElementSchema, PortElementSchema, AttachmentElementSchema, FieldElementSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelAddress>;
@@ -5696,23 +5759,23 @@ export const PasteComponentsSchema: z.ZodType<PasteComponents> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<PasteComponents>;
 
-export const PlaceComponentSchema: z.ZodType<PlaceComponent> = z.lazy(() =>
+export const PlaceCardSchema: z.ZodType<PlaceCard> = z.lazy(() =>
   z
     .object({
       "address": ModelAddressSchema,
       "position": ModelPositionSchema,
     })
     .strict()
-) as unknown as z.ZodType<PlaceComponent>;
+) as unknown as z.ZodType<PlaceCard>;
 
-export const MoveComponentsSchema: z.ZodType<MoveComponents> = z.lazy(() =>
+export const MoveCardsSchema: z.ZodType<MoveCards> = z.lazy(() =>
   z
     .object({
-      "op": z.literal("move_components"),
-      "placements": z.array(PlaceComponentSchema).min(1),
+      "op": z.literal("move_cards"),
+      "placements": z.array(PlaceCardSchema).min(1),
     })
     .strict()
-) as unknown as z.ZodType<MoveComponents>;
+) as unknown as z.ZodType<MoveCards>;
 
 export const CollapseGraphSchema: z.ZodType<CollapseGraph> = z.lazy(() =>
   z
@@ -5799,7 +5862,7 @@ export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, MoveComponentsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;
@@ -8039,38 +8102,6 @@ export const TrainContinuationSchema: z.ZodType<TrainContinuation> = z.lazy(() =
     .strict()
 ) as unknown as z.ZodType<TrainContinuation>;
 
-export const LrScheduleSpecSchema: z.ZodType<LrScheduleSpec> = z.lazy(() =>
-  z
-    .object({
-      "kind": z.union([z.literal("constant"), z.literal("warmup_cosine"), z.literal("delayed_cosine")]).optional(),
-      "learning_rate_0": z.number().finite().gt(0.0),
-      "total_steps": z.number().int().safe().gt(0).nullable().optional(),
-      "constant_lr_iterations": z.number().int().safe().gte(0).optional(),
-      "warmup_init_fraction": z.number().finite().gte(0.0).optional(),
-      "cosine_annealing_alpha": z.number().finite().gte(0.0).optional(),
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"kind": "constant", "constant_lr_iterations": 0, "warmup_init_fraction": 0.0, "cosine_annealing_alpha": 0.0}, ...input };
-      if ((value.kind === 'warmup_cosine' || value.kind === 'delayed_cosine') && (value.total_steps == null || (value.constant_lr_iterations ?? 0) >= value.total_steps || (value.kind === 'warmup_cosine' && (value.constant_lr_iterations ?? 0) < 1))) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "learning-rate schedule fields must match its kind",
-        });
-      }
-    })
-) as unknown as z.ZodType<LrScheduleSpec>;
-
-export const OptimizerSpecSchema: z.ZodType<OptimizerSpec> = z.lazy(() =>
-  z
-    .object({
-      "type": z.string(),
-      "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
-      "lr_schedule": LrScheduleSpecSchema.nullable().optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<OptimizerSpec>;
-
 export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
   z
     .object({
@@ -9820,6 +9851,13 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
 
+export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("analysis"),
+    "element": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalysisPlace>;
+
 export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -10026,6 +10064,13 @@ export const StudioCheckpointRuleToSweepSchema: z.ZodType<StudioCheckpointRuleTo
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleToSweep>;
 
+export const StudioDefinitionChangeSchema: z.ZodType<StudioDefinitionChange> = z.lazy(() =>
+  z.object({
+    "path": z.string(),
+    "place": z.union([StudioModelPlaceSchema, StudioTaskPlaceSchema, StudioObjectivePlaceSchema, StudioTrainingPlaceSchema, StudioMethodPlaceSchema, StudioAnalysisPlaceSchema, StudioInputPlaceSchema, StudioStepPlaceSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioDefinitionChange>;
+
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
@@ -10071,6 +10116,13 @@ export const StudioEvaluationPointProgressSchema: z.ZodType<StudioEvaluationPoin
   }).strict()
 ) as unknown as z.ZodType<StudioEvaluationPointProgress>;
 
+export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("input"),
+    "role": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioInputPlace>;
+
 export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -10085,6 +10137,27 @@ export const StudioMemberCommandResultSchema: z.ZodType<StudioMemberCommandResul
     "snapshot": StudioProjectSnapshotSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommandResult>;
+
+export const StudioMethodPlaceSchema: z.ZodType<StudioMethodPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("method"),
+  }).strict()
+) as unknown as z.ZodType<StudioMethodPlace>;
+
+export const StudioModelPlaceSchema: z.ZodType<StudioModelPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("model"),
+    "document": z.union([z.string(), z.null()]),
+    "member": z.union([ModelAddressSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioModelPlace>;
+
+export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("objective"),
+    "document": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioObjectivePlace>;
 
 export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
   z.object({
@@ -10209,6 +10282,7 @@ export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowM
   z.object({
     "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
     "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
     "key": StudioSavedTrainKeySchema,
     "name": z.string(),
     "kind": z.union([z.literal("analyze"), z.literal("render")]),
@@ -10254,10 +10328,8 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "variant": z.union([z.string(), z.null()]),
     "step": z.union([z.string(), z.null()]),
     "row": z.union([z.string(), z.null()]),
-    "document": z.union([z.string(), z.null()]),
-    "element": z.union([z.string(), z.null()]).optional(),
+    "place": z.union([z.union([StudioModelPlaceSchema, StudioTaskPlaceSchema, StudioObjectivePlaceSchema, StudioTrainingPlaceSchema, StudioMethodPlaceSchema, StudioAnalysisPlaceSchema, StudioInputPlaceSchema, StudioStepPlaceSchema]), z.null()]),
     "document_path": z.union([z.string(), z.null()]).optional(),
-    "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
     "address": z.union([z.string(), z.null()]).optional(),
     "layer": z.union([z.string(), z.null()]).optional(),
     "authored_path": z.union([z.string(), z.null()]).optional(),
@@ -10353,6 +10425,7 @@ export const StudioSavedLightHistorySchema: z.ZodType<StudioSavedLightHistory> =
   z.object({
     "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
     "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSavedLightHistory>;
 
@@ -10366,6 +10439,13 @@ export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z
     "provenance": z.union([AttemptProvenanceSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSavedLightResult>;
+
+export const StudioStepPlaceSchema: z.ZodType<StudioStepPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("step"),
+    "field": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioStepPlace>;
 
 export const StudioSubsetToRowsEditSchema: z.ZodType<StudioSubsetToRowsEdit> = z.lazy(() =>
   z.object({
@@ -10383,12 +10463,27 @@ export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsReques
   }).strict()
 ) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
 
+export const StudioSweptParameterMissingSchema: z.ZodType<StudioSweptParameterMissing> = z.lazy(() =>
+  z.object({
+    "class_label": z.string().min(1),
+    "parameter_label": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioSweptParameterMissing>;
+
 export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "problems": z.array(ProblemSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioTaskChoice>;
+
+export const StudioTaskPlaceSchema: z.ZodType<StudioTaskPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("task"),
+    "document": z.union([z.string(), z.null()]),
+    "parameter": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskPlace>;
 
 export const StudioTaskTypeSchema: z.ZodType<StudioTaskType> = z.lazy(() =>
   z.object({
@@ -10407,6 +10502,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "settings": z.union([z.record(z.string(), jsonValueSchema), z.null()]),
     "patches": z.array(ProjectValueEditSchema),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
+    "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoring>;
 
@@ -10431,6 +10527,13 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainStep>;
+
+export const StudioTrainingPlaceSchema: z.ZodType<StudioTrainingPlace> = z.lazy(() =>
+  z.object({
+    "part": z.literal("training"),
+    "setting": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainingPlace>;
 
 export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.lazy(() =>
   z.object({

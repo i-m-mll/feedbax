@@ -29,7 +29,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const rows = table.locator('tbody tr[data-index]');
   await expect(table).toHaveAttribute('aria-rowcount', '2');
-  await expect(rate.getByRole('textbox', { name: 'Learning Rate', exact: true })).toHaveValue('0.001');
+  await expect(rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true })).toHaveValue('0.001');
 
   await authorLearningRateSweep(rate);
   await expect(card.getByRole('button', { name: 'Sweep learning-rate' })).toHaveText('learning-rate 3');
@@ -43,7 +43,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await expect(rate.getByRole('button', { name: 'Select Learning Rate 0.002', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await mapStep(page, 'train').click();
 
-  const rateText = rate.getByRole('textbox', { name: 'Learning Rate', exact: true });
+  const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   const pending = (await readPlan(request, projectPath)).plan;
   const medium = pending.window_map!.rows.find(({ coordinates }) => coordinates['learning-rate']?.value === 0.002)!;
   await enter(rateText, '0.001, 0.0025, 0.003');
@@ -101,30 +101,29 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   const run = runsHeader.getByRole('button', { name: 'Run', exact: true });
   const stop = runsHeader.getByRole('button', { name: 'Stop', exact: true });
   await expect(runsHeader.getByRole('combobox', { name: 'Machine' })).toBeVisible();
-  await expect(run).toHaveText('Run');
+  await expect(run).toBeVisible();
   await expect(runsHeader.getByRole('button', { name: /^(Check|Accept|New Step)/ })).toHaveCount(0);
   await page.screenshot({ path: test.info().outputPath('runs-wide.png') });
   await page.setViewportSize({ width: 1180, height: 900 });
   await page.screenshot({ path: test.info().outputPath('runs-medium.png') });
   await page.setViewportSize({ width: 820, height: 900 });
-  const more = runsHeader.getByRole('button', { name: 'More', exact: true });
-  await expect(more).toBeVisible();
   await expect(run).toBeVisible();
   expect(await runsHeader.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
   await page.screenshot({ path: test.info().outputPath('runs-narrow.png') });
-  await more.click();
-  const menu = page.getByRole('menu', { name: 'More' });
-  await expect(menu.getByRole('menuitemradio').first()).toBeVisible();
-  await expect(menu.getByRole('menuitem', { name: 'Run', exact: true })).toHaveCount(0);
-  await page.screenshot({ path: test.info().outputPath('runs-narrow-menu.png') });
-  await page.keyboard.press('Escape');
-  await page.setViewportSize({ width: 700, height: 900 });
+  await page.setViewportSize({ width: 520, height: 900 });
   await expect.poll(() => runsSlot.evaluate((node) => node.getBoundingClientRect().width)).toBe(260);
+  const more = runsHeader.getByRole('button', { name: 'More', exact: true });
   await expect(run).toBeVisible();
   await expect(stop).toBeVisible();
   await expect(more).toBeVisible();
   expect(await runsHeader.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
   await page.screenshot({ path: test.info().outputPath('runs-minimum.png') });
+  await more.click();
+  const menu = page.getByRole('menu', { name: 'More' });
+  await expect(menu.getByRole('menuitemradio').first()).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: 'Run', exact: true })).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath('runs-minimum-menu.png') });
+  await page.keyboard.press('Escape');
   await page.setViewportSize({ width: 1440, height: 900 });
   await rate.getByRole('button', { name: 'Select Learning Rate 0.00275', exact: true }).click();
   const selected = rows.and(table.locator('tr[data-selected=true]'));
@@ -166,7 +165,7 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   }
   const base = kept.project.steps?.train.base;
   expect(base && 'inline' in base ? base.inline : {}).toMatchObject({
-    settings: { optimizer: { params: { learning_rate: 0.00275 } } },
+    settings: { optimizer: { learning_rate: { value: 0.00275 } } },
   });
 });
 

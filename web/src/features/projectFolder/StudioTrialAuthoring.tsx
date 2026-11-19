@@ -26,6 +26,7 @@ import type {
 import { authoredPointer } from './authoredEdits';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
+import { ScrollFade } from '@/components/ui/ScrollFade';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 /** Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. */
@@ -46,8 +47,10 @@ export function useTrialAuthoring(
     queryKey: ['trial-authoring', project, revision, run],
     queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
     enabled: enabled && !!run,
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
+      JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
   });
-  const commit: Commit | undefined = editable && !busy && run && query.data ? async (name, change, removes) => {
+  const commit: Commit | undefined = editable && !busy && run && query.data && !query.isPlaceholderData ? async (name, change, removes) => {
     if (writing.current) return studioReason('saving', studioName('project'));
     writing.current = true;
     setBusy(true);
@@ -87,7 +90,7 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
   const packages = new Map(catalogEntries(catalog.data, 'python_tasks').map((entry) => [entry.key, entry.package]));
   const source = view.task_source && <span className="text-xs text-shell-muted">{studioEvaluateValueSource(view.task_source)}</span>;
   const edit = (name: string, edits: ProjectValueEdit[]) => commit && commit(studioAccessibleName('set', name), { kind: 'task', edits });
-  return <div className="grid max-w-2xl gap-4 p-3 text-sm">
+  return <div className="grid max-w-2xl gap-4 text-sm">
     {!task && source}
     {task && <section className="grid gap-1" aria-label={studioName('parameters')}>
       <FieldRow label={studioName('task')} labelId={typeLabel}>
@@ -135,7 +138,7 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
 }) {
   return <Drawer>
     {taskGroups(view).map(({ id, nodes }) => nodes.length > 0 && <DrawerSection key={id} sections={sections} id={`task.${id}`}
-      name={studioName(id)} count={nodes.length}>
+      name={studioName(id)}>
       <Tree aria-label={studioName(id)} nodes={nodes} selected={selected && nodes.some((node) => node.id === selected) ? [selected] : []}
         onSelectedChange={(ids) => select(ids.at(-1) ?? null)} />
     </DrawerSection>)}
@@ -237,7 +240,7 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
   const sources = [...view.outputs.map(({ value }) => value), ...view.variables, ...view.signals]
     .filter(({ type }) => type.base === 'real' || type.base === 'integer');
   const chosen = sources.find(({ id }) => id === source) ?? sources[0];
-  return <div className="grid gap-3 overflow-auto p-3 text-sm">
+  return <ScrollFade className="grid gap-3 p-3 text-sm">
     <div className="flex items-center gap-2">
       <Select className="min-w-0" aria-label={studioName('measureSource')} value={chosen?.id ?? null} disabled={!commit || !sources.length}
         items={sources.map(({ id, name }) => ({ value: id, label: humanizeLabel(name) }))} onValueChange={setSource} />
@@ -280,7 +283,7 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
         </tr>;
       })}</tbody>
     </Table>
-  </div>;
+  </ScrollFade>;
 }
 
 export function TrialObjectiveOutline({ sections, view, commit, selected, select }: {
@@ -295,7 +298,7 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
     id: term.id, name: term.name ?? studioAccessibleName('term', index + 1), muted: term.enabled === false,
   }));
   return <Drawer>
-    <DrawerSection sections={sections} id="objective.outline" name={studioName('outline')} count={terms.length}>
+    <DrawerSection sections={sections} id="objective.outline" name={studioName('outline')}>
       <Tree ref={tree} aria-label={studioName('objectiveTerms')} nodes={nodes} selected={selected ? [selected] : []}
         onSelectedChange={(ids) => select(ids.at(-1) ?? null)}
         onRename={commit && ((id, name) => {

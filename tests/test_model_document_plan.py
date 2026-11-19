@@ -18,6 +18,7 @@ from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
 from feedbax.contracts import request_identity
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.studio_place import StudioModelPlace
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENT_BATCHES
 from feedbax.contracts.expression_values import LENGTH, TIME, ValueBase, ValueType
 from feedbax.contracts.graph import StudioTaskBindingSpec
@@ -333,7 +334,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
         assert not recipe["problems"], recipe
         saved = client.patch(url, json={"revision": snapshot.revision, "files": recipe["files"]})
         assert saved.status_code == 200, saved.text
-        sampled_axis = folders.read("fields").project.steps["train"].sweep.axes["step"]
+        sampled_axis = folders.read("fields").project.steps["train"].sweep.axes["step-seconds"]
         assert sampled_axis.sampler.distribution.family == "uniform"
         assert sampled_axis.sampler.seed == 8
         expected = [float(jax.random.uniform(jax.random.fold_in(jax.random.key(8), index),
@@ -405,19 +406,88 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
         assert sampled["sampler"]["distribution"]["family"] == "choice"
 
 
+def test_class_parameter_axes_are_named_by_the_field_holding_the_class(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"] = {
+        "type": "warmup_cosine_decay_schedule", "init_value": 0.0, "peak_value": 1e-3, "warmup_steps": 10, "decay_steps": 100,
+    }
+    _save_project(ProjectFolderService(tmp_path), "class-axes", Project.model_validate(raw))
+    url = "/api/projects/class-axes"
+    endpoint = url + "/authoring/train/train/fields"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        body = {"revision": client.get(url).json()["revision"]}
+
+        recipe = client.post(endpoint, json=body | {
+            "field": "/settings/optimizer/learning_rate/peak_value", "edit": {"kind": "text", "text": "0.001, 0.003"},
+        }).json()
+        assert not recipe["problems"], recipe
+        client.patch(url, json=body | {"files": recipe["files"]}).raise_for_status()
+        body = {"revision": client.get(url).json()["revision"]}
+        recipe = client.post(endpoint, json=body | {
+            "field": "/settings/optimizer/b1", "edit": {"kind": "text", "text": "0.8, 0.9"},
+        }).json()
+        assert not recipe["problems"], recipe
+        client.patch(url, json=body | {"files": recipe["files"]}).raise_for_status()
+        axes = client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]["sweep"]["axes"]
+        assert set(axes) == {"learning-rate-peak-value", "optimizer-b1"}
+
+
+def test_a_sweep_with_an_exception_can_still_sweep_the_fields_the_exception_leaves_alone(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    rate = "settings.optimizer.learning_rate.value"
+    raw["steps"]["train"]["sweep"] = {
+        "axes": {"learning-rate": {"values": {
+            "slow": {"value": 0.001, "patches": {rate: {"value": 0.001}}},
+            "fast": {"value": 0.003, "patches": {rate: {"value": 0.003}}},
+        }}},
+        "exceptions": {"wide": {
+            "where": {"axes": {"learning-rate": ["fast"]}},
+            "patches": {"training_config.batch_size": {"value": 8}},
+        }},
+    }
+    _save_project(ProjectFolderService(tmp_path), "excepted", Project.model_validate(raw))
+    url = "/api/projects/excepted"
+    endpoint = url + "/authoring/train/train/fields"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        body = {"revision": client.get(url).json()["revision"]}
+        fields = {field["id"]: field for field in client.post(endpoint, json=body).json()["fields"]}
+        assert fields["/settings/optimizer/b1"]["can_sweep"]
+        assert not fields["/settings/optimizer/learning_rate/value"]["can_sweep"]
+        assert not fields["/training_config/batch_size"]["can_sweep"]
+
+        recipe = client.post(endpoint, json=body | {
+            "field": "/settings/optimizer/b1", "edit": {"kind": "text", "text": "0.8, 0.9"},
+        }).json()
+        assert not recipe["problems"], recipe
+        client.patch(url, json=body | {"files": recipe["files"]}).raise_for_status()
+        revision = client.get(url).json()["revision"]
+    plan = ProjectFolderService(tmp_path).read_plan("excepted", revision=revision).plan
+    keys = tuple(row.key for row in plan.rows if row.key.step == "train")
+    assert len(keys) == 4
+    plan = ProjectFolderService(tmp_path).read_plan("excepted", revision=revision, source_runs=keys).plan
+    batch_sizes = sorted(
+        (definition.payload["settings"]["optimizer"]["learning_rate"]["value"], definition.payload["training_config"]["batch_size"])
+        for definition in plan.selected_definitions.values()
+    )
+    assert [size for value, size in batch_sizes if value == 0.003] == [8, 8]
+    assert all(size != 8 for value, size in batch_sizes if value == 0.001)
+
+
 def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
     raw = _model_project()
     raw["steps"].pop("baseline")
     _save_project(ProjectFolderService(tmp_path), "managed-rate", Project.model_validate(raw))
     url = "/api/projects/managed-rate"
-    field_path = "/settings/optimizer/params/learning_rate"
+    field_path = "/settings/optimizer/learning_rate/value"
     endpoint = url + "/authoring/train/train/fields"
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         initial = client.get(url).json()
         body = {"revision": initial["revision"]}
         fields = client.post(endpoint, json=body).json()["fields"]
-        rate, = [field for field in fields if field["label"] == "Learning Rate"]
-        assert rate["id"] == field_path and rate["can_sweep"]
+        rate, = [field for field in fields if field["id"] == field_path]
+        assert rate["can_sweep"]
         response = client.post(endpoint, json=body | {
             "field": field_path, "edit": {"kind": "text", "text": "geomspace(1e-4, 1e-2, 5)"},
         })
@@ -443,7 +513,7 @@ def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):
         for key, expected in zip(keys, np.geomspace(1e-4, 1e-2, 5), strict=True):
             resolved = plan.selected_definitions[key]
             assert "learning_rate" not in resolved.payload["training_config"]
-            assert resolved.payload["settings"]["optimizer"]["params"]["learning_rate"] == pytest.approx(expected)
+            assert resolved.payload["settings"]["optimizer"]["learning_rate"]["value"] == pytest.approx(expected)
             assert resolved.sources["/payload" + field_path].kind == "sweep_value"
 
         body = {"revision": reopened["revision"]}
@@ -685,10 +755,10 @@ def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value()
     model = raw["documents"]["reach-model"]["payload"]
     model["interior"]["components"]["plant"]["fields"]["mass"] = model["step_seconds"] = 0.01
     train = raw["steps"]["train"]
-    optimizer = train["base"]["inline"]["settings"]["optimizer"]["params"]
+    optimizer = train["base"]["inline"]["settings"]["optimizer"]["learning_rate"]
     mass = "/interior/components/plant/fields/mass"
     alias = {"document": "reach-model", "pointer": mass}
-    optimizer["learning_rate"] = alias
+    optimizer["value"] = alias
     train["model_attachments"] = {"change-mass": [{
         "op": "set_field",
         "address": {"composites": [], "element": {
@@ -705,7 +775,7 @@ def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value()
         assert plan == compile_project(project)
         (run,) = plan.runs
         spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-        assert spec.settings["optimizer"]["params"]["learning_rate"] == expected_rate
+        assert spec.settings["optimizer"]["learning_rate"]["value"] == expected_rate
         return run.request_id
 
     before = train_request(0.02)
@@ -1142,11 +1212,10 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     response = service.response(view, include_window_map=True)
 
     train = next(problem for problem in response.window_map.problems if problem.step == "train")
-    assert train.document == "reach-model"
-    assert train.model_address == ModelAddress.model_validate({
+    assert train.place == StudioModelPlace(part="model", document="reach-model", member=ModelAddress.model_validate({
         "composites": ["arm"] if domain == "spatial_multibody" else [],
         "element": {"kind": "graph"} if domain == "spatial_multibody" else {"kind": "component", "id": "arm"},
-    })
+    }))
     if domain == "spatial_multibody":
         assert train.path == "payload.trial_documents.model.interior.components.arm"
         assert "requires an authored spatial asset" in train.detail
@@ -1156,7 +1225,7 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
         assert train.path == "/trial_documents/model/interior/components/arm"
         assert "no typed model checkpoint owner for solver 'euler'" in train.detail
         evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
-        assert evaluate.model_address == train.model_address
+        assert evaluate.place.member == train.place.member
         assert "no qualified Evaluate realization" in evaluate.detail
 
     snapshot = view.settled

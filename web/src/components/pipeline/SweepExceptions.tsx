@@ -13,7 +13,7 @@ export function SweepExceptions({ exceptions, onRemove }: {
   exceptions: readonly SweepExceptionView[];
   onRemove?: (id: string) => void;
 }) {
-  return <div className="grid gap-px p-1" role="list">
+  return <div className="grid gap-px p-1" role="list" aria-label={studioName('exceptions')}>
       {exceptions.map(({ id, text }) => <ListRow key={id} role="listitem" name={text}
         trailing={onRemove && <IconButton size="mark" label={studioName('removeException')} icon={<X aria-hidden="true" />}
           onClick={() => onRemove(id)} />} />)}

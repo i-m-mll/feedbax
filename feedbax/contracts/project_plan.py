@@ -32,6 +32,7 @@ from feedbax.contracts.model_input import DocumentInput, InitialModelSource, aut
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
+from feedbax.contracts.studio_place import path_parts, variation_targets
 from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
@@ -977,7 +978,7 @@ def _encode_row(
                 term.enabled for term in spec.trial_documents.objective.terms
             ) else checkpoint_problem
         )
-        if problem is None and encoded.train_task is not None:
+        if encoded.train_task is not None:
             selection = encoded.train_task.python_selection
             evaluation_source = selection if selection is not None else condition_ids
         return _LoweredRow(
@@ -1783,6 +1784,16 @@ class _Compiler:
         return _model_difference_problem(key, document, address, detail), None
 
     def lower_evaluate_payload(
+        self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
+        reference: object, has_differences: bool,
+    ) -> Payload | ProjectDiagnostic:
+        original = payload.get("params")
+        result = self._lower_evaluate_payload(key, payload, model_source, reference, has_differences)
+        if isinstance(result, ProjectDiagnostic) and (parts := path_parts(result.path))[:2] == ("params", "variation"):
+            return replace(result, variation_target=variation_targets(original)(parts[2]) if len(parts) > 2 else None)
+        return result
+
+    def _lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool,
     ) -> Payload | ProjectDiagnostic:
@@ -3072,14 +3083,15 @@ def _request_change(
     )
 
 
-def authored_request_change_path(
+def authored_request_change(
     key: RunKey | ElementKey, old: request_identity.DecodedRequest, new: request_identity.DecodedRequest,
-) -> str:
-    """Locate a canonical request change at its authored Plan address."""
+) -> tuple[str, tuple[str, ...]]:
+    """Locate a canonical request change at its authored Plan address, as text and as keys."""
     if old.kind != new.kind:
-        return key.payload_path(new.kind) if isinstance(key, ElementKey) else "payload"
-    path, _ = _authored_request_change(key, old, new)
-    return path
+        path = key.payload_path(new.kind) if isinstance(key, ElementKey) else "payload"
+        return path, tuple(path.split("."))
+    path, parts = _authored_request_change(key, old, new)
+    return path, parts or tuple(path.split("."))
 
 
 def _authored_request_change(

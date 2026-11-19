@@ -349,7 +349,7 @@ export function SceneDrawer({ sections, scene, selectedId, onSelect, trials, che
         const nodes = groups.get(group);
         if (!nodes) return null;
         return (
-          <DrawerSection key={group} sections={sections} id={`scene.${group}`} name={studioName(group)} count={nodes.length}>
+          <DrawerSection key={group} sections={sections} id={`scene.${group}`} name={studioName(group)}>
             <Tree aria-label={studioName(group)} nodes={nodes} selected={selectedId && nodes.some(({ id }) => id === selectedId) ? [selectedId] : []}
               onSelectedChange={(ids) => onSelect(ids.at(-1) ?? null)} />
           </DrawerSection>

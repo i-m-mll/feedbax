@@ -347,6 +347,28 @@ def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp
         assert row.evaluation_conditions is None
 
 
+def test_window_gives_unadmitted_train_runs_their_task_conditions(tmp_path):
+    raw = _python_project()
+    raw["documents"]["reach-model"]["payload"] = _model_payload()
+    raw["steps"].pop("baseline")
+    tasks = application_python_tasks()
+    folders = ProjectFolderService(tmp_path, python_tasks=tasks)
+
+    def row(terms):
+        raw["documents"]["objective"]["payload"]["terms"] = terms
+        _save_project(folders, "cohort", Project.model_validate(raw))
+        view = window_service.ProjectPlanRead.without_history(folders.read_plan("cohort", revision=None))
+        (row,) = view.window_map(evaluation_tasks=tasks).rows
+        return row
+
+    admitted = row([{"id": "command", "measure": {"kind": "literal", "value": 1}}])
+    unadmitted = row([])
+    assert admitted.status != "cannot_run"
+    assert unadmitted.status == "cannot_run"
+    assert admitted.evaluation_conditions is not None
+    assert unadmitted.evaluation_conditions == admitted.evaluation_conditions
+
+
 @pytest.mark.parametrize("kind", ["step", "axis_value", "rows", "variant"])
 def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
     raw = _python_project()

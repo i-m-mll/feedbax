@@ -3,6 +3,7 @@ import { ApiRequestError } from '@/api/request';
 import { reportStudioRenderFailure } from '@/api/studioDiagnostics';
 import { studioName, studioReason, studioRunStatus, type StudioNameId, type StudioRunStatusId } from './studioVocabulary';
 import { Button } from '@/components/ui/Button';
+import { Section } from '@/components/ui/Section';
 
 export interface StudioRegionIssue {
   reason: string;
@@ -124,10 +125,9 @@ function RegionFailure({ issue, retry, recoveryLabel = 'retry' }: {
         {studioName(recoveryLabel)}
       </Button>
       {issue.detail && issue.detail !== issue.reason && (
-        <details className="text-xs text-shell-muted">
-          <summary className="cursor-pointer">{studioName('details')}</summary>
-          <pre className="mt-2 select-text whitespace-pre-wrap break-words">{issue.detail}</pre>
-        </details>
+        <Section level="field" name={studioName('details')} defaultOpen={false}>
+          <pre className="select-text whitespace-pre-wrap break-words text-xs text-shell-muted">{issue.detail}</pre>
+        </Section>
       )}
     </div>
   );

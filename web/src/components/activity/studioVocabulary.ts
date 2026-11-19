@@ -2,8 +2,10 @@ import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
 import type { StatusMarkStatus } from '@/components/ui/StatusMark';
 import type {
   ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, FieldKind, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
-  StudioPlanReviewSource, StudioSavedEvaluationResult, ValidityReason,
+  StudioDefinitionChange, StudioPlanReviewSource, StudioProjectWindowMapProblem, StudioSavedEvaluationResult,
+  StudioSavedTrainChange, StudioSweptParameterMissing, ValidityReason,
 } from '@/generated/studioContracts';
+import { humanizeLabel } from '@/components/values/humanizeLabel';
 import vocabulary from './vocabulary.json';
 
 export type StudioNameId = keyof typeof vocabulary.name;
@@ -34,6 +36,16 @@ export function studioUnit(id: keyof typeof vocabulary.unit) {
 
 export function studioFieldLabel(id: StudioNameId, label: string) {
   return studioFormat('fieldLabel', { label, name: studioName(id).toLowerCase() });
+}
+
+/** The accessible name of a chosen class's only parameter, drawn in its field's box under the field's label. */
+export function studioParameterLabel(field: string, parameter: string) {
+  return studioFormat('fieldLabel', { label: field, name: parameter });
+}
+
+/** Why a class cannot be chosen: the step sweeps a parameter it lacks. */
+export function studioSweptParameterMissing({ class_label, parameter_label }: StudioSweptParameterMissing) {
+  return studioFormat('sweptParameterMissing', { class: class_label, parameter: parameter_label });
 }
 
 export function studioFieldKindLabel(label: string, kind: FieldKind) {
@@ -69,6 +81,19 @@ export function studioMoney(microusd: number) {
 
 export function studioDateTime(epochMs: number) {
   return dateTimeFormat.format(epochMs);
+}
+
+/**
+ * A format whose `{name}` slots are filled with nodes, such as a link to the object a value names,
+ * rather than with text.
+ */
+export function studioFormatParts<T>(id: keyof typeof vocabulary.format, values: Readonly<Record<string, T>>): (string | T)[] {
+  return vocabulary.format[id].split(/(\{[A-Za-z]+\})/).flatMap((part): (string | T)[] => {
+    const key = /^\{([A-Za-z]+)\}$/.exec(part)?.[1];
+    if (key === undefined) return part ? [part] : [];
+    if (!(key in values)) throw new Error(`Missing Studio format value ${key} for ${id}`);
+    return [values[key]];
+  });
 }
 
 export function studioFormat(
@@ -215,6 +240,57 @@ export function studioRunPhase(phase: string | null | undefined) {
 
 export function studioReason(id: StudioReasonId, value: string) {
   return vocabulary.reason[id].replace('{value}', () => value);
+}
+
+/** The place in a step's definition that a reason or problem names. */
+export type StudioPlace = NonNullable<StudioProjectWindowMapProblem['place']>;
+
+/** The name of a place, as its link draws it. */
+export function studioPlaceName(place: StudioPlace | null) {
+  switch (place?.part) {
+    case 'model': return studioName('model');
+    case 'task': return place.parameter ? humanizeLabel(place.parameter) : studioName('task');
+    case 'objective': return studioName('objective');
+    case 'training': return place.setting ? humanizeLabel(place.setting) : studioName('training');
+    case 'method': return studioName('trainingMethod');
+    case 'analysis': return humanizeLabel(place.element);
+    case 'input': return humanizeLabel(place.role);
+    case 'step': return place.field ? humanizeLabel(place.field) : studioName('step');
+    case undefined: return studioName('step');
+  }
+}
+
+/** A changed value, as a stale run's reason draws it. */
+export function studioChange(before: unknown, after: unknown) {
+  return `${JSON.stringify(before)} → ${JSON.stringify(after)}`;
+}
+
+/** A typed reason as one line of text: the name of what it names, then what it says. */
+export function studioPlaceReason(place: StudioPlace | null, detail: string) {
+  return `${studioPlaceName(place)} · ${detail}`;
+}
+
+/** What a problem says, after the member of a document it names. */
+export function studioProblemDetail({ detail, document_path }: StudioProjectWindowMapProblem) {
+  return document_path ? `${document_path} · ${detail}` : detail;
+}
+
+/** What a definition change says: the values it changed, or the field it changed when it carries none. */
+export function studioChangeDetail(change: StudioDefinitionChange | StudioSavedTrainChange) {
+  return 'before' in change ? studioChange(change.before, change.after) : `${change.path} ${studioValidity('changed')}`;
+}
+
+/** A run's reason as one line of text, for its status tooltip. */
+export function studioRunReason({ openingReason, problems = [], change, reason }: {
+  readonly openingReason?: string;
+  readonly problems?: readonly StudioProjectWindowMapProblem[];
+  readonly change?: StudioDefinitionChange | StudioSavedTrainChange;
+  readonly reason?: string;
+}) {
+  if (openingReason) return openingReason;
+  if (problems.length) return problems.map((problem) => studioPlaceReason(problem.place, studioProblemDetail(problem))).join('\n');
+  if (change) return studioPlaceReason(change.place, studioChangeDetail(change));
+  return reason;
 }
 
 export function studioStep(kind: keyof typeof vocabulary.step | StudioActivityJob['kind']) {

@@ -52,7 +52,7 @@ def ordinary_files(batches: str, *rates: str):
         step["sweep"] = {
             "axes": {"rate": {"values": {
                 f"rate-{index}": {"label": rate, "patches": {
-                    "settings.optimizer.params.learning_rate": {"value": float(rate)},
+                    "settings.optimizer.learning_rate.value": {"value": float(rate)},
                 }}
                 for index, rate in enumerate(rates)
             }}},

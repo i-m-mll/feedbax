@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, get_args, overload
 
+import optax
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 from feedbax.contracts.migrations import default_spec_registry
@@ -22,6 +23,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import (
     DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
 )
+from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_plan import ProjectPlan, RunKey
 from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step
@@ -44,6 +46,7 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringRegistry,
     StudioAuthoringSource,
     StudioAuthoringSurface,
+    StudioSweptParameterMissing,
 )
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
@@ -54,9 +57,10 @@ from feedbax.plugins.application import (
 )
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
-from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
+from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps, paths_match, sweep_paths
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
+from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 
 
 _TRAIN = REQUEST_KINDS["train"].spec_type
@@ -67,11 +71,11 @@ _TRAIN_DOCUMENT_MODELS = {
 }
 _STEP_DOCUMENT_FAMILY = {"analyze": "analysis", "report": "report"}
 _GRAPH_BATCH_SIZE = 1
-_OPTIMIZER_RATE = ("settings", "optimizer", "params", "learning_rate")
 type _Path = tuple[str, ...]
 type _Scalar = str | int | float
 type _ReadPlan = Callable[[tuple[RunKey, ...]], ProjectPlan]
 _CHECKPOINT_POLICY = ("checkpoint_initialization",)
+_OPTAX_ORIGIN = StudioAuthoringOrigin(package="optax", distribution="optax", version=optax.__version__)
 _MISSING = object()
 _CHECKPOINT_CHOICES = {"initialize_from": "Initialize model only", "continue_from": "Carry training state"}
 
@@ -186,6 +190,19 @@ def authoring_surface(
                 ],
                 origins=_origins(task_records),
             ),
+            **{
+                family: StudioAuthoringRegistry(
+                    entries=[
+                        StudioAuthoringDeclaration(
+                            key=entry.key, label=entry.label, renamed_from=(),
+                            settings_schema=entry.model.model_json_schema(),
+                        )
+                        for entry in entries.values()
+                    ],
+                    origins={key: _OPTAX_ORIGIN for key in entries},
+                )
+                for family, entries in (("optimizers", OPTIMIZERS), ("schedules", SCHEDULES))
+            },
             FIGURE_TEMPLATES.family: StudioAuthoringRegistry(
                 entries=[
                     StudioAuthoringDeclaration(
@@ -206,6 +223,7 @@ class _Field:
     view: StudioAuthoringField
     write: Callable[[_Scalar], list[SetProjectValue]]
     documents: tuple[str, ...]
+    name: _Path
 
 
 def _read[Model: BaseModel](model: type[Model], value: Any) -> Model | None:
@@ -310,6 +328,7 @@ class _TrainFields:
         *,
         source: ValueSource | None = None,
         documents: tuple[str, ...] = (),
+        name: _Path | None = None,
     ) -> None:
         field_id = pointer(path)
         self.fields[field_id] = _Field(
@@ -322,6 +341,7 @@ class _TrainFields:
             ),
             write,
             documents,
+            name or path[-1:],
         )
 
     def named_documents(self, field: str) -> tuple[str, ...]:
@@ -424,7 +444,7 @@ class _TrainFields:
             return [self.set(("method",), selected), self.set(("settings",), defaults)]
 
         self.field(
-            ("method",), "Training method", key if isinstance(key, str) else None,
+            ("method",), "Method", key if isinstance(key, str) else None,
             _options({name: method.label or name for name, method in registrations.items()}),
             method_change,
         )
@@ -436,19 +456,19 @@ class _TrainFields:
             lambda value: [self.set(("seed",), value)],
         )
         raw = self.payload.get("training_config")
-        config = _read(DocumentTrainingConfig, raw)
-        if config is not None or raw is None:
-            defaults = DocumentTrainingConfig(batch_size=_GRAPH_BATCH_SIZE)
+        if raw is None or isinstance(raw, dict):
+            # An invalid value is still drawn in its field, so the problem that names it has a place to go.
+            defaults = DocumentTrainingConfig(batch_size=_GRAPH_BATCH_SIZE).model_dump(mode="json")
             for name, schema in DocumentTrainingConfig.model_json_schema()["properties"].items():
                 path = ("training_config", name)
 
                 def write(value: _Scalar, *, name=name, path=path) -> list[SetProjectValue]:
-                    if config is not None:
+                    if raw is not None:
                         return [self.set(path, value)]
-                    return [self.set(("training_config",), defaults.model_dump(mode="json") | {name: value})]
+                    return [self.set(("training_config",), defaults | {name: value})]
 
                 self.field(
-                    path, schema["title"], getattr(config or defaults, name),
+                    path, schema["title"], (raw or defaults).get(name, defaults[name]),
                     StudioAuthoringNumber(kind="number", min=1, step=1), write,
                 )
         if registration is None:
@@ -458,30 +478,103 @@ class _TrainFields:
             return
         schema = registration.settings_model.model_json_schema()
 
-        def fields(path: _Path, values: dict, shape: dict) -> None:
-            for name, leaf in values.items():
-                props = shape.get("properties", {}).get(name, {})
-                if "$ref" in props:
-                    props = schema["$defs"][props["$ref"].rsplit("/", 1)[-1]]
-                if "anyOf" in props:
-                    props = props | next((member for member in props["anyOf"] if member.get("type") != "null"), {})
+        def fields(
+            path: _Path, values: dict, shape: dict, anchor: tuple[_Path, dict] | None, owner: tuple[str, str, bool] | None,
+        ) -> None:
+            for name, declared in shape.get("properties", {}).items():
                 site = (*path, name)
+                present = name in values
+                leaf = values[name] if present else declared.get("default")
+                props = _schema_node(schema, declared, leaf)
+                inner = anchor if present or anchor is not None else (site, leaf)
                 if isinstance(leaf, dict):
-                    fields(site, leaf, props)
-                elif type(leaf) in (int, float):
-                    minimum = props.get("minimum")
-                    if site == _OPTIMIZER_RATE:
-                        minimum = 0
+                    # A chosen class's parameter is named by the field holding the class, and by its own
+                    # name only when the class has several: a constant rate is the rate.
+                    tag = declared.get("discriminator", {}).get("propertyName")
+                    single = tag is not None and len(set(props.get("properties", {})) - {tag}) == 1
+                    fields(site, leaf, props, inner, (name, _title(declared, name), single) if tag is not None else None)
+                elif type(leaf) in (int, float) and props.get("type") in ("number", "integer"):
+                    def write(value: _Scalar, site=site, inner=inner) -> list[SetProjectValue]:
+                        if inner is None:
+                            return [self.set(site, value)]
+                        root, default = inner
+                        return [self.set(root, _set_in(default, site[len(root):], value))]
+
                     self.field(
-                        site, props.get("title", name.replace("_", " ").title()), leaf,
+                        site, owner[1] if owner is not None and owner[2] else _title(props, name), leaf,
                         StudioAuthoringNumber(
-                            kind="number", min=minimum, max=props.get("maximum"),
+                            kind="number", min=props.get("minimum"), max=props.get("maximum"),
                             step=1 if props.get("type") == "integer" else None,
                         ),
-                        lambda value, site=site: [self.set(site, value)],
+                        write,
+                        name=None if owner is None else (owner[0],) if owner[2] else (owner[0], name),
                     )
 
-        fields(("settings",), raw, schema)
+        fields(("settings",), raw, schema, None, None)
+
+
+def _title(node: dict, name: str) -> str:
+    return node.get("title", name.replace("_", " ").title())
+
+
+def _schema_node(schema: dict, node: dict, value: JsonValue) -> dict:
+    """The schema that governs ``value``: references followed, an optional's value member, a tagged union's chosen class."""
+    while "$ref" in node:
+        node = schema["$defs"][node["$ref"].rsplit("/", 1)[-1]] | {k: v for k, v in node.items() if k != "$ref"}
+    if "anyOf" in node:
+        members = [member for member in node["anyOf"] if member.get("type") != "null"]
+        rest = {k: v for k, v in node.items() if k != "anyOf"}
+        return _schema_node(schema, rest | members[0], value) if len(members) == 1 else rest
+    if "discriminator" in node:
+        tag = node["discriminator"]["propertyName"]
+        chosen = node["discriminator"]["mapping"].get(value.get(tag)) if isinstance(value, dict) else None
+        return _schema_node(schema, {"$ref": chosen}, value) if isinstance(chosen, str) else {}
+    return node
+
+
+def _settings_node(schema: dict, settings: JsonValue, path: _Path) -> dict:
+    """The schema that governs the value at ``path`` below the settings."""
+    node, value = _schema_node(schema, schema, settings), settings
+    for name in path:
+        value = value.get(name) if isinstance(value, dict) else None
+        node = _schema_node(schema, node.get("properties", {}).get(name, {}), value)
+    return node
+
+
+def swept_parameter_missing(
+    sweep: Sweep | None, schema: dict, settings: JsonValue, path: _Path, value: JsonValue,
+) -> StudioSweptParameterMissing | None:
+    """The first parameter ``sweep`` writes below ``path`` that ``value``, written there in ``settings``, lacks.
+
+    ``path`` starts at the step (``settings``, ...). The class is named as ``value`` has it, the parameter as the
+    class it replaces has it.
+    """
+    if sweep is None or path[:1] != ("settings",):
+        return None
+    after = _set_in(settings, path[1:], value)
+    for swept in sorted(sweep_paths(sweep)):
+        parts = tuple(swept.split("."))
+        if len(parts) <= len(path) or parts[:len(path)] != path:
+            continue
+        record = value
+        for depth in range(len(path), len(parts)):
+            name = parts[depth]
+            if not isinstance(record, dict) or name not in record:
+                owner = parts[1:depth]
+                held = _settings_node(schema, settings, owner).get("properties", {}).get(name, {})
+                return StudioSweptParameterMissing(
+                    class_label=_title(_settings_node(schema, after, owner), parts[depth - 1]),
+                    parameter_label=_title(held, name),
+                )
+            record = record[name]
+    return None
+
+
+def _set_in(value: JsonValue, path: _Path, leaf: JsonValue) -> JsonValue:
+    if not path:
+        return leaf
+    record = value if isinstance(value, dict) else {}
+    return record | {path[0]: _set_in(record.get(path[0]), path[1:], leaf)}
 
 
 def project_train_fields(
@@ -491,18 +584,26 @@ def project_train_fields(
     change: StudioAuthoringChange | None,
     *,
     read_plan: _ReadPlan | None = None,
-) -> tuple[list[StudioAuthoringField], dict[str, JsonValue] | None, list[SetProjectValue], list[str]]:
-    """Project the Train step's declared fields and authored settings, and plan one atomic, step-local edit."""
+) -> tuple[
+    list[StudioAuthoringField], dict[str, JsonValue] | None, list[SetProjectValue] | StudioSweptParameterMissing, list[str],
+]:
+    """Project the Train step's declared fields and authored settings, and plan one atomic, step-local edit, or the
+    reason the step's sweep refuses it."""
     definition = _TrainFields(project, step_id, registry)
     definition.training(read_plan)
     if definition.step.sweep is not None:
+        swept = sweep_paths(definition.step.sweep)
         for field in definition.fields.values():
-            # A swept step keeps its axes' fields; a field that is not a number would rewrite what they sweep.
-            if not isinstance(field.view.control, StudioAuthoringNumber):
+            control = field.view.control
+            # A swept step keeps its sweep's fields; a choice that writes a swept path would rewrite what it sweeps.
+            if isinstance(control, StudioAuthoringChoice) and paths_match(swept, {
+                ".".join(json_pointer_parts(patch.path)[2:])
+                for option in control.options for patch in field.write(option.value)
+            }):
                 field.view.control = None
 
     settings = definition.payload.get("settings")
-    patches = []
+    patches: list[SetProjectValue] | StudioSweptParameterMissing = []
     documents: set[str] = set()
     if change is not None:
         field = definition.fields.get(change.field)
@@ -526,7 +627,8 @@ def project_train_fields(
                     for patch in patches
                     if (ref := _read(DocumentReference, patch.value)) is not None
                 )
-        patches = definition.authored_edits(change.field, patches)
+        if not isinstance(patches, StudioSweptParameterMissing):
+            patches = definition.authored_edits(change.field, patches)
     return (
         [field.view for field in definition.fields.values()],
         settings if isinstance(settings, dict) else None,
@@ -535,8 +637,11 @@ def project_train_fields(
     )
 
 
-def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> list[SetProjectValue]:
-    """Write one value under ``/settings`` when the method's settings model accepts the result."""
+def _settings_edit(
+    definition: _TrainFields, change: StudioAuthoringChange,
+) -> list[SetProjectValue] | StudioSweptParameterMissing:
+    """Write one value under ``/settings`` when the method's settings model accepts the result and the step's sweep
+    still finds every parameter it writes."""
     path = json_pointer_parts(change.field)
     settings = definition.payload.get("settings")
     if not path or path[0] != "settings" or len(path) < 2 or definition.method is None or not isinstance(settings, dict):
@@ -555,7 +660,10 @@ def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> l
     except ValidationError as error:
         location = ".".join(str(part) for part in error.errors()[0]["loc"]) or path[-1]
         raise ValueError(f"{location}: {error.errors()[0]['msg']}") from error
-    return [definition.set(tuple(path), change.value)]
+    missing = swept_parameter_missing(
+        definition.step.sweep, definition.method.settings_model.model_json_schema(), settings, tuple(path), change.value,
+    )
+    return missing or [definition.set(tuple(path), change.value)]
 
 
 def project_training_numeric_fields(
@@ -587,7 +695,7 @@ def project_training_numeric_fields(
             continue
         path = json_pointer_parts(field_id)
         target = SweepTarget.from_field(view.value, view.control, field.write) if not definition.linked else None
-        axis = FieldSweeps(definition.step, target, view.label, integer=view.control.step == 1) if target is not None else None
+        axis = FieldSweeps(definition.step, target, view.label, field.name, integer=view.control.step == 1) if target is not None else None
         numeric = NumericField(
             path, view.label, view.value,
             Site(expected=ValueType(base=ValueBase.INTEGER if view.control.step == 1 else ValueBase.REAL),
@@ -638,6 +746,6 @@ def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:
         or (control.max is not None and value > control.max)
     ):
         raise ValueError(f"{value!r} is outside the range of {field.label}")
-    if field.id in {"/settings/grad_clip", pointer(_OPTIMIZER_RATE)} and value <= 0:
+    if field.id == "/settings/grad_clip" and value <= 0:
         raise ValueError(f"{field.label} is {value!r}, not positive")
     return int(value) if control.step == 1 else value

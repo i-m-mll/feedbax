@@ -145,12 +145,12 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   expect(saved.ok(), await saved.text()).toBe(true);
   expect((await saved.json()).result.status).toBe('applied');
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Select default · Out of date', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Select train · Out of date', exact: true })).toBeVisible();
   await expect(drawer.getByRole('treeitem', { name: 'train Out of date', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
   await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Select default · Done', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Select train · Done', exact: true })).toBeVisible();
   await expect(drawer.getByRole('treeitem', { name: 'train Done', exact: true })).toBeVisible();
 });
 
@@ -192,8 +192,8 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   const model = panel('Model');
   const plant = model.getByRole('article', { name: 'Point mass', exact: true }).locator('header');
   const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
-  const batches = panel('Training').getByRole('textbox', { name: 'N Batches', exact: true });
-  const batchSize = panel('Training').getByRole('textbox', { name: 'Batch Size', exact: true });
+  const batches = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Batches', exact: true });
+  const batchSize = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Batch Size', exact: true });
   async function history(keys: string, view: string, suffix = '') {
     await panel(view).focus();
     const response = await saved(suffix ? 'POST' : 'PATCH', suffix, () => page.keyboard.press(keys));
@@ -203,7 +203,7 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
 
   await page.goto('/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
-  await tab('Training').click();
+  await tab('Runs').click();
   await edit(batchSize, '6');
   await edit(batches, '5');
   await tab('Model').click();
@@ -222,15 +222,15 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
 
   await history('Meta+Z', 'Model', '/model/undo');
   expect(JSON.parse(await read(modelPath)).payload.interior.components.plant.fields.mass).toBe(1);
-  await tab('Training').click();
-  await history('Meta+Z', 'Training');
+  await tab('Runs').click();
+  await history('Meta+Z', 'Runs');
   await expect(batches).toHaveValue('2');
-  await history('Meta+Z', 'Training');
+  await history('Meta+Z', 'Runs');
   await expect(batchSize).toHaveValue('4');
 
-  await history('Meta+Shift+Z', 'Training');
+  await history('Meta+Shift+Z', 'Runs');
   await expect(batchSize).toHaveValue('6');
-  await history('Meta+Shift+Z', 'Training');
+  await history('Meta+Shift+Z', 'Runs');
   await expect(batches).toHaveValue('5');
   await tab('Model').click();
   await history('Meta+Shift+Z', 'Model', '/model/undo');
@@ -250,9 +250,9 @@ test('outside saved-folder edits join the mounted Undo history', async ({ page, 
   await outside(modelPath, json(outsideModel));
   await expect(mass).toHaveValue('4', { timeout: 2_000 });
   await outside(stepPath, json(outsideStep));
-  await tab('Training').click();
+  await tab('Runs').click();
   await expect(batchSize).toHaveValue('8', { timeout: 2_000 });
-  const burst = await history('Meta+Z', 'Training', '/history/replay');
+  const burst = await history('Meta+Z', 'Runs', '/history/replay');
   expect(burst.files.map(({ address }: { address: { id: string } }) => address.id).sort()).toEqual(['point-mass', 'train']);
   await expect(batchSize).toHaveValue('6');
   expect(await read(stepPath)).toBe(step);
@@ -288,7 +288,7 @@ test('an Inspector edit typed before the field projection arrives is kept and sa
 test('a Model field edit waits for the plan of the revision it edits', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const mass = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Mass', exact: true });
-  const batches = page.getByRole('tabpanel', { name: 'Training', exact: true }).getByRole('textbox', { name: 'N Batches', exact: true });
+  const batches = page.getByRole('complementary', { name: 'Inspector' }).getByRole('textbox', { name: 'Batches', exact: true });
   // The page records, in order, each plan that arrives and each field edit sent.
   await page.addInitScript((path) => {
     const order: string[] = [];
@@ -306,7 +306,7 @@ test('a Model field edit waits for the plan of the revision it edits', async ({ 
   }, projectPath);
   await page.goto('/?project=' + snapshot.project_id);
   await mapStep(page, 'train').click();
-  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
   await expect(batches).toBeEditable();
   // The plan read after the step edit is held, so the field shows the new revision before its plan names the steps lit.
   // The field stays editable, and its edit is sent once that plan has arrived.
@@ -398,7 +398,6 @@ test('keyboard reaches the last Runs column in a narrow split', async ({ page, r
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
   await page.getByRole('tabpanel', { name: 'Runs', exact: true }).focus();
-  await page.getByRole('button', { name: 'Hide Drawer', exact: true }).click();
   await page.getByRole('button', { name: 'Hide Inspector', exact: true }).click();
   await page.setViewportSize({ width: 620, height: 860 });
   await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
@@ -566,8 +565,10 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const missingTraining = 'Training · Field required';
   await list.getByRole('button', { name: missingTraining, exact: true }).press('Enter');
   await expect(list).toBeHidden();
-  const training = page.getByRole('tabpanel', { name: 'Training', exact: true });
-  await expect(training.getByText(missingTraining, { exact: true })).toBeFocused();
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await expect(page.getByRole('tab', { name: 'Runs', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(inspector.getByText(missingTraining, { exact: true })).toBeVisible();
+  await expect(inspector.locator(':focus')).toHaveCount(1);
   await expect(broken.locator('.studio-map-run-mark')).toHaveAttribute('aria-pressed', 'true');
 
   const rowless = page.getByRole('article', { name: 'Train rowless' });
@@ -577,8 +578,10 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
 
   await problemButton.click();
-  await list.getByRole('button', { name: /Components · Model has no components/ }).click();
-  const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
+  // The group heading names the document, so the row does not repeat its place.
+  await list.locator('section').filter({ has: page.getByRole('heading', { name: 'empty-model', exact: true }) })
+    .getByRole('button', { name: /^Model has no components\./ }).click();
+  const emptyReason = page.getByText('Model · Model has no components.', { exact: true });
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
   await expect(empty.locator(':scope > header')).toContainText('empty-model');
   await expect(emptyReason).toBeFocused();

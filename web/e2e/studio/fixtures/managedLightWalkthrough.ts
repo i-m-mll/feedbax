@@ -31,6 +31,7 @@ async function plan(context: Walkthrough) {
 const pane = (page: Page) => page.getByRole('tabpanel', { name: 'Runs', exact: true });
 const table = (page: Page) => pane(page).getByRole('table', { name: 'Runs', exact: true });
 const drawer = (page: Page) => page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+const stepInspector = (page: Page) => page.getByRole('complementary', { name: 'Inspector', exact: true });
 const train = (page: Page) => page.getByRole('article', { name: 'Train train', exact: true });
 const variant = (page: Page) => page.getByRole('combobox', { name: 'Variant', exact: true });
 
@@ -57,7 +58,7 @@ export async function authorWalkthroughSweep(context: Walkthrough) {
   const { page } = context;
   await expect(variant(page)).toHaveText('base');
   await openRuns(page, 'train');
-  await authorLearningRateSweep(drawer(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
+  await authorLearningRateSweep(stepInspector(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
   const sweepRows = (value: StudioSavedTrainRuns) =>
     value.window_map!.rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
   await expect.poll(async () => sweepRows(await plan(context)).map(({ coordinates }) => coordinates['learning-rate']?.value))
@@ -131,8 +132,8 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const childUpdates = sourceUpdates + additionalUpdates;
   const subsetStep = pairedStep === 'evaluate' ? 'evaluate-2' : 'evaluate';
   const outline = page.getByRole('complementary', { name: 'Map Drawer', exact: true });
-  const used = pane(page).getByRole('region', { name: 'Used By', exact: true });
-  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const inspector = stepInspector(page);
+  const used = inspector.getByRole('button', { name: /^Select Used By / });
   const sourceRow = (index: number) => table(page).getByRole('button', { name: runName(prefix[index].label) });
 
   async function selectTwo() {
@@ -172,17 +173,18 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   await expect(page.getByRole('article', { name: 'Report report', exact: true })).not.toHaveAttribute('data-map-related', /.+/);
   await activate(page, sourceRow(0));
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
-  await expect(inspector.getByRole('region', { name: 'Run Inspector', exact: true })
-    .getByRole('heading', { name: prefix[0].label, exact: true })).toBeVisible();
+  // The inspector is titled by the run's step and its sweep values.
+  expect(prefix[0].label).toBe('learning-rate=0.001');
+  await expect(inspector.getByRole('heading', { name: 'train · learning-rate 0.001', exact: true })).toBeVisible();
   for (const [step, kind, count] of [[pairedStep, 'Evaluate', '2 of 2'], ['analyze', 'Analyze', '1 of 1'], ['report', 'Report', '1 of 1']]) {
-    await expect(used).toContainText(step);
+    await expect(used.filter({ hasText: step })).toHaveCount(1);
     await expect(outline.getByRole('treeitem', { name: new RegExp(`^${step}\\b`) })).toHaveAccessibleDescription(count);
     await expect(mapStep(page, step)).toHaveAccessibleDescription(new RegExp(count));
   }
 
   await selectTwo();
   await addSuccessor('Evaluate', subsetStep);
-  const input = drawer(page).getByRole('region', { name: 'Inputs', exact: true });
+  const input = stepInspector(page);
   await expect(input).toContainText('2 of 3');
   const subsetPlan = await plan(context);
   const partial = evaluationRows(subsetPlan, subsetStep);
@@ -197,7 +199,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const settled = evaluationRows(await plan(context), subsetStep);
   const beforeWidening = await attempts();
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
-  const subset = drawer(page).getByRole('group', { name: 'Subject Subset', exact: true });
+  const subset = stepInspector(page).getByRole('group', { name: 'Subject Subset', exact: true });
   const fast = subset.getByRole('checkbox', { name: '0.003', exact: true });
   await activate(page, fast, 'Space');
   await expect(fast).toBeChecked();
@@ -216,7 +218,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const child = 'train-continuation';
   const continued = await addSuccessor('Train', child);
   expect(continued.project.steps?.[child]?.kind).toBe('train');
-  const carryover = drawer(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
+  const carryover = stepInspector(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
   const carry = mutation(context, 'PATCH');
   await chooseOption(page, carryover, 'Carry training state');
   const carried = await carry;
@@ -230,7 +232,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
     },
   }]);
   await expect(carryover).toHaveText('Carry training state');
-  const batchCount = drawer(page).getByRole('textbox', { name: 'N Batches', exact: true });
+  const batchCount = stepInspector(page).getByRole('textbox', { name: 'Batches', exact: true });
   await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');
   await number(page, batchCount, String(additionalUpdates));

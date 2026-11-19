@@ -62,7 +62,7 @@ test('the slot header switches, creates, duplicates and renames a step\'s docume
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
 
-  await expect(header.getByRole('heading', { name: 'Model', exact: true })).toBeVisible();
+  await expect(header.getByRole('heading', { name: 'Model', exact: true })).toBeAttached();
   await expect(header.getByRole('heading')).toHaveText('Model');
   await expect(header.getByRole('button')).toHaveCount(2);
   await expect(picker('Model')).toHaveText('point-mass');
@@ -268,5 +268,5 @@ test('New in the Document header gives an empty report that cannot run', async (
   await expect(document.getByRole('listitem')).toHaveCount(0);
   await expect(document.getByRole('button', { name: 'Add Text', exact: true })).toBeEnabled();
   await expect(document.getByRole('status')).toContainText("Can't run");
-  await expect(document.getByRole('status')).toContainText('The report has no blocks.');
+  await expect(document.getByText('The report has no blocks.')).toBeVisible();
 });

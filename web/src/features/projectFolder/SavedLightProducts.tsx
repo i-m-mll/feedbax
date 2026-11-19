@@ -7,6 +7,7 @@ import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import type { StudioSavedLightHistory } from '@/generated/studioContracts';
 import { Button } from '@/components/ui/Button';
+import { Section } from '@/components/ui/Section';
 
 type Fields = Record<string, unknown>;
 
@@ -100,9 +101,8 @@ export function SavedFigureResult({ history, name }: { history: StudioSavedLight
 
 export function SavedReportResult({ url }: { url: string }) {
   const [open, setOpen] = useState(false);
-  return <details onToggle={({ currentTarget }) => setOpen(currentTarget.open)}>
-    <summary className="cursor-pointer">{studioName('result')}</summary>
+  return <Section level="group" name={studioName('result')} open={open} onOpenChange={setOpen}>
     {open && <iframe aria-label={studioName('report')} src={url} sandbox="allow-scripts allow-same-origin"
       className="h-[28rem] w-full rounded-shell-control border border-shell-divider" />}
-  </details>;
+  </Section>;
 }

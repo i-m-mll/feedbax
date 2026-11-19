@@ -143,10 +143,10 @@ for (const { scope, element, composites, target } of [
     expect(map?.rows.find((row) => row.key.step === 'train')?.status).toBe('cannot_run');
     const address = { composites, element };
     const problem = map?.problems.find((candidate) => candidate.step === 'train');
-    expect(problem?.model_address).toMatchObject(address);
+    expect(problem?.place).toMatchObject({ part: 'model', member: address });
     expect(problem?.detail).toBeTruthy();
     if (!problem?.detail) throw new Error('Expected an addressed Plan problem');
-    const reason = problem.detail.startsWith(problem.path + ': ') ? problem.detail.slice(problem.path.length + 2) : problem.detail;
+    const reason = problem.detail;
     await palette(page, 'problems', 'Problems');
     await page.getByRole('dialog', { name: 'Problems' }).getByRole('button').filter({ hasText: reason }).click();
     await expect(target(modelPanel(page))).toHaveCount(1);

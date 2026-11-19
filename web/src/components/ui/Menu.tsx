@@ -3,7 +3,7 @@ import { Menu as BaseMenu } from '@base-ui/react/menu';
 import clsx from 'clsx';
 import { Check } from 'lucide-react';
 import { useRef, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { popupItem, popupSurface } from './styles';
+import { popupItem, popupSurface, primaryText, secondaryText } from './styles';
 import { usePopupLayer } from './popupLayer';
 
 export const Menu = BaseMenu.Root;
@@ -66,8 +66,8 @@ export function MenuItem({ glyph, shortcut, children, className, ...props }: Men
   return (
     <BaseMenu.Item className={clsx(popupItem, className)} {...props}>
       {glyph}
-      <span className="flex-1 truncate">{children}</span>
-      {shortcut ? <span className="pl-4 text-shell-muted">{shortcut}</span> : null}
+      <span className={primaryText}>{children}</span>
+      {shortcut ? <span className={secondaryText}>{shortcut}</span> : null}
     </BaseMenu.Item>
   );
 }
@@ -86,7 +86,7 @@ export function MenuCheckboxItem({ checked, onCheckedChange, disabled, children 
       <span className="flex size-[1em] shrink-0 items-center justify-center">
         <BaseMenu.CheckboxItemIndicator keepMounted={false}><Check /></BaseMenu.CheckboxItemIndicator>
       </span>
-      <span className="flex-1 truncate">{children}</span>
+      <span className={primaryText}>{children}</span>
     </BaseMenu.CheckboxItem>
   );
 }
@@ -105,11 +105,11 @@ export const MenuRadioGroup = BaseMenu.RadioGroup;
 
 export function MenuRadioItem({ value, disabled, children }: { value: string; disabled?: boolean; children: ReactNode }) {
   return (
-    <BaseMenu.RadioItem className={popupItem} value={value} disabled={disabled}>
+    <BaseMenu.RadioItem className={popupItem} value={value} disabled={disabled} closeOnClick>
       <span className="flex size-[1em] shrink-0 items-center justify-center">
         <BaseMenu.RadioItemIndicator keepMounted={false}><Check /></BaseMenu.RadioItemIndicator>
       </span>
-      <span className="flex-1 truncate">{children}</span>
+      <span className={primaryText}>{children}</span>
     </BaseMenu.RadioItem>
   );
 }

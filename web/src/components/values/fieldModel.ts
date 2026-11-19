@@ -3,10 +3,13 @@ import type {
   ValueType,
 } from '@/generated/studioContracts';
 
-/** What a field holds, which decides its widget. A vector, list or group is drawn through its parts. */
+/**
+ * What a field holds, which decides its widget. A vector, list or group is drawn through its parts. A class is a group
+ * whose value is one of several classes: `value` is the chosen class's option value and the parts are its parameters.
+ */
 export type FieldType =
   | { readonly kind: 'number' | 'integer' | 'string' | 'readOnly' | 'vector' | 'list' | 'group' }
-  | { readonly kind: 'choice'; readonly options: readonly FieldOption[] }
+  | { readonly kind: 'choice' | 'class'; readonly options: readonly FieldOption[] }
   | { readonly kind: 'boolean' };
 
 export interface FieldOption {
@@ -53,6 +56,8 @@ export interface FieldModel {
   readonly members?: FieldMembers;
   /** The member a sweep keeps when Value is chosen from its kind menu. */
   readonly keeps?: string;
+  /** A chosen class's only parameter's own name; its `label` is the field holding the class, since the parameter is that field's value. */
+  readonly parameter?: string;
   /** The value's parts: a vector's components side by side; otherwise indented rows under the field (a group's members, a rule's first, last and count). */
   readonly parts?: readonly FieldModel[];
   /** The sweep may be turned into its listed values. */

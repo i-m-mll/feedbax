@@ -18,6 +18,7 @@ import { appTip } from '@window-shell/browser/tooltip';
 import { useRegionPending } from '@/components/activity/StudioRegion';
 import { Card, CardHead, cardTint, type CardStatus } from '@/components/ui/Card';
 import { ScrollFade } from '@/components/ui/ScrollFade';
+import { StepKindMark } from './StepKindMark';
 import { StatusMark, worstStatus } from '@/components/ui/StatusMark';
 import {
   studioAccessibleName,
@@ -110,7 +111,7 @@ export interface StudioPipelineMapProps {
   onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
   newStepCommand?: (source?: PipelineMapStepSource, subject?: string) => StudioCommand | undefined;
   newSweepCommand?: (stepId: string, subject?: string) => StudioCommand | undefined;
-  /** The open menu of a step's sweepable fields, anchored at the end of its card's shape line. */
+  /** The open menu of a step's sweepable fields, anchored at Add Sweep in its card's head. */
   sweepMenu?: SweepMenu;
   problemSteps?: ReadonlySet<string>;
   onProblems?: (stepId: string, opener: HTMLButtonElement) => void;
@@ -232,10 +233,9 @@ function stepLabel(step: PlanStepView, count?: string | number) {
 }
 
 function StepName({ step, rename }: { step: PlanStepView; rename?: MapStepRename }) {
-  const { Icon } = studioStep(step.kind);
   return (
     <span className="studio-card__title flex min-w-0 items-center gap-1.5">
-      <span className="studio-card__glyph" role="img" aria-label={studioName(step.kind)} {...appTip(studioName(step.kind))}><Icon aria-hidden="true" className="size-4" /></span>
+      <span className="studio-card__glyph"><StepKindMark kind={step.kind} /></span>
       {rename ? <StepNameEdit step={step} rename={rename} /> : <span data-step-name className="truncate font-medium">{step.label}</span>}
     </span>
   );
@@ -278,8 +278,6 @@ function StepShape({
   presentation,
   applySelection,
   onPresentationChange,
-  newSweep,
-  sweepMenu,
 }: {
   step: PlanStepView;
   sweeps: readonly PlanSweepView[];
@@ -288,8 +286,6 @@ function StepShape({
   presentation: PipelineCardPresentation;
   applySelection: ApplyMapSelection;
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
-  newSweep?: StudioCommand;
-  sweepMenu?: SweepMenu;
 }) {
   const dragging = useRef<string | null>(null);
   const [openSweep, setOpenSweep] = useState<string | null>(null);
@@ -371,16 +367,22 @@ function StepShape({
           </div>
         );
       })}
-      {newSweep && (
-        <Menu open={!!sweepMenu} onOpenChange={(open) => { if (open) newSweep.invoke(); else sweepMenu?.close(); }}>
-          <MenuTrigger render={<IconButton variant="default" size="mark" label={newSweep.label} icon={<Plus aria-hidden="true" />}
-            {...commandAttributes(newSweep)} disabled={!newSweep.enabled} />} />
-          <MenuContent aria-label={studioName('newSweep')}>{sweepMenu?.items}</MenuContent>
-        </Menu>
-      )}
     </div>
   );
 }
+
+function NewSweep({ command, menu }: { command: StudioCommand; menu?: SweepMenu }) {
+  return (
+    <Menu open={!!menu} onOpenChange={(open) => { if (open) command.invoke(); else menu?.close(); }}>
+      <MenuTrigger render={<IconButton variant="default" size="mark" label={command.label} icon={<Plus aria-hidden="true" />}
+        {...commandAttributes(command)} disabled={!command.enabled} />} />
+      <MenuContent aria-label={studioName('newSweep')}>{menu?.items}</MenuContent>
+    </Menu>
+  );
+}
+
+/** A press on a card that lands on none of its own controls is a press on its head. */
+const cardControl = 'button, a, input, select, textarea, [role="button"], [role="menuitem"], [role="menu"], [role="dialog"]';
 
 const StepCard = memo(function StepCard({
   step,
@@ -458,11 +460,15 @@ const StepCard = memo(function StepCard({
       aria-label={studioAccessibleName(step.kind, step.label)}
       className={`studio-map-card nopan pointer-events-auto text-sm focus-within:z-20 data-[map-dimmed=true]:border-dashed ${documentLevelStyle} ${!selection ? documentLitStyle : ''}`}
       style={{ width: compact ? compactMapCardWidth : mapCardWidth }}
+      onClick={(event) => {
+        if (event.target instanceof Element && event.target.closest(cardControl)) return;
+        headSelection.onClick(event);
+      }}
     >
       <span id={`${id}-summary`} className="sr-only">
         {sweeps.map((sweep) => `${sweep.label} ${sweep.values.length}`).join(' · ')}
       </span>
-      <CardHead className="relative">
+      <CardHead className="relative flex items-center">
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-px top-1/2" />
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-px top-1/2" />
         {renamingStep(rename, step.id, 'card') ? (
@@ -472,7 +478,7 @@ const StepCard = memo(function StepCard({
           size="content"
           align="start"
           data-canvas-focus
-          className="studio-map-card__head flex w-full px-3 py-2"
+          className="studio-map-card__head flex min-w-0 flex-1 px-3 py-2"
           aria-label={studioAccessibleName('select', stepLabel(step))}
           aria-describedby={[`${id}-summary`, compact ? `${id}-status` : '', related ? `${id}-related` : ''].filter(Boolean).join(' ')}
           aria-current={selection?.kind === 'steps' ? 'step' : undefined}
@@ -482,6 +488,9 @@ const StepCard = memo(function StepCard({
         >
           <StepName step={step} />
         </Button>}
+        {!compact && newSweep && !renamingStep(rename, step.id, 'card') && (
+          <span className="flex shrink-0 pr-2"><NewSweep command={newSweep} menu={sweepMenu} /></span>
+        )}
       </CardHead>
       {related > 0 && <span id={`${id}-related`} className="sr-only">{studioCountOf(related, step.runs.length)}</span>}
       {compact ? <div className="space-y-2 px-3 pb-2">
@@ -490,7 +499,7 @@ const StepCard = memo(function StepCard({
           style={{ width: `${100 * related / step.runs.length}%` }} />}
       </div> : <>
       <div className="space-y-2 px-3 pb-2 empty:hidden">
-        {(sweeps.length > 0 || newSweep) && <StepShape
+        {sweeps.length > 0 && <StepShape
           step={step}
           sweeps={sweeps}
           folded={folded}
@@ -498,8 +507,6 @@ const StepCard = memo(function StepCard({
           presentation={presentation}
           applySelection={applySelection}
           onPresentationChange={onPresentationChange}
-          newSweep={newSweep}
-          sweepMenu={sweepMenu}
         />}
         <PipelineRunMarks
           step={step}
@@ -756,7 +763,7 @@ function MapLine({
     return { ...choose, ...stepGestures(rename, enterStep, stepId, 'line', choose.onKeyDown) };
   };
   return (
-    <div className="flex items-center gap-2 overflow-auto p-2">
+    <ScrollFade axis="x" className="flex items-center gap-2 p-2">
       {groups.map((steps, index) => (
         <div key={index} className="flex shrink-0 items-center gap-2">
           {index > 0 && <ChevronRight aria-hidden="true" className="h-4 w-4 text-shell-muted" />}
@@ -783,7 +790,7 @@ function MapLine({
           ))}
         </div>
       ))}
-    </div>
+    </ScrollFade>
   );
 }
 

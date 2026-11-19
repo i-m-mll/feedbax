@@ -311,7 +311,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   function lightStatus(projection: StudioProjectWindowMap) {
     const { aligned, summary, figure, report } = light(projection);
     return [aligned, summary, figure, { ...report, ...report.light }].map((entry) => ({
-      key: entry.key, status: entry.status, reason: entry.reason,
+      key: entry.key, status: entry.status, reason: entry.reason, changed: entry.changed,
       current: identity(entry.result), previous: identity(entry.previous),
     }));
   }
@@ -331,7 +331,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   }
   async function showReport(url: string) {
     await expect(document.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('**Velocity** by condition.');
-    await activate(page, document.locator('summary').filter({ hasText: /^Result$/ }));
+    const result = document.getByRole('button', { name: 'Result', exact: true });
+    await activate(page, result);
+    await expect(result).toHaveAttribute('aria-expanded', 'true');
     const frame = document.locator('iframe[aria-label="Report"]');
     await expect(frame).toHaveAttribute('src', url);
     const rendered = frame.contentFrame();
@@ -435,7 +437,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const stale = await plan(changed.revision);
   const [stillCurrent, staleSummary, staleFigure, staleReport] = lightStatus(stale);
   expect(stillCurrent.current).toEqual(identity(aligned));
-  expect(staleSummary.reason).toContain('bounds_scale');
+  expect(staleSummary.changed).toMatchObject({
+    path: expect.stringContaining('bounds_scale'), place: { part: 'analysis', element: 'summarize_velocity' },
+  });
   expect([staleSummary, staleFigure, staleReport].map(({ status, previous }) => [status, previous]))
     .toEqual([summary, figure, renderedReport].map((entry) => ['stale', identity(entry)]));
   await Promise.all([
@@ -598,13 +602,14 @@ test('authors a paired Analyze and shared successors from the primary variant', 
     .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
 
   const evaluated = await successor('Evaluate', 'evaluate');
-  await expect(drawer.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeFocused();
+  const stepInspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await expect(stepInspector.getByRole('combobox', { name: 'Subject', exact: true })).toBeFocused();
   expect(evaluated.project.steps?.evaluate).toMatchObject({
     kind: 'evaluate', inputs: { subject: { step: 'train', checkpoint: 'last' } },
   });
   const childId = 'train-continuation';
   const continuation = await successor('Train', childId);
-  const batches = drawer.getByRole('textbox', { name: 'N Batches', exact: true });
+  const batches = stepInspector.getByRole('textbox', { name: 'Batches', exact: true });
   await expect(batches).toBeEditable();
   const prepared = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === path + '/authoring/train/' + childId + '/fields'

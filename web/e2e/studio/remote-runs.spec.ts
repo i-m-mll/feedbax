@@ -71,8 +71,8 @@ test('Machine approval reviews the saved selection and collects the remote resul
       } finally {
         await unlink(queueGate);
       }
-      await expect(runs.getByText('Starting', { exact: true })).toBeVisible();
-      await expect(runs.getByText('Opening machine: starting the worker service', { exact: true })).toBeVisible();
+      await expect(runs.getByRole('cell', { name: 'Starting', exact: true }))
+        .toHaveAccessibleDescription('Opening machine: starting the worker service');
       expect(await attempts()).toEqual([]);
     } finally {
       await unlink(openingGate);
@@ -130,7 +130,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   expect(events.every(({ venue }) => venue?.stream_id === source!.stream_id)).toBe(true);
   await page.reload();
   await mapStep(page, 'train').click();
-  await runs.getByRole('rowheader', { name: 'default' }).getByRole('button').click();
+  await runs.getByRole('rowheader', { name: runName('train') }).getByRole('button').click();
   await page.getByRole('button', { name: 'Open Run', exact: true }).click();
   await expect(page.getByRole('img', { name: 'Loss', exact: true }).locator(`line[data-attempt="${attempt.job_id}"]`).first())
     .toBeAttached();
@@ -178,8 +178,9 @@ test('A set of six remote rows keeps its Jobs states and commands across reloads
   const response = await accepted;
   expect(response.status(), await response.text()).toBe(202);
   const { session_id: session } = await response.json() as StudioMachineApprovalReceipt;
-  await expect(runs.getByText('Queued', { exact: true })).toHaveCount(2, { timeout: 12_000 });
-  await expect(runs.getByText('Waiting for a training slot.', { exact: true })).toHaveCount(2);
+  const queued = runs.getByRole('cell', { name: 'Queued', exact: true });
+  await expect(queued).toHaveCount(2, { timeout: 12_000 });
+  for (const cell of await queued.all()) await expect(cell).toHaveAccessibleDescription('Waiting for a training slot.');
   await expect.poll(async () => (await jobs()).filter(({ status }) => status === 'running').length,
     { timeout: 15_000 }).toBe(4);
   expect((await jobs()).map(({ target }) => target)).toEqual(Array.from({ length: 6 }, () =>
@@ -261,7 +262,8 @@ test('Opening refusal survives reload on the exact approved row', async ({ page,
     await page.reload();
     await mapStep(page, 'train').click();
     await expect(runs.getByText('Failed', { exact: true })).toBeVisible();
-    await expect(runs.getByText('Starting the worker service · The worker service could not be started.')).toBeVisible();
+    await runs.getByRole('cell', { name: 'Failed', exact: true }).getByText('Failed', { exact: true }).hover();
+    await expect(page.getByRole('tooltip')).toContainText('Starting the worker service · The worker service could not be started.');
     const persisted = await request.get(`${path}?revision=${snapshot.revision}`);
     const projected = await persisted.json() as StudioSavedTrainRuns;
     expect(projected.rows).toEqual([expect.objectContaining({ status: 'failed', attempts: [] })]);

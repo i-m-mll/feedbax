@@ -2510,11 +2510,16 @@ def saved_request_status(
     attempts: Sequence[PlanJobAttempt],
     *,
     success: PlanJobAttempt | None,
-    problem: str | None = None,
-    changed_path: str | None = None,
+    refused: bool = False,
+    changed: bool = False,
 ) -> tuple[JobStatus, str | None]:
-    if problem is not None:
-        return JobStatus.CANNOT_RUN, problem
+    """Project a request's attempts to its status and the reason that names nothing typed elsewhere.
+
+    A refused request's problems and a changed definition's place travel as typed references, so
+    their reason is ``None``.
+    """
+    if refused:
+        return JobStatus.CANNOT_RUN, None
     live = active_plan_attempt(attempts)
     if live is not None:
         return live.status, live.reason
@@ -2531,8 +2536,8 @@ def saved_request_status(
                     return JobStatus.STALE, notice
             return JobStatus.SUCCEEDED, notice
         return latest.status, latest.reason
-    if changed_path is not None:
-        return JobStatus.STALE, f"Definition changed at {changed_path}."
+    if changed:
+        return JobStatus.STALE, None
     return JobStatus.NOT_RUN, None
 
 

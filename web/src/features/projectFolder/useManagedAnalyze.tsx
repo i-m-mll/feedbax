@@ -4,7 +4,7 @@ import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
-import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
@@ -32,7 +32,8 @@ import type { PlanStepView } from '@/features/pipeline/planView';
 import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
-import { problemReason, type ProblemReveal } from './projectWindowProblems';
+import { placeElement, type Reveal } from './projectWindowProblems';
+import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 
 type Source = OperationElement['inputs'][string];
@@ -52,7 +53,7 @@ export function useManagedAnalyze({
   projection?: StudioSavedTrainRuns;
   wholeStep: boolean;
   focusedView?: string | null;
-  reveal?: ProblemReveal;
+  reveal?: Reveal;
   savePosition(document: string, node: string, position: PresentationPosition): Promise<unknown>;
 }) {
   const { saved, draft, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
@@ -66,8 +67,7 @@ export function useManagedAnalyze({
   const scope = JSON.stringify([saved.project_id, id, document]);
   const liveScope = useRef(scope);
   liveScope.current = scope;
-  const element = useNamedSelection(selection, document, reveal, reveal?.target.element?.kind === 'analysisElement'
-    ? reveal.target.element.id : undefined);
+  const element = useNamedSelection(selection, document, reveal, placeElement(reveal?.place));
   const [dialog, setDialog] = useState<{ scope: string; mode: 'add'; point?: PresentationPosition }>();
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
@@ -212,7 +212,7 @@ export function useManagedAnalyze({
     }, canBind);
   }
 
-  const problemOf = (name: string) => diagnostics.find((item) => item.element === name)?.detail;
+  const problemOf = (name: string) => diagnostics.find((item) => placeElement(item.place) === name)?.detail;
   const items: CanvasNode[] = [
     ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, name, glyph: <Database /> })),
     ...Object.keys(operations).map((name) => ({ id: name, selectionId: name, name, glyph: <Sigma />, problem: problemOf(name) })),
@@ -227,7 +227,7 @@ export function useManagedAnalyze({
       const label = product === role ? role : product + ' → ' + role;
       return { id: JSON.stringify([target, role]), source: from, target, label: label === from ? undefined : label };
     }));
-  const selectedProblems = diagnostics.filter((item) => selected && item.element === selected);
+  const selectedProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
   const selectedPlan = selected ? planned.get(selected) : undefined;
   function writeParameter(path: readonly string[], value: JsonValue) {
     if (!operation || !selected) return;
@@ -244,10 +244,11 @@ export function useManagedAnalyze({
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
       onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
-    {selectedProblems.map((problem) => <p key={problem.path + problem.detail} role="status">{problemReason(problem)}</p>)}
+    {selectedProblems.map((problem) => <ProblemRow key={problem.path + problem.detail} problem={problem} />)}
     {selectedPlan && <p role="status">{studioRunStatus(selectedPlan.status)}
       {selectedPlan.reason && <span className="block text-shell-muted">{selectedPlan.reason}</span>}
     </p>}
+    {selectedPlan?.changed && <MentionRow place={selectedPlan.changed.place} detail={studioChangeDetail(selectedPlan.changed)} />}
     {operation && definition && key && <div className="grid gap-1">
       <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}
         projected={(path) => {
@@ -274,6 +275,10 @@ export function useManagedAnalyze({
   const library = useMemo((): LibraryItem[] => catalog ? [
     ...catalog.operations.map((entry) => ({
       id: entry.key, name: entry.label, group: studioName('operations'), glyph: <Sigma />, terms: entry.key,
+      about: {
+        description: entry.description, inputs: Object.keys(entry.inputs), outputs: Object.keys(entry.outputs),
+        parameters: entry.param_schema.map(({ name }) => name),
+      },
     })),
     { id: figureItem, name: humanizeLabel(figureItem), group: studioName('figures'), glyph: <ChartLine /> },
   ] : [], [catalog]);
@@ -293,14 +298,10 @@ export function useManagedAnalyze({
     </Button>}
   </Inspector>;
   const drawer = <Drawer>
-    <DrawerSection sections={sections} id="analysis.library" name={studioName('library')}>
-      <StudioRegion state={catalogState}>
-        <LibraryList sections={sections} section="analysis.library" searchName="searchLibrary" items={library}
-          selected={shownItem?.id} dragType={canEdit ? operationDragType : undefined}
-          onInspect={(id) => setInspected({ scope, id })}
-          onPlace={canEdit ? (id) => place(id) : undefined} />
-      </StudioRegion>
-    </DrawerSection>
+    <LibraryList sections={sections} section="analysis.library" name={studioName('library')} searchName="searchLibrary"
+      state={catalogState} items={library} selected={shownItem?.id} dragType={canEdit ? operationDragType : undefined}
+      onInspect={(id) => setInspected({ scope, id })}
+      onPlace={canEdit ? (id) => place(id) : undefined} />
   </Drawer>;
   const figureList = <ul className="space-y-2 p-2">{Object.entries(figures).map(([name, view]) => {
     const caption = figureDefinition(name, view.figure)?.caption;

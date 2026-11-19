@@ -18,6 +18,7 @@ from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemov
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
+    StudioSweptParameterMissing,
     StudioTrainAuthoring,
     StudioTrainAuthoringRequest,
 )
@@ -121,9 +122,10 @@ def read_train_authoring(
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
+        refused = isinstance(patches, StudioSweptParameterMissing)
         return StudioTrainAuthoring(
-            project_id=project_id, step_id=step_id, revision=snapshot.revision,
-            fields=fields, settings=settings, patches=patches, documents=documents,
+            project_id=project_id, step_id=step_id, revision=snapshot.revision, fields=fields, settings=settings,
+            patches=[] if refused else patches, documents=documents, refusal=patches if refused else None,
         )
 
     return _project_response(response, project_fields)

@@ -21,10 +21,11 @@ from feedbax.contracts import project_plan, request_identity
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
+from feedbax.builtins.training import StandardTrainingSettings
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
-from feedbax.contracts.studio_authoring import StudioAuthoringChange
+from feedbax.contracts.studio_authoring import StudioAuthoringChange, StudioSweptParameterMissing
 from feedbax.host import HostError
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.authoring import project_train_fields
@@ -273,6 +274,16 @@ def test_train_authoring_keeps_composed_steps_and_incompatible_documents_intact(
         assert _folder_state(root) == original
 
 
+def test_an_invalid_training_setting_keeps_every_training_field_in_place():
+    registry = new_application_registry_bundle().training_methods
+    raw = managed_train_project(batches=25).model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["batch_size"] = -3
+    fields, _, _, _ = project_train_fields(Project.model_validate(raw), "train", registry, None)
+    values = {field.id: field.value for field in fields}
+    assert values["/training_config/batch_size"] == -3
+    assert values["/training_config/n_batches"] == 25
+
+
 def test_initial_training_settings_retain_the_authored_method_rate_and_batch_count():
     registry = new_application_registry_bundle().training_methods
     project = managed_train_project(batches=25)
@@ -287,9 +298,18 @@ def test_initial_training_settings_retain_the_authored_method_rate_and_batch_cou
     fields, _, patches, _ = project_train_fields(project, "train", registry, None)
     values = {field.id: field.value for field in fields}
     assert values["/training_config/n_batches"] == 25
-    assert values["/settings/optimizer/params/learning_rate"] == (
-        project.steps["train"].base.inline["settings"]["optimizer"]["params"]["learning_rate"]
+    assert values["/settings/optimizer/learning_rate/value"] == (
+        project.steps["train"].base.inline["settings"]["optimizer"]["learning_rate"]["value"]
     )
+    assert (values["/settings/grad_clip"], values["/settings/optimizer/b1"]) == (1.0, 0.9)
+
+    raw = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["base"]["inline"]["settings"] = {}
+    _, _, (patch,), _ = project_train_fields(
+        Project.model_validate(raw), "train", registry, StudioAuthoringChange(field="/settings/optimizer/b1", value=0.8),
+    )
+    assert patch.path == "/base/inline/settings/optimizer"
+    assert StandardTrainingSettings.model_validate({"optimizer": patch.value}).optimizer.b1 == 0.8
 
     _, _, patches, _ = project_train_fields(
         project, "train", registry,
@@ -323,13 +343,52 @@ def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
         project_train_fields(
             project, "train", registry, StudioAuthoringChange(field="/settings/optimizer/type", value=3),
         )
+    method = next(field for field in fields if field.id == "/method")
+    assert method.control is not None
+    project_train_fields(project, "train", registry, StudioAuthoringChange(field="/method", value=method.value))
+
+    # A method change rewrites the settings, so a sweep over a setting refuses it.
+    raw["steps"]["train"]["sweep"]["axes"]["rate"] = {"values": {
+        "slow": {"patches": {"settings.optimizer.params.learning_rate": {"value": 0.01}}},
+    }}
+    swept = Project.model_validate(raw)
+    fields, _, _, _ = project_train_fields(swept, "train", registry, None)
+    assert next(field for field in fields if field.id == "/method").control is None
+    with pytest.raises(ValueError, match="read-only"):
+        project_train_fields(swept, "train", registry, StudioAuthoringChange(field="/method", value=method.value))
+
+
+def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_sweep():
+    registry = new_application_registry_bundle().training_methods
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"] = {
+        "type": "warmup_cosine_decay_schedule", "peak_value": 0.001,
+    }
+    peak = "settings.optimizer.learning_rate.peak_value"
+    raw["steps"]["train"]["sweep"] = {"axes": {"peak": {"values": {
+        "low": {"patches": {peak: {"value": 0.001}}}, "high": {"patches": {peak: {"value": 0.002}}},
+    }}}}
+    project = Project.model_validate(raw)
+
+    def choose(schedule: dict):
+        _, _, patches, _ = project_train_fields(project, "train", registry, StudioAuthoringChange(
+            field="/settings/optimizer/learning_rate", value=schedule,
+        ))
+        return patches
+
+    assert choose({"type": "constant_schedule", "value": 0.001}) == StudioSweptParameterMissing(
+        class_label="Constant", parameter_label="Peak Value",
+    )
+    warmup = {"type": "warmup_constant_schedule", "init_value": 0.0, "peak_value": 0.001, "warmup_steps": 10}
+    (patch,) = choose(warmup)
+    assert (patch.path, patch.value) == ("/base/inline/settings/optimizer/learning_rate", warmup)
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     train = raw["steps"]["train"]
     carry_path = "checkpoint_initialization"
-    rate_path = "settings.optimizer.params.learning_rate"
+    rate_path = "settings.optimizer.learning_rate.value"
     train["sweep"] = {"axes": {"rate": {"values": {
         "slow": {"patches": {rate_path: {"value": 0.001}}},
         "fast": {"patches": {rate_path: {"value": 0.003}}},

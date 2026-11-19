@@ -1,8 +1,39 @@
 import { TriangleAlert, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioName, studioPlaceName, studioProblemDetail, type StudioPlace } from '@/components/activity/studioVocabulary';
+import type { StudioProjectWindowMapProblem } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from './studioCommands';
 import { Button, IconButton } from '@/components/ui/Button';
+
+/** A reason that names a place: pressed, it reveals the place. Every list of problems and changes draws this row. */
+export function MentionRow({ place, detail, context = [], placeShown = true, onReveal }: {
+  place: StudioPlace | null;
+  detail: string;
+  /** False where the surrounding heading or region already names the place. */
+  placeShown?: boolean;
+  /** What the surrounding list does not already say, such as the step or variant. */
+  context?: readonly string[];
+  onReveal?: () => void;
+}) {
+  const entry = <>
+    {placeShown && <><span className="font-medium">{studioPlaceName(place)}</span>{' · '}</>}{detail}
+    {context.length > 0 && <span className="block text-xs text-shell-muted">{context.join(' · ')}</span>}
+  </>;
+  return onReveal
+    ? <Button variant="ghost" size="content" className="block w-full rounded-control px-control-inline py-1 text-left" onClick={onReveal}>
+      {entry}
+    </Button>
+    : <div className="px-control-inline py-1">{entry}</div>;
+}
+
+export function ProblemRow({ problem, ...row }: {
+  problem: StudioProjectWindowMapProblem;
+  context?: readonly string[];
+  placeShown?: boolean;
+  onReveal?: () => void;
+}) {
+  return <MentionRow place={problem.place} detail={studioProblemDetail(problem)} {...row} />;
+}
 
 export function StudioProblems({ command, count, open, opener, onOpen, onClose, children }: {
   command: StudioCommand;

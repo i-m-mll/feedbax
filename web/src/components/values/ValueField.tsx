@@ -1,28 +1,41 @@
 import clsx from 'clsx';
-import { FunctionSquare } from 'lucide-react';
+import { Dices, Link, Sigma, Spline } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { FieldKind } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
 import {
-  studioAccessibleName, studioFieldKindLabel, studioFieldLabel, studioName,
+  studioAccessibleName, studioFieldKindLabel, studioFieldLabel, studioName, studioParameterLabel,
 } from '@/components/activity/studioVocabulary';
 import { selectionButton } from '@/features/pipeline/selection';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
+import { Combobox } from '@/components/ui/Combobox';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { Select } from '@/components/ui/Select';
-import { popupItem, popupSurface } from '@/components/ui/styles';
+import { Section } from '@/components/ui/Section';
+import { popupItem, popupSurface, primaryText, secondaryText } from '@/components/ui/styles';
 import { TextField } from '@/components/ui/TextField';
-import { completions, hasMark, type Completion, type FieldEdit, type FieldModel } from './fieldModel';
+import { completions, hasMark, type Completion, type FieldEdit, type FieldModel, type FieldOption } from './fieldModel';
+import { useFieldGroup } from './fieldGroups';
 import './valueField.css';
 
 export type ValueFieldForm = 'row' | 'cell';
 
+function Outline({ children }: { children: ReactNode }) {
+  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+    strokeLinecap="round" strokeLinejoin="round">{children}</svg>;
+}
+
 const kindGlyphs: Record<FieldKind, ReactNode> = {
-  value: '·', sweep: '◇', draw: '~', formula: <FunctionSquare aria-hidden="true" />, shape: '∿', link: '↗',
+  value: <Outline><circle cx="12" cy="12" r="2.5" /></Outline>,
+  sweep: <Outline><circle cx="3.5" cy="12" r="2.5" /><circle cx="12" cy="12" r="2.5" /><circle cx="20.5" cy="12" r="2.5" /></Outline>,
+  draw: <Dices aria-hidden="true" />,
+  formula: <Sigma aria-hidden="true" />,
+  shape: <Spline aria-hidden="true" />,
+  link: <Link aria-hidden="true" />,
 };
 
 /**
@@ -79,17 +92,28 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     else focusText();
   }
 
+  const parameter = type.kind === 'class' && model.parts?.length === 1 ? model.parts[0] : undefined;
+  const boxed = !!parameter && textualKind(parameter.type.kind);
   const widget = (() => {
     switch (type.kind) {
       case 'boolean':
         return <Checkbox aria-labelledby={labelId} checked={model.value === true} disabled={readOnly}
           aria-describedby={describedBy} onCheckedChange={(checked) => void submit({ kind: 'set', value: checked })} />;
       case 'choice': {
-        const index = type.options.findIndex(({ value }) => JSON.stringify(value) === JSON.stringify(model.value));
+        const index = optionIndex(type.options, model.value);
         return <Select aria-labelledby={labelId} aria-describedby={describedBy} className="w-full" disabled={readOnly}
           value={index < 0 ? null : String(index)} placeholder={studioName('mixed')}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => void submit({ kind: 'set', value: type.options[Number(position)].value })} />;
+      }
+      case 'class': {
+        const index = optionIndex(type.options, model.value);
+        return <Combobox aria-labelledby={labelId} className={boxed ? undefined : 'w-full'} inline={boxed} disabled={readOnly}
+          value={index < 0 ? null : String(index)}
+          items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
+          onValueChange={(position) => {
+            if (position !== null && Number(position) !== index) void submit({ kind: 'set', value: type.options[Number(position)].value });
+          }} />;
       }
       case 'vector':
         return <div className="grid min-w-0 auto-cols-[minmax(0,1fr)] grid-flow-col gap-1">
@@ -103,7 +127,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     }
   })();
 
-  const textual = !['boolean', 'choice', 'vector', 'group', 'list'].includes(type.kind);
+  const textual = textualKind(type.kind);
   if (form === 'cell') {
     return <div className="value-field value-field-cell grid min-w-0 gap-0.5 tabular-nums" role="group"
       aria-label={studioFieldLabel('field', label)}>
@@ -113,25 +137,95 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     </div>;
   }
 
-  const indented = type.kind !== 'vector' && !!model.parts?.length;
-  return <section className="value-field grid min-w-0 gap-1 tabular-nums" aria-label={studioFieldLabel('field', label)}>
+  const parts = (indented: boolean) => (indented || model.members || model.canList) && <div className="value-field-parts grid gap-1">
+    {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
+    {model.members && <Members model={model} />}
+    {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
+      onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
+  </div>;
+  if (boxed) return <ClassValue model={model} parameter={parameter!} labelId={labelId} picker={widget} />;
+  if (type.kind === 'class' && !model.parts?.length) {
+    return <section className="value-field grid min-w-0 gap-1" aria-label={studioFieldLabel('field', label)}>
+      <FieldRow label={label} labelId={labelId} below={model.origin || reason || model.reason ? below : undefined}>
+        {widget}
+      </FieldRow>
+    </section>;
+  }
+  if (type.kind === 'group' || type.kind === 'class' || type.kind === 'list') {
+    return <FieldGroup model={model} labelId={labelId} picker={widget}>
+      {(model.origin || reason || model.reason) && <div className="field-row-below">{below}</div>}
+      {parts(!!model.parts?.length)}
+    </FieldGroup>;
+  }
+  return <section className="value-field grid min-w-0 tabular-nums" aria-label={studioFieldLabel('field', label)}>
     <FieldRow label={label} labelId={labelId} htmlFor={textual ? id : undefined}
       below={model.origin || reason || model.reason ? below : undefined}>
       {widget}
     </FieldRow>
-    {(indented || model.members || model.canList) && <div className="value-field-parts grid gap-1">
-      {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
-      {model.members && <Members model={model} />}
-      {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
+    {parts(type.kind !== 'vector' && !!model.parts?.length)}
+  </section>;
+}
+
+const optionIndex = (options: readonly FieldOption[], value: unknown) =>
+  options.findIndex((option) => JSON.stringify(option.value) === JSON.stringify(value));
+
+const textualKind = (kind: FieldModel['type']['kind']) =>
+  !['boolean', 'choice', 'class', 'vector', 'group', 'list'].includes(kind);
+
+/** A field whose value is a group of fields: a folding header in the label style; a class's picker under it, kept when folded. */
+function FieldGroup({ model, labelId, picker, children }: {
+  model: FieldModel; labelId: string; picker: ReactNode; children: ReactNode;
+}) {
+  return <Section level="field" name={model.label} nameId={labelId} control={picker} bodyClassName="grid gap-1"
+    className="value-field tabular-nums" {...useFieldGroup(model.id)}>
+    {children}
+  </Section>;
+}
+
+/**
+ * A class with one textual parameter: the parameter is the field's value, in one box with the class's picker at its
+ * end. The parameter's name is not drawn; it names the input, after the field's name.
+ */
+function ClassValue({ model, parameter, labelId, picker }: {
+  model: FieldModel; parameter: FieldModel; labelId: string; picker: ReactNode;
+}) {
+  const id = useId();
+  const reasonId = useId();
+  const originId = useId();
+  const { busy, reason, setReason, submit } = useSubmit(parameter);
+  const readOnly = !parameter.commit || busy;
+  const shown = reason ?? parameter.reason ?? model.reason;
+  const origin = parameter.origin ?? model.origin;
+  const describedBy = [origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
+  function chooseKind(kind: FieldKind, focusText: () => void) {
+    if (kind === 'sweep' && parameter.kind !== 'sweep') void submit({ kind: 'to_sweep' });
+    else if (kind === 'value' && parameter.kind === 'sweep' && parameter.keeps) void submit({ kind: 'to_value', value_id: parameter.keeps });
+    else focusText();
+  }
+  return <section className="value-field value-field-class grid min-w-0 tabular-nums" aria-label={studioFieldLabel('field', model.label)}>
+    <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
+      {origin && <span id={originId} className="text-shell-muted">{origin}</span>}
+      {shown && <p role="alert" id={reasonId}>{shown}</p>}
+    </> : undefined}>
+      <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
+        submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
+        end={picker} parameterOf={[model.label, parameter.parameter!]} />
+    </FieldRow>
+    {(parameter.members || parameter.canList) && <div className="value-field-parts grid gap-1">
+      {parameter.members && <Members model={parameter} />}
+      {parameter.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
         onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
     </div>}
   </section>;
 }
 
-function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind }: {
+function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, end, parameterOf }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
   chooseKind(kind: FieldKind, focusText: () => void): void;
+  end?: ReactNode;
+  /** The field and parameter whose names make the input's accessible name, for a chosen class's only parameter. */
+  parameterOf?: readonly [field: string, parameter: string];
 }) {
   const { label, kind } = model;
   const input = useRef<HTMLInputElement>(null);
@@ -189,18 +283,20 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   }
 
   const markMenu = mark ? <Menu open={menu} onOpenChange={setMenu}>
-    <MenuTrigger render={<IconButton size="mark" label={studioFieldKindLabel(label, kind)}
-      className={kind === 'value' ? 'value-field-constant-mark' : undefined}
-      icon={<span aria-hidden="true" className="flex">{kindGlyphs[kind]}</span>} />} />
+    <MenuTrigger render={<IconButton size="content" label={studioFieldKindLabel(label, kind)}
+      className="flex size-full items-center rounded-control data-[popup-open]:bg-shell-hover"
+      icon={kindGlyphs[kind]} />} />
     <MenuContent aria-label={studioFieldLabel('kinds', label)} finalFocus={input}>
       {model.kinds.map((offer) => <MenuItem key={offer.kind} disabled={readOnly || !offer.enabled}
+        glyph={<span className="flex text-shell-muted">{kindGlyphs[offer.kind]}</span>}
         onClick={() => { setMenu(false); chooseKind(offer.kind, focusText); }}>{studioName(offer.kind)}</MenuItem>)}
     </MenuContent>
   </Menu> : undefined;
   const differs = model.differs !== undefined ? <output {...appTip(studioName('selectedValue'))} aria-description={model.differs}
     aria-label={studioFieldLabel('selectedValue', label)}>◆</output> : undefined;
   return <>
-    <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={differs} className="min-w-0"
+    <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={differs} end={end} className="min-w-0"
+      aria-label={parameterOf ? studioParameterLabel(...parameterOf) : undefined} size={end ? Math.max(6, text.length + 1) : undefined}
       placeholder={model.text === null && draft === undefined ? studioName('mixed') : undefined}
       readOnly={readOnly || model.type.kind === 'readOnly'} invalid={invalid}
       aria-describedby={describedBy}
@@ -230,10 +326,10 @@ function CompletionList({ id, anchor, items, highlight, onChoose }: {
     className={clsx(popupSurface, 'fixed z-50 max-h-64 overflow-y-auto')}
     style={{ left: box.left, top: box.bottom + 4, minWidth: box.width }}>
     {items.map((item, index) => <div key={item.id} id={`${id}-${index}`} role="option" aria-selected={index === highlight}
-      data-highlighted={index === highlight ? '' : undefined} className={clsx(popupItem, 'justify-between')}
+      data-highlighted={index === highlight ? '' : undefined} className={popupItem}
       onMouseDown={(event) => { event.preventDefault(); onChoose(item); }}>
-      <span className="truncate">{item.label}</span>
-      <span className="truncate pl-4 text-shell-muted">{item.detail}</span>
+      <span className={primaryText}>{item.label}</span>
+      <span className={secondaryText}>{item.detail}</span>
     </div>)}
   </div>, layer);
 }

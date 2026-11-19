@@ -30,7 +30,7 @@ export function SegmentedControl<Value extends string>(
       value={[value]}
       onValueChange={(next) => { if (next.length) onValueChange(next[0] as Value); }}
       disabled={disabled}
-      className={clsx('inline-flex h-control items-stretch gap-px rounded-control bg-shell-subtle p-px', className)}
+      className={clsx('inline-flex h-control items-stretch gap-px rounded-control border border-[var(--neutral-alpha-10)] bg-[var(--neutral-alpha-04)] p-0.5', className)}
       {...aria}
     >
       {items.map((item) => (
@@ -45,7 +45,7 @@ export function SegmentedControl<Value extends string>(
             'inline-flex select-none items-center justify-center gap-1.5 rounded-row text-shell-muted',
             item.icon ? 'aspect-square' : 'px-control-inline',
             'hover:[&:not([data-disabled])]:text-shell-foreground',
-            'data-[pressed]:bg-shell-surface data-[pressed]:font-medium data-[pressed]:text-shell-foreground',
+            'data-[pressed]:bg-[var(--segment-raised)] data-[pressed]:font-medium data-[pressed]:text-shell-foreground data-[pressed]:shadow-segment',
             focusRing, glyph, disabledLook,
           )}
         >

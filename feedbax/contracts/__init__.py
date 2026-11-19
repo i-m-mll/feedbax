@@ -231,10 +231,6 @@ from feedbax.contracts.selection import (
     refresh_selection_spec,
     select_parent_refs,
 )
-from feedbax.contracts.training import (
-    LrScheduleSpec,
-    OptimizerSpec,
-)
 from feedbax.contracts.value_identity import (
     VALUE_IDENTITY_SCHEMA_ID,
     VALUE_IDENTITY_SCHEMA_VERSION,
@@ -324,7 +320,6 @@ __all__ = [
     "GraphSpec",
     "GraphUIState",
     "SemanticAnchor",
-    "LrScheduleSpec",
     "MAX_EXPR_DEPTH",
     "ManifestIndexRow",
     "ManifestPredicate",
@@ -332,7 +327,6 @@ __all__ = [
     "NamedPredicateUnresolved",
     "NodeUIState",
     "Not",
-    "OptimizerSpec",
     "PATH_EXPRESSION_SCHEMA_ID",
     "PATH_EXPRESSION_SCHEMA_VERSION",
     "ParameterConstraintSpec",

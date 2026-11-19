@@ -1,19 +1,6 @@
-import { studioName } from '@/components/activity/studioVocabulary';
-import { humanizeLabel } from '@/components/values/humanizeLabel';
+import type { StudioPlace } from '@/components/activity/studioVocabulary';
 import type { JsonValue, StudioProjectFilePatch, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
 import { authoredMember, authoredPointerParts, removeAuthoredMember, type AuthoredProject } from './authoredEdits';
-
-type ProblemElement =
-  | { kind: 'component'; id: string }
-  | { kind: 'analysisElement'; id: string }
-  | { kind: 'wire'; index: number }
-  | { kind: 'taskParameter'; name: string };
-
-export function problemReason({ path, detail, document_path }: StudioProjectWindowMapProblem) {
-  const prefix = `${path}: `;
-  const message = detail.startsWith(prefix) ? detail.slice(prefix.length) : detail;
-  return document_path ? `${document_path} · ${message}` : message;
-}
 
 const authoredGraphVariation = 'authored_graph_variation';
 
@@ -74,67 +61,45 @@ export function removeGraphVariation(
   return patch && { address, patches: [patch] };
 }
 
-export function problemTarget(problem: StudioProjectWindowMapProblem): ProblemReveal['target'] {
-  if (problem.model_address || problem.code === authoredGraphVariation) return { view: 'model', label: studioName('model') };
-  const pointer = problem.path.startsWith('/');
-  const parts = pointer
-    ? problem.path.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'))
-    : problem.path.split('.');
-  if (parts[0] === 'payload') parts.shift();
-  const [field, group, id] = parts;
-  if (field === 'trial_documents') {
-    if (group === 'model') return { view: 'model', label: parts[3] === 'components' ? studioName('components') : studioName('model') };
-    if (group === 'task' || group === 'python_task') return { view: 'task', label: studioName('task') };
-    if (group === 'objective') return { view: 'objective', label: studioName('objective') };
+export type RevealView = 'model' | 'task' | 'objective' | 'analysis' | 'document' | 'runs';
+
+/** The view of a step that draws a place. A step's own fields are drawn in the Runs view's inspector. */
+export function placeView(place: StudioPlace | null): RevealView {
+  switch (place?.part) {
+    case 'model': case 'task': case 'objective': case 'analysis': return place.part;
+    default: return 'runs';
   }
-  if (problem.element && (field === 'operations' || field === 'views')) {
-    return {
-      view: 'analysis', label: group ? humanizeLabel(group) : studioName('analysis'),
-      element: { kind: 'analysisElement', id: problem.element },
-    } as const;
-  }
-  if (field === 'graph') {
-    if (group === 'nodes') {
-      if (pointer && id) {
-        return {
-          view: 'model', label: parts[4] ? `${id} · ${humanizeLabel(parts[4])}` : id,
-          element: { kind: 'component', id },
-        } as const;
-      }
-      return { view: 'model', label: studioName('components') } as const;
-    }
-    if (group === 'wires') {
-      const index = pointer && id && /^\d+$/.test(id) ? Number(id) : null;
-      return {
-        view: 'model', label: studioName('wires'),
-        element: index === null ? undefined : { kind: 'wire', index },
-      } as const;
-    }
-    return { view: 'model', label: studioName('model') } as const;
-  }
-  if (field === 'task' || field === 'task_binding_spec') {
-    return {
-      view: 'task', label: group === 'params' && id ? humanizeLabel(id) : studioName('task'),
-      element: pointer && group === 'params' && id ? { kind: 'taskParameter', name: id } : undefined,
-    } as const;
-  }
-  if (field === 'objective') return { view: 'objective', label: studioName('objective') } as const;
-  if (field === 'training_config') {
-    return { view: 'training', label: group ? humanizeLabel(group) : studioName('training') } as const;
-  }
-  if (field === 'method' || field === 'settings') {
-    return { view: 'training', label: studioName('trainingMethod') } as const;
-  }
-  const label = field === 'inputs' && group ? humanizeLabel(group)
-    : problem.document ?? (field ? humanizeLabel(field) : studioName('step'));
-  return { view: 'runs', label } as const;
 }
 
-export interface ProblemReveal {
-  readonly problem: StudioProjectWindowMapProblem;
-  readonly target: {
-    readonly view: 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'document' | 'runs';
-    readonly label: string;
-    readonly element?: ProblemElement;
-  };
+/**
+ * Whether a place is among a step's own fields, drawn in the inspector, and which: `target` is the `data-field` the
+ * inspector gives that field, absent when the place names the fields as a whole.
+ */
+export function placeField(place: StudioPlace | null): { target?: string } | null {
+  switch (place?.part) {
+    case 'training': return place.setting ? { target: `/training_config/${place.setting}` } : {};
+    case 'method': return { target: '/method' };
+    case 'step': return place.field ? { target: `/${place.field}` } : null;
+    default: return null;
+  }
+}
+
+/** A place revealed in a step's view, with what the reason that named it says. */
+export interface Reveal {
+  readonly step: string;
+  readonly place: StudioPlace | null;
+  readonly view: RevealView;
+  readonly reason: string;
+  /** The problem that named the place, when one did. */
+  readonly problem?: StudioProjectWindowMapProblem;
+}
+
+/** The Model member a place names, with the document that holds it. */
+export function placeMember(place: StudioPlace | null | undefined) {
+  return place?.part === 'model' && place.member ? { document: place.document, address: place.member } : undefined;
+}
+
+/** The Analyze element a place names. */
+export function placeElement(place: StudioPlace | null | undefined) {
+  return place?.part === 'analysis' ? place.element : undefined;
 }

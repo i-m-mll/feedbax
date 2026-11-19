@@ -24,7 +24,6 @@ import './modelCanvas.css';
 export type ModelCardData = {
   address: ModelAddress;
   name: string;
-  caption?: string;
   ports: readonly Port[];
   flipped?: boolean;
   collapsed?: boolean;
@@ -102,7 +101,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
   useEffect(() => { update(id); }, [id, update, geometry]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
   return <SurfaceCard as="article" className="studio-model-card" data-stacked={data.stacked} selected={data.selected}
-    data-holds-selection={data.holdsSelection} data-boundary={data.address.element.kind === 'graph'}
+    data-holds-selection={data.holdsSelection} data-boundary={data.address.element.kind === 'inputs' || data.address.element.kind === 'outputs'}
     aria-labelledby={nameId}>
     <CardHead as="header" className="studio-model-card-header">
       <strong id={nameId} className={data.renaming ? 'sr-only' : undefined}>{data.name}</strong>
@@ -116,7 +115,6 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
             if (event.key === 'Escape') { event.stopPropagation(); data.endRename?.(); }
           }} />
       </form>}
-      {data.caption && <span>{data.caption}</span>}
       {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
     </CardHead>
     {ports.map(({ port, key, reason, available, problem, verdict }) => {

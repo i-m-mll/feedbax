@@ -1,5 +1,5 @@
 import { studioName } from '@/components/activity/studioVocabulary';
-import type { Document, StudioProjectCreateFile, StudioProjectSnapshot } from '@/generated/studioContracts';
+import type { Document, StudioProjectCreateFile } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { blankDocuments } from './useProjectDocuments';
 
@@ -7,15 +7,10 @@ const { model, task, objective } = blankDocuments;
 const taskDocumentSchema = 'feedbax.spec.task_document';
 export const supervisedTrainMethod = 'feedbax.supervised_gradient';
 
-export function canCreateFirstTrain(project: StudioProjectSnapshot['project']) {
-  return Object.keys(project.steps ?? {}).length === 0;
-}
-
-export async function createFirstTrain(editor: ProjectEditController, reviewedRevision: string) {
+/** Create a Train step on the project's Model, Task and Objective documents, creating those that are missing. */
+export async function createTrain(editor: ProjectEditController, reviewedRevision: string) {
   const { saved } = editor.getSnapshot();
-  if (saved.revision !== reviewedRevision || !canCreateFirstTrain(saved.project)) {
-    throw new ProjectEditConflictError();
-  }
+  if (saved.revision !== reviewedRevision) throw new ProjectEditConflictError();
 
   const files: StudioProjectCreateFile['file'][] = [];
   const documents = saved.project.documents ?? {};
@@ -35,7 +30,9 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
   const taskDocument = bindDocument('task', task, [task.schema, taskDocumentSchema]);
   const taskField = documents[taskDocument]?.schema === taskDocumentSchema ? 'task' : 'python_task';
   const objectiveDocument = bindDocument('objective', objective);
-  const id = 'train';
+  const steps = saved.project.steps ?? {};
+  let id = 'train';
+  for (let number = 2; Object.prototype.hasOwnProperty.call(steps, id); number += 1) id = `train-${number}`;
   files.push({
     kind: 'step', id,
     step: {
@@ -52,7 +49,7 @@ export async function createFirstTrain(editor: ProjectEditController, reviewedRe
         },
         method: supervisedTrainMethod,
         settings: {
-          optimizer: { type: 'adam', params: { learning_rate: 0.001 } },
+          optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } },
         },
       } },
     },

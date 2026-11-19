@@ -183,7 +183,7 @@ def test_native_refusal_and_edit_during_approval_leave_no_admission(tmp_path, mo
             return challenges[0]
         changed_path = folders.root / PROJECT / "steps/train.json"
         document = json.loads(changed_path.read_bytes())
-        document["base"]["inline"]["settings"]["optimizer"]["params"]["learning_rate"] = 0.002
+        document["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = 0.002
         changed_path.write_text(json.dumps(document))
         return challenge
 
@@ -216,7 +216,7 @@ def test_staging_one_hundred_saved_runs_replies_before_provider_acquisition(
     base = raw["steps"].pop("train")
     for index in range(100):
         step = deepcopy(base)
-        step["base"]["inline"]["settings"]["optimizer"]["params"]["learning_rate"] += index / 1e6
+        step["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] += index / 1e6
         raw["steps"][f"train-{index}"] = step
     _save_project(folders, PROJECT, Project.model_validate(raw))
     reviewed = folders.read_plan(PROJECT, revision=None)
@@ -440,7 +440,7 @@ def test_controller_restart_delivers_approved_selection_on_the_same_machine(tmp_
         changed = "steps/train.json"
         changed_path = folders.root / PROJECT / changed
         document = json.loads(files[changed])
-        document["base"]["inline"]["settings"]["optimizer"]["params"]["learning_rate"] = 0.002
+        document["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = 0.002
         changed_path.write_text(json.dumps(document))
         edited = folders.read_plan(PROJECT, revision=None)
         assert edited.revision != reviewed.revision

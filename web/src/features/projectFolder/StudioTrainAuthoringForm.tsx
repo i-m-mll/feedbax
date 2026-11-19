@@ -1,11 +1,11 @@
-import { useEffect, useId, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import {
   catalogEntries, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
 } from '@/api/studioAuthoring';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioName, studioSweptParameterMissing } from '@/components/activity/studioVocabulary';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { MenuItem } from '@/components/ui/Menu';
@@ -41,8 +41,6 @@ interface Props {
   readonly fieldRows?: readonly string[];
   readonly step?: PlanStepView;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
-  readonly focusFirstField?: boolean;
-  readonly onFirstFieldFocused?: () => void;
   /** The project's Train steps, whose checkpoints the step can start from. */
   readonly trains?: readonly PlanStepView[];
   readonly picking?: ElementSelectionStore;
@@ -77,19 +75,37 @@ function validateRecipe(
   };
 }
 
+function useTrainFieldsQuery(
+  editor: ProjectEditController, stepId: string | undefined, run?: StudioSavedTrainKey, rows: readonly string[] = [],
+  runPending = false,
+) {
+  const { project_id: projectId, revision } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
+  const body = { revision, run, rows: run ? [...rows] : [] };
+  return { body, fields: useQuery({
+    queryKey: ['train-fields', projectId, stepId, body],
+    queryFn: ({ signal }) => projectTrainFields(projectId, stepId!, body, signal),
+    enabled: stepId !== undefined && !runPending,
+    placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
+  }) };
+}
+
+/** A Train step's numeric fields' labels, by the dotted step-local path a sweep exception patches. */
+export function useTrainFieldLabels(editor: ProjectEditController, stepId: string | undefined): ReadonlyMap<string, string> {
+  const { data } = useTrainFieldsQuery(editor, stepId).fields;
+  return useMemo(() => new Map((data?.fields ?? []).map(({ id, label }) => [jsonPointerPath(id), label])), [data]);
+}
+
+function jsonPointerPath(id: string) {
+  return id.split('/').slice(1).map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~')).join('.');
+}
+
 /** The step's numeric fields as the server projects them, and the edit that applies one through the run confirmation. */
 function useTrainFields(
   editor: ProjectEditController, stepId: string, run?: StudioSavedTrainKey, rows: readonly string[] = [], runPending = false,
 ) {
   const { saved, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
-  const body = { revision, run, rows: run ? [...rows] : [] };
-  const fields = useQuery({
-    queryKey: ['train-fields', projectId, stepId, body],
-    queryFn: ({ signal }) => projectTrainFields(projectId, stepId, body, signal),
-    enabled: !runPending,
-    placeholderData: (previous, query) => query?.queryKey[1] === projectId && query.queryKey[2] === stepId ? previous : undefined,
-  });
+  const { body, fields } = useTrainFieldsQuery(editor, stepId, run, rows, runPending);
   const confirmRemoval = useRunRemoval();
   const editable = !fields.isPlaceholderData && !pending && !outside;
   async function edit(field: string, change: ProjectedEdit): Promise<string | undefined> {
@@ -173,7 +189,7 @@ function CheckpointStart({ editor, stepId, step, trains, picking, editable }: {
 }
 
 export function StudioTrainAuthoringForm(props: Props) {
-  const { editor, stepId, onChooseSweepValue, focusFirstField, onFirstFieldFocused } = props;
+  const { editor, stepId, onChooseSweepValue } = props;
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { project_id: projectId, revision } = saved;
@@ -187,7 +203,6 @@ export function StudioTrainAuthoringForm(props: Props) {
   const numeric = useTrainFields(editor, stepId, props.run, props.fieldRows, props.runPending);
   const active = useRef<AbortController | null>(null);
   const command = useRef<AbortController | null>(null);
-  const region = useRef<HTMLElement | null>(null);
   const shown = definition.data;
   const current = shown?.revision === revision ? shown : null;
 
@@ -196,14 +211,6 @@ export function StudioTrainAuthoringForm(props: Props) {
     active.current = lifetime;
     return () => lifetime.abort();
   }, [editor, stepId]);
-
-  useLayoutEffect(() => {
-    if (!focusFirstField || !current || numeric.fields.isFetching) return;
-    const first = region.current?.querySelector<HTMLElement>('input:not([readonly]):not(:disabled):not([aria-hidden="true"])');
-    if (!first) return;
-    first.focus();
-    onFirstFieldFocused?.();
-  }, [focusFirstField, current, onFirstFieldFocused, numeric.fields.isFetching]);
 
   async function apply(change: NonNullable<StudioTrainAuthoringRequest['change']>, label: string): Promise<string | undefined> {
     const lifetime = active.current;
@@ -215,6 +222,7 @@ export function StudioTrainAuthoringForm(props: Props) {
       const recipe = await readStudioTrainAuthoring(projectId, stepId, { revision, change }, editor.signal);
       const latest = editor.getSnapshot();
       if (latest.saved.revision !== revision || latest.pending || latest.outside) throw new ProjectEditConflictError();
+      if (recipe.refusal) return studioSweptParameterMissing(recipe.refusal);
       if (!recipe.patches.length) return undefined;
       const address = { kind: 'step', id: stepId } as const;
       editor.edit(address, label, recipe.patches, validateRecipe(latest.saved.project, address, recipe.documents));
@@ -238,7 +246,7 @@ export function StudioTrainAuthoringForm(props: Props) {
     chooseMember: field.sweep && onChooseSweepValue
       ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined,
   });
-  const fields = current?.fields ?? [];
+  const fields = shown?.fields ?? [];
   const methodField = fields.find(({ id }) => id === '/method');
   const methods = catalogEntries(catalog.data, 'training_methods');
   const method = catalog.data?.registries.training_methods?.entries
@@ -256,19 +264,21 @@ export function StudioTrainAuthoringForm(props: Props) {
         void numeric.fields.refetch();
         void catalog.refetch();
       })}>
-      <section ref={region} aria-label={studioName('definition')} className="grid gap-1">
+      <section aria-label={studioName('definition')} className="grid gap-1">
         {props.trains && <CheckpointStart editor={editor} stepId={stepId} step={props.step} trains={props.trains}
           picking={props.picking} editable={editable} />}
-        {methodField && <FieldRow label={methodField.label} labelId={methodLabel}>
+        {methodField && <div data-field={methodField.id} className="contents"><FieldRow label={methodField.label} labelId={methodLabel}>
           <CatalogPicker aria-labelledby={methodLabel} className="w-full" entries={methods}
             value={typeof methodField.value === 'string' ? methodField.value : null}
             disabled={!editable || !methodField.control}
             onChoose={(key) => { void apply({ field: '/method', value: key }, methodField.label); }} />
-        </FieldRow>}
-        {choices.map((field) => <ValueField key={field.id} model={choiceField(field,
-          editable ? (value) => apply({ field: field.id, value }, field.label) : undefined)} />)}
-        {steps.map((field) => { const model = fieldModel(field); return <ValueField key={model.id} model={model} />; })}
-        {settingsSchema && current?.settings && <SettingsForm schema={settingsSchema} value={current.settings}
+        </FieldRow></div>}
+        {choices.map((field) => <div key={field.id} data-field={field.id} className="contents"><ValueField model={choiceField(field,
+          editable ? (value) => apply({ field: field.id, value }, field.label) : undefined)} /></div>)}
+        {steps.map((field) => { const model = fieldModel(field); return <div key={model.id} data-field={field.id} className="contents">
+          <ValueField model={model} />
+        </div>; })}
+        {settingsSchema && shown?.settings && <SettingsForm schema={settingsSchema} value={shown.settings}
           projected={(path) => {
             const field = byPath.get(settingsPrefix + pointer(path));
             return field && fieldModel(field);

@@ -17,6 +17,7 @@ from feedbax.contracts.project_sweep import (
     RangeAxis,
     SampledAxis,
     SetValue,
+    Sweep,
     axis_to_list,
     _paths_overlap,
 )
@@ -85,28 +86,41 @@ def _axis_paths(axis: Axis) -> set[str]:
     return set()
 
 
-def _matches(paths: set[str], other: set[str]) -> bool:
+def sweep_paths(sweep: Sweep) -> set[str]:
+    """The step-local paths a sweep writes, through its axes, rows, and exceptions."""
+    sets = [*sweep.rows.values(), *sweep.exceptions.values()]
+    return {
+        *(path for axis in sweep.axes.values() if axis is not None for path in _axis_paths(axis)),
+        *(path for entry in sets if entry is not None for path in entry.patches),
+    }
+
+
+def paths_match(paths: set[str], other: set[str]) -> bool:
     return any(_paths_overlap(left, right) for left in paths for right in other)
 
 
 class FieldSweeps:
-    def __init__(self, step: Step, target: SweepTarget, label: str, *, integer: bool):
+    """The sweeps over one field; a new axis is named by ``name``, the path segments that identify the field."""
+
+    def __init__(self, step: Step, target: SweepTarget, label: str, name: tuple[str, ...], *, integer: bool):
         self.step = step
         self.target = target
         self.label = label
+        self.name = re.sub(r"[^a-z0-9]+", "-", "-".join(name).lower()).strip("-") or "value"
         self.paths = set(target.entry(target.value).patches)
         self.integer = integer
         self.axes = step.sweep.axes if step.sweep else {}
         self.covering = [
             (name, axis) for name, axis in self.axes.items()
-            if axis is not None and _matches(self.paths, _axis_paths(axis))
+            if axis is not None and paths_match(self.paths, _axis_paths(axis))
         ]
-        self.simple = (
-            step.sweep is None or (
-                step.sweep.combination in (None, "cross")
-                and not step.sweep.rows
-                and all(exception is None for exception in step.sweep.exceptions.values())
-            )
+        exceptions = [exception for exception in step.sweep.exceptions.values() if exception is not None] if step.sweep else []
+        crossed = step.sweep is None or (step.sweep.combination in (None, "cross") and not step.sweep.rows)
+        self.simple = crossed and not exceptions
+        # A new crossed axis keeps an exception's meaning only when it selects by axis coordinates and leaves this field alone.
+        self.extendable = crossed and not any(
+            exception.where is None or exception.where.rows is not None or paths_match(self.paths, set(exception.patches))
+            for exception in exceptions
         )
 
     def to_list(self, axis: ListedAxis | GeneratedAxis) -> NamedAxis:
@@ -122,7 +136,7 @@ class FieldSweeps:
 
     @property
     def can_sweep(self) -> bool:
-        return self.simple and not self.covering
+        return self.extendable and not self.covering
 
     def _editable_list(self, axis: NamedAxis) -> bool:
         return self.simple and self.may_edit_member(axis)
@@ -175,8 +189,7 @@ class FieldSweeps:
 
     def write_axis(self, axis: Axis) -> list[SetProjectValue]:
         if self.can_sweep:
-            base = re.sub(r"[^a-z0-9]+", "-", self.label.lower()).strip("-") or "value"
-            name = self._fresh_id(base, self.axes)
+            name = self._fresh_id(self.name, self.axes)
             write = self._axis_write(name, axis)
             if self.step.sweep is None:
                 return [SetProjectValue(
