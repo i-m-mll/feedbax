@@ -44,10 +44,11 @@ export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | und
   return subset?.ranks?.length ? [{ coordinates: {}, ranks: subset.ranks }] : [];
 }
 
-/** A single value is drawn as its value; only a value without one has a name. */
+/** A coordinate is drawn as its label, else its single value, else its name. */
 function coordinateText({ value, label, value_id }: StudioProjectWindowMapCoordinate) {
+  if (label != null) return label;
   if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') return String(value);
-  return label ?? value_id;
+  return value_id;
 }
 
 function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {

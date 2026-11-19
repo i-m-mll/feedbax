@@ -29,6 +29,7 @@ from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectF
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
+from feedbax.studio.selection import merged_files
 from feedbax.web.services.evaluate_attachment import (
     EvaluateAttachmentRefused, prepare_evaluate_attachment, read_evaluate_attachments,
 )
@@ -186,11 +187,15 @@ def _fields(model: ModelDocument, owner: ModelAddress, components: ComponentRegi
 
 
 def _step_field_write(step: Step, address: ModelAddress, value: JsonValue) -> list[SetProjectValue]:
-    difference = SetField(op="set_field", address=address, value=value)
+    return _step_field_writes(step, [(address, value)])
+
+
+def _step_field_writes(step: Step, values: list[tuple[ModelAddress, JsonValue]]) -> list[SetProjectValue]:
     name = "field-values"
     batches = step.model_attachments
-    records = [record for record in batches.get(name, ()) if record.address != address]
-    records.append(difference)
+    addresses = [address for address, _ in values]
+    records = [record for record in batches.get(name, ()) if record.address not in addresses]
+    records.extend(SetField(op="set_field", address=address, value=value) for address, value in values)
     return [SetProjectValue(
         op="replace" if MODEL_ATTACHMENTS in step.model_fields_set else "add",
         path=pointer((MODEL_ATTACHMENTS,)),
@@ -199,6 +204,20 @@ def _step_field_write(step: Step, address: ModelAddress, value: JsonValue) -> li
             for key, batch in (batches | {name: records}).items()
         },
     )]
+
+
+def _kept_files(project, step_id: str, step: Step, writes: list[OverridePatch]) -> list[StudioProjectFilePatch]:
+    """The files that give ``step`` a sweep's kept value: Model fields among its field values, the rest in its definition."""
+    fields = [(ModelAddress.from_text(write.path), write.value) for write in writes if write.path.startswith("{")]
+    if any(write.op == "remove" for write in writes if write.path.startswith("{")):
+        raise ProjectFolderInvalid("A sweep value removes a Model field.")
+    rest = [write for write in writes if not write.path.startswith("{")]
+    return [
+        *([StudioProjectFilePatch(
+            address=AuthoredFileAddress(kind="step", id=step_id), patches=_step_field_writes(step, fields),
+        )] if fields else []),
+        *(scoped_file(project, step_id, EvaluateAttachmentStep(kind="step"), rest) if rest else []),
+    ]
 
 
 def model_fields(
@@ -296,13 +315,14 @@ def model_fields(
             raise ProjectFolderInvalid("A selected row already writes this field through a sweep value.")
     prepared = prepare_numeric_field(
         field.numeric, axis, body.edit, functions, period=(effective_model or model).step_seconds,
-        scoped=scope is not None, keep_value=axis.target.writes if axis is not None else None,
+        scoped=scope is not None,
     )
     result = prepared.result
     if isinstance(result, tuple):
         return ModelFieldResponse(problems=list(result))
     if isinstance(result, list):
-        return ModelFieldResponse(files=[step_file(result)], removed_values=prepared.removed)
+        kept = _kept_files(project, body.run.step, step, prepared.keep) if prepared.keep and step is not None else []
+        return ModelFieldResponse(files=merged_files([*kept, step_file(result)]), removed_values=prepared.removed)
     if scope is not None:
         if axis is None or axis.target.patch_path is None:
             return ModelFieldResponse(problems=[Problem(

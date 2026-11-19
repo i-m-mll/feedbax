@@ -290,7 +290,7 @@ def _written(project, writes):
 
 def _train_fields(project, registry, change=None):
     projection = project_train_fields(project, "train", registry, change, _WHOLE_STEP)
-    return projection.fields, projection.settings, projection.edit or [], projection.documents
+    return projection.fields, projection.settings, projection.refusal or projection.files, projection.documents
 
 
 def test_an_invalid_training_setting_keeps_every_training_field_in_place():

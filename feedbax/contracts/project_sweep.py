@@ -845,13 +845,15 @@ _PLAIN_VALUE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
 
 
 def coordinate_text(coordinate: SweepCoordinate) -> str:
-    """A coordinate as drawn: a single value is its value; only a value without one has a name."""
+    """A coordinate as drawn: its label, else its single value, else its name."""
+    if coordinate.label is not None:
+        return coordinate.label
     value = coordinate.value
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int | float | str):
         return str(value)
-    return coordinate.label or coordinate.value_id
+    return coordinate.value_id
 
 
 def _row_key(key: str) -> str:
