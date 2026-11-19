@@ -323,6 +323,19 @@ def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
         project_train_fields(
             project, "train", registry, StudioAuthoringChange(field="/settings/optimizer/type", value=3),
         )
+    method = next(field for field in fields if field.id == "/method")
+    assert method.control is not None
+    project_train_fields(project, "train", registry, StudioAuthoringChange(field="/method", value=method.value))
+
+    # A method change rewrites the settings, so a sweep over a setting refuses it.
+    raw["steps"]["train"]["sweep"]["axes"]["rate"] = {"values": {
+        "slow": {"patches": {"settings.optimizer.params.learning_rate": {"value": 0.01}}},
+    }}
+    swept = Project.model_validate(raw)
+    fields, _, _, _ = project_train_fields(swept, "train", registry, None)
+    assert next(field for field in fields if field.id == "/method").control is None
+    with pytest.raises(ValueError, match="read-only"):
+        project_train_fields(swept, "train", registry, StudioAuthoringChange(field="/method", value=method.value))
 
 
 def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):

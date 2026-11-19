@@ -17,6 +17,7 @@ from feedbax.contracts.project_sweep import (
     RangeAxis,
     SampledAxis,
     SetValue,
+    Sweep,
     axis_to_list,
     _paths_overlap,
 )
@@ -85,7 +86,16 @@ def _axis_paths(axis: Axis) -> set[str]:
     return set()
 
 
-def _matches(paths: set[str], other: set[str]) -> bool:
+def sweep_paths(sweep: Sweep) -> set[str]:
+    """The step-local paths a sweep writes, through its axes, rows, and exceptions."""
+    sets = [*sweep.rows.values(), *sweep.exceptions.values()]
+    return {
+        *(path for axis in sweep.axes.values() if axis is not None for path in _axis_paths(axis)),
+        *(path for entry in sets if entry is not None for path in entry.patches),
+    }
+
+
+def paths_match(paths: set[str], other: set[str]) -> bool:
     return any(_paths_overlap(left, right) for left in paths for right in other)
 
 
@@ -99,7 +109,7 @@ class FieldSweeps:
         self.axes = step.sweep.axes if step.sweep else {}
         self.covering = [
             (name, axis) for name, axis in self.axes.items()
-            if axis is not None and _matches(self.paths, _axis_paths(axis))
+            if axis is not None and paths_match(self.paths, _axis_paths(axis))
         ]
         self.simple = (
             step.sweep is None or (
