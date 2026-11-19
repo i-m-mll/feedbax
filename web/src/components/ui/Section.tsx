@@ -28,8 +28,8 @@ export interface SectionProps {
 }
 
 const header: Record<SectionLevel, string> = {
-  drawer: 'border-b border-shell-divider text-sm font-medium text-shell-foreground',
-  group: 'text-sm font-medium text-shell-foreground',
+  drawer: 'border-b border-shell-divider text-sm font-medium text-shell-muted',
+  group: 'text-xs font-medium text-shell-muted',
   field: 'text-xs text-shell-muted',
 };
 
@@ -64,7 +64,7 @@ export function Section({
           aria-controls={body}
           onClick={toggle}
           className={clsx(
-            'flex h-full min-w-0 flex-1 cursor-default select-none items-center gap-1 rounded-list-row px-1 text-left hover:bg-shell-row-hover',
+            'flex h-full min-w-0 flex-1 cursor-default select-none items-center gap-1 px-1 text-left hover:text-shell-foreground',
             level === 'field' && '-ml-1',
             focusRing,
           )}
