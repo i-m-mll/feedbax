@@ -41,7 +41,6 @@ class ModelFieldRequest(StudioRunSelection):
     owner: ModelAddress
     evaluate_scope: EvaluateAttachmentScope | None = None
     address: ModelAddress | None = None
-    lit_steps: list[ProjectName] = Field(default_factory=list)
     edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")] | None = None
 
 

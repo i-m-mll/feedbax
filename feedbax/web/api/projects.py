@@ -118,6 +118,7 @@ def read_train_authoring(
         bundle = request.app.state.bootstrap_state.bundle
         selection = train_selection(
             folders, project_id, snapshot.revision, snapshot.project, step_id, body.run, body.rows, body.axes,
+            body.lit_steps,
         )
         try:
             projection = project_train_fields(
@@ -131,7 +132,7 @@ def read_train_authoring(
         return StudioTrainAuthoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision, fields=projection.fields,
             settings=projection.settings, mixed=projection.mixed,
-            files=[edit] if edit is not None and not refused else [], documents=projection.documents,
+            files=edit if edit is not None and not refused else [], documents=projection.documents,
             refusal=edit if refused else None,
         )
 
@@ -151,6 +152,7 @@ def project_train_numeric_fields(
         bundle = request.app.state.bootstrap_state.bundle
         selection = train_selection(
             folders, project_id, body.revision, snapshot.project, step_id, body.run, body.rows, body.axes,
+            body.lit_steps,
         )
         try:
             return project_training_numeric_fields(

@@ -17,7 +17,7 @@ from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocument
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
-from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.expression_values import Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSource
@@ -29,7 +29,7 @@ from feedbax.contracts.project import (
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_plan import ProjectPlan, RunKey
-from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step
+from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step, document_write_target
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import REQUEST_KINDS, decode_request
@@ -61,7 +61,7 @@ from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps, sweep_paths
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
-from feedbax.studio.selection import TrainSelection
+from feedbax.studio.selection import TrainSelection, merged_files
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
 from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 
@@ -229,7 +229,7 @@ class TrainProjection:
     fields: list[StudioAuthoringField]
     settings: dict[str, JsonValue] | None
     mixed: list[str]
-    edit: StudioProjectFilePatch | StudioSweptParameterMissing | None
+    edit: list[StudioProjectFilePatch] | StudioSweptParameterMissing | None
     documents: list[str]
 
 
@@ -358,10 +358,12 @@ class _TrainFields:
         if linked:
             if not isinstance(template, StepTemplate) or not isinstance(resolved, ResolvedStep):
                 raise ValueError("The checkpoint continuation's definition could not be resolved")
-            self.payload = template.authored_payload()
+            self.authored = template.authored_payload()
         else:
             assert isinstance(step.base, InlineBase)
-            self.payload = step.base.inline
+            self.authored = step.base.inline
+        # The definition as the step's runs read it: each named document it refers to read in place.
+        self.payload = resolved.payload if isinstance(resolved, ResolvedStep) else self.authored
         self.current = self.payload if current is None else current
         self.sources = (resolved.sources or {}) if isinstance(resolved, ResolvedStep) else {}
         self.fields: dict[str, _Field] = {}
@@ -399,6 +401,8 @@ class _TrainFields:
         name: _Path | None = None,
     ) -> None:
         field_id = pointer(path)
+        if not documents and (target := document_write_target(self.authored, ".".join(path))) is not None:
+            documents = (target[0],)
         self.fields[field_id] = _Field(
             StudioAuthoringField(
                 id=field_id,
@@ -708,7 +712,7 @@ def project_train_fields(
     shown = payloads[0] if payloads else definition.payload
     settings = shown.get("settings")
     mixed = _differences([_effective(payload, registry) for payload in payloads]) if payloads else set()
-    edit: StudioProjectFilePatch | StudioSweptParameterMissing | None = None
+    edit: list[StudioProjectFilePatch] | StudioSweptParameterMissing | None = None
     documents: set[str] = set()
     if change is not None:
         field = definition.fields.get(change.field)
@@ -818,7 +822,8 @@ def project_training_numeric_fields(
         if not isinstance(view.control, StudioAuthoringNumber) or type(view.value) not in (float, int):
             continue
         path = json_pointer_parts(field_id)
-        step_writes = lambda value, field=field: _step_writes(field.number_write(value))
+        def step_writes(value, field=field):
+            return _step_writes(field.number_write(value))
         target = SweepTarget.from_field(view.value, view.control, step_writes) if not definition.linked else None
         axis = FieldSweeps(definition.step, target, view.label, field.name, integer=view.control.step == 1) if target is not None else None
         numeric = NumericField(
@@ -832,20 +837,27 @@ def project_training_numeric_fields(
             TrainFieldView, numeric, axis, functions, selection.row,
             json.loads(next(iter(values))) if len(values) == 1 else None, mixed=len(values) > 1, id=field_id,
         ))
-        targets[field_id] = field, numeric, axis, step_writes
+        targets[field_id] = field, numeric, axis
     if body.edit is None:
         return TrainFieldResponse(fields=fields)
     if body.field not in targets:
         raise ValueError(f"Train step {step_id!r} has no number field {body.field!r}")
-    field, numeric, axis, step_writes = targets[body.field]
-    prepared = prepare_numeric_field(
-        numeric, axis, body.edit, functions, scoped=selection.scoped, keep_value=step_writes,
-    )
+    field, numeric, axis = targets[body.field]
+    kept: list[int | float] = []
+
+    def keep(value: int | float) -> list[SetProjectValue]:
+        """A value a sweep turns back into, stored below with the selection's other edits."""
+        kept.append(value)
+        return []
+
+    prepared = prepare_numeric_field(numeric, axis, body.edit, functions, scoped=selection.scoped, keep_value=keep)
     result = prepared.result
     if isinstance(result, tuple):
         return TrainFieldResponse(problems=list(result))
     if isinstance(result, list):
         files = [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)] if result else []
+        for value in kept:
+            files = merged_files([*files, *selection.store(field.number_write(value))])
     elif definition.step.sweep and axis is None:
         return TrainFieldResponse(problems=[Problem(
             code=ProblemCode.STRUCTURE, reason="This Train field has no writable sweep destination.",
@@ -853,8 +865,31 @@ def project_training_numeric_fields(
     else:
         assert not isinstance(result, LiteralValue)
         definition.current = selection.current if selection.current is not None else definition.payload
-        files = [selection.store(field.number_write(result))]
+        files = selection.store(field.number_write(result))
     return TrainFieldResponse(files=files, dependencies=list(field.documents), removed_values=prepared.removed)
+
+
+def training_document_choice(
+    project: Project, step_id: str, registry: TrainingMethodRegistry, document: str,
+) -> list[OverridePatch] | StudioSweptParameterMissing:
+    """The writes that point the Train step at the training document ``document``, or the parameter the step sweeps
+    that the document lacks."""
+    entry = project.documents.get(document)
+    if entry is None or entry.schema_id != TRAINING_DOCUMENT_SCHEMA_ID or not isinstance(entry.payload, dict):
+        raise ValueError(f"{document} is not a Training document.")
+    definition = _TrainFields(project, step_id, registry)
+    definition.training(None)
+    for key in TRAINING_DOCUMENT_KEYS:
+        missing = swept_parameter_missing(
+            definition.step.sweep, (key,), entry.payload.get(key), document, definition.field_label,
+        )
+        if missing:
+            return missing
+    return [
+        OverridePatch(op="replace" if key in definition.authored else "add", path=key,
+                      value={"document": document, "pointer": f"/{key}"})
+        for key in TRAINING_DOCUMENT_KEYS
+    ]
 
 
 def _number(field: StudioAuthoringField, value: _Scalar) -> int | float:

@@ -1,5 +1,7 @@
 """Store an edit of a step's definition by the scope of the runs it is made for."""
 
+from collections.abc import Callable, Collection
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
@@ -12,13 +14,16 @@ from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.contracts.model_edit import (
     EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentStep, EvaluateAttachmentVariant,
 )
-from feedbax.contracts.project import InlineBase, SetProjectValue
+from feedbax.contracts.project import (
+    DocumentEdit, InlineBase, Project, RemoveProjectValue, SetProjectValue, apply_document_edits, document_edit_ops,
+)
 from feedbax.contracts.project_plan import RunKey
+from feedbax.contracts.project_resolution import StepTemplate, compose_step, document_write_target
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import NamedAxis, SetValue, RemoveValue, _compose_writes
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
-from feedbax.studio.selection import TrainSelection
+from feedbax.studio.selection import TrainSelection, merged_files
 from feedbax.web.services.project_folder import ProjectFolderInvalid
 
 
@@ -153,19 +158,136 @@ def _exception_file(address, raw, where, identity, writes, *, name_prefix):
     return file_value(address, raw, ("sweep",), sweep | {"exceptions": exceptions | {name: updated}})
 
 
-def scoped_file(project, step_id, scope: RunScope, writes) -> StudioProjectFilePatch:
-    """The file that stores ``writes``, paths in the step's definition, for the runs ``scope`` selects."""
+type DocumentUsers = Callable[[str], Collection[str]]
+"""The steps of the primary variant whose runs read a document."""
+
+
+def _overlap(left: str, right: str) -> bool:
+    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
+
+
+def _step_difference(project: Project, step: str, document: str, local: list[DocumentEdit]) -> StudioProjectFilePatch:
+    authored = project.steps[step]
+    differences = authored.model_dump(mode="json")["document_overrides"]
+    if not local:
+        differences.pop(document, None)
+    else:
+        differences[document] = [edit.model_dump(mode="json") for edit in local]
+    return StudioProjectFilePatch(
+        address=AuthoredFileAddress(kind="step", id=step),
+        patches=[SetProjectValue(
+            op="replace" if "document_overrides" in authored.model_fields_set else "add",
+            path="/document_overrides", value=differences,
+        )],
+    )
+
+
+def document_files(
+    project: Project, document: str, edits: list[DocumentEdit], lit: Collection[str], users: Collection[str],
+) -> list[StudioProjectFilePatch]:
+    """Store ``edits`` of ``document``'s payload for the steps ``lit``: in the document when they are all the steps that
+    read it, otherwise as a difference from it on each of them.
+
+    Stored in the document, an edit takes the place of a lit step's own difference at the same path.
+    """
+    entry = project.documents[document]
+    shared = set(lit) == set(users)
+    files = []
+    if shared:
+        raw = deepcopy(entry.payload)
+        apply_document_edits(raw, edits)
+        files.append(file_value(AuthoredFileAddress(kind="document", id=document),
+                                {"payload": entry.payload}, ("payload",), raw))
+    for step in sorted(lit):
+        previous = document_edit_ops(project.steps[step].document_overrides.get(document, {}))
+        if shared:
+            local = []
+            for edit in previous:
+                affected = [requested for requested in edits if _overlap(edit.path, requested.path)]
+                if not affected:
+                    local.append(edit)
+                elif any(requested.path != edit.path or edit.op != "replace" for requested in affected):
+                    raise ProjectFolderInvalid(f"{step} has an overlapping document difference.")
+        else:
+            local = [*previous, *edits]
+        if local != previous:
+            files.append(_step_difference(project, step, document, local))
+    return files
+
+
+def _document_edit(patch: OverridePatch, document_path: str, payload) -> DocumentEdit:
+    parts = tuple(document_path.split("."))
+    if patch.op == "remove":
+        return RemoveProjectValue(op="remove", path=pointer(parts))
+    parent = payload
+    for part in parts[:-1]:
+        parent = parent.get(part) if isinstance(parent, dict) else None
+    exists = isinstance(parent, dict) and parts[-1] in parent
+    return SetProjectValue(op="replace" if exists else "add", path=pointer(parts), value=patch.value)
+
+
+def _authored_payload(project: Project, step_id: str):
+    authored = project.steps[step_id]
+    if isinstance(authored.base, InlineBase):
+        return authored.base.inline
+    template = compose_step(project, step_id)
+    return template.authored_payload() if isinstance(template, StepTemplate) else None
+
+
+def scoped_file(
+    project, step_id, scope: RunScope, writes, *, lit: Collection[str] = (), users: DocumentUsers | None = None,
+) -> list[StudioProjectFilePatch]:
+    """The files that store ``writes``, paths in the step's definition, for the runs ``scope`` selects.
+
+    A write whose path passes through a document reference changes that document. For the whole step it is stored by
+    :func:`document_files` for the steps ``lit`` (the step alone when none are named) among the document's ``users``.
+    For a sweep value or exception it is applied to the selected runs' copy of the document, and for a variant it is the
+    variant's write of the document.
+    """
     authored = project.steps[step_id]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
     address = AuthoredFileAddress(kind="step", id=step_id)
+    payload = _authored_payload(project, step_id)
+    through: dict[str, list[tuple[OverridePatch, str]]] = {}
+    direct = []
+    for patch in writes:
+        target = document_write_target(payload, patch.path)
+        if target is None:
+            direct.append(patch)
+        else:
+            through.setdefault(target[0], []).append((patch, target[1]))
     if isinstance(scope, EvaluateAttachmentVariant):
         writes = [
             OverridePatch(path=f"steps.{step_id}.base.inline.{patch.path}", op=patch.op, **(
                 {"value": patch.value} if patch.op != "remove" else {}
             ))
-            for patch in writes
+            for patch in direct
+        ] + [
+            patch.model_copy(update={"path": f"documents.{document}.payload.{path}"})
+            for document, patches in through.items() for patch, path in patches
         ]
-        return variant_file(project, scope.variant, writes)
+        return [variant_file(project, scope.variant, writes)]
+    if isinstance(scope, EvaluateAttachmentAxis | SweepValuesScope | EvaluateAttachmentRows):
+        return [_selection_file(address, raw, authored, scope, writes)]
+    files = [_step_file(address, raw, authored, direct)] if direct else []
+    if through:
+        lit = set(lit) or {step_id}
+        if users is None:
+            raise ProjectFolderInvalid("This edit changes a document and needs the steps that read it.")
+        for document, patches in through.items():
+            readers = set(users(document))
+            if step_id not in lit or not lit <= readers:
+                raise ProjectFolderInvalid("The lit steps no longer match this document.")
+            payload = project.documents[document].payload
+            if lit != readers:
+                payload = deepcopy(payload)
+                apply_document_edits(payload, authored.document_overrides.get(document, {}))
+            edits = [_document_edit(patch, path, payload) for patch, path in patches]
+            files.extend(document_files(project, document, edits, lit, readers))
+    return merged_files(files)
+
+
+def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFilePatch:
     if isinstance(scope, EvaluateAttachmentAxis):
         axis = authored.sweep.axes.get(scope.axis) if authored.sweep else None
         if not isinstance(axis, NamedAxis) or axis.values.get(scope.value) is None:
@@ -173,8 +295,10 @@ def scoped_file(project, step_id, scope: RunScope, writes) -> StudioProjectFileP
         return sweep_value_file(address, raw, scope.axis, scope.value, writes)
     if isinstance(scope, SweepValuesScope):
         return values_exception_file(address, raw, scope.axes, writes)
-    if isinstance(scope, EvaluateAttachmentRows):
-        return row_exception_file(address, raw, scope.rows, writes, name_prefix="trial-rows-")
+    return row_exception_file(address, raw, scope.rows, writes, name_prefix="trial-rows-")
+
+
+def _step_file(address, raw, authored, writes) -> StudioProjectFilePatch:
     if isinstance(authored.base, InlineBase) and not authored.deltas:
         updated = apply_override_patches(authored.base.inline, writes)
         return file_value(address, raw, ("base", "inline"), updated)
@@ -185,15 +309,23 @@ def scoped_file(project, step_id, scope: RunScope, writes) -> StudioProjectFileP
     return file_value(address, raw, ("deltas",), [*raw.get("deltas", []), layer.model_dump(mode="json", exclude_unset=True)])
 
 
-def train_selection(folders, project_id, revision, project, step_id, run, rows=(), axes=None) -> TrainSelection:
+def train_selection(
+    folders, project_id, revision, project, step_id, run, rows=(), axes=None, lit_steps=(),
+) -> TrainSelection:
     """The runs a Train edit names, read from the plan of ``revision``, and the write that stores an edit for them.
 
-    Without rows the selection is every run of the step in the named run's variant.
+    Without rows the selection is every run of the step in the named run's variant. ``lit_steps`` are the steps an
+    edit of a document the step reads reaches; none is the step alone.
     """
+    def users(document: str) -> frozenset[str]:
+        plan = folders.read_plan(project_id, revision=revision).plan
+        return plan.document_users(plan.variants[0], document)
+
+    store = partial(scoped_file, project, step_id, lit=tuple(lit_steps), users=users)
     if run is None:
         if rows or axes:
             raise ProjectFolderInvalid("Rows were given without the run they belong to.")
-        return TrainSelection((), None, None, False, partial(scoped_file, project, step_id, EvaluateAttachmentStep(kind="step")))
+        return TrainSelection((), None, None, False, partial(store, EvaluateAttachmentStep(kind="step")))
     key = RunKey(run.variant, run.step, run.row)
     if key.step != step_id:
         raise ProjectFolderInvalid(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}.")
@@ -212,5 +344,5 @@ def train_selection(folders, project_id, revision, project, step_id, run, rows=(
         payloads, next((row for row in plan.rows if row.key == key), None),
         named.payload if isinstance(scope, SweepValuesScope | EvaluateAttachmentAxis | EvaluateAttachmentRows)
         and named is not None else None, scoped,
-        partial(scoped_file, project, step_id, scope),
+        partial(store, scope),
     )
