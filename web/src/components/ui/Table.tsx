@@ -1,6 +1,9 @@
 import clsx from 'clsx';
 import { forwardRef, type HTMLAttributes, type TdHTMLAttributes, type ThHTMLAttributes } from 'react';
 
+/** A cell centres its content between the row's lines: inline content sits in no line box, so no strut lowers it. */
+const centred = 'leading-[0] [&>*]:leading-normal';
+
 export function Table({ className, ...props }: HTMLAttributes<HTMLTableElement>) {
   return <table className={clsx('w-full border-separate border-spacing-0 text-shell-foreground', className)} {...props} />;
 }
@@ -10,6 +13,7 @@ export function TableHeaderCell({ className, ...props }: ThHTMLAttributes<HTMLTa
     <th
       className={clsx(
         'sticky top-0 h-row whitespace-nowrap border-b border-shell-divider bg-shell-chrome px-row-inline text-left text-sm font-medium text-shell-muted',
+        centred,
         className,
       )}
       {...props}
@@ -42,7 +46,7 @@ export const TableRow = forwardRef<HTMLTableRowElement, TableRowProps>(function 
   );
 });
 
-const cell = 'h-row truncate border-b border-shell-divider px-row-inline';
+const cell = clsx('h-row truncate border-b border-shell-divider px-row-inline', centred);
 
 export function TableCell({ className, ...props }: TdHTMLAttributes<HTMLTableCellElement>) {
   return <td className={clsx(cell, className)} {...props} />;
