@@ -386,7 +386,7 @@ export function ProjectWindow({
             })} />
         </div>
         <div className="shell-frame__cell studio-window-bar__project" data-separated="">
-          <h1 className="min-w-0 truncate text-sm font-semibold">{projectName}</h1>
+          <h1 className="min-w-0 truncate text-base font-normal">{projectName}</h1>
           {saveStatus}
           {variant}
         </div>
