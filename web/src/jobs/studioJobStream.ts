@@ -227,7 +227,8 @@ class JobStreamHub {
     }, gatherMs);
   }
 
-  private hide() {
+  /** Stops taking part, handing the stream to another window if this one holds it; as when the page is hidden. */
+  hide() {
     this.shown = false;
     if (this.holding) {
       this.holding = false;
@@ -244,7 +245,8 @@ class JobStreamHub {
     }
   }
 
-  private show() {
+  /** Takes part again after `hide`. */
+  show() {
     if (this.shown) return;
     this.shown = true;
     this.channel.postMessage({ type: 'topics', window: this.id, topics: this.topics() } satisfies Broadcast);
@@ -342,6 +344,13 @@ class JobStreamHub {
 }
 
 let hub: JobStreamHub | undefined;
+
+/**
+ * Hands the stream on before a native window closes: a closed window's page is not unloaded, so it would otherwise keep
+ * the lock. `rejoin` is for a close that did not happen.
+ */
+export const leaveJobStream = () => hub?.hide();
+export const rejoinJobStream = () => hub?.show();
 
 /** Opens a subscriber's port to the window's job stream. */
 export function openJobPort(): StudioJobPort {
