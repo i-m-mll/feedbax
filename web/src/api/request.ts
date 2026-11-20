@@ -96,6 +96,11 @@ export function isServiceFailure(error: unknown): error is ApiRequestError {
   return error instanceof ApiRequestError && (error.kind === 'network' || (error.status ?? 0) >= 500);
 }
 
+/** The service answered and refused the request for a reason of its own; the reason belongs on what was asked. */
+export function isRefusal(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.kind === 'http' && !isServiceFailure(error) && !isHttpConflict(error);
+}
+
 export function isHttpConflict(error: unknown): error is ApiRequestError {
   return error instanceof ApiRequestError && error.kind === 'http' && error.status === 409;
 }

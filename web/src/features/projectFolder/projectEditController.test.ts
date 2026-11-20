@@ -485,6 +485,18 @@ it('checks a structural edit guard against outside dependencies on undo and Keep
   pending.editor.dispose();
 });
 
+it('returns a refused save to its gesture and keeps no project error', async () => {
+  const { editor, write } = fixture();
+  write.mockRejectedValueOnce(new ApiRequestError('http', '/api/projects/reach', 'Value 2 is out of range.', { status: 422 }));
+  editor.edit(model, 'Refused edit', [value(2)]);
+  await expect(editor.flush()).rejects.toMatchObject({ status: 422 });
+  const snapshot = editor.getSnapshot();
+  expect(snapshot.error).toBeNull();
+  expect(snapshot.pending).toBe(0);
+  expect(snapshot.draft.documents?.model.payload).toEqual({ value: 1 });
+  editor.dispose();
+});
+
 it('retries a lost connection after a fresh read and flushes edits arriving during a write', async () => {
   const { editor, current, write, external } = fixture();
   write.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach', 'Offline'));
