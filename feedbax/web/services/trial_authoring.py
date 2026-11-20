@@ -451,13 +451,14 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         field, _ = _changed_value(
             documents, definition, change.document if isinstance(change, StudioTrialDocumentReset) else change.kind,
         )
-        path = f"payload.trial_documents.{field}"
-        if not definition.document_pointers.get(path):
-            document = definition.document_ids.get(path)
+        document = _whole_document(definition, f"payload.trial_documents.{field}")
     if isinstance(change, StudioTrialDocumentReset):
-        if document is None:
+        restored = document if step.kind == "train" else (
+            _whole_document(definition, _evaluation_task_path(definition)) if change.document == "task" else None
+        )
+        if restored is None:
             raise ProjectFolderInvalid("Reset needs a value the step reads from a document.")
-        change = _reset_edit(project, document, change)
+        change = _reset_edit(project, restored, change)
 
     variant = None if key.variant == plan.variants[0] else key.variant
 
@@ -533,6 +534,39 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     )
 
 
+def _whole_document(definition, path: str) -> str | None:
+    """The document the step reads whole at ``path``, its payload."""
+    return None if definition.document_pointers.get(path) else definition.document_ids.get(path)
+
+
+def _changed(project, document: str | None) -> list[str]:
+    """The pointers, at every depth, whose value in ``document`` differs from its base's, when it has a base.
+
+    A list is compared item by item, as the edits that address its items do, though a difference stores it whole.
+    """
+    entry = project.documents.get(document) if document is not None else None
+    if not isinstance(entry, BasedDocument):
+        return []
+    composed = [compose_document(project.documents.get, name) for name in (entry.base.document, document)]
+    if any(isinstance(item, ProjectDiagnostic) for item in composed):
+        return []
+    return sorted(set(_differing(composed[0].payload, composed[1].payload)) - {""})
+
+
+def _differing(before, after, at: str = ""):
+    if before == after:
+        return
+    yield at
+    if isinstance(after, dict):
+        for key, item in after.items():
+            inherited = before.get(key, _ABSENT) if isinstance(before, dict) else _ABSENT
+            yield from _differing(inherited, item, f"{at}/{str(key).replace('~', '~0').replace('/', '~1')}")
+    elif isinstance(after, list):
+        for index, item in enumerate(after):
+            inherited = before[index] if isinstance(before, list) and index < len(before) else _ABSENT
+            yield from _differing(inherited, item, f"{at}/{index}")
+
+
 def _family(project, document) -> set[str]:
     """``document`` and the documents based on it, at any depth."""
     found, pending = set(), [document]
@@ -556,7 +590,12 @@ def _reset_edit(project, document, change: StudioTrialDocumentReset) -> StudioTr
     for path in change.paths:
         value = base.payload
         for part in json_pointer_parts(path):
-            value = value.get(part, _ABSENT) if isinstance(value, dict) else _ABSENT
+            if isinstance(value, dict):
+                value = value.get(part, _ABSENT)
+            elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                value = value[int(part)]
+            else:
+                value = _ABSENT
         edits.append(RemoveProjectValue(op="remove", path=path) if value is _ABSENT
                      else SetProjectValue(op="replace", path=path, value=value))
     return StudioTrialDocumentEdit(kind=change.document, edits=edits)
@@ -774,6 +813,10 @@ def trial_authoring(
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=definition.document_ids.get("payload.trial_documents.objective"),
         task=task, objective=documents.objective if step.kind == "train" else None,
+        task_changed=_changed(snapshot.project, _whole_document(definition, task_path) if task_path else None),
+        objective_changed=_changed(snapshot.project, _whole_document(
+            definition, "payload.trial_documents.objective",
+        )) if step.kind == "train" else [],
         task_source=task_source, task_field_sources=task_field_sources,
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],

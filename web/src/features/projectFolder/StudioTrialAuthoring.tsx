@@ -8,14 +8,14 @@ import { Button } from '@/components/ui/Button';
 import { Inspector } from '@/components/ui/Inspector';
 import { MenuItem } from '@/components/ui/Menu';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
-import type { FieldModel } from '@/components/values/fieldModel';
+import type { ChangeMark, FieldModel } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { Select } from '@/components/ui/Select';
 import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { SettingsForm } from '@/components/values/SettingsForm';
-import { ValueField } from '@/components/values/ValueField';
+import { Origin, ValueField } from '@/components/values/ValueField';
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
 import { fromFieldView } from '@/components/values/adapters/fieldView';
@@ -37,6 +37,16 @@ const has = (record: object, key: string) => Object.prototype.hasOwnProperty.cal
 
 function write(path: string, value: JsonValue, present: boolean): ProjectValueEdit {
   return { op: present ? 'replace' : 'add', path, value };
+}
+
+/**
+ * The changed mark of the value at `path` in the step's Task or Objective document, when it differs from the
+ * document's base; its Reset gives it the base's value.
+ */
+function changedAt(view: StudioTrialAuthoring, document: 'task' | 'objective', path: string, text: string,
+  commit?: Commit): ChangeMark | undefined {
+  if (!(document === 'task' ? view.task_changed : view.objective_changed)?.includes(path)) return undefined;
+  return { text, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document, paths: [path] })) };
 }
 
 export function useTrialAuthoring(
@@ -84,10 +94,13 @@ export function useTrialAuthoring(
   return { view: query.data, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
-export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; commit?: Commit }) {
+/** `changed` is the text of the changed mark: Changed, or in an evaluation the step that changes the value. */
+export function TrialTaskForm({ view, commit, changed }: { view: StudioTrialAuthoring; commit?: Commit; changed: string }) {
   const [error, setError] = useState<string>();
   const catalog = useAuthoringCatalog();
   const typeLabel = useId();
+  const typeOrigin = useId();
+  const typeChange = changedAt(view, 'task', authoredPointer(['type']), changed, commit);
   const task = 'type' in view.task ? view.task : undefined;
   const params = task?.params ?? {};
   const type = view.task_types.find((item) => item.type === task?.type);
@@ -97,8 +110,10 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
   return <div className="grid max-w-2xl gap-4 text-sm">
     {!task && source}
     {task && <section className="grid gap-1" aria-label={studioName('parameters')}>
-      <FieldRow label={studioName('task')} labelId={typeLabel}>
-        <CatalogPicker aria-labelledby={typeLabel} className="w-full" disabled={!commit} value={task.type}
+      <FieldRow label={studioName('task')} labelId={typeLabel} below={typeChange && <Origin id={typeOrigin} text={typeChange.text}
+        reset={typeChange.reset && (() => { void typeChange.reset!().then(setError); })} />}>
+        <CatalogPicker aria-labelledby={typeLabel} aria-describedby={typeChange ? typeOrigin : undefined} className="w-full"
+          disabled={!commit} value={task.type}
           entries={view.task_types.map((item) => ({ key: item.type, label: item.label, package: packages.get(item.type) }))}
           onChoose={async (key) => setError(await edit(studioName('task'), [
             write(authoredPointer(['type']), key, true), write(authoredPointer(['params']), {}, has(task, 'params')),
@@ -109,6 +124,7 @@ export function TrialTaskForm({ view, commit }: { view: StudioTrialAuthoring; co
           const origin = view.task_field_sources?.[key] ?? view.task_source;
           return origin ? studioEvaluateValueSource(origin) : undefined;
         }}
+        changed={(path) => changedAt(view, 'task', authoredPointer(['params', ...path]), changed, commit)}
         write={commit && (async (path, value) => {
           const [key, ...rest] = path;
           const property = type.parameter_schema.properties;
@@ -187,6 +203,7 @@ const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', wind
 
 function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: number, commit?: Commit): Record<TermField, FieldModel> {
   const path = '/terms/' + index;
+  const changed = (field: keyof ObjectiveTerm) => changedAt(view, 'objective', path + '/' + field, studioName('changed'), commit);
   const set = (field: keyof ObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
     studioAccessibleName('set', name), { kind: 'objective', edits: [write(path + '/' + field, value, has(term, field))] }));
   const expression = (field: 'measure' | 'weight'): FieldModel => {
@@ -199,7 +216,7 @@ function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: numb
       label, text: projection.text ?? '',
       site: { ...projection.projection, kinds: projection.projection.kinds.filter((kind) => kind !== 'sweep') },
     }, {
-      id: term.id + field, kind,
+      id: term.id + field, kind, changed: changed(field),
       commit: commit && ((edit) => edit.kind === 'text'
         ? commit('Set ' + label, { kind: 'expression', term: term.id, field, text: edit.text })
         : Promise.resolve(undefined)),
@@ -208,11 +225,11 @@ function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: numb
   const epochs = term.epochs ?? [];
   return {
     name: rawField({ id: term.id + 'name', label: studioName('name'), type: { kind: 'string' },
-      value: term.name ?? '', change: set('name', studioName('name')) }),
+      value: term.name ?? '', change: set('name', studioName('name')), changed: changed('name') }),
     enabled: rawField({ id: term.id + 'enabled', label: studioName('enabled'), type: { kind: 'boolean' },
-      value: term.enabled ?? true, change: set('enabled', studioName('enabled')) }),
+      value: term.enabled ?? true, change: set('enabled', studioName('enabled')), changed: changed('enabled') }),
     measure: expression('measure'),
-    window: rawField({ id: term.id + 'window', label: studioName('window'),
+    window: rawField({ id: term.id + 'window', label: studioName('window'), changed: changed('epochs'),
       value: epochs.length === 1 ? epochs[0] : epochs.length ? epochs.join(', ') : '',
       type: { kind: 'choice', options: [
         { value: '', label: studioName('wholeTrial') },
@@ -223,7 +240,7 @@ function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: numb
         : commit('Set Window', { kind: 'objective', edits: [write(path + '/epochs', epoch ? [epoch] : [], has(term, 'epochs'))] })) }),
     weight: expression('weight'),
     reduction: rawField({ id: term.id + 'reduction', label: studioName('reduction'),
-      value: term.reduction ?? 'mean', change: set('reduction', humanizeLabel('reduction')), type: { kind: 'choice', options:
+      value: term.reduction ?? 'mean', change: set('reduction', humanizeLabel('reduction')), changed: changed('reduction'), type: { kind: 'choice', options:
         ([['mean', 'mean'], ['sum', 'sum'], ['last', 'last'], ['max', 'maximum']] as const)
           .map(([value, name]) => ({ value, label: studioName(name) })) } }),
   };

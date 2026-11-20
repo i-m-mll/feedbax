@@ -47,6 +47,8 @@ export interface NamedDocumentScope extends MapDocumentScope {
 
 export interface ManagedProjectDetail {
   readonly documentId?: string;
+  /** Why the service refuses the view's read of its document, shown on the document's picker. */
+  readonly refusal?: string;
   readonly body: ReactNode;
   readonly drawer?: ReactNode;
   readonly inspector?: ReactNode;

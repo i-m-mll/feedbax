@@ -4,10 +4,11 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type M
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
 import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
-import { ApiRequestError, apiErrorMessage } from '@/api/request';
+import { ApiRequestError, apiErrorMessage, isRefusal } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
-import { baseChain } from '../documentPayload';
+import { baseChain, documentPayload } from '../documentPayload';
+import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Button, IconButton } from '@/components/ui/Button';
@@ -28,7 +29,7 @@ import type {
   ComponentDefinition, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, JsonValue,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
-import { ModelAddressSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
+import { ModelAddressSchema, ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import { attachmentFields, componentFields, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
@@ -214,7 +215,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], readBody) ? previous : undefined,
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
-  const shownModel = evaluate ? effectiveModel : model?.value;
+  /** Why the service refuses an evaluation's read: it lands on the Model picker, and the view shows the read document. */
+  const refused = evaluate && isRefusal(attachments.error) ? apiErrorMessage(attachments.error) : undefined;
+  const shownModel = evaluate && !refused ? effectiveModel : model?.value;
   const resolved = useMemo(() => shownModel && modelPath(shownModel, path), [shownModel, path]);
   const currentPath = useMemo(() => resolved?.entries.map(({ id }) => id) ?? emptyPath, [resolved]);
   const graph = useMemo(() => currentGraph(currentPath), [currentPath]);
@@ -641,17 +644,46 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
   }
 
-  const effectiveInterior = effectiveModel ? modelPath(effectiveModel, currentPath).owner.interior : interior;
-  const effective = new Map<string, readonly Attachment[]>();
-  for (const [id, wire] of Object.entries(effectiveInterior?.wires ?? {})) {
-    effective.set(addressKey(at(graph, { kind: 'wire', id })), wire.attachments ?? []);
+  /** The attachment chains of the shown graph's wires and ports, as `source` holds them, by owner. */
+  function chains(source: typeof interior) {
+    const found = new Map<string, readonly Attachment[]>();
+    for (const [id, wire] of Object.entries(source?.wires ?? {})) {
+      found.set(addressKey(at(graph, { kind: 'wire', id })), wire.attachments ?? []);
+    }
+    for (const ports of portMap.values()) for (const port of ports) {
+      if (port.direction === 'physical' || port.taskSignal || port.growing) continue;
+      const address = at(graph, { kind: 'port', end: port.end });
+      const end = port.end;
+      const store = end.owner === 'component' ? source?.components?.[end.component]?.attachments : source?.attachments;
+      found.set(addressKey(address), (port.direction === 'output' ? store?.sources : store?.sinks)?.[end.port] ?? []);
+    }
+    return found;
   }
-  for (const ports of portMap.values()) for (const port of ports) {
-    if (port.direction === 'physical' || port.taskSignal || port.growing) continue;
-    const address = at(graph, { kind: 'port', end: port.end });
-    const end = port.end;
-    const store = end.owner === 'component' ? effectiveInterior?.components?.[end.component]?.attachments : effectiveInterior?.attachments;
-    effective.set(addressKey(address), (port.direction === 'output' ? store?.sources : store?.sinks)?.[end.port] ?? []);
+  const effectiveInterior = effectiveModel ? modelPath(effectiveModel, currentPath).owner.interior : interior;
+  const effective = chains(effectiveInterior);
+  /**
+   * The document the shown one's differences are from: its base, or in an evaluation the nearest document the read one
+   * shares with the subject's.
+   */
+  const shownDocument = model && saved.project.documents?.[model.id];
+  const comparedName = evaluate ? attachments.data?.changed_from ?? undefined
+    : shownDocument && 'base' in shownDocument ? shownDocument.base.document : undefined;
+  const compared = (() => {
+    const parsed = comparedName && ModelDocumentSchema.safeParse(documentPayload(saved.project.documents, saved.composed, comparedName));
+    if (!parsed || !parsed.success) return undefined;
+    const reached = modelPath(parsed.data, currentPath);
+    return reached.entries.length === currentPath.length ? reached.owner.interior : null;
+  })();
+  const ownChains = compared !== undefined ? chains(model ? modelPath(model.value, currentPath).owner.interior : undefined) : undefined;
+  const comparedChains = compared ? chains(compared) : undefined;
+  /** The attachment at `address` is a difference of the shown document: absent from, or other than, the one it is from. */
+  function fromDifference(address: ModelAddress) {
+    const element = address.element;
+    if (!ownChains || element.kind !== 'attachment') return false;
+    const owner = addressKey(at(address, element.parent));
+    const item = ownChains.get(owner)?.find(({ id }) => id === element.id);
+    const was = comparedChains?.get(owner)?.find(({ id }) => id === element.id);
+    return !!item && (!was || canonicalJsonV2(was) !== canonicalJsonV2(item));
   }
 
   function move(nodes: ModelCard[]) {
@@ -785,7 +817,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const chain = ownerAddress && effective.get(addressKey(ownerAddress));
   const authored = attachments.data?.records ?? [];
   function isAuthored(address: ModelAddress) {
-    return authored.some((record) => addressKey(record.op === 'add' ? attachmentAddress(record.owner, record.attachment.id) : record.address) === addressKey(address));
+    return fromDifference(address) || authored.some((record) => addressKey(record.op === 'add' ? attachmentAddress(record.owner, record.attachment.id) : record.address) === addressKey(address));
   }
   async function updateAttachment(address: ModelAddress, item: Attachment) {
     const difference = { op: 'change', address, attachment: item } as const;
@@ -1103,6 +1135,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
 
   return {
     documentId: model?.id,
+    refusal: refused,
     path: model && !!resolved?.entries.length && <nav className="flex min-w-0 items-center gap-1" aria-label={studioName('modelPath')}>
       <IconButton label={studioName('modelRoot')} icon={<House />} onClick={() => go([])} />
       {resolved?.entries.map(({ id, name }, index) => <Button key={id} variant="ghost"
@@ -1118,7 +1151,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       {(issue || problem) && <p className="px-2 text-sm" role="alert">
         {issue?.reason ?? problem?.reason}
       </p>}
-      {evaluate && <StudioRegion state={studioReadState(
+      {evaluate && !refused && <StudioRegion state={studioReadState(
         'model', attachments.data, attachments.error, () => { void attachments.refetch(); },
       )} />}
       {!evaluate && projection.error && <StudioRegion state={studioReadState(

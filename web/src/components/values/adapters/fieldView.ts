@@ -3,7 +3,7 @@ import type {
   StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import { studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason } from '@/components/activity/studioVocabulary';
-import type { FieldCommit, FieldModel } from '../fieldModel';
+import { withReset, type ChangeMark, type FieldModel } from '../fieldModel';
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
@@ -29,8 +29,8 @@ export interface FieldViewOptions {
   planSources?: readonly StudioPlanReviewSource[];
   exceptions?: ExceptionMentions;
   source?: StudioEvaluateValueSource;
-  /** The changed mark, when the value is a difference of the shown document; Reset goes to `reset`. */
-  changed?: { readonly text: string; readonly reset?: () => Promise<string | undefined> };
+  /** The changed mark, when the value is a difference of the shown document. */
+  changed?: ChangeMark;
 }
 
 function origin({ planSources, exceptions, source, changed }: FieldViewOptions) {
@@ -53,9 +53,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const { rowSelection = false, multipleRows = false } = options;
   const project = options.commit;
   const reset = options.changed?.reset;
-  const commit: FieldCommit | undefined = project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member'
-    ? Promise.resolve(undefined) : edit.kind === 'reset' ? reset?.() ?? Promise.resolve(undefined)
-    : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit));
+  const commit = withReset(project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member' || edit.kind === 'reset'
+    ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit)), options.changed);
   const readOnly = !commit;
   const rule = readOnly || !field.can_change_axis ? undefined : commit;
   const kind = sweep ? 'sweep' : options.kind ?? 'value';
