@@ -1653,6 +1653,50 @@ def test_a_continuation_s_edit_of_its_training_document_is_its_own(tmp_path):
         assert _changed(child, train.requests("train-2")) == child.keys()
 
 
+def _treated_reads(train):
+    return {key.step: definition.document_ids["payload.training_config"]
+            for key, definition in train.plan().selected_definitions.items() if key.variant == "treated"}
+
+
+def _ids(train):
+    return {run.key: run.request_id for run in train.plan().runs}
+
+
+def test_a_continuation_s_edit_in_a_variant_is_a_layer_its_row_appends(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=1, variants=("control", "treated"))
+    with client:
+        train = _Training(client, root)
+        files = {path: path.read_bytes() for path in (root / "documents" / "training.json", *(root / "steps").iterdir())}
+        before = _ids(train)
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"}, variant="treated")
+        assert {path: path.read_bytes() for path in files} == files
+        assert _differences(train, "training-2") == {_BATCHES: 4}
+        assert _treated_reads(train) == {"train": "training", "other": "training", "train-2": "training-2"}
+        assert _changed(before, _ids(train)) == {key for key in before if (key.variant, key.step) == ("treated", "train-2")}
+        after = _ids(train)
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "6"}, variant="treated")
+        assert _select(train.plan().selected_definitions[RunKey("treated", "train-2", "default")].payload, _BATCHES) == 6
+        assert _changed(after, _ids(train)) == {key for key in after if (key.variant, key.step) == ("treated", "train-2")}
+
+
+def test_a_variant_edit_back_to_the_default_value_drops_the_row_s_write(tmp_path):
+    root, client = _shared_training(tmp_path, variants=("control", "treated"))
+    with client:
+        train = _Training(client, root)
+        default = _ids(train)
+        value = _select(train.plan().selected_definitions[RunKey("control", "train", "default")].payload, _BATCHES)
+        write = {"documents.training.payload.training_config.n_batches": {"op": "replace", "value": value + 3}}
+        saved = client.patch(_URL, json={"revision": train.revision, "files": [{
+            "address": {"kind": "variant", "id": "treated"}, "patches": [{"op": "add", "path": "/patches", "value": write}],
+        }]})
+        assert saved.status_code == 200, saved.text
+        assert _changed(default, _ids(train))
+        train.number("train", _BATCHES, {"kind": "text", "text": str(value)}, chosen=("train", "other"), variant="treated")
+        assert not load_text_project(root).project.sweep.rows["treated"].patches
+        assert "training-2" not in train.documents()
+        assert _ids(train) == default
+
+
 def test_a_sweep_on_a_training_document_step_is_the_step_s_own(tmp_path):
     root, client = _shared_training(tmp_path)
     with client:
