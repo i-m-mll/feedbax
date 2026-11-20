@@ -1,4 +1,4 @@
-import { ApiRequestError, isHttpConflict } from '@/api/request';
+import { isHttpConflict, isServiceFailure } from '@/api/request';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
@@ -290,10 +290,6 @@ function versionsMatch(a: StudioProjectRevision, b: StudioProjectRevision) {
   return a.revision === b.revision && a.presentation_revision === b.presentation_revision;
 }
 
-function canRetryOnReconnect(error: unknown) {
-  return error instanceof ApiRequestError && (error.kind === 'network' || (error.status ?? 0) >= 500);
-}
-
 export function containsCreatedFile(project: AuthoredProject, file: NamedFileCreation) {
   const collection = file.kind === 'document' ? project.documents : project.steps;
   if (!collection || !Object.prototype.hasOwnProperty.call(collection, file.id)) return false;
@@ -475,7 +471,7 @@ export class ProjectEditController {
       try {
         return await operation(this.saved);
       } catch (error) {
-        if (isHttpConflict(error) || canRetryOnReconnect(error)) await this.refresh().catch(() => undefined);
+        if (isHttpConflict(error) || isServiceFailure(error)) await this.refresh().catch(() => undefined);
         throw error;
       }
     });
@@ -574,7 +570,7 @@ export class ProjectEditController {
       }, this.signal);
       latest = { ...this.document, snapshot };
     } catch (error) {
-      if (!canRetryOnReconnect(error)) throw error;
+      if (!isServiceFailure(error)) throw error;
       const observed = await this.read().catch(() => undefined);
       if (!observed || (!presentation && observed.snapshot.presentation_revision !== before.presentation_revision) ||
           !replayObserved(before, targets, observed.snapshot)) throw error;
@@ -622,7 +618,7 @@ export class ProjectEditController {
         result = await write();
       } catch (error) {
         this.abort.signal.throwIfAborted();
-        const ambiguous = canRetryOnReconnect(error);
+        const ambiguous = isServiceFailure(error);
         if (ambiguous || isHttpConflict(error)) {
           const latest = await this.refresh(ambiguous ? created : undefined).catch(() => undefined);
           if (ambiguous && latest && achieved(latest, before)) {
@@ -654,7 +650,7 @@ export class ProjectEditController {
   connected() {
     if (this.abort.signal.aborted) return;
     void this.sequence(async () => {
-      const retry = this.queued.length > 0 && canRetryOnReconnect(this.error);
+      const retry = this.queued.length > 0 && isServiceFailure(this.error);
       await this.refresh();
       if (retry && !this.outside) await this.drain();
     }).catch(() => {});
@@ -901,7 +897,7 @@ export class ProjectEditController {
     try {
       return await this.transport.write(this.saved.project_id, body, this.abort.signal);
     } catch (error) {
-      if (!exact || !canRetryOnReconnect(error)) throw error;
+      if (!exact || !isServiceFailure(error)) throw error;
       const observed = await this.read().catch(() => undefined);
       if (!observed) throw error;
       const files = 'files' in body ? body.files : [body];

@@ -34,12 +34,12 @@ it('moves an Evaluate subject between a checkpoint and an initial Model and back
   const evaluate: Step = {
     kind: 'evaluate',
     base: { inline: { evaluation_type: 'feedbax.rollout', params: { trial_set: { kind: 'every_condition' } } } },
-    inputs: { subject: { step: 'train', checkpoint: 'last' } },
     sweep: { axes: { subject: { input: 'subject' } } },
+    inputs: { subject: { step: 'train', checkpoint: 'last' } },
   };
   const apply = (step: Step, next: EvaluateSubject) => {
     const project = { steps: { evaluate: step } } as unknown as ProjectEditContent;
-    return (applyAuthoredEdits(project, { kind: 'step', id: 'evaluate' }, evaluateSubjectEdits(step, next)).project
+    return (applyAuthoredEdits(project, { kind: 'step', id: 'evaluate' }, evaluateSubjectEdits(step, next), true).project
       .steps as Record<string, Step>).evaluate;
   };
   const initial = apply(evaluate, { kind: 'document', document: 'arm', task: 'reach', objective: 'loss' });
