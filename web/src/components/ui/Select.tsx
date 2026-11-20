@@ -11,6 +11,8 @@ export interface Option<Value extends string> {
   glyph?: ReactNode;
   /** Trailing text in the list, such as a declaration's package. */
   detail?: string;
+  /** A mark after the label, in the list and in the trigger, such as a machine's state. */
+  mark?: ReactNode;
   disabled?: boolean;
 }
 
@@ -32,6 +34,7 @@ export interface SelectProps<Value extends string> {
 export function Select<Value extends string>(
   { items, value, onValueChange, placeholder, leading, disabled, id, className, ...aria }: SelectProps<Value>,
 ) {
+  const selectedMark = items.find((item) => item.value === value)?.mark;
   return (
     <BaseSelect.Root
       items={items}
@@ -51,6 +54,7 @@ export function Select<Value extends string>(
       >
         {leading ? <span aria-hidden="true" className={leadingSlot}>{leading}</span> : null}
         <BaseSelect.Value className="min-w-0 flex-1 truncate text-left data-[placeholder]:text-shell-muted" placeholder={placeholder} />
+        {selectedMark}
         <BaseSelect.Icon className="flex text-shell-muted"><ChevronsUpDown /></BaseSelect.Icon>
       </BaseSelect.Trigger>
       <BaseSelect.Portal container={usePopupLayer()}>
@@ -65,6 +69,7 @@ export function Select<Value extends string>(
                   </span>
                   {item.glyph}
                   <BaseSelect.ItemText>{item.label}</BaseSelect.ItemText>
+                  {item.mark}
                 </BaseSelect.Item>
               ))}
             </BaseSelect.List>

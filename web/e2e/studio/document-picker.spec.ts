@@ -1,10 +1,10 @@
 import { expect, test } from './fixtures/studio';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type {
   StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { chooseStepKind } from './fixtures/studioKeyboard';
+import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -248,10 +248,7 @@ test('New in the Document header gives an empty report that cannot run', async (
   await mapStep(page, 'analyze').click();
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
   await page.getByRole('tabpanel', { name: 'Figures', exact: true }).getByRole('button', { name: 'profile', exact: true }).click();
-  await page.keyboard.press('Meta+K');
-  const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
-  await palette.getByRole('combobox').fill('New Step');
-  await palette.getByRole('option', { name: 'New Step', exact: true }).press('Enter');
+  await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('listitem')).toHaveCount(1);
 
@@ -269,4 +266,90 @@ test('New in the Document header gives an empty report that cannot run', async (
   await expect(document.getByRole('button', { name: 'Add Text', exact: true })).toBeEnabled();
   await expect(document.getByRole('status')).toContainText("Can't run");
   await expect(document.getByText('The report has no blocks.')).toBeVisible();
+});
+
+test('the Training view edits the training document for the steps it lights, and the Inspector for its step', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
+  const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
+  const picker = (label: string) => primary.locator('.studio-window-slot__header')
+    .getByRole('button', { name: new RegExp(`^${label} Document `) });
+  const batches = (region: Locator) => region.getByRole('textbox', { name: 'Batches', exact: true });
+  async function saved() {
+    const response = await request.get(projectPath);
+    expect(response.ok()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  }
+  async function requests() {
+    const { revision } = await saved();
+    const response = await request.get(`${projectPath}/train-runs?revision=${revision}`);
+    expect(response.ok(), await response.text()).toBe(true);
+    const { rows } = await response.json() as StudioSavedTrainRuns;
+    return Object.fromEntries(rows.map(({ key, request_id }) => [key.step, request_id]));
+  }
+  /** Commits a Batches value and waits for the plan of the revision it saved. */
+  async function setBatches(region: Locator, value: string) {
+    const before = (await saved()).revision;
+    await batches(region).fill(value);
+    await batches(region).press('Enter');
+    await expect.poll(async () => (await saved()).revision).not.toBe(before);
+    return requests();
+  }
+
+  const keys = ['method', 'settings', 'training_config'] as const;
+  const inline = (snapshot.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
+  const { snapshot: withDocument } = await appendManagedFiles(request, snapshot, [{ kind: 'document', id: 'training', document: {
+    schema: 'feedbax.spec.training_document', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
+  } }]);
+  const shared = await request.patch(projectPath, { data: { revision: withDocument.revision, files:
+    ['train', 'sibling'].map((id) => ({ address: { kind: 'step', id }, patches: keys.map((key) => ({
+      op: 'replace', path: `/base/inline/${key}`, value: { document: 'training', pointer: `/${key}` },
+    })) })),
+  } });
+  expect(shared.ok(), await shared.text()).toBe(true);
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await expect(picker('Training')).toHaveText('training');
+  const document = () => saved().then(({ project }) => project.documents?.training?.payload);
+  const initial = await requests();
+  const edited = await setBatches(primary, '7');
+  expect(edited.train).not.toBe(initial.train);
+  expect(edited.sibling).not.toBe(initial.sibling);
+  expect(await document()).toMatchObject({ training_config: { n_batches: 7 } });
+
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const own = await setBatches(inspector, '8');
+  expect(own.train).not.toBe(edited.train);
+  expect(own.sibling).toBe(edited.sibling);
+  expect(await document()).toMatchObject({ training_config: { n_batches: 7 } });
+  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await expect(batches(primary)).toHaveValue('');
+  await expect(batches(primary)).toHaveAttribute('placeholder', 'Mixed');
+
+  await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
+  await expect(picker('Training')).toHaveText('training1 of 2');
+  const alone = await setBatches(primary, '9');
+  expect(alone.train).not.toBe(own.train);
+  expect(alone.sibling).toBe(own.sibling);
+  expect(await document()).toMatchObject({ training_config: { n_batches: 7 } });
+
+  await page.getByRole('tab', { name: 'Objective', exact: true }).click();
+  const objective = picker('Objective');
+  const name = (await objective.textContent())!;
+  const weight = primary.getByRole('textbox', { name: 'Weight', exact: true }).first();
+  await expect(weight).toBeEditable();
+  await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
+  await expect(objective).toHaveText(`${name}1 of 2`);
+  const before = (await saved()).project.documents?.[name];
+  const revision = (await saved()).revision;
+  await weight.fill('0.5');
+  await weight.press('Enter');
+  await expect.poll(async () => (await saved()).revision).not.toBe(revision);
+  const reached = await requests();
+  expect(reached.train).not.toBe(alone.train);
+  expect(reached.sibling).toBe(alone.sibling);
+  expect((await saved()).project.documents?.[name]).toEqual(before);
 });

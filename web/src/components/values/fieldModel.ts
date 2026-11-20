@@ -1,6 +1,6 @@
 import type {
   FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FunctionInfo, JsonValue, ScopedValue,
-  ValueType,
+  StudioAddClassMember, StudioRemoveClassMember, ValueType,
 } from '@/generated/studioContracts';
 
 /**
@@ -17,8 +17,12 @@ export interface FieldOption {
   readonly label: string;
 }
 
-/** An edit the field asks its source to make. A source answers with a reason when it refuses. */
-export type FieldEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit | { readonly kind: 'set'; readonly value: JsonValue };
+/**
+ * An edit the field asks its source to make. A source answers with a reason when it refuses. A swept class field adds
+ * a member by a class's option value and removes one by its id.
+ */
+export type FieldEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit | StudioAddClassMember | StudioRemoveClassMember |
+  { readonly kind: 'set'; readonly value: JsonValue };
 export type FieldCommit = (edit: FieldEdit) => Promise<string | undefined>;
 
 export interface FieldKindOffer {
@@ -31,6 +35,8 @@ export interface FieldMember {
   readonly id: string;
   readonly text: string;
   readonly selected: boolean;
+  /** A swept class's member: its class's option value. */
+  readonly option?: JsonValue;
 }
 
 export interface FieldMembers {
@@ -65,6 +71,8 @@ export interface FieldModel {
   /** The value set on the selected runs, where it differs from the document's. */
   readonly differs?: string;
   readonly origin?: string;
+  /** Shows the object the origin names, where it names one. */
+  readonly revealOrigin?: () => void;
   readonly reason?: string;
   readonly names: readonly ScopedValue[];
   readonly functions: readonly FunctionInfo[];

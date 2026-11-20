@@ -357,7 +357,7 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         def prepare(label, text, row="default", *, files=False):
             snapshot = client.get(url).json()
-            body = {"revision": snapshot["revision"], "document": "reach-model", "owner": owner, "lit_steps": ["train"],
+            body = {"revision": snapshot["revision"], "document": "reach-model", "owner": owner, "chosen_steps": ["train"],
                     "run": {"variant": "default", "step": "train", "row": row}}
             response = client.post(url + "/model/fields", json=body)
             assert response.status_code == 200, response.text
@@ -473,6 +473,300 @@ def test_a_sweep_with_an_exception_can_still_sweep_the_fields_the_exception_leav
     )
     assert [size for value, size in batch_sizes if value == 0.003] == [8, 8]
     assert all(size != 8 for value, size in batch_sizes if value == 0.001)
+
+
+def _seed_swept_project(tmp_path, name):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    raw["steps"]["train"]["base"]["inline"]["seed"] = 0
+    raw["steps"]["train"]["sweep"] = {"axes": {"seed": {"values": {
+        f"seed-{seed}": {"value": seed, "patches": {"seed": {"value": seed}}} for seed in (1, 2, 3)
+    }}}}
+    _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
+    return f"/api/projects/{name}"
+
+
+class _TrainClient:
+    """A Train step's edits through the Studio endpoints, each saved as it is made."""
+
+    def __init__(self, client, url):
+        self.client, self.url = client, url
+
+    @property
+    def revision(self):
+        return self.client.get(self.url).json()["revision"]
+
+    def plan(self, tmp_path, name):
+        folders = ProjectFolderService(tmp_path)
+        plan = folders.read_plan(name, revision=self.revision).plan
+        keys = tuple(row.key for row in plan.rows)
+        return folders.read_plan(name, revision=self.revision, source_runs=keys).plan
+
+    def requests(self, tmp_path, name):
+        return {run.key: run.request_id for run in self.plan(tmp_path, name).runs}
+
+    def runs(self, tmp_path, name, **coordinates):
+        return [row.key for row in self.plan(tmp_path, name).rows if row.key.step == "train" and all(
+            row.coordinates[axis].value_id == value for axis, value in coordinates.items()
+        )]
+
+    def save(self, response):
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert not body.get("problems") and not body.get("refusal"), body
+        saved = self.client.patch(self.url, json={"revision": self.revision, "files": body["files"]})
+        assert saved.status_code == 200, saved.text
+        return body
+
+    def number(self, field, edit, keys=(), axes=None, *, save=True):
+        response = self.client.post(self.url + "/authoring/train/train/fields", json=self.scope(keys, axes) | {
+            "field": field, "edit": edit,
+        })
+        return self.save(response) if save else response.json()
+
+    def choose(self, field, value, keys=(), axes=None):
+        return self.save(self.client.post(self.url + "/authoring/train/train", json=self.scope(keys, axes) | {
+            "change": {"field": field, "value": value},
+        }))
+
+    def sweep_class(self, field, edit, *, save=True):
+        response = self.client.post(self.url + "/authoring/train/train", json=self.scope() | {
+            "class_sweep": {"field": field, "edit": edit},
+        })
+        return self.save(response) if save else response.json()
+
+    def read(self, keys=(), named=None):
+        return self.client.post(self.url + "/authoring/train/train", json=self.scope(keys, named=named)).json()
+
+    def scope(self, keys=(), axes=None, *, named=None):
+        run = named or (keys[0] if keys else None)
+        return {"revision": self.revision} | ({"run": {
+            "variant": run.variant, "step": run.step, "row": run.row,
+        }, "rows": [key.row for key in keys], "axes": axes or {}} if run else {})
+
+
+def test_an_edit_for_a_sweep_value_is_stored_on_that_value(tmp_path):
+    url = _seed_swept_project(tmp_path, "by-value")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        seed_2 = train.runs(tmp_path, "by-value", seed="seed-2")
+        before = train.requests(tmp_path, "by-value")
+        train.number("/training_config/n_batches", {"kind": "text", "text": "7"}, seed_2, {"seed": ["seed-2"]})
+        after = train.requests(tmp_path, "by-value")
+        assert {key for key in before if before[key] != after[key]} == set(seed_2)
+        step = client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]
+        assert not step["sweep"].get("exceptions")
+
+        train.number("/settings/optimizer/learning_rate/value", {"kind": "to_sweep"})
+        train.number("/settings/optimizer/learning_rate/value", {"kind": "text", "text": "0.001, 0.003"})
+        train.number("/seed", {"kind": "text", "text": "1, 2, 3, 4"})
+        plan = train.plan(tmp_path, "by-value")
+        batches = {
+            (row.coordinates["seed"].value_id, row.coordinates["learning-rate"].value_id):
+                plan.selected_definitions[row.key].payload["training_config"]["n_batches"]
+            for row in plan.rows
+        }
+        assert len(batches) == 8
+        assert {key: count for key, count in batches.items() if count != 2} == {
+            ("seed-2", rate): 7 for rate in ("value", "value-2")
+        }
+
+
+def test_an_edit_for_runs_that_are_not_a_sweep_value_is_an_exception_for_those_runs(tmp_path):
+    url = _seed_swept_project(tmp_path, "by-run")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        picked = train.runs(tmp_path, "by-run")[:2]
+        before = train.requests(tmp_path, "by-run")
+        train.number("/training_config/n_batches", {"kind": "text", "text": "7"}, picked, {"seed": ["seed-1", "seed-2", "seed-3"]})
+        after = train.requests(tmp_path, "by-run")
+        assert {key for key in before if before[key] != after[key]} == set(picked)
+        exceptions = client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]["sweep"]["exceptions"]
+        assert [exception["where"] for exception in exceptions.values()] == [{"rows": sorted(key.row for key in picked)}]
+
+
+def test_a_class_chosen_for_one_run_changes_that_run_and_reads_mixed_for_the_step(tmp_path):
+    url = _seed_swept_project(tmp_path, "one-run")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        train.number("/settings/optimizer/learning_rate/value", {"kind": "text", "text": "0.001, 0.003"})
+        first, *others = train.runs(tmp_path, "one-run")
+        before = train.requests(tmp_path, "one-run")
+        train.choose("/settings/optimizer", "adamw", [first])
+        after = train.requests(tmp_path, "one-run")
+        assert {key for key in before if before[key] != after[key]} == {first}
+        plan = train.plan(tmp_path, "one-run")
+        assert not plan.diagnostics
+        assert plan.selected_definitions[first].payload["settings"]["optimizer"]["type"] == "adamw"
+        assert {plan.selected_definitions[key].payload["settings"]["optimizer"]["type"] for key in others} == {"adam"}
+        assert {"/settings/optimizer/type", "/settings/optimizer/weight_decay"} <= set(train.read(named=first)["mixed"])
+        assert "/settings/optimizer/b1" not in train.read(named=first)["mixed"]
+        assert not train.read([others[0]])["mixed"]
+
+
+def _optimizer_swept_project(tmp_path, name):
+    """Adam with b1 0.8 and every parameter stored, as Studio stores a chosen class, and the learning rate swept."""
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"] |= {
+        "b1": 0.8, "b2": 0.999, "eps": 1e-8, "eps_root": 0.0, "nesterov": False,
+    }
+    _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
+    url = f"/api/projects/{name}"
+    return url
+
+
+def test_an_optimizer_swept_with_its_parameters_crosses_the_learning_rate(tmp_path):
+    url = _optimizer_swept_project(tmp_path, "classes")
+    rate, optimizer = "/settings/optimizer/learning_rate/value", "/settings/optimizer"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        train.number(rate, {"kind": "text", "text": "0.001, 0.003"})
+        train.sweep_class(optimizer, {"kind": "to_sweep"})
+        train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
+
+        plan = train.plan(tmp_path, "classes")
+        assert not plan.diagnostics and all(run.admission_problem is None for run in plan.runs)
+        definitions = {row.key: plan.selected_definitions[row.key].payload["settings"]["optimizer"] for row in plan.rows}
+        assert sorted((row.coordinates["optimizer"].label, row.coordinates["learning-rate"].value) for row in plan.rows) == [
+            ("Adam", 0.001), ("Adam", 0.003), ("SGD", 0.001), ("SGD", 0.003),
+        ]
+        assert {row.label for row in plan.rows} == {
+            f"learning-rate={rate}, optimizer={name}" for rate in (0.001, 0.003) for name in ("Adam", "SGD")
+        }
+        adam = train.runs(tmp_path, "classes", optimizer="adam")
+        assert {definitions[key]["b1"] for key in adam} == {0.8}
+        assert all("b1" not in optimizer_ for key, optimizer_ in definitions.items() if key not in adam)
+
+        whole = train.read(named=adam[0])
+        [field] = [field for field in whole["classes"] if field["id"] == optimizer]
+        assert field["classes"] == ["adam", "sgd"]
+        assert [(member["label"], member["value"]) for member in field["sweep"]["members"]] == [("Adam", "adam"), ("SGD", "sgd")]
+        numbers = {field["id"]: field for field in client.post(
+            url + "/authoring/train/train/fields", json=train.scope(named=adam[0]),
+        ).json()["fields"]}
+        assert "/settings/optimizer/b1" not in numbers and numbers[rate]["sweep"]["id"] == "learning-rate"
+
+        group = {"optimizer": ["adam"]}
+        before = train.requests(tmp_path, "classes")
+        drawn = client.post(url + "/authoring/train/train/fields", json=train.scope(adam, group)).json()["fields"]
+        assert "/settings/optimizer/b1" in {field["id"] for field in drawn}
+        train.number("/settings/optimizer/b1", {"kind": "text", "text": "0.7"}, adam, group)
+        after = train.requests(tmp_path, "classes")
+        assert {key for key in before if before[key] != after[key]} == set(adam)
+
+        train.sweep_class(optimizer, {"kind": "add_member", "key": "rmsprop"})
+        assert len(train.plan(tmp_path, "classes").rows) == 6
+        kept = {request for key, request in train.requests(tmp_path, "classes").items() if key in adam}
+        body = train.sweep_class(optimizer, {"kind": "to_value", "value_id": "adam"})
+        assert body["removed_values"] == {"optimizer": ["sgd", "rmsprop"]}
+        assert set(train.requests(tmp_path, "classes").values()) == kept
+
+
+def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
+    """The owner's case: Adam and SGD, b1 swept over 0.8 and 0.9 for Adam's runs only."""
+    from tests.support.managed_train_fixture import managed_evaluation_step
+
+    raw = _model_project()
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"] |= {
+        "b1": 0.8, "b2": 0.999, "eps": 1e-8, "eps_root": 0.0, "nesterov": False,
+    }
+    raw["steps"]["baseline"]["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    raw["steps"]["picked"] = managed_evaluation_step("train")
+    raw["steps"]["train-2"] = {
+        "kind": "train", "base": {"step": "train"}, "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
+        "deltas": [{"layer_id": "initialize", "patches": [
+            {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+        ]}],
+    }
+    name, optimizer, b1 = "conditional", "/settings/optimizer", "/settings/optimizer/b1"
+    _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
+    url = f"/api/projects/{name}"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        train.sweep_class(optimizer, {"kind": "to_sweep"})
+        train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
+        before = train.requests(tmp_path, name)
+        adam, group = train.runs(tmp_path, name, optimizer="adam"), {"optimizer": ["adam"]}
+
+        def fields(keys, axes=None):
+            body = client.post(url + "/authoring/train/train/fields", json=train.scope(keys, axes)).json()
+            return {field["id"]: field for field in body["fields"]}
+
+        assert fields(adam, group)[b1]["can_sweep"]
+        train.number(b1, {"kind": "to_sweep"}, adam, group)
+        adam = train.runs(tmp_path, name, optimizer="adam")
+        train.number(b1, {"kind": "text", "text": "0.8, 0.9"}, adam, group)
+
+        plan = train.plan(tmp_path, name)
+        runs = [row for row in plan.rows if row.key.step == "train"]
+        axis = next(axis for axis in runs[0].coordinates if axis != "optimizer")
+        coordinate = {row.key: (row.coordinates["optimizer"].label, getattr(row.coordinates.get(axis), "value", None))
+                      for row in runs}
+        assert sorted(coordinate.values(), key=str) == [("Adam", 0.8), ("Adam", 0.9), ("SGD", None)]
+        assert {row.label for row in runs} == {
+            f"optimizer=Adam, {axis}=0.8", f"optimizer=Adam, {axis}=0.9", "optimizer=SGD",
+        }
+        (sgd,) = (key for key, value in coordinate.items() if value[0] == "SGD")
+        assert train.requests(tmp_path, name)[sgd] == before[sgd]
+        assert {key: plan.selected_definitions[key].payload["settings"]["optimizer"].get("b1") for key in coordinate} == {
+            key: value for key, (_, value) in coordinate.items()
+        }
+        assert fields(adam, group)[b1]["sweep"]["id"] == axis
+        rate = optimizer + "/learning_rate/value"
+        assert fields([sgd], {"optimizer": ["sgd"]})[rate]["can_sweep"] and not fields(adam[:1])[rate]["can_sweep"]
+
+        evaluated = {
+            row.key.row: row.coordinates for row in plan.rows if row.key.step == "baseline"
+        }
+        assert sorted(
+            (coordinates["optimizer"].label, getattr(coordinates.get(axis), "value", None)) for coordinates in evaluated.values()
+        ) == sorted(coordinate.values(), key=str)
+        continued = {run.key.row: run.inputs["checkpoint"].producer for run in plan.runs if run.key.step == "train-2"}
+        assert {row: producer.row for row, producer in continued.items()} == {key.row: key.row for key in coordinate}
+
+        point_nine = next(row.coordinates[axis].value_id for row in runs if axis in row.coordinates
+                          and row.coordinates[axis].value == 0.9)
+        train.save(Mock(status_code=200, json=lambda: {"files": [{
+            "address": {"kind": "step", "id": "picked"},
+            "patches": [{"op": "add", "path": "/inputs/subject/where", "value": {"axes": {axis: [point_nine]}}}],
+        }]}))
+        picked = [run for run in train.plan(tmp_path, name).runs if run.key.step == "picked"]
+        assert [run.inputs["subject"].producer.row for run in picked] == [
+            key.row for key, value in coordinate.items() if value == ("Adam", 0.9)
+        ]
+
+        train.number(optimizer + "/learning_rate/value", {"kind": "text", "text": "0.001, 0.003"})
+        assert len([row for row in train.plan(tmp_path, name).rows if row.key.step == "train"]) == 6
+
+
+def test_a_class_without_a_swept_parameter_is_refused_as_a_member(tmp_path):
+    raw = _model_project()
+    raw["steps"].pop("baseline")
+    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"] = {
+        "type": "warmup_cosine_decay_schedule", "init_value": 0.0, "peak_value": 0.001, "warmup_steps": 10,
+        "decay_steps": 100, "end_value": 0.0,
+    }
+    _save_project(ProjectFolderService(tmp_path), "peak", Project.model_validate(raw))
+    url, schedule = "/api/projects/peak", "/settings/optimizer/learning_rate"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        train.number(schedule + "/peak_value", {"kind": "text", "text": "0.001, 0.002"})
+        train.sweep_class(schedule, {"kind": "to_sweep"})
+        refused = train.sweep_class(schedule, {"kind": "add_member", "key": "constant_schedule"}, save=False)
+        assert refused["refusal"] == {"class_label": "Constant", "parameter_label": "Peak Value"}
+        assert refused["files"] == []
+
+
+def test_a_sweep_turned_into_its_value_keeps_the_edits_made_for_that_value(tmp_path):
+    url = _seed_swept_project(tmp_path, "kept")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        seed_2 = train.runs(tmp_path, "kept", seed="seed-2")
+        train.number("/training_config/n_batches", {"kind": "text", "text": "7"}, seed_2, {"seed": ["seed-2"]})
+        before = train.requests(tmp_path, "kept")[seed_2[0]]
+        train.number("/seed", {"kind": "to_value", "value_id": "seed-2"})
+        assert list(train.requests(tmp_path, "kept").values()) == [before]
 
 
 def test_managed_rate_field_keeps_one_authored_geomspace_rule(tmp_path):

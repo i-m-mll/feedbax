@@ -18,7 +18,7 @@ import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { ValueField } from '@/components/values/ValueField';
-import { fromFieldView } from '@/components/values/adapters/fieldView';
+import { fromFieldView, type ExceptionMentions } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
 import type { FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -52,8 +52,8 @@ type Props = {
   active: boolean;
   editable: boolean;
   fieldEditable: boolean;
-  fieldLitSteps?: ReadonlySet<string>;
-  /** Whether the plan read is of the shown revision, so that `fieldLitSteps` names the steps it lights. */
+  fieldChosenSteps?: ReadonlySet<string>;
+  /** Whether the plan read is of the shown revision, so that `fieldChosenSteps` names the steps it chooses. */
   planCurrent: boolean;
   fieldRows?: readonly string[];
   fieldAxes?: Record<string, string[]>;
@@ -68,6 +68,7 @@ type Props = {
   sections: DrawerSections;
   /** Opens Problems showing only those inside the element. */
   openProblems?: (element: ModelAddress, opener: HTMLElement) => void;
+  exceptions?: ExceptionMentions;
 };
 const sourceAttachment = '@source';
 const componentDragType = 'application/x-feedbax-component';
@@ -159,7 +160,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -170,10 +171,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const keyboardReview = useRef<AbortController>();
   const libraryReview = useRef<Promise<ModelConnectionReview>>();
   const [run] = useState(commandQueue);
-  const [plan] = useState(() => awaitedValue<{ revision: string; litSteps: ReadonlySet<string> }>());
+  const [plan] = useState(() => awaitedValue<{ revision: string; chosenSteps: ReadonlySet<string> }>());
   useEffect(() => {
-    plan.set(planCurrent ? { revision: saved.revision, litSteps: fieldLitSteps ?? new Set() } : undefined);
-  }, [plan, planCurrent, saved.revision, fieldLitSteps]);
+    plan.set(planCurrent ? { revision: saved.revision, chosenSteps: fieldChosenSteps ?? new Set() } : undefined);
+  }, [plan, planCurrent, saved.revision, fieldChosenSteps]);
   const [modelIssue, setIssue] = useState<{ document: string; address?: ModelAddress; reason: string }>();
   const issue = modelIssue?.document === model?.id ? modelIssue : undefined;
   const [libraryItem, setLibraryItem] = useState<ComponentDefinition>();
@@ -258,11 +259,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   async function editField(fieldBody: FieldBody, address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
     if (!canEditField || fieldsPlaceholder) return studioReason('unavailable', studioName('field'));
     return run(async () => {
-      const { litSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
+      const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
       const current = editor.getSnapshot().saved;
       try {
         const result = await projectModelFields(saved.project_id, {
-          ...fieldBody, revision: current.revision, address, edit, lit_steps: [...litSteps],
+          ...fieldBody, revision: current.revision, address, edit, chosen_steps: [...chosenSteps],
         }, editor.signal);
         if (result.problems?.length) return result.problems[0].reason;
         if (result.command) {
@@ -273,12 +274,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
           const dependencies = variant ? current.file_revisions.map(({ address: file }) => file).filter((file) =>
             (file.kind === 'document' && file.id === fieldBody.document) ||
-            (file.kind === 'step' && litSteps.has(file.id)) ||
+            (file.kind === 'step' && chosenSteps.has(file.id)) ||
             (file.kind === 'variant' && file.id !== variant))
             : [{ kind: 'document' as const, id: fieldBody.document },
               ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
               ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
-          editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
+          const settled = await editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
+          if (settled.status === 'refused') return apiErrorMessage(settled.error);
         }
         return undefined;
       } catch (error) {
@@ -291,6 +293,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const model = fromFieldView(field, {
       id: addressKey(field.address),
       planSources: field.sources?.filter((source) => !(source.kind === 'document' && source.name === fieldBody.document)),
+      exceptions,
       source: attachments.data?.field_sources?.[addressKey(field.address)] ??
         attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ??
         attachments.data?.source ?? undefined,

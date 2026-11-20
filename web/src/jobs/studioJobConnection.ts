@@ -1,17 +1,15 @@
 import type { StudioJobEvent, StudioProjectRevision } from '@/generated/studioContracts';
 
-export const STUDIO_JOBS_WORKER_NAME = 'feedbax-studio-jobs-v1';
-
 export type StudioJobConnection = 'connecting' | 'connected' | 'disconnected';
 
-export type StudioJobWorkerCommand =
+export type StudioJobCommand =
   | { type: 'subscribe'; projectId: string | null }
   | { type: 'subscribe-folder'; folderId: StudioProjectRevision['project_id'] }
   | { type: 'release' }
   | { type: 'retry' }
   | { type: 'seen'; jobId: string };
 
-export type StudioJobWorkerMessage =
+export type StudioJobMessage =
   | { type: 'attached' }
   | { type: 'reset' }
   | { type: 'machines-changed' }
@@ -20,3 +18,10 @@ export type StudioJobWorkerMessage =
   | { type: 'seen'; jobId: string }
   | { type: 'folder-connected' }
   | { type: 'folder-revision'; revision: StudioProjectRevision };
+
+/** A subscriber's end of the window's job stream, shaped like a MessagePort. */
+export interface StudioJobPort {
+  onmessage: ((event: { data: StudioJobMessage }) => void) | null;
+  postMessage(command: StudioJobCommand): void;
+  close(): void;
+}

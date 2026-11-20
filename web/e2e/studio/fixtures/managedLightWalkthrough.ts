@@ -215,7 +215,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(await attempts()).toEqual([...beforeWidening, ...extra].sort());
 
   await selectTwo();
-  const child = 'train-continuation';
+  const child = 'train-2';
   const continued = await addSuccessor('Train', child);
   expect(continued.project.steps?.[child]?.kind).toBe('train');
   const carryover = stepInspector(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
@@ -240,9 +240,10 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(changed.ok(), await changed.text()).toBe(true);
   expect(changed.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
   const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps![child];
-  expect(editedChild.deltas?.at(-1)?.patches).toEqual([
-    { op: 'replace', path: 'training_config.n_batches', value: additionalUpdates },
-  ]);
+  // The child reads its parent's training document, so its own Batches is a difference from that document.
+  expect(editedChild.document_overrides).toEqual({ training: [
+    { op: 'replace', path: '/training_config/n_batches', value: additionalUpdates },
+  ] });
   const beforeChildren = await attempts();
   const planned = stepRows(await plan(context), child);
   expect(planned.map(({ key }) => key.row)).toEqual(prefix.slice(0, 2).map(({ key }) => key.row));
@@ -288,7 +289,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const producer = children[0];
   const producerTable = await openFocusedRuns(child);
   await activate(page, producerTable.getByRole('rowheader', { name: runName(producer.label) }).getByRole('button'));
-  const nested = child + '-continuation';
+  const nested = 'train-3';
   await addSuccessor('Train', nested, child);
   const nestedTable = await openFocusedRuns(nested);
   const targets = stepRows(await plan(context), nested);

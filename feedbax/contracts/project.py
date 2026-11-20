@@ -19,6 +19,7 @@ from feedbax.contracts.project_inputs import (
 )
 from feedbax.contracts.project_sweep import PatchPath, Sweep
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
+from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
 type Payload = dict[str, JsonValue]
 type DocumentOverridePath = Annotated[Pointer, StringConstraints(min_length=1)]
@@ -98,6 +99,8 @@ class Document(StrictModel):
             PythonTaskSelection.model_validate(self.payload)
         elif self.schema_id == OBJECTIVE_DOCUMENT_SCHEMA_ID:
             ObjectiveDocument.model_validate(self.payload)
+        elif self.schema_id == TRAINING_DOCUMENT_SCHEMA_ID:
+            TrainingDocument.model_validate(self.payload)
         return self
 
 

@@ -1,5 +1,5 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
-import type { StatusMarkStatus } from '@/components/ui/StatusMark';
+import type { ResultStatus } from '@/components/ui/StatusMark';
 import type {
   ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, FieldKind, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
   StudioDefinitionChange, StudioPlanReviewSource, StudioProjectWindowMapProblem, StudioSavedEvaluationResult,
@@ -12,7 +12,7 @@ export type StudioNameId = keyof typeof vocabulary.name;
 export type StudioReasonId = keyof typeof vocabulary.reason;
 export type StudioRunStatusId = StudioActivityJob['status'];
 /** A run's status with its result's validity folded in: what one mark draws. */
-export type StudioResultState = StatusMarkStatus;
+export type StudioResultState = ResultStatus;
 
 const runStatus = vocabulary.status.run satisfies Record<StudioResultState, string>;
 const stepGlyphs = {
@@ -60,8 +60,11 @@ export function studioEvaluateValueSource(source: StudioEvaluateValueSource) {
   return studioFormat(source.kind === 'trained' ? 'trainedValue' : 'evaluateChangedValue', { step: source.step });
 }
 
-export function studioPlanValueSource(source: StudioPlanReviewSource) {
+/** Where a value comes from. An exception reads by the runs it picks (`runs`, as the Exceptions list reads them). */
+export function studioPlanValueSource(source: StudioPlanReviewSource, runs?: string) {
   switch (source.kind) {
+    case 'exception':
+      return runs ? studioFormat('fieldSource', { kind: studioName('exception'), name: runs }) : studioName('exception');
     case 'sweep_value':
       return studioFormat('fieldSource', { kind: source.axis ?? studioName('sweep'), name: source.value ?? source.name });
     case 'upstream':

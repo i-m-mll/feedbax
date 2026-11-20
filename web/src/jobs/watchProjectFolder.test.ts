@@ -1,30 +1,18 @@
 // @vitest-environment jsdom
 
 import { expect, it, vi } from 'vitest';
-import {
-  STUDIO_JOBS_WORKER_NAME,
-  type StudioJobWorkerCommand,
-  type StudioJobWorkerMessage,
-} from './studioJobConnection';
+import type { StudioJobCommand, StudioJobMessage } from './studioJobConnection';
 import { watchProjectFolder } from './watchProjectFolder';
 
-const makePort = vi.hoisted(() => vi.fn((_options: { name: string }) => ({
-  onmessage: null as ((event: { data: StudioJobWorkerMessage }) => void) | null,
-  postMessage: vi.fn<(message: StudioJobWorkerCommand) => void>(),
+const makePort = vi.hoisted(() => vi.fn(() => ({
+  onmessage: null as ((event: { data: StudioJobMessage }) => void) | null,
+  postMessage: vi.fn<(message: StudioJobCommand) => void>(),
   close: vi.fn(),
 })));
 
-vi.mock('@/jobs/studioJobWorker?sharedworker', () => ({
-  default: class {
-    port: ReturnType<typeof makePort>;
+vi.mock('@/jobs/studioJobStream', () => ({ openJobPort: makePort }));
 
-    constructor(options: { name: string }) {
-      this.port = makePort(options);
-    }
-  },
-}));
-
-it('releases the folder port on pagehide and reopens it for the same worker on pageshow', () => {
+it('releases the folder port on pagehide and reopens it on pageshow', () => {
   const connected = vi.fn();
   const revision = vi.fn();
   const release = watchProjectFolder('reach', { connected, revision });
@@ -35,7 +23,7 @@ it('releases the folder port on pagehide and reopens it for the same worker on p
   };
 
   try {
-    expect(makePort).toHaveBeenCalledWith({ name: STUDIO_JOBS_WORKER_NAME });
+    expect(makePort).toHaveBeenCalledOnce();
     const first = makePort.mock.results[0].value;
     const fromFirst = first.onmessage!;
     expect(first.postMessage).toHaveBeenCalledWith({ type: 'subscribe-folder', folderId: 'reach' });

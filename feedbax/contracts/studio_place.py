@@ -30,11 +30,13 @@ class StudioObjectivePlace(StrictModel):
 
 class StudioTrainingPlace(StrictModel):
     part: Literal["training"]
+    document: str | None
     setting: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class StudioMethodPlace(StrictModel):
     part: Literal["method"]
+    document: str | None
 
 
 class StudioAnalysisPlace(StrictModel):
@@ -89,7 +91,7 @@ def definition_place(
     """Name the part of a step's definition at ``parts``, a path from the step's root or its payload.
 
     ``document`` answers which project document supplies the definition at a slot such as
-    ``payload.trial_documents.objective``, or ``None`` when the step holds it inline.
+    ``payload.trial_documents.objective`` or ``payload.settings``, or ``None`` when the step holds it inline.
     ``variation`` answers the dotted path a named variation entry patches, so the entry is placed
     where its field lives.
     """
@@ -117,9 +119,11 @@ def definition_place(
         case "objective":
             return StudioObjectivePlace(part="objective", document=document("payload.objective"))
         case "training_config":
-            return StudioTrainingPlace(part="training", setting=rest[0] if rest else None)
+            return StudioTrainingPlace(
+                part="training", document=document("payload.training_config"), setting=rest[0] if rest else None,
+            )
         case "method" | "settings":
-            return StudioMethodPlace(part="method")
+            return StudioMethodPlace(part="method", document=document(f"payload.{field}"))
         case "params" if rest[:1] == ("variation",):
             target = path_parts(variation(rest[1])) if len(rest) > 1 else ()
             if target[:1] == ("task",):

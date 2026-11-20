@@ -1,7 +1,7 @@
 import { expect, firstJobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
@@ -150,10 +150,9 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   const [selected] = sourceRows;
   await page.keyboard.press('Control+Meta+2');
-  await activate(page, train.getByRole('button', { name: /^Sweep learning-rate / }));
-  const slow = train.getByRole('listitem').getByRole('button', { name: 'Select learning-rate 0.001', exact: true });
-  await activate(page, slow);
-  await expect(slow).toHaveAttribute('aria-pressed', 'true');
+  await activate(page, sweepLabel(train, 'learning-rate'));
+  const slow = page.getByRole('menuitem', { name: '0.001', exact: true });
+  await activateMenuItem(page, slow);
   await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
 
   async function submit(keys: StudioSavedTrainKey[], revision: string) {
@@ -229,10 +228,8 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
   await page.keyboard.press('Control+Meta+2');
   await activate(page, mapStep(page, 'train'));
-  const sweep = train.getByRole('button', { name: /^Sweep learning-rate / });
-  if (!(await slow.isVisible())) await activate(page, sweep);
-  await activate(page, slow);
-  await expect(slow).toHaveAttribute('aria-pressed', 'true');
+  await activate(page, sweepLabel(train, 'learning-rate'));
+  await activateMenuItem(page, slow);
   await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
   const creating = post(page, projectPath + '/files');
   await activate(page, train.getByRole('button', { name: 'New Step train', exact: true }));
@@ -273,10 +270,10 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
     contentType: 'application/json',
   });
   const sceneTab = page.getByRole('tab', { name: 'Scene', exact: true });
-  await expect(sceneTab).toHaveAttribute('aria-keyshortcuts', 'Meta+5');
+  await expect(sceneTab).toHaveAttribute('aria-keyshortcuts', 'Meta+6');
   const [replayed] = await Promise.all([
     post(page, projectPath + '/evaluate-replay'),
-    page.keyboard.press('Meta+5'),
+    page.keyboard.press('Meta+6'),
   ]);
   await expect(sceneTab).toHaveAttribute('aria-selected', 'true');
   expect(replayed.ok(), await replayed.text()).toBe(true);
@@ -575,18 +572,16 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await page.reload();
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('Control+Meta+2');
-  await activate(page, card.getByRole('button', { name: /^Sweep learning-rate / }));
-  const value = (name: string) => card.getByRole('listitem').getByRole('button', { name: `Select learning-rate ${name}`, exact: true });
-  await activate(page, value('0.001'));
-  await activate(page, value('0.003'), 'Shift+Enter');
-  await expect(value('0.001')).toHaveAttribute('aria-pressed', 'true');
-  await expect(value('0.003')).toHaveAttribute('aria-pressed', 'true');
-  await expect(value('0.002')).toHaveAttribute('aria-pressed', 'false');
+  const value = (name: string) => page.getByRole('menuitem', { name, exact: true });
+  await activate(page, sweepLabel(card, 'learning-rate'));
+  await activateMenuItem(page, value('0.001'));
+  await activate(page, sweepLabel(card, 'learning-rate'));
+  await activateMenuItem(page, value('0.003'), 'Shift+Enter');
   await expect(card.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(2);
   const marks = card.getByRole('grid', { name: 'Runs' });
-  await tabTo(page, marks.getByRole('rowheader').first().getByRole('button'));
-  await page.keyboard.press('ArrowDown');
-  await expect(marks.getByRole('gridcell').first().getByRole('button')).toBeFocused();
+  await tabTo(page, marks.getByRole('gridcell').first().getByRole('button'));
+  await page.keyboard.press('ArrowRight');
+  await expect(marks.getByRole('gridcell').nth(1).getByRole('button')).toBeFocused();
 
   const prefix = post(page, runsPath);
   await page.keyboard.press('Meta+R');
@@ -607,7 +602,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const created = await create;
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: authored } = await created.json() as StudioProjectDocument;
-  const child = 'train-continuation';
+  const child = 'train-2';
   const plan = await (await request.get(`${runsPath}?revision=${authored.revision}&window_map=true`)).json() as StudioSavedTrainRuns;
   const selected = plan.window_map!.rows.filter(({ key }) => key.step === 'train' && sourceKeys.some(({ row }) => row === key.row));
   expect(selected.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.003]);
@@ -659,7 +654,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await page.keyboard.press('Meta+1');
   await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 12_000 });
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
-  await page.keyboard.press('Meta+6');
+  await page.keyboard.press('Meta+7');
   await expect(results).toBeFocused();
   await expect(results.getByRole('img', { name: 'Loss' })).toBeVisible();
   await page.keyboard.press('Escape');

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -19,7 +19,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project import (
     Document,
-    DocumentOverrides,
+    DocumentEdit,
     DocumentReference,
     ExternalBase,
     InlineBase,
@@ -30,7 +30,6 @@ from feedbax.contracts.project import (
     StepBase,
     StepKind,
     apply_document_edit,
-    apply_document_edits,
     document_edit_ops,
     document_edit_value,
     json_pointer_parts,
@@ -294,11 +293,80 @@ def _pack(value: Any, path: str, step: str | None) -> Any:
     return value
 
 
+def reference_write_target(value: Any, parts: Sequence[str]) -> tuple[str, str] | None:
+    """Name the document and the dotted path in its payload that a write at ``parts`` of ``value`` reaches.
+
+    A path that passes through a document reference reaches the referenced document at the
+    reference's pointer followed by the rest of the path. A path that ends at a reference
+    replaces the reference, and a path that meets no reference stays where it is: both are ``None``.
+    """
+    for index, part in enumerate(parts):
+        if isinstance(value, dict) and "document" in value and value.keys() <= {"document", "pointer"}:
+            value = DocumentReference.model_validate(value)
+        if isinstance(value, DocumentReference):
+            return value.document, ".".join((*json_pointer_parts(value.pointer), *parts[index:]))
+        if isinstance(value, dict):
+            value = value.get(part)
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            return None
+    return None
+
+
+def document_write_target(payload: Any, path: str) -> tuple[str, str] | None:
+    """Name the document a row's write at ``path`` of a step's payload changes, and where.
+
+    A ``documents.<name>.payload.<path>`` target names it directly; any other path reaches a
+    document only by passing through a reference in the payload.
+    """
+    parts = path.split(".")
+    if len(parts) >= 4 and parts[0] == "documents" and parts[2] == "payload":
+        return parts[1], ".".join(parts[3:])
+    return reference_write_target(payload, parts)
+
+
 def _figure_slot(path: str) -> str | None:
     parts = path.split(".")
     if len(parts) == 4 and parts[:2] == ["payload", "views"] and parts[3] == "figure":
         return parts[2]
     return None
+
+
+@dataclass(frozen=True)
+class DocumentDifference:
+    """One edit a step applies to a document it reads, at ``location`` in that step's file."""
+
+    step: str
+    location: tuple[str, ...]
+    edit: DocumentEdit
+
+
+type DocumentDifferences = Mapping[str, tuple[DocumentDifference, ...]]
+
+
+def document_differences(project: Project, step: str) -> dict[str, tuple[DocumentDifference, ...]]:
+    """The differences ``step`` applies to each document: those of its ``base: {step}`` chain, root first, then its own.
+
+    Applied in order, a later difference at the same path wins. A chain that names a missing step or returns to itself
+    ends there; composing the step reports it.
+    """
+    chain: list[str] = []
+    name: str | None = step
+    while name is not None and name not in chain and (authored := project.steps.get(name)) is not None:
+        chain.append(name)
+        name = authored.base.step if isinstance(authored.base, StepBase) else None
+    differences: dict[str, list[DocumentDifference]] = {}
+    for name in reversed(chain):
+        for document, edits in project.steps[name].document_overrides.items():
+            for index, edit in enumerate(document_edit_ops(edits)):
+                location = (edit.path,) if isinstance(edits, dict) else (
+                    (str(index), "value") if isinstance(edit, SetProjectValue) else (str(index),)
+                )
+                differences.setdefault(document, []).append(
+                    DocumentDifference(name, ("document_overrides", document, *location), edit)
+                )
+    return {document: tuple(items) for document, items in differences.items()}
 
 
 class _Documents:
@@ -308,7 +376,7 @@ class _Documents:
         step: str | None = None,
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
-        overrides: Mapping[str, DocumentOverrides] | None = None,
+        overrides: DocumentDifferences | None = None,
         *,
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
@@ -347,8 +415,8 @@ class _Documents:
                 try:
                     if not isinstance(draft, dict):
                         raise ValueError("Document differences require an object payload")
-                    if edits:
-                        apply_document_edits(draft, edits)
+                    for difference in edits or ():
+                        apply_document_edit(draft, difference.edit, document_edit_value(difference.edit))
                 except ValueError as error:
                     raise _Problem(
                         ResolutionCode.INVALID_DELTA, path, str(error), step=self.step, document=reference.document
@@ -440,14 +508,9 @@ class _Documents:
             document = self.read_document(name)
             assert document is not None and self.step is not None
             shape = source_shape(document.payload, ValueSource("document", name), variant)
-            for index, edit in enumerate(document_edit_ops(edits) if edits else ()):
-                location = (edit.path,) if isinstance(edits, dict) else (str(index),)
-                if not isinstance(edits, dict) and isinstance(edit, SetProjectValue):
-                    location += ("value",)
-                source = ValueSource(
-                    "step", self.step, pointer(("document_overrides", name, *location)), step=self.step,
-                )
-                apply_document_edit(shape, edit, source_shape(document_edit_value(edit), source))
+            for difference in edits or ():
+                source = ValueSource("step", difference.step, pointer(difference.location), step=difference.step)
+                apply_document_edit(shape, difference.edit, source_shape(document_edit_value(difference.edit), source))
             for item in patches:
                 assert item.source is not None
                 shape = patch_source(shape, item.patch, source_shape(item.patch.value, item.source, item.override))
@@ -916,42 +979,17 @@ class _Resolver:
                         raise ValueError("Use an unscoped Model field target in a step sweep")
                     fields.append((path, patch))
                     continue
-                parts = patch.path.split(".")
-                if len(parts) >= 4 and parts[0] == "documents" and parts[2] == "payload":
+                if (target := document_write_target(payload, patch.path)) is not None:
+                    document, document_path = target
                     source, override = (None, None) if origins is None else self.row_source(
                         row.patch_authors.get(patch.path, name), row, patch.path,
                     )
-                    documents.setdefault(parts[1], []).append(_DocumentRowPatch(
-                        patch.model_copy(update={"path": ".".join(parts[3:])}), source, override,
+                    documents.setdefault(document, []).append(_DocumentRowPatch(
+                        patch.model_copy(update={"path": document_path}), source, override,
                     ))
                     continue
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
-                trial_parts = patch.path.split(".", 2)
-                if (
-                    len(trial_parts) == 3 and trial_parts[0] == "trial_documents"
-                    and trial_parts[1] in {"python_task", "task", "objective"}
-                ):
-                    field = trial_parts[1]
-                    trial_path = f"trial_documents.{field}"
-                    trials = payload.get("trial_documents")
-                    selection = trials.get(field) if isinstance(trials, dict) else None
-                    if isinstance(selection, DocumentReference):
-                        task_documents = _Documents(
-                            self.project, name, self.variant_sources, self.read_document,
-                            self.project.steps[name].document_overrides,
-                        )
-                        resolved = task_documents.inline(selection, "payload." + trial_path)
-                        if not isinstance(resolved, dict):
-                            raise ValueError("The trial document must resolve to an object")
-                        document_uses = document_uses.union(task_documents.used)
-                        payload = payload | {"trial_documents": trials | {field: resolved}}
-                        if origins is not None:
-                            override = OverridePatch(path=trial_path, op="replace", value={})
-                            origins = patch_source(
-                                origins, override,
-                                task_documents.source(selection, resolved),
-                            )
                 if patch.path.startswith(MODEL_ATTACHMENTS + ".") and MODEL_ATTACHMENTS not in payload:
                     payload = payload | {MODEL_ATTACHMENTS: {}}
                     if origins is not None:
@@ -1002,7 +1040,7 @@ class _Resolver:
 
     def row_documents(self, name: str, state: _StepState, *, partial_figures: bool = False) -> _Documents:
         return _Documents(
-            self.project, name, self.variant_sources, self.read_document, self.project.steps[name].document_overrides,
+            self.project, name, self.variant_sources, self.read_document, document_differences(self.project, name),
             external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
             partial_figures=partial_figures,
             row_patches=state.row_document_patches,
@@ -1093,13 +1131,16 @@ class StepComposition:
 
     name: str
     _state: _StepState
-    _document_overrides: Mapping[str, DocumentOverrides]
+    _document_differences: DocumentDifferences
 
     @cached_property
     def row_basis(self) -> str:
         """Hash the ordered payload and required paths before row-local patches."""
         return sha256_bytes(to_json((
-            self._state.payload, self._state.requires, sorted(self._state.document_uses), self._document_overrides,
+            self._state.payload, self._state.requires, sorted(self._state.document_uses), {
+                document: [difference.edit.model_dump(mode="json") for difference in differences]
+                for document, differences in sorted(self._document_differences.items())
+            },
         )))
 
     @property
@@ -1203,7 +1244,7 @@ def compose_step(
     resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
     try:
         state = resolver.state(step)
-        return StepTemplate(StepComposition(step, state, project.steps[step].document_overrides), resolver)
+        return StepTemplate(StepComposition(step, state, document_differences(project, step)), resolver)
     except _Problem as error:
         return error.diagnostic
 

@@ -1,6 +1,6 @@
 import {
   BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Target, Workflow, X,
+  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
@@ -82,6 +82,7 @@ export const viewGlyphs = {
   analysis: Workflow,
   figures: Image,
   document: FileText,
+  training: Settings2,
 } satisfies Record<ProjectWindowView, LucideIcon>;
 
 const modes = [
@@ -440,13 +441,13 @@ export function ProjectWindow({
             onFocusCapture={(event) => {
               const id = event.target.dataset.commandId;
               const view = projectWindowViews.find((item) => item === id);
-              if (view) setRailFocus(view);
+              if (view && event.target.getAttribute('aria-disabled') !== 'true') setRailFocus(view);
             }}
             onBlurCapture={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget)) setRailFocus(null);
             }}
             onKeyDown={(event) => {
-              const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
+              const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]:not([aria-disabled="true"])')];
               const index = tabs.findIndex((tab) => tab === event.target);
               if (index < 0) return;
               const destination = { ArrowUp: (index - 1 + tabs.length) % tabs.length,
@@ -457,7 +458,9 @@ export function ProjectWindow({
             }}>
             {tabCommands.map((command) => {
               const view = command.id;
-              if (!command.enabled) return <span key={view} aria-hidden="true" className="studio-window-control" />;
+              if (!command.enabled) {
+                return <WindowButton key={view} command={command} icon={viewGlyphs[view]} tab={{ id: tabId(view), tabbable: false }} />;
+              }
               const selected = shownViews[focusedSlot] === view;
               return (
                 <WindowButton key={view} command={command} icon={viewGlyphs[view]} controls={selected ? ids[focusedSlot] : undefined}

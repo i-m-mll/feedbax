@@ -4,7 +4,8 @@ import type {
 } from '@/generated/studioContracts';
 import { containsCreatedFile, ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 
-import { blankDocuments } from './useProjectDocuments';
+import { blankDocuments, type DocumentRole } from './useProjectDocuments';
+import { generatedName, holds } from './generatedName';
 import { planVariants, savedRunId, sharedRowTerms, stepSourceRows } from './projectWindowPlan';
 
 type NamedStep = CreateNamedStep['step'];
@@ -13,22 +14,23 @@ async function createManagedStep(
   editor: ProjectEditController,
   revision: string,
   sourceStepId: string,
+  family: DocumentRole,
   document: CreateNamedDocument['document'],
   step: Pick<NamedStep, 'kind' | 'inputs'>,
 ) {
   const { saved } = editor.getSnapshot();
   const sourceKind = step.kind === 'analyze' ? 'evaluate' : 'analyze';
   if (saved.revision !== revision || saved.project.steps?.[sourceStepId]?.kind !== sourceKind) throw new ProjectEditConflictError();
-  let id: string = step.kind;
-  for (let number = 2; saved.project.steps?.[id] || saved.project.documents?.[id] &&
-      (!containsCreatedFile(saved.project, { kind: 'document', id, document }) ||
-       Object.values(saved.project.steps ?? {}).some(({ base }) => 'document' in base && base.document === id));
-    number += 1) id = step.kind + '-' + number;
-  const file: CreateNamedDocument = { kind: 'document', id, document };
+  const steps = saved.project.steps ?? {};
+  const documentId = generatedName(family, (name) => holds(saved.project.documents)(name) &&
+    (!containsCreatedFile(saved.project, { kind: 'document', id: name, document }) ||
+     Object.values(steps).some(({ base }) => 'document' in base && base.document === name)));
+  const file: CreateNamedDocument = { kind: 'document', id: documentId, document };
   const acknowledged = containsCreatedFile(saved.project, file) ? saved
     : (await editor.createFile(file, revision)).snapshot;
+  const id = generatedName(step.kind, holds(steps));
   await editor.createFile({
-    kind: 'step', id, step: { ...step, base: { document: id } },
+    kind: 'step', id, step: { ...step, base: { document: documentId } },
   }, acknowledged.revision);
   return id;
 }
@@ -48,7 +50,7 @@ export function analyzeInput(
 }
 
 export function createAnalyze(editor: ProjectEditController, revision: string, source: StepReference) {
-  return createManagedStep(editor, revision, source.step, blankDocuments.analysis, {
+  return createManagedStep(editor, revision, source.step, 'analysis', blankDocuments.analysis, {
     kind: 'analyze', inputs: { states: source },
   });
 }
@@ -74,7 +76,7 @@ export function createReport(editor: ProjectEditController, revision: string, so
     blocks: [{ figure: role }],
     completeness: 'complete',
   };
-  return createManagedStep(editor, revision, source.key.step, {
+  return createManagedStep(editor, revision, source.key.step, 'report', {
     schema,
     payload,
   }, {

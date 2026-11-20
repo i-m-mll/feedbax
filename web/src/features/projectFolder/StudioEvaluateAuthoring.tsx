@@ -27,10 +27,14 @@ import { ScrollFade } from '@/components/ui/ScrollFade';
 
 type Choice = { id: string; label: string };
 
-export function CheckpointRuleEditor({ initial, disabled, readOnly, onSave, onToSweep }: {
+/** The Evaluate fields an edit can be refused on. */
+export type EvaluateField = 'subject' | 'checkpoints' | 'subset' | 'trialSet';
+
+export function CheckpointRuleEditor({ initial, disabled, readOnly, refusal, onSave, onToSweep }: {
   initial: EditableCheckpointRule;
   disabled: boolean;
   readOnly?: boolean;
+  refusal?: string;
   onSave(rule: EditableCheckpointRule): void;
   onToSweep?(): void;
 }) {
@@ -60,6 +64,7 @@ export function CheckpointRuleEditor({ initial, disabled, readOnly, onSave, onTo
         }} />
     </label>
     {reason && <p id={errorId} className="text-shell-muted" role="status">{reason}</p>}
+    {refusal && <p role="alert">{refusal}</p>}
     {!readOnly && <Button className="justify-self-start" disabled={disabled || !changed} onClick={save}>{studioName('applyCheckpoints')}</Button>}
     {onToSweep && <Button className="justify-self-start" disabled={disabled || draft !== saved} onClick={onToSweep}>{studioName('toSweep')}</Button>}
   </fieldset>;
@@ -114,8 +119,8 @@ function BestEditor({ rule, sweeps, disabled, onChange }: {
   </div>;
 }
 
-function TrialSetEditor({ initial, domain, disabled, onSave }: {
-  initial: TrialSet; domain: TrialDomain; disabled: boolean; onSave(rule: TrialSet): void;
+function TrialSetEditor({ initial, domain, disabled, refusal, onSave }: {
+  initial: TrialSet; domain: TrialDomain; disabled: boolean; refusal?: string; onSave(rule: TrialSet): void;
 }) {
   const [rule, setRule] = useDraft(initial);
   const select = useId();
@@ -154,11 +159,12 @@ function TrialSetEditor({ initial, domain, disabled, onSave }: {
     </label>}
     <Button className="justify-self-start" disabled={disabled || !validTrialSet(rule, domain) || JSON.stringify(rule) === JSON.stringify(initial)}
       onClick={() => onSave(rule)}>{studioName('applyTrials')}</Button>
+    {refusal && <p role="alert">{refusal}</p>}
   </fieldset>;
 }
 
 export function StudioEvaluateAuthoring({
-  authored, source, sourceRows, domain, disabled, editSubject, onEdit, onToRows,
+  authored, source, sourceRows, domain, disabled, editSubject, refusals, onEdit, onToRows,
 }: {
   authored: { terms: SubsetTerms; trialSet: TrialSet; hasWhere: boolean };
   source: PlanStepView;
@@ -166,7 +172,8 @@ export function StudioEvaluateAuthoring({
   domain: TrialDomain | undefined;
   disabled: boolean;
   editSubject: boolean;
-  onEdit(name: string, edit: ProjectValueEdit): void;
+  refusals: { subset?: string; trialSet?: string };
+  onEdit(field: 'subset' | 'trialSet', name: string, edit: ProjectValueEdit): void;
   onToRows?(): void;
 }) {
   const { terms, trialSet } = authored;
@@ -216,15 +223,16 @@ export function StudioEvaluateAuthoring({
       {draft.best && <BestEditor rule={draft.best} sweeps={source.sweeps} disabled={disabled}
         onChange={(rule) => setDraft({ ...draft, best: rule })} />}
       <Button className="justify-self-start" disabled={disabled || !canApplySubject || !uniqueRows}
-        onClick={() => onEdit(studioName('applySubset'), {
+        onClick={() => onEdit('subset', studioName('applySubset'), {
           op: authored.hasWhere ? 'replace' : 'add', path: '/inputs/subject/where',
           value: { ...draft, ...(best?.success && { best: best.data }) },
         })}>{studioName('applySubset')}</Button>
       {onToRows && <Button className="justify-self-start" disabled={disabled || changed} onClick={onToRows}>{studioName('toRows')}</Button>}
       {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
+      {refusals.subset && <p role="alert">{refusals.subset}</p>}
     </fieldset>}
-    {domain && <TrialSetEditor initial={trialSet} domain={domain} disabled={disabled}
-      onSave={(rule) => onEdit(studioName('applyTrials'), { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
+    {domain && <TrialSetEditor initial={trialSet} domain={domain} disabled={disabled} refusal={refusals.trialSet}
+      onSave={(rule) => onEdit('trialSet', studioName('applyTrials'), { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
   </div>;
 }
 
@@ -233,13 +241,15 @@ export function StudioEvaluateAuthoring({
  * initial Model document or a Train step's checkpoint; a checkpoint subject reads its Task and Objective from its
  * Train step.
  */
-export function EvaluateSubjectFields({ step, project, trains, picking, subset, onEdit }: {
+export function EvaluateSubjectFields({ step, project, trains, picking, subset, refusal, onEdit }: {
   step: Step;
   project: AuthoredProject;
   trains: readonly PlanStepView[];
   picking: ElementSelectionStore;
   /** The subject's subset, under its field. */
   subset?: ReactNode;
+  /** Why the last edit of the subject was refused. */
+  refusal?: string;
   onEdit?: (name: string, edits: ProjectValueEdit[], documents: readonly string[]) => void;
 }) {
   const labels = useId();
@@ -269,7 +279,8 @@ export function EvaluateSubjectFields({ step, project, trains, picking, subset, 
       onChoose={onEdit && ((choice) => choose(studioName(kind), { ...subject, [kind]: choice.label }))} />
   </FieldRow>;
   return <>
-    <FieldRow label={name} labelId={`${labels}-subject`} below={subset}>
+    <FieldRow label={name} labelId={`${labels}-subject`}
+      below={(refusal || subset) && <>{refusal && <p role="alert">{refusal}</p>}{subset}</>}>
       <ReferenceField label={name} aria-labelledby={`${labels}-subject`} picking={picking} value={value}
         groups={[documentGroup(project, 'model'), stepGroup(trains)]}
         onChoose={onEdit && ((choice) => {

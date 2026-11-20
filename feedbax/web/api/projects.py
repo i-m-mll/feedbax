@@ -18,7 +18,6 @@ from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemov
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringCatalog,
     StudioAuthoringSurface,
-    StudioSweptParameterMissing,
     StudioTrainAuthoring,
     StudioTrainAuthoringRequest,
 )
@@ -110,22 +109,29 @@ def read_train_authoring(
     response: Response,
 ) -> StudioTrainAuthoring:
     from feedbax.studio.authoring import project_train_fields
+    from feedbax.web.services.trial_scope import train_selection
 
     def project_fields() -> StudioTrainAuthoring:
         folders = request.app.state.project_folders
         snapshot = folders.read(project_id, revision=body.revision)
         bundle = request.app.state.bootstrap_state.bundle
+        selection = train_selection(
+            folders, project_id, snapshot.revision, snapshot.project, step_id, body.run, body.rows, body.axes,
+            body.chosen_steps,
+        )
         try:
-            fields, settings, patches, documents = project_train_fields(
-                snapshot.project, step_id, bundle.training_methods, body.change,
+            projection = project_train_fields(
+                snapshot.project, step_id, bundle.training_methods, body.change, selection,
                 read_plan=lambda keys: folders.read_plan(project_id, revision=snapshot.revision, source_runs=keys).plan,
+                class_sweep=body.class_sweep,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
-        refused = isinstance(patches, StudioSweptParameterMissing)
         return StudioTrainAuthoring(
-            project_id=project_id, step_id=step_id, revision=snapshot.revision, fields=fields, settings=settings,
-            patches=[] if refused else patches, documents=documents, refusal=patches if refused else None,
+            project_id=project_id, step_id=step_id, revision=snapshot.revision, fields=projection.fields,
+            settings=projection.settings, mixed=projection.mixed, files=projection.files,
+            documents=projection.documents, refusal=projection.refusal, classes=projection.classes,
+            removed_values=projection.removed,
         )
 
     return _project_response(response, project_fields)
@@ -136,14 +142,19 @@ def project_train_numeric_fields(
     project_id: ProjectName, step_id: ProjectName, body: TrainFieldRequest, request: Request, response: Response,
 ) -> TrainFieldResponse:
     from feedbax.studio.authoring import project_training_numeric_fields
+    from feedbax.web.services.trial_scope import train_selection
 
     def project_fields() -> TrainFieldResponse:
         folders = request.app.state.project_folders
         snapshot = folders.read(project_id, revision=body.revision)
         bundle = request.app.state.bootstrap_state.bundle
+        selection = train_selection(
+            folders, project_id, body.revision, snapshot.project, step_id, body.run, body.rows, body.axes,
+            body.chosen_steps,
+        )
         try:
             return project_training_numeric_fields(
-                snapshot.project, step_id, bundle.training_methods, bundle.expression_functions, body,
+                snapshot.project, step_id, bundle.training_methods, bundle.expression_functions, body, selection,
                 lambda keys: folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan,
             )
         except ValueError as error:

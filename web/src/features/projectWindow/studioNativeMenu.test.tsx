@@ -80,7 +80,7 @@ it('refuses native commands from another project scope', async () => {
     id: 'run', label: 'Run', accelerator: 'Cmd+R', enabled: true,
   }));
   expect(item(bridge.latest(), 'stop')).toMatchObject({ accelerator: 'Cmd+.', enabled: false });
-  expect(item(bridge.latest(), 'scene')).toMatchObject({ accelerator: 'Cmd+5', enabled: false });
+  expect(item(bridge.latest(), 'scene')).toMatchObject({ accelerator: 'Cmd+6', enabled: false });
   const scope = bridge.latest()!.scope;
 
   expect(fireEvent.keyDown(document.body, { key: 'r', code: 'KeyR', metaKey: true })).toBe(true);

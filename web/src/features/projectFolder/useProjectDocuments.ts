@@ -1,19 +1,32 @@
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
-import { apiErrorMessage } from '@/api/request';
-import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
+import { apiErrorMessage, landsOnGesture } from '@/api/request';
+import {
+  studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
+} from '@/components/activity/studioVocabulary';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
 import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
+import { generatedName, holds } from './generatedName';
 
-export type DocumentRole = 'model' | 'task' | 'objective' | 'analysis' | 'report';
+export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
+
+const supervisedTrainMethod = 'feedbax.supervised_gradient';
 
 export const blankDocuments = {
   model: { schema: 'feedbax.spec.model', payload: { step_seconds: 0.01, ports: {}, interior: {} } },
   task: { schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} } },
   objective: { schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] } },
+  training: {
+    schema: 'feedbax.spec.training_document',
+    payload: {
+      method: supervisedTrainMethod,
+      settings: { optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } } },
+      training_config: { n_batches: 1000, batch_size: 64 },
+    },
+  },
   analysis: {
     schema: 'feedbax.analysis_document.v1',
     payload: {
@@ -30,12 +43,13 @@ const schemas: Record<DocumentRole, readonly string[]> = {
   model: [blankDocuments.model.schema],
   task: [blankDocuments.task.schema, 'feedbax.spec.task_document'],
   objective: [blankDocuments.objective.schema],
+  training: [blankDocuments.training.schema],
   analysis: [blankDocuments.analysis.schema],
   report: [blankDocuments.report.schema],
 };
 
 const labels: Record<DocumentRole, StudioNameId> = {
-  model: 'modelDocument', task: 'taskDocument', objective: 'objectiveDocument',
+  model: 'modelDocument', task: 'taskDocument', objective: 'objectiveDocument', training: 'trainingDocument',
   analysis: 'analysisDocument', report: 'reportDocument',
 };
 
@@ -57,15 +71,12 @@ export function documentsOfRole(project: { documents?: Readonly<Record<string, D
   return Object.keys(all).filter((id) => schemas[role].includes(all[id].schema)).sort();
 }
 
-export function freeDocumentName(taken: readonly string[], base: string) {
-  let name = base;
-  for (let number = 2; taken.includes(name); number += 1) name = `${base}-${number}`;
-  return name;
-}
-
 export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
+  /** The document a step did not take in a role, and why: it lacks a parameter the step sweeps. */
+  const [refused, setRefused] = useState<{ step: string; role: DocumentRole; reason: string }>();
+  const refuse = (role: DocumentRole, reason?: string) => setRefused(reason && stepId ? { step: stepId, role, reason } : undefined);
 
   async function use(role: DocumentRole, document: string, revision: string): Promise<StudioProjectFilePatch[]> {
     if (!stepId) return [];
@@ -76,14 +87,18 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const result = await readStudioTrialAuthoring(projectId, {
       revision, run, scope, change: { kind: 'select_document', role, document },
     }, editor.signal);
+    refuse(role, result.refusal ? studioSweptParameterMissing(result.refusal) : undefined);
     return result.files;
   }
 
-  async function attempt<T>(work: () => Promise<T>) {
+  /** A refusal lands on the role's picker; any other failure goes to `onError`. */
+  async function attempt<T>(role: DocumentRole, work: () => Promise<T>) {
+    refuse(role);
     try {
       return await work();
     } catch (error) {
-      onError(apiErrorMessage(error));
+      if (landsOnGesture(error)) refuse(role, apiErrorMessage(error));
+      else onError(apiErrorMessage(error));
     }
   }
 
@@ -106,22 +121,23 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const repoint = editable && !!stepId && selectable.has(role);
     return {
       label: labels[role], document, documents, count,
-      choose: repoint ? (next) => { void attempt(() => point(studioAccessibleName('select', kind), role, next)); } : undefined,
-      create: repoint ? () => attempt(async () => {
+      refusal: refused?.step === stepId && refused?.role === role ? refused.reason : undefined,
+      choose: repoint ? (next) => { void attempt(role, () => point(studioAccessibleName('select', kind), role, next)); } : undefined,
+      create: repoint ? () => attempt(role, async () => {
         const { saved } = editor.getSnapshot();
-        const id = freeDocumentName(Object.keys(saved.project.documents ?? {}), role);
+        const id = generatedName(role, holds(saved.project.documents));
         await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document: blankDocuments[role] }],
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;
       }) : undefined,
-      duplicate: repoint ? () => attempt(async () => {
+      duplicate: repoint ? () => attempt(role, async () => {
         const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
           { kind: 'duplicate', family: 'documents', member: document }, editor.getSnapshot().saved,
           (result) => use(role, result.member, result.snapshot.revision));
         return result.member;
       }) : undefined,
       rename: editable ? (name) => {
-        void attempt(() => editor.memberCommand(studioAccessibleName('rename', kind),
+        void attempt(role, () => editor.memberCommand(studioAccessibleName('rename', kind),
           { kind: 'rename', family: 'documents', member: document, name }, editor.getSnapshot().saved));
       } : undefined,
     };

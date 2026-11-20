@@ -514,7 +514,7 @@ class StudioRemoteRuns:
                 continue
             failure = opening_failures.get(request.id)
             machines.append(StudioRemoteSession(
-                id=request.id, name=self._labels[request.profile],
+                id=request.id, name=self._labels[request.profile], profile=request.profile,
                 state="off" if failure else "queued",
                 hourly_microusd=opening.hourly_microusd, estimated_cost_microusd=0,
                 closes_at_ms=opening.expires_at_ms, ceiling_microusd=request.maximum_microusd,
@@ -544,6 +544,7 @@ class StudioRemoteRuns:
             region = placement.get("region") if isinstance(placement, dict) else None
             machines.append(StudioRemoteSession(
                 id=launch.request.id, name=self._labels[launch.request.placement.profile],
+                profile=launch.request.placement.profile,
                 state=active, hourly_microusd=launch.hourly_microusd,
                 estimated_cost_microusd=elapsed_ms * launch.hourly_microusd // 3_600_000,
                 closes_at_ms=observation.verified_cutoff_ms or launch.ends_at_ms, ceiling_microusd=launch.request.maximum_microusd,

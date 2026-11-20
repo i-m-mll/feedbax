@@ -1,15 +1,19 @@
-"""Revision-bound sweep recipes for numeric fields on authored steps."""
+"""Revision-bound sweep recipes for the fields of authored steps."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 
+from pydantic import JsonValue
+
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import Step, json_pointer_parts
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
     Axis,
+    AxisCondition,
     AxisValue,
     GeneratedAxis,
     ListedAxis,
@@ -19,6 +23,7 @@ from feedbax.contracts.project_sweep import (
     SetValue,
     Sweep,
     axis_to_list,
+    sweep_value_identity_bytes,
     _paths_overlap,
 )
 from feedbax.contracts.studio_authoring import (
@@ -27,7 +32,6 @@ from feedbax.contracts.studio_authoring import (
     StudioNameSweepValue,
     StudioSetSweepValue,
     StudioSweepEdit,
-    StudioToField,
 )
 from feedbax.contracts.studio_field import StudioSweepList, StudioSweepRange, StudioSweepSampler, StudioSweepValue
 from feedbax.contracts.studio_project import SetProjectValue
@@ -35,10 +39,13 @@ from feedbax.contracts.studio_project import SetProjectValue
 
 @dataclass(frozen=True)
 class SweepTarget:
-    """The ordinary scalar write expressed as step-local sweep patches."""
+    """A field's ordinary write expressed as step-local sweep patches: a member of its sweep sets the field to its value.
 
-    value: int | float
-    writes: Callable[[int | float], list[SetProjectValue]]
+    ``value`` is the field's value on the step: a number, or the key of a chosen class.
+    """
+
+    value: JsonValue
+    writes: Callable[[JsonValue], list[SetProjectValue]]
     patch_path: str | None = None
 
     @property
@@ -50,7 +57,7 @@ class SweepTarget:
                 return path
         return None
 
-    def entry(self, value: int | float, label: str | None = None) -> AxisValue:
+    def entry(self, value: JsonValue, label: str | None = None) -> AxisValue:
         if self.patch_path is not None:
             return AxisValue(label=label, value=value, patches={self.patch_path: SetValue(value=value)})
         return AxisValue(
@@ -86,24 +93,84 @@ def _axis_paths(axis: Axis) -> set[str]:
     return set()
 
 
-def sweep_paths(sweep: Sweep) -> set[str]:
-    """The step-local paths a sweep writes, through its axes, rows, and exceptions."""
+def _axis_field_paths(axis: Axis) -> set[str]:
+    """The paths an axis sweeps: each value sets them to that value. A value's other patches are edits for its runs."""
+    if not isinstance(axis, NamedAxis):
+        return _axis_paths(axis)
+    entries = [entry for entry in axis.values.values() if entry is not None]
+    swept = [
+        {path for path, patch in entry.patches.items() if isinstance(patch, SetValue) and patch.value == entry.value}
+        for entry in entries
+    ]
+    return set.intersection(*swept) if swept else set()
+
+
+def sweep_paths(sweep: Sweep | None, *, besides: str | None = None) -> set[str]:
+    """The step-local paths a sweep writes, through its axes other than ``besides``, its rows, and its exceptions.
+
+    A run of the sweep may hold a value at any of them that the step does not.
+    """
+    if sweep is None:
+        return set()
     sets = [*sweep.rows.values(), *sweep.exceptions.values()]
     return {
-        *(path for axis in sweep.axes.values() if axis is not None for path in _axis_paths(axis)),
+        *(path for name, axis in sweep.axes.items() if axis is not None and name != besides for path in _axis_paths(axis)),
         *(path for entry in sets if entry is not None for path in entry.patches),
     }
+
+
+def drop_axis(name: str) -> SetProjectValue:
+    """The write that ends the sweep ``name``.
+
+    A null axis keeps the authored position and the inverse edit; the sweep grammar omits it from the product.
+    """
+    return SetProjectValue(op="replace", path=pointer(("sweep", "axes", name)), value=None)
+
+
+def patch_writes(patches: dict[str, object]) -> list[OverridePatch]:
+    """A patch set as ordered writes at paths in the step's definition."""
+    return [
+        OverridePatch(op=patch.op, path=path, **({"value": patch.value} if isinstance(patch, SetValue) else {}))
+        for path, patch in patches.items() if patch is not None
+    ]
 
 
 def paths_match(paths: set[str], other: set[str]) -> bool:
     return any(_paths_overlap(left, right) for left in paths for right in other)
 
 
-class FieldSweeps:
-    """The sweeps over one field; a new axis is named by ``name``, the path segments that identify the field."""
+@dataclass(frozen=True)
+class SelectedValues:
+    """Runs selected as a set of values per sweep of the step: ``condition``. ``current`` is their definition."""
 
-    def __init__(self, step: Step, target: SweepTarget, label: str, name: tuple[str, ...], *, integer: bool):
+    condition: AxisCondition
+    current: Mapping[str, JsonValue]
+
+    def holds(self, path: str) -> bool:
+        node: object = self.current
+        for part in path.split("."):
+            if not isinstance(node, Mapping) or part not in node:
+                return False
+            node = node[part]
+        return True
+
+
+def _where(axis: Axis) -> AxisCondition | None:
+    return axis.where if isinstance(axis, NamedAxis | GeneratedAxis) else None
+
+
+class FieldSweeps:
+    """The sweeps over one field; a new axis is named by ``name``, the path segments that identify the field.
+
+    With ``selected``, the edit is made for those runs: a new sweep applies to them only.
+    """
+
+    def __init__(
+        self, step: Step, target: SweepTarget, label: str, name: tuple[str, ...], *, integer: bool,
+        selected: SelectedValues | None = None,
+    ):
         self.step = step
+        self.selected = selected
         self.target = target
         self.label = label
         self.name = re.sub(r"[^a-z0-9]+", "-", "-".join(name).lower()).strip("-") or "value"
@@ -112,7 +179,7 @@ class FieldSweeps:
         self.axes = step.sweep.axes if step.sweep else {}
         self.covering = [
             (name, axis) for name, axis in self.axes.items()
-            if axis is not None and paths_match(self.paths, _axis_paths(axis))
+            if axis is not None and paths_match(self.paths, _axis_field_paths(axis))
         ]
         exceptions = [exception for exception in step.sweep.exceptions.values() if exception is not None] if step.sweep else []
         crossed = step.sweep is None or (step.sweep.combination in (None, "cross") and not step.sweep.rows)
@@ -123,16 +190,49 @@ class FieldSweeps:
             for exception in exceptions
         )
 
+    @property
+    def for_selection(self) -> bool:
+        """The selected runs are a set of sweep values, and the field is unswept or swept for exactly those runs."""
+        if self.selected is None:
+            return False
+        if not self.covering:
+            return True
+        return len(self.covering) == 1 and _where(self.covering[0][1]) == self.selected.condition
+
+    def release(self) -> list[OverridePatch]:
+        """The writes that take this field's value off the selected runs' own record, for a new sweep over them."""
+        if self.selected is None or self.covering:
+            return []
+        return [
+            OverridePatch(op="remove", path=path)
+            for path, patch in self.target.entry(self.target.value).patches.items()
+            if isinstance(patch, SetValue) and patch.op == "add" and self.selected.holds(path)
+        ]
+
     def to_list(self, axis: ListedAxis | GeneratedAxis) -> NamedAxis:
         return axis_to_list(axis, integer_site=lambda path: self.integer and path in self.paths)
 
+    def own_patches(self, entry: AxisValue) -> dict[str, object]:
+        """The patches of ``entry`` that write this field; the others are edits made for that value's runs."""
+        return {path: patch for path, patch in entry.patches.items() if paths_match({path}, self.paths)}
+
     def may_edit_member(self, axis: NamedAxis) -> bool:
         return all(
-            entry is not None
-            and type(entry.value) in (int, float)
-            and entry.patches == self.target.entry(entry.value).patches
+            entry is not None and self.own_patches(entry) == self.target.entry(entry.value).patches
             for entry in axis.values.values()
         )
+
+    def keep(self, value: JsonValue) -> list[OverridePatch]:
+        """The writes that give the step the definition of the covering sweep's runs at ``value``.
+
+        A member with that value gives its own patches and the edits made for its runs, so its runs keep their requests.
+        """
+        named = named_axis(self, self.covering[0][1]) if len(self.covering) == 1 else None
+        kept = next((
+            entry for entry in (named.values.values() if named else ())
+            if entry is not None and sweep_value_identity_bytes(entry.value) == sweep_value_identity_bytes(value)
+        ), None)
+        return patch_writes((kept or self.target.entry(value)).patches)
 
     @property
     def can_sweep(self) -> bool:
@@ -189,6 +289,8 @@ class FieldSweeps:
 
     def write_axis(self, axis: Axis) -> list[SetProjectValue]:
         if self.can_sweep:
+            if self.selected is not None:
+                axis = axis.model_copy(update={"where": self.selected.condition})
             name = self._fresh_id(self.name, self.axes)
             write = self._axis_write(name, axis)
             if self.step.sweep is None:
@@ -205,7 +307,7 @@ class FieldSweeps:
                 isinstance(previous, GeneratedAxis) and self._can_list(previous)
             )
             if editable:
-                return [self._axis_write(name, axis)]
+                return [self._axis_write(name, axis.model_copy(update={"where": _where(previous)}))]
         raise ValueError(f"{self.label} has no supported sweep edit")
 
     def edit(self, command: StudioAuthoringSweepChange, validate_number: Callable[[int | float], int | float]) -> list[SetProjectValue]:
@@ -223,7 +325,7 @@ class FieldSweeps:
         self,
         name: str,
         axis: Axis,
-        edit: StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue,
+        edit: StudioSweepEdit | StudioSetSweepValue | StudioNameSweepValue,
         validate_number: Callable[[int | float], int | float],
     ) -> list[SetProjectValue]:
         if edit.kind == "toList" and isinstance(axis, (RangeAxis, SampledAxis, ListedAxis)) and self._can_list(axis):
@@ -248,7 +350,7 @@ class FieldSweeps:
                 SetProjectValue(op="replace", path=pointer((*path, "value")), value=number),
                 *(
                     SetProjectValue(op="replace", path=pointer((*path, "patches", key, "value")), value=number)
-                    for key in entry.patches
+                    for key in self.own_patches(entry)
                 ),
             ]
         if edit.kind == "nameSweepValue":
@@ -256,11 +358,13 @@ class FieldSweeps:
                 op="replace" if "label" in entry.model_fields_set else "add",
                 path=pointer((*path, "label")), value=edit.label,
             )]
-        if not self.simple:
-            raise ValueError("This sweep has explicit row edits.")
-        # A null axis preserves the authored position and the inverse edit.
-        # It is omitted from the compiled product by the sweep grammar.
-        return [
-            *self.target.writes(entry.value),
-            SetProjectValue(op="replace", path=pointer(("sweep", "axes", name)), value=None),
-        ]
+        raise ValueError(f"{self.label} has no supported sweep edit")
+
+
+def named_axis(sweep: FieldSweeps, axis: Axis) -> NamedAxis | None:
+    if isinstance(axis, ListedAxis | RangeAxis | SampledAxis):
+        try:
+            return sweep.to_list(axis)
+        except ValueError:
+            return None
+    return axis if isinstance(axis, NamedAxis) else None

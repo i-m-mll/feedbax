@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { shellHost } from '@window-shell/browser/titlebar';
+import { leaveJobStream, rejoinJobStream } from '@/jobs/studioJobStream';
 
 export const projectWindowViews = [
-  'runs', 'model', 'task', 'objective', 'scene', 'results', 'analysis', 'figures', 'document',
+  'runs', 'model', 'task', 'objective', 'training', 'scene', 'results', 'analysis', 'figures', 'document',
 ] as const;
 
 export type ProjectWindowView = typeof projectWindowViews[number];
@@ -217,7 +218,11 @@ export function useProjectWindowState(windowKey: string): [ProjectWindowState, D
     if (!native) return;
     window.__FEEDBAX_FLUSH_WINDOW_PREFERENCES__ = (close = true) => {
       closing.current = close;
-      return close ? flush() : Promise.resolve();
+      if (!close) {
+        rejoinJobStream();
+        return Promise.resolve();
+      }
+      return flush().then(leaveJobStream);
     };
     const reconnected = () => {
       void flush().catch((error: unknown) => console.error('Studio window preferences could not be saved', error));

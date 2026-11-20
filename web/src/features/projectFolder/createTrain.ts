@@ -2,12 +2,13 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import type { Document, StudioProjectCreateFile } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { blankDocuments } from './useProjectDocuments';
+import { trainingDocumentKeys } from './trainingDocument';
+import { generatedName, holds } from './generatedName';
 
-const { model, task, objective } = blankDocuments;
+const { model, task, objective, training } = blankDocuments;
 const taskDocumentSchema = 'feedbax.spec.task_document';
-export const supervisedTrainMethod = 'feedbax.supervised_gradient';
 
-/** Create a Train step on the project's Model, Task and Objective documents, creating those that are missing. */
+/** Create a Train step on the project's Model, Task, Objective and training documents, creating those that are missing. */
 export async function createTrain(editor: ProjectEditController, reviewedRevision: string) {
   const { saved } = editor.getSnapshot();
   if (saved.revision !== reviewedRevision) throw new ProjectEditConflictError();
@@ -19,10 +20,7 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
     const existing = documentNames.find((id) => schemas.includes(documents[id].schema));
     if (existing !== undefined) return existing;
 
-    let id = name;
-    for (let number = 2; Object.prototype.hasOwnProperty.call(documents, id); number += 1) {
-      id = `${name}-${number}`;
-    }
+    const id = generatedName(name, holds(documents));
     files.push({ kind: 'document', id, document });
     return id;
   }
@@ -30,9 +28,8 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
   const taskDocument = bindDocument('task', task, [task.schema, taskDocumentSchema]);
   const taskField = documents[taskDocument]?.schema === taskDocumentSchema ? 'task' : 'python_task';
   const objectiveDocument = bindDocument('objective', objective);
-  const steps = saved.project.steps ?? {};
-  let id = 'train';
-  for (let number = 2; Object.prototype.hasOwnProperty.call(steps, id); number += 1) id = `train-${number}`;
+  const trainingDocument = bindDocument('training', training);
+  const id = generatedName('train', holds(saved.project.steps));
   files.push({
     kind: 'step', id,
     step: {
@@ -43,14 +40,7 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
           [taskField]: { document: taskDocument },
           objective: { document: objectiveDocument },
         },
-        training_config: {
-          n_batches: 1000,
-          batch_size: 64,
-        },
-        method: supervisedTrainMethod,
-        settings: {
-          optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } },
-        },
+        ...Object.fromEntries(trainingDocumentKeys.map((key) => [key, { document: trainingDocument, pointer: `/${key}` }])),
       } },
     },
   });

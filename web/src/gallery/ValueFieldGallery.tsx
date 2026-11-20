@@ -105,6 +105,8 @@ function useHistory(initial: JsonValue) {
   return {
     value: history.at(-1)!,
     write: (path: readonly string[], next: JsonValue) => setHistory((past) => [...past, setIn(past.at(-1), path, next)]),
+    choose: (path: readonly string[], key: JsonValue) =>
+      setHistory((past) => [...past, setIn(past.at(-1), path, { type: key })]),
     undo: history.length > 1 ? () => setHistory((past) => past.slice(0, -1)) : undefined,
   };
 }
@@ -151,7 +153,7 @@ export function ValueFieldGallery() {
             model={fromParamSchema(schema, raw.values[schema.name], raw.change(schema.name))} />)}
         </div>
         <div className="grid w-80 content-start gap-2 rounded-control border border-shell-divider p-2" aria-label="SettingsForm">
-          <SettingsForm schema={settingsSchema} value={settings.value} write={settings.write} />
+          <SettingsForm schema={settingsSchema} value={settings.value} write={settings.write} choose={settings.choose} />
           <Button className="justify-self-start" disabled={!settings.undo} onClick={settings.undo}>Undo</Button>
           <ValueField model={fromParamSchema({ name: 'locked', type: 'float', default: 3 }, undefined)} />
         </div>

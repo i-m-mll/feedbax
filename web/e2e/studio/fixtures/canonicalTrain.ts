@@ -68,6 +68,17 @@ export function mapStep(page: Page, stepId: string) {
   return page.locator(`[data-map-step="${stepId}"] button[data-canvas-focus]`);
 }
 
+/** A sweep's label on a map card, which opens the list of its values. */
+export function sweepLabel(card: Locator, sweep: string) {
+  return card.getByRole('button', { name: new RegExp(`^Sweep ${sweep} \\d+$`) });
+}
+
+/** Chooses a value from a sweep's label on a map card; with Shift, adds it to the chosen values. */
+export async function chooseSweepValue(card: Locator, sweep: string, value: string, extend = false) {
+  await sweepLabel(card, sweep).click();
+  await card.page().getByRole('menuitem', { name: value, exact: true }).click({ modifiers: extend ? ['Shift'] : [] });
+}
+
 export async function chooseTrainSuccessor(page: Page) {
   await chooseStepKind(page, 'Train');
 }

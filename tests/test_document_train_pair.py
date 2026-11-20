@@ -247,7 +247,7 @@ def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, a
     revision = folders.read("variant").revision
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         result = client.post("/api/projects/variant/model/fields", json={
-            "revision": revision, "document": "reach-model", "owner": owner, "lit_steps": ["train"],
+            "revision": revision, "document": "reach-model", "owner": owner, "chosen_steps": ["train"],
             "run": {"variant": "compare", "step": "train", "row": "default"},
             "address": owner | {"element": {"kind": "field", "parent": owner["element"], "path": ["fields", "mass"]}},
             "edit": {"kind": "text", "text": "2"},
@@ -571,3 +571,86 @@ def test_managed_host_train_and_evaluate_share_document_runtime(host, tmp_path, 
     with result.open_states() as dataset:
         assert np.isfinite(dataset.data("objective/total")).all()
         assert int(dataset.data("objective/coverage/effort").item()) == 28
+
+
+def _training_document(raw, *steps):
+    """Move the first step's method, settings and run controls into a `training` document the steps read."""
+    from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
+
+    inline = raw["steps"][steps[0]]["base"]["inline"]
+    raw["documents"]["training"] = {
+        "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {key: inline[key] for key in TRAINING_DOCUMENT_KEYS},
+    }
+    for step in steps:
+        raw["steps"][step]["base"]["inline"] |= {
+            key: {"document": "training", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS
+        }
+    return raw
+
+
+def _requests(raw, step):
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    return {run.key.row: run.request_id for run in plan.runs if run.key.step == step}
+
+
+def test_training_document_sweep_compiles_as_inline_settings(authored):
+    inline = document_project(authored)
+    _two_optimizer_rates(inline)
+    shared = _training_document(deepcopy(inline), "train")
+    assert len(_requests(inline, "train")) == 2
+    assert _requests(shared, "train") == _requests(inline, "train")
+
+    shared["steps"]["other"] = deepcopy(shared["steps"]["train"]) | {"sweep": None}
+    stored = deepcopy(shared["documents"]["training"])
+    unswept = deepcopy(shared)
+    unswept["steps"]["train"]["sweep"] = None
+    assert _requests(shared, "other") == _requests(unswept, "other")
+    assert len(set(_requests(shared, "train").values())) == 2
+    assert shared["documents"]["training"] == stored
+
+    keys = [RunKey("default", "train", f"rate={name}") for name in ("low", "high")]
+    tracked = compile_project(Project.model_validate(shared), source_runs=tuple(keys))
+    rate = "/payload/settings/optimizer/learning_rate/value"
+    for key in keys:
+        definition = tracked.selected_definitions[key]
+        assert definition.document_ids["payload.settings"] == "training"
+        assert "training" in definition.document_uses
+        assert tracked.sources[key][rate].kind == "sweep_value"
+
+
+def test_variant_write_through_a_step_reference_names_the_document_form(authored):
+    raw = _training_document(document_project(authored), "train")
+    raw["sweep"] = {"rows": {"base": {}, "fast": {"patches": {
+        "steps.train.base.inline.settings.optimizer.learning_rate.value": {"value": 0.01},
+    }}}}
+    plan = compile_project(Project.model_validate(raw))
+    (problem,) = plan.diagnostics
+    assert (problem.variant, problem.step) == ("fast", "train")
+    assert "documents.training.payload.settings.optimizer.learning_rate.value" in problem.detail
+
+    raw["sweep"]["rows"]["fast"]["patches"] = {
+        "documents.training.payload.settings.optimizer.learning_rate.value": {"value": 0.01},
+    }
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    assert len({run.request_id for run in plan.runs}) == 2
+
+
+@pytest.mark.parametrize(("key", "value", "path", "place"), [
+    ("settings", {"optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": "fast"}}},
+     "/settings/optimizer", "method"),
+    ("method", "missing.method", "/method", "method"),
+])
+def test_training_document_problem_is_placed_in_the_document(authored, key, value, path, place):
+    from feedbax.contracts.studio_place import definition_place, path_parts
+
+    raw = _training_document(document_project(authored), "train")
+    raw["documents"]["training"]["payload"][key] = value
+    plan = compile_project(Project.model_validate(raw))
+    assert plan.diagnostics
+    for problem in plan.diagnostics:
+        assert problem.document == "training"
+        assert problem.document_path.startswith(path)
+        located = definition_place(path_parts(problem.path), lambda _slot: problem.document)
+        assert (located.part, located.document) == (place, "training")

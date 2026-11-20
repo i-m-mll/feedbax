@@ -188,7 +188,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await expect(analysis).toBeVisible();
   const created = await snapshot();
   expect(created.project.steps?.analyze).toMatchObject({
-    kind: 'analyze', base: { document: 'analyze' }, inputs: { states: {
+    kind: 'analyze', base: { document: 'analysis' }, inputs: { states: {
       step: evaluateStep,
       ...(paired ? { where: { axes: expect.any(Object) } } : { row: sources[0].key.row }),
     } },
@@ -231,7 +231,8 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await expect(page.getByRole('option', { name: 'states', exact: true })).toHaveAttribute('data-highlighted');
   await page.keyboard.press('Enter');
   expect((await refusal).status()).toBe(422);
-  await expect(analysis.getByRole('alert')).toContainText('Requires dataset schemas');
+  // The refusal lands on the role field it was made in.
+  await expect(inspector.getByRole('alert')).toHaveText(/Requires dataset schemas/);
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
   await edit(() => chooseOption(page, roleField('Velocity'), 'aligned_velocity.velocity'));
 
@@ -240,7 +241,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const wired = await edit(() => chooseOption(page, roleField('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   if (first) {
-    const authored = wired.project.documents!.analyze.payload as unknown as AnalysisDocument;
+    const authored = wired.project.documents!.analysis.payload as unknown as AnalysisDocument;
     const state = '/v1/model/state/' + first.plantId + '/';
     expect(authored.operations).toMatchObject({
       aligned_velocity: {
@@ -598,7 +599,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(paired.project.sweep).toEqual(initial.project.sweep);
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Aligned velocity');
   await drawer.getByRole('option', { name: 'Aligned velocity', exact: true }).dblclick();
-  await expect.poll(async () => (await snapshot()).project.documents?.analyze?.payload)
+  await expect.poll(async () => (await snapshot()).project.documents?.analysis?.payload)
     .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
 
   const evaluated = await successor('Evaluate', 'evaluate');
@@ -607,7 +608,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(evaluated.project.steps?.evaluate).toMatchObject({
     kind: 'evaluate', inputs: { subject: { step: 'train', checkpoint: 'last' } },
   });
-  const childId = 'train-continuation';
+  const childId = 'train-2';
   const continuation = await successor('Train', childId);
   const batches = stepInspector.getByRole('textbox', { name: 'Batches', exact: true });
   await expect(batches).toBeEditable();

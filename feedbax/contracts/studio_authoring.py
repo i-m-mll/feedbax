@@ -12,7 +12,8 @@ from feedbax.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
-from feedbax.contracts.studio_project import ProjectValueEdit
+from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.studio_project import StudioProjectFilePatch
 
 
 class StudioAuthoringDeclaration(StrictModel):
@@ -91,7 +92,11 @@ class StudioAuthoringField(StrictModel):
 
 
 class StudioAuthoringChange(StrictModel):
-    """Sets a declared field, or any value under ``/settings`` that the method's settings model accepts."""
+    """Sets a declared field, or any value under ``/settings`` that the method's settings model accepts.
+
+    At ``/method`` or a class-valued field the value is the chosen method's or class's key; the server keeps each
+    current setting the chosen one declares and accepts, and takes its defaults for the rest.
+    """
 
     field: str
     value: JsonValue
@@ -104,12 +109,6 @@ class StudioToSweep(StrictModel):
 class StudioSweepEdit(StrictModel):
     kind: Literal["addValue", "toList"]
     sweep_id: ProjectName
-
-
-class StudioToField(StrictModel):
-    kind: Literal["toField"]
-    sweep_id: ProjectName
-    value_id: ProjectName
 
 
 class StudioSetSweepValue(StrictModel):
@@ -129,14 +128,63 @@ class StudioNameSweepValue(StrictModel):
 class StudioAuthoringSweepChange(StrictModel):
     field: str
     edit: Annotated[
-        StudioToSweep | StudioSweepEdit | StudioToField | StudioSetSweepValue | StudioNameSweepValue,
+        StudioToSweep | StudioSweepEdit | StudioSetSweepValue | StudioNameSweepValue,
         Field(discriminator="kind"),
     ]
 
 
-class StudioTrainAuthoringRequest(StrictModel):
+class StudioRunSelection(StrictModel):
+    """The runs an edit is made for: a named run and, when they are not the whole step, the selected rows.
+
+    Rows that are exactly the runs of a set of values per sweep, named in ``axes``, are stored by those values;
+    other rows are stored by row. ``chosen_steps`` are the steps the user named for an edit of a document, none being
+    the edited step alone; the edit also reaches the steps based on them.
+    """
+
+    run: StudioSavedTrainKey | None = None
+    rows: list[str] = Field(default_factory=list)
+    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
+    chosen_steps: list[ProjectName] = Field(default_factory=list)
+
+
+class StudioClassToSweep(StrictModel):
+    kind: Literal["to_sweep"]
+
+
+class StudioClassToValue(StrictModel):
+    """Turns the sweep into its member ``value_id``: the step takes that member's class, parameters and edits."""
+
+    kind: Literal["to_value"]
+    value_id: ProjectName
+
+
+class StudioAddClassMember(StrictModel):
+    """Adds the class ``key`` to the sweep; a parameter the step holds that the class lacks moves to the members that
+    have it."""
+
+    kind: Literal["add_member"]
+    key: str
+
+
+class StudioRemoveClassMember(StrictModel):
+    kind: Literal["remove_member"]
+    value_id: ProjectName
+
+
+class StudioClassSweepChange(StrictModel):
+    """An edit of the sweep over the class-valued field ``field``, a pointer in the Train definition."""
+
+    field: str
+    edit: Annotated[
+        StudioClassToSweep | StudioClassToValue | StudioAddClassMember | StudioRemoveClassMember,
+        Field(discriminator="kind"),
+    ]
+
+
+class StudioTrainAuthoringRequest(StudioRunSelection):
     revision: Sha256
     change: StudioAuthoringChange | None = None
+    class_sweep: StudioClassSweepChange | None = None
 
 
 class StudioSweptParameterMissing(StrictModel):
@@ -146,12 +194,47 @@ class StudioSweptParameterMissing(StrictModel):
     parameter_label: NonemptyText
 
 
+class StudioClassMember(StrictModel):
+    id: ProjectName
+    label: str
+    value: str
+    """The member's class key."""
+
+
+class StudioClassSweep(StrictModel):
+    id: ProjectName
+    members: list[StudioClassMember]
+
+
+class StudioClassField(StrictModel):
+    """A class-valued field of the Train definition as the selected runs have it.
+
+    ``classes`` are the keys of the selected runs' classes, in the sweep's order when it is swept. The step's fields
+    below it are the parameters every one of those classes has.
+    """
+
+    id: str
+    label: str
+    options: list[StudioAuthoringOption]
+    classes: list[str]
+    sweep: StudioClassSweep | None = None
+    selected_value: ProjectName | None = None
+    """The member whose runs include the named run."""
+    can_sweep: bool = False
+
+
 class StudioTrainAuthoring(StrictModel):
     project_id: ProjectName
     step_id: ProjectName
     revision: Sha256
     fields: list[StudioAuthoringField]
     settings: dict[str, JsonValue] | None
-    patches: list[ProjectValueEdit]
+    """The selected runs' settings: the named run's."""
+    mixed: list[str] = Field(default_factory=list)
+    """Pointers in the definition where the selected runs hold different values."""
+    files: list[StudioProjectFilePatch]
     documents: list[ProjectName]
     refusal: StudioSweptParameterMissing | None = None
+    classes: list[StudioClassField] = Field(default_factory=list)
+    removed_values: dict[str, list[str]] = Field(default_factory=dict)
+    """Per sweep, the values whose runs the edit removes from the project."""

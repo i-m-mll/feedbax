@@ -8,14 +8,35 @@ type Schema = Readonly<Record<string, JsonValue>>;
 /** Writes the value at a path below the form's root; answers with a reason when the source refuses. */
 export type SchemaWrite = (path: readonly string[], value: JsonValue) => ReturnType<RawChange>;
 
+/**
+ * Puts the class whose key is `key` at a class-valued path, in place of the current one; the source decides what of
+ * the current value the class keeps. Answers with a reason when the source refuses.
+ */
+export type SchemaChoose = (path: readonly string[], key: JsonValue) => ReturnType<RawChange>;
+
 export interface SchemaContext {
   /** The schema whose `$defs` resolve `$ref`. */
   readonly root: JsonValue;
   readonly write?: SchemaWrite;
+  /** Without it, a class-valued field shows its class and cannot change it. */
+  readonly choose?: SchemaChoose;
   /** A field the server projects for the value at this path (a sweepable number), drawn in place of the schema's. */
   readonly projected?: (path: readonly string[]) => FieldModel | undefined;
   /** Where the value at this path comes from, when not from the document itself. */
   readonly origin?: (path: readonly string[]) => string | undefined;
+  /** The value at this path differs between the runs the form shows: it is drawn as Mixed. */
+  readonly mixed?: (path: readonly string[]) => boolean;
+  /** The source's account of the class-valued field at this path, where it has one. */
+  readonly classed?: (path: readonly string[]) => ClassProjection | undefined;
+}
+
+/**
+ * A class-valued field as its source projects it: the classes of the runs the form shows, and the field's kind,
+ * members and edits. With several classes, only the parameters all of them have are drawn.
+ */
+export interface ClassProjection {
+  readonly classes: readonly JsonValue[];
+  readonly field: Pick<FieldModel, 'kind' | 'kinds' | 'keeps' | 'members' | 'commit'>;
 }
 
 const without = (schema: Schema, ...keys: string[]) =>
@@ -82,36 +103,6 @@ function constOf(member: Schema, name: string) {
   return fixed(isRecord(member.properties) ? member.properties[name] ?? null : null) ?? null;
 }
 
-/** Whether the schema describes the value: by its type, or for a union of classes, by its class. */
-function fits(schema: JsonValue, value: JsonValue, root: JsonValue): boolean {
-  const resolved = resolve(schema, root, true);
-  const union = Array.isArray(resolved.anyOf) ? resolved.anyOf : Array.isArray(resolved.oneOf) ? resolved.oneOf : undefined;
-  if (value === null) return !!union?.some((member) => isRecord(member) && member.type === 'null');
-  const classes = unionOf(resolved, root);
-  if (!classes) return accepts(resolved, value);
-  const { members, name } = classes;
-  return name !== undefined && isRecord(value)
-    ? members.some((member) => constOf(member, name) === value[name])
-    : members.some((member) => fits(member, value, root));
-}
-
-/** The class's value when it replaces `current`: each parameter it shares with `current` kept, its defaults for the rest. */
-function replacing(member: Schema, name: string, current: JsonValue, root: JsonValue): Record<string, JsonValue> {
-  const properties = isRecord(member.properties) ? member.properties : {};
-  const kept = isRecord(current) ? Object.entries(current)
-    .filter(([key, value]) => key !== name && key in properties && fits(properties[key], value, root)) : [];
-  return { ...defaults(member, root), ...Object.fromEntries(kept), [name]: constOf(member, name) };
-}
-
-/** A class's value before it is edited: each declared default, a nested object's own defaults. */
-function defaults(member: Schema, root: JsonValue): Record<string, JsonValue> {
-  return Object.fromEntries(Object.entries(isRecord(member.properties) ? member.properties : {}).flatMap(([name, property]) => {
-    if (isRecord(property) && 'default' in property) return [[name, property.default]];
-    const resolved = resolve(property, root);
-    return resolved.type === 'object' && !unionOf(resolved, root) ? [[name, defaults(resolved, root)]] : [];
-  }));
-}
-
 export function pointer(path: readonly string[]) {
   return path.map((part) => '/' + part.replace(/~/g, '~0').replace(/\//g, '~1')).join('');
 }
@@ -134,6 +125,12 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   path: readonly string[] = [key]): FieldModel {
   const projection = context.projected?.(path);
   if (projection) return projection;
+  const field = declaredField(key, property, value, context, path);
+  return context.mixed?.(path) && field.type.kind !== 'group' ? { ...field, value: null, text: null } : field;
+}
+
+function declaredField(key: string, property: JsonValue, value: JsonValue | undefined, context: SchemaContext,
+  path: readonly string[]): FieldModel {
   const outer = resolve(property, context.root);
   const label = typeof outer.title === 'string' ? outer.title : humanizeLabel(key);
   const id = pointer(path);
@@ -144,7 +141,7 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   let schema = outer;
   if (union) {
     const { members, name } = union;
-    if (name) return classField(label, id, name, members, current, path, context, change, origin);
+    if (name) return classField(label, id, name, members, current, path, context, origin);
     const member = members.length === 1 ? members[0] : members.find((candidate) => accepts(candidate, current));
     schema = { ...without(member ?? {}, 'title'), ...without(outer, 'anyOf', 'oneOf', 'discriminator') };
   }
@@ -181,28 +178,40 @@ export function fromJsonSchema(key: string, property: JsonValue, value: JsonValu
   return rawField({ id, label, type: { kind: 'readOnly' }, value: current });
 }
 
-/** A value that is one of several classes: a choice of class, the chosen class's parameters as its parts. */
+/**
+ * A value that is one of several classes: a choice of class, the chosen class's parameters as its parts. Where the
+ * source shows several classes, the parts are the parameters every one of them has, and the field reads by their names.
+ */
 function classField(label: string, id: string, name: string, members: readonly Schema[], current: JsonValue,
-  path: readonly string[], context: SchemaContext, change: RawChange | undefined, origin: string | undefined): FieldModel {
+  path: readonly string[], context: SchemaContext, origin: string | undefined): FieldModel {
   const chosen = isRecord(current) ? members.find((member) => constOf(member, name) === current[name]) : undefined;
   const options: FieldOption[] = members.map((member) => {
     const value = constOf(member, name);
     return { value, label: typeof member.title === 'string' ? member.title : String(value) };
   });
-  const parameters = chosen && isRecord(chosen.properties) && isRecord(current)
-    ? Object.entries(chosen.properties).filter(([key]) => key !== name)
+  const projection = context.classed?.(path);
+  const shown = projection
+    ? members.filter((member) => projection.classes.some((key) => key === constOf(member, name)))
+    : chosen ? [chosen] : [];
+  const owner = chosen && shown.includes(chosen) ? chosen : shown[0];
+  const parameters = owner && isRecord(owner.properties) && isRecord(current)
+    ? Object.entries(owner.properties).filter(([key]) => key !== name &&
+      shown.every((member) => isRecord(member.properties) && key in member.properties))
     : [];
   const parts = parameters.map(([key, nested]) => fromJsonSchema(key, nested, (current as Record<string, JsonValue>)[key], context, [...path, key]));
   if (parts.length === 1) {
     const [[key, nested]] = parameters;
     const own = resolve(nested, context.root);
-    parts[0] = { ...parts[0], label, parameter: typeof own.title === 'string' ? own.title : humanizeLabel(key) };
+    const title = typeof own.title === 'string' ? own.title : humanizeLabel(key);
+    // A swept class draws its members between the field and the parameter, so the parameter is named for itself.
+    parts[0] = projection?.field.kind === 'sweep' ? { ...parts[0], label: title } : { ...parts[0], label, parameter: title };
   }
-  return rawField({
-    id, label, origin, value: chosen ? constOf(chosen, name) : null, type: { kind: 'class', options }, parts,
-    change: change && ((next) => {
-      const member = members.find((candidate) => constOf(candidate, name) === next);
-      return member && change(replacing(member, name, current, context.root));
-    }),
+  const single = shown.length === 1 && !context.mixed?.([...path, name]) ? shown[0] : undefined;
+  const model = rawField({
+    id, label, origin, value: single ? constOf(single, name) : null, type: { kind: 'class', options }, parts,
+    change: context.choose && ((key) => context.choose!(path, key)),
   });
+  if (!projection) return model;
+  const labels = shown.map((member) => options[members.indexOf(member)].label);
+  return { ...model, ...projection.field, text: labels.join(', ') };
 }

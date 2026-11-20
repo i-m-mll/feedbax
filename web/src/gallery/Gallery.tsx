@@ -31,6 +31,7 @@ import { StatusMark, type StatusMarkStatus } from '@/components/ui/StatusMark';
 import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
 import { TextField } from '@/components/ui/TextField';
 import { ValueFieldGallery } from './ValueFieldGallery';
+import { RunGridGallery } from './RunGridGallery';
 import { CardStyles } from './CardStyles';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 
@@ -482,6 +483,10 @@ export function Gallery() {
 
         <Group name="Card">
           <CardDemo />
+        </Group>
+
+        <Group name="Run grid">
+          <RunGridGallery />
         </Group>
 
         <Group name="InlineEdit">

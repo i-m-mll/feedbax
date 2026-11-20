@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator } from '@playwright/test';
-import { captureStudioWindow, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { captureStudioWindow, chooseSweepValue, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette } from './fixtures/studioKeyboard';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -30,7 +30,7 @@ test('the map card draws one sweep in a line, its head as glyph and name, and th
   expect(new Set(tops).size).toBe(1);
 
   await expect(card.locator('.studio-card__head')).toHaveText('train');
-  await card.getByRole('button', { name: 'Select batch-size 4', exact: true }).click();
+  await chooseSweepValue(card, 'batch-size', '4');
   await expect(card.locator('[id$="-status"]')).toHaveCount(0);
   await expect(card.getByText(/\d+ of \d+/)).toHaveCount(0);
 

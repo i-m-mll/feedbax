@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
-import { authorLearningRateSweep, captureStudioWindow, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, captureStudioWindow, chooseSweepValue, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
 import type {
@@ -400,8 +400,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await expect(source).toHaveAttribute('data-selected');
   await authorLearningRateSweep(stepInspector.getByRole('region', { name: 'Learning Rate field', exact: true }));
 
-  const sweep = source.getByRole('button', { name: /^Sweep \(?learning-rate / });
-  await expect(sweep).toHaveText('learning-rate 3');
+  await expect(source.getByRole('button', { name: 'Sweep learning-rate 3', exact: true })).toBeVisible();
   const saved = await request.get(projectPath);
   expect(saved.ok(), await saved.text()).toBe(true);
   snapshot = await saved.json() as StudioProjectSnapshot;
@@ -427,15 +426,9 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     return result.items;
   };
 
-  await sweep.click();
-  const valueButton = (name: string) => source.getByRole('listitem').getByRole('button', { name: `Select learning-rate ${name}`, exact: true });
-  await valueButton('0.001').click();
-  await valueButton('0.003').click({ modifiers: ['Shift'] });
-  await expect(valueButton('0.001')).toHaveAttribute('aria-pressed', 'true');
-  await expect(valueButton('0.003')).toHaveAttribute('aria-pressed', 'true');
-  await expect(valueButton('0.002')).toHaveAttribute('aria-pressed', 'false');
-  await sweep.click();
-  await page.keyboard.press('Tab');
+  await chooseSweepValue(source, 'learning-rate', '0.001');
+  await chooseSweepValue(source, 'learning-rate', '0.003', true);
+  await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
   const mark = source.locator('.studio-map-run-mark').first();
   await mark.focus();
   await expect(mark).not.toHaveCSS('box-shadow', 'none');
@@ -450,7 +443,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const accepted = await create;
   expect(accepted.status(), await accepted.text()).toBe(201);
   ({ snapshot } = await accepted.json() as StudioProjectDocument);
-  const childId = 'train-continuation';
+  const childId = 'train-2';
   expect(snapshot.project.steps?.[childId]).toMatchObject({
     base: { step: 'train' },
     inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': valueIds } } } },
@@ -523,10 +516,8 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   expect(unselected.attempts).toEqual([]);
 
   await mapStep(page, 'train').click();
-  await sweep.click();
-  await valueButton('0.001').click();
-  await valueButton('0.003').click({ modifiers: ['Shift'] });
-  await sweep.click();
+  await chooseSweepValue(source, 'learning-rate', '0.001');
+  await chooseSweepValue(source, 'learning-rate', '0.003', true);
   await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
   await expect(source.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(0);
   await captureStudioWindow(page, info, 'visual-map-group');
@@ -549,7 +540,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const rowSaved = await explicit;
   expect(rowSaved.status(), await rowSaved.text()).toBe(201);
   ({ snapshot } = await rowSaved.json() as StudioProjectDocument);
-  const rowChild = 'train-continuation-2';
+  const rowChild = 'train-3';
   expect(snapshot.project.steps?.[rowChild]).toMatchObject({
     base: { step: 'train' },
     inputs: { checkpoint: {

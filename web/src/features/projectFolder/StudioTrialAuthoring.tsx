@@ -29,6 +29,8 @@ import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
+/** The scope a change is made in. */
+export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['scope'] | undefined;
 /** Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. */
 type Commit = (name: string, change: Change, removes?: boolean) => Promise<string | undefined>;
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
@@ -39,7 +41,7 @@ function write(path: string, value: JsonValue, present: boolean): ProjectValueEd
 
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
-  enabled: boolean, editable: boolean, scope: StudioTrialAuthoringRequest['scope'] | undefined, confirmRemoval: ConfirmRunRemoval,
+  enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval,
 ) {
   const writing = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -55,7 +57,7 @@ export function useTrialAuthoring(
     writing.current = true;
     setBusy(true);
     try {
-      const result = await readStudioTrialAuthoring(project, { revision, run, change, scope }, editor.signal);
+      const result = await readStudioTrialAuthoring(project, { revision, run, change, scope: scope(change) }, editor.signal);
       if (result.files.length) {
         if (removes && !await confirmRemoval(filesRemoval(project, revision, result.files, editor.signal))) return;
         const documents = [result.model, result.task_document, result.objective_document];

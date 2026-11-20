@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
-import { enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { outlineRow, pick, placeFromLibrary } from './fixtures/controls';
 
@@ -67,6 +67,9 @@ test('authors and reopens an addressed Model through the project history', async
   await expect(cell.getByText('GRU', { exact: true }).first()).toBeVisible();
   await model.getByRole('button', { name: 'Fit View', exact: true }).click();
   const initialPosition = await cell.evaluate((node) => node.style.transform);
+  // Topology edits wait for the plan of the saved revision after each commit.
+  const editableCard = () => expect(cell).toHaveClass(/\bdraggable\b/);
+  await editableCard();
   const moved = await apply(async () => {
     const bounds = await cell.locator('header').boundingBox();
     if (!bounds) throw new Error('The cell header is not measurable');
@@ -80,6 +83,7 @@ test('authors and reopens an addressed Model through the project history', async
   await expect.poll(() => cell.evaluate((node) => node.style.transform)).not.toBe(initialPosition);
   const handle = (direction: 'input' | 'output', name: string) => cell.locator(`[data-handleid="${direction}:${name}"]`);
   const reviewed = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/connections`);
+  await editableCard();
   const wired = await apply(async () => {
     await handle('output', 'hidden').hover();
     await page.mouse.down();
@@ -219,9 +223,7 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
   const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
-  await evaluation.getByRole('button', { name: 'Sweep seed 2', exact: true }).click();
-  await evaluation.getByRole('listitem').getByRole('button', { name: 'Select seed control', exact: true }).click();
-  await evaluation.getByRole('button', { name: 'Sweep seed 2', exact: true }).click();
+  await chooseSweepValue(evaluation, 'seed', 'control');
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await addIntervention(page, projectPath, { kind: 'axis_value', axis: 'seed', value: 'control' });
   await mapStep(page, 'baseline').click();

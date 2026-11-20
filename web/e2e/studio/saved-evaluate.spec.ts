@@ -6,7 +6,7 @@ import type {
 } from '../../src/generated/studioContracts';
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
-import { captureStudioWindow, drawnRunLabel, enter, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { captureStudioWindow, chooseSweepValue, drawnRunLabel, enter, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
 import { pick, reveal } from './fixtures/controls';
@@ -217,6 +217,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
     step: 'baseline', code: 'cannot_run', path: '/inputs/subject',
   }));
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeDisabled();
   // A card accepts a new step whatever its runs' status.
   await expect(page.getByRole('button', { name: 'New Step baseline', exact: true })).toBeEnabled();
 
@@ -745,8 +746,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
     expect(response.ok(), await response.text()).toBe(true);
     return await response.json() as StudioProjectSnapshot;
   }
-  await page.getByRole('article', { name: 'Evaluate evaluate', exact: true })
-    .getByRole('button', { name: 'Select replicate left', exact: true }).click();
+  await chooseSweepValue(page.getByRole('article', { name: 'Evaluate evaluate', exact: true }), 'replicate', 'left');
   await expect(field).toHaveValue('every 2');
   await field.fill('3');
   const axis = await save(() => inspector.getByRole('button', { name: 'Apply Checkpoints' }).click());

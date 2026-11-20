@@ -14,14 +14,14 @@ from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentStep, ModelEditCommand, SetField,
+    EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentRows, EvaluateAttachmentStep,
+    ModelEditCommand, SetField,
 )
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import InlineBase, SetProjectValue, Step
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
-from feedbax.contracts.project_inputs import SweepExceptionTerms
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import _paths_overlap, authored_row
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, ModelFieldView
@@ -29,12 +29,13 @@ from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectF
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
+from feedbax.studio.selection import merged_files
 from feedbax.web.services.evaluate_attachment import (
     EvaluateAttachmentRefused, prepare_evaluate_attachment, read_evaluate_attachments,
 )
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
-from feedbax.web.services.trial_scope import variant_file
+from feedbax.web.services.trial_scope import reached_steps, scoped_file, selection_scope, variant_file
 
 
 @dataclass(frozen=True)
@@ -186,11 +187,15 @@ def _fields(model: ModelDocument, owner: ModelAddress, components: ComponentRegi
 
 
 def _step_field_write(step: Step, address: ModelAddress, value: JsonValue) -> list[SetProjectValue]:
-    difference = SetField(op="set_field", address=address, value=value)
+    return _step_field_writes(step, [(address, value)])
+
+
+def _step_field_writes(step: Step, values: list[tuple[ModelAddress, JsonValue]]) -> list[SetProjectValue]:
     name = "field-values"
     batches = step.model_attachments
-    records = [record for record in batches.get(name, ()) if record.address != address]
-    records.append(difference)
+    addresses = [address for address, _ in values]
+    records = [record for record in batches.get(name, ()) if record.address not in addresses]
+    records.extend(SetField(op="set_field", address=address, value=value) for address, value in values)
     return [SetProjectValue(
         op="replace" if MODEL_ATTACHMENTS in step.model_fields_set else "add",
         path=pointer((MODEL_ATTACHMENTS,)),
@@ -199,6 +204,20 @@ def _step_field_write(step: Step, address: ModelAddress, value: JsonValue) -> li
             for key, batch in (batches | {name: records}).items()
         },
     )]
+
+
+def _kept_files(project, step_id: str, step: Step, writes: list[OverridePatch]) -> list[StudioProjectFilePatch]:
+    """The files that give ``step`` a sweep's kept value: Model fields among its field values, the rest in its definition."""
+    fields = [(ModelAddress.from_text(write.path), write.value) for write in writes if write.path.startswith("{")]
+    if any(write.op == "remove" for write in writes if write.path.startswith("{")):
+        raise ProjectFolderInvalid("A sweep value removes a Model field.")
+    rest = [write for write in writes if not write.path.startswith("{")]
+    return [
+        *([StudioProjectFilePatch(
+            address=AuthoredFileAddress(kind="step", id=step_id), patches=_step_field_writes(step, fields),
+        )] if fields else []),
+        *(scoped_file(project, step_id, EvaluateAttachmentStep(kind="step"), rest) if rest else []),
+    ]
 
 
 def model_fields(
@@ -266,7 +285,8 @@ def model_fields(
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         fields.append(project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
-            period=(effective_model or model).step_seconds, address=field.address,
+            period=(effective_model or model).step_seconds, scoped=bool(body.rows or body.axes),
+            address=field.address,
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
         ))
         targets[field_key] = replace(field, numeric=numeric), axis
@@ -284,18 +304,11 @@ def model_fields(
     def step_file(patches: list[SetProjectValue]) -> StudioProjectFilePatch:
         return StudioProjectFilePatch(address=step_address, patches=patches)
 
+    scope = None
     if (body.rows or body.axes) and evaluate is None:
-        available = {row.key.row: row for row in plan.rows if
-                     (row.key.variant, row.key.step) == (body.run.variant, body.run.step)}
-        if not set(body.rows) <= available.keys() or len(set(body.rows)) != len(body.rows):
-            raise ProjectFolderInvalid("The selected rows no longer address this stored field.")
-        if body.axes and set(body.rows) != {
-            row_id for row_id, row in available.items()
-            if all(axis in row.coordinates and row.coordinates[axis].value_id in values
-                   for axis, values in body.axes.items())
-        }:
-            raise ProjectFolderInvalid("The selected sweep values no longer address these rows.")
-        if not body.axes and axis is not None and any(
+        key = RunKey(body.run.variant, body.run.step, body.run.row)
+        scope = selection_scope(project, plan, key, tuple(body.rows), body.axes)
+        if isinstance(scope, EvaluateAttachmentRows) and axis is not None and any(
             source.kind == "sweep_value"
             for field_view in fields if field_view.address == body.address
             for source in field_view.sources
@@ -303,15 +316,21 @@ def model_fields(
             raise ProjectFolderInvalid("A selected row already writes this field through a sweep value.")
     prepared = prepare_numeric_field(
         field.numeric, axis, body.edit, functions, period=(effective_model or model).step_seconds,
-        rows=tuple(body.rows) if evaluate is None else (),
-        selection=SweepExceptionTerms(axes=body.axes) if evaluate is None and body.axes else None,
-        keep_value=axis.target.writes if axis is not None else None,
+        scoped=scope is not None,
     )
     result = prepared.result
     if isinstance(result, tuple):
         return ModelFieldResponse(problems=list(result))
     if isinstance(result, list):
-        return ModelFieldResponse(files=[step_file(result)], removed_values=prepared.removed)
+        kept = _kept_files(project, body.run.step, step, prepared.keep) if prepared.keep and step is not None else []
+        return ModelFieldResponse(files=merged_files([*kept, step_file(result)]), removed_values=prepared.removed)
+    if scope is not None:
+        if axis is None or axis.target.patch_path is None:
+            return ModelFieldResponse(problems=[Problem(
+                code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
+            )])
+        write = OverridePatch(op="replace", path=axis.target.patch_path, value=result)
+        return ModelFieldResponse(files=scoped_file(project, body.run.step, scope, [write]))
     value = result
     if isinstance(result, LiteralValue):
         if field.address.element.parent.kind == "attachment":
@@ -331,7 +350,9 @@ def model_fields(
             return ModelFieldResponse(problems=[Problem(code=ProblemCode.STRUCTURE, reason=error.problem.detail)])
         return ModelFieldResponse(files=[edit.file])
     if variant is not None:
-        if body.rows or plan is None or set(body.lit_steps) != plan.document_users(variant, owner_name):
+        if body.rows or plan is None or not plan.document_users(variant, owner_name) <= reached_steps(
+            project, set(body.chosen_steps) or {body.run.step},
+        ):
             raise ProjectFolderInvalid("Select the steps that use this Model in the authored variant.")
         sweep = project.sweep
         assert sweep is not None
@@ -369,7 +390,9 @@ def model_fields(
         return ModelFieldResponse(files=[variant_file(project, variant, [write])])
     if body.address.to_text() not in authored_fields:
         return ModelFieldResponse(files=[step_file(_step_field_write(step, field.address, value))])
-    if set(body.lit_steps) != plan.document_users(body.run.variant, owner_name):
+    if not plan.document_users(body.run.variant, owner_name) <= reached_steps(
+        project, set(body.chosen_steps) or {body.run.step},
+    ):
         return ModelFieldResponse(problems=[Problem(
             code=ProblemCode.STRUCTURE, reason="Select all steps that use this Model to change its document value.",
         )])

@@ -4,6 +4,7 @@ import { selectedRuns } from '@/features/pipeline/selection';
 import type { JsonValue, ProjectValueEdit, Step, StepReference, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { planVariants, savedRunId, sharedRowTerms, stepSourceRows } from './projectWindowPlan';
+import { generatedName, holds } from './generatedName';
 
 const initializationPath = 'checkpoint_initialization';
 const initializationLayer = 'initialize';
@@ -91,10 +92,7 @@ export async function createCheckpointTrain(
   projection: StudioSavedTrainRuns,
 ) {
   const { step, where } = trainSourceSubset(source, view, projection, !!editor.getSnapshot().saved.project.sweep);
-  const name = `${step.id}-continuation`;
-  const stepIds = new Set(Object.keys(editor.getSnapshot().saved.project.steps ?? {}));
-  let id = name;
-  for (let number = 2; stepIds.has(id); number += 1) id = `${name}-${number}`;
+  const id = generatedName('train', holds(editor.getSnapshot().saved.project.steps));
   await editor.createFile({
     kind: 'step', id,
     step: withCheckpointStart({ kind: 'train', base: { step: step.id } }, step.inputs.some(({ id }) => id === 'checkpoint'),

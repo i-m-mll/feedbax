@@ -3,11 +3,17 @@ import clsx from 'clsx';
 import type { HTMLAttributes } from 'react';
 import type { ReceiptValidity, StudioActivityJob } from '@/generated/studioContracts';
 
-export type StatusMarkStatus =
+/** A run's status with its result's validity folded in. */
+export type ResultStatus =
   | StudioActivityJob['status']
   | Exclude<ReceiptValidity['state'], 'current' | 'stale'>
   | 'checking'
   | 'environment';
+
+/** A machine's state that draws a mark; a ready machine draws none. */
+export type MachineMarkStatus = 'busy' | 'unreachable' | 'off';
+
+export type StatusMarkStatus = ResultStatus | MachineMarkStatus;
 
 type Fill = 'solid' | 'hollow';
 
@@ -30,15 +36,27 @@ const marks = {
   unchecked: ['text-shell-status-success', 'hollow', 'M2.5 6l2.5 2.5 4.5-5'],
   checking: ['text-shell-status-success', 'hollow', 'M6 2a4 4 0 1 1-4 4'],
   environment: ['text-shell-status-neutral', 'hollow', 'M6 2v8M2 6h8M3.5 3.5l5 5m0-5-5 5'],
+  busy: ['text-shell-status-running', 'hollow', 'M6 2a4 4 0 1 1-4 4'],
+  unreachable: ['text-shell-status-failure', 'hollow', 'M2 6h2.5m3 0H10M5 4l2 4'],
+  off: ['text-shell-status-idle', 'hollow', 'M6 2v3.5M3.8 4a3.2 3.2 0 1 0 4.4 0'],
 } as const satisfies Record<StatusMarkStatus, readonly [string, Fill, string]>;
+
+/** The status's colour class, for a mark too small to carry its shape. */
+export function statusTone(status: StatusMarkStatus) {
+  return marks[status][0];
+}
 
 export interface StatusMarkProps extends Omit<HTMLAttributes<HTMLSpanElement>, 'children'> {
   status: StatusMarkStatus;
   /** The status's word, read aloud and shown as the tooltip; omit where the mark sits beside it. */
   label?: string;
+  /** The tooltip in place of the label, when it says more than the word, such as the reason. */
+  tip?: string;
 }
 
-export function StatusMark({ status, label, className, ...props }: StatusMarkProps) {
+const spinning: ReadonlySet<StatusMarkStatus> = new Set(['checking', 'busy']);
+
+export function StatusMark({ status, label, tip, className, ...props }: StatusMarkProps) {
   const [tone, fill, path] = marks[status];
   const unchecked = status === 'unchecked';
   return (
@@ -46,7 +64,7 @@ export function StatusMark({ status, label, className, ...props }: StatusMarkPro
       role={label ? 'img' : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
-      {...(label ? appTip(label) : {})}
+      {...(label ? appTip(tip ?? label) : {})}
       data-status-mark={status}
       className={clsx(
         'relative inline-flex size-4 shrink-0 items-center justify-center rounded-sm border-[1.5px] border-current',
@@ -62,7 +80,7 @@ export function StatusMark({ status, label, className, ...props }: StatusMarkPro
           'size-3.5 shrink-0',
           fill === 'solid' ? 'text-shell-status-ink' : 'text-current',
           unchecked && '[:root[data-unchecked=badge]_&]:text-shell-status-ink',
-          status === 'checking' && 'motion-safe:animate-spin',
+          spinning.has(status) && 'motion-safe:animate-spin',
         )}
         viewBox="0 0 12 12"
       >
@@ -79,13 +97,13 @@ export function StatusMark({ status, label, className, ...props }: StatusMarkPro
 }
 
 /** Statuses from the one that most needs attention to the one that needs none. */
-const severity: readonly StatusMarkStatus[] = [
+const severity: readonly ResultStatus[] = [
   'failed', 'corrupt', 'cannot_run', 'blocked', 'interrupted', 'awaiting_authorization', 'stale', 'environment',
   'stopping', 'running', 'collecting', 'starting', 'checking', 'queued', 'unchecked', 'stopped', 'not_run', 'succeeded',
 ];
 
 /** The status of a set that most needs attention, with how many members have it. */
-export function worstStatus(counts: Readonly<Partial<Record<StatusMarkStatus, number>>>) {
+export function worstStatus(counts: Readonly<Partial<Record<ResultStatus, number>>>) {
   const status = severity.find((candidate) => (counts[candidate] ?? 0) > 0);
   return status && { status, count: counts[status]! };
 }

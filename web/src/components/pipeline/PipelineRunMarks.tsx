@@ -1,15 +1,20 @@
-import { memo, useMemo, type KeyboardEvent } from 'react';
+import clsx from 'clsx';
+import { Check } from 'lucide-react';
+import { memo, useMemo, useRef, type DragEvent, type KeyboardEvent } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
-import { StatusMark } from '@/components/ui/StatusMark';
+import { StatusMark, statusTone } from '@/components/ui/StatusMark';
 import {
   studioAccessibleName,
   studioCountOf,
+  studioFormat,
+  studioFormatParts,
   studioName,
   studioRunStatus,
   type StudioResultState,
 } from '@/components/activity/studioVocabulary';
 import type { PlanStepView, PlanSweepView } from '@/features/pipeline/planView';
 import {
+  extendsSelection,
   selectionButton,
   selectRun,
   selectSweepGroup,
@@ -17,40 +22,117 @@ import {
   type PipelineSelection,
   type PipelineSelectionState,
 } from '@/features/pipeline/selection';
-import { mapRunCells, type RunMark } from './pipelineMapLayout';
+import {
+  exchangeMapSweeps,
+  mapAxes,
+  mapMarkSize,
+  mapRunCells,
+  type MapMarkSize,
+  type MarkCell,
+  type RunMark,
+} from './pipelineMapLayout';
 import { RunContextMenu, type RunMenu } from './RunContextMenu';
 import { Button } from '@/components/ui/Button';
+import { Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 
 export type ApplyMapSelection = (change: (state: PipelineSelectionState) => PipelineSelectionState) => void;
 
-export function MapSweepValue({
+type Place = 'rows' | 'columns' | 'folded';
+const placeFormat = { rows: 'mapRowsAxis', columns: 'mapColumnsAxis', folded: 'mapFoldedSweep' } as const;
+/** An axis names its count only when there are more values than can be counted at a glance; no mark shows a folded sweep's. */
+const countedValues = 7;
+
+function MapAxisLabel({
   sweep,
-  value,
-  stepId,
+  place,
+  step,
   selection,
   applySelection,
+  placeAt,
+  dragging,
+  exchange,
 }: {
   sweep: PlanSweepView;
-  value: PlanSweepView['values'][number];
-  stepId: string;
+  place: Place;
+  step: PlanStepView;
   selection: PipelineSelection | null;
   applySelection: ApplyMapSelection;
+  placeAt?: (place: 'rows' | 'columns') => void;
+  dragging: { current: string | null };
+  exchange?: (from: string, to: string) => void;
 }) {
-  const selected = selection?.kind === 'values' && selection.terms.some(
-    (term) => term.sweepId === sweep.id && term.valueIds.includes(value.id),
-  );
+  const count = sweep.values.length;
+  const folded = place === 'folded';
+  const shownCount = folded || count > countedValues ? studioFormat('mapValueCount', { count }) : '';
+  // Only the name's track shrinks, to its first letter, so a shortened label keeps its glyph and count.
+  const parts = studioFormatParts<string | null>(placeFormat[place], { name: null, count: shownCount });
+  const nameAt = parts.indexOf(null);
+  const chosen = new Set(selection?.kind === 'values' && selection.stepId === step.id
+    ? selection.terms.find(({ sweepId }) => sweepId === sweep.id)?.valueIds : []);
+  // A key's modifiers do not reach the click a menu item synthesizes from it.
+  const extendByKey = useRef(false);
+  function drop(event: DragEvent) {
+    const from = dragging.current;
+    if (!from || !exchange) return;
+    event.preventDefault();
+    exchange(from, sweep.id);
+    dragging.current = null;
+  }
   return (
-    <Button
-      variant="ghost"
-      size="mark"
-      className="studio-map-value"
-      aria-label={studioAccessibleName('select', `${sweep.label} ${value.label}`)}
-      pressed={selected}
-      {...selectionButton((extend) => applySelection((state) => selectSweepValue(state, stepId, sweep.id, value.id, extend)))}
-    >
-      {value.label}
-    </Button>
+    <Menu>
+      <MenuTrigger render={
+        <Button
+          variant="ghost"
+          size="mark"
+          // The line never wraps: folded names shorten first, their weight keeping an axis name's share of the
+          // shrink below one layout unit until they are at their least.
+          className={clsx('studio-map-axis !shrink aria-expanded:bg-shell-selected', folded && '![flex-shrink:1000000]')}
+          data-place={place}
+          aria-label={studioAccessibleName('sweep', `${sweep.label} ${count}`)}
+          {...appTip(studioAccessibleName('sweep', `${sweep.label} ${count}`))}
+          draggable={Boolean(exchange)}
+          onDragStart={(event) => {
+            dragging.current = sweep.id;
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', sweep.id);
+          }}
+          onDragEnd={() => { dragging.current = null; }}
+          onDragOver={(event) => { if (dragging.current && dragging.current !== sweep.id) event.preventDefault(); }}
+          onDrop={drop}
+        >
+          <span className="grid grid-cols-[auto_minmax(1.5em,max-content)_auto] whitespace-pre">
+            <span>{parts.slice(0, nameAt)}</span>
+            <span className="truncate">{sweep.label}</span>
+            <span>{parts.slice(nameAt + 1)}</span>
+          </span>
+        </Button>
+      } />
+      <MenuContent aria-label={studioAccessibleName('sweep', sweep.label)}>
+        <ScrollFade axis="y" className="nowheel max-h-60">
+          {sweep.values.map((value) => (
+            <MenuItem key={value.id}
+              glyph={<span className="flex size-[1em] shrink-0 items-center justify-center">{chosen.has(value.id) && <Check />}</span>}
+              onKeyDown={(event) => { extendByKey.current = extendsSelection(event); }}
+              onClick={(event) => {
+                const extend = extendsSelection(event) || extendByKey.current;
+                extendByKey.current = false;
+                applySelection((state) => selectSweepValue(state, step.id, sweep.id, value.id, extend));
+              }}>
+              {value.label}
+            </MenuItem>
+          ))}
+        </ScrollFade>
+        {placeAt && <>
+          <MenuSeparator />
+          <MenuRadioGroup value={folded ? '' : place}
+            onValueChange={(next: string) => placeAt(next as 'rows' | 'columns')}>
+            <MenuRadioItem value="rows">{studioName('rows')}</MenuRadioItem>
+            <MenuRadioItem value="columns">{studioName('columns')}</MenuRadioItem>
+          </MenuRadioGroup>
+        </>}
+      </MenuContent>
+    </Menu>
   );
 }
 
@@ -60,15 +142,11 @@ interface MarkPresentation {
   statuses: readonly [StudioResultState, number][];
 }
 
-interface ProjectedCell {
-  key: string;
-  row: number;
-  column: number;
-  marks: (MarkPresentation & { id: string })[];
-}
+const markRadius: Record<MapMarkSize['id'], string> = { full: 'rounded-sm', small: 'rounded-[2px]', smallest: 'rounded-[1px]' };
 
 function MarkButton({
   item,
+  size,
   stepId,
   selected,
   selectionKind,
@@ -78,6 +156,7 @@ function MarkButton({
   runMenu,
 }: {
   item: MarkPresentation;
+  size: MapMarkSize;
   stepId: string;
   selected: ReadonlySet<string>;
   selectionKind?: PipelineSelection['kind'];
@@ -112,6 +191,7 @@ function MarkButton({
     ? studioCountOf(selectedCount, runs.length)
     : null;
   const name = [label, status, share].filter(Boolean).join(' · ');
+  const shaped = size.id === 'full' && statuses.length === 1;
   return <RunContextMenu runs={runs} menu={runMenu} trigger={
     <Button
       variant="bare"
@@ -124,18 +204,26 @@ function MarkButton({
       data-map-focus={lineage}
       data-boxed={selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}
       data-group-member={selectionKind === 'values' && selectedCount > 0 && mark.kind === 'run' ? '' : undefined}
-      className="studio-map-run-mark relative inline-flex shrink-0 gap-px rounded-sm"
+      className={clsx('studio-map-run-mark relative flex shrink-0', markRadius[size.id])}
+      style={{ width: size.mark, height: size.mark }}
       {...selectionButton((extend) => {
-        if (mark.kind === 'group') applySelection(() => selectSweepGroup(stepId, mark.terms));
-        else applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));
+        if (mark.kind === 'run') applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));
+        else if (mark.terms) applySelection(() => selectSweepGroup(stepId, mark.terms!));
+        else applySelection(() => ({ selection: { kind: 'rows', stepId, runIds: runs.map(({ id }) => id) }, focus: null }));
       })}
     >
-      {statuses.map(([state, count]) => <StatusMark key={state} status={state} style={{ flexGrow: count }} />)}
+      {shaped ? <StatusMark status={statuses[0][0]} /> : (
+        <span aria-hidden="true" className={clsx('flex size-full overflow-hidden', markRadius[size.id])}>
+          {statuses.map(([state, count]) => (
+            <span key={state} className={clsx('h-full min-w-0 basis-0 bg-current', statusTone(state))} style={{ flexGrow: count }} />
+          ))}
+        </span>
+      )}
       {selectedCount > 0 && mark.kind === 'group' && (
         <span
           aria-hidden="true"
-          className="absolute inset-x-0 bottom-0 h-1 rounded-bl-[2px] bg-shell-foreground"
-          style={{ width: `${100 * selectedCount / runs.length}%` }}
+          className="absolute bottom-0 left-0 bg-shell-foreground"
+          style={{ width: `${100 * selectedCount / runs.length}%`, height: Math.max(1, size.mark / 4) }}
         />
       )}
       {relatedCount > 0 && <span aria-hidden="true"
@@ -147,205 +235,148 @@ function MarkButton({
   } />;
 }
 
-const bandKeys: Record<string, string> = { ArrowLeft: 'ArrowUp', ArrowRight: 'ArrowDown', ArrowUp: 'ArrowLeft', ArrowDown: 'ArrowRight' };
+const arrowSteps: Record<string, readonly [number, number]> = {
+  ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0],
+};
 
+/** Arrow keys move to the nearest mark in their direction, past empty cells. */
 function navigateMarks(event: KeyboardEvent<HTMLDivElement>) {
-  const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
-  if (event.defaultPrevented || !keys.includes(event.key) || !(event.target instanceof HTMLElement)) return;
-  const key = event.currentTarget.dataset.orientation === 'band' ? bandKeys[event.key] : event.key;
+  const direction = arrowSteps[event.key];
+  if (event.defaultPrevented || !direction || !(event.target instanceof HTMLElement)) return;
   const cell = event.target.closest<HTMLElement>('[aria-colindex]');
   const row = cell?.closest<HTMLElement>('[aria-rowindex]');
   if (!cell || !row) return;
-  const horizontal = key === 'ArrowLeft' || key === 'ArrowRight';
-  const direction = key === 'ArrowLeft' || key === 'ArrowUp' ? -1 : 1;
-  const buttons = [...cell.querySelectorAll<HTMLButtonElement>('button')];
-  const adjacent = horizontal ? buttons[buttons.indexOf(event.target as HTMLButtonElement) + direction] : undefined;
-  const selector = '[aria-colindex]';
-  const column = cell.getAttribute('aria-colindex');
-  let destination = adjacent;
-  if (!destination && horizontal) {
-    const cells = [...row.querySelectorAll<HTMLElement>(selector)];
-    const next = cells[cells.indexOf(cell) + direction];
-    const controls = next && [...next.querySelectorAll<HTMLButtonElement>('button')];
-    destination = direction < 0 ? controls?.at(-1) : controls?.[0];
-  } else if (!horizontal) {
-    const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[aria-rowindex]')];
-    for (let index = rows.indexOf(row) + direction; rows[index] && !destination; index += direction) {
-      destination = rows[index].querySelector<HTMLButtonElement>(`[aria-colindex="${column}"] button`) ?? undefined;
+  event.preventDefault();
+  const grid = event.currentTarget;
+  const rows = Number(grid.getAttribute('aria-rowcount'));
+  const columns = Number(grid.getAttribute('aria-colcount'));
+  const [down, across] = direction;
+  for (
+    let r = Number(row.getAttribute('aria-rowindex')) + down, c = Number(cell.getAttribute('aria-colindex')) + across;
+    r >= 1 && r <= rows && c >= 1 && c <= columns;
+    r += down, c += across
+  ) {
+    const next = grid.querySelector<HTMLButtonElement>(`[aria-rowindex="${r}"] > [aria-colindex="${c}"] button`);
+    if (next) {
+      next.focus();
+      return;
     }
   }
-  event.preventDefault();
-  destination?.focus();
 }
 
+/** A step's runs on its card: the label line naming each sweep's place, then one mark per cell on a uniform pitch. */
 export const PipelineRunMarks = memo(function PipelineRunMarks({
   step,
   sweeps,
-  folded,
   selection,
   selected,
   upstream,
   downstream,
   applySelection,
   runMenu,
+  arrange,
 }: {
   step: PlanStepView;
   sweeps: readonly PlanSweepView[];
-  folded: PlanSweepView | undefined;
   selection: PipelineSelection | null;
   selected: ReadonlySet<string>;
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   applySelection: ApplyMapSelection;
   runMenu?: RunMenu;
+  /** Saves a new sweep order; absent where the card cannot be arranged. */
+  arrange?: (order: string[]) => void;
 }) {
+  const dragging = useRef<string | null>(null);
+  const axes = useMemo(() => mapAxes(sweeps), [sweeps]);
   const grid = useMemo(() => {
-    const { rowSweep, columnSweep, cells } = mapRunCells(step.runs, sweeps, folded);
+    const { cells, rowCount, columnCount } = mapRunCells(step.runs, axes);
     const valuesBySweep = new Map(sweeps.map(
       (sweep) => [sweep.id, new Map(sweep.values.map(({ id, label }) => [id, label]))],
     ));
-    const positions = (sweep?: PlanSweepView) => new Map<string | undefined, number>(sweep?.values.map(({ id }, index) => [id, index]));
-    const rows = positions(rowSweep);
-    const columns = positions(columnSweep);
-    const projectedCells = [...cells].map(([key, cell]): ProjectedCell => ({
-      key,
-      row: (rows.get(cell.row) ?? rows.size) + (columnSweep ? 2 : 1),
-      column: (columns.get(cell.column) ?? columns.size) + (rowSweep ? 2 : 1),
-      marks: [...cell.marks].map(([id, mark]) => {
-        if (mark.kind === 'run') {
-          const coordinates = sweeps.flatMap((sweep) => {
-            const value = valuesBySweep.get(sweep.id)?.get(mark.run.values[sweep.id]);
-            return value === undefined ? [] : [`${sweep.label} ${value}`];
-          });
-          const label = coordinates.join(' · ') || mark.run.label;
-          return { id, mark, label, statuses: [[mark.run.state, 1]] } satisfies MarkPresentation & { id: string };
-        }
-        const scope = sweeps.flatMap((sweep) => {
-          const term = mark.terms.find(({ sweepId }) => sweepId === sweep.id);
-          if (!term || sweep.id === folded?.id) return [];
-          const values = term.valueIds.map((valueId) => valuesBySweep.get(sweep.id)?.get(valueId) ?? valueId);
-          return [`${sweep.label} ${values.join(', ')}`];
+    const present = ({ mark }: MarkCell): MarkPresentation => {
+      if (mark.kind === 'run') {
+        const coordinates = sweeps.flatMap((sweep) => {
+          const value = valuesBySweep.get(sweep.id)?.get(mark.run.values[sweep.id]);
+          return value === undefined ? [] : [`${sweep.label} ${value}`];
         });
-        const counts = new Map<StudioResultState, number>();
-        for (const run of mark.runs) counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
-        const label = [...scope, `${mark.runs.length} ${studioName('runs')}`].join(' · ');
-        return { id, mark, label, statuses: [...counts] };
-      }),
-    }));
-    const cellsByRow = new Map<number, ProjectedCell[]>();
-    for (const cell of projectedCells) {
-      const row = cellsByRow.get(cell.row);
-      if (row) row.push(cell);
-      else cellsByRow.set(cell.row, [cell]);
-    }
-    for (const cells of cellsByRow.values()) cells.sort((a, b) => a.column - b.column);
-    const extraColumn = projectedCells.some((cell) => cell.column > columns.size + Number(Boolean(rowSweep)));
-    return {
-      rowSweep, columnSweep, cellsByRow,
-      rowCount: Math.max(0, (rowSweep?.values.length ?? 0) + Number(Boolean(columnSweep)), ...cellsByRow.keys()),
-      columnCount: Math.max(1, columns.size + Number(extraColumn)),
+        return { mark, label: coordinates.join(' · ') || mark.run.label, statuses: [[mark.run.state, 1]] };
+      }
+      const scope = (mark.terms ?? []).map(({ sweepId, valueIds }) =>
+        `${sweeps.find(({ id }) => id === sweepId)?.label} ${valueIds.map((id) => valuesBySweep.get(sweepId)?.get(id) ?? id).join(', ')}`);
+      const counts = new Map<StudioResultState, number>();
+      for (const run of mark.runs) counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
+      return { mark, label: [...scope, `${mark.runs.length} ${studioName('runs')}`].join(' · '), statuses: [...counts] };
     };
-  }, [step.runs, sweeps, folded]);
+    const byRow = Array.from({ length: rowCount }, () => [] as (MarkCell & { item: MarkPresentation })[]);
+    for (const cell of cells) byRow[cell.row].push({ ...cell, item: present(cell) });
+    for (const row of byRow) row.sort((a, b) => a.column - b.column);
+    return { byRow, rowCount, columnCount, size: mapMarkSize(columnCount, rowCount) };
+  }, [step.runs, sweeps, axes]);
   if (!grid.rowCount) return null;
-  const headerRows = grid.columnSweep ? 1 : 0;
-  const terms = selection?.kind === 'values' ? selection.terms : [];
+  const { rows, columns, folded } = axes;
+  const { size } = grid;
+  const terms = selection?.kind === 'values' && selection.stepId === step.id ? selection.terms : [];
   const chosen = (sweep: PlanSweepView | undefined) => terms.find(({ sweepId }) => sweepId === sweep?.id)?.valueIds;
-  const chosenRows = chosen(grid.rowSweep);
-  const chosenColumns = chosen(grid.columnSweep);
+  const chosenRows = chosen(rows);
+  const chosenColumns = chosen(columns);
   const boxRows = terms.length === 1 && chosenRows !== undefined;
   const boxColumns = terms.length === 1 && chosenColumns !== undefined;
   const boxIntersections = terms.length === 2 && chosenRows !== undefined && chosenColumns !== undefined;
-  const marksOf = (cell: ProjectedCell, heading?: PlanSweepView['values'][number]) => (
-    <div role="gridcell" aria-colindex={cell.column} key={cell.key}
-      data-map-group-cell={boxIntersections && heading && chosenRows.includes(heading.id)
-        && chosenColumns.includes(grid.columnSweep?.values[cell.column - 2]?.id ?? '') ? '' : undefined}
-      className="relative flex flex-wrap items-center justify-center gap-1"
-      style={grid.columnSweep ? { gridColumn: cell.column, gridRow: cell.row, maxWidth: 192 } : { maxWidth: 192 }}>
-      {cell.marks.map((item) => (
-        <MarkButton key={item.id} item={item} stepId={step.id} selected={selected}
-          selectionKind={selection?.kind} upstream={upstream} downstream={downstream}
-          applySelection={applySelection} runMenu={runMenu} />
-      ))}
-    </div>
+  const exchange = arrange && sweeps.length > 1
+    ? (from: string, to: string) => {
+      const order = exchangeMapSweeps(sweeps, from, to);
+      if (order) arrange(order);
+    }
+    : undefined;
+  const label = (sweep: PlanSweepView, place: Place) => (
+    <MapAxisLabel key={sweep.id} sweep={sweep} place={place} step={step} selection={selection}
+      applySelection={applySelection} dragging={dragging} exchange={exchange}
+      placeAt={exchange && rows && columns ? (target) => exchange(sweep.id, (target === 'rows' ? rows : columns).id) : undefined} />
   );
-  if (grid.rowSweep && !grid.columnSweep) {
-    const sweep = grid.rowSweep;
-    return (
-      <ScrollFade axis="y" className="nowheel max-h-56 p-1">
-        <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount} aria-colcount={2}
-          data-orientation="band" onKeyDown={navigateMarks}
-          data-separate-labels={terms.length > 0 && !boxRows ? '' : undefined}
-          className="studio-map-run-grid flex flex-wrap items-start gap-x-1.5 gap-y-1">
-          {Array.from({ length: grid.rowCount }, (_, index) => {
-            const row = index + 1;
-            const heading = sweep.values[index];
-            return (
-              <div role="row" aria-rowindex={row} key={row} className="relative inline-flex flex-col items-center gap-1">
-                {boxRows && heading && chosenRows.includes(heading.id) &&
-                  <span aria-hidden="true" className="studio-map-group-box" />}
-                {heading && (
-                  <div role="rowheader" aria-colindex={1}>
-                    <MapSweepValue sweep={sweep} value={heading} stepId={step.id}
-                      selection={selection} applySelection={applySelection} />
-                  </div>
-                )}
-                {grid.cellsByRow.get(row)?.map((cell) => marksOf(cell, heading))}
-              </div>
-            );
-          })}
+  return (
+    <div className="grid gap-1">
+      {sweeps.length > 0 && (
+        <div className="studio-map-axes flex min-w-0 items-center gap-1 overflow-hidden text-xs text-shell-muted">
+          {rows && label(rows, 'rows')}
+          {columns && label(columns, 'columns')}
+          {folded.map((sweep) => label(sweep, 'folded'))}
+        </div>
+      )}
+      <ScrollFade axis="both" className="nowheel max-h-56 p-1">
+        <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount} aria-colcount={grid.columnCount}
+          data-mark-size={size.id} onKeyDown={navigateMarks}
+          className="studio-map-run-grid relative grid w-max"
+          style={{
+            gridTemplateColumns: `repeat(${grid.columnCount}, ${size.mark}px)`,
+            gridAutoRows: `${size.mark}px`,
+            gap: size.gap,
+          }}>
+          {boxRows && rows?.values.map((value, index) => chosenRows?.includes(value.id) && (
+            <span key={`row:${value.id}`} aria-hidden="true" className="studio-map-group-box"
+              style={{ gridRow: index + 1, gridColumn: `1 / ${grid.columnCount + 1}` }} />
+          ))}
+          {boxColumns && columns?.values.map((value, index) => chosenColumns?.includes(value.id) && (
+            <span key={`column:${value.id}`} aria-hidden="true" className="studio-map-group-box"
+              style={{ gridRow: `1 / ${grid.rowCount + 1}`, gridColumn: index + 1 }} />
+          ))}
+          {grid.byRow.map((cells, row) => (
+            <div role="row" aria-rowindex={row + 1} key={row} className="contents">
+              {cells.map((cell) => (
+                <div role="gridcell" aria-colindex={cell.column + 1} key={cell.column}
+                  data-map-group-cell={boxIntersections && chosenRows.includes(rows?.values[cell.row]?.id ?? '')
+                    && chosenColumns.includes(columns?.values[cell.column]?.id ?? '') ? '' : undefined}
+                  className="relative flex"
+                  style={{ gridRow: cell.row + 1, gridColumn: cell.column + 1 }}>
+                  <MarkButton item={cell.item} size={size} stepId={step.id} selected={selected}
+                    selectionKind={selection?.kind} upstream={upstream} downstream={downstream}
+                    applySelection={applySelection} runMenu={runMenu} />
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       </ScrollFade>
-    );
-  }
-  return (
-    <ScrollFade axis="both" className="nowheel max-h-56 p-1">
-      <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount}
-        aria-colcount={grid.columnCount + Number(!!grid.rowSweep)} onKeyDown={navigateMarks}
-        data-separate-labels={terms.length > 0 && !boxRows && !boxColumns ? '' : undefined}
-        className="studio-map-run-grid relative inline-grid items-center gap-1"
-        style={{ gridTemplateColumns: `${grid.rowSweep ? 'max-content ' : ''}repeat(${grid.columnCount}, max-content)` }}>
-        {boxRows && grid.rowSweep?.values.map((value, index) => {
-          if (!chosenRows?.includes(value.id)) return null;
-          const row = index + headerRows + 1;
-          const lastColumn = grid.cellsByRow.get(row)?.at(-1)?.column ?? 1;
-          return <span key={`row:${value.id}`} aria-hidden="true" className="studio-map-group-box"
-            style={{ gridRow: `${row} / span 1`, gridColumn: `1 / ${lastColumn + 1}` }} />;
-        })}
-        {boxColumns && grid.columnSweep?.values.map((value, index) => {
-          if (!chosenColumns?.includes(value.id)) return null;
-          const column = index + 2;
-          let lastRow = grid.rowCount;
-          while (lastRow > 1 && !grid.cellsByRow.get(lastRow)?.some((cell) => cell.column === column)) lastRow -= 1;
-          return <span key={`column:${value.id}`} aria-hidden="true" className="studio-map-group-box"
-            style={{ gridRow: `1 / ${lastRow + 1}`, gridColumn: `${column} / span 1` }} />;
-        })}
-        {grid.columnSweep && (
-          <div role="row" aria-rowindex={1} className="contents">
-            {grid.columnSweep.values.map((value, index) => (
-              <div role="columnheader" aria-colindex={index + 2} key={value.id} className="text-center"
-                style={{ gridRow: 1, gridColumn: index + 2 }}>
-                <MapSweepValue sweep={grid.columnSweep!} value={value} stepId={step.id}
-                  selection={selection} applySelection={applySelection} />
-              </div>
-            ))}
-          </div>
-        )}
-        {Array.from({ length: grid.rowCount - headerRows }, (_, index) => {
-          const row = index + headerRows + 1;
-          const heading = grid.rowSweep?.values[index];
-          return (
-            <div role="row" aria-rowindex={row} key={row} className="contents">
-              {grid.rowSweep && heading && (
-                <div role="rowheader" aria-colindex={1} className="text-right" style={{ gridColumn: 1, gridRow: row }}>
-                  <MapSweepValue sweep={grid.rowSweep} value={heading} stepId={step.id}
-                    selection={selection} applySelection={applySelection} />
-                </div>
-              )}
-              {grid.cellsByRow.get(row)?.map((cell) => marksOf(cell, heading))}
-            </div>
-          );
-        })}
-      </div>
-    </ScrollFade>
+    </div>
   );
 });

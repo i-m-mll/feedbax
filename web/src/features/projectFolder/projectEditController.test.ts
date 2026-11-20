@@ -129,7 +129,7 @@ function fixture(settleMs = 400, start = initial) {
 
 afterEach(() => vi.useRealTimers());
 
-it('binds the first compatible documents by name, scaffolds only the missing type and names the Train freely', async () => {
+it('binds the first compatible documents by name, scaffolds only the missing types and names the Train freely', async () => {
   const { editor } = fixture(400, {
     ...initial,
     project: { steps: { train: {} as never }, documents: {
@@ -149,11 +149,12 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
     { kind: 'document', id: 'objective-2', document: {
       schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
     } },
+    { kind: 'document', id: 'training', document: expect.objectContaining({ schema: 'feedbax.spec.training_document' }) },
     expect.objectContaining({ kind: 'step', id: 'train-2', step: expect.objectContaining({
       base: { inline: expect.objectContaining({ trial_documents: {
         model: { document: 'a-model' }, task: { document: 'a-task' },
         objective: { document: 'objective-2' },
-      } }) },
+      }, settings: { document: 'training', pointer: '/settings' } }) },
     }) }),
   ], initial.revision);
   editor.dispose();
@@ -203,15 +204,15 @@ it('undoes and redoes placement while preserving a later fold', async () => {
   ], { reviewedRevision: start.revision, reviewedPresentationRevision: start.presentation_revision });
   await editor.flush();
   expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions } } });
-  external(presentationAddress, [{ op: 'add', path: '/steps/fit/folded_sweep_id', value: 'seed' }]);
+  external(presentationAddress, [{ op: 'add', path: '/steps/fit/sweep_order', value: ['seed'] }]);
   await editor.flush();
   editor.undo();
   await editor.flush();
   expect(current().project).toEqual(start.project);
-  expect(current().presentation).toEqual({ steps: { fit: { folded_sweep_id: 'seed' } } });
+  expect(current().presentation).toEqual({ steps: { fit: { sweep_order: ['seed'] } } });
   editor.redo();
   await editor.flush();
-  expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions, folded_sweep_id: 'seed' } } });
+  expect(current().presentation).toEqual({ steps: { fit: { model_positions: positions, sweep_order: ['seed'] } } });
   editor.dispose();
 });
 
@@ -230,7 +231,7 @@ it('refuses to create a file from a stale reviewed project', async () => {
   const { editor, create, external } = fixture();
   external(model, [value(2)]);
   await expect(editor.createFile({
-    kind: 'step', id: 'continuation', step: { kind: 'train', base: { step: 'train' } },
+    kind: 'step', id: 'train-2', step: { kind: 'train', base: { step: 'train' } },
   }, initial.revision)).rejects.toBeInstanceOf(ProjectEditConflictError);
   expect(create).not.toHaveBeenCalled();
   editor.dispose();
@@ -482,6 +483,28 @@ it('checks a structural edit guard against outside dependencies on undo and Keep
   await expect(pending.editor.keep('edits')).rejects.toThrow('depends on the existing model layout');
   expect(pending.editor.getSnapshot()).toMatchObject({ outside, pending: 1 });
   pending.editor.dispose();
+});
+
+it('returns a refused save to its gesture and keeps no project error', async () => {
+  const { editor, write } = fixture();
+  write.mockRejectedValueOnce(new ApiRequestError('http', '/api/projects/reach', 'Value 2 is out of range.', { status: 422 }));
+  editor.edit(model, 'Refused edit', [value(2)]);
+  await expect(editor.flush()).rejects.toMatchObject({ status: 422 });
+  const snapshot = editor.getSnapshot();
+  expect(snapshot.error).toBeNull();
+  expect(snapshot.pending).toBe(0);
+  expect(snapshot.draft.documents?.model.payload).toEqual({ value: 1 });
+  editor.dispose();
+});
+
+it('delivers a timer-drained refusal to the gesture that queued the edit', async () => {
+  const { editor, write } = fixture(10);
+  const refused = new ApiRequestError('http', '/api/projects/reach', 'Value 2 is out of range.', { status: 422 });
+  write.mockRejectedValueOnce(refused);
+  const settlement = await editor.edit(model, 'Refused edit', [value(2)]);
+  expect(settlement).toEqual({ status: 'refused', error: refused });
+  expect(editor.getSnapshot()).toMatchObject({ error: null, pending: 0 });
+  editor.dispose();
 });
 
 it('retries a lost connection after a fresh read and flushes edits arriving during a write', async () => {

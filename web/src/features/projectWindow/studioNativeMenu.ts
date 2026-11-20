@@ -19,10 +19,10 @@ const groups = {
     'themeSystem', 'themeLight', 'themeDark',
   ],
   Run: ['run', 'stop', 'resume', 'forceStop', 'openRun', 'check', 'accept'],
-  Plan: ['newStep', 'newSweep', 'pivot', 'fold'],
+  Plan: ['newStep', 'newSweep', 'pivot'],
 } as const satisfies Record<string, readonly StudioCommandId[]>;
 const sections = Object.entries(groups) as [keyof typeof groups, readonly StudioCommandId[]][];
-const menuIds = new Set<StudioCommandId>([...sections.flatMap(([, ids]) => ids), 'unfold']);
+const menuIds = new Set<StudioCommandId>(sections.flatMap(([, ids]) => ids));
 const documentClipboard = new Set<StudioCommandId>(['modelSelectAll', 'modelCut', 'modelCopy', 'modelPaste']);
 const nativeCommandEvent = 'studio-native-command';
 type Context = ReturnType<typeof studioCommandContext>;
@@ -49,7 +49,7 @@ export function studioMenuPresentation(commands: readonly StudioCommand[], conte
     sections: sections.map(([title, ids]) => ({
       title,
       items: ids.filter((id) => !documentClipboard.has(id) || bindings.has(id)).map((id) => {
-        const command = bindings.get(id === 'fold' && bindings.has('unfold') ? 'unfold' : id) ??
+        const command = bindings.get(id) ??
           bindStudioCommand(id, () => {}, { enabled: false });
         return {
           id: command.id,

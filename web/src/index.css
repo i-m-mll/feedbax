@@ -55,12 +55,6 @@
   --studio-shadow-lift: 0 18px 40px rgba(15, 23, 42, 0.12);
 }
 
-
-/* The content's inset shadow is drawn only in light mode, as in Mandible. */
-:root:not([data-theme='light']) {
-  --shell-inset-shadow: none;
-}
-
 :root[data-theme='dark'] {
   --studio-shell-accent: #c1aedf;
   --studio-scrim: rgba(0, 0, 0, 0.5);

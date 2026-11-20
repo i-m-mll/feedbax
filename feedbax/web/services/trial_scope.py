@@ -1,22 +1,82 @@
-"""Write selected-run trial edits using authored Project scopes."""
+"""Store an edit of a step's definition by the scope of the runs it is made for."""
 
-from hashlib import sha256
+from collections.abc import Callable, Collection
+from copy import deepcopy
+from dataclasses import dataclass
+from functools import partial
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patches
-from feedbax.contracts.model_edit import EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentVariant
-from feedbax.contracts.project import InlineBase, SetProjectValue
+from feedbax.contracts.model_edit import (
+    EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentStep, EvaluateAttachmentVariant,
+)
+from feedbax.contracts.project import (
+    StepBase,
+    DocumentEdit, InlineBase, Project, RemoveProjectValue, SetProjectValue, apply_document_edits, document_edit_ops,
+)
+from feedbax.contracts.project_inputs import SweepExceptionTerms
+from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.project_resolution import StepTemplate, compose_step, document_differences, document_write_target
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.project_sweep import NamedAxis, SetValue, RemoveValue, _compose_writes
+from feedbax.contracts.project_sweep import AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
-from feedbax.web.services.project_folder import ProjectFolderInvalid
+from feedbax.project_members import generated_name
+from feedbax.studio.selection import TrainSelection, merged_files
+from feedbax.web.services.project_folder import ProjectFolderInvalid, preview_authored_files
 
 
 _SWEEP_WRITE = TypeAdapter(SetValue | RemoveValue)
+
+
+@dataclass(frozen=True)
+class SweepValuesScope:
+    """Runs selected as values of the step's sweeps, other than one named value of one sweep."""
+
+    axes: dict[str, tuple[str, ...]]
+
+
+type RunScope = (
+    EvaluateAttachmentStep | EvaluateAttachmentAxis | SweepValuesScope | EvaluateAttachmentRows | EvaluateAttachmentVariant
+)
+
+
+def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
+    """Where an edit made for the selected runs is stored.
+
+    No rows is the step, or the variant outside the primary one. Rows that are exactly the runs of a set of values per
+    sweep are those values: one named value's patches, or an exception over the values. Other rows are an exception over
+    those rows.
+    """
+    axes = axes or {}
+    if not rows:
+        if axes:
+            raise ProjectFolderInvalid("Sweep values were given without their runs.")
+        if key.variant != plan.variants[0]:
+            return EvaluateAttachmentVariant(kind="variant", variant=key.variant)
+        return EvaluateAttachmentStep(kind="step")
+    if key.variant != plan.variants[0]:
+        raise ProjectFolderInvalid("A selection of runs is stored in the primary variant only.")
+    available = {row.key.row: row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)}
+    if not set(rows) <= available.keys() or len(set(rows)) != len(rows):
+        raise ProjectFolderInvalid("The selected rows no longer belong to this step.")
+    covered = {
+        row_id for row_id, row in available.items()
+        if all(axis in row.coordinates and row.coordinates[axis].value_id in values for axis, values in axes.items())
+    }
+    if not axes or set(rows) != covered:
+        return EvaluateAttachmentRows(kind="rows", rows=tuple(rows))
+    if len(axes) == 1:
+        (axis, values), = axes.items()
+        sweep = project.steps[key.step].sweep
+        named = sweep.axes.get(axis) if sweep else None
+        if len(values) == 1 and isinstance(named, NamedAxis) and named.values.get(values[0]) is not None:
+            return EvaluateAttachmentAxis(kind="axis_value", axis=axis, value=values[0])
+    return SweepValuesScope({axis: tuple(values) for axis, values in axes.items()})
 
 
 def file_value(address, raw, parts, value):
@@ -29,7 +89,7 @@ def file_value(address, raw, parts, value):
     ])
 
 
-def selected_runs(plan, key, scope, *, lit_steps=()):
+def selected_runs(plan, key, scope, *, chosen_steps=()):
     rows = [row for row in plan.rows if row.key.step == key.step]
     if isinstance(scope, EvaluateAttachmentVariant):
         selected = {row.key for row in rows if row.key.variant == scope.variant}
@@ -45,7 +105,7 @@ def selected_runs(plan, key, scope, *, lit_steps=()):
     else:
         selected = {
             row.key for row in plan.rows
-            if row.key.step in (lit_steps or (key.step,))
+            if row.key.step in (chosen_steps or (key.step,))
         }
     if key not in selected or any(item.variant != key.variant for item in selected):
         raise ProjectFolderInvalid("The edit must address runs in the selected variant only.")
@@ -80,37 +140,245 @@ def sweep_value_file(address, raw, axis, value, writes):
     return file_value(address, raw, (*parts, "patches"), _store_patches(authored.get("patches", {}), writes))
 
 
-def row_exception_file(address, raw, rows, writes, *, name_prefix):
+def row_exception_file(address, raw, rows, writes):
+    return _exception_file(address, raw, {"rows": sorted(set(rows))}, writes)
+
+
+def values_exception_file(address, raw, axes, writes):
+    return _exception_file(address, raw, {"axes": {axis: sorted(set(values)) for axis, values in sorted(axes.items())}}, writes)
+
+
+def _canonical_where(where) -> bytes | None:
+    try:
+        terms = SweepExceptionTerms.model_validate(where)
+    except ValidationError:
+        return None
+    selector = terms.model_dump(mode="json", exclude_defaults=True)
+    if "rows" in selector:
+        selector["rows"] = sorted(set(selector["rows"]))
+    if "axes" in selector:
+        selector["axes"] = {axis: sorted(set(values)) for axis, values in selector["axes"].items()}
+    return canonical_json_v2_bytes(selector)
+
+
+def _exception_file(address, raw, where, writes):
+    """Add ``writes`` to the exception whose selector is ``where``, or to a new one named by :func:`generated_name`."""
     sweep = raw.get("sweep") or {}
-    rows = sorted(set(rows))
-    name = name_prefix + sha256(canonical_json_v2_bytes(rows)).hexdigest()
     exceptions = sweep.get("exceptions", {})
-    prior = exceptions.get(name, {"where": {"rows": rows}})
-    if prior is None or prior.get("where") != {"rows": rows} or prior.get("exclude"):
-        raise ProjectFolderInvalid("The selected row exception has an incompatible definition.")
+    selector = _canonical_where(where)
+    name = next(
+        (name for name, exception in exceptions.items()
+         if exception is not None and _canonical_where(exception.get("where")) == selector),
+        None,
+    )
+    if name is None:
+        name, prior = generated_name("exception", exceptions.__contains__), {"where": where}
+    else:
+        prior = exceptions[name]
+        if prior.get("exclude"):
+            raise ProjectFolderInvalid("The selected exception has an incompatible definition.")
     updated = prior | {"patches": _store_patches(prior.get("patches", {}), writes)}
     return file_value(address, raw, ("sweep",), sweep | {"exceptions": exceptions | {name: updated}})
 
 
-def scoped_file(project, key, scope, writes):
-    authored = project.steps[key.step]
+def base_descendants(project: Project, steps: Collection[str]) -> frozenset[str]:
+    """The steps based, through ``base: {step}`` at any depth, on one of ``steps``; they read everything stored there."""
+    found = set(steps)
+    while added := {
+        name for name, step in project.steps.items()
+        if name not in found and isinstance(step.base, StepBase) and step.base.step in found
+    }:
+        found |= added
+    return frozenset(found - set(steps))
+
+
+def reached_steps(project: Project, chosen: Collection[str]) -> frozenset[str]:
+    """The steps an edit for the ``chosen`` steps reaches: those and the steps based on them."""
+    return frozenset(chosen) | base_descendants(project, chosen)
+
+
+def refuse_unreached(plan, candidate, reach: Collection[RunKey]) -> None:
+    """Refuse a candidate that changes the request of a run outside ``reach``, the runs of the reached steps.
+
+    A run fed by a reached run's product may change its request with it, provided its own definition does not change.
+    """
+    previous = {run.key: run for run in plan.runs}
+    current = {run.key: run for run in candidate.runs}
+    changed = {
+        key for key in previous.keys() | current.keys()
+        if getattr(previous.get(key), "request_id", None) != getattr(current.get(key), "request_id", None)
+    }
+    affected = changed & set(reach)
+    for graph in (plan, candidate):
+        for run in graph.runs:
+            if run.key in changed and any(binding.producer in affected for binding in run.inputs.values()):
+                other = previous.get(run.key) if graph is candidate else current.get(run.key)
+                if other is not None:
+                    before = decode_request(plan.requests[previous[run.key].request_id], plan.documents.__getitem__)
+                    after = decode_request(candidate.requests[current[run.key].request_id], candidate.documents.__getitem__)
+                    if before.spec != after.spec:
+                        continue
+                affected.add(run.key)
+    if changed - affected:
+        raise ProjectFolderInvalid("The proposed edit reaches runs outside the selected scope.")
+
+
+def reached_runs(
+    plan, variants: Collection[str], selected: Collection[RunKey], steps: Collection[str],
+) -> frozenset[RunKey]:
+    """The runs an edit for ``selected`` may change: those and every run of the reached ``steps`` in ``variants``."""
+    return frozenset(selected) | {row.key for row in plan.rows if row.key.variant in variants and row.key.step in steps}
+
+
+type DocumentUsers = Callable[[str], Collection[str]]
+"""The steps of the primary variant whose runs read a document."""
+
+
+def _overlap(left: str, right: str) -> bool:
+    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
+
+
+def _covers(outer: str, inner: str) -> bool:
+    return inner == outer or inner.startswith(outer + "/")
+
+
+def _step_difference(project: Project, step: str, document: str, local: list[DocumentEdit]) -> StudioProjectFilePatch:
+    authored = project.steps[step]
+    differences = authored.model_dump(mode="json")["document_overrides"]
+    if not local:
+        differences.pop(document, None)
+    else:
+        differences[document] = [edit.model_dump(mode="json") for edit in local]
+    return StudioProjectFilePatch(
+        address=AuthoredFileAddress(kind="step", id=step),
+        patches=[SetProjectValue(
+            op="replace" if "document_overrides" in authored.model_fields_set else "add",
+            path="/document_overrides", value=differences,
+        )],
+    )
+
+
+def document_files(
+    project: Project, document: str, edits: list[DocumentEdit], chosen: Collection[str], users: Collection[str],
+) -> list[StudioProjectFilePatch]:
+    """Store ``edits`` of ``document``'s payload for the ``chosen`` steps.
+
+    The edit is stored in the document when the steps it reaches, the chosen ones and those based on them, are all of
+    the document's ``users``; otherwise as a difference on each chosen step not based on another chosen step. Each chosen
+    step's own difference at an edited path is cleared, or replaced where the edit is stored on it. A step the edit
+    reaches without being chosen keeps its own difference.
+    """
+    entry = project.documents[document]
+    shared = set(users) <= reached_steps(project, chosen)
+    files = []
+    if shared:
+        raw = deepcopy(entry.payload)
+        apply_document_edits(raw, edits)
+        files.append(file_value(AuthoredFileAddress(kind="document", id=document),
+                                {"payload": entry.payload}, ("payload",), raw))
+    storing = set() if shared else {step for step in chosen if step not in base_descendants(project, set(chosen) - {step})}
+    for step in sorted(chosen):
+        previous = document_edit_ops(project.steps[step].document_overrides.get(document, {}))
+        local = []
+        for edit in previous:
+            affected = [requested for requested in edits if _overlap(edit.path, requested.path)]
+            if not affected or step in storing and not any(_covers(requested.path, edit.path) for requested in affected):
+                local.append(edit)
+            elif not any(_covers(requested.path, edit.path) for requested in affected):
+                raise ProjectFolderInvalid(f"{step} has an overlapping document difference.")
+        if step in storing:
+            local.extend(edits)
+        if local != previous:
+            files.append(_step_difference(project, step, document, local))
+    return files
+
+
+def _document_edit(patch: OverridePatch, document_path: str, payload) -> DocumentEdit:
+    parts = tuple(document_path.split("."))
+    if patch.op == "remove":
+        return RemoveProjectValue(op="remove", path=pointer(parts))
+    parent = payload
+    for part in parts[:-1]:
+        parent = parent.get(part) if isinstance(parent, dict) else None
+    exists = isinstance(parent, dict) and parts[-1] in parent
+    return SetProjectValue(op="replace" if exists else "add", path=pointer(parts), value=patch.value)
+
+
+def _authored_payload(project: Project, step_id: str):
+    authored = project.steps[step_id]
+    if isinstance(authored.base, InlineBase):
+        return authored.base.inline
+    template = compose_step(project, step_id)
+    return template.authored_payload() if isinstance(template, StepTemplate) else None
+
+
+def scoped_file(
+    project, step_id, scope: RunScope, writes, *, chosen: Collection[str] = (), users: DocumentUsers | None = None,
+) -> list[StudioProjectFilePatch]:
+    """The files that store ``writes``, paths in the step's definition, for the runs ``scope`` selects.
+
+    A write whose path passes through a document reference changes that document. For the whole step it is stored by
+    :func:`document_files` for the ``chosen`` steps (the step alone when none are named) among the document's ``users``.
+    For a sweep value or exception it is applied to the selected runs' copy of the document, and for a variant it is the
+    variant's write of the document.
+    """
+    authored = project.steps[step_id]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    address = AuthoredFileAddress(kind="step", id=key.step)
+    address = AuthoredFileAddress(kind="step", id=step_id)
+    payload = _authored_payload(project, step_id)
+    through: dict[str, list[tuple[OverridePatch, str]]] = {}
+    direct = []
+    for patch in writes:
+        target = document_write_target(payload, patch.path)
+        if target is None:
+            direct.append(patch)
+        else:
+            through.setdefault(target[0], []).append((patch, target[1]))
     if isinstance(scope, EvaluateAttachmentVariant):
         writes = [
-            OverridePatch(path=f"steps.{key.step}.base.inline.{patch.path}", op=patch.op, **(
+            OverridePatch(path=f"steps.{step_id}.base.inline.{patch.path}", op=patch.op, **(
                 {"value": patch.value} if patch.op != "remove" else {}
             ))
-            for patch in writes
+            for patch in direct
+        ] + [
+            patch.model_copy(update={"path": f"documents.{document}.payload.{path}"})
+            for document, patches in through.items() for patch, path in patches
         ]
-        return variant_file(project, key.variant, writes)
+        return [variant_file(project, scope.variant, writes)]
+    if isinstance(scope, EvaluateAttachmentAxis | SweepValuesScope | EvaluateAttachmentRows):
+        return [_selection_file(address, raw, authored, scope, writes)]
+    files = [_step_file(address, raw, authored, direct)] if direct else []
+    if through:
+        chosen = set(chosen) or {step_id}
+        if users is None:
+            raise ProjectFolderInvalid("This edit changes a document and needs the steps that read it.")
+        for document, patches in through.items():
+            readers = set(users(document))
+            if step_id not in chosen or not chosen <= readers:
+                raise ProjectFolderInvalid("The chosen steps no longer match this document.")
+            payload = project.documents[document].payload
+            if not readers <= reached_steps(project, chosen):
+                payload = deepcopy(payload)
+                apply_document_edits(payload, [
+                    difference.edit for difference in document_differences(project, step_id).get(document, ())
+                ])
+            edits = [_document_edit(patch, path, payload) for patch, path in patches]
+            files.extend(document_files(project, document, edits, chosen, readers))
+    return merged_files(files)
+
+
+def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFilePatch:
     if isinstance(scope, EvaluateAttachmentAxis):
         axis = authored.sweep.axes.get(scope.axis) if authored.sweep else None
         if not isinstance(axis, NamedAxis) or axis.values.get(scope.value) is None:
             raise ProjectFolderInvalid("The group needs a named sweep value authored on this step.")
         return sweep_value_file(address, raw, scope.axis, scope.value, writes)
-    if isinstance(scope, EvaluateAttachmentRows):
-        return row_exception_file(address, raw, scope.rows, writes, name_prefix="trial-rows-")
+    if isinstance(scope, SweepValuesScope):
+        return values_exception_file(address, raw, scope.axes, writes)
+    return row_exception_file(address, raw, scope.rows, writes)
+
+
+def _step_file(address, raw, authored, writes) -> StudioProjectFilePatch:
     if isinstance(authored.base, InlineBase) and not authored.deltas:
         updated = apply_override_patches(authored.base.inline, writes)
         return file_value(address, raw, ("base", "inline"), updated)
@@ -119,3 +387,85 @@ def scoped_file(project, key, scope, writes):
         layer_id="trial-authoring", patches=writes, acknowledges_ancestor_paths=[patch.path for patch in writes],
     )
     return file_value(address, raw, ("deltas",), [*raw.get("deltas", []), layer.model_dump(mode="json", exclude_unset=True)])
+
+
+def train_selection(
+    folders, project_id, revision, project, step_id, run, rows=(), axes=None, chosen_steps=(),
+) -> TrainSelection:
+    """The runs a Train edit names, read from the plan of ``revision``, and the write that stores an edit for them.
+
+    ``chosen_steps`` are the steps the user named for an edit of a document the step reads; none is the step alone.
+    Without rows the selection is every run of the chosen steps in the named run's variant. The edit reaches the chosen
+    steps and those based on them; the write refuses one that changes a request of any other step.
+    """
+    def users(document: str) -> frozenset[str]:
+        plan = folders.read_plan(project_id, revision=revision).plan
+        return plan.document_users(plan.variants[0], document)
+
+    chosen = {step_id, *chosen_steps}
+
+    def checked(scope, selected, writes):
+        files = scoped_file(project, step_id, scope, writes, chosen=tuple(chosen_steps), users=users)
+        if files:
+            settled = folders.read_plan(project_id, revision=revision)
+            candidate = compile_project(
+                preview_authored_files(project, files), readers=settled.readers,
+                operations=folders.operations, components=folders.components, functions=folders.functions,
+                python_tasks=folders.python_tasks, figure_templates=folders.figure_templates,
+            )
+            reached = reached_steps(project, chosen)
+            refuse_unreached(settled.plan, candidate, selected or reached_runs(settled.plan, settled.plan.variants, (), reached))
+        return files
+
+    if run is None:
+        if rows or axes:
+            raise ProjectFolderInvalid("Rows were given without the run they belong to.")
+        return TrainSelection((), None, None, False, partial(checked, EvaluateAttachmentStep(kind="step"), frozenset()))
+    key = RunKey(run.variant, run.step, run.row)
+    if key.step != step_id:
+        raise ProjectFolderInvalid(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}.")
+    plan = folders.read_plan(project_id, revision=revision, source_runs=(key,)).plan
+    scope = selection_scope(project, plan, key, tuple(rows), axes)
+    shown = tuple(RunKey(key.variant, step_id, row) for row in rows) or tuple(sorted(
+        (row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in chosen),
+        key=lambda item: item.step != step_id,
+    ))
+    if set(shown) != {key}:
+        plan = folders.read_plan(project_id, revision=revision, source_runs=tuple(dict.fromkeys((key, *shown)))).plan
+    definitions = plan.selected_definitions
+    payloads = tuple(definitions[item].payload for item in shown if item in definitions)
+    scoped = not isinstance(scope, EvaluateAttachmentStep)
+    named = definitions.get(key)
+    values = (
+        AxisCondition(axes={scope.axis: [scope.value]}) if isinstance(scope, EvaluateAttachmentAxis)
+        else AxisCondition(axes={axis: sorted(set(ids)) for axis, ids in sorted(scope.axes.items())})
+        if isinstance(scope, SweepValuesScope) else None
+    )
+    return TrainSelection(
+        payloads, next((row for row in plan.rows if row.key == key), None),
+        named.payload if isinstance(scope, SweepValuesScope | EvaluateAttachmentAxis | EvaluateAttachmentRows)
+        and named is not None else None, scoped,
+        partial(checked, scope, _scoped_runs(project, plan, key, scope, chosen)), values,
+    )
+
+
+def _scoped_runs(project, plan, key: RunKey, scope: RunScope, chosen: Collection[str]) -> frozenset[RunKey]:
+    """The runs an edit for ``scope`` may change: the step's selected runs and those of the other steps it reaches.
+
+    Stored on the step, an edit reaches those runs in every variant; stored on a variant, in that variant.
+    """
+    variants = {scope.variant} if isinstance(scope, EvaluateAttachmentVariant) else set(plan.variants)
+    reached = reached_steps(project, chosen)
+    if isinstance(scope, EvaluateAttachmentStep | EvaluateAttachmentVariant):
+        return reached_runs(plan, variants, (), reached)
+    picked = {
+        row.key for row in plan.rows if row.key.variant in variants and row.key.step == key.step and (
+            row.key.row in scope.rows if isinstance(scope, EvaluateAttachmentRows)
+            else all(
+                (coordinate := row.coordinates.get(axis)) is not None and coordinate.value_id in values
+                for axis, values in ({scope.axis: (scope.value,)} if isinstance(scope, EvaluateAttachmentAxis)
+                                     else scope.axes).items()
+            )
+        )
+    }
+    return reached_runs(plan, variants, picked, reached - {key.step})

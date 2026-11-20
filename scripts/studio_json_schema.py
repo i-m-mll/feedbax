@@ -88,7 +88,7 @@ def _project(schema: dict[str, Any], path: str) -> _Projection:
                 "z.object({\n" + "\n".join(validators) + "\n}).strict()",
             )
 
-        check("type", "patternProperties", "propertyNames", "additionalProperties")
+        check("type", "patternProperties", "propertyNames", "additionalProperties", "minProperties")
         names = schema.get("propertyNames", {"type": "string"})
         values = schema.get("additionalProperties", True)
         if "patternProperties" in schema:
@@ -99,9 +99,11 @@ def _project(schema: dict[str, Any], path: str) -> _Projection:
             names = {"type": "string", "pattern": pattern}
         key = _project(names, f"{path}.key")
         value = _JSON if values is True else _project(values, f"{path}.*")
-        return _Projection(
-            f"Record<string, {value.typescript}>", f"z.record({key.zod}, {value.zod})"
-        )
+        record = f"z.record({key.zod}, {value.zod})"
+        if "minProperties" in schema:
+            least = schema["minProperties"]
+            record += f".refine((entries) => Object.keys(entries).length >= {least}, {{ message: 'expected at least {least} entries' }})"
+        return _Projection(f"Record<string, {value.typescript}>", record)
 
     if kind == "array":
         if "prefixItems" in schema:

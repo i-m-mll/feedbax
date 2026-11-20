@@ -67,6 +67,7 @@ from feedbax.contracts.project_resolution import (
     TerminalTrainSource,
     _TrialResolution,
     compose_step,
+    reference_write_target,
     _select,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, resolve_trial_ids
@@ -855,6 +856,14 @@ def _trial_problem(
     )
 
 
+class _PayloadProblems(Exception):
+    """Problems at dotted payload paths found while lowering a row."""
+
+    def __init__(self, problems: tuple[tuple[str, str], ...]):
+        super().__init__(problems)
+        self.problems = problems
+
+
 def _encode_row(
     key: RunKey,
     kind: StepKind,
@@ -870,6 +879,7 @@ def _encode_row(
     remember_train: Callable[[_PreparedTrainRow], None] | None = None,
     training_methods: TrainingMethodRegistry | None = None,
     previous: _LoweredRow | None = None,
+    document_pointers: Mapping[str, str] = MappingProxyType({}),
 ) -> _LoweredRow:
     checkpoint_problem = None
     condition_ids = None
@@ -941,7 +951,17 @@ def _encode_row(
                 raise ValueError("/inputs/checkpoint: a predecessor and initialization policy must be declared together")
             if training_methods is None:
                 raise ValueError("Train requires the installed method catalog.")
-            spec, _, _ = normalize_train_method(spec, training_methods)
+            try:
+                training_methods.resolve(spec.method)
+            except KeyError as error:
+                raise _PayloadProblems((("method", error.args[0]),)) from error
+            try:
+                spec, _, _ = normalize_train_method(spec, training_methods)
+            except ValidationError as error:
+                raise _PayloadProblems(tuple(
+                    (".".join(("settings", *map(str, failure["loc"]))), failure["msg"])
+                    for failure in error.errors(include_url=False, include_input=False)
+                )) from error
         if (
             previous is not None and previous.request is not None
             and previous.lowering_stamp is not None and lowering_stamp is not None
@@ -963,6 +983,8 @@ def _encode_row(
             (".".join(map(str, failure["loc"])), failure["msg"])
             for failure in error.errors(include_url=False, include_input=False)
         )
+    except _PayloadProblems as error:
+        problems = error.problems
     except ValueError as error:
         problems = (("", str(error)),)
     else:
@@ -989,17 +1011,27 @@ def _encode_row(
         None,
         tuple(
             ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD,
-                f"payload.{path}" if path else "payload",
-                message,
-                key.step,
-                row=key.row,
-                variant=key.variant,
+                ResolutionCode.INVALID_PAYLOAD, place, message, key.step, row=key.row, variant=key.variant,
+                document=document, document_path=document_path,
             )
             for path, message in problems
+            for place in (f"payload.{path}" if path else "payload",)
+            for document, document_path in (_payload_document(place, document_ids, document_pointers),)
         ),
         lowering_stamp,
     )
+
+
+def _payload_document(
+    path: str, document_ids: Mapping[str, str], document_pointers: Mapping[str, str],
+) -> tuple[str | None, str | None]:
+    """Name the document that supplies the value at ``path`` and the pointer to it in that document's payload."""
+    parts = tuple(path.split("."))
+    for length in range(len(parts), 1, -1):
+        slot = ".".join(parts[:length])
+        if (document := document_ids.get(slot)) is not None:
+            return document, pointer((*json_pointer_parts(document_pointers.get(slot)), *parts[length:]))
+    return None, None
 
 
 @dataclass
@@ -1242,6 +1274,14 @@ class _Compiler:
                     parts = tuple(path.split("."))
                     if len(parts) < 2 or parts[0] not in {"documents", "steps"}:
                         raise ValueError("a variant must patch a named document or step")
+                    if parts[0] == "steps" and (
+                        reached := reference_write_target(data["steps"], parts[1:])
+                    ) is not None:
+                        step_name = parts[1]
+                        raise ValueError(
+                            "A variant cannot write through a step's document reference; "
+                            f"write documents.{reached[0]}.payload.{reached[1]}"
+                        )
                     if len(parts) >= 4 and parts[0] == "steps" and parts[2] == MODEL_ATTACHMENTS:
                         step = data["steps"].get(parts[1])
                         if step is not None and MODEL_ATTACHMENTS not in step:
@@ -1687,7 +1727,7 @@ class _Compiler:
             lowered = _encode_row(
                 key, kind, payload, inputs, lowering_stamp,
                 self.work.request_documents, self.prepare_train_trial, document_ids,
-                self.python_tasks, model_source=authored_model,
+                self.python_tasks, model_source=authored_model, document_pointers=document_pointers,
                 prepared_train=prepared_train, remember_train=remember_train,
                 training_methods=self.training_methods, previous=previous,
             )

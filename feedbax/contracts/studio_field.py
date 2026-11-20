@@ -6,12 +6,13 @@ from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import Problem
-from feedbax.contracts.jobs import StudioPlanReviewSource, StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import EvaluateAttachmentScope, ModelEditCommand
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
+from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 from feedbax.expression_site import SiteProjection
 
@@ -34,16 +35,12 @@ class FieldNameEdit(StrictModel):
     label: str | None
 
 
-class ModelFieldRequest(StrictModel):
+class ModelFieldRequest(StudioRunSelection):
     revision: Sha256
     document: ProjectName
     owner: ModelAddress
-    run: StudioSavedTrainKey | None = None
     evaluate_scope: EvaluateAttachmentScope | None = None
     address: ModelAddress | None = None
-    lit_steps: list[ProjectName] = Field(default_factory=list)
-    rows: list[str] = Field(default_factory=list)
-    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
     edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")] | None = None
 
 
@@ -101,11 +98,9 @@ class TrainFieldView(StudioFieldView):
     id: str
 
 
-class TrainFieldRequest(StrictModel):
+class TrainFieldRequest(StudioRunSelection):
     revision: Sha256
-    run: StudioSavedTrainKey | None = None
     field: str | None = None
-    rows: list[str] = Field(default_factory=list)
     edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")] | None = None
 
 
