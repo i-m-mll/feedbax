@@ -570,3 +570,46 @@ def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_pa
     prior = {run.key: run.request_id for run in before.plan.runs}
     changed = {run.key for run in after.plan.runs if prior[run.key] != run.request_id}
     assert changed == {RunKey("treated", "baseline", "default")}
+
+
+@pytest.mark.parametrize("variant", ["default", "treated"])
+def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path, variant):
+    from feedbax.contracts.rollout import ROLLOUT_TYPE
+    from web.e2e.studio.fixtures.evaluate_authoring import _train_definition
+
+    raw = _train_definition()
+    raw["steps"]["check"] = {"kind": "evaluate", "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
+        "seed": 731, "trial_policy": "paired", "variation": [], "trial_set": {"kind": "every_condition"},
+    }}}, "inputs": {"subject": {"step": "train", "checkpoint": "last"}}}
+    if variant != "default":
+        raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "check", Project.model_validate(raw))
+    before = folders.read_plan("check", revision=None)
+    run = {"variant": variant, "step": "check", "row": "default"}
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        reply = client.post("/api/projects/check/authoring/trials", json={
+            "revision": before.revision, "run": run, "scope": {"kind": "step"},
+            "change": {"kind": "task", "edits": [{"op": "replace", "path": "/params/x", "value": 0.24}]},
+        })
+        assert reply.status_code == 200, reply.text
+        edited = reply.json()
+        assert not edited["problems"], edited["problems"]
+        (created,) = edited["created"]
+        assert client.post("/api/projects/check/files", json={
+            "revision": before.revision, "file": created,
+        }).status_code == 201
+        saved = client.patch("/api/projects/check", json={"revision": folders.read("check").revision, "files": edited["files"]})
+        assert saved.status_code == 200, saved.text
+        view = client.post("/api/projects/check/authoring/trials", json={"revision": saved.json()["revision"], "run": run})
+        assert view.status_code == 200, view.text
+    assert view.json()["task"]["params"]["x"] == 0.24
+    assert view.json()["task_document"] == created["id"]
+    trained = {row.key: row for row in before.plan.rows if row.key.step == "train"}
+    after = folders.read_plan("check", revision=None).plan
+    assert {row.key: row for row in after.rows if row.key.step == "train"}.keys() == trained.keys()
+    assert {run.key: run.request_id for run in after.runs if run.key.step == "train"} == {
+        run.key: run.request_id for run in before.plan.runs if run.key.step == "train"
+    }
+    if variant != "default":
+        assert folders.read("check").project.steps == Project.model_validate(raw).steps

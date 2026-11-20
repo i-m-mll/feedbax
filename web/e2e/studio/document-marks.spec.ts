@@ -339,8 +339,6 @@ test('a based Training document marks the class it changes, and Reset gives it t
 });
 
 test('an Evaluate step\'s Task edit marks the value its document changes, and Reset gives it the base\'s', async ({ page, request }) => {
-  // The service refuses a whole-step Evaluate Task edit ("A selected value is controlled by a different authored source.").
-  test.fixme();
   test.setTimeout(60_000);
   const files = (JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring')) as { kind: string; id: string }[])
     .filter(({ id }) => id !== 'conditions');

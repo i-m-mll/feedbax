@@ -413,6 +413,21 @@ class PlanSourceIndex:
         return definition.sources.get(pointer(parts))
 
 
+def own_task_variation(subject_task: TaskDocument | PythonTaskSelection, task: Any, variation: Any) -> list[Any] | None:
+    """The variation an Evaluate step that names its own Task, of content ``task``, runs: its authored ``variation``
+    after a replacement of the subject's Task, or None when ``task`` is the subject's."""
+    try:
+        if type(subject_task).model_validate(task) == subject_task:
+            return None
+    except ValidationError:
+        pass
+    if isinstance(variation, dict):
+        variation = [variation[name] for name in sorted(variation)]
+    if not isinstance(variation, list):
+        raise ValueError("Declare the variation as a list.")
+    return [{"op": "replace", "path": "task", "value": task}, *variation]
+
+
 @dataclass(frozen=True)
 class ProjectPlan:
     """Named runs and deduplicated objects encoded by the shared request codec."""
@@ -1947,23 +1962,15 @@ class _Compiler:
                 model = _EvaluationModel(name, differences)
         task = False
         if "task" in slots:
-            subject_task = train.trial_documents.task_source
+            params = payload.get("params")
+            if not isinstance(params, dict):
+                return problem("payload.params", "Declare rollout parameters.")
             try:
-                same = type(subject_task).model_validate(slots["task"]) == subject_task
-            except ValidationError:
-                same = False
-            if not same:
-                params = payload.get("params")
-                if not isinstance(params, dict):
-                    return problem("payload.params", "Declare rollout parameters.")
-                authored = params.get("variation", [])
-                if isinstance(authored, dict):
-                    authored = [authored[name] for name in sorted(authored)]
-                if not isinstance(authored, list):
-                    return problem("payload.params.variation", "Declare the variation as a list.")
-                payload = payload | {"params": params | {"variation": [
-                    {"op": "replace", "path": "task", "value": slots["task"]}, *authored,
-                ]}}
+                variation = own_task_variation(train.trial_documents.task_source, slots["task"], params.get("variation", []))
+            except ValueError as error:
+                return problem("payload.params.variation", str(error))
+            if variation is not None:
+                payload = payload | {"params": params | {"variation": variation}}
                 task = True
         return payload, model, task
 
