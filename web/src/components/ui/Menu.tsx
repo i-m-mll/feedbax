@@ -26,16 +26,35 @@ export interface MenuContentProps {
   className?: string;
 }
 
-export function MenuContent({ children, side = 'bottom', align = 'start', anchor, finalFocus, className, ...aria }: MenuContentProps) {
-  const popup = useRef<HTMLDivElement>(null);
-  // Focus returns when the close animation ends. If the person has moved focus elsewhere by then, it stays there:
-  // returning it would send their next keys to the field the menu came from.
-  const settle: PopupProps['finalFocus'] = (closeType) => {
+/**
+ * Focus returns when the close animation ends. If the person or the chosen command has moved focus elsewhere by then,
+ * it stays there: returning it would send their next keys to the field the menu came from.
+ */
+function settledFocus(popup: { readonly current: HTMLElement | null }, finalFocus?: PopupProps['finalFocus']): PopupProps['finalFocus'] {
+  return (closeType) => {
     const active = document.activeElement;
     if (active && active !== document.body && !popup.current?.contains(active)) return false;
     if (typeof finalFocus === 'function') return finalFocus(closeType);
     return typeof finalFocus === 'object' ? finalFocus.current : finalFocus ?? true;
   };
+}
+
+/** The keys that open a focused element's context menu. */
+export function opensContextMenu(event: { key: string; shiftKey: boolean }) {
+  return event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey);
+}
+
+/** Opens the context menu of `element` from the keyboard, at its lower start corner. */
+export function openContextMenu(element: Element) {
+  const bounds = element.getBoundingClientRect();
+  element.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, button: 2, clientX: bounds.left, clientY: bounds.bottom,
+  }));
+}
+
+export function MenuContent({ children, side = 'bottom', align = 'start', anchor, finalFocus, className, ...aria }: MenuContentProps) {
+  const popup = useRef<HTMLDivElement>(null);
+  const settle = settledFocus(popup, finalFocus);
   return (
     <BaseMenu.Portal container={usePopupLayer()}>
       <BaseMenu.Positioner className="z-50 outline-none" side={side} align={align} sideOffset={4} anchor={anchor}>
@@ -46,10 +65,12 @@ export function MenuContent({ children, side = 'bottom', align = 'start', anchor
 }
 
 export function ContextMenuContent({ children, className }: Pick<MenuContentProps, 'children' | 'className'>) {
+  const popup = useRef<HTMLDivElement>(null);
+  const settle = settledFocus(popup);
   return (
     <BaseContextMenu.Portal container={usePopupLayer()}>
       <BaseContextMenu.Positioner className="z-50 outline-none">
-        <BaseContextMenu.Popup className={clsx(popupSurface, 'min-w-[10rem]', className)}>{children}</BaseContextMenu.Popup>
+        <BaseContextMenu.Popup ref={popup} className={clsx(popupSurface, 'min-w-[10rem]', className)} finalFocus={settle}>{children}</BaseContextMenu.Popup>
       </BaseContextMenu.Positioner>
     </BaseContextMenu.Portal>
   );

@@ -5,7 +5,7 @@ import {
 } from 'react';
 import { InlineEdit } from './InlineEdit';
 import { ListRow } from './ListRow';
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from './Menu';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger, openContextMenu, opensContextMenu } from './Menu';
 
 export interface TreeNode {
   id: string;
@@ -235,6 +235,12 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
     const level = siblings(node.id);
     const position = level.findIndex((sibling) => sibling.id === node.id);
     const handled = () => event.preventDefault();
+    const row = rows.current.get(node.id);
+    if (menu && row && opensContextMenu(event)) {
+      handled();
+      event.stopPropagation();
+      return openContextMenu(row);
+    }
     switch (event.key) {
       case 'ArrowDown':
         handled();

@@ -34,7 +34,7 @@ import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCan
 import { Button, IconButton } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { ListRow } from '@/components/ui/ListRow';
-import { Tree, type TreeNode } from '@/components/ui/Tree';
+import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Menu, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { useElementSize } from '@/hooks/useElementSize';
 import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
@@ -49,7 +49,7 @@ import {
   type RunSetsByStep,
 } from '@/features/pipeline/selection';
 import { PipelineRunMarks, type ApplyMapSelection } from './PipelineRunMarks';
-import type { RunMenu } from './RunContextMenu';
+import { CommandContextMenu, CommandMenuItems, type RunMenu, type StepMenu } from './CommandContextMenu';
 import {
   compactMapCardWidth,
   focusedMapEdgePairs,
@@ -117,6 +117,7 @@ export interface StudioPipelineMapProps {
   viewportRef?: Ref<CanvasViewport>;
   fitReady?: boolean;
   runMenu?: RunMenu;
+  stepMenu?: StepMenu;
   /** An armed reference pick: a card it accepts fills the reference when its head is chosen. */
   pick?: ReferencePick | null;
   rename?: MapStepRename;
@@ -288,6 +289,7 @@ const StepCard = memo(function StepCard({
   upstream,
   downstream,
   runMenu,
+  stepMenu,
   rename,
   pick,
   enterStep,
@@ -309,6 +311,7 @@ const StepCard = memo(function StepCard({
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   runMenu?: RunMenu;
+  stepMenu?: StepMenu;
   rename?: MapStepRename;
   pick?: ReferencePick | null;
   enterStep?: (stepId: string) => void;
@@ -363,7 +366,8 @@ const StepCard = memo(function StepCard({
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-px top-1/2" />
         {renamingStep(rename, step.id, 'card') ? (
           <div className="studio-map-card__head flex w-full px-3 py-2"><StepName step={step} rename={rename} /></div>
-        ) : <Button
+        ) : <CommandContextMenu commands={stepMenu && (() => stepMenu(step, () => rename?.setEditing({ stepId: step.id, surface: 'card' })))}
+          trigger={<Button
           variant="bare"
           size="content"
           align="start"
@@ -377,7 +381,7 @@ const StepCard = memo(function StepCard({
           {...stepGestures(rename, pick ? undefined : enterStep, step.id, 'card', headSelection.onKeyDown)}
         >
           <StepName step={step} />
-        </Button>}
+        </Button>} />}
         {!compact && newSweep && !renamingStep(rename, step.id, 'card') && (
           <span className="flex shrink-0 pr-2"><NewSweep command={newSweep} menu={sweepMenu} /></span>
         )}
@@ -525,6 +529,7 @@ interface DrawerProps {
   documentScope?: MapDocumentScope;
   rename?: MapStepRename;
   enterStep?: (stepId: string) => void;
+  stepMenu?: StepMenu;
 }
 
 function stepTrailing(step: PlanStepView, applySelection: ApplyMapSelection) {
@@ -547,13 +552,18 @@ function stepTrailing(step: PlanStepView, applySelection: ApplyMapSelection) {
 
 const groupId = (group: string) => '\u0000' + group;
 
-function MapDrawer({ steps, newStep, framed = false, pending = false, selection, related, focusedStepId, chooseStep, applySelection, documentScope, rename, enterStep }: DrawerProps & {
+function MapDrawer({ steps, newStep, framed = false, pending = false, selection, related, focusedStepId, chooseStep, applySelection, documentScope, rename, enterStep, stepMenu }: DrawerProps & {
   steps: readonly PlanStepView[];
   newStep?: StudioCommand;
   framed?: boolean;
   pending?: boolean;
 }) {
   const region = useRegionPending(pending);
+  const tree = useRef<TreeHandle>(null);
+  const menu = stepMenu && ((node: TreeNode) => {
+    const step = steps.find(({ id }) => id === node.id);
+    return step && <CommandMenuItems commands={() => stepMenu(step, () => tree.current?.rename(step.id))} />;
+  });
   const rows = (entries: readonly PlanStepView[]): TreeNode[] => entries.map((step) => {
     const { Icon } = studioStep(step.kind);
     const count = related?.get(step.id)?.size ?? 0;
@@ -599,7 +609,7 @@ function MapDrawer({ steps, newStep, framed = false, pending = false, selection,
         </div>
       )}
       <ScrollFade axis="y" className="min-h-0 flex-1">
-        <Tree aria-label={studioName('steps')} nodes={nodes} selected={selected} onSelectedChange={choose}
+        <Tree ref={tree} aria-label={studioName('steps')} nodes={nodes} menu={menu} selected={selected} onSelectedChange={choose}
           onRename={rename && ((stepId, name) => rename.commit(stepId, name))} renameLabel={studioName('rename')}
           onActivate={enterStep}
           defaultExpanded={[...grouped.keys()].flatMap((group) => group === null ? [] : [groupId(group)])} />
@@ -608,14 +618,14 @@ function MapDrawer({ steps, newStep, framed = false, pending = false, selection,
   );
 }
 
-export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep, rename, onEnterStep, pending }: Pick<
-  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep' | 'rename' | 'onEnterStep' | 'pending'
+export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newStepCommand, documentScope, onChooseStep, rename, onEnterStep, stepMenu, pending }: Pick<
+  StudioPipelineMapProps, 'plan' | 'state' | 'onSelectionChange' | 'newStepCommand' | 'documentScope' | 'onChooseStep' | 'rename' | 'onEnterStep' | 'stepMenu' | 'pending'
 >) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const applySelection: ApplyMapSelection = (change) => onSelectionChange(change(state));
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
-    chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename} enterStep={onEnterStep}
+    chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename} enterStep={onEnterStep} stepMenu={stepMenu}
     newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })} framed pending={pending} />;
 }
 
@@ -628,6 +638,7 @@ function MapLine({
   reached,
   rename,
   enterStep,
+  stepMenu,
 }: {
   plan: PlanView;
   layout: MapLayout;
@@ -637,6 +648,7 @@ function MapLine({
   reached?: ReadonlySet<string>;
   rename?: MapStepRename;
   enterStep?: (stepId: string) => void;
+  stepMenu?: StepMenu;
 }) {
   const selected = plan.steps.filter(({ id }) => stepSelection(selection, id));
   const center = selected.length === 1 ? selected[0] : null;
@@ -655,8 +667,9 @@ function MapLine({
           {steps.map((step) => renamingStep(rename, step.id, 'line') ? (
             <span key={step.id} className="studio-card studio-map-line-step px-2 py-1 text-sm" style={cardTint(studioStep(step.kind).tint)}><StepName step={step} rename={rename} /></span>
           ) : (
-            <Button
-              key={step.id}
+            <CommandContextMenu key={step.id}
+              commands={stepMenu && (() => stepMenu(step, () => rename?.setEditing({ stepId: step.id, surface: 'line' })))}
+              trigger={<Button
               variant="bare"
               size="content"
               className={`studio-card studio-map-line-step px-2 py-1 text-sm ${documentLevelStyle} ${!stepSelection(selection, step.id) ? documentLitStyle : ''}`}
@@ -671,7 +684,7 @@ function MapLine({
               {...lineSelection(step.id)}
             >
               <StepName step={step} />
-            </Button>
+            </Button>} />
           ))}
         </div>
       ))}
@@ -699,6 +712,7 @@ export function StudioPipelineMap({
   viewportRef,
   fitReady,
   runMenu,
+  stepMenu,
   rename,
   pick,
   onEnterStep,
@@ -769,7 +783,7 @@ export function StudioPipelineMap({
       } : undefined}
     >
       {!plan.steps.length ? null : mode === 'line' ? (
-        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} reached={reached} rename={rename} enterStep={onEnterStep} />
+        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} reached={reached} rename={rename} enterStep={onEnterStep} stepMenu={stepMenu} />
       ) : (
         <>
           {drawDrawer && (
@@ -784,6 +798,7 @@ export function StudioPipelineMap({
               newStep={firstStep}
               rename={rename}
               enterStep={onEnterStep}
+              stepMenu={stepMenu}
             />
           )}
           <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus}
@@ -811,6 +826,7 @@ export function StudioPipelineMap({
                     sweepMenu={sweepMenu?.stepId === step.id ? sweepMenu : undefined}
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                     runMenu={runMenu}
+                    stepMenu={stepMenu}
                     rename={rename}
                     pick={pick}
                     enterStep={onEnterStep}
