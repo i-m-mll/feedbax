@@ -123,6 +123,7 @@ if TYPE_CHECKING:
     from feedbax.tasks.registry import PythonTaskRegistry
     from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
+    from feedbax.compiler.model_document import LoweredModelDocument
     from feedbax.expression_registry import FunctionRegistry
     from feedbax.plot.templates import FigureTemplateRegistry
 
@@ -637,6 +638,16 @@ class _ModelSource:
     stamp: str
     evaluation_problem: ProjectDiagnostic | None = None
     evaluation_graph: GraphSpec | None = None
+    trained: _TrainedSource | None = None
+
+
+@dataclass(frozen=True)
+class _TrainedSource:
+    """What a Train run's checkpoint holds, as its plan knows it."""
+
+    graph: GraphSpec
+    method: str
+    replicates: int
 
 
 EVALUATION_MODEL = "payload.trial_documents.model"
@@ -851,6 +862,8 @@ class _TrainPreparation:
     checkpoint_problem: RunProblem | None
     evaluation: GraphSpec | ProjectDiagnostic
     condition_ids: tuple[str, ...]
+    graph: GraphSpec
+    lowered: LoweredModelDocument
 
 
 @dataclass(frozen=True)
@@ -900,6 +913,29 @@ def _trial_problem(
     )
 
 
+def _checkpoint_fit_problem(
+    source: _TrainedSource, preparation: _TrainPreparation, spec: DocumentTrainingRequestSpec,
+    components: ComponentRegistry,
+) -> RunProblem | None:
+    from feedbax.compiler.checkpoint_fit import checkpoint_misfit
+
+    if source.replicates != spec.training_config.replicates:
+        return RunProblem("/training_config/replicates", f"The checkpoint has {source.replicates} replicates.")
+    continuation = spec.continuation
+    if continuation is not None and continuation.state == "preserve" and source.method != spec.method:
+        return RunProblem("/method", f"Carrying state needs the checkpoint's method, {source.method!r}.")
+    if (misfit := checkpoint_misfit(source.graph, preparation.graph, components)) is None:
+        return None
+    if not misfit.path:
+        return RunProblem("/trial_documents/model", misfit.reason)
+    graph_path = (
+        "graph", *(token for name in misfit.path[:-1] for token in ("subgraphs", name)), "nodes", misfit.path[-1],
+    )
+    address = preparation.lowered.source_address(pointer(graph_path))
+    path = ("trial_documents", "model", *address.stored_path()) if address is not None else graph_path
+    return RunProblem(pointer(path), misfit.reason, address)
+
+
 class _PayloadProblems(Exception):
     """Problems at dotted payload paths found while lowering a row."""
 
@@ -924,13 +960,16 @@ def _encode_row(
     training_methods: TrainingMethodRegistry | None = None,
     previous: _LoweredRow | None = None,
     document_pointers: Mapping[str, str] = MappingProxyType({}),
+    checkpoint_source: _TrainedSource | None = None,
+    components: ComponentRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
     condition_ids = None
     if prepared_train is not None:
         payload = payload | {"trial_documents": prepared_train.documents}
-        checkpoint_problem = prepared_train.preparation.checkpoint_problem
-        condition_ids = prepared_train.preparation.condition_ids
+        preparation = prepared_train.preparation
+        checkpoint_problem = preparation.checkpoint_problem
+        condition_ids = preparation.condition_ids
         model_source = prepared_train.model
     elif kind == "train":
         from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
@@ -1035,6 +1074,14 @@ def _encode_row(
         if remember_train is not None:
             assert isinstance(spec, DocumentTrainingRequestSpec) and model_source is not None
             remember_train(_PreparedTrainRow(spec.trial_documents, preparation, model_source))
+        if isinstance(spec, DocumentTrainingRequestSpec):
+            assert model_source is not None
+            model_source = replace(model_source, trained=_TrainedSource(
+                preparation.graph, spec.method, spec.training_config.replicates,
+            ))
+            if checkpoint_problem is None and checkpoint_source is not None:
+                assert components is not None
+                checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
         evaluation_source = None
         problem = (
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
@@ -1710,6 +1757,9 @@ class _Compiler:
             (model_source.stamp,) if model_source is not None else ()
         )
         source_problem = model_source.evaluation_problem if model_source is not None else None
+        checkpoint = inputs.get("checkpoint") if kind == "train" else None
+        trained = self.model_sources.get(checkpoint.producer) if checkpoint is not None and checkpoint.producer else None
+        checkpoint_source = trained.trained if trained is not None else None
 
         def lower(reader=None, previous=None):
             if definition is None:
@@ -1795,6 +1845,7 @@ class _Compiler:
                 self.python_tasks, model_source=authored_model, document_pointers=document_pointers,
                 prepared_train=prepared_train, remember_train=remember_train,
                 training_methods=self.training_methods, previous=previous,
+                checkpoint_source=checkpoint_source, components=self.components or _builtin_model_registry(),
             )
             return replace(
                 lowered,
@@ -1846,7 +1897,9 @@ class _Compiler:
                     ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
                     model_address=address,
                 )
-            result = _TrainPreparation(checkpoint_problem, evaluation, paired.execution.task.condition_ids)
+            result = _TrainPreparation(
+                checkpoint_problem, evaluation, paired.execution.task.condition_ids, graph, paired.lowered,
+            )
         self.trial_preparations[identity] = result
         return result
 
