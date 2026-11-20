@@ -9,7 +9,7 @@ import { Agent } from 'node:http';
 import type { Plugin } from 'vite';
 import { buildSync } from 'esbuild';
 import { appearanceBootEntry } from './entries';
-import { endStreamsWithUpstream, mandibleInterfaceNotes } from './mandible-notes';
+import { mandibleInterfaceNotes } from './mandible-notes';
 
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
@@ -183,7 +183,12 @@ export default defineConfig({
             configure(proxy) {
               // A stopped backend answers nothing; the page must see that, not the proxy's 500.
               proxy.on('error', (_error, request) => { request.socket.destroy(); });
-              endStreamsWithUpstream(proxy);
+              proxy.on('proxyRes', (upstream, _request, downstream) => {
+                if (!upstream.headers['content-type']?.startsWith('text/event-stream')) return;
+                upstream.once('close', () => {
+                  if (!upstream.complete && !downstream.writableEnded) downstream.destroy();
+                });
+              });
             },
           },
           '/ws': {
