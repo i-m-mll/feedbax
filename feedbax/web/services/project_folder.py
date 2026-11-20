@@ -5,6 +5,7 @@ from __future__ import annotations
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
 from copy import deepcopy
+from functools import partial
 from hmac import compare_digest, digest
 import os
 from pathlib import Path
@@ -157,7 +158,11 @@ class ProjectFolderService(ProjectFolder):
     ) -> ModelEditResponse:
         from feedbax.contracts.model_edit import ModelEditApplied, ModelEditProblem, ModelEditRefused, ModelEditResponse
 
-        result = self.apply_model_command(project_id, body, components)
+        from feedbax.web.services.trial_scope import model_document_store
+
+        result = self.apply_model_command(
+            project_id, body, components, partial(model_document_store, self, self.project_id(project_id)),
+        )
         if isinstance(result, ModelEditProblem):
             return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
         change = result.change
@@ -166,7 +171,7 @@ class ProjectFolderService(ProjectFolder):
         ) if change is not None else None
         return ModelEditResponse(result=ModelEditApplied(
             status="applied", snapshot=result.snapshot, changed=result.changed, clipboard=result.clipboard,
-            undo_token=token,
+            undo_token=token, created=result.created,
         ))
 
     def undo_model(self, project_id: str, body: ModelUndoRequest) -> ModelEditResponse:

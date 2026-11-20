@@ -405,3 +405,51 @@ test('a continuation taken out keeps its runs, and Detach cuts a based document 
   await picker('Training').click();
   await expect(menu.getByRole('menuitem', { name: 'Detach', exact: true })).toHaveCount(0);
 });
+
+test('a narrowed edit in the Model view makes a document based on the shown one, and one Undo restores the files', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
+  const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
+  const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Model Document / });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
+  async function saved() {
+    const response = await request.get(projectPath);
+    expect(response.ok()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  }
+  async function requests() {
+    const { revision } = await saved();
+    const response = await request.get(`${projectPath}/train-runs?revision=${revision}`);
+    expect(response.ok(), await response.text()).toBe(true);
+    const { rows } = await response.json() as StudioSavedTrainRuns;
+    return Object.fromEntries(rows.map(({ key, request_id }) => [key.step, request_id]));
+  }
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(picker).toHaveText('point-mass');
+  await primary.locator('.react-flow__node').filter({ hasText: 'Point mass' }).locator('header').click();
+  await expect(mass).toBeEditable();
+  await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
+  await expect(picker).toHaveText('point-mass1 of 2');
+  await expect(mass).toBeEditable();
+  const files = (await saved()).project;
+  const before = await requests();
+  await mass.fill('2.5');
+  await mass.press('Enter');
+  await expect(picker).toHaveText('point-mass-2');
+  await expect.poll(async () => (await saved()).project.documents?.['point-mass-2']).toMatchObject({ base: { document: 'point-mass' } });
+  expect((await saved()).project.documents?.['point-mass']).toEqual(files.documents?.['point-mass']);
+  const after = await requests();
+  expect(after.train).not.toBe(before.train);
+  expect(after.sibling).toBe(before.sibling);
+  await primary.locator('.react-flow__node').filter({ hasText: 'Point mass' }).locator('header').click();
+  await expect(mass).toHaveValue('2.5');
+
+  await primary.focus();
+  await page.keyboard.press('Meta+Z');
+  await expect.poll(async () => (await saved()).project).toEqual(files);
+  await expect(picker).toHaveText('point-mass1 of 2');
+});

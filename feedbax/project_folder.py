@@ -34,7 +34,9 @@ from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project import BasedDocument, Project, RootDocument, Sha256, json_pointer_parts
+from feedbax.contracts.project import (
+    BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, same_json,
+)
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
@@ -65,6 +67,7 @@ from feedbax.project_members import (
     detach_refusals, duplicate_step, generated_name, references_member, rename_member,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.studio.selection import StoredEdit
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
     AuthoredFileAddress,
@@ -112,7 +115,7 @@ _MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
 
 def _document_sweep_paths(
     project: Project, document: str, read_plan: Callable[[], ProjectPlan],
-) -> set[tuple[str, ...] | ModelAddress]:
+) -> list[tuple[str, ...] | ModelAddress]:
     prefix = f"documents.{document}.payload."
 
     def paths(sweep: Sweep):
@@ -127,15 +130,15 @@ def _document_sweep_paths(
             if entry is not None:
                 yield from entry.patches
 
-    targets: set[tuple[str, ...] | ModelAddress] = set()
-    scoped: dict[str, set[ModelAddress]] = {}
+    targets: list[tuple[str, ...] | ModelAddress] = []
+    scoped: dict[str, list[ModelAddress]] = {}
     has_step_targets = False
     for sweep in (project.sweep, *(step.sweep for step in project.steps.values())):
         if sweep is None:
             continue
         for path in paths(sweep):
             if path.startswith(prefix):
-                targets.add(tuple(path.removeprefix(prefix).split(".")))
+                targets.append(tuple(path.removeprefix(prefix).split(".")))
                 continue
             try:
                 target = model_field_target(path)
@@ -144,9 +147,9 @@ def _document_sweep_paths(
             if target is None:
                 continue
             if target.document == document:
-                targets.add(target.address)
+                targets.append(target.address)
             elif target.step is not None:
-                scoped.setdefault(target.step, set()).add(target.address)
+                scoped.setdefault(target.step, []).append(target.address)
             elif target.document is None:
                 has_step_targets = True
     if not scoped and not has_step_targets:
@@ -165,7 +168,7 @@ def _document_sweep_paths(
         if subject is not None and any(key in rows and uses_model(rows[key]) for key in subject.sources):
             steps.add((run.key.variant, run.key.step))
     for variant, name in steps:
-        targets.update(scoped.get(name, ()))
+        targets.extend(scoped.get(name, ()))
         if sweep := plan.steps[variant, name].sweep:
             for path in paths(sweep):
                 try:
@@ -173,7 +176,7 @@ def _document_sweep_paths(
                 except ValueError:
                     continue  # The Plan reports malformed authored targets.
                 if target is not None and target.step is None and target.document is None:
-                    targets.add(target.address)
+                    targets.append(target.address)
     return targets
 
 
@@ -268,8 +271,60 @@ def _project_file_entry(payload: dict, address: AuthoredFileAddress) -> dict:
 def preview_authored_files(project: Project, files: Sequence[StudioProjectFilePatch]) -> Project:
     payload = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
     for file in files:
-        _apply_file_edits(_project_file_entry(payload, file.address), file)
+        _apply_file_edits(_project_file_entry(payload, file.address), file, model_operation=True)
     return Project.model_validate(payload)
+
+
+def document_file(
+    name: str, document: Document, content: dict[str, JsonValue], base: dict[str, JsonValue] | None,
+) -> StudioProjectFilePatch | None:
+    """The document's file holding ``content``: its payload, or its differences from ``base``; none when unchanged."""
+    address = AuthoredFileAddress(kind="document", id=name)
+    if isinstance(document, RootDocument):
+        if same_json(document.payload, content):
+            return None
+        return StudioProjectFilePatch(address=address, patches=[SetProjectValue(op="replace", path="/payload", value=content)])
+    assert base is not None
+    differences = diff(base, content)
+    if differences == document.differences:
+        return None
+    return StudioProjectFilePatch(address=address, patches=[SetProjectValue(
+        op="replace" if "differences" in document.model_fields_set else "add", path="/differences",
+        value={path: value.model_dump(mode="json") for path, value in differences.items()},
+    )])
+
+
+type ModelStore = Callable[[Project, ModelEditRequest, dict[str, JsonValue], dict[str, JsonValue]], StoredEdit]
+"""Store a Model edit's change of the shown document's composed content, from the first payload to the second, after
+the request's step files: the documents it creates and the patches of files."""
+
+
+def _layout_patches(
+    presentation: PresentationDocument, layouts: dict[str, dict[str, JsonValue]],
+    *, had_entry: bool = True, had_documents: bool = True,
+) -> list[SetProjectValue | RemoveProjectValue]:
+    """The presentation patches that give each document its Model layout, keeping its other presentation."""
+    from feedbax.contracts.project_sources import pointer
+
+    patches: list[SetProjectValue | RemoveProjectValue] = []
+    has_documents = "documents" in presentation.model_fields_set
+    for document, layout in layouts.items():
+        entry = presentation.documents.get(document)
+        current = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
+        next_entry = {key: value for key, value in current.items() if key not in _MODEL_LAYOUT_FIELDS} | layout
+        if next_entry == current:
+            continue
+        path = pointer(("documents", document))
+        if not next_entry and not had_entry:
+            if not had_documents and presentation.documents.keys() == {document}:
+                path = "/documents"
+            patches.append(RemoveProjectValue(op="remove", path=path))
+        elif not has_documents:
+            patches.append(SetProjectValue(op="add", path="/documents", value={document: next_entry}))
+            has_documents = True
+        else:
+            patches.append(SetProjectValue(op="replace" if entry is not None else "add", path=path, value=next_entry))
+    return patches
 
 
 @dataclass(frozen=True)
@@ -790,10 +845,13 @@ class ModelEditChange:
 
 @dataclass(frozen=True)
 class AppliedModelEdit:
+    """``change`` is the shown document's change when the edit wrote its file and layout alone."""
+
     snapshot: StudioProjectSnapshot
     changed: tuple[ModelAddress, ...]
     clipboard: ModelClipboard | None
     change: ModelEditChange | None
+    created: tuple[str, ...] = ()
 
 
 class ProjectFolder:
@@ -1242,9 +1300,13 @@ class ProjectFolder:
             return StudioMemberCommandResult(member=name, snapshot=self._snapshot(folder.location, self._load(root)))
 
     def apply_model_command(
-        self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,
+        self, project_id: str, body: ModelEditRequest, components: ComponentRegistry, store: ModelStore,
     ) -> AppliedModelEdit | ModelEditProblem:
-        """Apply a named Model operation and commit its document and layout together."""
+        """Apply a named Model operation to the shown document's composed content and commit what ``store`` makes of
+        it with the layout, in one write.
+
+        A document the edit creates gets the layout of its base, the edited layout when its base is the shown one.
+        """
         from feedbax.contracts.model_edit import ModelEditProblem, ModelEditState, ModelProjectionRequest
         from feedbax.studio.model_edit import apply_model_edit
         from feedbax.studio.model_ports import ModelRegistryPorts
@@ -1266,8 +1328,11 @@ class ProjectFolder:
         )
         if isinstance(result, ModelEditProblem):
             return result
+        if any(file.address.kind != "step" for file in body.files):
+            raise ProjectFolderInvalid("A Model edit writes step files alongside its command.")
         change = None
-        if result.state != state:
+        created: tuple[str, ...] = ()
+        if result.state != state or body.files:
             next_payload = result.state.document.model_dump(mode="json") if result.state.document != state.document else payload
             targets = _document_sweep_paths(
                 snapshot.project, body.document, lambda: self.read_plan(project_id, revision=body.revision).plan,
@@ -1285,39 +1350,52 @@ class ProjectFolder:
                     next_layout[key] = updated_layout[key]
                 else:
                     next_layout.pop(key, None)
-            change = ModelEditChange(snapshot, (payload, layout), (next_payload, next_layout))
-            snapshot = self._write_model_change(snapshot, body.document, next_payload, next_layout)
-        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change)
+            stored = store(snapshot.project, body, payload, next_payload) if next_payload is not payload or body.files \
+                else StoredEdit([])
+            assert snapshot.presentation is not None
+            layouts: dict[str, dict[str, JsonValue]] = {}
+            narrowed = False
+            for document in stored.created:
+                base = document.document.base.document if isinstance(document.document, BasedDocument) else None
+                if base == body.document:
+                    narrowed = True
+                    layouts[document.id] = next_layout
+                elif base is not None and (entry := snapshot.presentation.documents.get(base)) is not None:
+                    shown = entry.model_dump(mode="json", exclude_unset=True)
+                    layouts[document.id] = {key: shown[key] for key in _MODEL_LAYOUT_FIELDS if key in shown}
+            if not narrowed:
+                layouts[body.document] = next_layout
+            shown_file = AuthoredFileAddress(kind="document", id=body.document)
+            alone = not stored.created and all(file.address == shown_file for file in stored.files)
+            created = tuple(document.id for document in stored.created)
+            files = list(stored.files)
+            if patches := _layout_patches(snapshot.presentation, layouts):
+                files.append(StudioProjectFilePatch(address=PRESENTATION_ADDRESS, patches=patches))
+            before = snapshot
+            if files or stored.created:
+                snapshot = self._patch(snapshot.project_id, StudioProjectPatchBatch(
+                    revision=snapshot.revision, presentation_revision=snapshot.presentation_revision, files=files,
+                ), model_operation=True, created=stored.created)
+            if alone:
+                change = ModelEditChange(before, (payload, layout), model_edit_source(snapshot, body.document))
+        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created)
 
     def _write_model_change(
         self, snapshot: StudioProjectSnapshot, document: ProjectName,
         payload: dict[str, JsonValue], layout: dict[str, JsonValue],
         *, had_entry: bool = True, had_documents: bool = True,
     ) -> StudioProjectSnapshot:
-        from feedbax.contracts.project_sources import pointer
-
+        """Give ``document`` the composed content ``payload`` and the Model ``layout``."""
         assert snapshot.presentation is not None
-        before, old_layout = model_edit_source(snapshot, document)
-        files: list[StudioProjectFilePatch] = []
-        if canonical_json_v2_bytes(before) != canonical_json_v2_bytes(payload):
-            files.append(StudioProjectFilePatch(
-                address=AuthoredFileAddress(kind="document", id=document),
-                patches=[SetProjectValue(op="replace", path="/payload", value=payload)],
-            ))
-        if layout != old_layout:
-            entry = snapshot.presentation.documents.get(document)
-            current = entry.model_dump(mode="json", exclude_unset=True) if entry is not None else {}
-            next_entry = {key: value for key, value in current.items() if key not in _MODEL_LAYOUT_FIELDS} | layout
-            path = pointer(("documents", document))
-            if not next_entry and not had_entry:
-                if not had_documents and snapshot.presentation.documents.keys() == {document}:
-                    path = "/documents"
-                patch = RemoveProjectValue(op="remove", path=path)
-            elif "documents" not in snapshot.presentation.model_fields_set:
-                patch = SetProjectValue(op="add", path="/documents", value={document: next_entry})
-            else:
-                patch = SetProjectValue(op="replace" if entry is not None else "add", path=path, value=next_entry)
-            files.append(StudioProjectFilePatch(address=PRESENTATION_ADDRESS, patches=[patch]))
+        entry = snapshot.project.documents[document]
+        base = None
+        if isinstance(entry, BasedDocument):
+            base, _ = model_edit_source(snapshot, entry.base.document)
+        files = [file] if (file := document_file(document, entry, payload, base)) is not None else []
+        if patches := _layout_patches(
+            snapshot.presentation, {document: layout}, had_entry=had_entry, had_documents=had_documents,
+        ):
+            files.append(StudioProjectFilePatch(address=PRESENTATION_ADDRESS, patches=patches))
         if not files:
             return snapshot
         return self._patch(snapshot.project_id, StudioProjectPatchBatch(
@@ -1326,7 +1404,9 @@ class ProjectFolder:
 
     def _patch(
         self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch, *, model_operation: bool,
+        created: Sequence[CreateNamedDocument] = (),
     ) -> StudioProjectSnapshot:
+        """Apply ``body``'s file patches, after creating the ``created`` documents, in one write."""
         with self._locked_folder(project_id) as folder:
             root = folder.path
             text = self._load(root)
@@ -1335,6 +1415,15 @@ class ProjectFolder:
             original = dump_text_project(text.project, text.configuration)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             addresses = {}
+            made = set()
+            for document in created:
+                address = AuthoredFileAddress(kind="document", id=document.id)
+                relative = _relative_file(address)
+                if document.id in payload.setdefault("documents", {}) or relative in original:
+                    raise ProjectFileExists(relative)
+                payload["documents"][document.id] = document.document.model_dump(mode="json", by_alias=True, exclude_unset=True)
+                addresses[relative] = address
+                made.add(relative)
             presentation_data = None
             edits_presentation = any(file.address == PRESENTATION_ADDRESS for file in files)
             if edits_presentation:
@@ -1349,14 +1438,14 @@ class ProjectFolder:
                 )
                 for file in files:
                     relative = _relative_file(file.address)
-                    if relative in addresses:
+                    if relative in addresses and relative not in made:
                         raise ProjectFolderInvalid(f"{relative} is addressed twice")
                     addresses[relative] = file.address
                     if relative == STUDIO_PRESENTATION_FILENAME:
                         assert presentation is not None
                         entry = presentation
                     else:
-                        if relative not in original:
+                        if relative not in original and relative not in made:
                             raise ProjectFolderNotFound(file.address.id)
                         entry = _project_file_entry(payload, file.address)
                     _apply_file_edits(entry, file, model_operation=model_operation)
@@ -1367,7 +1456,7 @@ class ProjectFolder:
                     encoded[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument.model_validate(presentation))
             except (ValueError, TypeError, RecursionError) as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            changed = [relative for relative in addresses if encoded[relative] != original[relative]]
+            changed = [relative for relative in addresses if encoded[relative] != original.get(relative)]
 
             def guard() -> None:
                 check_revision("project", text.revision, self._load(root).revision)
@@ -1380,7 +1469,7 @@ class ProjectFolder:
                         address=addresses[relative],
                         before=(
                             sha256_bytes(presentation_data) if presentation_data is not None else None
-                        ) if relative == STUDIO_PRESENTATION_FILENAME else text.file_revisions[relative],
+                        ) if relative == STUDIO_PRESENTATION_FILENAME else text.file_revisions.get(relative),
                         data=encoded[relative].decode(),
                     )
                     for relative in changed

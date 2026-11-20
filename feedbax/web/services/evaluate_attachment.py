@@ -21,13 +21,17 @@ from feedbax.contracts.model_edit import (
     EvaluateAttachmentReadRequest,
     EvaluateAttachmentRows,
     EvaluateAttachmentState,
+    EvaluateAttachmentStep,
     EvaluateAttachmentVariant,
     ModelEditProblem,
 )
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.model_document import ModelDocument
-from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import ProjectPlan, RunKey, compile_project
+from feedbax.contracts.project import (
+    DifferenceNotApplied, InlineBase, Project, apply_differences, diff, nearest_shared_base,
+)
+from feedbax.contracts.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, compile_project
+from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import model_field_target
 from feedbax.contracts.studio_project import AuthoredFileAddress, SetProjectValue, StudioProjectFilePatch
@@ -109,10 +113,12 @@ def _scope(project, data, body):
         original = project.sweep.rows.get(scope.variant) if project.sweep is not None else None
         if original is None:
             raise ValueError("The selected variant has no authored row")
+        if not isinstance(authored.base, InlineBase):
+            raise ValueError("A variant changes the Model of an Evaluate step defined in its own file")
         row = data["sweep"]["rows"][scope.variant]
         patches = row.setdefault("patches", {})
         batch = _batch_id("variant", scope.variant)
-        path = _batch_path(patches, f"steps.{key.step}.{MODEL_ATTACHMENTS}", batch)
+        path = _batch_path(patches, f"steps.{key.step}.base.inline.{MODEL_ATTACHMENTS}", batch)
         return _Scope(
             AuthoredFileAddress(kind="variant", id=scope.variant), "patches", patches, original,
             patch=path,
@@ -152,13 +158,7 @@ def _scope(project, data, body):
             address, "sweep", patches, authored, patch=_batch_path(patches, MODEL_ATTACHMENTS, batch),
             exception=(exceptions, name),
         ), step
-    batch = _batch_id("step", key.step)
-    batches = step.setdefault(MODEL_ATTACHMENTS, {})
-    if batch not in batches and len(batches) == 1:
-        batch = next(iter(batches))
-    return _Scope(
-        address, MODEL_ATTACHMENTS, batches, authored, batch=batch,
-    ), step
+    raise ValueError("A change for the whole step is an edit of the Model document it reads")
 
 
 def _addressed_field(path: str) -> bool:
@@ -218,7 +218,7 @@ def read_evaluate_attachments(
         selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
     definition = selected.selected_definitions.get(key)
     data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    scope, _ = _scope(snapshot.project, data, body)
+    local = () if isinstance(body.scope, EvaluateAttachmentStep) else _local_records(_scope(snapshot.project, data, body)[0])
     _, editable = _selected_rows(selected, body)
     effective = MODEL_DIFFERENCE_BATCHES.validate_python(
         definition.payload.get(MODEL_ATTACHMENTS, {}) if definition else {},
@@ -232,11 +232,14 @@ def read_evaluate_attachments(
         source = evaluate_value_source(provenance)
         train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(producer,)).plan
         train = train_plan.selected_definitions.get(producer)
-        if train is not None:
-            document = train.document_ids.get("payload.trial_documents.model")
-            if model_document is not None and document != model_document:
+        row = next((row for row in selected.rows if row.key == key), None)
+        if train is not None and row is not None:
+            document = train.document_ids.get(EVALUATION_MODEL)
+            read = row.document_ids.get(EVALUATION_MODEL)
+            if model_document is not None and read != model_document:
                 raise ProjectFolderInvalid("The selected run does not use this Model.")
-            if document and (model := selected_model(train, document)) is not None:
+            if document and read and (model := selected_model(train, document)) is not None:
+                model = _with_document(snapshot.project, model, document, read)
                 resolved = resolve_effective_model(
                     ModelDocument.model_validate(model), components or folders.components,
                     differences, functions=folders.functions,
@@ -252,7 +255,7 @@ def read_evaluate_attachments(
     return EvaluateAttachmentState(
         revision=body.revision,
         editable=editable,
-        records=tuple(record for record in _local_records(scope) if isinstance(record, AttachmentDifference)),
+        records=tuple(record for record in local if isinstance(record, AttachmentDifference)),
         effective=tuple(
             record for record in differences if isinstance(record, AttachmentDifference)
         ),
@@ -260,6 +263,23 @@ def read_evaluate_attachments(
         source=source,
         field_sources=field_sources,
     )
+
+
+def _with_document(project: Project, model: dict, subject: str, read: str) -> dict:
+    """The subject run's ``model`` with the differences of the read document from the nearest one it shares with the
+    subject's."""
+    if read == subject:
+        return model
+    shared = nearest_shared_base(project.documents, subject, read)
+    if shared is None:
+        raise ProjectFolderInvalid(f"{read} shares no document with {subject}.")
+    composed = [compose_document(project.documents.get, name) for name in (shared, read)]
+    if bad := next((entry for entry in composed if isinstance(entry, ProjectDiagnostic)), None):
+        raise ProjectFolderInvalid(bad.detail)
+    try:
+        return apply_differences(model, diff(composed[0].payload, composed[1].payload))
+    except DifferenceNotApplied as error:
+        raise ProjectFolderInvalid(f"{read} does not apply to the trained model: {error}") from error
 
 
 def _selected_rows(plan: ProjectPlan, body: EvaluateAttachmentReadRequest) -> tuple[set[RunKey], bool]:

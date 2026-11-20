@@ -16,7 +16,7 @@ from feedbax.contracts.project import (
     BasedDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import EVALUATION_TASK, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, authored_variation
@@ -45,7 +45,7 @@ from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_val
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.studio.selection import StoredEdit
 from feedbax.web.services.trial_scope import (
-    document_write, file_value, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
+    authored_payload, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
     selected_runs, variant_file,
 )
 
@@ -373,7 +373,7 @@ def _chosen_task(project, document):
 
 def _evaluation_task_path(definition):
     entry = _authored_task_entry(definition.payload.get("params", {}).get("variation"))
-    return f"payload.params.variation.{entry}.value" if entry is not None else None
+    return f"payload.params.variation.{entry}.value" if entry is not None else EVALUATION_TASK
 
 
 def _evaluate_documents(plan, key, definition, bundle):
@@ -397,17 +397,18 @@ def _evaluate_documents(plan, key, definition, bundle):
             projection.pair.lowered.graph, documents.task_source, params.variation,
             components=bundle.components,
         )
-        graph = variant.graph
+        graph, task = variant.graph, variant.task
         run = next((row for row in plan.runs if row.key == key), None)
         if run is not None:
             effective = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
             if isinstance(effective, EvaluationRequestSpec):
                 effective_params = authored_rollout_settings(effective.params)
                 if effective_params.variation != params.variation:
-                    graph = resolve_evaluation_variant(
+                    lowered = resolve_evaluation_variant(
                         projection.pair.lowered.graph, documents.task_source, effective_params.variation,
                         components=bundle.components,
-                    ).graph
+                    )
+                    graph, task = lowered.graph, lowered.task
     except ValueError as error:
         return documents, _Projection(
             projection.pair, projection.variables, projection.signals, projection.epochs,
@@ -415,7 +416,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, variant.task)
+    documents = _with_task(documents, task)
     paired = _project(documents, bundle, show_objective=False, graph_override=graph, objective_use=ObjectiveUse.INHERITED)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
@@ -472,7 +473,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     if isinstance(scope, StudioTrialStepScope):
         if key.variant != plan.variants[0]:
             raise ProjectFolderInvalid("A step scope covers the primary variant only.")
-        if chosen and (key.step not in chosen or not chosen <= users):
+        if chosen and document is not None and (key.step not in chosen or not chosen <= users):
             raise ProjectFolderInvalid("The chosen steps no longer match this document.")
         chosen = chosen or {key.step}
     selected = selected_runs(plan, key, scope, chosen_steps=chosen)
@@ -489,13 +490,21 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         settled = folders.read_plan(project_id, revision=body.revision, source_runs=selected)
     evaluate_field = (step.kind == "evaluate" and isinstance(change, StudioTrialDocumentEdit) and change.kind == "task")
     if step.kind == "evaluate":
+        whole = isinstance(scope, StudioTrialStepScope)
         if isinstance(change, StudioTrialSelectDocument):
             if change.role != "task":
                 raise ProjectFolderInvalid("An Evaluate reads its Model and Objective from its subject.")
             _chosen_task(project, change.document)
-            stored = scoped_file(project, key.step, scope, _task_selection_writes(
-                definition, {"document": change.document},
-            ), chosen=chosen, users=readers)
+            reference = {"document": change.document}
+            stored = scoped_file(project, key.step, scope, [
+                _override("trial_documents.task", "replace" if "task" in slots else "add", reference)
+                if isinstance(slots := (authored_payload(project, key.step) or {}).get("trial_documents"), dict)
+                else _override("trial_documents", "add", {"task": reference}),
+            ] if whole else _task_selection_writes(definition, reference), chosen=chosen, users=readers)
+        elif evaluate_field and whole:
+            stored = _evaluate_task_write(project, plan, key, scope, change)
+            selected = selected_runs(plan, key, scope, chosen_steps=set(stored.reached) | {key.step})
+            settled = folders.read_plan(project_id, revision=body.revision, source_runs=selected)
         elif evaluate_field:
             stored = _evaluate_field_files(project, settled.plan, key, scope, selected, bundle, change, documents, projected)
         else:
@@ -521,7 +530,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     reach = reached_runs(plan, variants, selected, stored.reached - {key.step})
     return _validate_files(
         stored, project, settled, selected, reach, key.step, folders, bundle, change, expression,
-        evaluate_field=evaluate_field,
+        evaluate_field=evaluate_field and not isinstance(scope, StudioTrialStepScope),
     )
 
 
@@ -555,6 +564,26 @@ def _reset_edit(project, document, change: StudioTrialDocumentReset) -> StudioTr
 
 
 _ABSENT = object()
+
+
+def _evaluate_task_write(project, plan, key, scope: StudioTrialStepScope, change) -> StoredEdit:
+    """An Evaluate step's edit of its Task, stored in the Task document it reads for the chosen steps.
+
+    Without chosen steps they are the Evaluate steps that read the document or one based on it.
+    """
+    row = next(row for row in plan.rows if row.key == key)
+    document = row.document_ids.get(EVALUATION_TASK) or row.document_ids.get("payload.trial_documents.python_task")
+    if document is None:
+        raise ProjectFolderInvalid("The selected Evaluate reads no Task document.")
+
+    def readers(name):
+        return plan.document_users(plan.variants[0], name)
+
+    chosen = {key.step, *scope.chosen_steps} if scope.chosen_steps else {key.step} | {
+        step for step in lit_steps(project.documents, readers, document)
+        if plan.steps[plan.variants[0], step].kind == "evaluate"
+    }
+    return evaluation_document_write(project, plan, document, list(change.edits), chosen, "task")
 
 
 def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, documents, projected):

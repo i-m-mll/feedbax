@@ -80,7 +80,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     owner = _attachment_owner("read")
     selection = {
         "run": {"step": "condition", "row": "default", "variant": "default"},
-        "scope": {"kind": "step"},
+        "scope": {"kind": "rows", "rows": ["default"]},
     }
     invalid = EvaluateAttachmentRequest.model_validate(
         selection

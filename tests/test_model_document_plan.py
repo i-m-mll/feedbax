@@ -1078,7 +1078,6 @@ def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value()
 
 
 @pytest.mark.parametrize(("kind", "scope"), [
-    ("wire", {"kind": "step"}),
     ("port", {"kind": "rows", "rows": ["seed=control"]}),
     ("port", {"kind": "axis_value", "axis": "seed", "value": "control"}),
     ("wire", {"kind": "variant", "variant": "treated"}),
@@ -1229,18 +1228,22 @@ def test_evaluate_attachment_order_and_identity_follow_effective_graph():
 def test_evaluate_attachment_can_reorder_a_saved_record(tmp_path):
     raw = _model_project()
     owner = _attachment_owner("carry")
-    raw["steps"]["baseline"]["model_attachments"] = {"step": [
-        _add_attachment(owner, "condition", None),
-    ]}
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "nested", Project.model_validate(raw))
-    before = folders.read_plan("nested", revision=None)
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         base = "/api/projects/nested"
         selection = {
-            "revision": before.revision, "scope": {"kind": "step"},
+            "revision": folders.read_plan("nested", revision=None).revision,
+            "scope": {"kind": "rows", "rows": ["default"]},
             "run": {"step": "baseline", "row": "default", "variant": "default"},
         }
+        added = client.post(f"{base}/model/evaluate-attachment", json=selection | {
+            "difference": _add_attachment(owner, "condition", None),
+        })
+        assert added.status_code == 200, added.text
+        assert client.patch(base, json={"revision": selection["revision"], **added.json()["file"]}).status_code == 200
+        before = folders.read_plan("nested", revision=None)
+        selection["revision"] = before.revision
         changed = client.post(f"{base}/model/evaluate-attachment", json=selection | {"difference": {
             "op": "change", "address": _attachment_address(owner, "condition"),
             "attachment": _scale_attachment("condition", 0.5), "after": "carry",
@@ -1636,7 +1639,7 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
             edit = prepare_evaluate_attachment(folders, project, EvaluateAttachmentRequest.model_validate({
                 "revision": plan.revision,
                 "run": {"step": "baseline", "row": "default", "variant": "default"},
-                "difference": difference, "scope": {"kind": "step"},
+                "difference": difference, "scope": {"kind": "rows", "rows": ["default"]},
             }), registry.components)
             patch, = edit.file.patches
             raw["steps"]["baseline"][patch.path.removeprefix("/")] = patch.value
