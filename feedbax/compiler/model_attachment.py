@@ -238,15 +238,20 @@ def _graph_edits(before: GraphSpec, after: GraphSpec, path=("graph",)):
 
 
 def lower_evaluate_attachments(
-    model: ModelDocument, binding: StudioTaskBindingSpec | None, components: ComponentRegistry,
-    differences: tuple[ModelDifference, ...], *, functions=None,
+    trained: ModelDocument, evaluated: ModelDocument, binding: StudioTaskBindingSpec | None,
+    components: ComponentRegistry, differences: tuple[ModelDifference, ...], *, functions=None,
 ) -> tuple[LoweredModelDocument, LoweredModelDocument, tuple[OverridePatch, ...]]:
-    """Derive the scoped wire/port variation from the resolved authored model."""
-    before = lower_model_document(model, components, binding)
-    resolved = resolve_effective_model(model, components, differences, functions=functions)
+    """Derive the scoped wire/port variation that turns ``trained`` into ``evaluated`` with ``differences``.
+
+    Raises ValueError when the change alters the trained graph's interface and no difference names it.
+    """
+    before = lower_model_document(trained, components, binding)
+    resolved = resolve_effective_model(evaluated, components, differences, functions=functions)
     after = lower_model_document(resolved, components, binding)
     try:
         derived = tuple(sorted(_graph_edits(before.graph, after.graph), key=lambda edit: edit.path))
     except ValueError as error:
+        if not differences:
+            raise
         raise ModelCompilationProblem(differences[-1].address, str(error)) from error
     return before, after, derived
