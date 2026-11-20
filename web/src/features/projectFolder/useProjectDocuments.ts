@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from 'react';
 import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
-import { apiErrorMessage, isServiceFailure } from '@/api/request';
+import { apiErrorMessage, landsOnGesture } from '@/api/request';
 import {
   studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
@@ -91,14 +91,14 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     return result.files;
   }
 
-  /** A refusal lands on the role's picker; only a service failure goes to `onError`. */
+  /** A refusal lands on the role's picker; any other failure goes to `onError`. */
   async function attempt<T>(role: DocumentRole, work: () => Promise<T>) {
     refuse(role);
     try {
       return await work();
     } catch (error) {
-      if (isServiceFailure(error)) onError(apiErrorMessage(error));
-      else refuse(role, apiErrorMessage(error));
+      if (landsOnGesture(error)) refuse(role, apiErrorMessage(error));
+      else onError(apiErrorMessage(error));
     }
   }
 

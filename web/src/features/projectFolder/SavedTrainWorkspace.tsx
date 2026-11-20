@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import { useStore } from 'zustand';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
-import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered } from '@/api/request';
+import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered, landsOnGesture } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
@@ -619,7 +619,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     setRefusal(undefined);
   }
   function failed(cause: unknown, refuse?: (reason: string) => Refusal | undefined) {
-    const refused = !isServiceFailure(cause) && refuse?.(apiErrorMessage(cause));
+    const refused = landsOnGesture(cause) && refuse?.(apiErrorMessage(cause));
     if (refused) setRefusal(refused);
     else commandFailed(cause);
   }
@@ -630,7 +630,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return {
       clear: settled,
       fail: (cause, land) => {
-        if (land && !isServiceFailure(cause)) land(apiErrorMessage(cause));
+        if (land && landsOnGesture(cause)) land(apiErrorMessage(cause));
         else failed(cause, refuseStep(stepId));
       },
     };

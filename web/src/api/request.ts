@@ -101,6 +101,11 @@ export function isRefusal(error: unknown): error is ApiRequestError {
   return error instanceof ApiRequestError && error.kind === 'http' && !isServiceFailure(error) && !isHttpConflict(error);
 }
 
+/** A failure of the gesture itself, shown on what it acted on: a refusal by the service or by the edit's own checks. A service failure or an outside change concerns the whole project. */
+export function landsOnGesture(error: unknown): boolean {
+  return !isServiceFailure(error) && !isHttpConflict(error);
+}
+
 export function isHttpConflict(error: unknown): error is ApiRequestError {
   return error instanceof ApiRequestError && error.kind === 'http' && error.status === 409;
 }
