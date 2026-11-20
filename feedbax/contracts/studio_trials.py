@@ -118,6 +118,10 @@ class StudioTrialAuthoring(StrictModel):
     task: TaskDocument | PythonTaskSelection
     task_source: StudioEvaluateValueSource | None = None
     task_field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
+    task_changed: list[Pointer] = Field(default_factory=list)
+    """Pointers, at every depth, whose value in the Task document the step reads differs from its base's."""
+    objective_changed: list[Pointer] = Field(default_factory=list)
+    """The same, in the Objective document."""
     objective: ObjectiveDocument | None
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]

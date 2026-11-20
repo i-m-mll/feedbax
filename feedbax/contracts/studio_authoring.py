@@ -253,3 +253,5 @@ class StudioTrainAuthoring(StrictModel):
     classes: list[StudioClassField] = Field(default_factory=list)
     removed_values: dict[str, list[str]] = Field(default_factory=dict)
     """Per sweep, the values whose runs the edit removes from the project."""
+    changed: list[str] = Field(default_factory=list)
+    """Pointers in the definition whose value is a difference of the based document it is read from."""

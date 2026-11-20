@@ -1,6 +1,6 @@
 import type { JsonValue } from '@/generated/studioContracts';
 import { humanizeLabel } from '../humanizeLabel';
-import type { FieldModel, FieldOption } from '../fieldModel';
+import { withReset, type ChangeMark, type FieldModel, type FieldOption } from '../fieldModel';
 import { isRecord, rawField, type RawChange } from './raw';
 
 type Schema = Readonly<Record<string, JsonValue>>;
@@ -24,6 +24,8 @@ export interface SchemaContext {
   readonly projected?: (path: readonly string[]) => FieldModel | undefined;
   /** Where the value at this path comes from, when not from the document itself. */
   readonly origin?: (path: readonly string[]) => string | undefined;
+  /** The changed mark of the value at this path, when a difference of the shown document sets it. */
+  readonly changed?: (path: readonly string[]) => ChangeMark | undefined;
   /** The value at this path differs between the runs the form shows: it is drawn as Mixed. */
   readonly mixed?: (path: readonly string[]) => boolean;
   /** The source's account of the class-valued field at this path, where it has one. */
@@ -136,32 +138,35 @@ function declaredField(key: string, property: JsonValue, value: JsonValue | unde
   const id = pointer(path);
   const change: RawChange | undefined = context.write && ((next) => context.write!(path, next));
   const origin = context.origin?.(path);
+  const changed = context.changed?.(path);
   const current = value ?? outer.default ?? null;
   const union = unionOf(outer, context.root);
   let schema = outer;
   if (union) {
     const { members, name } = union;
-    if (name) return classField(label, id, name, members, current, path, context, origin);
+    if (name) return classField(label, id, name, members, current, path, context, origin, changed);
     const member = members.length === 1 ? members[0] : members.find((candidate) => accepts(candidate, current));
     schema = { ...without(member ?? {}, 'title'), ...without(outer, 'anyOf', 'oneOf', 'discriminator') };
   }
   if (Array.isArray(schema.enum)) {
-    return rawField({ id, label, value: current, change, origin,
+    return rawField({ id, label, value: current, change, origin, changed,
       type: { kind: 'choice', options: schema.enum.map((option) => ({ value: option, label: String(option) })) } });
   }
   switch (schema.type) {
-    case 'boolean': return rawField({ id, label, type: { kind: 'boolean' }, value: current, change, origin });
-    case 'integer': return rawField({ id, label, type: { kind: 'integer' }, value: current, change, origin });
-    case 'number': return rawField({ id, label, type: { kind: 'number' }, value: current, change, origin });
-    case 'string': return rawField({ id, label, type: { kind: 'string' }, value: current, change, origin });
+    case 'boolean': return rawField({ id, label, type: { kind: 'boolean' }, value: current, change, origin, changed });
+    case 'integer': return rawField({ id, label, type: { kind: 'integer' }, value: current, change, origin, changed });
+    case 'number': return rawField({ id, label, type: { kind: 'number' }, value: current, change, origin, changed });
+    case 'string': return rawField({ id, label, type: { kind: 'string' }, value: current, change, origin, changed });
     case 'array': {
       if (!Array.isArray(current)) break;
       const fixed = Array.isArray(schema.prefixItems) ||
         typeof schema.minItems === 'number' && schema.minItems === schema.maxItems;
       const items = Array.isArray(schema.prefixItems) ? schema.prefixItems : undefined;
-      return rawField({ id, label, type: { kind: fixed ? 'vector' : 'list' }, value: current, change,
+      // A list is one value: it carries the mark, its items do not.
+      const itemContext = { ...context, changed: undefined };
+      return rawField({ id, label, type: { kind: fixed ? 'vector' : 'list' }, value: current, change, changed,
         parts: current.map((item, index) => fromJsonSchema(String(index + 1), items?.[index] ?? schema.items ?? null,
-          item, context, [...path, String(index)])) });
+          item, itemContext, [...path, String(index)])) });
     }
     case 'object': {
       if (!isRecord(current)) break;
@@ -170,7 +175,7 @@ function declaredField(key: string, property: JsonValue, value: JsonValue | unde
       const free = isRecord(extra)
         ? Object.keys(current).filter((name) => !declared.some(([key]) => key === name)).map((name) => [name, extra] as const)
         : [];
-      return rawField({ id, label, type: { kind: 'group' }, value: current, change,
+      return rawField({ id, label, type: { kind: 'group' }, value: current, change, changed,
         parts: [...declared, ...free].map(([name, nested]) =>
           fromJsonSchema(name, nested, current[name], context, [...path, name])) });
     }
@@ -183,7 +188,7 @@ function declaredField(key: string, property: JsonValue, value: JsonValue | unde
  * source shows several classes, the parts are the parameters every one of them has, and the field reads by their names.
  */
 function classField(label: string, id: string, name: string, members: readonly Schema[], current: JsonValue,
-  path: readonly string[], context: SchemaContext, origin: string | undefined): FieldModel {
+  path: readonly string[], context: SchemaContext, origin: string | undefined, changed: ChangeMark | undefined): FieldModel {
   const chosen = isRecord(current) ? members.find((member) => constOf(member, name) === current[name]) : undefined;
   const options: FieldOption[] = members.map((member) => {
     const value = constOf(member, name);
@@ -208,10 +213,10 @@ function classField(label: string, id: string, name: string, members: readonly S
   }
   const single = shown.length === 1 && !context.mixed?.([...path, name]) ? shown[0] : undefined;
   const model = rawField({
-    id, label, origin, value: single ? constOf(single, name) : null, type: { kind: 'class', options }, parts,
+    id, label, origin, changed, value: single ? constOf(single, name) : null, type: { kind: 'class', options }, parts,
     change: context.choose && ((key) => context.choose!(path, key)),
   });
   if (!projection) return model;
   const labels = shown.map((member) => options[members.indexOf(member)].label);
-  return { ...model, ...projection.field, text: labels.join(', ') };
+  return { ...model, ...projection.field, commit: withReset(projection.field.commit, changed), text: labels.join(', ') };
 }

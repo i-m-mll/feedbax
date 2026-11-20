@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, overload
@@ -240,6 +240,7 @@ class TrainProjection:
     documents: list[str]
     classes: list[StudioClassField]
     removed: dict[str, list[str]]
+    changed: list[str]
 
 
 @dataclass(frozen=True)
@@ -843,7 +844,19 @@ def project_train_fields(
             for field in definition.classes.values()
         ],
         removed,
+        sorted(changed_fields(project, step_id, [
+            *definition.fields, *definition.classes,
+            *(f"/settings{pointer}" for pointer in _pointers(settings)),
+        ])),
     )
+
+
+def _pointers(value: Any, at: str = "") -> Iterator[str]:
+    """``value``'s pointer and those of every value inside it."""
+    yield at
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from _pointers(child, f"{at}/{str(key).replace('~', '~0').replace('/', '~1')}")
 
 
 def _class_sweep_edit(definition: _TrainFields, change: StudioClassSweepChange, selection: TrainSelection):

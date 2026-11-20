@@ -347,6 +347,9 @@ class EvaluateAttachmentState(StrictModel):
     resolved_model: ModelDocument | None = None
     source: StudioEvaluateValueSource | None = None
     field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
+    changed_from: ProjectName | None = None
+    """The nearest document the read Model document shares with the subject's, when they differ: what the
+    evaluation changes is the read document's differences from it."""
 
 
 class EvaluateAttachmentEdit(StrictModel):

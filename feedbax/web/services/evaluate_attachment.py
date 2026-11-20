@@ -270,6 +270,7 @@ def evaluate_reading(
         resolved_model=resolved,
         source=source,
         field_sources=field_sources,
+        changed_from=shared,
     ), changes, shared)
 
 

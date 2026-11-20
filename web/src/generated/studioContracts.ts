@@ -833,6 +833,7 @@ export interface EvaluateAttachmentState {
   resolved_model?: ModelDocument | null;
   source?: StudioEvaluateValueSource | null;
   field_sources?: Record<string, StudioEvaluateValueSource>;
+  changed_from?: string | null;
 }
 
 export interface StudioEvaluateValueSource {
@@ -3979,6 +3980,7 @@ export type StudioTrainAuthoring = {
   "refusal"?: StudioSweptParameterMissing | null;
   "classes"?: Array<StudioClassField>;
   "removed_values"?: Record<string, Array<string>>;
+  "changed"?: Array<string>;
 };
 
 export type StudioTrainAuthoringRequest = {
@@ -4028,6 +4030,8 @@ export type StudioTrialAuthoring = {
   "task": TaskDocument | PythonTaskSelection;
   "task_source"?: StudioEvaluateValueSource | null;
   "task_field_sources"?: Record<string, StudioEvaluateValueSource>;
+  "task_changed"?: Array<Pointer>;
+  "objective_changed"?: Array<Pointer>;
   "objective": ObjectiveDocument | null;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
@@ -5759,6 +5763,7 @@ export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> =
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "source": StudioEvaluateValueSourceSchema.nullable().optional(),
       "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
+      "changed_from": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateAttachmentState>;
@@ -10709,6 +10714,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
     "classes": z.array(StudioClassFieldSchema).optional(),
     "removed_values": z.record(z.string(), z.array(z.string())).optional(),
+    "changed": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoring>;
 
@@ -10770,6 +10776,8 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "task": z.union([TaskDocumentSchema, PythonTaskSelectionSchema]),
     "task_source": z.union([StudioEvaluateValueSourceSchema, z.null()]).optional(),
     "task_field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
+    "task_changed": z.array(PointerSchema).optional(),
+    "objective_changed": z.array(PointerSchema).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),

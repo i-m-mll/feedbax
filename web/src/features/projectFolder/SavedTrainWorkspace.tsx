@@ -6,7 +6,7 @@ import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered, landsOnGest
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
+  studioAccessibleName, studioCountOf, studioEvaluateValueSource, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -567,6 +567,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
     ) : undefined,
     exceptions: exceptionMention,
+    onRefused: step && ((reason: string | undefined) => setReadRefusal((current) => reason ? { kind: 'step', step: step.id, reason }
+      : current?.step === step.id ? undefined : current)),
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({
@@ -1393,7 +1395,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               return {
                 padded: true,
                 picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
-                body: withProblem(<TrialTaskForm view={value} commit={commit} />),
+                body: withProblem(<TrialTaskForm view={value} commit={commit} changed={step?.kind === 'evaluate'
+                  ? studioEvaluateValueSource({ kind: 'evaluate', step: step.id }) : studioName('changed')} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
               };
